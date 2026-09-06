@@ -287,6 +287,10 @@ pub const TIMBER_MATERIAL_V1: &str = "ketchup.material.timber.unspecified.v1";
 pub const GENERAL_BOM_EXPORT_V1: &str = "ketchup.general-bom-export.v1";
 pub const GENERAL_DRAWING_SVG_V1: &str = "ketchup.general-drawing-svg.v1";
 pub const GENERAL_MANUFACTURING_EXPORT_V2: &str = "ketchup.general-manufacturing-export.v2";
+pub const BTLX_2_3_1_VERSION: &str = "2.3.1";
+pub const BTLX_2_3_1_SCHEMA_URL: &str = "https://www.design2machine.com/btlx/BTLx_2_3_1.xsd";
+pub const BTLX_2_3_1_SCHEMA_SHA256: &str =
+    "208848116af3b43c189156610d3b82f6f86ea2afa7d09bc85a15876cc91cf1c6";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GeneralFabricationError {
@@ -645,6 +649,174 @@ impl GeneralFabricationProjection {
         }
         Ok(output.into_bytes())
     }
+
+    pub fn btlx_2_3_1_export(
+        &self,
+        snapshot: &Snapshot,
+    ) -> Result<Vec<u8>, GeneralFabricationError> {
+        self.bom_export(snapshot)?;
+        self.manufacturing_export(snapshot)?;
+        if self.bom.rows.is_empty() || self.manufacturing.operations.len() != self.bom.rows.len() {
+            return Err(GeneralFabricationError::ExportBlocked);
+        }
+
+        let mut output = format!(
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<BTLx xmlns=\"https://www.design2machine.com\" Version=\"{BTLX_2_3_1_VERSION}\" Language=\"en\">\n  <Project Name=\"Ketchup\">\n    <Parts>\n"
+        );
+        for (index, row) in self.bom.rows.iter().enumerate() {
+            let GeneralBodySource::Exact(row_source) = &row.source else {
+                return Err(GeneralFabricationError::ExportBlocked);
+            };
+            let matching = self
+                .manufacturing
+                .operations
+                .iter()
+                .filter(|operation| {
+                    operation.definition_id == row.definition_id && operation.source == *row_source
+                })
+                .collect::<Vec<_>>();
+            let [stock] = matching.as_slice() else {
+                return Err(GeneralFabricationError::ExportBlocked);
+            };
+            if stock.kind != GeneralManufacturingKind::Stock
+                || !stock.semantic_inputs.is_empty()
+                || row.material_key != TIMBER_MATERIAL_V1
+                || row.quantity == 0
+                || row.quantity != row.instances.len()
+            {
+                return Err(GeneralFabricationError::ExportBlocked);
+            }
+            let Some((count, single_member_number)) =
+                btlx_component_identifiers(row.quantity, index)
+            else {
+                return Err(GeneralFabricationError::ExportBlocked);
+            };
+            let Some((length_mm, width_mm, height_mm)) =
+                rectangular_timber_stock_dimensions(&stock.machining)
+            else {
+                return Err(GeneralFabricationError::ExportBlocked);
+            };
+            let length = format_btlx_positive_number(length_mm)
+                .ok_or(GeneralFabricationError::ExportBlocked)?;
+            let width = format_btlx_positive_number(width_mm)
+                .ok_or(GeneralFabricationError::ExportBlocked)?;
+            let height = format_btlx_positive_number(height_mm)
+                .ok_or(GeneralFabricationError::ExportBlocked)?;
+            output.push_str(&format!(
+                "      <Part Count=\"{count}\" Length=\"{length}\" Width=\"{width}\" Height=\"{height}\" SingleMemberNumber=\"{single_member_number}\" Designation=\"definition-{}\" Material=\"{}\"/>\n",
+                row.definition_id.0,
+                TIMBER_MATERIAL_V1
+            ));
+        }
+        output.push_str("    </Parts>\n  </Project>\n</BTLx>\n");
+        Ok(output.into_bytes())
+    }
+}
+
+fn btlx_component_identifiers(quantity: usize, zero_based_index: usize) -> Option<(i32, u32)> {
+    let count = i32::try_from(quantity).ok().filter(|count| *count >= 1)?;
+    let single_member_number = u32::try_from(zero_based_index.checked_add(1)?).ok()?;
+    Some((count, single_member_number))
+}
+
+fn format_btlx_positive_number(value: f64) -> Option<String> {
+    let formatted = format_number(value);
+    formatted
+        .parse::<f64>()
+        .ok()
+        .filter(|rounded| rounded.is_finite() && *rounded > 0.0)
+        .map(|_| formatted)
+}
+
+fn rectangular_timber_stock_dimensions(
+    geometry: &GeneralMachiningGeometry,
+) -> Option<(f64, f64, f64)> {
+    let GeneralMachiningGeometry::TimberStock {
+        cross_section,
+        length_mm,
+        cross_section_width_mm,
+        cross_section_height_mm,
+        ..
+    } = geometry
+    else {
+        return None;
+    };
+    if cross_section.len() != 4
+        || [
+            *length_mm,
+            *cross_section_width_mm,
+            *cross_section_height_mm,
+        ]
+        .into_iter()
+        .any(|value| !value.is_finite() || value <= 0.0)
+    {
+        return None;
+    }
+
+    let mut edges = Vec::with_capacity(4);
+    for segment in cross_section {
+        let GeneralMachiningSegment::Line { start_mm, end_mm } = segment else {
+            return None;
+        };
+        if start_mm
+            .iter()
+            .chain(end_mm)
+            .any(|coordinate| !coordinate.is_finite())
+            || (start_mm[0] == end_mm[0]) == (start_mm[1] == end_mm[1])
+        {
+            return None;
+        }
+        edges.push((*start_mm, *end_mm));
+    }
+    if !edges
+        .iter()
+        .zip(edges.iter().cycle().skip(1))
+        .all(|((_, end), (next_start, _))| end == next_start)
+    {
+        return None;
+    }
+
+    let minimum = [
+        edges
+            .iter()
+            .flat_map(|(start, end)| [start[0], end[0]])
+            .fold(f64::INFINITY, f64::min),
+        edges
+            .iter()
+            .flat_map(|(start, end)| [start[1], end[1]])
+            .fold(f64::INFINITY, f64::min),
+    ];
+    let maximum = [
+        edges
+            .iter()
+            .flat_map(|(start, end)| [start[0], end[0]])
+            .fold(f64::NEG_INFINITY, f64::max),
+        edges
+            .iter()
+            .flat_map(|(start, end)| [start[1], end[1]])
+            .fold(f64::NEG_INFINITY, f64::max),
+    ];
+    let expected_edges = [
+        ([minimum[0], minimum[1]], [maximum[0], minimum[1]]),
+        ([maximum[0], minimum[1]], [maximum[0], maximum[1]]),
+        ([maximum[0], maximum[1]], [minimum[0], maximum[1]]),
+        ([minimum[0], maximum[1]], [minimum[0], minimum[1]]),
+    ];
+    if expected_edges.iter().any(|expected| {
+        edges
+            .iter()
+            .filter(|actual| {
+                **actual == *expected || (actual.0 == expected.1 && actual.1 == expected.0)
+            })
+            .count()
+            != 1
+    }) {
+        return None;
+    }
+    let width_mm = maximum[0] - minimum[0];
+    let height_mm = maximum[1] - minimum[1];
+    (width_mm == *cross_section_width_mm && height_mm == *cross_section_height_mm)
+        .then_some((*length_mm, width_mm, height_mm))
 }
 
 fn timber_member_occurrences(
@@ -2070,4 +2242,65 @@ fn format_number(value: f64) -> String {
         .trim_end_matches('0')
         .trim_end_matches('.')
         .to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn btlx_numeric_values_follow_supported_xsd_ranges() {
+        assert_eq!(btlx_component_identifiers(1, 0), Some((1, 1)));
+        assert_eq!(
+            btlx_component_identifiers(i32::MAX as usize, 0),
+            Some((i32::MAX, 1))
+        );
+        assert_eq!(btlx_component_identifiers(i32::MAX as usize + 1, 0), None);
+        let last_index = u32::MAX as usize - 1;
+        assert_eq!(
+            btlx_component_identifiers(1, last_index),
+            Some((1, u32::MAX))
+        );
+        assert_eq!(btlx_component_identifiers(1, last_index + 1), None);
+        assert_eq!(
+            format_btlx_positive_number(1.0e-9),
+            Some("0.000000001".to_owned())
+        );
+        assert_eq!(format_btlx_positive_number(1.0e-10), None);
+        assert_eq!(format_btlx_positive_number(f64::NAN), None);
+        assert_eq!(format_btlx_positive_number(f64::INFINITY), None);
+    }
+
+    #[test]
+    fn btlx_stock_dimensions_require_a_closed_axis_aligned_rectangle() {
+        let valid = legacy_stock_geometry(PieceDimensions {
+            length_mm: 100.0,
+            width_mm: 50.0,
+            height_mm: 1000.0,
+        });
+        assert_eq!(
+            rectangular_timber_stock_dimensions(&valid),
+            Some((1000.0, 100.0, 50.0))
+        );
+
+        let mut open = valid.clone();
+        let GeneralMachiningGeometry::TimberStock { cross_section, .. } = &mut open else {
+            unreachable!()
+        };
+        let GeneralMachiningSegment::Line { end_mm, .. } = &mut cross_section[3] else {
+            unreachable!()
+        };
+        *end_mm = [1.0, 0.0];
+        assert_eq!(rectangular_timber_stock_dimensions(&open), None);
+
+        let mut diagonal = valid;
+        let GeneralMachiningGeometry::TimberStock { cross_section, .. } = &mut diagonal else {
+            unreachable!()
+        };
+        let GeneralMachiningSegment::Line { end_mm, .. } = &mut cross_section[0] else {
+            unreachable!()
+        };
+        *end_mm = [100.0, 1.0];
+        assert_eq!(rectangular_timber_stock_dimensions(&diagonal), None);
+    }
 }

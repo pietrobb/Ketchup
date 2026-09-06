@@ -16,6 +16,7 @@ use ketchup_core::exact_validation::{
     general_body_validation_policy,
 };
 use ketchup_core::fabrication::{
+    BTLX_2_3_1_SCHEMA_SHA256, BTLX_2_3_1_SCHEMA_URL, BTLX_2_3_1_VERSION,
     FABRICATION_ROLE_DIMENSION_V1, GeneralFabricationError, GeneralFabricationProjection,
     GeneralMachiningGeometry, GeneralManufacturingKind, ProjectionStatus, TIMBER_MATERIAL_V1,
     TIMBER_MEMBER_ROLE_V1, project_general_fabrication,
@@ -466,6 +467,42 @@ fn general_fabrication_regenerates_deterministically_and_exports_fail_closed() {
             tolerance,
         ),
         Err(GeneralFabricationError::UnsupportedOrUnavailableGeometry)
+    );
+}
+
+#[test]
+fn btlx_2_3_1_straight_timber_export_is_pinned_deterministic_and_fail_closed() {
+    assert_eq!(BTLX_2_3_1_VERSION, "2.3.1");
+    assert_eq!(
+        BTLX_2_3_1_SCHEMA_URL,
+        "https://www.design2machine.com/btlx/BTLx_2_3_1.xsd"
+    );
+    assert_eq!(
+        BTLX_2_3_1_SCHEMA_SHA256,
+        "208848116af3b43c189156610d3b82f6f86ea2afa7d09bc85a15876cc91cf1c6"
+    );
+
+    let document = straight_timber_document();
+    let snapshot = document.current();
+    let projection = exact_document_fabrication_projection(&document).unwrap();
+    let export = projection.btlx_2_3_1_export(&snapshot).unwrap();
+    assert_eq!(
+        export,
+        include_bytes!("fixtures/btlx/straight-timber-2.3.1.btlx")
+    );
+    assert_eq!(export, projection.btlx_2_3_1_export(&snapshot).unwrap());
+
+    let (machined_snapshot, machined) = circular_drill_fabrication_projection();
+    assert_eq!(
+        machined.btlx_2_3_1_export(&machined_snapshot),
+        Err(GeneralFabricationError::ExportBlocked)
+    );
+
+    let mut tampered = projection;
+    tampered.bom.rows[0].quantity = 3;
+    assert_eq!(
+        tampered.btlx_2_3_1_export(&snapshot),
+        Err(GeneralFabricationError::ExportBlocked)
     );
 }
 
@@ -1269,6 +1306,40 @@ fn mark_timber_members(document: &mut DocumentStore, occurrence_ids: &[Occurrenc
     document.apply_batch(&CommandBatch::new(commands)).unwrap();
 }
 
+fn straight_timber_document() -> DocumentStore {
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: EXACT_DEFINITION,
+                name: "Straight timber".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: EXACT_PROFILE,
+                definition_id: EXACT_DEFINITION,
+                name: "100 x 50 profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: EXACT_BODY,
+                definition_id: EXACT_DEFINITION,
+                name: "1000 mm stock".to_owned(),
+                kind: FeatureKind::Extrusion {
+                    profile: EXACT_PROFILE,
+                    height: Dimension::from_decimal("1000").unwrap(),
+                },
+            },
+            occurrence(EXACT_LEFT, EXACT_DEFINITION, 0.0),
+            occurrence(EXACT_RIGHT, EXACT_DEFINITION, 200.0),
+        ]))
+        .unwrap();
+    mark_timber_members(&mut document, &[EXACT_LEFT, EXACT_RIGHT]);
+    document.discard_history_before_current();
+    document
+}
+
 fn exact_only_document() -> DocumentStore {
     let mut document = DocumentStore::new();
     document
@@ -1399,13 +1470,41 @@ fn exact_package(
             format!("geometry:{role:?}"),
         )
     });
+    let FeatureKind::Profile { points_mm } = snapshot.feature(EXACT_PROFILE).unwrap().kind() else {
+        unreachable!()
+    };
+    let FeatureKind::Extrusion { height, .. } = snapshot.feature(EXACT_BODY).unwrap().kind() else {
+        unreachable!()
+    };
+    let minimum = [
+        points_mm
+            .iter()
+            .map(|point| point[0])
+            .fold(f64::INFINITY, f64::min),
+        points_mm
+            .iter()
+            .map(|point| point[1])
+            .fold(f64::INFINITY, f64::min),
+        0.0,
+    ];
+    let maximum = [
+        points_mm
+            .iter()
+            .map(|point| point[0])
+            .fold(f64::NEG_INFINITY, f64::max),
+        points_mm
+            .iter()
+            .map(|point| point[1])
+            .fold(f64::NEG_INFINITY, f64::max),
+        height.millimetres(),
+    ];
     build_box_render_package(
         &request,
         "m17-exact-input".to_owned(),
         "m17-exact-result".to_owned(),
         "m17-backend".to_owned(),
         "m17-tolerance".to_owned(),
-        [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]],
+        [minimum, maximum],
         evidence,
     )
     .unwrap()
