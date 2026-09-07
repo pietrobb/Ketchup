@@ -35,7 +35,7 @@ const REPLACEMENT_SELECTED: OccurrenceId = OccurrenceId(100);
 const REPLACEMENT_SIBLING: OccurrenceId = OccurrenceId(101);
 const REPLACEMENT_TARGET_OCCURRENCE: OccurrenceId = OccurrenceId(200);
 const REPLACEMENT_PLANAR_MATE: AssemblyMateId = AssemblyMateId(300);
-const REPLACEMENT_AXIAL_MATE: AssemblyMateId = AssemblyMateId(301);
+const REPLACEMENT_SECOND_PLANAR_MATE: AssemblyMateId = AssemblyMateId(301);
 const REPLACEMENT_SHEET: DrawingSheetId = DrawingSheetId(400);
 
 fn exact_worker_path() -> PathBuf {
@@ -124,7 +124,7 @@ fn write_component_replacement_fixture(path: &Path) {
                 definition_id: REPLACEMENT_TARGET,
                 name: "Target profile".to_owned(),
                 kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [14.0, 0.0], [14.0, 8.0], [0.0, 8.0]],
+                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
                 },
             },
             CanonicalCommand::CreateFeature {
@@ -133,7 +133,7 @@ fn write_component_replacement_fixture(path: &Path) {
                 name: "Target extrusion".to_owned(),
                 kind: FeatureKind::Extrusion {
                     profile: REPLACEMENT_TARGET_PROFILE,
-                    height: Dimension::from_decimal("18").unwrap(),
+                    height: Dimension::from_decimal("10").unwrap(),
                 },
             },
             CanonicalCommand::CreateOccurrence {
@@ -179,30 +179,45 @@ fn write_component_replacement_fixture(path: &Path) {
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
                 REPLACEMENT_PLANAR_MATE,
-                AssemblyMateEndpoint::resolved(
+                AssemblyMateEndpoint::resolved_planar_face(
                     REPLACEMENT_SELECTED,
-                    source.reference(ExactFaceRole::Top).unwrap().clone(),
+                    source
+                        .planar_face_attachment(source.reference(ExactFaceRole::Top).unwrap())
+                        .unwrap()
+                        .clone(),
                 ),
-                AssemblyMateEndpoint::resolved(
+                AssemblyMateEndpoint::resolved_planar_face(
                     REPLACEMENT_TARGET_OCCURRENCE,
-                    target.reference(ExactFaceRole::Bottom).unwrap().clone(),
+                    target
+                        .planar_face_attachment(target.reference(ExactFaceRole::Bottom).unwrap())
+                        .unwrap()
+                        .clone(),
                 ),
                 AssemblyMateKind::CoincidentPlanar {
-                    offset_mm: 0.0,
+                    offset_mm: 10.0,
                     reversed: false,
                 },
             )),
             CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
-                REPLACEMENT_AXIAL_MATE,
-                AssemblyMateEndpoint::resolved(
+                REPLACEMENT_SECOND_PLANAR_MATE,
+                AssemblyMateEndpoint::resolved_planar_face(
                     REPLACEMENT_SELECTED,
-                    source.reference(ExactFaceRole::East).unwrap().clone(),
+                    source
+                        .planar_face_attachment(source.reference(ExactFaceRole::East).unwrap())
+                        .unwrap()
+                        .clone(),
                 ),
-                AssemblyMateEndpoint::resolved(
+                AssemblyMateEndpoint::resolved_planar_face(
                     REPLACEMENT_TARGET_OCCURRENCE,
-                    target.reference(ExactFaceRole::East).unwrap().clone(),
+                    target
+                        .planar_face_attachment(target.reference(ExactFaceRole::East).unwrap())
+                        .unwrap()
+                        .clone(),
                 ),
-                AssemblyMateKind::ConcentricAxial { reversed: false },
+                AssemblyMateKind::CoincidentPlanar {
+                    offset_mm: -50.0,
+                    reversed: true,
+                },
             )),
             CanonicalCommand::SetOccurrenceGrounded {
                 id: REPLACEMENT_SELECTED,
@@ -990,7 +1005,11 @@ fn replace_component_choice_previews_complete_impact_and_commits_one_undo_step()
         .unwrap()
         .clone();
     shell.click_button_label(&preview);
-    assert!(shell.app().feature_history_preview_pending());
+    assert!(
+        shell.app().feature_history_preview_pending(),
+        "{}",
+        shell.app().action_digest()
+    );
     assert_eq!(stamp(&shell), before);
     assert_eq!(
         shell.app().feature_history_replacement_identity(),

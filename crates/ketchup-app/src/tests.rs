@@ -9015,6 +9015,19 @@ fn imported_exact_occurrences_route_through_solid_tool_preview_and_commit() {
     app.active_tool = ActiveTool::SolidIntersect;
     let imported_boxes = app.active_boxes();
     assert_eq!(imported_boxes.len(), 2, "{imported_boxes:?}");
+    let snapshot = app.document.current();
+    let exact_projection = app.exact_projection(&snapshot);
+    assert!(app.viewport_boxes(&exact_projection).is_empty());
+    app.refresh_interaction_projection_cache(&snapshot);
+    assert_eq!(
+        app.interaction_projection_cache
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .boxes
+            .occurrence_count(),
+        0
+    );
     assert!(app.command_enabled(AppCommand::SolidIntersect));
     let before_digest = app.canonical_digest();
     let before_revision = app.document_revision();

@@ -148,7 +148,6 @@ mod occurrence_color_ui;
 #[cfg(feature = "named-product-fixtures")]
 mod part_authoring_ui;
 mod validator_ui;
-#[cfg(debug_assertions)]
 #[doc(hidden)]
 pub use face_workflow_ui::HeadlessFaceWorkflowFailure;
 pub use native_document_inspection::{NativeDocumentInspection, inspect_native_document};
@@ -6658,6 +6657,8 @@ impl KetchupApp {
         let tags_visible = self.tags_visible;
         let dimensions_visible = self.dimensions_visible;
         let about_open = self.about_open;
+        let exact_worker_path = self.exact_worker_path.clone();
+        let exact_worker_attempted = self.exact_worker_attempted;
         // The graphics device outlives the document: losing its target format
         // here would silently drop the whole instanced scene until restart.
         let wgpu_target_format = self.wgpu_target_format;
@@ -6669,6 +6670,8 @@ impl KetchupApp {
         self.wgpu_target_format = wgpu_target_format;
         self.wgpu_device = wgpu_device;
         self.wgpu_queue = wgpu_queue;
+        self.exact_worker_path = exact_worker_path;
+        self.exact_worker_attempted = exact_worker_attempted;
         self.assistant_request_sequence = assistant_request_sequence;
         self.assistant_diagnostics_enabled = assistant_diagnostics_enabled;
         self.assistant_inspector_tab = assistant_inspector_tab;
@@ -11573,14 +11576,12 @@ impl KetchupApp {
         ));
     }
 
-    #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn headless_force_exact_worker_path(&mut self, executable: impl AsRef<Path>) {
         self.exact_worker_path = Some(executable.as_ref().to_owned());
         self.exact_worker_attempted = true;
     }
 
-    #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn headless_install_exact_package(&mut self, package: ExactBodyPackage) -> bool {
         if let Some(task) = self.exact_task.take() {
@@ -11791,6 +11792,10 @@ impl KetchupApp {
                     active_context_paths.contains(&occurrence.instance_path)
                         && !exact.contains_occurrence(&occurrence.instance_path)
                         && !mesh.contains_occurrence(&occurrence.instance_path)
+                        && !Self::definition_is_imported_exact_body(
+                            snapshot,
+                            occurrence.body.definition_id,
+                        )
                         && occurrence.local_box.is_some()
                 })
                 .expect("canonical visible box projections are valid");
@@ -11909,6 +11914,20 @@ impl KetchupApp {
         bounds
     }
 
+    fn definition_is_imported_exact_body(snapshot: &Snapshot, definition_id: DefinitionId) -> bool {
+        snapshot
+            .definition(definition_id)
+            .is_some_and(|definition| {
+                matches!(
+                    definition.feature_ids(),
+                    [feature_id]
+                        if snapshot.feature(*feature_id).is_some_and(|feature| {
+                            matches!(feature.kind(), FeatureKind::ImportedExactBody(_))
+                        })
+                )
+            })
+    }
+
     fn active_boxes(&self) -> Vec<RenderBox> {
         let snapshot = self.document.current();
         self.refresh_interaction_projection_cache(&snapshot);
@@ -11962,13 +11981,19 @@ impl KetchupApp {
             .filter(|occurrence| occurrence.visible)
             .filter_map(|occurrence| {
                 if occurrence.box_proxy.is_none() {
-                    if definition_requires_evaluated_geometry(
-                        &snapshot,
+                    let is_imported_exact_body = Self::definition_is_imported_exact_body(
+                        snapshot,
                         occurrence.body.definition_id,
-                    ) && exact_packages
-                        .as_ref()
-                        .and_then(|packages| packages.get(&occurrence.body.definition_id))
-                        .is_none()
+                    );
+                    if !is_imported_exact_body
+                        && definition_requires_evaluated_geometry(
+                            snapshot,
+                            occurrence.body.definition_id,
+                        )
+                        && exact_packages
+                            .as_ref()
+                            .and_then(|packages| packages.get(&occurrence.body.definition_id))
+                            .is_none()
                     {
                         return None;
                     }
@@ -22967,7 +22992,6 @@ impl KetchupApp {
         let Some(distance_mm) = parse_distance_mm(&self.push_pull_distance_input) else {
             return false;
         };
-        #[cfg(debug_assertions)]
         if let Some(failure) = self.face_workflow.take_headless_failure() {
             self.clear_ephemeral_edit_state();
             self.status_key = "error-preview-stale";
@@ -25049,9 +25073,12 @@ impl KetchupApp {
                         .contains(&item.instance_path.root_occurrence())
             });
         }
+        let snapshot = self.document.current();
         boxes.retain(|item| {
-            !exact_projection.contains_occurrence(&item.instance_path)
-                || self.proxy_preview_is_active(item)
+            let proxy_preview = self.proxy_preview_is_active(item);
+            (!Self::definition_is_imported_exact_body(&snapshot, item.definition_id)
+                || proxy_preview)
+                && (!exact_projection.contains_occurrence(&item.instance_path) || proxy_preview)
         });
         boxes
     }

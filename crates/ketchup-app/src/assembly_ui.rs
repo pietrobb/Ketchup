@@ -9,7 +9,6 @@ use ketchup_core::assembly_joint::{
     AssemblyMotionDriver, AssemblyMotionStudy, AssemblyMotionStudyId,
     solve_assembly_joint_kinematics_with_drivers,
 };
-#[cfg(debug_assertions)]
 use ketchup_core::drawing::project_orthographic_drawing;
 use ketchup_core::drawing::{
     DrawingSheet, DrawingSheetId, DrawingSource, prepare_create_drawing_sheet,
@@ -179,7 +178,15 @@ impl KetchupApp {
             .references()
             .iter()
             .filter(|reference| {
-                !kind.requires_planar_faces() || reference.expected_type == "planar_face"
+                if kind.requires_planar_faces() {
+                    self.exact_results
+                        .planar_face_attachment(snapshot, reference)
+                        .is_some()
+                } else {
+                    self.exact_results
+                        .axial_attachment(snapshot, reference)
+                        .is_some()
+                }
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -927,12 +934,45 @@ impl KetchupApp {
                     + 1,
             )
         });
-        let mate = AssemblyMate::new(
-            id,
-            AssemblyMateEndpoint::resolved(occurrence_a, reference_a),
-            AssemblyMateEndpoint::resolved(occurrence_b, reference_b),
-            kind,
-        );
+        let endpoints = match kind {
+            AssemblyMateKind::ConcentricAxial { .. } => self
+                .exact_results
+                .axial_attachment(&snapshot, &reference_a)
+                .cloned()
+                .zip(
+                    self.exact_results
+                        .axial_attachment(&snapshot, &reference_b)
+                        .cloned(),
+                )
+                .map(|(attachment_a, attachment_b)| {
+                    (
+                        AssemblyMateEndpoint::resolved_axial(occurrence_a, attachment_a),
+                        AssemblyMateEndpoint::resolved_axial(occurrence_b, attachment_b),
+                    )
+                }),
+            AssemblyMateKind::CoincidentPlanar { .. }
+            | AssemblyMateKind::Distance { .. }
+            | AssemblyMateKind::Angle { .. } => self
+                .exact_results
+                .planar_face_attachment(&snapshot, &reference_a)
+                .cloned()
+                .zip(
+                    self.exact_results
+                        .planar_face_attachment(&snapshot, &reference_b)
+                        .cloned(),
+                )
+                .map(|(attachment_a, attachment_b)| {
+                    (
+                        AssemblyMateEndpoint::resolved_planar_face(occurrence_a, attachment_a),
+                        AssemblyMateEndpoint::resolved_planar_face(occurrence_b, attachment_b),
+                    )
+                }),
+        };
+        let Some((endpoint_a, endpoint_b)) = endpoints else {
+            self.assembly_error(self.catalog.text("assembly-error-references"));
+            return false;
+        };
+        let mate = AssemblyMate::new(id, endpoint_a, endpoint_b, kind);
         self.prepare_assembly_preview(AssemblyPreviewSource::Mate {
             mate,
             editing: self.assembly_editor.selected_mate.is_some(),
@@ -1512,7 +1552,6 @@ impl KetchupApp {
         self.document.current().assembly_motion_studies().count()
     }
 
-    #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn headless_set_assembly_motion_position(&mut self, position: f64) {
         self.assembly_editor.motion_position_input = position.to_string();
@@ -1569,7 +1608,6 @@ impl KetchupApp {
         ))
     }
 
-    #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn headless_drawing_fingerprint(
         &self,

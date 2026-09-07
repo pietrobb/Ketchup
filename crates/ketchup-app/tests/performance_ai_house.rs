@@ -141,7 +141,10 @@ fn ai_house_follow_up_fits_the_sidecar_request_envelope() {
     assert_eq!(context["context_complete"], false);
     assert_eq!(context["boxes_complete"], false);
     assert_eq!(context["boxes"], serde_json::json!([]));
-    assert_eq!(context["occurrences"].as_array().unwrap().len(), 64);
+    assert_eq!(context["occurrence_count"], 64);
+    assert_eq!(context["occurrences_complete"], false);
+    assert!(context["occurrences"].as_array().unwrap().len() < 64);
+    assert!(!context["occurrences"].as_array().unwrap().is_empty());
     assert!(!context["conversation"].as_array().unwrap().is_empty());
     assert!(context["state_view"]["content"].as_str().unwrap().len() <= 1024);
 }

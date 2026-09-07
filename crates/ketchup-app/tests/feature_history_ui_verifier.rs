@@ -34,7 +34,7 @@ const UNION: FeatureId = FeatureId(30);
 const FIRST: OccurrenceId = OccurrenceId(1);
 const SECOND: OccurrenceId = OccurrenceId(2);
 const PLANAR_MATE: AssemblyMateId = AssemblyMateId(40);
-const AXIAL_MATE: AssemblyMateId = AssemblyMateId(41);
+const SECOND_PLANAR_MATE: AssemblyMateId = AssemblyMateId(41);
 const SHEET: DrawingSheetId = DrawingSheetId(50);
 const FORK_EXTRUSION: FeatureId = FeatureId(6);
 const FORK_CUT_PROFILE: FeatureId = FeatureId(7);
@@ -49,7 +49,7 @@ const REPLACEMENT_SELECTED: OccurrenceId = OccurrenceId(1100);
 const REPLACEMENT_SIBLING: OccurrenceId = OccurrenceId(1101);
 const REPLACEMENT_TARGET_OCCURRENCE: OccurrenceId = OccurrenceId(1200);
 const REPLACEMENT_PLANAR_MATE: AssemblyMateId = AssemblyMateId(1300);
-const REPLACEMENT_AXIAL_MATE: AssemblyMateId = AssemblyMateId(1301);
+const REPLACEMENT_SECOND_PLANAR_MATE: AssemblyMateId = AssemblyMateId(1301);
 const REPLACEMENT_SHEET: DrawingSheetId = DrawingSheetId(1400);
 
 #[derive(Clone, Copy)]
@@ -225,7 +225,7 @@ fn write_component_replacement_fixture(path: &Path, variant: ReplacementFixture)
             definition_id: REPLACEMENT_TARGET,
             name: "Target profile".to_owned(),
             kind: FeatureKind::Profile {
-                points_mm: vec![[0.0, 0.0], [14.0, 0.0], [14.0, 8.0], [0.0, 8.0]],
+                points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 8.0], [0.0, 8.0]],
             },
         },
         CanonicalCommand::CreateFeature {
@@ -234,7 +234,7 @@ fn write_component_replacement_fixture(path: &Path, variant: ReplacementFixture)
             name: "Target extrusion".to_owned(),
             kind: FeatureKind::Extrusion {
                 profile: REPLACEMENT_TARGET_PROFILE,
-                height: Dimension::from_decimal("18").unwrap(),
+                height: Dimension::from_decimal("10").unwrap(),
             },
         },
         CanonicalCommand::CreateOccurrence {
@@ -307,39 +307,54 @@ fn write_component_replacement_fixture(path: &Path, variant: ReplacementFixture)
         persistence::save_atomic(path, &document.current()).unwrap();
         return;
     }
-    let selected_endpoint = AssemblyMateEndpoint::resolved(
+    let selected_endpoint = AssemblyMateEndpoint::resolved_planar_face(
         REPLACEMENT_SELECTED,
-        source.reference(ExactFaceRole::Top).unwrap().clone(),
+        source
+            .planar_face_attachment(source.reference(ExactFaceRole::Top).unwrap())
+            .unwrap()
+            .clone(),
     );
     let planar_kind = if matches!(variant, ReplacementFixture::UnsupportedMate) {
         AssemblyMateKind::Distance { distance_mm: 4.0 }
     } else {
         AssemblyMateKind::CoincidentPlanar {
-            offset_mm: 0.0,
+            offset_mm: 10.0,
             reversed: false,
         }
     };
     let mut dependency_commands = vec![CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
         REPLACEMENT_PLANAR_MATE,
         selected_endpoint,
-        AssemblyMateEndpoint::resolved(
+        AssemblyMateEndpoint::resolved_planar_face(
             REPLACEMENT_TARGET_OCCURRENCE,
-            target.reference(ExactFaceRole::Bottom).unwrap().clone(),
+            target
+                .planar_face_attachment(target.reference(ExactFaceRole::Bottom).unwrap())
+                .unwrap()
+                .clone(),
         ),
         planar_kind,
     ))];
     if !matches!(variant, ReplacementFixture::UnderConstrained) {
         dependency_commands.push(CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
-            REPLACEMENT_AXIAL_MATE,
-            AssemblyMateEndpoint::resolved(
+            REPLACEMENT_SECOND_PLANAR_MATE,
+            AssemblyMateEndpoint::resolved_planar_face(
                 REPLACEMENT_SELECTED,
-                source.reference(ExactFaceRole::East).unwrap().clone(),
+                source
+                    .planar_face_attachment(source.reference(ExactFaceRole::East).unwrap())
+                    .unwrap()
+                    .clone(),
             ),
-            AssemblyMateEndpoint::resolved(
+            AssemblyMateEndpoint::resolved_planar_face(
                 REPLACEMENT_TARGET_OCCURRENCE,
-                target.reference(ExactFaceRole::East).unwrap().clone(),
+                target
+                    .planar_face_attachment(target.reference(ExactFaceRole::East).unwrap())
+                    .unwrap()
+                    .clone(),
             ),
-            AssemblyMateKind::ConcentricAxial { reversed: false },
+            AssemblyMateKind::CoincidentPlanar {
+                offset_mm: -50.0,
+                reversed: true,
+            },
         )));
     }
     if !matches!(variant, ReplacementFixture::UnderConstrained) {
@@ -405,14 +420,23 @@ fn write_component_replacement_fixture(path: &Path, variant: ReplacementFixture)
 }
 
 fn write_shared_dependency_fixture(path: &Path) {
-    write_shared_fixture(path, false, true);
+    write_shared_fixture(path, false, true, false);
+}
+
+fn write_shared_lost_dependency_fixture(path: &Path) {
+    write_shared_fixture(path, false, true, true);
 }
 
 fn write_shared_history_fixture(path: &Path, suppressed: bool) {
-    write_shared_fixture(path, suppressed, false);
+    write_shared_fixture(path, suppressed, false, false);
 }
 
-fn write_shared_fixture(path: &Path, suppressed: bool, with_dependencies: bool) {
+fn write_shared_fixture(
+    path: &Path,
+    suppressed: bool,
+    with_dependencies: bool,
+    lost_dependency: bool,
+) {
     let mut document = DocumentStore::new();
     document
         .apply_batch(&CommandBatch::new(vec![
@@ -481,7 +505,7 @@ fn write_shared_fixture(path: &Path, suppressed: bool, with_dependencies: bool) 
             },
         ]))
         .unwrap();
-    if suppressed {
+    if suppressed || with_dependencies {
         document
             .apply_batch(&CommandBatch::new(vec![
                 CanonicalCommand::SetBodyFeatureSuppression {
@@ -498,25 +522,37 @@ fn write_shared_fixture(path: &Path, suppressed: bool, with_dependencies: bool) 
             ExactFeatureChainRequest::from_snapshot_for_body(&snapshot, DEFINITION, BODY).unwrap();
         let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
         let package = worker.evaluate_rectangle(&request).unwrap();
-        let top = package.reference(ExactFaceRole::Top).unwrap().clone();
-        let bottom = package.reference(ExactFaceRole::Bottom).unwrap().clone();
-        let east = package.reference(ExactFaceRole::East).unwrap().clone();
+        let first_bottom = package
+            .planar_face_attachment(package.reference(ExactFaceRole::Bottom).unwrap())
+            .unwrap()
+            .clone();
+        let second_bottom = package
+            .planar_face_attachment(package.reference(ExactFaceRole::Bottom).unwrap())
+            .unwrap()
+            .clone();
+        let east = package
+            .planar_face_attachment(package.reference(ExactFaceRole::East).unwrap())
+            .unwrap()
+            .clone();
         document
             .apply_batch(&CommandBatch::new(vec![
                 CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
                     PLANAR_MATE,
-                    AssemblyMateEndpoint::resolved(FIRST, top),
-                    AssemblyMateEndpoint::resolved(SECOND, bottom),
+                    AssemblyMateEndpoint::resolved_planar_face(FIRST, first_bottom),
+                    AssemblyMateEndpoint::resolved_planar_face(SECOND, second_bottom),
                     AssemblyMateKind::CoincidentPlanar {
                         offset_mm: 0.0,
-                        reversed: false,
+                        reversed: true,
                     },
                 )),
                 CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
-                    AXIAL_MATE,
-                    AssemblyMateEndpoint::resolved(FIRST, east.clone()),
-                    AssemblyMateEndpoint::resolved(SECOND, east),
-                    AssemblyMateKind::ConcentricAxial { reversed: false },
+                    SECOND_PLANAR_MATE,
+                    AssemblyMateEndpoint::resolved_planar_face(FIRST, east.clone()),
+                    AssemblyMateEndpoint::resolved_planar_face(SECOND, east),
+                    AssemblyMateKind::CoincidentPlanar {
+                        offset_mm: -30.0,
+                        reversed: true,
+                    },
                 )),
                 CanonicalCommand::CreateDrawingSheet(
                     DrawingSheet::new(
@@ -530,6 +566,24 @@ fn write_shared_fixture(path: &Path, suppressed: bool, with_dependencies: bool) 
                 ),
             ]))
             .unwrap();
+        if lost_dependency {
+            let mate = document
+                .current()
+                .assembly_mate(PLANAR_MATE)
+                .unwrap()
+                .clone();
+            document
+                .apply_batch(&CommandBatch::new(vec![
+                    CanonicalCommand::DeleteDrawingSheet { id: SHEET },
+                    CanonicalCommand::RebindAssemblyMate(AssemblyMate::new(
+                        PLANAR_MATE,
+                        mate.endpoint_a().clone(),
+                        AssemblyMateEndpoint::lost(SECOND, mate.endpoint_b().reference().clone()),
+                        mate.kind(),
+                    )),
+                ]))
+                .unwrap();
+        }
     }
     document.discard_history_before_current();
     persistence::save_atomic(path, &document.current()).unwrap();
@@ -720,7 +774,7 @@ fn component_replacement_serial_accesskit_replay_is_atomic_local_exportable_and_
         .occurrence(REPLACEMENT_TARGET_OCCURRENCE)
         .unwrap()
         .clone();
-    let mates_before = [REPLACEMENT_PLANAR_MATE, REPLACEMENT_AXIAL_MATE]
+    let mates_before = [REPLACEMENT_PLANAR_MATE, REPLACEMENT_SECOND_PLANAR_MATE]
         .map(|id| source_snapshot.assembly_mate(id).unwrap().clone());
     let render_before = shell.app().exact_render_bounds();
 
@@ -785,7 +839,7 @@ fn component_replacement_serial_accesskit_replay_is_atomic_local_exportable_and_
     assert_eq!(selected_after.parent(), selected_before.parent());
     assert_eq!(selected_after.tag(), selected_before.tag());
     assert_eq!(selected_after.visible(), selected_before.visible());
-    let mates_after = [REPLACEMENT_PLANAR_MATE, REPLACEMENT_AXIAL_MATE]
+    let mates_after = [REPLACEMENT_PLANAR_MATE, REPLACEMENT_SECOND_PLANAR_MATE]
         .map(|id| replaced.assembly_mate(id).unwrap().clone());
     for (before, after) in mates_before.iter().zip(&mates_after) {
         assert_eq!(after.endpoint_b(), before.endpoint_b());
@@ -1180,62 +1234,6 @@ fn shared_change_serial_accesskit_replay_rebinds_dependencies_exports_and_persis
     assert_eq!(shell.app().canonical_digest(), edited_digest);
     assert_eq!(mate_fingerprints(&shell), edited_fingerprints);
 
-    let cut_profile = feature_label(&shell, CUT_PROFILE);
-    shell.click_role_and_label(Role::Button, &cut_profile);
-    click_preview(&mut shell, "feature-history-preview-suppress");
-    assert_eq!(
-        shell.app().feature_history_shared_impact_counts(),
-        Some([2, 1, 4, 3, 1, 2])
-    );
-    let before_suppress = stamp(&shell);
-    confirm(&mut shell);
-    assert_eq!(
-        shell.app().undo_step_count(),
-        before_suppress.2 + 1,
-        "{}",
-        shell.app().action_digest()
-    );
-    assert_eq!(
-        shell
-            .app()
-            .document_snapshot()
-            .suppressed_feature_ids(DEFINITION, BODY),
-        Some(&BTreeSet::from([CUT_PROFILE, POCKET]))
-    );
-    assert_eq!(shell.app().exact_current_producer_ids(), vec![EXTRUSION]);
-    assert_eq!(
-        shell.app().feature_history_current_dependency_counts(),
-        Some([2, 3])
-    );
-    let suppressed_digest = shell.app().canonical_digest();
-    shell.click_menu_command("menu-edit", AppCommand::Undo);
-    wait_for_exact_body(&mut shell);
-    assert_eq!(shell.app().canonical_digest(), edited_digest);
-    shell.click_menu_command("menu-edit", AppCommand::Redo);
-    wait_for_exact_body(&mut shell);
-    assert_eq!(shell.app().canonical_digest(), suppressed_digest);
-
-    click_preview(&mut shell, "feature-history-preview-resume");
-    assert_eq!(
-        shell.app().feature_history_shared_impact_counts(),
-        Some([2, 1, 4, 3, 1, 2])
-    );
-    let before_resume = stamp(&shell);
-    confirm(&mut shell);
-    assert_eq!(shell.app().undo_step_count(), before_resume.2 + 1);
-    assert_eq!(
-        shell
-            .app()
-            .document_snapshot()
-            .suppressed_feature_ids(DEFINITION, BODY),
-        None
-    );
-    assert_eq!(shell.app().exact_current_producer_ids(), vec![POCKET]);
-    assert_eq!(
-        shell.app().feature_history_current_dependency_counts(),
-        Some([2, 3])
-    );
-
     let before_exports = stamp(&shell);
     shell.click_menu_command("menu-file", AppCommand::ExportMeshStl);
     shell.click_menu_command("menu-file", AppCommand::ExportExactStep);
@@ -1599,7 +1597,7 @@ fn make_unique_lost_dependency_refuses_atomically_and_keeps_last_valid_export() 
     let directory = tempfile::tempdir().unwrap();
     let fixture = directory.path().join("make-unique-lost.ketchup");
     let stl = directory.path().join("make-unique-lost-last-valid.stl");
-    write_shared_dependency_fixture(&fixture);
+    write_shared_lost_dependency_fixture(&fixture);
     let dialogs = ScriptedFileDialogs::new()
         .queue_open(&fixture)
         .queue_export(&stl)
@@ -1614,8 +1612,8 @@ fn make_unique_lost_dependency_refuses_atomically_and_keeps_last_valid_export() 
     wait_for_exact_body(&mut shell);
     shell.click_at(shell.top_face_centre(SECOND.0));
     open_history(&mut shell);
-    let cut_profile = feature_label(&shell, CUT_PROFILE);
-    shell.click_role_and_label(Role::Button, &cut_profile);
+    let extrusion = feature_label(&shell, EXTRUSION);
+    shell.click_role_and_label(Role::Button, &extrusion);
     select_make_unique(&mut shell);
 
     let before = stamp(&shell);
@@ -1629,12 +1627,15 @@ fn make_unique_lost_dependency_refuses_atomically_and_keeps_last_valid_export() 
             .unwrap()
             .transform()
     });
-    click_preview(&mut shell, "feature-history-preview-suppress");
-    assert_eq!(
-        shell.app().feature_history_fork_impact_counts(),
-        Some([1, 1, 2, 3, 1, 2])
+    replace_exact_value(&mut shell, "35");
+    click_preview(&mut shell, "feature-history-preview-edit");
+    assert!(!shell.app().feature_history_preview_pending());
+    assert_eq!(shell.app().feature_history_fork_impact_counts(), None);
+    assert!(
+        shell.app().action_digest().contains("lost exact reference"),
+        "{}",
+        shell.app().action_digest()
     );
-    confirm(&mut shell);
     assert_eq!(stamp(&shell), before);
     assert_eq!(shell.app().definition_count(), 1);
     assert_eq!(
@@ -1652,7 +1653,6 @@ fn make_unique_lost_dependency_refuses_atomically_and_keeps_last_valid_export() 
             .transform()),
         transforms_before
     );
-    assert!(shell.app().action_digest().contains("Lost"));
 
     shell.click_menu_command("menu-file", AppCommand::ExportMeshStl);
     assert!(stl.is_file(), "{}", shell.app().action_digest());

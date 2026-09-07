@@ -1,7 +1,6 @@
 use super::*;
 use ketchup_core::sketch::PrincipalPlane;
 
-#[cfg(debug_assertions)]
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HeadlessFaceWorkflowFailure {
@@ -42,7 +41,6 @@ pub(super) struct FaceWorkflowUiState {
     datum: FaceWorkflowDatum,
     snaps_enabled: bool,
     xray_preview: bool,
-    #[cfg(debug_assertions)]
     headless_failure: Option<HeadlessFaceWorkflowFailure>,
 }
 
@@ -52,7 +50,6 @@ impl Default for FaceWorkflowUiState {
             datum: FaceWorkflowDatum::Xy,
             snaps_enabled: true,
             xray_preview: false,
-            #[cfg(debug_assertions)]
             headless_failure: None,
         }
     }
@@ -71,7 +68,6 @@ impl FaceWorkflowUiState {
         self.xray_preview = active;
     }
 
-    #[cfg(debug_assertions)]
     pub(super) fn take_headless_failure(&mut self) -> Option<HeadlessFaceWorkflowFailure> {
         self.headless_failure.take()
     }
@@ -167,13 +163,11 @@ impl KetchupApp {
         self.hover_readout()
     }
 
-    #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn arm_headless_face_workflow_failure(&mut self, failure: HeadlessFaceWorkflowFailure) {
         self.face_workflow.headless_failure = Some(failure);
     }
 
-    #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn seed_headless_face_workflow_last_valid_output(&mut self) -> Result<(), String> {
         use ketchup_core::exact_product::{
@@ -228,14 +222,12 @@ impl KetchupApp {
         Ok(())
     }
 
-    #[cfg(debug_assertions)]
     #[doc(hidden)]
     #[must_use]
     pub fn headless_face_workflow_exact_output_stamp(&self) -> u64 {
         self.exact_results.contents_stamp()
     }
 
-    #[cfg(debug_assertions)]
     #[doc(hidden)]
     #[must_use]
     pub fn headless_face_workflow_exact_output_fingerprints(&self) -> Vec<String> {
