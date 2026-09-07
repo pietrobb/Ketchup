@@ -865,11 +865,8 @@ impl BtlxProcessing {
                     contour.start_point[0],
                     contour.start_point[1]
                 );
-                for end_point in &contour.end_points {
-                    xml.push_str(&format!(
-                        "              <Line><EndPoint X=\"{}\" Y=\"{}\" Z=\"0\"/></Line>\n",
-                        end_point[0], end_point[1]
-                    ));
+                for segment in &contour.segments {
+                    xml.push_str(&segment.xml());
                 }
                 xml.push_str("            </Contour>\n          </FreeContour>\n");
                 xml
@@ -891,11 +888,8 @@ impl BtlxProcessing {
                     contour.start_point[0],
                     contour.start_point[1]
                 );
-                for end_point in &contour.end_points {
-                    xml.push_str(&format!(
-                        "              <Line><EndPoint X=\"{}\" Y=\"{}\" Z=\"0\"/></Line>\n",
-                        end_point[0], end_point[1]
-                    ));
+                for segment in &contour.segments {
+                    xml.push_str(&segment.xml());
                 }
                 xml.push_str("            </Contour>\n          </MillContour>\n");
                 xml
@@ -927,13 +921,42 @@ struct BtlxSawContour {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+enum BtlxContourSegment {
+    Line {
+        end_point: [String; 2],
+    },
+    Arc {
+        end_point: [String; 2],
+        point_on_arc: [String; 2],
+    },
+}
+
+impl BtlxContourSegment {
+    fn xml(&self) -> String {
+        match self {
+            Self::Line { end_point } => format!(
+                "              <Line><EndPoint X=\"{}\" Y=\"{}\" Z=\"0\"/></Line>\n",
+                end_point[0], end_point[1]
+            ),
+            Self::Arc {
+                end_point,
+                point_on_arc,
+            } => format!(
+                "              <Arc><EndPoint X=\"{}\" Y=\"{}\" Z=\"0\"/><PointOnArc X=\"{}\" Y=\"{}\" Z=\"0\"/></Arc>\n",
+                end_point[0], end_point[1], point_on_arc[0], point_on_arc[1]
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 struct BtlxFreeContour {
     reference_point_mm: [f64; 3],
     x_vector: [f64; 3],
     y_vector: [f64; 3],
     tool_position: &'static str,
     start_point: [String; 2],
-    end_points: Vec<[String; 2]>,
+    segments: Vec<BtlxContourSegment>,
     depth: String,
 }
 
@@ -1079,6 +1102,59 @@ fn btlx_drilling(geometry: &GeneralMachiningGeometry) -> Option<BtlxDrilling> {
     })
 }
 
+fn btlx_arc_points(
+    start: [f64; 2],
+    end: [f64; 2],
+    center: [f64; 2],
+    clockwise: bool,
+) -> Option<Vec<[f64; 2]>> {
+    if start
+        .into_iter()
+        .chain(end)
+        .chain(center)
+        .any(|coordinate| !coordinate.is_finite())
+        || start == end
+    {
+        return None;
+    }
+    let start_vector = [start[0] - center[0], start[1] - center[1]];
+    let end_vector = [end[0] - center[0], end[1] - center[1]];
+    let start_radius = start_vector[0].hypot(start_vector[1]);
+    let end_radius = end_vector[0].hypot(end_vector[1]);
+    let radius_tolerance = 1.0e-9 * start_radius.max(end_radius).max(1.0);
+    if start_radius <= 0.0 || (start_radius - end_radius).abs() > radius_tolerance {
+        return None;
+    }
+    let start_angle = start_vector[1].atan2(start_vector[0]);
+    let mut sweep = end_vector[1].atan2(end_vector[0]) - start_angle;
+    if clockwise {
+        if sweep >= 0.0 {
+            sweep -= std::f64::consts::TAU;
+        }
+    } else if sweep <= 0.0 {
+        sweep += std::f64::consts::TAU;
+    }
+    let mut subdivisions = (sweep.abs() / (std::f64::consts::PI / 18.0))
+        .ceil()
+        .max(2.0) as usize;
+    subdivisions += subdivisions % 2;
+    Some(
+        (1..=subdivisions)
+            .map(|index| {
+                let angle = start_angle + sweep * index as f64 / subdivisions as f64;
+                if index == subdivisions {
+                    end
+                } else {
+                    [
+                        center[0] + start_radius * angle.cos(),
+                        center[1] + start_radius * angle.sin(),
+                    ]
+                }
+            })
+            .collect(),
+    )
+}
+
 fn btlx_free_contour(geometry: &GeneralMachiningGeometry) -> Option<BtlxFreeContour> {
     let GeneralMachiningGeometry::ProfileCut {
         frame,
@@ -1093,49 +1169,82 @@ fn btlx_free_contour(geometry: &GeneralMachiningGeometry) -> Option<BtlxFreeCont
         || !start_mm.is_finite()
         || !end_mm.is_finite()
         || end_mm <= start_mm
-        || segments.len() < 3
+        || segments.len() < 2
     {
         return None;
     }
-    let edges = segments
+    let endpoints = segments
         .iter()
-        .map(|segment| {
-            let GeneralMachiningSegment::Line { start_mm, end_mm } = segment else {
-                return None;
-            };
-            (start_mm
+        .map(|segment| match segment {
+            GeneralMachiningSegment::Line { start_mm, end_mm } => (start_mm
                 .iter()
                 .chain(end_mm)
                 .all(|coordinate| coordinate.is_finite())
                 && start_mm != end_mm)
-                .then_some((*start_mm, *end_mm))
+                .then_some((*start_mm, *end_mm)),
+            GeneralMachiningSegment::CircularArc {
+                start_mm,
+                end_mm,
+                center_mm,
+                clockwise,
+            } => btlx_arc_points(*start_mm, *end_mm, *center_mm, *clockwise)
+                .map(|_| (*start_mm, *end_mm)),
         })
         .collect::<Option<Vec<_>>>()?;
-    if !edges
+    if !endpoints
         .iter()
-        .zip(edges.iter().cycle().skip(1))
+        .zip(endpoints.iter().cycle().skip(1))
         .all(|((_, end), (next_start, _))| end == next_start)
     {
         return None;
     }
-    let formatted_edges = edges
-        .iter()
-        .map(|(start, end)| (start.map(format_number), end.map(format_number)))
+    let start_point = endpoints[0].0.map(format_number);
+    let parse_point =
+        |point: &[String; 2]| Some([point[0].parse::<f64>().ok()?, point[1].parse::<f64>().ok()?]);
+    let mut rounded_points = vec![parse_point(&start_point)?];
+    let mut btlx_segments = Vec::with_capacity(segments.len());
+    for segment in segments {
+        match segment {
+            GeneralMachiningSegment::Line { end_mm, .. } => {
+                let end_point = end_mm.map(format_number);
+                rounded_points.push(parse_point(&end_point)?);
+                btlx_segments.push(BtlxContourSegment::Line { end_point });
+            }
+            GeneralMachiningSegment::CircularArc {
+                start_mm,
+                end_mm,
+                center_mm,
+                clockwise,
+            } => {
+                let arc_points = btlx_arc_points(*start_mm, *end_mm, *center_mm, *clockwise)?;
+                let point_on_arc = arc_points[arc_points.len() / 2 - 1].map(format_number);
+                let end_point = end_mm.map(format_number);
+                if point_on_arc == start_mm.map(format_number) || point_on_arc == end_point {
+                    return None;
+                }
+                rounded_points.extend(
+                    arc_points
+                        .iter()
+                        .map(|point| parse_point(&point.map(format_number)))
+                        .collect::<Option<Vec<_>>>()?,
+                );
+                btlx_segments.push(BtlxContourSegment::Arc {
+                    end_point,
+                    point_on_arc,
+                });
+            }
+        }
+    }
+    let rounded_edges = rounded_points
+        .windows(2)
+        .map(|points| (points[0], points[1]))
         .collect::<Vec<_>>();
-    let rounded_edges = formatted_edges
-        .iter()
-        .map(|(start, end)| {
-            Some((
-                [start[0].parse::<f64>().ok()?, start[1].parse::<f64>().ok()?],
-                [end[0].parse::<f64>().ok()?, end[1].parse::<f64>().ok()?],
-            ))
-        })
-        .collect::<Option<Vec<_>>>()?;
     let signed_double_area = rounded_edges
         .iter()
         .map(|(start, end)| start[0] * end[1] - end[0] * start[1])
         .sum::<f64>();
     if rounded_edges.iter().any(|(start, end)| start == end)
+        || rounded_points.first() != rounded_points.last()
         || !btlx_polygon_is_simple(&rounded_edges)
         || !signed_double_area.is_finite()
         || signed_double_area == 0.0
@@ -1154,8 +1263,8 @@ fn btlx_free_contour(geometry: &GeneralMachiningGeometry) -> Option<BtlxFreeCont
         } else {
             "right"
         },
-        start_point: formatted_edges[0].0.clone(),
-        end_points: formatted_edges.into_iter().map(|(_, end)| end).collect(),
+        start_point,
+        segments: btlx_segments,
         depth: format_btlx_number_in_range(depth_mm, f64::MIN_POSITIVE, 100_000.0)?,
     })
 }
@@ -2921,7 +3030,7 @@ mod tests {
     }
 
     #[test]
-    fn btlx_free_contour_requires_a_closed_simple_linear_profile() {
+    fn btlx_free_contour_requires_a_closed_simple_line_arc_profile() {
         let line = |start_mm, end_mm| GeneralMachiningSegment::Line { start_mm, end_mm };
         let valid = GeneralMachiningGeometry::ProfileCut {
             frame: identity_machining_frame(),
@@ -2978,7 +3087,42 @@ mod tests {
             start_mm: 0.0,
             end_mm: 20.0,
         };
-        assert_eq!(btlx_free_contour(&irregular).unwrap().end_points.len(), 5);
+        assert_eq!(btlx_free_contour(&irregular).unwrap().segments.len(), 5);
+
+        let arc_profile = GeneralMachiningGeometry::ProfileCut {
+            frame: identity_machining_frame(),
+            segments: vec![
+                line([10.0, 10.0], [30.0, 10.0]),
+                GeneralMachiningSegment::CircularArc {
+                    start_mm: [30.0, 10.0],
+                    end_mm: [30.0, 30.0],
+                    center_mm: [30.0, 20.0],
+                    clockwise: false,
+                },
+                line([30.0, 30.0], [10.0, 30.0]),
+                line([10.0, 30.0], [10.0, 10.0]),
+            ],
+            start_mm: 0.0,
+            end_mm: 18.0,
+        };
+        assert!(matches!(
+            &btlx_free_contour(&arc_profile).unwrap().segments[1],
+            BtlxContourSegment::Arc {
+                end_point,
+                point_on_arc,
+            } if end_point == &["30".to_owned(), "30".to_owned()]
+                && point_on_arc == &["40".to_owned(), "20".to_owned()]
+        ));
+        let mut mismatched_arc_radius = arc_profile;
+        let GeneralMachiningGeometry::ProfileCut { segments, .. } = &mut mismatched_arc_radius
+        else {
+            unreachable!()
+        };
+        let GeneralMachiningSegment::CircularArc { center_mm, .. } = &mut segments[1] else {
+            unreachable!()
+        };
+        *center_mm = [31.0, 19.0];
+        assert_eq!(btlx_free_contour(&mismatched_arc_radius), None);
 
         let self_intersecting = GeneralMachiningGeometry::ProfileCut {
             frame: identity_machining_frame(),

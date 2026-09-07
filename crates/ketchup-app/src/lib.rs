@@ -7732,7 +7732,7 @@ impl KetchupApp {
                 BtlxProfileProcessingRequest::PortableFreeContour => (
                     "portable FreeContour",
                     "not applicable".to_owned(),
-                    "closed simple linear polygons",
+                    "closed simple line/arc contours",
                 ),
                 BtlxProfileProcessingRequest::EdgeSawCutsThenMillContour {
                     intermediate_saw_cuts,
@@ -7819,7 +7819,7 @@ impl KetchupApp {
                 .btlx_2_3_1_export_with_options(&snapshot, options)
                 .map_err(|error| error.to_string())?;
             let support_report = format!(
-                "schema=ketchup.btlx-support-report.v1\nsource_digest={}\nformat=BTLx 2.3.1\nstock=rectangular straight timber\ndrilling=circular\nportable_profile_contours=closed simple linear polygons\ndefault_profile_request=edge SawContour cuts, then MillContour\nselected_profile_request={selected_profile_request}\nintermediate_saw_cuts={intermediate_saw_cuts}\nselected_profile_contours={selected_profile_contours}\nunsupported=arc profile contours; non-rectangular profile with the edge-saw request; non-rectangular stock; other machining operations\nconcrete_importer_verified=false\nmachine_execution_order_guaranteed=false\n",
+                "schema=ketchup.btlx-support-report.v1\nsource_digest={}\nformat=BTLx 2.3.1\nstock=rectangular straight timber\ndrilling=circular\nportable_profile_contours=closed simple line/arc contours\ndefault_profile_request=edge SawContour cuts, then MillContour\nselected_profile_request={selected_profile_request}\nintermediate_saw_cuts={intermediate_saw_cuts}\nselected_profile_contours={selected_profile_contours}\nunsupported=arc or non-rectangular profile with the edge-saw request; non-rectangular stock; other machining operations\nconcrete_importer_verified=false\nmachine_execution_order_guaranteed=false\n",
                 snapshot.canonical_digest()
             );
             let report_path = path.with_extension("btlx.support.txt");

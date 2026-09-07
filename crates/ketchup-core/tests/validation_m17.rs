@@ -560,6 +560,16 @@ fn btlx_2_3_1_straight_timber_export_is_pinned_deterministic_and_fail_closed() {
         Err(GeneralFabricationError::BtlxProfileRequestUnsupported)
     );
 
+    let (arc_cut_snapshot, arc_cut) = arc_profile_cut_fabrication_projection();
+    let arc_cut_export = arc_cut.btlx_2_3_1_export(&arc_cut_snapshot).unwrap();
+    assert_eq!(
+        arc_cut_export,
+        include_bytes!("fixtures/btlx/arc-profile-cut-2.3.1.btlx")
+    );
+    assert_eq!(
+        arc_cut.btlx_2_3_1_export_with_options(&arc_cut_snapshot, BtlxExportOptions::default()),
+        Err(GeneralFabricationError::BtlxProfileRequestUnsupported)
+    );
     let (irregular_cut_snapshot, irregular_cut) = irregular_profile_cut_fabrication_projection();
     let irregular_cut_export = irregular_cut
         .btlx_2_3_1_export(&irregular_cut_snapshot)
@@ -1195,6 +1205,14 @@ fn irregular_profile_cut_fabrication_projection() -> (Snapshot, GeneralFabricati
     )
 }
 
+fn arc_profile_cut_fabrication_projection() -> (Snapshot, GeneralFabricationProjection) {
+    exact_graph_document_fabrication_projection(
+        arc_profile_cut_document(),
+        "m17-arc-profile-cut-result",
+        GRAPH_BOOLEAN,
+    )
+}
+
 fn exact_graph_document_fabrication_projection(
     document: DocumentStore,
     result_fingerprint: &str,
@@ -1348,6 +1366,78 @@ fn rectangular_profile_cut_document() -> DocumentStore {
                     target: GRAPH_BASE_BODY,
                     profile: GRAPH_TOOL_PROFILE,
                     depth: Dimension::from_decimal("20").unwrap(),
+                },
+            },
+            occurrence(GRAPH_LEFT, GRAPH_DEFINITION, 0.0),
+            occurrence(GRAPH_RIGHT, GRAPH_DEFINITION, 200.0),
+        ]))
+        .unwrap();
+    mark_timber_members(&mut document, &[GRAPH_LEFT, GRAPH_RIGHT]);
+    document.discard_history_before_current();
+    document
+}
+
+fn arc_profile_cut_document() -> DocumentStore {
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: GRAPH_DEFINITION,
+                name: "Timber with arc profile cut".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: GRAPH_BASE_PROFILE,
+                definition_id: GRAPH_DEFINITION,
+                name: "100 x 50 timber profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: GRAPH_BASE_BODY,
+                definition_id: GRAPH_DEFINITION,
+                name: "1000 mm timber stock".to_owned(),
+                kind: FeatureKind::Extrusion {
+                    profile: GRAPH_BASE_PROFILE,
+                    height: Dimension::from_decimal("1000").unwrap(),
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: GRAPH_TOOL_PROFILE,
+                definition_id: GRAPH_DEFINITION,
+                name: "Arc profile cut".to_owned(),
+                kind: FeatureKind::SegmentProfile {
+                    segments: vec![
+                        ProfileSegment::Line {
+                            start_mm: [10.0, 10.0],
+                            end_mm: [30.0, 10.0],
+                        },
+                        ProfileSegment::CircularArc {
+                            start_mm: [30.0, 10.0],
+                            end_mm: [30.0, 30.0],
+                            center_mm: [30.0, 20.0],
+                            clockwise: false,
+                        },
+                        ProfileSegment::Line {
+                            start_mm: [30.0, 30.0],
+                            end_mm: [10.0, 30.0],
+                        },
+                        ProfileSegment::Line {
+                            start_mm: [10.0, 30.0],
+                            end_mm: [10.0, 10.0],
+                        },
+                    ],
+                    closed: true,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: GRAPH_BOOLEAN,
+                definition_id: GRAPH_DEFINITION,
+                name: "18 mm arc profile cut".to_owned(),
+                kind: FeatureKind::Pocket {
+                    target: GRAPH_BASE_BODY,
+                    profile: GRAPH_TOOL_PROFILE,
+                    depth: Dimension::from_decimal("18").unwrap(),
                 },
             },
             occurrence(GRAPH_LEFT, GRAPH_DEFINITION, 0.0),
