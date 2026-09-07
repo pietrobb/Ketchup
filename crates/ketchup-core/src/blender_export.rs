@@ -161,7 +161,7 @@ pub fn exact_model_glb_export(
     }
     let glb = encode_glb(&document, &binary)?;
     let loss_report = format!(
-        "authority=accepted exact OCCT B-Rep\nformat=glTF 2.0 binary (GLB)\nconversion=current-visible-exact-model-to-instanced-mesh-scene\nunit_conversion=millimetres to metres\naxis_conversion=Ketchup Z-up to glTF Y-up\nhierarchy=canonical global groups, component occurrences, local groups, and nested occurrences\neditability_loss=canonical features, rules, dimensions, constraints, and Undo history are not preserved\ntopology_loss=exact topology, analytic surfaces, and durable face identity are not preserved\ntolerance_loss=geometry is approximated by each accepted tessellation under its source tolerance profile\nsource_digest={}\noccurrence_body_count={}\nunique_geometry_count={}\nmesh_count={}\n",
+        "authority=accepted exact OCCT B-Rep\nformat=glTF 2.0 binary (GLB)\nconversion=current-visible-exact-model-to-instanced-mesh-scene\nunit_conversion=millimetres to metres\naxis_conversion=Ketchup Z-up to glTF Y-up\nhierarchy=canonical global groups, component occurrences, local groups, and nested occurrences\nblender_background_import_verified=false\neditability_loss=canonical features, rules, dimensions, constraints, and Undo history are not preserved\ntopology_loss=exact topology, analytic surfaces, and durable face identity are not preserved\ntolerance_loss=geometry is approximated by each accepted tessellation under its source tolerance profile\nsource_digest={}\noccurrence_body_count={}\nunique_geometry_count={}\nmesh_count={}\n",
         snapshot.canonical_digest(),
         instances.len(),
         geometries.len(),

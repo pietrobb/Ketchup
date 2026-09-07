@@ -2320,6 +2320,7 @@ fn blender_glb_file_command_exports_current_scene_with_loss_report() {
     assert!(report.contains("format=glTF 2.0 binary (GLB)"));
     assert!(report.contains("unit_conversion=millimetres to metres"));
     assert!(report.contains("axis_conversion=Ketchup Z-up to glTF Y-up"));
+    assert!(report.contains("blender_background_import_verified=false"));
     assert_eq!(script.export_requests()[0].extension, "glb");
     let receipt = harness.state().last_side_effect_receipt().unwrap();
     assert_eq!(receipt.scope().class(), HighRiskClass::LossyConversion);
