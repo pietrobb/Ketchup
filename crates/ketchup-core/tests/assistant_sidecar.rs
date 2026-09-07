@@ -574,9 +574,8 @@ fn cad_edit_append_boolean_contract_is_strict_bounded_and_host_id_assigned() {
                 }
             ]
         });
-        match serde_json::from_value::<AssistantCadEditProgram>(invalid) {
-            Ok(program) => assert!(program.validate().is_err()),
-            Err(_) => {}
+        if let Ok(program) = serde_json::from_value::<AssistantCadEditProgram>(invalid) {
+            assert!(program.validate().is_err());
         }
     }
 

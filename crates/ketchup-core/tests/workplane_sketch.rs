@@ -330,7 +330,7 @@ fn disjoint_circle_remains_a_separate_region() {
         .iter()
         .find(|region| {
             region.entity_ids.as_slice()
-                == &[
+                == [
                     SketchEntityId(1),
                     SketchEntityId(2),
                     SketchEntityId(3),

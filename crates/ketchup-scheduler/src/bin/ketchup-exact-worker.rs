@@ -56,10 +56,7 @@ fn main() {
     let mut stdin = stdin.lock();
     let mut stdout = io::stdout().lock();
     let mut pairs = pair_query::PairQuerySession::default();
-    loop {
-        let Ok(Some(line)) = read_bounded_request_line(&mut stdin) else {
-            break;
-        };
+    while let Ok(Some(line)) = read_bounded_request_line(&mut stdin) {
         let response = pairs
             .handle(&backend, &line)
             .or_else(|| handle_request(&backend, &line));

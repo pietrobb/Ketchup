@@ -10197,6 +10197,8 @@ pub fn build_box_render_package<const N: usize>(
     )
 }
 
+// Preserve this public exact-worker adapter signature for typed attachment callers.
+#[allow(clippy::too_many_arguments)]
 pub fn build_box_render_package_with_attachments<const N: usize>(
     request: &ExactFeatureChainRequest,
     exact_input_digest: String,
@@ -10220,6 +10222,8 @@ pub fn build_box_render_package_with_attachments<const N: usize>(
     )
 }
 
+// Preserve this public exact-worker adapter signature for axial attachment callers.
+#[allow(clippy::too_many_arguments)]
 pub fn build_box_render_package_with_axial_attachments<const N: usize>(
     request: &ExactFeatureChainRequest,
     exact_input_digest: String,
@@ -10243,6 +10247,8 @@ pub fn build_box_render_package_with_axial_attachments<const N: usize>(
     )
 }
 
+// Preserve the common public adapter's explicit planar and axial evidence channels.
+#[allow(clippy::too_many_arguments)]
 pub fn build_box_render_package_with_typed_attachments<const N: usize>(
     request: &ExactFeatureChainRequest,
     exact_input_digest: String,

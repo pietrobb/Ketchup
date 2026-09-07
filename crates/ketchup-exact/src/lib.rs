@@ -864,11 +864,13 @@ fn flatten_spatial_segments(segments: &[SpatialProfileSegment]) -> Vec<f64> {
         .collect()
 }
 
+type SpatialSweepPathMetric = (f64, [f64; 3], [f64; 3]);
+
 fn spatial_sweep_path_metrics(
     segment: &SpatialProfileSegment,
     operation: &'static str,
     input: &str,
-) -> Result<(f64, [f64; 3], [f64; 3]), GeometryError> {
+) -> Result<SpatialSweepPathMetric, GeometryError> {
     let invalid = || {
         parameter_error(
             GeometryErrorCode::InvalidProfile,
@@ -1077,7 +1079,7 @@ fn validate_spatial_sweep_path(
     segments: &[SpatialProfileSegment],
     operation: &'static str,
     input: &str,
-) -> Result<Vec<(f64, [f64; 3], [f64; 3])>, GeometryError> {
+) -> Result<Vec<SpatialSweepPathMetric>, GeometryError> {
     let invalid = |diagnostic: &str| {
         parameter_error(
             GeometryErrorCode::InvalidProfile,

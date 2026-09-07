@@ -3719,6 +3719,8 @@ fn consume_scene_text_budget(
     Ok(())
 }
 
+// Recursive traversal carries its explicit budgets and accumulated scene state together.
+#[allow(clippy::too_many_arguments)]
 fn project_local_occurrences_bounded(
     product: &ProductModel,
     root_occurrence_id: OccurrenceId,
@@ -10854,10 +10856,9 @@ fn is_valid_segment_profile(segments: &[ProfileSegment], closed: bool) -> bool {
             control_2_mm,
             ..
         } = segment
+            && (!valid_point(*control_1_mm) || !valid_point(*control_2_mm))
         {
-            if !valid_point(*control_1_mm) || !valid_point(*control_2_mm) {
-                return false;
-            }
+            return false;
         }
     }
     if segments
@@ -11980,6 +11981,8 @@ fn apply_solid_tool(
     apply_graph_exact_solid_tool(product, plan, target_occurrence, tool_occurrence)
 }
 
+// Keep the validated plan and owned source feature parts explicit at this mutation boundary.
+#[allow(clippy::too_many_arguments)]
 fn apply_mixed_exact_solid_tool(
     product: &mut ProductModel,
     plan: &SolidToolPlan,
@@ -12192,6 +12195,8 @@ fn apply_mixed_exact_solid_tool(
     Ok(())
 }
 
+// Keep the validated plan and owned imported-body parts explicit at this mutation boundary.
+#[allow(clippy::too_many_arguments)]
 fn apply_imported_exact_solid_tool(
     product: &mut ProductModel,
     plan: &SolidToolPlan,

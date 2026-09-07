@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeSet, VecDeque, hash_map::RandomState},
-    hash::{BuildHasher, Hash, Hasher},
+    hash::BuildHasher,
     io,
     net::SocketAddr,
     sync::{
@@ -334,9 +334,7 @@ impl KetchupApp {
 
 impl LiveBridge {
     fn batch_job_handle(&self, id: u64) -> String {
-        let mut hasher = self.batch_job_key.build_hasher();
-        id.hash(&mut hasher);
-        format!("batch-{id:016x}-{:016x}", hasher.finish())
+        format!("batch-{id:016x}-{:016x}", self.batch_job_key.hash_one(id))
     }
 
     // Deliberately inspect raw state: validity-filtered preview helpers can hide stale human work.

@@ -399,7 +399,7 @@ fn collision_report(
                 graph: None,
                 analytic,
             };
-            if worker.is_some() {
+            if let Some((_, _, timeout)) = &worker {
                 let key = (occurrence.definition_id, producer);
                 if let Some(index) = graph_indices.get(&key) {
                     body.graph = Some(*index);
@@ -428,20 +428,11 @@ fn collision_report(
                                 json!([{"reason": "exact_collision_cancelled"}]);
                             return report;
                         }
-                        Ok(_)
-                            if scope.is_some()
-                                && worker.as_ref().is_some_and(|(_, _, timeout)| {
-                                    started.elapsed() >= *timeout
-                                }) =>
-                        {
+                        Ok(_) if scope.is_some() && started.elapsed() >= *timeout => {
                             report["state"] = json!("not_evaluated");
                             report["not_evaluated"] = json!([{
                                 "reason": "exact_collision_timeout",
-                                "timeout_ms": worker
-                                    .as_ref()
-                                    .expect("worker checked")
-                                    .2
-                                    .as_millis(),
+                                "timeout_ms": timeout.as_millis(),
                             }]);
                             return report;
                         }
@@ -709,9 +700,11 @@ fn collision_report(
                     "unbounded_body_count": unbounded.len(),
                 }));
             }
-            broad_rejected = spatial_complete
-                .then(|| bounded_relevant_pairs.saturating_sub(candidates.len()))
-                .unwrap_or(0);
+            broad_rejected = if spatial_complete {
+                bounded_relevant_pairs.saturating_sub(candidates.len())
+            } else {
+                0
+            };
             let boundary_occurrences = candidates
                 .iter()
                 .flat_map(|(left, right)| [*left, *right])

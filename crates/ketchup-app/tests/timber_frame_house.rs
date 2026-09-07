@@ -1180,9 +1180,13 @@ fn live_oauth_assistant_builds_a_roofed_house_frame_across_turns() {
             .evaluate_exact_brep_graph(&graph)
             .unwrap_or_else(|error| panic!("live-authored {name} must evaluate in OCCT: {error}"));
         assert!((package.volume_mm3 - 800_000_000.0).abs() <= 0.8);
-        for axis in 0..3 {
-            assert!((package.bounds_mm[0][axis] - expected_bounds[0][axis]).abs() <= 1.0e-6);
-            assert!((package.bounds_mm[1][axis] - expected_bounds[1][axis]).abs() <= 1.0e-6);
+        for (actual, expected) in package
+            .bounds_mm
+            .iter()
+            .flatten()
+            .zip(expected_bounds.iter().flatten())
+        {
+            assert!((*actual - *expected).abs() <= 1.0e-6);
         }
         let support_y_mm = if name == "Left roof plane" {
             0.0

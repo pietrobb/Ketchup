@@ -141,10 +141,10 @@ impl PendingBootstrap {
         if app.live_bridge.is_some() {
             return Err(BootstrapError);
         }
-        if let Some(path) = self.document_path {
-            if !app.open_document_path(&path) {
-                return Err(BootstrapError);
-            }
+        if let Some(path) = self.document_path
+            && !app.open_document_path(&path)
+        {
+            return Err(BootstrapError);
         }
         let bridge =
             transport::start_with_token(context.clone(), self.token).map_err(|_| BootstrapError)?;

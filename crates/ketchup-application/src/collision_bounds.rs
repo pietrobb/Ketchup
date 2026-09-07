@@ -170,9 +170,11 @@ impl Bounds {
     }
 
     fn expanded(mut bounds: [[f64; 3]; 2], margin: f64) -> Option<Self> {
-        for axis in 0..3 {
-            bounds[0][axis] = (bounds[0][axis] - margin).next_down();
-            bounds[1][axis] = (bounds[1][axis] + margin).next_up();
+        for coordinate in &mut bounds[0] {
+            *coordinate = (*coordinate - margin).next_down();
+        }
+        for coordinate in &mut bounds[1] {
+            *coordinate = (*coordinate + margin).next_up();
         }
         (bounds.iter().flatten().all(|x| x.is_finite())
             && (0..3).all(|axis| bounds[0][axis] <= bounds[1][axis]))
@@ -189,15 +191,18 @@ impl Bounds {
         for x in [self.0[0][0], self.0[1][0]] {
             for y in [self.0[0][1], self.0[1][1]] {
                 for z in [self.0[0][2], self.0[1][2]] {
-                    for axis in 0..3 {
-                        let i = axis * 4;
-                        let value =
-                            matrix[i] * x + matrix[i + 1] * y + matrix[i + 2] * z + matrix[i + 3];
+                    let [lower, upper] = &mut bounds;
+                    for ((lower, upper), row) in lower
+                        .iter_mut()
+                        .zip(upper.iter_mut())
+                        .zip(matrix.chunks_exact(4))
+                    {
+                        let value = row[0] * x + row[1] * y + row[2] * z + row[3];
                         if !value.is_finite() {
                             return None;
                         }
-                        bounds[0][axis] = bounds[0][axis].min(value);
-                        bounds[1][axis] = bounds[1][axis].max(value);
+                        *lower = (*lower).min(value);
+                        *upper = (*upper).max(value);
                     }
                 }
             }

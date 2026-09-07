@@ -15,7 +15,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::{
     collections::{BTreeSet, VecDeque, hash_map::RandomState},
-    hash::{BuildHasher, Hash, Hasher},
+    hash::BuildHasher,
     io::{self, BufRead, Write},
 };
 
@@ -134,9 +134,7 @@ impl Server {
         }
     }
     fn batch_job_handle(&self, id: u64) -> String {
-        let mut hasher = self.batch_job_key.build_hasher();
-        id.hash(&mut hasher);
-        format!("batch-{id:016x}-{:016x}", hasher.finish())
+        format!("batch-{id:016x}-{:016x}", self.batch_job_key.hash_one(id))
     }
 
     fn revoke_batch_jobs(&mut self) {

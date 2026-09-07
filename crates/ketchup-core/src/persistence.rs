@@ -561,6 +561,8 @@ impl ConfirmedMigration {
     }
 }
 
+// Boxing the editable audit would change this public persistence result contract.
+#[allow(clippy::large_enum_variant)]
 pub enum LoadOutcome {
     Editable {
         document: DocumentStore,

@@ -2615,7 +2615,7 @@ fn cubic_sweep_is_deterministic_and_rejects_degenerate_or_backtracking_handles()
             end_mm: [45.0, 20.0],
         },
     ] {
-        let invalid_path = [path[0].clone(), invalid_cubic, path[2].clone()];
+        let invalid_path = [path[0], invalid_cubic, path[2]];
         assert_eq!(
             backend
                 .sweep_planar_profile(&profile, &invalid_path)
@@ -2649,7 +2649,7 @@ fn cubic_sweep_is_deterministic_and_rejects_degenerate_or_backtracking_handles()
 
     for invalid_arc_path in [
         vec![
-            path[0].clone(),
+            path[0],
             PlanarProfileSegment::CircularArc {
                 start_mm: [25.0, 0.0],
                 end_mm: [25.0, 0.0],
@@ -2658,7 +2658,7 @@ fn cubic_sweep_is_deterministic_and_rejects_degenerate_or_backtracking_handles()
             },
         ],
         vec![
-            path[0].clone(),
+            path[0],
             PlanarProfileSegment::CircularArc {
                 start_mm: [25.0, 0.0],
                 end_mm: [35.000_000_002, 10.0],

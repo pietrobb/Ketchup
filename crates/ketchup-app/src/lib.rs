@@ -72,14 +72,6 @@ use ketchup_core::exact_product::{ExactBRepGraphPackage, ExactBRepGraphWorkerEvi
 use ketchup_core::exact_revolve::ExactRevolveRequest;
 #[cfg(feature = "named-product-fixtures")]
 use ketchup_core::exact_revolve::{BottleAuthorityReport, ExactRevolvePackage};
-#[cfg(test)]
-use ketchup_core::exact_validation::{
-    BuiltinGeneralBodyValidator, BuiltinGravitySupportValidator,
-    GENERAL_BODY_SOURCE_FRAME_METHOD_V1, GeneralBodySource, GeneralClearanceCase,
-    GravitySupportInput, GravitySupportParticipant, general_body_containment,
-    general_body_input_bytes, general_body_validation_policy, gravity_support_input_bytes,
-    gravity_support_validation_policy,
-};
 use ketchup_core::exact_validation::{
     GeneralBodyNarrowPhaseRelation, GeneralBodyParticipant, general_body_narrow_phase,
 };
@@ -112,11 +104,6 @@ use ketchup_core::topology::{TopologicalElementKind, TopologicalElementRef};
 #[cfg(feature = "named-product-fixtures")]
 use ketchup_core::validation::ValidationReport;
 use ketchup_core::validation::ValidatorRoleIndex;
-#[cfg(test)]
-use ketchup_core::validation::{
-    DiagnosticSeverity, EvidenceClass, HostNeutralValidator, ValidationExecution,
-    ValidationInvocation, ValidationState, ValidatorRoleError,
-};
 use ketchup_interaction::{
     Axis, ElementId, ExactHit, LocaleCatalog, PickResult, Ray, SelectionId, Side, SnapKind,
     SnapPolicy, SnapResult, SnapTracker, Vec3,
@@ -12022,7 +12009,7 @@ impl KetchupApp {
                                 .entry(occurrence.body.definition_id)
                                 .or_insert_with(|| {
                                     exact_solid_tool_feature_id(
-                                        &snapshot,
+                                        snapshot,
                                         occurrence.body.definition_id,
                                     )
                                 })
