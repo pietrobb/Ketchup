@@ -2339,6 +2339,9 @@ fn hundegger_btlx_file_command_exports_validated_timber_with_support_report() {
     let support = std::fs::read_to_string(path.with_extension("btlx.support.txt")).unwrap();
     assert!(support.contains("default_profile_request=edge SawContour cuts, then MillContour"));
     assert!(support.contains("selected_profile_request=edge SawContour cuts, then MillContour"));
+    assert!(
+        support.contains("portable_profile_removals=pocket, through-cut, extruded boolean-cut")
+    );
     assert!(support.contains("intermediate_saw_cuts=0"));
     assert!(support.contains("concrete_importer_verified=false"));
     assert!(support.contains("machine_execution_order_guaranteed=false"));

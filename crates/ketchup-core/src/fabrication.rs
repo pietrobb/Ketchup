@@ -968,7 +968,9 @@ fn btlx_processings(
         GeneralManufacturingKind::CircularDrill => btlx_drilling(&operation.machining)
             .map(|drilling| vec![BtlxProcessing::Drilling(drilling)])
             .ok_or(GeneralFabricationError::ExportBlocked),
-        GeneralManufacturingKind::ProfileCut => {
+        GeneralManufacturingKind::ThroughCut
+        | GeneralManufacturingKind::ProfileCut
+        | GeneralManufacturingKind::BooleanCut => {
             let contour = btlx_free_contour(&operation.machining)
                 .ok_or(GeneralFabricationError::ExportBlocked)?;
             match options.profile_processing_request {

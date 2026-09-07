@@ -609,11 +609,21 @@ fn btlx_2_3_1_straight_timber_export_is_pinned_deterministic_and_fail_closed() {
         Err(GeneralFabricationError::ExportBlocked)
     );
 
-    let (unsupported_snapshot, unsupported) =
-        graph_fabrication_projection(BooleanOperation::Cut, true, "m17-btlx-unsupported-cut");
+    let (through_cut_snapshot, through_cut) = rectangular_through_cut_fabrication_projection();
     assert_eq!(
-        unsupported.btlx_2_3_1_export(&unsupported_snapshot),
-        Err(GeneralFabricationError::ExportBlocked)
+        through_cut
+            .btlx_2_3_1_export(&through_cut_snapshot)
+            .unwrap(),
+        include_bytes!("fixtures/btlx/rectangular-through-cut-2.3.1.btlx")
+    );
+
+    let (boolean_cut_snapshot, boolean_cut) =
+        graph_fabrication_projection(BooleanOperation::Cut, true, "m17-btlx-boolean-cut");
+    assert_eq!(
+        boolean_cut
+            .btlx_2_3_1_export(&boolean_cut_snapshot)
+            .unwrap(),
+        include_bytes!("fixtures/btlx/boolean-cut-2.3.1.btlx")
     );
 }
 
@@ -1197,6 +1207,14 @@ fn rectangular_profile_cut_fabrication_projection() -> (Snapshot, GeneralFabrica
     )
 }
 
+fn rectangular_through_cut_fabrication_projection() -> (Snapshot, GeneralFabricationProjection) {
+    exact_graph_document_fabrication_projection(
+        rectangular_through_cut_document(),
+        "m17-rectangular-through-cut-result",
+        GRAPH_BOOLEAN,
+    )
+}
+
 fn irregular_profile_cut_fabrication_projection() -> (Snapshot, GeneralFabricationProjection) {
     exact_graph_document_fabrication_projection(
         irregular_profile_cut_document(),
@@ -1326,6 +1344,14 @@ fn circular_drill_document() -> DocumentStore {
 }
 
 fn rectangular_profile_cut_document() -> DocumentStore {
+    rectangular_profile_removal_document(false)
+}
+
+fn rectangular_through_cut_document() -> DocumentStore {
+    rectangular_profile_removal_document(true)
+}
+
+fn rectangular_profile_removal_document(through: bool) -> DocumentStore {
     let mut document = DocumentStore::new();
     document
         .apply_batch(&CommandBatch::new(vec![
@@ -1362,10 +1388,17 @@ fn rectangular_profile_cut_document() -> DocumentStore {
                 id: GRAPH_BOOLEAN,
                 definition_id: GRAPH_DEFINITION,
                 name: "20 mm rectangular profile cut".to_owned(),
-                kind: FeatureKind::Pocket {
-                    target: GRAPH_BASE_BODY,
-                    profile: GRAPH_TOOL_PROFILE,
-                    depth: Dimension::from_decimal("20").unwrap(),
+                kind: if through {
+                    FeatureKind::ThroughCut {
+                        target: GRAPH_BASE_BODY,
+                        profile: GRAPH_TOOL_PROFILE,
+                    }
+                } else {
+                    FeatureKind::Pocket {
+                        target: GRAPH_BASE_BODY,
+                        profile: GRAPH_TOOL_PROFILE,
+                        depth: Dimension::from_decimal("20").unwrap(),
+                    }
                 },
             },
             occurrence(GRAPH_LEFT, GRAPH_DEFINITION, 0.0),
