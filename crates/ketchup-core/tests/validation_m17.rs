@@ -17,9 +17,9 @@ use ketchup_core::exact_validation::{
 };
 use ketchup_core::fabrication::{
     BTLX_2_3_1_SCHEMA_SHA256, BTLX_2_3_1_SCHEMA_URL, BTLX_2_3_1_VERSION, BtlxExportOptions,
-    FABRICATION_ROLE_DIMENSION_V1, GeneralFabricationError, GeneralFabricationProjection,
-    GeneralMachiningGeometry, GeneralManufacturingKind, ProjectionStatus, TIMBER_MATERIAL_V1,
-    TIMBER_MEMBER_ROLE_V1, project_general_fabrication,
+    BtlxProfileProcessingRequest, FABRICATION_ROLE_DIMENSION_V1, GeneralFabricationError,
+    GeneralFabricationProjection, GeneralMachiningGeometry, GeneralManufacturingKind,
+    ProjectionStatus, TIMBER_MATERIAL_V1, TIMBER_MEMBER_ROLE_V1, project_general_fabrication,
 };
 use ketchup_core::graph::{DerivedIdentity, PortSpec, RuleOutput, SlotPath, SlotSegment};
 use ketchup_core::import::{StepImportMesh, StepMeshTriangle};
@@ -523,6 +523,41 @@ fn btlx_2_3_1_straight_timber_export_is_pinned_deterministic_and_fail_closed() {
     assert_eq!(
         saw_then_mill_export,
         include_bytes!("fixtures/btlx/rectangular-groove-saw-then-mill-2.3.1.btlx")
+    );
+    let intermediate_saw_export = profile_cut
+        .btlx_2_3_1_export_with_options(
+            &profile_cut_snapshot,
+            BtlxExportOptions {
+                profile_processing_request:
+                    BtlxProfileProcessingRequest::EdgeSawCutsThenMillContour {
+                        intermediate_saw_cuts: 2,
+                    },
+            },
+        )
+        .unwrap();
+    let intermediate_saw_xml = String::from_utf8(intermediate_saw_export).unwrap();
+    assert_eq!(intermediate_saw_xml.matches("<SawContour ").count(), 4);
+    assert!(intermediate_saw_xml.contains(
+        "<StartPoint X=\"10\" Y=\"15\" Z=\"0\"/>\n              <Line><EndPoint X=\"30\" Y=\"15\" Z=\"0\"/></Line>"
+    ));
+    assert!(intermediate_saw_xml.contains(
+        "<StartPoint X=\"10\" Y=\"20\" Z=\"0\"/>\n              <Line><EndPoint X=\"30\" Y=\"20\" Z=\"0\"/></Line>"
+    ));
+    assert!(
+        intermediate_saw_xml.rfind("</SawContour>").unwrap()
+            < intermediate_saw_xml.find("<MillContour ").unwrap()
+    );
+    assert_eq!(
+        profile_cut.btlx_2_3_1_export_with_options(
+            &profile_cut_snapshot,
+            BtlxExportOptions {
+                profile_processing_request:
+                    BtlxProfileProcessingRequest::EdgeSawCutsThenMillContour {
+                        intermediate_saw_cuts: 33,
+                    },
+            },
+        ),
+        Err(GeneralFabricationError::BtlxProfileRequestUnsupported)
     );
 
     let (irregular_cut_snapshot, irregular_cut) = irregular_profile_cut_fabrication_projection();

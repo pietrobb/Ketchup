@@ -295,7 +295,7 @@ pub const BTLX_2_3_1_SCHEMA_SHA256: &str =
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BtlxProfileProcessingRequest {
     PortableFreeContour,
-    EdgeSawCutsThenMillContour,
+    EdgeSawCutsThenMillContour { intermediate_saw_cuts: u8 },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -306,7 +306,9 @@ pub struct BtlxExportOptions {
 impl Default for BtlxExportOptions {
     fn default() -> Self {
         Self {
-            profile_processing_request: BtlxProfileProcessingRequest::EdgeSawCutsThenMillContour,
+            profile_processing_request: BtlxProfileProcessingRequest::EdgeSawCutsThenMillContour {
+                intermediate_saw_cuts: 0,
+            },
         }
     }
 }
@@ -950,14 +952,21 @@ fn btlx_processings(
                 BtlxProfileProcessingRequest::PortableFreeContour => {
                     Ok(vec![BtlxProcessing::FreeContour(contour)])
                 }
-                BtlxProfileProcessingRequest::EdgeSawCutsThenMillContour => {
-                    let saw_contours = btlx_edge_saw_contours(&operation.machining, &contour)
-                        .ok_or(GeneralFabricationError::BtlxProfileRequestUnsupported)?;
-                    Ok(vec![
-                        BtlxProcessing::SawContour(saw_contours[0].clone()),
-                        BtlxProcessing::SawContour(saw_contours[1].clone()),
-                        BtlxProcessing::MillContour(contour),
-                    ])
+                BtlxProfileProcessingRequest::EdgeSawCutsThenMillContour {
+                    intermediate_saw_cuts,
+                } => {
+                    let saw_contours = btlx_edge_saw_contours(
+                        &operation.machining,
+                        &contour,
+                        intermediate_saw_cuts,
+                    )
+                    .ok_or(GeneralFabricationError::BtlxProfileRequestUnsupported)?;
+                    let mut processings = saw_contours
+                        .into_iter()
+                        .map(BtlxProcessing::SawContour)
+                        .collect::<Vec<_>>();
+                    processings.push(BtlxProcessing::MillContour(contour));
+                    Ok(processings)
                 }
             }
         }
@@ -968,7 +977,11 @@ fn btlx_processings(
 fn btlx_edge_saw_contours(
     geometry: &GeneralMachiningGeometry,
     contour: &BtlxFreeContour,
-) -> Option<[BtlxSawContour; 2]> {
+    intermediate_saw_cuts: u8,
+) -> Option<Vec<BtlxSawContour>> {
+    if intermediate_saw_cuts > 32 {
+        return None;
+    }
     let GeneralMachiningGeometry::ProfileCut { segments, .. } = geometry else {
         return None;
     };
@@ -998,20 +1011,38 @@ fn btlx_edge_saw_contours(
     {
         return None;
     }
-    let selected = if dot(vectors[0], vectors[0]) >= dot(vectors[1], vectors[1]) {
-        [*first, *third]
-    } else {
-        [*second, *fourth]
-    };
-    Some(selected.map(|(start, end)| BtlxSawContour {
+    let [first_boundary, second_boundary] =
+        if dot(vectors[0], vectors[0]) >= dot(vectors[1], vectors[1]) {
+            [*first, *third]
+        } else {
+            [*second, *fourth]
+        };
+    let saw_contour = |(start, end): ([f64; 2], [f64; 2]), tool_position| BtlxSawContour {
         reference_point_mm: contour.reference_point_mm,
         x_vector: contour.x_vector,
         y_vector: contour.y_vector,
-        tool_position: contour.tool_position,
+        tool_position,
         start_point: start.map(format_number),
         end_point: end.map(format_number),
         depth: contour.depth.clone(),
-    }))
+    };
+    let mut result = Vec::with_capacity(usize::from(intermediate_saw_cuts) + 2);
+    result.push(saw_contour(first_boundary, contour.tool_position));
+    for index in 1..=intermediate_saw_cuts {
+        let fraction = f64::from(index) / (f64::from(intermediate_saw_cuts) + 1.0);
+        let interpolate = |start: [f64; 2], end: [f64; 2]| {
+            std::array::from_fn(|axis| start[axis] + (end[axis] - start[axis]) * fraction)
+        };
+        result.push(saw_contour(
+            (
+                interpolate(first_boundary.0, second_boundary.1),
+                interpolate(first_boundary.1, second_boundary.0),
+            ),
+            "center",
+        ));
+    }
+    result.push(saw_contour(second_boundary, contour.tool_position));
+    Some(result)
 }
 
 fn btlx_drilling(geometry: &GeneralMachiningGeometry) -> Option<BtlxDrilling> {
