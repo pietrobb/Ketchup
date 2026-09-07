@@ -16,7 +16,7 @@ use ketchup_core::exact_validation::{
     general_body_validation_policy,
 };
 use ketchup_core::fabrication::{
-    BTLX_2_3_1_SCHEMA_SHA256, BTLX_2_3_1_SCHEMA_URL, BTLX_2_3_1_VERSION,
+    BTLX_2_3_1_SCHEMA_SHA256, BTLX_2_3_1_SCHEMA_URL, BTLX_2_3_1_VERSION, BtlxExportOptions,
     FABRICATION_ROLE_DIMENSION_V1, GeneralFabricationError, GeneralFabricationProjection,
     GeneralMachiningGeometry, GeneralManufacturingKind, ProjectionStatus, TIMBER_MATERIAL_V1,
     TIMBER_MEMBER_ROLE_V1, project_general_fabrication,
@@ -517,6 +517,13 @@ fn btlx_2_3_1_straight_timber_export_is_pinned_deterministic_and_fail_closed() {
             .btlx_2_3_1_export(&profile_cut_snapshot)
             .unwrap()
     );
+    let saw_then_mill_export = profile_cut
+        .btlx_2_3_1_export_with_options(&profile_cut_snapshot, BtlxExportOptions::default())
+        .unwrap();
+    assert_eq!(
+        saw_then_mill_export,
+        include_bytes!("fixtures/btlx/rectangular-groove-saw-then-mill-2.3.1.btlx")
+    );
 
     let (irregular_cut_snapshot, irregular_cut) = irregular_profile_cut_fabrication_projection();
     let irregular_cut_export = irregular_cut
@@ -531,6 +538,11 @@ fn btlx_2_3_1_straight_timber_export_is_pinned_deterministic_and_fail_closed() {
         irregular_cut
             .btlx_2_3_1_export(&irregular_cut_snapshot)
             .unwrap()
+    );
+    assert_eq!(
+        irregular_cut
+            .btlx_2_3_1_export_with_options(&irregular_cut_snapshot, BtlxExportOptions::default(),),
+        Err(GeneralFabricationError::BtlxProfileRequestUnsupported)
     );
 
     let mut tampered = projection;

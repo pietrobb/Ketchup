@@ -293,6 +293,25 @@ pub const BTLX_2_3_1_SCHEMA_SHA256: &str =
     "208848116af3b43c189156610d3b82f6f86ea2afa7d09bc85a15876cc91cf1c6";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BtlxProfileProcessingRequest {
+    PortableFreeContour,
+    EdgeSawCutsThenMillContour,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BtlxExportOptions {
+    pub profile_processing_request: BtlxProfileProcessingRequest,
+}
+
+impl Default for BtlxExportOptions {
+    fn default() -> Self {
+        Self {
+            profile_processing_request: BtlxProfileProcessingRequest::EdgeSawCutsThenMillContour,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GeneralFabricationError {
     ValidationBindingMismatch,
     FabricationRoleDimensionMissing,
@@ -303,6 +322,7 @@ pub enum GeneralFabricationError {
     InvalidGeometry,
     NoSupportedGeometry,
     ExportBlocked,
+    BtlxProfileRequestUnsupported,
 }
 
 impl fmt::Display for GeneralFabricationError {
@@ -334,6 +354,9 @@ impl fmt::Display for GeneralFabricationError {
             }
             Self::ExportBlocked => formatter.write_str(
                 "fabrication export is incomplete, stale, invalid, or lacks manufacturing semantics",
+            ),
+            Self::BtlxProfileRequestUnsupported => formatter.write_str(
+                "the requested BTLx profile processing strategy cannot represent this contour",
             ),
         }
     }
@@ -654,6 +677,19 @@ impl GeneralFabricationProjection {
         &self,
         snapshot: &Snapshot,
     ) -> Result<Vec<u8>, GeneralFabricationError> {
+        self.btlx_2_3_1_export_with_options(
+            snapshot,
+            BtlxExportOptions {
+                profile_processing_request: BtlxProfileProcessingRequest::PortableFreeContour,
+            },
+        )
+    }
+
+    pub fn btlx_2_3_1_export_with_options(
+        &self,
+        snapshot: &Snapshot,
+        options: BtlxExportOptions,
+    ) -> Result<Vec<u8>, GeneralFabricationError> {
         self.bom_export(snapshot)?;
         self.manufacturing_export(snapshot)?;
         if self.bom.rows.is_empty() || self.manufacturing.operations.is_empty() {
@@ -710,9 +746,11 @@ impl GeneralFabricationProjection {
                 .ok_or(GeneralFabricationError::ExportBlocked)?;
             let processings = machining
                 .iter()
-                .map(|operation| btlx_processing(operation))
-                .collect::<Option<Vec<_>>>()
-                .ok_or(GeneralFabricationError::ExportBlocked)?;
+                .map(|operation| btlx_processings(operation, options))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>();
             output.push_str(&format!(
                 "      <Part Count=\"{count}\" Length=\"{length}\" Width=\"{width}\" Height=\"{height}\" SingleMemberNumber=\"{single_member_number}\" Designation=\"definition-{}\" Material=\"{}\"{}\n",
                 row.definition_id.0,
@@ -786,6 +824,8 @@ fn format_btlx_positive_number(value: f64) -> Option<String> {
 enum BtlxProcessing {
     Drilling(BtlxDrilling),
     FreeContour(BtlxFreeContour),
+    SawContour(BtlxSawContour),
+    MillContour(BtlxFreeContour),
 }
 
 impl BtlxProcessing {
@@ -796,7 +836,12 @@ impl BtlxProcessing {
                 drilling.x_vector,
                 drilling.y_vector,
             ),
-            Self::FreeContour(contour) => (
+            Self::FreeContour(contour) | Self::MillContour(contour) => (
+                contour.reference_point_mm,
+                contour.x_vector,
+                contour.y_vector,
+            ),
+            Self::SawContour(contour) => (
                 contour.reference_point_mm,
                 contour.x_vector,
                 contour.y_vector,
@@ -827,6 +872,32 @@ impl BtlxProcessing {
                 xml.push_str("            </Contour>\n          </FreeContour>\n");
                 xml
             }
+            Self::SawContour(contour) => format!(
+                "          <SawContour Name=\"Ketchup groove edge pre-cut\" ProcessID=\"{process_id}\" ReferencePlaneID=\"{reference_plane_id}\" ToolPosition=\"{}\">\n            <Contour DepthBounded=\"yes\" Depth=\"{}\" Inclination=\"0\">\n              <StartPoint X=\"{}\" Y=\"{}\" Z=\"0\"/>\n              <Line><EndPoint X=\"{}\" Y=\"{}\" Z=\"0\"/></Line>\n            </Contour>\n          </SawContour>\n",
+                contour.tool_position,
+                contour.depth,
+                contour.start_point[0],
+                contour.start_point[1],
+                contour.end_point[0],
+                contour.end_point[1]
+            ),
+            Self::MillContour(contour) => {
+                let mut xml = format!(
+                    "          <MillContour Name=\"Ketchup groove interior milling\" ProcessID=\"{process_id}\" ReferencePlaneID=\"{reference_plane_id}\" ToolPosition=\"{}\">\n            <Contour DepthBounded=\"yes\" Depth=\"{}\" Inclination=\"0\">\n              <StartPoint X=\"{}\" Y=\"{}\" Z=\"0\"/>\n",
+                    contour.tool_position,
+                    contour.depth,
+                    contour.start_point[0],
+                    contour.start_point[1]
+                );
+                for end_point in &contour.end_points {
+                    xml.push_str(&format!(
+                        "              <Line><EndPoint X=\"{}\" Y=\"{}\" Z=\"0\"/></Line>\n",
+                        end_point[0], end_point[1]
+                    ));
+                }
+                xml.push_str("            </Contour>\n          </MillContour>\n");
+                xml
+            }
         }
     }
 }
@@ -843,6 +914,17 @@ struct BtlxDrilling {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+struct BtlxSawContour {
+    reference_point_mm: [f64; 3],
+    x_vector: [f64; 3],
+    y_vector: [f64; 3],
+    tool_position: &'static str,
+    start_point: [String; 2],
+    end_point: [String; 2],
+    depth: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 struct BtlxFreeContour {
     reference_point_mm: [f64; 3],
     x_vector: [f64; 3],
@@ -853,16 +935,83 @@ struct BtlxFreeContour {
     depth: String,
 }
 
-fn btlx_processing(operation: &GeneralManufacturingOperation) -> Option<BtlxProcessing> {
+fn btlx_processings(
+    operation: &GeneralManufacturingOperation,
+    options: BtlxExportOptions,
+) -> Result<Vec<BtlxProcessing>, GeneralFabricationError> {
     match operation.kind {
-        GeneralManufacturingKind::CircularDrill => {
-            btlx_drilling(&operation.machining).map(BtlxProcessing::Drilling)
-        }
+        GeneralManufacturingKind::CircularDrill => btlx_drilling(&operation.machining)
+            .map(|drilling| vec![BtlxProcessing::Drilling(drilling)])
+            .ok_or(GeneralFabricationError::ExportBlocked),
         GeneralManufacturingKind::ProfileCut => {
-            btlx_free_contour(&operation.machining).map(BtlxProcessing::FreeContour)
+            let contour = btlx_free_contour(&operation.machining)
+                .ok_or(GeneralFabricationError::ExportBlocked)?;
+            match options.profile_processing_request {
+                BtlxProfileProcessingRequest::PortableFreeContour => {
+                    Ok(vec![BtlxProcessing::FreeContour(contour)])
+                }
+                BtlxProfileProcessingRequest::EdgeSawCutsThenMillContour => {
+                    let saw_contours = btlx_edge_saw_contours(&operation.machining, &contour)
+                        .ok_or(GeneralFabricationError::BtlxProfileRequestUnsupported)?;
+                    Ok(vec![
+                        BtlxProcessing::SawContour(saw_contours[0].clone()),
+                        BtlxProcessing::SawContour(saw_contours[1].clone()),
+                        BtlxProcessing::MillContour(contour),
+                    ])
+                }
+            }
         }
-        _ => None,
+        _ => Err(GeneralFabricationError::ExportBlocked),
     }
+}
+
+fn btlx_edge_saw_contours(
+    geometry: &GeneralMachiningGeometry,
+    contour: &BtlxFreeContour,
+) -> Option<[BtlxSawContour; 2]> {
+    let GeneralMachiningGeometry::ProfileCut { segments, .. } = geometry else {
+        return None;
+    };
+    let edges = segments
+        .iter()
+        .map(|segment| {
+            let GeneralMachiningSegment::Line { start_mm, end_mm } = segment else {
+                return None;
+            };
+            Some((*start_mm, *end_mm))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let [first, second, third, fourth] = edges.as_slice() else {
+        return None;
+    };
+    let vector = |(start, end): &([f64; 2], [f64; 2])| [end[0] - start[0], end[1] - start[1]];
+    let dot = |left: [f64; 2], right: [f64; 2]| left[0] * right[0] + left[1] * right[1];
+    let cross = |left: [f64; 2], right: [f64; 2]| left[0] * right[1] - left[1] * right[0];
+    let vectors = [vector(first), vector(second), vector(third), vector(fourth)];
+    let close = |left: f64, right: f64| (left - right).abs() <= 1.0e-9;
+    if !close(dot(vectors[0], vectors[1]), 0.0)
+        || !close(dot(vectors[1], vectors[2]), 0.0)
+        || !close(cross(vectors[0], vectors[2]), 0.0)
+        || !close(cross(vectors[1], vectors[3]), 0.0)
+        || !close(dot(vectors[0], vectors[0]), dot(vectors[2], vectors[2]))
+        || !close(dot(vectors[1], vectors[1]), dot(vectors[3], vectors[3]))
+    {
+        return None;
+    }
+    let selected = if dot(vectors[0], vectors[0]) >= dot(vectors[1], vectors[1]) {
+        [*first, *third]
+    } else {
+        [*second, *fourth]
+    };
+    Some(selected.map(|(start, end)| BtlxSawContour {
+        reference_point_mm: contour.reference_point_mm,
+        x_vector: contour.x_vector,
+        y_vector: contour.y_vector,
+        tool_position: contour.tool_position,
+        start_point: start.map(format_number),
+        end_point: end.map(format_number),
+        depth: contour.depth.clone(),
+    }))
 }
 
 fn btlx_drilling(geometry: &GeneralMachiningGeometry) -> Option<BtlxDrilling> {
