@@ -2280,6 +2280,78 @@ fn install_initial_graph_result(app: &mut KetchupApp) {
     install_graph_result(app, INITIAL_BOX_DEFINITION, FeatureId(2), None);
 }
 
+#[test]
+fn hundegger_btlx_file_command_exports_validated_timber_with_support_report() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("single-timber.btlx");
+    let dialogs = dialogs::ScriptedFileDialogs::new()
+        .queue_export(&path)
+        .always_confirm_high_risk_as(84);
+    let script = dialogs.clone();
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpsertClassificationDimension {
+                id: ClassificationDimensionId(100),
+                name: ketchup_core::fabrication::FABRICATION_ROLE_DIMENSION_V1.to_owned(),
+                categories: vec![(
+                    ClassificationCategoryId(101),
+                    ketchup_core::fabrication::TIMBER_MEMBER_ROLE_V1.to_owned(),
+                )],
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: OccurrenceId(1),
+                dimension_id: ClassificationDimensionId(100),
+                category_id: Some(ClassificationCategoryId(101)),
+            },
+        ]))
+        .unwrap();
+    install_initial_graph_result(&mut app);
+    let revision = app.document.current().revision_id();
+    let digest = app.document.current().canonical_digest();
+
+    let mut harness = Harness::builder()
+        .with_size(Vec2::new(1600.0, 1000.0))
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+    harness.run();
+    let file_menu = harness.state().catalog.text("menu-file");
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, &file_menu)
+        .click();
+    harness.run();
+    let export = harness
+        .state()
+        .command_label(AppCommand::ExportHundeggerBtlx);
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, &export)
+        .click();
+    harness.run();
+
+    assert_eq!(harness.state().document.current().revision_id(), revision);
+    assert_eq!(
+        harness.state().document.current().canonical_digest(),
+        digest
+    );
+    let btlx = std::fs::read_to_string(&path).unwrap();
+    assert!(btlx.contains("<BTLx"));
+    assert!(btlx.contains("Version=\"2.3.1\""));
+    assert!(btlx.contains("Material=\"ketchup.material.timber.unspecified.v1\""));
+    let support = std::fs::read_to_string(path.with_extension("btlx.support.txt")).unwrap();
+    assert!(support.contains("default_profile_request=edge SawContour cuts, then MillContour"));
+    assert!(support.contains("concrete_importer_verified=false"));
+    assert!(support.contains("machine_execution_order_guaranteed=false"));
+    assert_eq!(script.export_requests()[0].extension, "btlx");
+    let receipt = harness.state().last_side_effect_receipt().unwrap();
+    assert_eq!(
+        receipt.scope().class(),
+        HighRiskClass::ReleaseManufacturingExportWithWarnings
+    );
+    assert_eq!(
+        receipt.operation(),
+        "release-hundegger-btlx-with-support-report"
+    );
+}
+
 fn select_initial_topological(app: &mut KetchupApp, kind: TopologicalElementKind, ordinal: u32) {
     assert!(app.select_topological_locator(TopologicalPickLocator {
         instance_path: InstancePath::root(OccurrenceId(1)),

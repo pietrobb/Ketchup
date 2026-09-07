@@ -73,8 +73,11 @@ use ketchup_core::exact_revolve::ExactRevolveRequest;
 #[cfg(feature = "named-product-fixtures")]
 use ketchup_core::exact_revolve::{BottleAuthorityReport, ExactRevolvePackage};
 use ketchup_core::exact_validation::{
-    GeneralBodyNarrowPhaseRelation, GeneralBodyParticipant, general_body_narrow_phase,
+    BuiltinGeneralBodyValidator, GeneralBodyNarrowPhaseRelation, GeneralBodyParticipant,
+    GeneralClearanceCase, general_body_input_bytes, general_body_narrow_phase,
+    general_body_validation_policy,
 };
+use ketchup_core::fabrication::{BtlxExportOptions, project_general_fabrication};
 #[cfg(feature = "named-product-fixtures")]
 use ketchup_core::fabrication::{FullBomProjection, PieceDimensionSheet};
 use ketchup_core::graph::{
@@ -103,7 +106,9 @@ use ketchup_core::state_view::{AGENT_STATE_VIEW_V1, encode_semantic_state};
 use ketchup_core::topology::{TopologicalElementKind, TopologicalElementRef};
 #[cfg(feature = "named-product-fixtures")]
 use ketchup_core::validation::ValidationReport;
-use ketchup_core::validation::ValidatorRoleIndex;
+use ketchup_core::validation::{
+    HostNeutralValidator, ValidationExecution, ValidationInvocation, ValidatorRoleIndex,
+};
 use ketchup_interaction::{
     Axis, ElementId, ExactHit, LocaleCatalog, PickResult, Ray, SelectionId, Side, SnapKind,
     SnapPolicy, SnapResult, SnapTracker, Vec3,
@@ -3142,6 +3147,7 @@ pub enum AppCommand {
     ImportSketchupScene,
     ExportExactStep,
     ExportMeshStl,
+    ExportHundeggerBtlx,
     Select,
     Line,
     Rectangle,
@@ -3309,7 +3315,7 @@ struct CommandSpec {
 struct CommandRegistry;
 
 impl CommandRegistry {
-    const COMMANDS: [CommandSpec; 106] = [
+    const COMMANDS: [CommandSpec; 107] = [
         CommandSpec {
             id: AppCommand::New,
             label_key: "file-new",
@@ -3376,6 +3382,13 @@ impl CommandRegistry {
         CommandSpec {
             id: AppCommand::ExportMeshStl,
             label_key: "file-export-mesh",
+            shortcut_key: "shortcut-none",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::ExportHundeggerBtlx,
+            label_key: "file-export-hundegger-btlx",
             shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
@@ -7013,7 +7026,8 @@ impl KetchupApp {
         let (filter_key, suffix) = match extension {
             "step" => ("file-filter-step", "step"),
             "stl" => ("file-filter-stl", "stl"),
-            _ => unreachable!("the File menu exposes only STEP and STL export"),
+            "btlx" => ("file-filter-btlx", "btlx"),
+            _ => unreachable!("the File menu exposes only STEP, STL, and BTLx export"),
         };
         let filter_label = self.catalog.text(filter_key);
         let stem = self
@@ -7680,6 +7694,154 @@ impl KetchupApp {
         }
     }
 
+    fn export_current_model_btlx_to(&mut self, path: &Path) -> bool {
+        self.side_effect_receipts.clear();
+        let snapshot = self.document.current();
+        self.rebind_exact_results(&snapshot);
+        let result = (|| {
+            let tolerance = TolerancePolicy::default();
+            let participants = snapshot
+                .scene_query()
+                .into_iter()
+                .filter(|occurrence| occurrence.visible)
+                .filter(|occurrence| {
+                    snapshot
+                        .definition(occurrence.definition_id)
+                        .is_some_and(|definition| {
+                            definition.feature_ids().iter().any(|feature_id| {
+                                snapshot
+                                    .feature(*feature_id)
+                                    .is_some_and(|feature| feature.kind().produces_body())
+                            })
+                        })
+                })
+                .map(|occurrence| {
+                    GeneralBodyParticipant::accept(
+                        &snapshot,
+                        &self.exact_results,
+                        occurrence.instance_path,
+                        tolerance,
+                    )
+                    .map_err(|error| {
+                        format!("visible exact body is not fabrication-ready: {error:?}")
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut cases = participants
+                .windows(2)
+                .map(|pair| {
+                    GeneralClearanceCase::new(pair[0].clone(), pair[1].clone(), 0.0)
+                        .map_err(|error| format!("invalid fabrication clearance: {error:?}"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if participants.len() > 2 {
+                cases.push(
+                    GeneralClearanceCase::new(
+                        participants
+                            .last()
+                            .expect("more than two participants have a last item")
+                            .clone(),
+                        participants[0].clone(),
+                        0.0,
+                    )
+                    .map_err(|error| format!("invalid fabrication clearance: {error:?}"))?,
+                );
+            }
+            let validator = BuiltinGeneralBodyValidator::new(tolerance);
+            let policy = general_body_validation_policy();
+            let input = general_body_input_bytes(&cases);
+            let invocation = ValidationInvocation::bind(
+                &snapshot,
+                validator.descriptor(),
+                &policy,
+                Vec::new(),
+                &input,
+            );
+            let report = validator.invoke(ValidationExecution {
+                snapshot: &snapshot,
+                invocation,
+                policy: &policy,
+                input: &cases,
+            });
+            let projection = project_general_fabrication(
+                &snapshot,
+                &self.exact_results,
+                &cases,
+                &report,
+                tolerance,
+            )
+            .map_err(|error| error.to_string())?;
+            let btlx = projection
+                .btlx_2_3_1_export_with_options(&snapshot, BtlxExportOptions::default())
+                .map_err(|error| error.to_string())?;
+            let support_report = format!(
+                "schema=ketchup.btlx-support-report.v1\nsource_digest={}\nformat=BTLx 2.3.1\nstock=rectangular straight timber\ndrilling=circular\nportable_profile_contours=closed simple linear polygons\ndefault_profile_request=edge SawContour cuts, then MillContour\nintermediate_saw_cuts=0\ndefault_profile_contours=rectangular only\nunsupported=arc profile contours; non-rectangular profile with the default request; non-rectangular stock; other machining operations\nconcrete_importer_verified=false\nmachine_execution_order_guaranteed=false\n",
+                snapshot.canonical_digest()
+            );
+            let report_path = path.with_extension("btlx.support.txt");
+            let precondition = ExportBundlePrecondition::capture(path, &report_path)?;
+            let mut evidence = btlx.clone();
+            evidence.extend_from_slice(support_report.as_bytes());
+            let title = self.catalog.text("dialog-export-btlx-title");
+            let risk = self.catalog.text("dialog-export-btlx-risk");
+            self.authorize_path_side_effect(
+                HighRiskClass::ReleaseManufacturingExportWithWarnings,
+                "release-hundegger-btlx-with-support-report",
+                &title,
+                &risk,
+                path,
+                &evidence,
+            )?;
+            if precondition.primary_sha256.is_some() {
+                let title = self.catalog.text("dialog-export-overwrite-title");
+                let risk = self.catalog.text("dialog-export-overwrite-risk");
+                self.authorize_path_side_effect(
+                    HighRiskClass::Overwrite,
+                    "overwrite-hundegger-btlx-export",
+                    &title,
+                    &risk,
+                    path,
+                    &evidence,
+                )?;
+            }
+            if precondition.report_sha256.is_some() {
+                let title = self.catalog.text("dialog-export-overwrite-title");
+                let risk = self.catalog.text("dialog-export-overwrite-risk");
+                self.authorize_path_side_effect(
+                    HighRiskClass::Overwrite,
+                    "overwrite-hundegger-btlx-support-report",
+                    &title,
+                    &risk,
+                    &report_path,
+                    &evidence,
+                )?;
+            }
+            write_export_bundle(
+                path,
+                &btlx,
+                &report_path,
+                support_report.as_bytes(),
+                &precondition,
+            )
+        })();
+        match result {
+            Ok(()) => {
+                self.digest = self.catalog.format(
+                    "digest-exported-btlx",
+                    &BTreeMap::from([("path", path.display().to_string())]),
+                );
+                true
+            }
+            Err(error) => {
+                self.digest = self.catalog.format(
+                    "error-export-btlx",
+                    &BTreeMap::from([("path", path.display().to_string()), ("reason", error)]),
+                );
+                false
+            }
+        }
+    }
+
     fn export_current_model_step_to(&mut self, path: &Path) -> bool {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
@@ -7964,6 +8126,11 @@ impl KetchupApp {
             AppCommand::ExportMeshStl => {
                 if let Some(path) = self.choose_export_path("stl") {
                     self.export_current_model_stl_to(&path);
+                }
+            }
+            AppCommand::ExportHundeggerBtlx => {
+                if let Some(path) = self.choose_export_path("btlx") {
+                    self.export_current_model_btlx_to(&path);
                 }
             }
             AppCommand::New | AppCommand::Open => {}
@@ -14747,7 +14914,8 @@ impl KetchupApp {
             | AppCommand::ImportExactStep
             | AppCommand::ImportSketchupScene
             | AppCommand::ExportExactStep
-            | AppCommand::ExportMeshStl => {
+            | AppCommand::ExportMeshStl
+            | AppCommand::ExportHundeggerBtlx => {
                 self.dispatch_file_command(id);
             }
             AppCommand::Undo => {
@@ -29251,6 +29419,7 @@ impl KetchupApp {
                 ui.separator();
                 self.menu_command(ui, AppCommand::ExportExactStep);
                 self.menu_command(ui, AppCommand::ExportMeshStl);
+                self.menu_command(ui, AppCommand::ExportHundeggerBtlx);
             });
             ui.menu_button(self.catalog.text("menu-edit"), |ui| {
                 self.menu_command(ui, AppCommand::Undo);

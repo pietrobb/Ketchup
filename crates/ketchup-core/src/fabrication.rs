@@ -1414,6 +1414,15 @@ pub fn project_general_fabrication(
             )
         })
         .collect::<BTreeSet<_>>();
+    let single_visible_timber_member = validation_cases.is_empty()
+        && snapshot
+            .scene_query()
+            .into_iter()
+            .filter(|occurrence| {
+                occurrence.visible && timber_members.contains(&occurrence.occurrence_id)
+            })
+            .count()
+            == 1;
     let mut accepted = Vec::new();
     for occurrence in snapshot.scene_query().into_iter().filter(|occurrence| {
         occurrence.visible && timber_members.contains(&occurrence.occurrence_id)
@@ -1433,10 +1442,12 @@ pub fn project_general_fabrication(
             occurrence.instance_path.clone(),
             tolerance,
         )?;
-        if !covered.contains(&(
-            participant.instance_path().clone(),
-            participant.source().clone(),
-        )) {
+        if !single_visible_timber_member
+            && !covered.contains(&(
+                participant.instance_path().clone(),
+                participant.source().clone(),
+            ))
+        {
             return Err(GeneralFabricationError::ValidationBindingMismatch);
         }
         let dimensions = local_dimensions(snapshot, registry, participant.source())?;
