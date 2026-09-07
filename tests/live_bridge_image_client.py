@@ -91,6 +91,12 @@ async def scenario():
     stamp = state["stamp"]
     assert launched["stamp"] == stamp
     assert state["result"]["image"] == "cad_viewport_png_thumbnail"
+    assert state["result"]["image_protocol"] == {
+        "version": 2,
+        "capabilities": ["capture_mode", "capture_metadata", "render_metadata"],
+        "capture_modes": ["offscreen", "visible_viewport"],
+        "default_capture_mode": "offscreen",
+    }
     checkpoint("initial", stamp)
 
     async def image(expected=stamp, image_path=str(destination)):
@@ -114,6 +120,7 @@ async def scenario():
     assert result["render"]["gui_overlays_included"] is False
     assert "data" not in result and "png_base64" not in result
     assert result["scope"] == "cad_viewport" and result["mime_type"] == "image/png"
+    assert result["image_protocol_version"] == 2
     assert result["capture_mode"] == "offscreen"
     assert result["render"]["render_correlated"] is True
     assert isinstance(result["render"]["callback_correlated"], bool)

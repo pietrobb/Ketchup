@@ -17,6 +17,7 @@ fn queue(h: &mut Harness<'_, KetchupApp>, session: u64) -> mpsc::Receiver<Respon
             id: session,
             request: Request::Image {
                 expected: app.live_bridge_stamp(),
+                image_protocol_version: IMAGE_PROTOCOL_VERSION,
                 capture_mode: CaptureMode::Offscreen,
             },
             cancelled: Arc::new(AtomicBool::new(false)),

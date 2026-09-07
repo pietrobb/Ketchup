@@ -47,6 +47,7 @@ pub const QUEUE_CAPACITY: usize = 8;
 pub const MAX_SELECTION: usize = 100;
 pub const MAX_RECEIPTS: usize = 32;
 pub const MAX_BATCH_JOBS: usize = 16;
+pub const IMAGE_PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -136,7 +137,7 @@ pub enum Request {
     },
     Image {
         expected: Stamp,
-        #[serde(default)]
+        image_protocol_version: u32,
         capture_mode: CaptureMode,
     },
     Disconnect {},
@@ -519,7 +520,9 @@ impl LiveBridge {
     ) -> Result<Value, &'static str> {
         match request {
             Request::Status {} => Ok(
-                json!({"connected":true,"protocol":1,"image":"cad_viewport_png_thumbnail","image_capture_modes":["offscreen","visible_viewport"],"default_image_capture_mode":"offscreen","busy":ui_busy || Self::busy(app),"read_only":app.review_candidate.is_some(),
+                json!({"connected":true,"protocol":1,"image":"cad_viewport_png_thumbnail",
+                "image_protocol":{"version":IMAGE_PROTOCOL_VERSION,"capabilities":["capture_mode","capture_metadata","render_metadata"],"capture_modes":["offscreen","visible_viewport"],"default_capture_mode":"offscreen"},
+                "busy":ui_busy || Self::busy(app),"read_only":app.review_candidate.is_some(),
                 "selection":Self::selection(app).ok(),"selection_scope":"root_occurrences_only",
                 "undo_steps":app.undo_step_count(),"redo_steps":app.redo_step_count(),
                 "pending_proposal_id":self.pending.as_ref().map(|p|p.id),
@@ -772,7 +775,14 @@ impl LiveBridge {
                 app.dispatch_command(command);
                 Ok(json!({"view":view,"canonical_mutation":false,"image":"not_requested"}))
             }
-            Request::Image { expected, .. } => {
+            Request::Image {
+                expected,
+                image_protocol_version,
+                ..
+            } => {
+                if image_protocol_version != IMAGE_PROTOCOL_VERSION {
+                    return Err("unsupported_image_protocol");
+                }
                 Self::guard(app, &expected)?;
                 Err("image_requires_frame_callback")
             }

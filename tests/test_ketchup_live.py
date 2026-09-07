@@ -38,6 +38,13 @@ def response(request, *, result=None, error=None, stamp=STAMP):
             "error": error}
 
 
+def image_capability():
+    return {"image_protocol": {"version": 2,
+            "capabilities": ["capture_mode", "capture_metadata", "render_metadata"],
+            "capture_modes": ["offscreen", "visible_viewport"],
+            "default_capture_mode": "offscreen"}}
+
+
 def frame(value):
     body = value if isinstance(value, bytes) else json.dumps(value).encode("utf-8")
     return struct.pack("!I", len(body)) + body
@@ -134,10 +141,12 @@ def test_relation_query_is_forwarded_and_numeric_detail_is_rejected():
 
 def test_all_methods_match_wire_and_do_not_refresh_expected_or_modify_inputs():
     def answer(req, stream):
-        if req["request"]["method"] == "image":
+        method = req["request"]["method"]
+        if method == "image":
             return response(req, error="unsupported_image")
-        return response(req, result={"disconnected": True} if req["request"]["method"] == "disconnect" else {},
-                        stamp=Stamp(7, 99, "b" * 64, 101))
+        result = ({"disconnected": True} if method == "disconnect"
+                  else image_capability() if method == "status" else {})
+        return response(req, result=result, stamp=Stamp(7, 99, "b" * 64, 101))
     expected, program, selection = asdict(STAMP), copy.deepcopy(PROGRAM), [1]
     operation = {"type": "set_color", "color": [10, 20, 30]}
     original = copy.deepcopy((expected, program, selection, operation))
@@ -198,6 +207,7 @@ def test_all_methods_match_wire_and_do_not_refresh_expected_or_modify_inputs():
     assert requests[10] == {"method": "propose", "expected": expected, "selection": [1], "program": program}
     assert requests[11] == {"method": "commit", "expected": expected, "proposal_id": 9}
     assert requests[14]["occurrence_ids"] == [1] and requests[15]["view"] == "zoom_fit"
+    assert requests[16]["image_protocol_version"] == 2
     assert requests[16]["capture_mode"] == "offscreen"
     assert all(req["expected"] == expected for req in requests[2:17])
     assert (expected, program, selection, operation) == original
@@ -573,23 +583,103 @@ def image_response(data=None, width=2, height=2, capture_mode="offscreen"):
     data = png_fixture(width, height) if data is None else data
     visible = capture_mode == "visible_viewport"
     return response({"id": 1}, result={"data": base64.b64encode(data).decode("ascii"),
-        "width": width, "height": height, "byte_count": len(data),
-        "stamp": asdict(STAMP), "capture_stamp": asdict(STAMP), "capture_id": 21, "render_id": 34,
+        "width": width, "height": height, "stamp": asdict(STAMP),
         "mime_type": "image/png", "encoding": "base64", "scope": "cad_viewport",
-        "capture_mode": capture_mode, "capture_pass": 34,
+        "image_protocol_version": 2, "capture_mode": capture_mode, "capture_pass": 34,
+        "source_size_px": [width, height], "crop_px": [0, 0, width, height],
+        "pixels_per_point": 1.0, "sampling": "nearest_center", "thumbnail": True,
+        "view": {"projection": "Perspective", "yaw": 0.2, "pitch": 0.3,
+                 "target_z_mm": 0.0, "zoom": 1.0, "pan": [0.0, 0.0], "distance_mm": 10.0},
+        "selection": [],
         "render": {"render_correlated": True, "callback_correlated": not visible,
-                   "viewport_visibility_required": visible, "viewport_unoccluded": visible},
-        "source": "cad_viewport", "camera": {"view": "iso"}})
+                   "viewport_visibility_required": visible, "viewport_unoccluded": visible,
+                   "geometry_complete": False, "source": "isolated_cad_target",
+                   "gui_overlays_included": False,
+                   "completeness": "display_only_not_geometry_validation",
+                   "exact_contents_stamp": 5, "topology_contents_stamp": 7,
+                   "exact_evaluation_complete": True, "exact_evaluation_pending": False,
+                   "scene_callbacks": 0, "paint_shape_count": 12,
+                   "style": "test-camera", "theme": "Dark"}})
+
+
+@pytest.mark.parametrize("capability", [
+    {},
+    {"image_protocol": {"version": 1, "capabilities": ["capture_mode"],
+                        "capture_modes": ["offscreen"], "default_capture_mode": "offscreen"}},
+    {"image_protocol": {"version": 2.0,
+                        "capabilities": ["capture_mode", "capture_metadata", "render_metadata"],
+                        "capture_modes": ["offscreen"], "default_capture_mode": "offscreen"}},
+    {"image_protocol": {"version": 2,
+                        "capabilities": ["capture_mode", "capture_metadata"],
+                        "capture_modes": ["offscreen", "visible_viewport"],
+                        "default_capture_mode": "offscreen"}},
+])
+def test_image_fails_closed_without_declared_v2_capabilities(capability):
+    with Peer(lambda req, stream: response(req, result=capability)) as peer, LiveSession(
+            peer.address, TOKEN) as live:
+        for _ in range(2):
+            with pytest.raises(LiveProtocolError, match="not negotiated"):
+                live.image(STAMP)
+        assert [request["request"]["method"] for request in peer.requests] == ["status"]
+
+
+def test_image_negotiates_supported_mode_when_server_advertises_future_mode():
+    capability = image_capability()
+    capability["image_protocol"]["capture_modes"].append("future_capture")
+    value = image_response()
+
+    def answer(req, stream):
+        if req["request"]["method"] == "status":
+            return response(req, result=capability)
+        return {**value, "id": req["id"]}
+
+    with Peer(answer) as peer, LiveSession(peer.address, TOKEN) as live:
+        assert live.image(STAMP)["result"]["capture_mode"] == "offscreen"
+        assert [request["request"]["method"] for request in peer.requests] == ["status", "image"]
+
+
+def test_image_fails_closed_when_requested_mode_was_not_negotiated():
+    capability = image_capability()
+    capability["image_protocol"]["capture_modes"] = ["offscreen"]
+    with Peer(lambda req, stream: response(req, result=capability)) as peer, LiveSession(
+            peer.address, TOKEN) as live:
+        with pytest.raises(LiveProtocolError, match="not negotiated"):
+            live.image(STAMP, "visible_viewport")
+        assert [request["request"]["method"] for request in peer.requests] == ["status"]
+
+
+def test_first_image_negotiation_and_capture_share_one_deadline():
+    value = image_response()
+    def answer(req, stream):
+        time.sleep(0.09)
+        if req["request"]["method"] == "status":
+            return response(req, result=image_capability())
+        return {**value, "id": req["id"]}
+    with Peer(answer) as peer, LiveSession(peer.address, TOKEN, timeout=0.14) as live:
+        with pytest.raises(LiveTimeout):
+            live.image(STAMP)
+        assert live.closed
+        assert peer.received.wait(1)
+
+
+def image_answer(value):
+    def answer(req, stream):
+        if req["request"]["method"] == "status":
+            return response(req, result=image_capability())
+        return {**value, "id": req["id"]}
+    return answer
 
 
 def test_image_artifact_preserves_metadata_and_original_hash(tmp_path):
     value = image_response()
     original = copy.deepcopy(value)
     destination = tmp_path / "new" / "capture.png"
-    with Peer(lambda req, stream: {**value, "id": req["id"]}) as peer, LiveSession(peer.address, TOKEN) as live:
+    with Peer(image_answer(value)) as peer, LiveSession(peer.address, TOKEN) as live:
         receipt = save_image(live.image(STAMP), STAMP, str(destination))
-        assert [r["request"] for r in peer.requests] == [{
-            "method": "image", "expected": asdict(STAMP), "capture_mode": "offscreen"}]
+        assert [r["request"]["method"] for r in peer.requests] == ["status", "image"]
+        assert peer.requests[1]["request"] == {
+            "method": "image", "expected": asdict(STAMP), "image_protocol_version": 2,
+            "capture_mode": "offscreen"}
     assert value == original
     assert destination.read_bytes() == png_fixture()
     assert receipt["stamp"] == original["stamp"]
@@ -603,14 +693,25 @@ def test_image_artifact_preserves_metadata_and_original_hash(tmp_path):
     assert len(json.dumps(receipt).encode()) < MAX_FRAME_BYTES
 
 
+def test_live_image_rejects_malformed_success_and_closes_session():
+    value = image_response()
+    value["result"]["render"]["source"] = "desktop"
+    with Peer(image_answer(value)) as peer, LiveSession(peer.address, TOKEN) as live:
+        with pytest.raises(LiveProtocolError, match="invalid live image response"):
+            live.image(STAMP)
+        assert live.closed
+        assert [request["request"]["method"] for request in peer.requests] == ["status", "image"]
+
+
 def test_visible_image_mode_is_bound_to_request_and_visibility_proof(tmp_path):
     value = image_response(capture_mode="visible_viewport")
     destination = tmp_path / "visible.png"
-    with Peer(lambda req, stream: {**value, "id": req["id"]}) as peer, LiveSession(
-            peer.address, TOKEN) as live:
+    with Peer(image_answer(value)) as peer, LiveSession(peer.address, TOKEN) as live:
         receipt = save_image(
             live.image(STAMP, "visible_viewport"), STAMP, str(destination), "visible_viewport")
-        assert peer.requests[0]["request"]["capture_mode"] == "visible_viewport"
+        assert [request["request"]["method"] for request in peer.requests] == ["status", "image"]
+        assert peer.requests[1]["request"]["image_protocol_version"] == 2
+        assert peer.requests[1]["request"]["capture_mode"] == "visible_viewport"
     assert receipt["result"]["capture_mode"] == "visible_viewport"
     assert receipt["result"]["render"]["viewport_unoccluded"] is True
     mismatched = tmp_path / "mismatched.png"
@@ -620,10 +721,10 @@ def test_visible_image_mode_is_bound_to_request_and_visibility_proof(tmp_path):
 
 
 @pytest.mark.parametrize("field", list(asdict(STAMP)))
-@pytest.mark.parametrize("location", ["stamp", "capture_stamp"])
+@pytest.mark.parametrize("location", ["envelope", "result"])
 def test_image_tampered_stamp_never_writes(tmp_path, field, location):
     value = image_response()
-    stamp = value["stamp"] if location == "stamp" else value["result"][location]
+    stamp = value["stamp"] if location == "envelope" else value["result"]["stamp"]
     stamp[field] = "wrong" if field == "canonical_digest" else stamp[field] + 1
     destination = tmp_path / "absent" / "bad.png"
     with pytest.raises(LiveProtocolError):
@@ -639,9 +740,12 @@ def test_image_tampered_stamp_never_writes(tmp_path, field, location):
     lambda r: r.update(data="A" * (MAX_FRAME_BYTES + 4)),
     lambda r: r.update(width=True), lambda r: r.update(height=0),
     lambda r: r.update(width=2049), lambda r: r.update(width=3),
-    lambda r: r.update(byte_count=True), lambda r: r.update(byte_count=MAX_PNG_BYTES + 1),
-    lambda r: r.update(byte_count=r["byte_count"] + 1),
+    lambda r: r.pop("source_size_px"), lambda r: r.update(sampling="bilinear"),
+    lambda r: r["render"].update(source="desktop"),
+    lambda r: r["render"].update(geometry_complete=True),
     lambda r: r.pop("stamp"), lambda r: r.update(artifact={}),
+    lambda r: r.pop("image_protocol_version"), lambda r: r.update(image_protocol_version=1),
+    lambda r: r.update(image_protocol_version=2.0),
     lambda r: r.update(mime_type="text/plain"), lambda r: r.update(scope="desktop"),
     lambda r: r.update(encoding="raw"), lambda r: r.update(capture_pass=True),
     lambda r: r.update(render={"render_correlated": False, "callback_correlated": False,
@@ -711,24 +815,18 @@ def test_image_requires_explicit_absolute_png_path(path):
 
 def test_image_near_wire_limit_returns_compact_receipt(tmp_path):
     # Deterministic noisy synthetic RGB data approaches the wire budget.
-    pixels = b"\0" + random.Random(42).randbytes(18000)
-    data = png_fixture(60, 100, b"".join(b"\0" + pixels[1 + i * 180:1 + (i + 1) * 180] for i in range(100)))
-    value = image_response(data, 60, 100)
-    assert 24000 < len(json.dumps(value).encode()) < MAX_FRAME_BYTES
-    # Metadata padding must stay bounded even with a full payload.
-    value["result"]["render_metadata"] = "r" * 1000
+    pixels = random.Random(42).randbytes(64 * 64 * 3)
+    data = png_fixture(64, 64, b"".join(
+        b"\0" + pixels[i * 192:(i + 1) * 192] for i in range(64)))
+    value = image_response(data, 64, 64)
+    assert 16000 < len(json.dumps(value).encode()) < MAX_FRAME_BYTES
     receipt = save_image(value, STAMP, str(tmp_path / "bounded.png"))
     assert len(json.dumps(receipt).encode()) < 4096
     assert "data" not in receipt["result"]
 
 
-def test_image_observed_rust_schema_without_byte_count(tmp_path):
+def test_image_observed_rust_v2_schema(tmp_path):
     value = image_response()
-    value["result"].pop("byte_count")
-    value["result"].pop("capture_stamp")
-    value["result"].update(source_size_px=[1920, 1080], crop_px=[10, 10, 640, 480],
-                           pixels_per_point=1.0, sampling="nearest_center", thumbnail=True,
-                           selection=[], view={"projection": "Perspective", "yaw": 0.2})
     receipt = save_image(value, STAMP, str(tmp_path / "rust-schema.png"))
     assert receipt["result"]["stamp"] == asdict(STAMP)
     assert receipt["result"]["artifact"]["byte_count"] == len(png_fixture())
@@ -736,11 +834,15 @@ def test_image_observed_rust_schema_without_byte_count(tmp_path):
 
 
 @pytest.mark.parametrize("code", ["image_unavailable", "image_timeout", "hidden_viewport", "stale_image",
-    "occluded_viewport", "invalid_image_callback", "invalid_image_dimensions", "incomplete_image",
+    "unsupported_image_protocol", "occluded_viewport", "invalid_image_callback", "invalid_image_dimensions", "incomplete_image",
     "unsupported_image_texture", "unsupported_image_renderer"])
 def test_observed_rust_image_errors_are_safe_and_nonfatal(code):
-    with Peer(lambda req, stream: response(req, error=code)) as peer, LiveSession(peer.address, TOKEN) as live:
+    def answer(req, stream):
+        if req["request"]["method"] == "status":
+            return response(req, result=image_capability())
+        return response(req, error=code)
+    with Peer(answer) as peer, LiveSession(peer.address, TOKEN) as live:
         with pytest.raises(LiveBridgeError) as caught:
             live.image(STAMP)
         assert caught.value.code == code and not live.closed
-        assert len(peer.requests) == 1
+        assert [request["request"]["method"] for request in peer.requests] == ["status", "image"]

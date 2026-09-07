@@ -214,6 +214,7 @@ fn same_gui_store_observational_reads_verified_once_and_gui_history() {
         &mut shell,
         Request::Image {
             expected: stamp,
+            image_protocol_version: IMAGE_PROTOCOL_VERSION,
             capture_mode: CaptureMode::Offscreen,
         },
     );

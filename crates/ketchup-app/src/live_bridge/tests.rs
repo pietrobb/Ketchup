@@ -73,6 +73,52 @@ fn protected_requests(stamp: &Stamp, commit: &Request) -> Vec<Request> {
 }
 
 #[test]
+fn image_protocol_is_versioned_declared_and_required() {
+    let (mut app, mut bridge) = setup();
+    let status = bridge.execute(&mut app, Request::Status {}, false).unwrap();
+    assert_eq!(status["protocol"], 1);
+    assert_eq!(
+        status["image_protocol"],
+        json!({
+            "version": IMAGE_PROTOCOL_VERSION,
+            "capabilities": ["capture_mode", "capture_metadata", "render_metadata"],
+            "capture_modes": ["offscreen", "visible_viewport"],
+            "default_capture_mode": "offscreen",
+        })
+    );
+    let expected = serde_json::to_value(app.live_bridge_stamp()).unwrap();
+    assert!(
+        serde_json::from_value::<Request>(json!({
+            "method": "image",
+            "expected": expected,
+            "capture_mode": "offscreen",
+        }))
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<Request>(json!({
+            "method": "image",
+            "expected": expected,
+            "image_protocol_version": IMAGE_PROTOCOL_VERSION,
+        }))
+        .is_err()
+    );
+    let stamp = app.live_bridge_stamp();
+    assert_eq!(
+        bridge.execute(
+            &mut app,
+            Request::Image {
+                expected: stamp,
+                image_protocol_version: IMAGE_PROTOCOL_VERSION - 1,
+                capture_mode: CaptureMode::Offscreen,
+            },
+            false,
+        ),
+        Err("unsupported_image_protocol")
+    );
+}
+
+#[test]
 fn raw_preview_sketch_parameter_editor_dialog_and_anchor_are_busy_and_retained() {
     for state in 0..8 {
         let (mut app, mut bridge) = setup();

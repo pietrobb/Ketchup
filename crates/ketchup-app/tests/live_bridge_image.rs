@@ -39,7 +39,11 @@ fn harness() -> Harness<'static, KetchupApp> {
     h.state_mut().enable_live_bridge(&ctx).unwrap();
     h
 }
-fn send_request_mode(h: &Harness<'_, KetchupApp>, capture_mode: CaptureMode) -> TcpStream {
+fn send_request_version_mode(
+    h: &Harness<'_, KetchupApp>,
+    image_protocol_version: u32,
+    capture_mode: CaptureMode,
+) -> TcpStream {
     let credentials = h.state().live_bridge_credentials().unwrap();
     let mut socket = TcpStream::connect(credentials.address).unwrap();
     socket
@@ -51,6 +55,7 @@ fn send_request_mode(h: &Harness<'_, KetchupApp>, capture_mode: CaptureMode) -> 
         token: credentials.token,
         request: Request::Image {
             expected: h.state().live_bridge_stamp(),
+            image_protocol_version,
             capture_mode,
         },
     })
@@ -61,14 +66,18 @@ fn send_request_mode(h: &Harness<'_, KetchupApp>, capture_mode: CaptureMode) -> 
     socket.write_all(&body).unwrap();
     socket
 }
+fn send_request_mode(h: &Harness<'_, KetchupApp>, capture_mode: CaptureMode) -> TcpStream {
+    send_request_version_mode(h, IMAGE_PROTOCOL_VERSION, capture_mode)
+}
 fn send_request(h: &Harness<'_, KetchupApp>) -> TcpStream {
     send_request_mode(h, CaptureMode::Offscreen)
 }
-fn request_mode(
+fn request_version_mode(
     h: &Harness<'_, KetchupApp>,
+    image_protocol_version: u32,
     capture_mode: CaptureMode,
 ) -> mpsc::Receiver<Response> {
-    let mut socket = send_request_mode(h, capture_mode);
+    let mut socket = send_request_version_mode(h, image_protocol_version, capture_mode);
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let mut header = [0; 4];
@@ -80,6 +89,12 @@ fn request_mode(
         tx.send(serde_json::from_slice(&body).unwrap()).unwrap();
     });
     rx
+}
+fn request_mode(
+    h: &Harness<'_, KetchupApp>,
+    capture_mode: CaptureMode,
+) -> mpsc::Receiver<Response> {
+    request_version_mode(h, IMAGE_PROTOCOL_VERSION, capture_mode)
 }
 fn request(h: &Harness<'_, KetchupApp>) -> mpsc::Receiver<Response> {
     request_mode(h, CaptureMode::Offscreen)
@@ -183,6 +198,7 @@ fn assert_pixels(png: &[u8], value: &serde_json::Value, rect: egui::Rect) {
     assert_eq!(value["source_size_px"], serde_json::json!([1600, 1000]));
     assert_eq!(value["sampling"], "nearest_center");
     assert_eq!(value["thumbnail"], true);
+    assert_eq!(value["image_protocol_version"], IMAGE_PROTOCOL_VERSION);
     assert_eq!(value["render"]["source"], "isolated_cad_target");
     assert_eq!(value["render"]["gui_overlays_included"], false);
     assert_eq!(value["capture_mode"], "offscreen");
@@ -274,6 +290,20 @@ fn queue_command(h: &mut Harness<'_, KetchupApp>, command: AppCommand) {
     h.step();
     h.step();
 }
+#[test]
+fn unsupported_image_protocol_is_rejected_before_callback_scheduling() {
+    let _gpu = GPU_TEST.lock().unwrap_or_else(|error| error.into_inner());
+    let mut h = harness();
+    let rx = request_version_mode(&h, IMAGE_PROTOCOL_VERSION - 1, CaptureMode::Offscreen);
+    let response = wait_response(&mut h, rx);
+    assert!(!response.ok && response.result.is_none(), "{response:?}");
+    assert_eq!(
+        response.error.as_deref(),
+        Some("unsupported_image_protocol")
+    );
+    assert!(!has_callback(&h));
+}
+
 #[test]
 fn isolated_pixels_are_bounded_stamped_private_and_view_dependent() {
     let _gpu = GPU_TEST.lock().unwrap_or_else(|error| error.into_inner());

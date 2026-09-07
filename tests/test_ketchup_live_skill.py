@@ -526,12 +526,23 @@ def image_envelope(capture_mode="offscreen"):
     data = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack("!IIBBBBB", 1, 1, 8, 6, 0, 0, 0))
             + chunk(b"IDAT", zlib.compress(b"\0\x12\x34\x56\xff")) + chunk(b"IEND", b""))
     return envelope({"data": base64.b64encode(data).decode("ascii"), "width": 1, "height": 1,
-        "stamp": copy.deepcopy(STAMP), "capture_stamp": copy.deepcopy(STAMP),
-        "mime_type": "image/png", "encoding": "base64", "scope": "cad_viewport",
+        "stamp": copy.deepcopy(STAMP), "mime_type": "image/png", "encoding": "base64",
+        "scope": "cad_viewport", "image_protocol_version": 2,
         "capture_mode": capture_mode, "capture_pass": 17,
+        "source_size_px": [1, 1], "crop_px": [0, 0, 1, 1], "pixels_per_point": 1.0,
+        "sampling": "nearest_center", "thumbnail": True,
+        "view": {"projection": "Perspective", "yaw": 0.2, "pitch": 0.3,
+                 "target_z_mm": 0.0, "zoom": 1.0, "pan": [0.0, 0.0], "distance_mm": 10.0},
+        "selection": [],
         "render": {"render_correlated": True, "callback_correlated": not visible,
-                   "viewport_visibility_required": visible, "viewport_unoccluded": visible},
-        "capture_id": 13, "render_id": 17, "source": "cad_viewport"})
+                   "viewport_visibility_required": visible, "viewport_unoccluded": visible,
+                   "geometry_complete": False, "source": "isolated_cad_target",
+                   "gui_overlays_included": False,
+                   "completeness": "display_only_not_geometry_validation",
+                   "exact_contents_stamp": 5, "topology_contents_stamp": 7,
+                   "exact_evaluation_complete": True, "exact_evaluation_pending": False,
+                   "scene_callbacks": 0, "paint_shape_count": 12,
+                   "style": "test-camera", "theme": "Dark"}})
 
 
 def test_registered_image_artifact_receipt_no_base64_or_overwrite(tmp_path, monkeypatch):
@@ -549,8 +560,8 @@ def test_registered_image_artifact_receipt_no_base64_or_overwrite(tmp_path, monk
         result = await call(registered, "KetchupLiveView", action="image", handle=handle,
                             expected=STAMP, image_path=str(destination))
         assert result["ok"] and result["stamp"] == STAMP
-        assert result["result"]["capture_stamp"] == STAMP
-        assert result["result"]["capture_id"] == 13 and result["result"]["render_id"] == 17
+        assert result["result"]["stamp"] == STAMP
+        assert result["result"]["image_protocol_version"] == 2
         artifact = result["result"]["artifact"]
         assert artifact["artifact_saved"] and artifact["path"] == str(destination)
         assert artifact["visual_delivery"] == "unverified" and artifact["geometry_evaluated"] is False
@@ -610,7 +621,7 @@ def test_image_file_write_guard_but_inspection_stays_read_only(tmp_path, monkeyp
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("tamper", ["epoch", "bytes", "capture_stamp"])
+@pytest.mark.parametrize("tamper", ["epoch", "bytes", "result_stamp"])
 def test_registered_image_invalid_response_never_saves_or_leaks(tmp_path, monkeypatch, tamper):
     monkeypatch.setattr(skill, "IMAGE_ROOT", tmp_path)
     destination = tmp_path / "invalid.png"
@@ -618,8 +629,8 @@ def test_registered_image_invalid_response_never_saves_or_leaks(tmp_path, monkey
     value = image_envelope()
     if tamper == "epoch":
         value["stamp"]["mutation_epoch"] += 1
-    elif tamper == "capture_stamp":
-        value["result"]["capture_stamp"]["mutation_epoch"] += 1
+    elif tamper == "result_stamp":
+        value["result"]["stamp"]["mutation_epoch"] += 1
     else:
         value["result"]["data"] = "DO_NOT_EXPOSE"
     session.image = lambda expected, capture_mode="offscreen": value

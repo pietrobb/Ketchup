@@ -30,6 +30,7 @@ from typing import Any, Literal
 from .client import ProtocolError, SessionClosedError, TransportError, TransportTimeout
 
 MAX_FRAME_BYTES = 32768
+IMAGE_PROTOCOL_VERSION = 2
 MAX_TIMEOUT = 30.0
 _U64_MAX = (1 << 64) - 1
 _KINDS = ("occurrences", "instances", "definitions", "features", "relations")
@@ -44,7 +45,7 @@ _ERROR_CODES = frozenset({
     "invalid_program", "planning_rejected", "proposal_ids_exhausted",
     "receipt_guard_mismatch", "proposal_not_found", "commit_rejected",
     "undo_unavailable", "redo_unavailable", "entity_not_found", "view_unavailable",
-    "unsupported_image", "invalid_params", "invalid_cursor", "stale_cursor",
+    "unsupported_image", "unsupported_image_protocol", "invalid_params", "invalid_cursor", "stale_cursor",
     "cross_query_cursor", "output_too_large", "busy", "image_unavailable", "image_timeout",
     "hidden_viewport", "stale_image", "occluded_viewport", "invalid_image_callback",
     "invalid_image_dimensions", "incomplete_image", "unsupported_image_texture",
@@ -332,36 +333,90 @@ def _image_bytes(response: dict, expected: Stamp | dict, encoded_png: str,
     response = _json_copy(response)
     if len(json.dumps(response, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")) > MAX_FRAME_BYTES:
         raise ValueError("image response exceeds frame budget")
-    if (type(response) is not dict or response.get("ok") is not True
-            or response.get("error") is not None or _stamp(response.get("stamp")) != _stamp(expected)):
+    if (type(response) is not dict
+            or set(response) != {"version", "id", "ok", "stamp", "result", "error"}
+            or type(response.get("version")) is not int or response["version"] != 1
+            or response.get("ok") is not True or response.get("error") is not None
+            or _stamp(response.get("stamp")) != _stamp(expected)):
         raise ValueError("image stamp mismatch")
+    _uint(response["id"])
     result = response.get("result")
-    if type(result) is not dict or "artifact" in result:
+    result_fields = {"data", "width", "height", "mime_type", "encoding", "scope",
+                     "image_protocol_version", "capture_mode", "stamp", "capture_pass",
+                     "source_size_px", "crop_px", "pixels_per_point", "sampling",
+                     "thumbnail", "view", "selection", "render"}
+    if type(result) is not dict or set(result) != result_fields:
         raise ValueError("invalid image metadata")
     if (result.get("mime_type") != "image/png" or result.get("encoding") != "base64"
             or result.get("scope") != "cad_viewport" or "stamp" not in result
+            or type(result.get("image_protocol_version")) is not int
+            or result.get("image_protocol_version") != IMAGE_PROTOCOL_VERSION
             or result.get("capture_mode") != capture_mode):
         raise ValueError("invalid CAD image metadata")
     _uint(result.get("capture_pass"))
+    if _stamp(result["stamp"]) != _stamp(expected):
+        raise ValueError("capture stamp mismatch")
+    source_size = result.get("source_size_px")
+    crop = result.get("crop_px")
+    if (type(source_size) is not list or len(source_size) != 2
+            or type(crop) is not list or len(crop) != 4):
+        raise ValueError("invalid capture metadata")
+    source_width, source_height = (_uint(value, 1) for value in source_size)
+    x, y, crop_width, crop_height = (_uint(value) for value in crop)
+    if (source_width * source_height > 16_777_216 or crop_width == 0 or crop_height == 0
+            or x + crop_width > source_width or y + crop_height > source_height
+            or type(result.get("pixels_per_point")) not in (int, float)
+            or not math.isfinite(result["pixels_per_point"]) or result["pixels_per_point"] <= 0
+            or result.get("sampling") != "nearest_center" or result.get("thumbnail") is not True):
+        raise ValueError("invalid capture metadata")
+    view = result.get("view")
+    if (type(view) is not dict
+            or set(view) != {"projection", "yaw", "pitch", "target_z_mm", "zoom", "pan", "distance_mm"}
+            or type(view.get("projection")) is not str or not view["projection"]
+            or type(view.get("pan")) is not list or len(view["pan"]) != 2
+            or any(type(value) not in (int, float) or not math.isfinite(value)
+                   for value in (view["yaw"], view["pitch"], view["target_z_mm"], view["zoom"],
+                                 view["distance_mm"], *view["pan"]))
+            or view["zoom"] <= 0 or view["distance_mm"] <= 0):
+        raise ValueError("invalid view metadata")
+    _ids(result.get("selection"))
     render = result.get("render")
+    render_fields = {"render_correlated", "callback_correlated", "viewport_visibility_required",
+                     "viewport_unoccluded", "geometry_complete", "source",
+                     "gui_overlays_included", "completeness", "exact_contents_stamp",
+                     "topology_contents_stamp", "exact_evaluation_complete",
+                     "exact_evaluation_pending", "scene_callbacks", "paint_shape_count",
+                     "style", "theme"}
     visible = capture_mode == "visible_viewport"
-    if (type(render) is not dict or render.get("render_correlated") is not True
+    if (type(render) is not dict or set(render) != render_fields
+            or render.get("render_correlated") is not True
             or type(render.get("callback_correlated")) is not bool
             or render.get("viewport_visibility_required") is not visible
-            or render.get("viewport_unoccluded") is not visible):
+            or render.get("viewport_unoccluded") is not visible
+            or render.get("geometry_complete") is not False
+            or render.get("source") != "isolated_cad_target"
+            or render.get("gui_overlays_included") is not False
+            or render.get("completeness") != "display_only_not_geometry_validation"
+            or type(render.get("exact_evaluation_complete")) is not bool
+            or type(render.get("exact_evaluation_pending")) is not bool
+            or type(render.get("style")) is not str or type(render.get("theme")) is not str):
         raise ValueError("uncorrelated CAD image")
-    for key in ("stamp", "capture_stamp"):
-        if key in result and _stamp(result[key]) != _stamp(expected):
-            raise ValueError("capture stamp mismatch")
+    _uint(render["exact_contents_stamp"])
+    _uint(render["topology_contents_stamp"])
+    _uint(render["scene_callbacks"], 0, 1)
+    _uint(render["paint_shape_count"], 1, 100_000)
     width = _uint(result.get("width"), 1, MAX_IMAGE_DIMENSION)
     height = _uint(result.get("height"), 1, MAX_IMAGE_DIMENSION)
-    byte_count = _uint(result["byte_count"], 57, MAX_PNG_BYTES) if "byte_count" in result else None
+    scale = min(1.0, 64.0 / max(crop_width, crop_height))
+    if (width != max(1, math.floor(crop_width * scale))
+            or height != max(1, math.floor(crop_height * scale))):
+        raise ValueError("thumbnail dimensions do not match capture crop")
     if type(encoded_png) is not str or not encoded_png or len(encoded_png) > (MAX_PNG_BYTES + 2) // 3 * 4:
         raise ValueError("invalid PNG encoding")
     data = base64.b64decode(encoded_png, validate=True)
     if base64.b64encode(data).decode("ascii") != encoded_png:
         raise ValueError("noncanonical PNG encoding")
-    if (byte_count is not None and len(data) != byte_count) or _png_dimensions(data) != (width, height):
+    if _png_dimensions(data) != (width, height):
         raise ValueError("PNG metadata mismatch")
     return data
 
@@ -415,6 +470,24 @@ def save_image(response: dict, expected: Stamp | dict, image_path: str,
     return snapshot
 
 
+def _negotiated_image_modes(result: dict) -> frozenset[str]:
+    protocol = result.get("image_protocol") if type(result) is dict else None
+    if (type(protocol) is not dict or type(protocol.get("version")) is not int
+            or protocol["version"] != IMAGE_PROTOCOL_VERSION):
+        return frozenset()
+    capabilities = protocol.get("capabilities")
+    modes = protocol.get("capture_modes")
+    required = {"capture_mode", "capture_metadata", "render_metadata"}
+    if (type(capabilities) is not list or any(type(item) is not str for item in capabilities)
+            or not required <= set(capabilities) or type(modes) is not list
+            or any(type(mode) is not str for mode in modes)
+            or len(set(modes)) != len(modes)
+            or protocol.get("default_capture_mode") != "offscreen"
+            or "offscreen" not in modes):
+        return frozenset()
+    return frozenset(mode for mode in modes if mode in _CAPTURE_MODES)
+
+
 class LiveSession:
     """One serialized socket to a trusted host, never an owned app/process.
 
@@ -427,7 +500,8 @@ class LiveSession:
     the authenticated revocation request then closes even if it fails.
     """
 
-    __slots__ = ("_socket", "_token", "_timeout", "_lock", "_id", "_closed")
+    __slots__ = ("_socket", "_token", "_timeout", "_lock", "_id", "_closed",
+                 "_image_capture_modes")
 
     def __init__(self, address: tuple[str, int] | str, token: str, timeout: float = 30.0):
         endpoint = None
@@ -451,6 +525,7 @@ class LiveSession:
         self._lock = threading.Lock()
         self._id = 0
         self._closed = False
+        self._image_capture_modes = None
         self._socket = None
         self._token = bytearray(token, "ascii")
         deadline = time.monotonic() + self._timeout
@@ -527,9 +602,13 @@ class LiveSession:
             raise ValueError("invalid or unavailable response; response_limit can follow execution")
         return response
 
-    def _request(self, method: str, **params) -> dict:
-        deadline = time.monotonic() + self._timeout
-        if not self._lock.acquire(timeout=self._timeout):
+    def _request(self, method: str, *, _deadline: float | None = None, **params) -> dict:
+        deadline = time.monotonic() + self._timeout if _deadline is None else _deadline
+        try:
+            lock_timeout = _remaining(deadline)
+        except TimeoutError:
+            raise LiveTimeout("live bridge request not sent: deadline expired") from None
+        if not self._lock.acquire(timeout=lock_timeout):
             raise LiveTimeout("live bridge request not sent: connection busy")
         sent = False
         try:
@@ -582,8 +661,13 @@ class LiveSession:
                 self._close_locked()
             self._lock.release()
 
+    def _status(self, deadline: float | None = None) -> dict:
+        response = self._request("status", _deadline=deadline)
+        self._image_capture_modes = _negotiated_image_modes(response["result"])
+        return response
+
     def status(self) -> dict:
-        return self._request("status")
+        return self._status()
 
     def summary(self) -> dict:
         return self._request("summary")
@@ -677,7 +761,21 @@ class LiveSession:
         """Read a correlated CAD render; visible proof is explicit and optional."""
         if type(capture_mode) is not str or capture_mode not in _CAPTURE_MODES:
             raise ValueError("invalid capture mode")
-        return self._request("image", expected=_stamp(expected), capture_mode=capture_mode)
+        expected = _stamp(expected)
+        deadline = time.monotonic() + self._timeout
+        if self._image_capture_modes is None:
+            self._status(deadline)
+        if capture_mode not in self._image_capture_modes:
+            raise LiveProtocolError("live image protocol or capture mode was not negotiated")
+        response = self._request("image", _deadline=deadline, expected=expected,
+                                 image_protocol_version=IMAGE_PROTOCOL_VERSION,
+                                 capture_mode=capture_mode)
+        try:
+            _image_bytes(response, expected, response["result"]["data"], capture_mode)
+        except (ValueError, TypeError, KeyError, binascii.Error, zlib.error):
+            self.close()
+            raise LiveProtocolError("invalid live image response") from None
+        return response
 
     def disconnect(self) -> dict | None:
         """Request connection-local authority revocation, then close only socket."""

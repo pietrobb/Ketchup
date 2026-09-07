@@ -1,7 +1,9 @@
 //! Bootstrap contract against real pipes/TCP and the actual offscreen app, not OS input.
 mod harness;
 use harness::Shell;
-use ketchup_app::live_bridge::{CaptureMode, Envelope, Request, Response, bootstrap::*};
+use ketchup_app::live_bridge::{
+    CaptureMode, Envelope, IMAGE_PROTOCOL_VERSION, Request, Response, bootstrap::*,
+};
 use std::{
     ffi::OsString,
     io::{self, Cursor, Read, Write},
@@ -264,6 +266,7 @@ fn readiness_authentication_and_detach_use_the_actual_app() {
         TOKEN,
         Request::Image {
             expected: before.clone(),
+            image_protocol_version: IMAGE_PROTOCOL_VERSION,
             capture_mode: CaptureMode::Offscreen,
         },
     );

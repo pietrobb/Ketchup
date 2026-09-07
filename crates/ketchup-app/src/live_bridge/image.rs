@@ -233,11 +233,15 @@ impl LiveBridge {
         let result = (|| {
             let Request::Image {
                 expected,
+                image_protocol_version,
                 capture_mode,
             } = &queued.request
             else {
                 unreachable!()
             };
+            if *image_protocol_version != IMAGE_PROTOCOL_VERSION {
+                return Err("unsupported_image_protocol");
+            }
             Self::guard(app, expected)?;
             Self::available(app, ctx.wants_keyboard_input() || ctx.is_using_pointer())?;
             if self.image.pending.is_some() {
@@ -419,7 +423,7 @@ fn thumbnail(
     let camera = &capture.state.camera;
     Ok(
         json!({"mime_type":"image/png","encoding":"base64","data":base64(&png),"width":w,"height":h,
-        "scope":"cad_viewport","capture_mode":mode.as_str(),"stamp":capture.state.stamp,"capture_pass":capture.pass,
+        "scope":"cad_viewport","image_protocol_version":IMAGE_PROTOCOL_VERSION,"capture_mode":mode.as_str(),"stamp":capture.state.stamp,"capture_pass":capture.pass,
         "source_size_px":image.size,"crop_px":[x0,y0,sw,sh],"pixels_per_point":ppp,
         "sampling":"nearest_center","thumbnail":true,
         "view":{"projection":format!("{:?}",camera.projection_mode),"yaw":camera.yaw,"pitch":camera.pitch,
