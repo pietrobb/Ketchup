@@ -1,7 +1,7 @@
 use ketchup_core::blender_export::{ExactGlbInstance, exact_model_glb_export};
 use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
-    OccurrenceId, Transform,
+    GroupId, OccurrenceId, Transform,
 };
 use ketchup_core::exact_product::{
     ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactProductError,
@@ -158,6 +158,55 @@ fn glb_preserves_named_transformed_instances_and_reuses_geometry() {
     assert!((maximum[1].as_f64().unwrap() - 0.01).abs() < 1.0e-8);
     assert!(first.loss_report.contains("unique_geometry_count=1"));
     assert!(first.loss_report.contains("occurrence_body_count=2"));
+}
+
+#[test]
+fn glb_preserves_group_hierarchy_with_local_transforms() {
+    let mut document = seeded_document(None, None);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateGroup {
+                id: GroupId(20),
+                name: "Frame".into(),
+                transform: Transform::from_translation(100.0, 0.0, 0.0).unwrap(),
+                parent: None,
+            },
+            CanonicalCommand::SetOccurrenceParent {
+                id: FIRST,
+                parent: Some(GroupId(20)),
+            },
+            CanonicalCommand::SetOccurrenceParent {
+                id: SECOND,
+                parent: Some(GroupId(20)),
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    let package = current_package(&snapshot);
+    let occurrences = snapshot.scene_query();
+    let instances = occurrences
+        .iter()
+        .map(|occurrence| ExactGlbInstance {
+            package: &package,
+            occurrence,
+        })
+        .collect::<Vec<_>>();
+
+    let export = exact_model_glb_export(&snapshot, &instances).unwrap();
+    let gltf = glb_json(&export.glb);
+    assert_eq!(gltf["scenes"][0]["nodes"], serde_json::json!([0]));
+    assert_eq!(gltf["nodes"][0]["name"], "Frame");
+    assert_eq!(gltf["nodes"][0]["children"], serde_json::json!([1, 2]));
+    assert_eq!(gltf["nodes"][0]["matrix"][12], 0.1);
+    assert_eq!(gltf["nodes"][1]["name"], "Beam A");
+    assert_eq!(gltf["nodes"][1]["matrix"][12], 0.0);
+    assert_eq!(gltf["nodes"][2]["name"], "Beam B");
+    assert_eq!(gltf["nodes"][2]["matrix"][12], 0.02);
+    assert!(
+        export
+            .loss_report
+            .contains("hierarchy=canonical global groups")
+    );
 }
 
 #[test]

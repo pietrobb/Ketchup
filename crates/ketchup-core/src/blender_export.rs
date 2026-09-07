@@ -1,4 +1,7 @@
-use crate::document::{DefinitionId, FeatureId, SceneOccurrence, Snapshot, Transform};
+use crate::document::{
+    DefinitionId, FeatureId, GroupId, InstancePathStep, LocalGroupKey, LocalOccurrenceKey,
+    SceneOccurrence, Snapshot, Transform,
+};
 use crate::exact_product::{ExactBodyPackage, ExactBodyView, ExactProductError};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -34,6 +37,31 @@ struct GeometryKey {
 struct GeometryLayout {
     position_accessor: usize,
     index_accessor: usize,
+}
+
+struct SceneNode {
+    name: String,
+    matrix: [f64; 16],
+    mesh: Option<usize>,
+    children: Vec<usize>,
+    extras: Value,
+}
+
+impl SceneNode {
+    fn into_json(self) -> Value {
+        let mut node = json!({
+            "name": self.name,
+            "matrix": self.matrix,
+            "extras": self.extras
+        });
+        if let Some(mesh) = self.mesh {
+            node["mesh"] = json!(mesh);
+        }
+        if !self.children.is_empty() {
+            node["children"] = json!(self.children);
+        }
+        node
+    }
 }
 
 pub fn exact_model_glb_export(
@@ -72,7 +100,7 @@ pub fn exact_model_glb_export(
     let mut materials = Vec::<Value>::new();
     let mut mesh_indices = BTreeMap::<(GeometryKey, Option<[u8; 3]>), usize>::new();
     let mut meshes = Vec::<Value>::new();
-    let mut nodes = Vec::<Value>::new();
+    let mut instance_meshes = Vec::with_capacity(instances.len());
     for instance in instances {
         let geometry_key = geometry_key(instance.package);
         let mesh_key = (geometry_key.clone(), instance.occurrence.color());
@@ -101,19 +129,14 @@ pub fn exact_model_glb_export(
             mesh_indices.insert(mesh_key, index);
             index
         };
-        nodes.push(json!({
-            "name": instance.occurrence.occurrence_name,
-            "mesh": mesh_index,
-            "matrix": gltf_matrix(instance.occurrence.transform)?,
-            "extras": {
-                "ketchupDefinition": instance.occurrence.definition_name,
-                "ketchupInstancePath": instance_path_label(instance.occurrence),
-                "ketchupProducerFeatureId": instance.package.producer_feature_id().0
-            }
-        }));
+        instance_meshes.push(mesh_index);
     }
 
-    let root_nodes = (0..nodes.len()).collect::<Vec<_>>();
+    let (nodes, root_nodes) = build_scene_nodes(snapshot, instances, &instance_meshes)?;
+    let nodes = nodes
+        .into_iter()
+        .map(SceneNode::into_json)
+        .collect::<Vec<_>>();
     let mut document = json!({
         "asset": {
             "version": "2.0",
@@ -138,13 +161,231 @@ pub fn exact_model_glb_export(
     }
     let glb = encode_glb(&document, &binary)?;
     let loss_report = format!(
-        "authority=accepted exact OCCT B-Rep\nformat=glTF 2.0 binary (GLB)\nconversion=current-visible-exact-model-to-instanced-mesh-scene\nunit_conversion=millimetres to metres\naxis_conversion=Ketchup Z-up to glTF Y-up\neditability_loss=canonical features, rules, dimensions, constraints, and Undo history are not preserved\ntopology_loss=exact topology, analytic surfaces, and durable face identity are not preserved\ntolerance_loss=geometry is approximated by each accepted tessellation under its source tolerance profile\nsource_digest={}\noccurrence_body_count={}\nunique_geometry_count={}\nmesh_count={}\n",
+        "authority=accepted exact OCCT B-Rep\nformat=glTF 2.0 binary (GLB)\nconversion=current-visible-exact-model-to-instanced-mesh-scene\nunit_conversion=millimetres to metres\naxis_conversion=Ketchup Z-up to glTF Y-up\nhierarchy=canonical global groups, component occurrences, local groups, and nested occurrences\neditability_loss=canonical features, rules, dimensions, constraints, and Undo history are not preserved\ntopology_loss=exact topology, analytic surfaces, and durable face identity are not preserved\ntolerance_loss=geometry is approximated by each accepted tessellation under its source tolerance profile\nsource_digest={}\noccurrence_body_count={}\nunique_geometry_count={}\nmesh_count={}\n",
         snapshot.canonical_digest(),
         instances.len(),
         geometries.len(),
         mesh_indices.len(),
     );
     Ok(ExactGlbExport { glb, loss_report })
+}
+
+fn build_scene_nodes(
+    snapshot: &Snapshot,
+    instances: &[ExactGlbInstance<'_>],
+    instance_meshes: &[usize],
+) -> Result<(Vec<SceneNode>, Vec<usize>), ExactProductError> {
+    let mut nodes = Vec::new();
+    let mut root_nodes = Vec::new();
+    let mut hierarchy = BTreeMap::<String, usize>::new();
+    let identity = gltf_matrix(Transform::identity())?;
+    for (instance, mesh_index) in instances.iter().zip(instance_meshes) {
+        let root_id = instance.occurrence.instance_path.root_occurrence();
+        let root_occurrence = snapshot
+            .occurrence(root_id)
+            .ok_or(ExactProductError::InvalidMeshExport)?;
+        let root_key = format!("occurrence:{}", root_id.0);
+        let root_index = if let Some(index) = hierarchy.get(&root_key) {
+            *index
+        } else {
+            let parent = root_occurrence
+                .parent()
+                .map(|group_id| {
+                    ensure_global_group(
+                        snapshot,
+                        group_id,
+                        &mut nodes,
+                        &mut root_nodes,
+                        &mut hierarchy,
+                    )
+                })
+                .transpose()?;
+            let index = push_scene_node(
+                &mut nodes,
+                SceneNode {
+                    name: root_occurrence.name().to_owned(),
+                    matrix: gltf_matrix(root_occurrence.transform())?,
+                    mesh: None,
+                    children: Vec::new(),
+                    extras: json!({
+                        "ketchupEntity": "occurrence",
+                        "ketchupDefinition": snapshot
+                            .definition(root_occurrence.definition_id())
+                            .ok_or(ExactProductError::InvalidMeshExport)?
+                            .name(),
+                        "ketchupInstancePath": root_key
+                    }),
+                },
+            );
+            attach_scene_node(&mut nodes, &mut root_nodes, parent, index);
+            hierarchy.insert(root_key.clone(), index);
+            index
+        };
+
+        let mut owner_definition_id = root_occurrence.definition_id();
+        let mut parent_index = root_index;
+        let mut path_key = root_key;
+        for step in instance.occurrence.instance_path.steps() {
+            match step {
+                InstancePathStep::Group(local_id) => {
+                    path_key.push_str(&format!("/group:{}", local_id.0));
+                    let key = LocalGroupKey {
+                        definition_id: owner_definition_id,
+                        local_id: *local_id,
+                    };
+                    let local = snapshot
+                        .local_group(key)
+                        .ok_or(ExactProductError::InvalidMeshExport)?;
+                    parent_index = ensure_local_scene_node(
+                        &mut nodes,
+                        &mut hierarchy,
+                        parent_index,
+                        &path_key,
+                        local.name(),
+                        local.transform(),
+                        json!({
+                            "ketchupEntity": "group",
+                            "ketchupInstancePath": path_key
+                        }),
+                    )?;
+                }
+                InstancePathStep::Occurrence(local_id) => {
+                    path_key.push_str(&format!("/occurrence:{}", local_id.0));
+                    let key = LocalOccurrenceKey {
+                        definition_id: owner_definition_id,
+                        local_id: *local_id,
+                    };
+                    let local = snapshot
+                        .local_occurrence(key)
+                        .ok_or(ExactProductError::InvalidMeshExport)?;
+                    let definition = snapshot
+                        .definition(local.definition_id())
+                        .ok_or(ExactProductError::InvalidMeshExport)?;
+                    parent_index = ensure_local_scene_node(
+                        &mut nodes,
+                        &mut hierarchy,
+                        parent_index,
+                        &path_key,
+                        local.name(),
+                        local.transform(),
+                        json!({
+                            "ketchupEntity": "occurrence",
+                            "ketchupDefinition": definition.name(),
+                            "ketchupInstancePath": path_key
+                        }),
+                    )?;
+                    owner_definition_id = local.definition_id();
+                }
+            }
+        }
+        if owner_definition_id != instance.occurrence.definition_id {
+            return Err(ExactProductError::InvalidMeshExport);
+        }
+        if nodes[parent_index].mesh.is_none() {
+            nodes[parent_index].mesh = Some(*mesh_index);
+            nodes[parent_index].extras["ketchupProducerFeatureId"] =
+                json!(instance.package.producer_feature_id().0);
+        } else {
+            let body_index = push_scene_node(
+                &mut nodes,
+                SceneNode {
+                    name: format!(
+                        "{} body {}",
+                        instance.occurrence.definition_name,
+                        instance.package.producer_feature_id().0
+                    ),
+                    matrix: identity,
+                    mesh: Some(*mesh_index),
+                    children: Vec::new(),
+                    extras: json!({
+                        "ketchupEntity": "body",
+                        "ketchupProducerFeatureId": instance.package.producer_feature_id().0
+                    }),
+                },
+            );
+            attach_scene_node(&mut nodes, &mut root_nodes, Some(parent_index), body_index);
+        }
+    }
+    Ok((nodes, root_nodes))
+}
+
+fn ensure_global_group(
+    snapshot: &Snapshot,
+    group_id: GroupId,
+    nodes: &mut Vec<SceneNode>,
+    root_nodes: &mut Vec<usize>,
+    hierarchy: &mut BTreeMap<String, usize>,
+) -> Result<usize, ExactProductError> {
+    let key = format!("group:{}", group_id.0);
+    if let Some(index) = hierarchy.get(&key) {
+        return Ok(*index);
+    }
+    let group = snapshot
+        .group(group_id)
+        .ok_or(ExactProductError::InvalidMeshExport)?;
+    let parent = group
+        .parent()
+        .map(|parent_id| ensure_global_group(snapshot, parent_id, nodes, root_nodes, hierarchy))
+        .transpose()?;
+    let index = push_scene_node(
+        nodes,
+        SceneNode {
+            name: group.name().to_owned(),
+            matrix: gltf_matrix(group.transform())?,
+            mesh: None,
+            children: Vec::new(),
+            extras: json!({"ketchupEntity": "group", "ketchupGroupId": group_id.0}),
+        },
+    );
+    attach_scene_node(nodes, root_nodes, parent, index);
+    hierarchy.insert(key, index);
+    Ok(index)
+}
+
+fn ensure_local_scene_node(
+    nodes: &mut Vec<SceneNode>,
+    hierarchy: &mut BTreeMap<String, usize>,
+    parent_index: usize,
+    key: &str,
+    name: &str,
+    transform: Transform,
+    extras: Value,
+) -> Result<usize, ExactProductError> {
+    if let Some(index) = hierarchy.get(key) {
+        return Ok(*index);
+    }
+    let index = push_scene_node(
+        nodes,
+        SceneNode {
+            name: name.to_owned(),
+            matrix: gltf_matrix(transform)?,
+            mesh: None,
+            children: Vec::new(),
+            extras,
+        },
+    );
+    nodes[parent_index].children.push(index);
+    hierarchy.insert(key.to_owned(), index);
+    Ok(index)
+}
+
+fn push_scene_node(nodes: &mut Vec<SceneNode>, node: SceneNode) -> usize {
+    let index = nodes.len();
+    nodes.push(node);
+    index
+}
+
+fn attach_scene_node(
+    nodes: &mut [SceneNode],
+    root_nodes: &mut Vec<usize>,
+    parent: Option<usize>,
+    index: usize,
+) {
+    if let Some(parent) = parent {
+        nodes[parent].children.push(index);
+    } else {
+        root_nodes.push(index);
+    }
 }
 
 fn geometry_key(package: &ExactBodyPackage) -> GeometryKey {
@@ -296,23 +537,6 @@ fn srgb_channel_to_linear(channel: u8) -> f64 {
     } else {
         ((value + 0.055) / 1.055).powf(2.4)
     }
-}
-
-fn instance_path_label(occurrence: &SceneOccurrence) -> String {
-    let mut label = format!(
-        "occurrence:{}",
-        occurrence.instance_path.root_occurrence().0
-    );
-    for step in occurrence.instance_path.steps() {
-        use crate::document::InstancePathStep;
-        match step {
-            InstancePathStep::Group(id) => label.push_str(&format!("/group:{}", id.0)),
-            InstancePathStep::Occurrence(id) => {
-                label.push_str(&format!("/occurrence:{}", id.0));
-            }
-        }
-    }
-    label
 }
 
 fn encode_glb(document: &Value, binary: &[u8]) -> Result<Vec<u8>, ExactProductError> {
