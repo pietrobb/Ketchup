@@ -2338,6 +2338,8 @@ fn hundegger_btlx_file_command_exports_validated_timber_with_support_report() {
     assert!(btlx.contains("Material=\"ketchup.material.timber.unspecified.v1\""));
     let support = std::fs::read_to_string(path.with_extension("btlx.support.txt")).unwrap();
     assert!(support.contains("default_profile_request=edge SawContour cuts, then MillContour"));
+    assert!(support.contains("selected_profile_request=edge SawContour cuts, then MillContour"));
+    assert!(support.contains("intermediate_saw_cuts=0"));
     assert!(support.contains("concrete_importer_verified=false"));
     assert!(support.contains("machine_execution_order_guaranteed=false"));
     assert_eq!(script.export_requests()[0].extension, "btlx");
@@ -2349,6 +2351,59 @@ fn hundegger_btlx_file_command_exports_validated_timber_with_support_report() {
     assert_eq!(
         receipt.operation(),
         "release-hundegger-btlx-with-support-report"
+    );
+}
+
+#[test]
+fn hundegger_btlx_file_menu_configures_profile_strategy_and_intermediate_cuts() {
+    let mut harness = Harness::builder()
+        .with_size(Vec2::new(1600.0, 1000.0))
+        .build_state(
+            |context, app: &mut KetchupApp| app.ui(context),
+            KetchupApp::new(),
+        );
+    harness.run();
+
+    let file_menu = harness.state().catalog.text("menu-file");
+    let options = format!(
+        "{} ⏵",
+        harness.state().catalog.text("file-export-btlx-options")
+    );
+    let portable = harness
+        .state()
+        .catalog
+        .text("file-export-btlx-portable-contour");
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, &file_menu)
+        .click();
+    harness.run();
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, &options)
+        .click();
+    harness.run();
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, &portable)
+        .click();
+    harness.run();
+
+    assert_eq!(
+        harness
+            .state()
+            .btlx_export_options()
+            .profile_processing_request,
+        BtlxProfileProcessingRequest::PortableFreeContour
+    );
+
+    harness.state_mut().btlx_profile_strategy = BtlxProfileStrategy::EdgeSawCutsThenMillContour;
+    harness.state_mut().btlx_intermediate_saw_cuts = 32;
+    assert_eq!(
+        harness
+            .state()
+            .btlx_export_options()
+            .profile_processing_request,
+        BtlxProfileProcessingRequest::EdgeSawCutsThenMillContour {
+            intermediate_saw_cuts: 32,
+        }
     );
 }
 

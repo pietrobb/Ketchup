@@ -77,7 +77,9 @@ use ketchup_core::exact_validation::{
     GeneralClearanceCase, general_body_input_bytes, general_body_narrow_phase,
     general_body_validation_policy,
 };
-use ketchup_core::fabrication::{BtlxExportOptions, project_general_fabrication};
+use ketchup_core::fabrication::{
+    BtlxExportOptions, BtlxProfileProcessingRequest, project_general_fabrication,
+};
 #[cfg(feature = "named-product-fixtures")]
 use ketchup_core::fabrication::{FullBomProjection, PieceDimensionSheet};
 use ketchup_core::graph::{
@@ -6036,6 +6038,12 @@ struct MigrationReviewPlan {
     review: MigrationReviewIdentity,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BtlxProfileStrategy {
+    PortableFreeContour,
+    EdgeSawCutsThenMillContour,
+}
+
 pub struct KetchupApp {
     document: DocumentStore,
     live_bridge: Option<live_bridge::LiveBridge>,
@@ -6046,6 +6054,8 @@ pub struct KetchupApp {
     saved_digest: String,
     confirmation_surface: TrustedConfirmationSurface,
     side_effect_receipts: Vec<SideEffectAuthorizationReceipt>,
+    btlx_profile_strategy: BtlxProfileStrategy,
+    btlx_intermediate_saw_cuts: u8,
     catalog: LocaleCatalog,
     assembly_editor: assembly_ui::AssemblyEditorState,
     body_editor: body_ui::BodyEditorState,
@@ -6298,6 +6308,8 @@ impl KetchupApp {
             saved_digest,
             confirmation_surface,
             side_effect_receipts: Vec::new(),
+            btlx_profile_strategy: BtlxProfileStrategy::EdgeSawCutsThenMillContour,
+            btlx_intermediate_saw_cuts: 0,
             catalog,
             assembly_editor: assembly_ui::AssemblyEditorState::default(),
             body_editor: body_ui::BodyEditorState::default(),
@@ -7694,10 +7706,42 @@ impl KetchupApp {
         }
     }
 
+    fn btlx_export_options(&self) -> BtlxExportOptions {
+        let profile_processing_request = match self.btlx_profile_strategy {
+            BtlxProfileStrategy::PortableFreeContour => {
+                BtlxProfileProcessingRequest::PortableFreeContour
+            }
+            BtlxProfileStrategy::EdgeSawCutsThenMillContour => {
+                BtlxProfileProcessingRequest::EdgeSawCutsThenMillContour {
+                    intermediate_saw_cuts: self.btlx_intermediate_saw_cuts,
+                }
+            }
+        };
+        BtlxExportOptions {
+            profile_processing_request,
+        }
+    }
+
     fn export_current_model_btlx_to(&mut self, path: &Path) -> bool {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
         self.rebind_exact_results(&snapshot);
+        let options = self.btlx_export_options();
+        let (selected_profile_request, intermediate_saw_cuts, selected_profile_contours) =
+            match options.profile_processing_request {
+                BtlxProfileProcessingRequest::PortableFreeContour => (
+                    "portable FreeContour",
+                    "not applicable".to_owned(),
+                    "closed simple linear polygons",
+                ),
+                BtlxProfileProcessingRequest::EdgeSawCutsThenMillContour {
+                    intermediate_saw_cuts,
+                } => (
+                    "edge SawContour cuts, then MillContour",
+                    intermediate_saw_cuts.to_string(),
+                    "rectangular only",
+                ),
+            };
         let result = (|| {
             let tolerance = TolerancePolicy::default();
             let participants = snapshot
@@ -7772,10 +7816,10 @@ impl KetchupApp {
             )
             .map_err(|error| error.to_string())?;
             let btlx = projection
-                .btlx_2_3_1_export_with_options(&snapshot, BtlxExportOptions::default())
+                .btlx_2_3_1_export_with_options(&snapshot, options)
                 .map_err(|error| error.to_string())?;
             let support_report = format!(
-                "schema=ketchup.btlx-support-report.v1\nsource_digest={}\nformat=BTLx 2.3.1\nstock=rectangular straight timber\ndrilling=circular\nportable_profile_contours=closed simple linear polygons\ndefault_profile_request=edge SawContour cuts, then MillContour\nintermediate_saw_cuts=0\ndefault_profile_contours=rectangular only\nunsupported=arc profile contours; non-rectangular profile with the default request; non-rectangular stock; other machining operations\nconcrete_importer_verified=false\nmachine_execution_order_guaranteed=false\n",
+                "schema=ketchup.btlx-support-report.v1\nsource_digest={}\nformat=BTLx 2.3.1\nstock=rectangular straight timber\ndrilling=circular\nportable_profile_contours=closed simple linear polygons\ndefault_profile_request=edge SawContour cuts, then MillContour\nselected_profile_request={selected_profile_request}\nintermediate_saw_cuts={intermediate_saw_cuts}\nselected_profile_contours={selected_profile_contours}\nunsupported=arc profile contours; non-rectangular profile with the edge-saw request; non-rectangular stock; other machining operations\nconcrete_importer_verified=false\nmachine_execution_order_guaranteed=false\n",
                 snapshot.canonical_digest()
             );
             let report_path = path.with_extension("btlx.support.txt");
@@ -29419,6 +29463,24 @@ impl KetchupApp {
                 ui.separator();
                 self.menu_command(ui, AppCommand::ExportExactStep);
                 self.menu_command(ui, AppCommand::ExportMeshStl);
+                ui.menu_button(self.catalog.text("file-export-btlx-options"), |ui| {
+                    ui.selectable_value(
+                        &mut self.btlx_profile_strategy,
+                        BtlxProfileStrategy::PortableFreeContour,
+                        self.catalog.text("file-export-btlx-portable-contour"),
+                    );
+                    ui.selectable_value(
+                        &mut self.btlx_profile_strategy,
+                        BtlxProfileStrategy::EdgeSawCutsThenMillContour,
+                        self.catalog.text("file-export-btlx-saw-then-mill"),
+                    );
+                    ui.add_enabled(
+                        self.btlx_profile_strategy
+                            == BtlxProfileStrategy::EdgeSawCutsThenMillContour,
+                        egui::Slider::new(&mut self.btlx_intermediate_saw_cuts, 0..=32)
+                            .text(self.catalog.text("file-export-btlx-intermediate-saw-cuts")),
+                    );
+                });
                 self.menu_command(ui, AppCommand::ExportHundeggerBtlx);
             });
             ui.menu_button(self.catalog.text("menu-edit"), |ui| {
