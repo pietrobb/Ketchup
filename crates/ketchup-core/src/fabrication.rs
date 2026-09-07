@@ -913,7 +913,7 @@ fn btlx_free_contour(geometry: &GeneralMachiningGeometry) -> Option<BtlxFreeCont
         || !start_mm.is_finite()
         || !end_mm.is_finite()
         || end_mm <= start_mm
-        || segments.len() != 4
+        || segments.len() < 3
     {
         return None;
     }
@@ -927,7 +927,7 @@ fn btlx_free_contour(geometry: &GeneralMachiningGeometry) -> Option<BtlxFreeCont
                 .iter()
                 .chain(end_mm)
                 .all(|coordinate| coordinate.is_finite())
-                && (start_mm[0] == end_mm[0]) != (start_mm[1] == end_mm[1]))
+                && start_mm != end_mm)
                 .then_some((*start_mm, *end_mm))
         })
         .collect::<Option<Vec<_>>>()?;
@@ -935,46 +935,6 @@ fn btlx_free_contour(geometry: &GeneralMachiningGeometry) -> Option<BtlxFreeCont
         .iter()
         .zip(edges.iter().cycle().skip(1))
         .all(|((_, end), (next_start, _))| end == next_start)
-    {
-        return None;
-    }
-    let minimum = [
-        edges
-            .iter()
-            .flat_map(|(start, end)| [start[0], end[0]])
-            .fold(f64::INFINITY, f64::min),
-        edges
-            .iter()
-            .flat_map(|(start, end)| [start[1], end[1]])
-            .fold(f64::INFINITY, f64::min),
-    ];
-    let maximum = [
-        edges
-            .iter()
-            .flat_map(|(start, end)| [start[0], end[0]])
-            .fold(f64::NEG_INFINITY, f64::max),
-        edges
-            .iter()
-            .flat_map(|(start, end)| [start[1], end[1]])
-            .fold(f64::NEG_INFINITY, f64::max),
-    ];
-    let expected_edges = [
-        ([minimum[0], minimum[1]], [maximum[0], minimum[1]]),
-        ([maximum[0], minimum[1]], [maximum[0], maximum[1]]),
-        ([maximum[0], maximum[1]], [minimum[0], maximum[1]]),
-        ([minimum[0], maximum[1]], [minimum[0], minimum[1]]),
-    ];
-    if minimum[0] >= maximum[0]
-        || minimum[1] >= maximum[1]
-        || expected_edges.iter().any(|expected| {
-            edges
-                .iter()
-                .filter(|actual| {
-                    **actual == *expected || (actual.0 == expected.1 && actual.1 == expected.0)
-                })
-                .count()
-                != 1
-        })
     {
         return None;
     }
@@ -996,6 +956,7 @@ fn btlx_free_contour(geometry: &GeneralMachiningGeometry) -> Option<BtlxFreeCont
         .map(|(start, end)| start[0] * end[1] - end[0] * start[1])
         .sum::<f64>();
     if rounded_edges.iter().any(|(start, end)| start == end)
+        || !btlx_polygon_is_simple(&rounded_edges)
         || !signed_double_area.is_finite()
         || signed_double_area == 0.0
     {
@@ -1017,6 +978,53 @@ fn btlx_free_contour(geometry: &GeneralMachiningGeometry) -> Option<BtlxFreeCont
         end_points: formatted_edges.into_iter().map(|(_, end)| end).collect(),
         depth: format_btlx_number_in_range(depth_mm, f64::MIN_POSITIVE, 100_000.0)?,
     })
+}
+
+fn btlx_polygon_is_simple(edges: &[([f64; 2], [f64; 2])]) -> bool {
+    let cross = |origin: [f64; 2], first: [f64; 2], second: [f64; 2]| {
+        (first[0] - origin[0]) * (second[1] - origin[1])
+            - (first[1] - origin[1]) * (second[0] - origin[0])
+    };
+    let point_on_segment = |point: [f64; 2], start: [f64; 2], end: [f64; 2]| {
+        cross(start, end, point) == 0.0
+            && point[0] >= start[0].min(end[0])
+            && point[0] <= start[0].max(end[0])
+            && point[1] >= start[1].min(end[1])
+            && point[1] <= start[1].max(end[1])
+    };
+    let intersects = |(left_start, left_end): ([f64; 2], [f64; 2]),
+                      (right_start, right_end): ([f64; 2], [f64; 2])| {
+        let left_start_side = cross(left_start, left_end, right_start);
+        let left_end_side = cross(left_start, left_end, right_end);
+        let right_start_side = cross(right_start, right_end, left_start);
+        let right_end_side = cross(right_start, right_end, left_end);
+        (left_start_side * left_end_side < 0.0 && right_start_side * right_end_side < 0.0)
+            || point_on_segment(right_start, left_start, left_end)
+            || point_on_segment(right_end, left_start, left_end)
+            || point_on_segment(left_start, right_start, right_end)
+            || point_on_segment(left_end, right_start, right_end)
+    };
+
+    let edge_count = edges.len();
+    if (0..edge_count).any(|index| {
+        let previous = edges[(index + edge_count - 1) % edge_count].0;
+        let current = edges[index].0;
+        let next = edges[(index + 1) % edge_count].0;
+        cross(previous, current, next) == 0.0
+    }) {
+        return false;
+    }
+    for left in 0..edge_count {
+        for right in (left + 1)..edge_count {
+            if right == left + 1 || (left == 0 && right == edge_count - 1) {
+                continue;
+            }
+            if intersects(edges[left], edges[right]) {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 fn format_btlx_number_in_range(value: f64, minimum: f64, maximum: f64) -> Option<String> {
@@ -2722,7 +2730,7 @@ mod tests {
     }
 
     #[test]
-    fn btlx_free_contour_requires_a_closed_rectangular_profile() {
+    fn btlx_free_contour_requires_a_closed_simple_linear_profile() {
         let line = |start_mm, end_mm| GeneralMachiningSegment::Line { start_mm, end_mm };
         let valid = GeneralMachiningGeometry::ProfileCut {
             frame: identity_machining_frame(),
@@ -2767,15 +2775,32 @@ mod tests {
         *end_mm = [1.0, 0.0];
         assert_eq!(btlx_free_contour(&open), None);
 
-        let mut diagonal = valid.clone();
-        let GeneralMachiningGeometry::ProfileCut { segments, .. } = &mut diagonal else {
-            unreachable!()
+        let irregular = GeneralMachiningGeometry::ProfileCut {
+            frame: identity_machining_frame(),
+            segments: vec![
+                line([0.0, 0.0], [20.0, 0.0]),
+                line([20.0, 0.0], [25.0, 5.0]),
+                line([25.0, 5.0], [10.0, 15.0]),
+                line([10.0, 15.0], [0.0, 10.0]),
+                line([0.0, 10.0], [0.0, 0.0]),
+            ],
+            start_mm: 0.0,
+            end_mm: 20.0,
         };
-        let GeneralMachiningSegment::Line { end_mm, .. } = &mut segments[0] else {
-            unreachable!()
+        assert_eq!(btlx_free_contour(&irregular).unwrap().end_points.len(), 5);
+
+        let self_intersecting = GeneralMachiningGeometry::ProfileCut {
+            frame: identity_machining_frame(),
+            segments: vec![
+                line([0.0, 0.0], [20.0, 20.0]),
+                line([20.0, 20.0], [0.0, 20.0]),
+                line([0.0, 20.0], [20.0, 0.0]),
+                line([20.0, 0.0], [0.0, 0.0]),
+            ],
+            start_mm: 0.0,
+            end_mm: 20.0,
         };
-        *end_mm = [20.0, 1.0];
-        assert_eq!(btlx_free_contour(&diagonal), None);
+        assert_eq!(btlx_free_contour(&self_intersecting), None);
 
         let collapsed_after_formatting = GeneralMachiningGeometry::ProfileCut {
             frame: identity_machining_frame(),

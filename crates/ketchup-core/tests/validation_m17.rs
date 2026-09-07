@@ -518,6 +518,21 @@ fn btlx_2_3_1_straight_timber_export_is_pinned_deterministic_and_fail_closed() {
             .unwrap()
     );
 
+    let (irregular_cut_snapshot, irregular_cut) = irregular_profile_cut_fabrication_projection();
+    let irregular_cut_export = irregular_cut
+        .btlx_2_3_1_export(&irregular_cut_snapshot)
+        .unwrap();
+    assert_eq!(
+        irregular_cut_export,
+        include_bytes!("fixtures/btlx/irregular-profile-cut-2.3.1.btlx")
+    );
+    assert_eq!(
+        irregular_cut_export,
+        irregular_cut
+            .btlx_2_3_1_export(&irregular_cut_snapshot)
+            .unwrap()
+    );
+
     let mut tampered = projection;
     tampered.bom.rows[0].quantity = 3;
     assert_eq!(
@@ -1125,6 +1140,14 @@ fn rectangular_profile_cut_fabrication_projection() -> (Snapshot, GeneralFabrica
     )
 }
 
+fn irregular_profile_cut_fabrication_projection() -> (Snapshot, GeneralFabricationProjection) {
+    exact_graph_document_fabrication_projection(
+        irregular_profile_cut_document(),
+        "m17-irregular-profile-cut-result",
+        GRAPH_BOOLEAN,
+    )
+}
+
 fn exact_graph_document_fabrication_projection(
     document: DocumentStore,
     result_fingerprint: &str,
@@ -1278,6 +1301,64 @@ fn rectangular_profile_cut_document() -> DocumentStore {
                     target: GRAPH_BASE_BODY,
                     profile: GRAPH_TOOL_PROFILE,
                     depth: Dimension::from_decimal("20").unwrap(),
+                },
+            },
+            occurrence(GRAPH_LEFT, GRAPH_DEFINITION, 0.0),
+            occurrence(GRAPH_RIGHT, GRAPH_DEFINITION, 200.0),
+        ]))
+        .unwrap();
+    mark_timber_members(&mut document, &[GRAPH_LEFT, GRAPH_RIGHT]);
+    document.discard_history_before_current();
+    document
+}
+
+fn irregular_profile_cut_document() -> DocumentStore {
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: GRAPH_DEFINITION,
+                name: "Timber with irregular profile cut".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: GRAPH_BASE_PROFILE,
+                definition_id: GRAPH_DEFINITION,
+                name: "100 x 50 timber profile".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: GRAPH_BASE_BODY,
+                definition_id: GRAPH_DEFINITION,
+                name: "1000 mm timber stock".to_owned(),
+                kind: FeatureKind::Extrusion {
+                    profile: GRAPH_BASE_PROFILE,
+                    height: Dimension::from_decimal("1000").unwrap(),
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: GRAPH_TOOL_PROFILE,
+                definition_id: GRAPH_DEFINITION,
+                name: "Irregular profile cut".to_owned(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![
+                        [10.0, 10.0],
+                        [40.0, 10.0],
+                        [40.0, 20.0],
+                        [25.0, 30.0],
+                        [10.0, 20.0],
+                    ],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: GRAPH_BOOLEAN,
+                definition_id: GRAPH_DEFINITION,
+                name: "18 mm irregular profile cut".to_owned(),
+                kind: FeatureKind::Pocket {
+                    target: GRAPH_BASE_BODY,
+                    profile: GRAPH_TOOL_PROFILE,
+                    depth: Dimension::from_decimal("18").unwrap(),
                 },
             },
             occurrence(GRAPH_LEFT, GRAPH_DEFINITION, 0.0),
