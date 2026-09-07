@@ -2281,6 +2281,55 @@ fn install_initial_graph_result(app: &mut KetchupApp) {
 }
 
 #[test]
+fn blender_glb_file_command_exports_current_scene_with_loss_report() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("current-model.glb");
+    let dialogs = dialogs::ScriptedFileDialogs::new()
+        .queue_export(&path)
+        .always_confirm_high_risk_as(83);
+    let script = dialogs.clone();
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    install_initial_graph_result(&mut app);
+    let revision = app.document.current().revision_id();
+    let digest = app.document.current().canonical_digest();
+
+    let mut harness = Harness::builder()
+        .with_size(Vec2::new(1600.0, 1000.0))
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+    harness.run();
+    let file_menu = harness.state().catalog.text("menu-file");
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, &file_menu)
+        .click();
+    harness.run();
+    let export = harness.state().command_label(AppCommand::ExportBlenderGlb);
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, &export)
+        .click();
+    harness.run();
+
+    assert_eq!(harness.state().document.current().revision_id(), revision);
+    assert_eq!(
+        harness.state().document.current().canonical_digest(),
+        digest
+    );
+    let glb = std::fs::read(&path).unwrap();
+    assert_eq!(&glb[0..4], b"glTF");
+    assert_eq!(u32::from_le_bytes(glb[4..8].try_into().unwrap()), 2);
+    let report = std::fs::read_to_string(path.with_extension("glb.loss.txt")).unwrap();
+    assert!(report.contains("format=glTF 2.0 binary (GLB)"));
+    assert!(report.contains("unit_conversion=millimetres to metres"));
+    assert!(report.contains("axis_conversion=Ketchup Z-up to glTF Y-up"));
+    assert_eq!(script.export_requests()[0].extension, "glb");
+    let receipt = harness.state().last_side_effect_receipt().unwrap();
+    assert_eq!(receipt.scope().class(), HighRiskClass::LossyConversion);
+    assert_eq!(
+        receipt.operation(),
+        "export-current-model-blender-glb-with-loss-report"
+    );
+}
+
+#[test]
 fn hundegger_btlx_file_command_exports_validated_timber_with_support_report() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("single-timber.btlx");

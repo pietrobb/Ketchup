@@ -37,6 +37,7 @@ use ketchup_core::beam_m4ae::{
 };
 #[cfg(feature = "named-product-fixtures")]
 use ketchup_core::beam_m5::{BeamExactPiecePackage, BeamM5Products};
+use ketchup_core::blender_export::{ExactGlbExport, ExactGlbInstance, exact_model_glb_export};
 use ketchup_core::document::{
     AuthenticatedApprover, AuthoritativeDependency, BodyId, BooleanOperation, BottleEdgeFinishKind,
     CanonicalCommand, CanonicalError, ClassificationCategoryId, ClassificationDimensionId,
@@ -3149,6 +3150,7 @@ pub enum AppCommand {
     ImportSketchupScene,
     ExportExactStep,
     ExportMeshStl,
+    ExportBlenderGlb,
     ExportHundeggerBtlx,
     Select,
     Line,
@@ -3317,7 +3319,7 @@ struct CommandSpec {
 struct CommandRegistry;
 
 impl CommandRegistry {
-    const COMMANDS: [CommandSpec; 107] = [
+    const COMMANDS: [CommandSpec; 108] = [
         CommandSpec {
             id: AppCommand::New,
             label_key: "file-new",
@@ -3384,6 +3386,13 @@ impl CommandRegistry {
         CommandSpec {
             id: AppCommand::ExportMeshStl,
             label_key: "file-export-mesh",
+            shortcut_key: "shortcut-none",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::ExportBlenderGlb,
+            label_key: "file-export-blender-glb",
             shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
@@ -7038,8 +7047,9 @@ impl KetchupApp {
         let (filter_key, suffix) = match extension {
             "step" => ("file-filter-step", "step"),
             "stl" => ("file-filter-stl", "stl"),
+            "glb" => ("file-filter-glb", "glb"),
             "btlx" => ("file-filter-btlx", "btlx"),
-            _ => unreachable!("the File menu exposes only STEP, STL, and BTLx export"),
+            _ => unreachable!("the File menu exposes only STEP, STL, GLB, and BTLx export"),
         };
         let filter_label = self.catalog.text(filter_key);
         let stem = self
@@ -7579,10 +7589,10 @@ impl KetchupApp {
         }
     }
 
-    fn current_visible_exact_model(
+    fn current_visible_exact_scene(
         &self,
         snapshot: &Snapshot,
-    ) -> Result<Vec<(ExactBodyPackage, Transform)>, String> {
+    ) -> Result<Vec<(ExactBodyPackage, SceneOccurrence)>, String> {
         let occurrences = snapshot
             .scene_query()
             .into_iter()
@@ -7602,7 +7612,7 @@ impl KetchupApp {
         if occurrences.is_empty() {
             return Err("the visible model is empty".to_owned());
         }
-        let mut model = Vec::new();
+        let mut scene = Vec::new();
         for occurrence in occurrences {
             let packages = self
                 .exact_results
@@ -7615,13 +7625,25 @@ impl KetchupApp {
                     occurrence.instance_path
                 ));
             }
-            model.extend(
+            scene.extend(
                 packages
                     .into_iter()
-                    .map(|package| ((**package).clone(), occurrence.transform)),
+                    .map(|package| ((**package).clone(), occurrence.clone())),
             );
         }
-        Ok(model)
+        Ok(scene)
+    }
+
+    fn current_visible_exact_model(
+        &self,
+        snapshot: &Snapshot,
+    ) -> Result<Vec<(ExactBodyPackage, Transform)>, String> {
+        self.current_visible_exact_scene(snapshot).map(|scene| {
+            scene
+                .into_iter()
+                .map(|(package, occurrence)| (package, occurrence.transform))
+                .collect()
+        })
     }
 
     fn export_current_model_stl_to(&mut self, path: &Path) -> bool {
@@ -7699,6 +7721,85 @@ impl KetchupApp {
             Err(error) => {
                 self.digest = self.catalog.format(
                     "error-export-stl",
+                    &BTreeMap::from([("path", path.display().to_string()), ("reason", error)]),
+                );
+                false
+            }
+        }
+    }
+
+    fn export_current_model_glb_to(&mut self, path: &Path) -> bool {
+        self.side_effect_receipts.clear();
+        let snapshot = self.document.current();
+        let result = self
+            .current_visible_exact_scene(&snapshot)
+            .and_then(|scene| {
+                let instances = scene
+                    .iter()
+                    .map(|(package, occurrence)| ExactGlbInstance {
+                        package,
+                        occurrence,
+                    })
+                    .collect::<Vec<_>>();
+                exact_model_glb_export(&snapshot, &instances).map_err(|error| error.to_string())
+            })
+            .and_then(|bundle| {
+                let report_path = path.with_extension("glb.loss.txt");
+                let precondition = ExportBundlePrecondition::capture(path, &report_path)?;
+                let evidence = exact_glb_export_evidence(path, &bundle);
+                let title = self.catalog.text("dialog-export-blender-title");
+                let risk = self.catalog.text("dialog-export-blender-risk");
+                self.authorize_path_side_effect(
+                    HighRiskClass::LossyConversion,
+                    "export-current-model-blender-glb-with-loss-report",
+                    &title,
+                    &risk,
+                    path,
+                    &evidence,
+                )?;
+                if precondition.primary_sha256.is_some() {
+                    let title = self.catalog.text("dialog-export-overwrite-title");
+                    let risk = self.catalog.text("dialog-export-overwrite-risk");
+                    self.authorize_path_side_effect(
+                        HighRiskClass::Overwrite,
+                        "overwrite-current-model-blender-glb-export",
+                        &title,
+                        &risk,
+                        path,
+                        &evidence,
+                    )?;
+                }
+                if precondition.report_sha256.is_some() {
+                    let title = self.catalog.text("dialog-export-overwrite-title");
+                    let risk = self.catalog.text("dialog-export-overwrite-risk");
+                    self.authorize_path_side_effect(
+                        HighRiskClass::Overwrite,
+                        "overwrite-current-model-blender-glb-loss-report",
+                        &title,
+                        &risk,
+                        &report_path,
+                        &evidence,
+                    )?;
+                }
+                write_export_bundle(
+                    path,
+                    &bundle.glb,
+                    &report_path,
+                    bundle.loss_report.as_bytes(),
+                    &precondition,
+                )
+            });
+        match result {
+            Ok(()) => {
+                self.digest = self.catalog.format(
+                    "digest-exported-glb",
+                    &BTreeMap::from([("path", path.display().to_string())]),
+                );
+                true
+            }
+            Err(error) => {
+                self.digest = self.catalog.format(
+                    "error-export-glb",
                     &BTreeMap::from([("path", path.display().to_string()), ("reason", error)]),
                 );
                 false
@@ -8170,6 +8271,11 @@ impl KetchupApp {
             AppCommand::ExportMeshStl => {
                 if let Some(path) = self.choose_export_path("stl") {
                     self.export_current_model_stl_to(&path);
+                }
+            }
+            AppCommand::ExportBlenderGlb => {
+                if let Some(path) = self.choose_export_path("glb") {
+                    self.export_current_model_glb_to(&path);
                 }
             }
             AppCommand::ExportHundeggerBtlx => {
@@ -14959,6 +15065,7 @@ impl KetchupApp {
             | AppCommand::ImportSketchupScene
             | AppCommand::ExportExactStep
             | AppCommand::ExportMeshStl
+            | AppCommand::ExportBlenderGlb
             | AppCommand::ExportHundeggerBtlx => {
                 self.dispatch_file_command(id);
             }
@@ -29463,6 +29570,7 @@ impl KetchupApp {
                 ui.separator();
                 self.menu_command(ui, AppCommand::ExportExactStep);
                 self.menu_command(ui, AppCommand::ExportMeshStl);
+                self.menu_command(ui, AppCommand::ExportBlenderGlb);
                 ui.menu_button(self.catalog.text("file-export-btlx-options"), |ui| {
                     ui.selectable_value(
                         &mut self.btlx_profile_strategy,
@@ -35687,6 +35795,16 @@ fn exact_stl_export_evidence(path: &Path, bundle: &ExactStlExport) -> Vec<u8> {
         path,
         bundle.mesh_stl.as_bytes(),
         &path.with_extension("stl.loss.txt"),
+        bundle.loss_report.as_bytes(),
+    )
+}
+
+fn exact_glb_export_evidence(path: &Path, bundle: &ExactGlbExport) -> Vec<u8> {
+    export_bundle_evidence(
+        b"ketchup.current-model-blender-glb-export.v1",
+        path,
+        &bundle.glb,
+        &path.with_extension("glb.loss.txt"),
         bundle.loss_report.as_bytes(),
     )
 }
