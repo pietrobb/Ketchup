@@ -8,6 +8,7 @@ pub mod assistant_sidecar;
 pub mod beam_m4ae;
 #[cfg(feature = "named-product-fixtures")]
 pub mod beam_m5;
+pub mod blender_export;
 pub mod exact_revolve;
 
 pub mod bottle_m6 {
