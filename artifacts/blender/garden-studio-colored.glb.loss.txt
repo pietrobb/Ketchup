@@ -1,0 +1,14 @@
+authority=accepted exact OCCT B-Rep
+format=glTF 2.0 binary (GLB)
+conversion=current-visible-exact-model-to-instanced-mesh-scene
+unit_conversion=millimetres to metres
+axis_conversion=Ketchup Z-up to glTF Y-up
+hierarchy=canonical global groups, component occurrences, local groups, and nested occurrences
+blender_background_import_verified=false
+editability_loss=canonical features, rules, dimensions, constraints, and Undo history are not preserved
+topology_loss=exact topology, analytic surfaces, and durable face identity are not preserved
+tolerance_loss=geometry is approximated by each accepted tessellation under its source tolerance profile
+source_digest=b31e92b55a45cc96
+occurrence_body_count=140
+unique_geometry_count=140
+mesh_count=140
