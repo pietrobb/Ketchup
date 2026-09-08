@@ -389,6 +389,7 @@ impl StableDigest {
             ImportFormat::Dxf => 2,
             ImportFormat::Step => 3,
             ImportFormat::SketchupScene => 4,
+            ImportFormat::Glb => 5,
         });
         self.bytes(receipt.source_sha256());
         self.u64(receipt.source_byte_len());
@@ -435,6 +436,10 @@ impl StableDigest {
                 }
                 ImportOutputRef::Occurrence(id) => {
                     self.byte(3);
+                    self.u64(id.0);
+                }
+                ImportOutputRef::Group(id) => {
+                    self.byte(4);
                     self.u64(id.0);
                 }
             }
@@ -1091,6 +1096,10 @@ impl StableDigest {
                     }
                     MeshAuthority::ImportedSketchupScene { import_id } => {
                         self.byte(4);
+                        self.u64(import_id.0);
+                    }
+                    MeshAuthority::ImportedGlb { import_id } => {
+                        self.byte(5);
                         self.u64(import_id.0);
                     }
                     MeshAuthority::ExactConversion(conversion) => {

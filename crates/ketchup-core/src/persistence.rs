@@ -104,7 +104,8 @@ const PLANAR_FACE_ATTACHMENT_SCHEMA: u16 = 50;
 const AXIAL_ATTACHMENT_SCHEMA: u16 = 51;
 const FREE_WORKPLANE_SCHEMA: u16 = 52;
 const OCCURRENCE_COLOR_SCHEMA: u16 = 53;
-pub const CURRENT_SCHEMA: u16 = OCCURRENCE_COLOR_SCHEMA;
+const GLB_IMPORT_SCHEMA: u16 = 54;
+pub const CURRENT_SCHEMA: u16 = GLB_IMPORT_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -173,6 +174,7 @@ struct ProductSchemaCapabilities {
     axial_attachments: bool,
     free_workplanes: bool,
     occurrence_colors: bool,
+    glb_import: bool,
 }
 
 impl ProductSchemaCapabilities {
@@ -226,6 +228,7 @@ impl ProductSchemaCapabilities {
         axial_attachments: false,
         free_workplanes: false,
         occurrence_colors: false,
+        glb_import: false,
     };
 
     const fn current(schema: u16) -> Self {
@@ -279,6 +282,7 @@ impl ProductSchemaCapabilities {
             axial_attachments: schema >= AXIAL_ATTACHMENT_SCHEMA,
             free_workplanes: schema >= FREE_WORKPLANE_SCHEMA,
             occurrence_colors: schema >= OCCURRENCE_COLOR_SCHEMA,
+            glb_import: schema >= GLB_IMPORT_SCHEMA,
         }
     }
 }
@@ -1839,6 +1843,10 @@ fn write_features(bytes: &mut Vec<u8>, product: &ProductModel) {
                         push_u8(bytes, 4);
                         push_u64(bytes, import_id.0);
                     }
+                    MeshAuthority::ImportedGlb { import_id } => {
+                        push_u8(bytes, 5);
+                        push_u64(bytes, import_id.0);
+                    }
                     MeshAuthority::ExactConversion(conversion) => {
                         push_u8(bytes, 2);
                         push_u64(bytes, conversion.source_document_id.0);
@@ -3130,6 +3138,7 @@ fn write_import_receipt(bytes: &mut Vec<u8>, receipt: &ImportReceipt) {
             ImportFormat::Dxf => 2,
             ImportFormat::Step => 3,
             ImportFormat::SketchupScene => 4,
+            ImportFormat::Glb => 5,
         },
     );
     bytes.extend_from_slice(receipt.source_sha256());
@@ -3188,6 +3197,10 @@ fn write_import_receipt(bytes: &mut Vec<u8>, receipt: &ImportReceipt) {
                 push_u8(bytes, 3);
                 push_u64(bytes, id.0);
             }
+            ImportOutputRef::Group(id) => {
+                push_u8(bytes, 4);
+                push_u64(bytes, id.0);
+            }
         }
     }
 }
@@ -3195,6 +3208,7 @@ fn write_import_receipt(bytes: &mut Vec<u8>, receipt: &ImportReceipt) {
 fn read_import_receipt(
     reader: &mut Reader<'_>,
     sketchup_scene: bool,
+    glb_import: bool,
 ) -> Result<ImportReceipt, PersistenceError> {
     let id = ImportId(reader.u64()?);
     let format = match reader.u8()? {
@@ -3202,6 +3216,7 @@ fn read_import_receipt(
         2 => ImportFormat::Dxf,
         3 => ImportFormat::Step,
         4 if sketchup_scene => ImportFormat::SketchupScene,
+        5 if glb_import => ImportFormat::Glb,
         value => return Err(PersistenceError::InvalidImportFormat(value)),
     };
     let source_sha256 = reader
@@ -3250,6 +3265,7 @@ fn read_import_receipt(
             1 => ImportOutputRef::Definition(DefinitionId(reader.u64()?)),
             2 => ImportOutputRef::Feature(FeatureId(reader.u64()?)),
             3 => ImportOutputRef::Occurrence(OccurrenceId(reader.u64()?)),
+            4 if glb_import => ImportOutputRef::Group(GroupId(reader.u64()?)),
             value => return Err(PersistenceError::InvalidImportOutput(value)),
         });
     }
@@ -4259,6 +4275,9 @@ fn read_product(
                     4 if capabilities.sketchup_scene => MeshAuthority::ImportedSketchupScene {
                         import_id: crate::import::ImportId(reader.u64()?),
                     },
+                    5 if capabilities.glb_import => MeshAuthority::ImportedGlb {
+                        import_id: crate::import::ImportId(reader.u64()?),
+                    },
                     2 => {
                         let source_document_id = crate::document::DocumentId(reader.u64()?);
                         let source_revision = reader.u64()?;
@@ -4481,7 +4500,11 @@ fn read_product(
         }
         if capabilities.import_receipts {
             for _ in 0..reader.count_with_limit(MAX_IMPORT_OUTPUTS as u32)? {
-                let receipt = read_import_receipt(reader, capabilities.sketchup_scene)?;
+                let receipt = read_import_receipt(
+                    reader,
+                    capabilities.sketchup_scene,
+                    capabilities.glb_import,
+                )?;
                 let id = receipt.id();
                 if product
                     .import_receipts

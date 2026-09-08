@@ -9,6 +9,10 @@ use ketchup_application::diagnostics::{
     assistant_planning_rejection, assistant_rejection,
 };
 use ketchup_application::evaluation::{ExactEvaluationTask, ExactSource, exact_worker_candidates};
+use ketchup_application::mesh_conversion::{
+    MeshConversionPlan, MeshConversionVerification, commit_mesh_conversion,
+    prepare_mesh_conversion, verify_mesh_conversion,
+};
 pub use ketchup_application::topology::GeneralFinishKind;
 use ketchup_application::topology::{
     MAX_TOPOLOGICAL_FINISH_REFERENCES, assistant_topology_references, plan_topology_finish_kind,
@@ -88,9 +92,10 @@ use ketchup_core::graph::{
 };
 use ketchup_core::import::{
     DxfImportOptions, ImportDiagnosticSeverity, ImportFormat, ImportLengthUnit,
-    ImportUnitAuthority, ImportUnitDecision, MAX_DXF_SOURCE_BYTES, MAX_SKETCHUP_SCENE_SOURCE_BYTES,
-    MAX_STEP_SOURCE_BYTES, MAX_STL_SOURCE_BYTES, ParsedDxf, ParsedSketchupScene, ParsedStlMesh,
-    StepImportEvidence, inspect_dxf, inspect_sketchup_scene, parse_stl, plan_dxf_import,
+    ImportUnitAuthority, ImportUnitDecision, MAX_DXF_SOURCE_BYTES, MAX_GLB_SOURCE_BYTES,
+    MAX_SKETCHUP_SCENE_SOURCE_BYTES, MAX_STEP_SOURCE_BYTES, MAX_STL_SOURCE_BYTES, ParsedDxf,
+    ParsedGlbScene, ParsedSketchupScene, ParsedStlMesh, StepImportEvidence, inspect_dxf,
+    inspect_glb, inspect_sketchup_scene, parse_stl, plan_dxf_import, plan_glb_import,
     plan_sketchup_scene_import, plan_step_import, plan_stl_import,
 };
 #[cfg(test)]
@@ -173,6 +178,7 @@ const INITIAL_BOX_DEFINITION: DefinitionId = DefinitionId(1);
 const BOX_WIDTH_MM: f64 = 100.0;
 const BOX_DEPTH_MM: f64 = 60.0;
 const GRID_STEP_MM: f64 = 10.0;
+const MESH_CONVERSION_TOLERANCE_MM: f64 = 0.25;
 /// A Move pinned to one axis snaps this finely, because a part being stacked on
 /// another is placed to the millimetre rather than to the layout grid.
 const MOVE_AXIS_STEP_MM: f64 = 1.0;
@@ -3148,6 +3154,8 @@ pub enum AppCommand {
     ImportDrawingDxf,
     ImportExactStep,
     ImportSketchupScene,
+    ImportBlenderGlb,
+    ConvertSelectedMeshToExact,
     ExportExactStep,
     ExportMeshStl,
     ExportBlenderGlb,
@@ -3319,7 +3327,7 @@ struct CommandSpec {
 struct CommandRegistry;
 
 impl CommandRegistry {
-    const COMMANDS: [CommandSpec; 108] = [
+    const COMMANDS: [CommandSpec; 110] = [
         CommandSpec {
             id: AppCommand::New,
             label_key: "file-new",
@@ -3372,6 +3380,20 @@ impl CommandRegistry {
         CommandSpec {
             id: AppCommand::ImportSketchupScene,
             label_key: "file-import-sketchup-scene",
+            shortcut_key: "shortcut-none",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::ImportBlenderGlb,
+            label_key: "file-import-blender-glb",
+            shortcut_key: "shortcut-none",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::ConvertSelectedMeshToExact,
+            label_key: "model-convert-mesh-exact",
             shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
@@ -6021,6 +6043,35 @@ struct PendingSketchupSceneImport {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+struct GlbImportSourcePlan {
+    path: PathBuf,
+    source: Vec<u8>,
+    document_id: DocumentId,
+    revision_id: u64,
+    canonical_digest: String,
+    source_sha256: [u8; 32],
+    source_byte_len: u64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct GlbImportPreviewPlan {
+    source: GlbImportSourcePlan,
+    review: ParsedGlbScene,
+    batch: CommandBatch,
+}
+
+#[derive(Clone, Debug)]
+struct PendingGlbImport {
+    plan: GlbImportPreviewPlan,
+    invalidated: bool,
+}
+
+struct PendingMeshConversion {
+    plan: MeshConversionPlan,
+    verification: MeshConversionVerification,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 struct MigrationReviewSourcePlan {
     path: PathBuf,
     effective_path: PathBuf,
@@ -6223,6 +6274,8 @@ pub struct KetchupApp {
     pending_dxf_import: Option<PendingDxfImport>,
     pending_step_import: Option<PendingStepImport>,
     pending_sketchup_scene_import: Option<PendingSketchupSceneImport>,
+    pending_glb_import: Option<PendingGlbImport>,
+    pending_mesh_conversion: Option<PendingMeshConversion>,
     viewport_rect: Option<Rect>,
     dialogs: Box<dyn FileDialogs>,
     exact_worker_path: Option<PathBuf>,
@@ -6473,6 +6526,8 @@ impl KetchupApp {
             pending_dxf_import: None,
             pending_step_import: None,
             pending_sketchup_scene_import: None,
+            pending_glb_import: None,
+            pending_mesh_conversion: None,
             viewport_rect: None,
             dialogs: Box::new(NativeFileDialogs::default()),
             exact_worker_path: None,
@@ -6583,6 +6638,9 @@ impl KetchupApp {
             pending.invalidated = true;
         }
         if let Some(pending) = self.pending_sketchup_scene_import.as_mut() {
+            pending.invalidated = true;
+        }
+        if let Some(pending) = self.pending_glb_import.as_mut() {
             pending.invalidated = true;
         }
     }
@@ -7589,6 +7647,199 @@ impl KetchupApp {
         }
     }
 
+    fn choose_glb_import_path(&mut self) -> Option<PathBuf> {
+        let filter_label = self.catalog.text("file-filter-glb");
+        self.dialogs.pick_import_path(ImportDialogRequest {
+            format: ImportFormat::Glb,
+            filter_label: &filter_label,
+            extensions: &["glb"],
+        })
+    }
+
+    fn read_glb_source(path: &Path) -> Result<Vec<u8>, String> {
+        if std::fs::metadata(path)
+            .map_err(|error| error.to_string())?
+            .len()
+            > MAX_GLB_SOURCE_BYTES
+        {
+            return Err("GLB source exceeds the bounded 32 MiB envelope".to_owned());
+        }
+        let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+        let mut source = Vec::new();
+        std::io::Read::by_ref(&mut file)
+            .take(MAX_GLB_SOURCE_BYTES + 1)
+            .read_to_end(&mut source)
+            .map_err(|error| error.to_string())?;
+        if source.len() as u64 > MAX_GLB_SOURCE_BYTES {
+            return Err("GLB source exceeds the bounded 32 MiB envelope".to_owned());
+        }
+        Ok(source)
+    }
+
+    fn prepare_glb_import_preview_plan(
+        &self,
+        source: GlbImportSourcePlan,
+    ) -> Result<GlbImportPreviewPlan, String> {
+        let snapshot = self.document.current();
+        if snapshot.document_id() != source.document_id
+            || snapshot.revision_id() != source.revision_id
+            || snapshot.canonical_digest() != source.canonical_digest
+        {
+            return Err("GLB import review is stale for the active document".to_owned());
+        }
+        if source.source.len() as u64 != source.source_byte_len
+            || sha256_bytes(&source.source) != source.source_sha256
+        {
+            return Err("sealed GLB source identity does not match its bytes".to_owned());
+        }
+        let source_name = source
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| "GLB source name is not valid UTF-8".to_owned())?;
+        let review = std::panic::catch_unwind(|| inspect_glb(&source.source))
+            .map_err(|_| "bounded GLB parser stopped without publishing geometry".to_owned())?
+            .map_err(|error| error.to_string())?;
+        let batch =
+            std::panic::catch_unwind(|| plan_glb_import(&snapshot, &source.source, source_name))
+                .map_err(|_| "bounded GLB parser stopped without publishing geometry".to_owned())?
+                .map_err(|error| error.to_string())?;
+        Ok(GlbImportPreviewPlan {
+            source,
+            review,
+            batch,
+        })
+    }
+
+    fn import_glb_from(&mut self, pending: &PendingGlbImport) -> bool {
+        let path = &pending.plan.source.path;
+        let result = (|| {
+            if pending.invalidated {
+                return Err("GLB import review is stale for the active document".to_owned());
+            }
+            let source = Self::read_glb_source(path)?;
+            if source.len() as u64 != pending.plan.source.source_byte_len
+                || sha256_bytes(&source) != pending.plan.source.source_sha256
+                || source != pending.plan.source.source
+            {
+                return Err("GLB source changed after it was selected for review".to_owned());
+            }
+            let rederived = self.prepare_glb_import_preview_plan(pending.plan.source.clone())?;
+            if rederived != pending.plan {
+                return Err("GLB review or canonical batch changed after preview".to_owned());
+            }
+            self.document
+                .apply_batch(&pending.plan.batch)
+                .map_err(|error| error.to_string())?;
+            Ok::<(), String>(())
+        })();
+        match result {
+            Ok(()) => {
+                self.digest = self.catalog.format(
+                    "digest-imported-glb",
+                    &BTreeMap::from([("path", path.display().to_string())]),
+                );
+                true
+            }
+            Err(reason) => {
+                self.digest = self.catalog.format(
+                    "error-import-glb",
+                    &BTreeMap::from([("path", path.display().to_string()), ("reason", reason)]),
+                );
+                false
+            }
+        }
+    }
+
+    fn selected_mesh_feature_id(&self) -> Option<FeatureId> {
+        let selected = self.selected_occurrence_ids();
+        if selected.len() != 1 {
+            return None;
+        }
+        let snapshot = self.document.current();
+        let occurrence = snapshot.occurrence(*selected.iter().next()?)?;
+        let definition = snapshot.definition(occurrence.definition_id())?;
+        let [feature_id] = definition.feature_ids() else {
+            return None;
+        };
+        snapshot
+            .feature(*feature_id)
+            .is_some_and(|feature| matches!(feature.kind(), FeatureKind::MeshBody(_)))
+            .then_some(*feature_id)
+    }
+
+    fn begin_mesh_conversion_review(&mut self) {
+        self.pending_mesh_conversion = None;
+        let result = (|| {
+            let feature_id = self
+                .selected_mesh_feature_id()
+                .ok_or_else(|| "select exactly one mesh body occurrence".to_owned())?;
+            let plan =
+                prepare_mesh_conversion(&self.document, feature_id, MESH_CONVERSION_TOLERANCE_MM)
+                    .map_err(|error| error.to_string())?;
+            let executable = self.exact_worker_executable()?;
+            let mut worker =
+                ExactWorkerSupervisor::spawn(executable).map_err(|error| error.to_string())?;
+            let package = worker
+                .evaluate_exact_brep_graph(plan.graph())
+                .map_err(|error| error.to_string())?;
+            let verification =
+                verify_mesh_conversion(&plan, package).map_err(|error| error.to_string())?;
+            Ok::<_, String>(PendingMeshConversion { plan, verification })
+        })();
+        match result {
+            Ok(pending) => {
+                self.pending_mesh_conversion = Some(pending);
+                self.digest = self.catalog.text("digest-mesh-conversion-verified");
+            }
+            Err(reason) => {
+                self.digest = self.catalog.format(
+                    "error-mesh-conversion",
+                    &BTreeMap::from([("reason", reason)]),
+                );
+            }
+        }
+    }
+
+    fn confirm_mesh_conversion(&mut self) {
+        let Some(pending) = self.pending_mesh_conversion.take() else {
+            return;
+        };
+        match commit_mesh_conversion(&mut self.document, &pending.plan, pending.verification) {
+            Ok(package) => {
+                if let Some(task) = self.exact_task.take() {
+                    task.cancelled.store(true, Ordering::Release);
+                }
+                let snapshot = self.document.current();
+                self.rebind_exact_results(&snapshot);
+                let package = Arc::new(ExactBodyPackage::from(package));
+                self.exact_results
+                    .insert_current(&snapshot, Arc::clone(&package))
+                    .expect("verified conversion package matches committed snapshot");
+                if !package.topological_references().is_empty() {
+                    self.topology_results
+                        .insert_current(&snapshot, package)
+                        .expect("verified topology package matches committed snapshot");
+                }
+                self.exact_source = None;
+                self.exact_retry_at = None;
+                self.render_plan = Some(Arc::new(InstancedRenderPlan::from_snapshot(
+                    &snapshot,
+                    &self.exact_results,
+                    &mut self.render_cache,
+                )));
+                self.interaction_projection_cache.get_mut().take();
+                self.digest = self.catalog.text("digest-mesh-conversion-committed");
+            }
+            Err(error) => {
+                self.digest = self.catalog.format(
+                    "error-mesh-conversion",
+                    &BTreeMap::from([("reason", error.to_string())]),
+                );
+            }
+        }
+    }
+
     fn current_visible_exact_scene(
         &self,
         snapshot: &Snapshot,
@@ -7620,6 +7871,22 @@ impl KetchupApp {
                 .filter(|package| package.definition_id() == occurrence.definition_id)
                 .collect::<Vec<_>>();
             if packages.is_empty() {
+                let contains_mesh =
+                    snapshot
+                        .definition(occurrence.definition_id)
+                        .is_some_and(|definition| {
+                            definition.feature_ids().iter().any(|feature_id| {
+                                snapshot.feature(*feature_id).is_some_and(|feature| {
+                                    matches!(feature.kind(), FeatureKind::MeshBody(_))
+                                })
+                            })
+                        });
+                if contains_mesh {
+                    return Err(format!(
+                        "visible occurrence {:?} is a mesh body without verified exact geometry; exact-derived export is unavailable until explicit exact conversion",
+                        occurrence.instance_path
+                    ));
+                }
                 return Err(format!(
                     "visible occurrence {:?} has no current accepted exact result",
                     occurrence.instance_path
@@ -7861,6 +8128,21 @@ impl KetchupApp {
                         })
                 })
                 .map(|occurrence| {
+                    let contains_mesh = snapshot
+                        .definition(occurrence.definition_id)
+                        .is_some_and(|definition| {
+                            definition.feature_ids().iter().any(|feature_id| {
+                                snapshot.feature(*feature_id).is_some_and(|feature| {
+                                    matches!(feature.kind(), FeatureKind::MeshBody(_))
+                                })
+                            })
+                        });
+                    if contains_mesh {
+                        return Err(format!(
+                            "visible occurrence {:?} is a mesh body without verified exact geometry; BTLx manufacturing export is unavailable until explicit exact conversion",
+                            occurrence.instance_path
+                        ));
+                    }
                     GeneralBodyParticipant::accept(
                         &snapshot,
                         &self.exact_results,
@@ -8214,6 +8496,40 @@ impl KetchupApp {
                             self.pending_sketchup_scene_import = None;
                             self.digest = self.catalog.format(
                                 "error-import-sketchup-scene",
+                                &BTreeMap::from([
+                                    ("path", path.display().to_string()),
+                                    ("reason", reason),
+                                ]),
+                            );
+                        }
+                    }
+                }
+            }
+            AppCommand::ImportBlenderGlb => {
+                if let Some(path) = self.choose_glb_import_path() {
+                    let result = Self::read_glb_source(&path).and_then(|source| {
+                        let snapshot = self.document.current();
+                        let source_plan = GlbImportSourcePlan {
+                            path: path.clone(),
+                            source_sha256: sha256_bytes(&source),
+                            source_byte_len: source.len() as u64,
+                            source,
+                            document_id: snapshot.document_id(),
+                            revision_id: snapshot.revision_id(),
+                            canonical_digest: snapshot.canonical_digest(),
+                        };
+                        let plan = self.prepare_glb_import_preview_plan(source_plan)?;
+                        Ok(PendingGlbImport {
+                            plan,
+                            invalidated: false,
+                        })
+                    });
+                    match result {
+                        Ok(pending) => self.pending_glb_import = Some(pending),
+                        Err(reason) => {
+                            self.pending_glb_import = None;
+                            self.digest = self.catalog.format(
+                                "error-import-glb",
                                 &BTreeMap::from([
                                     ("path", path.display().to_string()),
                                     ("reason", reason),
@@ -8704,6 +9020,15 @@ impl KetchupApp {
     #[must_use]
     pub fn document_snapshot(&self) -> Snapshot {
         self.document.current()
+    }
+
+    #[doc(hidden)]
+    pub fn headless_select_occurrence(&mut self, occurrence_id: OccurrenceId) -> bool {
+        if self.document.current().occurrence(occurrence_id).is_none() {
+            return false;
+        }
+        self.selection.select_occurrence(occurrence_id, false);
+        true
     }
 
     #[must_use]
@@ -14895,6 +15220,10 @@ impl KetchupApp {
                 AppCommand::Ungroup => self.ungroup_selection_source_plan().is_some(),
                 AppCommand::MakeComponent => self.make_component_source_plan().is_some(),
                 AppCommand::MakeUnique => self.make_unique_source_plan().is_some(),
+                AppCommand::ConvertSelectedMeshToExact => {
+                    self.selected_mesh_feature_id().is_some()
+                        && self.pending_mesh_conversion.is_none()
+                }
                 AppCommand::ReplaceComponent => self.component_replacement_source_plan().is_some(),
                 AppCommand::SelectAllInstances => self.select_all_instances_source_plan().is_some(),
                 AppCommand::AssignTag => self.tag_assignment_source_plan().is_some(),
@@ -15063,6 +15392,7 @@ impl KetchupApp {
             | AppCommand::ImportDrawingDxf
             | AppCommand::ImportExactStep
             | AppCommand::ImportSketchupScene
+            | AppCommand::ImportBlenderGlb
             | AppCommand::ExportExactStep
             | AppCommand::ExportMeshStl
             | AppCommand::ExportBlenderGlb
@@ -15114,6 +15444,9 @@ impl KetchupApp {
             }
             AppCommand::MakeUnique => {
                 self.make_unique();
+            }
+            AppCommand::ConvertSelectedMeshToExact => {
+                self.begin_mesh_conversion_review();
             }
             AppCommand::ReplaceComponent => {
                 self.begin_component_replacement();
@@ -29567,6 +29900,7 @@ impl KetchupApp {
                 self.menu_command(ui, AppCommand::ImportDrawingDxf);
                 self.menu_command(ui, AppCommand::ImportExactStep);
                 self.menu_command(ui, AppCommand::ImportSketchupScene);
+                self.menu_command(ui, AppCommand::ImportBlenderGlb);
                 ui.separator();
                 self.menu_command(ui, AppCommand::ExportExactStep);
                 self.menu_command(ui, AppCommand::ExportMeshStl);
@@ -29707,6 +30041,7 @@ impl KetchupApp {
                 self.menu_command(ui, AppCommand::Ungroup);
                 self.menu_command(ui, AppCommand::MakeComponent);
                 self.menu_command(ui, AppCommand::MakeUnique);
+                self.menu_command(ui, AppCommand::ConvertSelectedMeshToExact);
                 self.menu_command(ui, AppCommand::ReplaceComponent);
                 self.menu_command(ui, AppCommand::SelectAllInstances);
                 self.menu_command(ui, AppCommand::AssignTag);
@@ -34473,6 +34808,162 @@ impl KetchupApp {
         }
     }
 
+    fn show_glb_import_window(&mut self, context: &egui::Context) {
+        let Some(pending) = self.pending_glb_import.as_ref() else {
+            return;
+        };
+        let path = pending.plan.source.path.display().to_string();
+        let mesh_count = pending.plan.review.mesh_primitive_count().to_string();
+        let node_count = pending.plan.review.node_count().to_string();
+        let instance_count = pending.plan.review.instance_count().to_string();
+        let triangle_count = pending.plan.review.triangle_count().to_string();
+        let diagnostics = pending
+            .plan
+            .review
+            .diagnostics()
+            .iter()
+            .map(|diagnostic| {
+                (
+                    diagnostic.severity(),
+                    diagnostic.code().to_owned(),
+                    diagnostic.count(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut import = false;
+        let mut cancel = false;
+        egui::Window::new(self.catalog.text("dialog-import-glb-title"))
+            .id(egui::Id::new("glb-import-review"))
+            .collapsible(false)
+            .resizable(true)
+            .show(context, |ui| {
+                ui.label(self.catalog.format(
+                    "dialog-import-glb-source",
+                    &BTreeMap::from([("path", path.clone())]),
+                ));
+                ui.label(self.catalog.format(
+                    "dialog-import-glb-summary",
+                    &BTreeMap::from([
+                        ("meshes", mesh_count.clone()),
+                        ("nodes", node_count.clone()),
+                        ("instances", instance_count.clone()),
+                        ("triangles", triangle_count.clone()),
+                    ]),
+                ));
+                ui.label(self.catalog.text("dialog-import-glb-preserved"));
+                ui.separator();
+                ui.label(self.catalog.text("dialog-import-glb-losses"));
+                egui::ScrollArea::vertical()
+                    .max_height(160.0)
+                    .show(ui, |ui| {
+                        for (severity, code, count) in &diagnostics {
+                            let severity = match severity {
+                                ImportDiagnosticSeverity::Info => {
+                                    self.catalog.text("dialog-import-glb-diagnostic-info")
+                                }
+                                ImportDiagnosticSeverity::Warning => {
+                                    self.catalog.text("dialog-import-glb-diagnostic-warning")
+                                }
+                            };
+                            ui.label(format!("{severity} · {code} · {count}"));
+                        }
+                    });
+                ui.colored_label(
+                    Color32::YELLOW,
+                    self.catalog.text("dialog-import-glb-warning"),
+                );
+                ui.separator();
+                ui.horizontal(|ui| {
+                    import = ui
+                        .button(self.catalog.text("dialog-import-glb-confirm"))
+                        .clicked();
+                    cancel = ui
+                        .button(self.catalog.text("dialog-import-glb-cancel"))
+                        .clicked();
+                });
+            });
+        if cancel {
+            self.pending_glb_import = None;
+            self.digest = self.catalog.text("digest-cancelled");
+        } else if import {
+            let pending = self
+                .pending_glb_import
+                .take()
+                .expect("the GLB review window has a pending import");
+            self.import_glb_from(&pending);
+        }
+    }
+
+    fn show_mesh_conversion_window(&mut self, context: &egui::Context) {
+        let Some(pending) = self.pending_mesh_conversion.as_ref() else {
+            return;
+        };
+        let kind_key = match pending.plan.candidate().kind() {
+            ketchup_core::mesh_recognition::RecognizedMeshKind::Box => {
+                "dialog-mesh-conversion-kind-box"
+            }
+            ketchup_core::mesh_recognition::RecognizedMeshKind::Cylinder => {
+                "dialog-mesh-conversion-kind-cylinder"
+            }
+            ketchup_core::mesh_recognition::RecognizedMeshKind::LinearExtrusion => {
+                "dialog-mesh-conversion-kind-extrusion"
+            }
+        };
+        let values = BTreeMap::from([
+            ("kind", self.catalog.text(kind_key)),
+            ("tolerance", format!("{:.6}", pending.plan.tolerance_mm())),
+            (
+                "recognition",
+                format!("{:.6}", pending.plan.residuals().maximum_mm()),
+            ),
+            (
+                "source_to_exact",
+                format!("{:.6}", pending.verification.max_source_to_exact_mm()),
+            ),
+            (
+                "exact_to_source",
+                format!("{:.6}", pending.verification.max_exact_to_source_mm()),
+            ),
+        ]);
+        let mut confirm = false;
+        let mut cancel = false;
+        egui::Window::new(self.catalog.text("dialog-mesh-conversion-title"))
+            .id(egui::Id::new("mesh-conversion-review"))
+            .collapsible(false)
+            .resizable(false)
+            .show(context, |ui| {
+                ui.label(self.catalog.format("dialog-mesh-conversion-kind", &values));
+                ui.label(
+                    self.catalog
+                        .format("dialog-mesh-conversion-tolerance", &values),
+                );
+                ui.label(
+                    self.catalog
+                        .format("dialog-mesh-conversion-recognition", &values),
+                );
+                ui.label(self.catalog.format("dialog-mesh-conversion-exact", &values));
+                ui.colored_label(
+                    Color32::YELLOW,
+                    self.catalog.text("dialog-mesh-conversion-warning"),
+                );
+                ui.separator();
+                ui.horizontal(|ui| {
+                    confirm = ui
+                        .button(self.catalog.text("dialog-mesh-conversion-confirm"))
+                        .clicked();
+                    cancel = ui
+                        .button(self.catalog.text("dialog-mesh-conversion-cancel"))
+                        .clicked();
+                });
+            });
+        if cancel {
+            self.pending_mesh_conversion = None;
+            self.digest = self.catalog.text("digest-cancelled");
+        } else if confirm {
+            self.confirm_mesh_conversion();
+        }
+    }
+
     fn show_shortcuts_window(&mut self, context: &egui::Context) {
         if !self.shortcuts_open {
             return;
@@ -34952,6 +35443,8 @@ impl KetchupApp {
         self.show_dxf_import_window(context);
         self.show_step_import_window(context);
         self.show_sketchup_scene_import_window(context);
+        self.show_glb_import_window(context);
+        self.show_mesh_conversion_window(context);
         self.show_shortcuts_window(context);
         self.show_about_window(context);
         self.poll_assistant_chat(context);

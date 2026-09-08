@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
 use crate::document::{
-    CanonicalCommand, CommandBatch, DefinitionId, FeatureId, FeatureKind,
+    CanonicalCommand, CommandBatch, DefinitionId, FeatureId, FeatureKind, GroupId,
     IMPORTED_EXACT_BODY_SCHEMA_V1, ImportedExactBodySpec, MESH_BODY_SCHEMA_V1, MeshAuthority,
     MeshBodySpec, OccurrenceId, Snapshot, Transform,
 };
@@ -23,6 +23,7 @@ pub enum ImportFormat {
     Dxf,
     Step,
     SketchupScene,
+    Glb,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -148,6 +149,7 @@ pub enum ImportOutputRef {
     Definition(DefinitionId),
     Feature(FeatureId),
     Occurrence(OccurrenceId),
+    Group(GroupId),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -247,6 +249,7 @@ impl ImportReceipt {
                 ImportOutputRef::Definition(id) => id.0 == 0,
                 ImportOutputRef::Feature(id) => id.0 == 0,
                 ImportOutputRef::Occurrence(id) => id.0 == 0,
+                ImportOutputRef::Group(id) => id.0 == 0,
             })
         {
             return Err(ImportContractError::OutputsNotCanonical);
@@ -339,6 +342,8 @@ mod dxf;
 pub use dxf::*;
 mod sketchup_scene;
 pub use sketchup_scene::*;
+mod glb;
+pub use glb::*;
 
 pub const STEP_PARSER_ID: &str = "ketchup-occt-step";
 pub const STEP_PARSER_VERSION: &str = "2";

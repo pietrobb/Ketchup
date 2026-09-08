@@ -20,6 +20,7 @@ use ketchup_core::import::{
     DxfImportOptions, ImportFormat, ImportLengthUnit, ImportUnitAuthority, MAX_DXF_SOURCE_BYTES,
     MAX_STEP_SOURCE_BYTES, MAX_STL_SOURCE_BYTES, inspect_dxf,
 };
+use ketchup_core::mesh_recognition::{MeshRecognition, recognize_mesh_body};
 use ketchup_interaction::Vec3;
 use ketchup_scheduler::ExactWorkerSupervisor;
 
@@ -1109,6 +1110,233 @@ fn file_import_sketchup_scene_preserves_shared_instances_offscreen() {
         })
         .unwrap();
     assert_eq!(imported_mesh.vertices_mm[1], [25.4, 0.0, 0.0]);
+}
+
+#[test]
+fn file_import_blender_glb_reviews_and_commits_one_mesh_scene_offscreen() {
+    let source_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../artifacts/blender/garden-studio-colored.glb");
+    let source = std::fs::read(&source_path).unwrap();
+    let review = ketchup_core::import::inspect_glb(&source).unwrap();
+    let script = ScriptedFileDialogs::new().queue_import(ImportFormat::Glb, &source_path);
+    let mut shell = Shell::with_dialogs(script.clone());
+    let before = canonical_state(&shell);
+
+    shell.click_menu_command("menu-file", AppCommand::ImportBlenderGlb);
+    shell.click_button_label(&shell.catalog().text("dialog-import-glb-confirm"));
+
+    assert_eq!(shell.app().document_revision(), before.revision + 1);
+    assert_eq!(
+        shell.app().definition_count(),
+        before.definitions + review.mesh_primitive_count()
+    );
+    assert_eq!(
+        shell.app().occurrence_count(),
+        before.occurrences + review.instance_count()
+    );
+    assert_eq!(
+        shell.app().mesh_body_count(),
+        before.mesh_bodies + review.mesh_primitive_count()
+    );
+    assert_eq!(
+        shell.app().import_receipt_count(),
+        before.import_receipts + 1
+    );
+    assert_eq!(shell.app().undo_step_count(), before.undo_steps + 1);
+    assert!(digest_starts_like(&shell, "digest-imported-glb"));
+    assert_eq!(
+        script.import_requests(),
+        vec![ketchup_app::dialogs::ImportDialogRequestRecord {
+            format: ImportFormat::Glb,
+            filter_label: shell.catalog().text("file-filter-glb"),
+            extensions: vec!["glb".to_owned()],
+        }]
+    );
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), before.digest);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(
+        shell
+            .app()
+            .document_snapshot()
+            .import_receipts()
+            .find(|receipt| receipt.format() == ImportFormat::Glb)
+            .unwrap()
+            .source_sha256(),
+        &sha256_bytes(&source)
+    );
+}
+
+#[test]
+fn file_import_blender_glb_cancel_source_change_and_stale_review_do_not_mutate() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../artifacts/blender/garden-studio-colored.glb");
+    let original = std::fs::read(&fixture).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("reviewed.glb");
+    std::fs::write(&source, &original).unwrap();
+    let script = ScriptedFileDialogs::new()
+        .queue_import(ImportFormat::Glb, &source)
+        .queue_import(ImportFormat::Glb, &source)
+        .queue_import(ImportFormat::Glb, &source);
+    let mut shell = Shell::with_dialogs(script);
+    compose_two_shared_occurrences(&mut shell);
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    let before = canonical_state(&shell);
+    let before_history = reachable_history_digests(&mut shell);
+
+    shell.click_menu_command("menu-file", AppCommand::ImportBlenderGlb);
+    shell.click_button_label(&shell.catalog().text("dialog-import-glb-cancel"));
+    assert_state_and_history_unchanged(&mut shell, &before, &before_history);
+
+    shell.click_menu_command("menu-file", AppCommand::ImportBlenderGlb);
+    let mut replacement = original.clone();
+    replacement[0] ^= 1;
+    std::fs::write(&source, replacement).unwrap();
+    shell.click_button_label(&shell.catalog().text("dialog-import-glb-confirm"));
+    assert!(digest_starts_like(&shell, "error-import-glb"));
+    assert_state_and_history_unchanged(&mut shell, &before, &before_history);
+
+    std::fs::write(&source, original).unwrap();
+    shell.click_menu_command("menu-file", AppCommand::ImportBlenderGlb);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    let after_redo = canonical_state(&shell);
+    let after_redo_history = reachable_history_digests(&mut shell);
+    shell.click_button_label(&shell.catalog().text("dialog-import-glb-confirm"));
+    assert!(digest_starts_like(&shell, "error-import-glb"));
+    assert_state_and_history_unchanged(&mut shell, &after_redo, &after_redo_history);
+}
+
+#[test]
+fn blender_mesh_exact_conversion_requires_review_and_one_confirmed_undo_step() {
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../artifacts/blender/garden-studio-colored.glb");
+    let script = ScriptedFileDialogs::new().queue_import(ImportFormat::Glb, &source);
+    let mut shell = Shell::with_dialogs(script);
+    shell
+        .app_mut()
+        .set_assistant_workspace_mode(ketchup_app::AssistantWorkspaceMode::Tab);
+    shell
+        .app_mut()
+        .headless_force_exact_worker_path(exact_worker_path());
+    shell.settle();
+
+    shell.click_menu_command("menu-file", AppCommand::ImportBlenderGlb);
+    shell.click_button_label(&shell.catalog().text("dialog-import-glb-confirm"));
+    let snapshot = shell.app().document_snapshot();
+    let recognized = snapshot
+        .features()
+        .find_map(|feature| match feature.kind() {
+            FeatureKind::MeshBody(mesh)
+                if matches!(
+                    recognize_mesh_body(mesh, 0.25),
+                    MeshRecognition::Candidate { .. }
+                ) =>
+            {
+                Some((feature.id(), feature.definition_id()))
+            }
+            _ => None,
+        })
+        .expect("the real Blender fixture must contain a supported simple mesh");
+    let occurrence_id = snapshot
+        .occurrences()
+        .find(|occurrence| occurrence.definition_id() == recognized.1)
+        .expect("the recognized Blender mesh must have a placed occurrence")
+        .id();
+    drop(snapshot);
+    assert!(shell.app_mut().headless_select_occurrence(occurrence_id));
+    shell.settle();
+    let imported = canonical_state(&shell);
+    let imported_history = reachable_history_digests(&mut shell);
+
+    assert!(shell.app_mut().headless_select_occurrence(occurrence_id));
+    shell.settle();
+    shell.click_menu_command("menu-model", AppCommand::ConvertSelectedMeshToExact);
+    assert_eq!(canonical_state(&shell), imported);
+    assert!(
+        shell.has_visible_label(&shell.catalog().text("dialog-mesh-conversion-title")),
+        "{}",
+        shell.app().action_digest()
+    );
+    shell.click_button_label(&shell.catalog().text("dialog-mesh-conversion-cancel"));
+    assert_state_and_history_unchanged(&mut shell, &imported, &imported_history);
+
+    assert!(shell.app_mut().headless_select_occurrence(occurrence_id));
+    shell.settle();
+    shell.click_menu_command("menu-model", AppCommand::ConvertSelectedMeshToExact);
+    assert!(shell.app_mut().create_box());
+    assert!(shell.app_mut().undo());
+    let after_aba = canonical_state(&shell);
+    let after_aba_history = reachable_history_digests(&mut shell);
+    shell.click_button_label(&shell.catalog().text("dialog-mesh-conversion-confirm"));
+    assert!(digest_starts_like(&shell, "error-mesh-conversion"));
+    assert_state_and_history_unchanged(&mut shell, &after_aba, &after_aba_history);
+
+    assert!(shell.app_mut().headless_select_occurrence(occurrence_id));
+    shell.settle();
+    shell.click_menu_command("menu-model", AppCommand::ConvertSelectedMeshToExact);
+    assert_eq!(canonical_state(&shell), after_aba);
+    shell.click_button_label(&shell.catalog().text("dialog-mesh-conversion-confirm"));
+    assert!(shell.app().document_revision() > after_aba.revision);
+    assert_eq!(shell.app().mesh_body_count(), after_aba.mesh_bodies - 1);
+    assert_eq!(shell.app().undo_step_count(), after_aba.undo_steps + 1);
+    assert!(matches!(
+        shell
+            .app()
+            .document_snapshot()
+            .feature(recognized.0)
+            .expect("converted feature keeps the source feature ID")
+            .kind(),
+        FeatureKind::Profile { .. } | FeatureKind::Workplane(_)
+    ));
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), after_aba.digest);
+    assert!(matches!(
+        shell
+            .app()
+            .document_snapshot()
+            .feature(recognized.0)
+            .expect("Undo restores the source mesh")
+            .kind(),
+        FeatureKind::MeshBody(_)
+    ));
+}
+
+#[test]
+fn imported_blender_mesh_blocks_exact_and_btlx_exports_before_side_effects() {
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../artifacts/blender/garden-studio-colored.glb");
+    let directory = tempfile::tempdir().unwrap();
+    let step = directory.path().join("blocked.step");
+    let btlx = directory.path().join("blocked.btlx");
+    let script = ScriptedFileDialogs::new()
+        .queue_import(ImportFormat::Glb, &source)
+        .queue_export(&step)
+        .queue_export(&btlx)
+        .always_confirm_high_risk_as(91);
+    let mut shell = Shell::with_dialogs(script.clone());
+
+    shell.click_menu_command("menu-file", AppCommand::ImportBlenderGlb);
+    shell.click_button_label(&shell.catalog().text("dialog-import-glb-confirm"));
+    let imported = canonical_state(&shell);
+    let imported_history = reachable_history_digests(&mut shell);
+
+    shell.click_menu_command("menu-file", AppCommand::ExportExactStep);
+    assert!(digest_starts_like(&shell, "error-export-step"));
+    assert!(shell.app().action_digest().contains("mesh body"));
+    assert!(!step.exists());
+    assert_state_and_history_unchanged(&mut shell, &imported, &imported_history);
+
+    shell.click_menu_command("menu-file", AppCommand::ExportHundeggerBtlx);
+    assert!(digest_starts_like(&shell, "error-export-btlx"));
+    assert!(shell.app().action_digest().contains("mesh body"));
+    assert!(!btlx.exists());
+    assert!(!btlx.with_extension("btlx.support.txt").exists());
+    assert!(script.high_risk_prompts().is_empty());
+    assert!(shell.app().last_side_effect_receipt().is_none());
+    assert_state_and_history_unchanged(&mut shell, &imported, &imported_history);
 }
 
 #[test]

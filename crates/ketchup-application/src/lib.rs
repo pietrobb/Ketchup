@@ -6,6 +6,7 @@ mod collision;
 mod creation;
 pub mod diagnostics;
 pub mod evaluation;
+pub mod mesh_conversion;
 pub mod model_query;
 mod planner;
 mod sketch;

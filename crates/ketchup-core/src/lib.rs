@@ -28,6 +28,7 @@ pub mod intent;
 pub mod linear_hardware;
 pub mod mechanical_contract;
 pub mod mechanical_coupling;
+pub mod mesh_recognition;
 pub mod persistence;
 pub mod prismatic;
 pub mod reference_examples;

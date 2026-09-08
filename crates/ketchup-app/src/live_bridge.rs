@@ -399,6 +399,7 @@ impl LiveBridge {
             || app.pending_dxf_import.is_some()
             || app.pending_step_import.is_some()
             || app.pending_sketchup_scene_import.is_some()
+            || app.pending_glb_import.is_some()
             || app.migration_review_plan.is_some()
             || app.assembly_preview_pending()
             || app.body_preview_pending()

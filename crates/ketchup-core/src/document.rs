@@ -447,6 +447,7 @@ pub enum MeshAuthority {
     ExactConversion(ExactToMeshConversion),
     ImportedStl { import_id: ImportId },
     ImportedSketchupScene { import_id: ImportId },
+    ImportedGlb { import_id: ImportId },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -4799,6 +4800,7 @@ impl DocumentStore {
                             ImportOutputRef::Definition(id) => product.definitions.contains_key(id),
                             ImportOutputRef::Feature(id) => product.features.contains_key(id),
                             ImportOutputRef::Occurrence(id) => product.occurrences.contains_key(id),
+                            ImportOutputRef::Group(id) => product.groups.contains_key(id),
                         };
                         if !exists {
                             return Err(CanonicalError::InvalidImportReceipt);
@@ -9996,6 +9998,7 @@ fn validate_mesh_body(spec: &MeshBodySpec) -> Result<(), CanonicalError> {
         }
         MeshAuthority::ImportedStl { import_id }
         | MeshAuthority::ImportedSketchupScene { import_id }
+        | MeshAuthority::ImportedGlb { import_id }
             if import_id.0 == 0 =>
         {
             return Err(CanonicalError::InvalidMeshBody);
@@ -14119,6 +14122,10 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                         .import_receipts
                         .get(import_id)
                         .is_none_or(|receipt| receipt.format() != ImportFormat::SketchupScene),
+                    MeshAuthority::ImportedGlb { import_id } => product
+                        .import_receipts
+                        .get(import_id)
+                        .is_none_or(|receipt| receipt.format() != ImportFormat::Glb),
                     MeshAuthority::Authored { .. } => false,
                 };
                 if definition.feature_ids.as_slice() != [feature.id] || authority_is_invalid {
@@ -15269,6 +15276,7 @@ fn authoritative_dependencies(
                         ImportOutputRef::Definition(id) => AuthoritativeDependency::Definition(*id),
                         ImportOutputRef::Feature(id) => AuthoritativeDependency::Feature(*id),
                         ImportOutputRef::Occurrence(id) => AuthoritativeDependency::Occurrence(*id),
+                        ImportOutputRef::Group(id) => AuthoritativeDependency::Group(*id),
                     });
                 }
             }

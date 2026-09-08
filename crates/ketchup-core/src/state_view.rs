@@ -1862,6 +1862,15 @@ pub fn encode_semantic_state_with_results(
                         )
                         .unwrap();
                     }
+                    crate::document::MeshAuthority::ImportedGlb { import_id } => {
+                        writeln!(
+                            complete,
+                            "feature.{}.mesh.authority=imported_glb:{}",
+                            feature.id().0,
+                            import_id.0
+                        )
+                        .unwrap();
+                    }
                     crate::document::MeshAuthority::ExactConversion(conversion) => {
                         writeln!(
                             complete,
@@ -1985,6 +1994,7 @@ pub fn encode_semantic_state_with_results(
                         crate::document::MeshAuthority::ImportedSketchupScene { .. } => {
                             "imported_sketchup_scene"
                         }
+                        crate::document::MeshAuthority::ImportedGlb { .. } => "imported_glb",
                     }
                 )
                 .unwrap();
