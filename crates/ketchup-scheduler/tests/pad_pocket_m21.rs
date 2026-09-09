@@ -1,3 +1,4 @@
+use ketchup_core::assembly::PlanarFaceAttachment;
 use ketchup_core::document::{
     BodyId, BooleanOperation, CanonicalCommand, CommandBatch, DefinitionId, Dimension,
     DocumentStore, FeatureEvaluationState, FeatureId, FeatureKind, MultiBodyBooleanPlan,
@@ -691,6 +692,27 @@ fn branched_pocket_recompute_preserves_unrelated_pad_and_root_failure_identity()
     for reference in &mut incompatible.references {
         reference.backend = incompatible.identity.backend.clone();
     }
+    incompatible.planar_face_attachments = incompatible
+        .planar_face_attachments
+        .iter()
+        .map(|attachment| {
+            let reference = incompatible
+                .references
+                .iter()
+                .find(|reference| {
+                    reference.semantic_role == attachment.reference().semantic_role
+                        && reference.source_element_id == attachment.reference().source_element_id
+                })
+                .unwrap()
+                .clone();
+            PlanarFaceAttachment::new(
+                reference,
+                attachment.local_origin_mm(),
+                attachment.local_unit_normal(),
+            )
+            .unwrap()
+        })
+        .collect();
     let ambiguous = ExactResultRegistry::accept(
         &stale,
         [

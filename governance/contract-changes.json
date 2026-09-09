@@ -18,10 +18,10 @@
     {
       "path": ".github/workflows/ci.yml",
       "direction": "tighten",
-      "old_freeze_id": "m0-pre-governance",
-      "new_freeze_id": "m0-ci-governance-v1",
-      "evidence": "KETCHUP_ARCHITECTURE_SPECIFICATION_V4.md",
-      "new_sha256": "5d13178b2f8ed3b5adcbd13d341ba7933d1a8bfb0580f9e6568e9d374bb66843"
+      "old_freeze_id": "m0-ci-governance-v1",
+      "new_freeze_id": "pr-complete-ci-v1",
+      "evidence": "scripts/windows/test-pr-ci-red-paths.ps1",
+      "new_sha256": "73652000ea88752decfa6f1b25f750f9b54c939e4a0bd382113aac9d2ccdd463"
     },
     {
       "path": "governance/contract-changes.json",
@@ -41,10 +41,10 @@
     {
       "path": "scripts/windows/test-architecture-guards.ps1",
       "direction": "tighten",
-      "old_freeze_id": "m4b-a0-separation-v1",
-      "new_freeze_id": "m21-candidate-certification-v1",
+      "old_freeze_id": "m21-candidate-certification-v1",
+      "new_freeze_id": "pr-complete-ci-v1",
       "evidence": "scripts/windows/test-ci-guard-red-paths.ps1",
-      "new_sha256": "87ad8df98da16d5c3b39d1e9862c4779d40206e4d3f263e4e805bb4b37e01cf7"
+      "new_sha256": "db1af245788bffee4cda1c1a8f385ca120a0be9c36a87942fa0e87381bac0f08"
     },
     {
       "path": "scripts/windows/test-ci-guard-red-paths.ps1",
@@ -73,26 +73,26 @@
     {
       "path": "governance/r0-transitions-v1-v13.json",
       "direction": "tighten",
-      "old_freeze_id": "m0-lifecycle-r0-envelope-v1",
-      "new_freeze_id": "m0-upper-envelope-v2",
+      "old_freeze_id": "m0-upper-envelope-v2",
+      "new_freeze_id": "pr-complete-ci-v1",
       "evidence": "scripts/windows/validate-r0-transition-classifications.ps1",
-      "new_sha256": "f7100f878a7b123e4555ec6ff4f79f534873d07ce764a15c229c5a6d2d139d47"
+      "new_sha256": "652b1e35acdf0b56ed94b4c680a503c02651d60240e9fcb3c6311b73d4562f0e"
     },
     {
       "path": "scripts/windows/validate-r0-transition-classifications.ps1",
       "direction": "tighten",
-      "old_freeze_id": "m0-lifecycle-r0-envelope-v1",
-      "new_freeze_id": "m0-upper-envelope-v2",
+      "old_freeze_id": "m0-upper-envelope-v2",
+      "new_freeze_id": "pr-complete-ci-v1",
       "evidence": "governance/r0-transitions-v1-v13.json",
-      "new_sha256": "a461540b0ab451e9e65b4e845e21759e2e340ce8b3a8d6088db23b226839e164"
+      "new_sha256": "2b2135d1e2b01b9b8560fc884e1a8e2ad604c6b28a9f3a5f5368bf78a1e1177b"
     },
     {
       "path": "crates/ketchup-exact/tests/upper_envelope.rs",
       "direction": "tighten",
-      "old_freeze_id": "m0-upper-envelope-v1",
-      "new_freeze_id": "m0-upper-envelope-v2",
+      "old_freeze_id": "m0-upper-envelope-v2",
+      "new_freeze_id": "pr-complete-ci-v1",
       "evidence": "governance/r0-transitions-v1-v13.json",
-      "new_sha256": "057ff96a8a198c4758b5dfb1f99f37a7ab5c16d3f67351ec35f4400e6a83d0b4"
+      "new_sha256": "ff7723896161a3d92f95e6e37b7d874918725d449d2868b9f231d0a531a302d5"
     },
     {
       "path": "governance/deny-ci.toml",

@@ -13,7 +13,7 @@ use crate::document::{
     ProposalContext, ProposalGoal, ProposalPrincipal, ProposalRisk, Snapshot, Transform,
 };
 use crate::drawing::{
-    DrawingSheet, DrawingSheetId, DrawingSource, OrthographicDrawing, OrthographicViewKind,
+    DrawingSheetId, DrawingSource, OrthographicDrawing, OrthographicViewKind,
     project_orthographic_drawing, validate_source,
 };
 use crate::exact_product::{
@@ -393,8 +393,7 @@ pub fn project_occurrence_edit_impact(
                 .contains(&request.target_occurrence_id)
                 .then(|| {
                     (
-                        sheet.id(),
-                        sheet.name().to_owned(),
+                        sheet.clone(),
                         occurrence_ids.clone(),
                         occurrence_ids
                             .iter()
@@ -409,19 +408,20 @@ pub fn project_occurrence_edit_impact(
     dependency_commands.extend(
         impacted_drawings
             .iter()
-            .map(|(sheet_id, _, _, _)| CanonicalCommand::DeleteDrawingSheet { id: *sheet_id }),
+            .map(|(sheet, _, _)| CanonicalCommand::DeleteDrawingSheet { id: sheet.id() }),
     );
     let dependency_candidate = document
         .preview_batch(&CommandBatch::new(dependency_commands))
         .map_err(|error| OccurrenceEditImpactError::InvalidCandidate(error.to_string()))?;
     let mut drawing_dependencies = Vec::new();
-    for (sheet_id, sheet_name, occurrence_ids_before, occurrence_ids_after) in impacted_drawings {
+    for (sheet, occurrence_ids_before, occurrence_ids_after) in impacted_drawings {
+        let sheet_id = sheet.id();
         let updated_source = DrawingSource::RigidAssembly {
             occurrence_ids: occurrence_ids_after.clone(),
         };
         let update = (!occurrence_ids_after.is_empty()
             && validate_source(&dependency_candidate, &updated_source).is_ok())
-        .then(|| DrawingSheet::new(sheet_id, sheet_name, updated_source))
+        .then(|| sheet.with_source(updated_source))
         .transpose()
         .map_err(|error| OccurrenceEditImpactError::InvalidCandidate(error.to_string()))?;
         let action = if let Some(updated_sheet) = update {

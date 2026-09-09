@@ -3,7 +3,11 @@ use ketchup_application::validation::{
     scoped_collision_report_with_worker,
 };
 use ketchup_application::{AssistantValidationSelection, DocumentSession, SessionSettings};
-use ketchup_core::{document::*, exact_product::ExactResultRegistry, persistence::ContainerData};
+use ketchup_core::{
+    document::*,
+    exact_product::ExactResultRegistry,
+    persistence::{self, ContainerData},
+};
 use std::time::Duration;
 
 fn add(document: &mut DocumentStore, id: u64, points: Vec<[f64; 2]>, x: f64) {
@@ -387,6 +391,13 @@ fn missing_worker_and_partial_analytic_coverage_never_pass() {
 fn full_140_house_has_no_silent_collision_cap() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../examples/garden-studio-colored.ketchup");
+    let legacy = persistence::load_file(&path).unwrap();
+    assert_eq!(legacy.source_schema(), 53);
+    let legacy_digest = legacy.snapshot().canonical_digest();
+    let current = persistence::load(&persistence::save(&legacy.snapshot())).unwrap();
+    assert_eq!(current.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(current.snapshot().canonical_digest(), legacy_digest);
+
     let session = DocumentSession::open(
         path,
         SessionSettings {

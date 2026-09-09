@@ -147,6 +147,8 @@ function Verify-Package {
     $expectedRecords = [Collections.Generic.List[object]]::new()
     $expectedRecords.Add([ordered]@{ name = "ketchup-app.exe"; role = "desktop-application" })
     $expectedRecords.Add([ordered]@{ name = "ketchup-exact-worker.exe"; role = "exact-worker" })
+    $expectedRecords.Add([ordered]@{ name = "ketchup_assistant.py"; role = "public-assistant-entry" })
+    $expectedRecords.Add([ordered]@{ name = "ketchup_assistant_protocol.py"; role = "public-assistant-protocol" })
     foreach ($record in @($pinnedOcct.shared_libraries)) {
         $expectedRecords.Add([ordered]@{
             name = [IO.Path]::GetFileName([string]$record.path)
@@ -172,7 +174,9 @@ function Verify-Package {
             (Get-Sha256 $path) -cne [string]$record.sha256) {
             throw "Packaged runtime fingerprint mismatch: $name"
         }
-        Assert-PeAmd64 $path "Packaged runtime entry $name"
+        if ([string]$record.role -in @("desktop-application", "exact-worker", "pinned-occt-runtime")) {
+            Assert-PeAmd64 $path "Packaged runtime entry $name"
+        }
     }
     $actual = @(Get-ChildItem $OutputDir -Force)
     Assert-ExactNames @($actual | ForEach-Object { $_.Name }) @(@($expectedRecords | ForEach-Object { [string]$_.name }) + "package-manifest.json") "Package contents"
@@ -253,6 +257,8 @@ function Add-PackageFile([string]$Source, [string]$Name, [string]$Role) {
 
 Add-PackageFile $appSource "ketchup-app.exe" "desktop-application"
 Add-PackageFile $workerSource "ketchup-exact-worker.exe" "exact-worker"
+Add-PackageFile (Join-Path $repoRoot "sdk\python\ketchup_assistant.py") "ketchup_assistant.py" "public-assistant-entry"
+Add-PackageFile (Join-Path $repoRoot "sdk\python\ketchup_assistant_protocol.py") "ketchup_assistant_protocol.py" "public-assistant-protocol"
 foreach ($record in @($occtManifest.shared_libraries) | Sort-Object path) {
     $name = [IO.Path]::GetFileName([string]$record.path)
     $source = Join-Path $OcctRoot ([string]$record.path)

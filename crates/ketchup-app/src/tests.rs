@@ -1915,19 +1915,6 @@ fn canonical_error_codes_are_stable_machine_identifiers() {
 }
 
 #[test]
-fn assistant_path_resolution_skips_a_stale_higher_priority_candidate() {
-    let directory = tempfile::tempdir().unwrap();
-    let stale = directory.path().join("stale.exe");
-    let installed = directory.path().join("KetchupPrivateAssistant.exe");
-    std::fs::write(&installed, b"sidecar").unwrap();
-
-    assert_eq!(
-        first_existing_assistant_path([Some(stale), Some(installed.clone()), None]),
-        Some(installed)
-    );
-}
-
-#[test]
 fn export_rollback_preserves_concurrent_destination_and_original_backup() {
     let directory = tempfile::tempdir().unwrap();
     let target = directory.path().join("model.step");
@@ -16606,7 +16593,7 @@ fn migration_confirmation_rejects_review_candidate_tamper_atomically() {
 }
 
 #[test]
-fn lossless_schema_three_open_replaces_the_document_and_clears_history_and_review() {
+fn lossless_open_replaces_the_document_preserves_history_and_clears_review() {
     let directory = tempfile::tempdir().unwrap();
     let review_path = directory.path().join("legacy.ketchup");
     let lossless_path = directory.path().join("lossless.ketchup");
@@ -16616,6 +16603,7 @@ fn lossless_schema_three_open_replaces_the_document_and_clears_history_and_revie
     assert!(source.create_box());
     assert!(source.create_box());
     let expected = source.document.current();
+    let expected_undo_steps = source.document.visible_undo_steps();
     let expected_bytes = ketchup_core::persistence::save(&expected);
     assert!(source.save_document_to(&lossless_path));
 
@@ -16636,9 +16624,9 @@ fn lossless_schema_three_open_replaces_the_document_and_clears_history_and_revie
     assert_eq!(ketchup_core::persistence::save(&opened), expected_bytes);
     assert_eq!(app.document_path.as_deref(), Some(lossless_path.as_path()));
     assert!(!app.is_dirty());
-    assert_eq!(app.document.visible_undo_steps(), 0);
+    assert_eq!(app.document.visible_undo_steps(), expected_undo_steps);
     assert_eq!(app.document.visible_redo_steps(), 0);
-    assert_eq!(app.document.revision_count(), 1);
+    assert_eq!(app.document.revision_count(), expected_undo_steps + 1);
     assert!(!app.has_review_candidate());
 }
 
@@ -16655,6 +16643,7 @@ fn file_workflow_round_trips_composed_model_and_tracks_dirty_state() {
     app.select_from_outliner(InstancePath::root(OccurrenceId(2)), true);
     assert!(app.group_selected());
     let expected = app.document.current();
+    let expected_undo_steps = app.document.visible_undo_steps();
     assert!(app.is_dirty());
     assert!(app.save_document_to(&path));
     assert!(!app.is_dirty());
@@ -16686,7 +16675,7 @@ fn file_workflow_round_trips_composed_model_and_tracks_dirty_state() {
         expected.feature(FeatureId(2)).unwrap().kind()
     );
     assert!(!reopened.is_dirty());
-    assert_eq!(reopened.document.visible_undo_steps(), 0);
+    assert_eq!(reopened.document.visible_undo_steps(), expected_undo_steps);
 
     reopened.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
     assert!(reopened.move_selected(Vec3::new(10.0, 0.0, 0.0)));

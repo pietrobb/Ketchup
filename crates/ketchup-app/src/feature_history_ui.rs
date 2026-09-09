@@ -13,7 +13,10 @@ use ketchup_core::shared_change::{
     commit_shared_definition_change, project_component_replacement_impact,
     project_occurrence_fork_impact, project_shared_change_impact,
 };
-use ketchup_core::sketch::SketchConstraintKind;
+use ketchup_core::sketch::{
+    MAX_SKETCH_CONSTRAINTS, SketchConstraint, SketchConstraintId, SketchConstraintKind,
+    SketchDiagnosticReport, SketchDiagnosticStatus, SketchEntity, SketchEntityId, SketchError,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum FeatureHistoryPreviewKind {
@@ -22,6 +25,8 @@ enum FeatureHistoryPreviewKind {
     Suppress { boundary: FeatureId },
     Resume,
     ReplaceComponent,
+    SketchConstruction,
+    SketchConstraint,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -95,6 +100,21 @@ enum FeatureHistoryPreviewSource {
         request: BodyHistoryMutationRequest,
         fork: Option<(OccurrenceId, String)>,
     },
+    SketchConstruction {
+        source_revision: u64,
+        source_digest: String,
+        feature_id: FeatureId,
+        entity_id: SketchEntityId,
+        construction: bool,
+        constraint_id: SketchConstraintId,
+    },
+    SketchConstraint {
+        source_revision: u64,
+        source_digest: String,
+        feature_id: FeatureId,
+        command: Box<CanonicalCommand>,
+        action: String,
+    },
     Replacement(ComponentReplacementImpactRequest),
 }
 
@@ -106,6 +126,7 @@ struct FeatureHistoryUiPreview {
     action: String,
     affected_feature_ids: Vec<FeatureId>,
     suppressed_feature_ids: Vec<FeatureId>,
+    sketch_diagnostic: Option<SketchDiagnosticReport>,
 }
 
 #[derive(Clone, Debug)]
@@ -117,9 +138,15 @@ struct ParameterChoice {
 
 #[derive(Default)]
 pub(super) struct FeatureHistoryUiState {
+    revision_before: Option<u64>,
+    revision_after: Option<u64>,
+    rollback_revision: Option<u64>,
+    checkpoint_input: String,
     definition: Option<DefinitionId>,
     selected_body: Option<ketchup_core::document::BodyId>,
     selected_feature: Option<FeatureId>,
+    selected_sketch_entity: Option<SketchEntityId>,
+    selected_sketch_constraint: Option<SketchConstraintId>,
     selected_parameter: Option<ExactParameterEditTarget>,
     parameter_source: Option<(u64, ExactParameterEditTarget)>,
     value_input: String,
@@ -133,6 +160,8 @@ enum FeatureHistoryUiAction {
     SelectDefinition(DefinitionId),
     SelectBody(ketchup_core::document::BodyId),
     SelectFeature(FeatureId),
+    SelectSketchEntity(SketchEntityId),
+    SelectSketchConstraint(SketchConstraintId),
     SelectParameter(ExactParameterEditTarget),
     SelectReplacementTarget(DefinitionId),
     PreviewEdit,
@@ -140,11 +169,39 @@ enum FeatureHistoryUiAction {
     PreviewSuppress,
     PreviewResume,
     PreviewReplacement,
+    PreviewSketchConstruction(bool),
+    PreviewCreateSketchConstraint,
+    PreviewReplaceSketchConstraint,
+    PreviewDeleteSketchConstraint,
     Confirm,
     Cancel,
 }
 
 fn ids(values: &[FeatureId]) -> String {
+    if values.is_empty() {
+        "—".to_owned()
+    } else {
+        values
+            .iter()
+            .map(|id| id.0.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+fn sketch_entity_ids(values: &[SketchEntityId]) -> String {
+    if values.is_empty() {
+        "—".to_owned()
+    } else {
+        values
+            .iter()
+            .map(|id| id.0.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+fn sketch_constraint_ids(values: &[SketchConstraintId]) -> String {
     if values.is_empty() {
         "—".to_owned()
     } else {
@@ -215,7 +272,9 @@ impl KetchupApp {
                         | SketchConstraintKind::Concentric { .. }
                         | SketchConstraintKind::Collinear { .. }
                         | SketchConstraintKind::Midpoint { .. }
-                        | SketchConstraintKind::PointOnCurve { .. } => return None,
+                        | SketchConstraintKind::PointOnCurve { .. }
+                        | SketchConstraintKind::Projection { .. }
+                        | SketchConstraintKind::Construction { .. } => return None,
                     };
                     Some(ParameterChoice {
                         target: ExactParameterEditTarget::SketchConstraintDimension {
@@ -401,7 +460,9 @@ impl KetchupApp {
                     FeatureHistoryPreviewKind::ExactEdit
                     | FeatureHistoryPreviewKind::ProfileTranslation
                     | FeatureHistoryPreviewKind::Resume
-                    | FeatureHistoryPreviewKind::ReplaceComponent => None,
+                    | FeatureHistoryPreviewKind::ReplaceComponent
+                    | FeatureHistoryPreviewKind::SketchConstruction
+                    | FeatureHistoryPreviewKind::SketchConstraint => None,
                 },
             ),
         };
@@ -545,7 +606,9 @@ impl KetchupApp {
                         FeatureHistoryPreviewKind::Resume => Vec::new(),
                         FeatureHistoryPreviewKind::ExactEdit
                         | FeatureHistoryPreviewKind::ProfileTranslation
-                        | FeatureHistoryPreviewKind::ReplaceComponent => unreachable!(),
+                        | FeatureHistoryPreviewKind::ReplaceComponent
+                        | FeatureHistoryPreviewKind::SketchConstruction
+                        | FeatureHistoryPreviewKind::SketchConstraint => unreachable!(),
                     };
                     (
                         FeatureHistoryExecutionPlan::Fork(impact),
@@ -570,7 +633,9 @@ impl KetchupApp {
                                 FeatureHistoryPreviewKind::Resume => Vec::new(),
                                 FeatureHistoryPreviewKind::ExactEdit
                                 | FeatureHistoryPreviewKind::ProfileTranslation
-                                | FeatureHistoryPreviewKind::ReplaceComponent => unreachable!(),
+                                | FeatureHistoryPreviewKind::ReplaceComponent
+                                | FeatureHistoryPreviewKind::SketchConstruction
+                                | FeatureHistoryPreviewKind::SketchConstraint => unreachable!(),
                             };
                             (
                                 FeatureHistoryExecutionPlan::Shared(impact),
@@ -599,9 +664,75 @@ impl KetchupApp {
                     FeatureHistoryPreviewKind::Resume => "feature-history-action-resume",
                     FeatureHistoryPreviewKind::ExactEdit
                     | FeatureHistoryPreviewKind::ProfileTranslation
-                    | FeatureHistoryPreviewKind::ReplaceComponent => unreachable!(),
+                    | FeatureHistoryPreviewKind::ReplaceComponent
+                    | FeatureHistoryPreviewKind::SketchConstruction
+                    | FeatureHistoryPreviewKind::SketchConstraint => unreachable!(),
                 });
                 (execution, kind, affected, suppressed, action)
+            }
+            FeatureHistoryPreviewSource::SketchConstruction {
+                source_revision,
+                source_digest,
+                feature_id,
+                entity_id,
+                construction,
+                constraint_id,
+            } => {
+                if snapshot.revision_id() != *source_revision
+                    || snapshot.canonical_digest() != source_digest.as_str()
+                {
+                    return Err("feature history preview source is stale".to_owned());
+                }
+                let proposal = self
+                    .document
+                    .prepare_proposal_with_context(
+                        CommandBatch::new(vec![CanonicalCommand::SetSketchEntityConstruction {
+                            id: *feature_id,
+                            entity_id: *entity_id,
+                            construction: *construction,
+                            construction_constraint_id: *constraint_id,
+                        }]),
+                        ProposalContext::canonical_preview(),
+                    )
+                    .map_err(|error| error.to_string())?;
+                (
+                    FeatureHistoryExecutionPlan::Local(proposal),
+                    FeatureHistoryPreviewKind::SketchConstruction,
+                    vec![*feature_id],
+                    Vec::new(),
+                    self.catalog.text(if *construction {
+                        "feature-history-action-make-construction"
+                    } else {
+                        "feature-history-action-make-geometry"
+                    }),
+                )
+            }
+            FeatureHistoryPreviewSource::SketchConstraint {
+                source_revision,
+                source_digest,
+                feature_id,
+                command,
+                action,
+            } => {
+                if snapshot.revision_id() != *source_revision
+                    || snapshot.canonical_digest() != source_digest.as_str()
+                {
+                    return Err("feature history preview source is stale".to_owned());
+                }
+                let proposal = self
+                    .document
+                    .prepare_proposal_with_context(
+                        CommandBatch::new(vec![command.as_ref().clone()]),
+                        ProposalContext::canonical_preview(),
+                    )
+                    .map_err(|error| error.to_string())?;
+                (
+                    FeatureHistoryExecutionPlan::Local(proposal),
+                    FeatureHistoryPreviewKind::SketchConstraint,
+                    vec![*feature_id],
+                    Vec::new(),
+                    action.clone(),
+                )
             }
             FeatureHistoryPreviewSource::Replacement(request) => {
                 let impact = project_component_replacement_impact(
@@ -628,22 +759,269 @@ impl KetchupApp {
                 )
             }
         };
-        let preview = FeatureHistoryUiPreview {
+        let proposal = execution
+            .proposal()
+            .ok_or_else(|| "feature history preview has no reviewed proposal".to_owned())?;
+        let candidate = self
+            .document
+            .preview_batch(proposal.batch())
+            .map_err(|error| error.to_string())?;
+        let sketch_diagnostic = affected_feature_ids
+            .iter()
+            .filter_map(|feature_id| candidate.feature(*feature_id))
+            .find_map(|feature| match feature.kind() {
+                FeatureKind::Sketch(spec) => Some(spec.diagnose()),
+                _ => None,
+            })
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        Ok(FeatureHistoryUiPreview {
             source: source.clone(),
             execution,
             kind,
             action,
             affected_feature_ids,
             suppressed_feature_ids,
+            sketch_diagnostic,
+        })
+    }
+
+    fn prepare_sketch_constraint_command(
+        &mut self,
+        command: CanonicalCommand,
+        action_key: &str,
+    ) -> bool {
+        let Some(feature_id) = self.feature_history.selected_feature else {
+            self.feature_history_error(
+                self.catalog
+                    .text("feature-history-error-no-sketch-constraint"),
+            );
+            return false;
         };
-        let proposal = preview
-            .execution
-            .proposal()
-            .ok_or_else(|| "feature history preview has no reviewed proposal".to_owned())?;
-        self.document
-            .preview_batch(proposal.batch())
-            .map_err(|error| error.to_string())?;
-        Ok(preview)
+        let snapshot = self.document.current();
+        let source = FeatureHistoryPreviewSource::SketchConstraint {
+            source_revision: snapshot.revision_id(),
+            source_digest: snapshot.canonical_digest(),
+            feature_id,
+            command: Box::new(command),
+            action: self.catalog.text(action_key),
+        };
+        let preview = match self.derive_feature_history_preview(&source) {
+            Ok(preview) => preview,
+            Err(error) => {
+                self.feature_history_error(error);
+                return false;
+            }
+        };
+        let action = preview.action.clone();
+        self.feature_history.preview = Some(preview);
+        self.digest = self.catalog.format(
+            "feature-history-preview-ready",
+            &BTreeMap::from([("action", action)]),
+        );
+        true
+    }
+
+    fn prepare_create_sketch_constraint(&mut self) -> bool {
+        let (Some(feature_id), Some(entity_id)) = (
+            self.feature_history.selected_feature,
+            self.feature_history.selected_sketch_entity,
+        ) else {
+            self.feature_history_error(self.catalog.text("feature-history-error-no-sketch-entity"));
+            return false;
+        };
+        let snapshot = self.document.current();
+        let Some(feature) = snapshot.feature(feature_id) else {
+            self.feature_history_error(self.catalog.text("feature-history-error-no-sketch-entity"));
+            return false;
+        };
+        let FeatureKind::Sketch(spec) = feature.kind() else {
+            self.feature_history_error(self.catalog.text("feature-history-error-no-sketch-entity"));
+            return false;
+        };
+        if !spec
+            .entities
+            .iter()
+            .any(|entity| matches!(entity, SketchEntity::Line { id, .. } if *id == entity_id))
+        {
+            self.feature_history_error(self.catalog.text("feature-history-error-line-constraint"));
+            return false;
+        }
+        let used = spec
+            .constraints
+            .iter()
+            .map(|constraint| constraint.id)
+            .collect::<BTreeSet<_>>();
+        let Some(constraint_id) = (1..=MAX_SKETCH_CONSTRAINTS as u64)
+            .map(SketchConstraintId)
+            .find(|id| !used.contains(id))
+        else {
+            self.feature_history_error(SketchError::ResourceLimit);
+            return false;
+        };
+        self.prepare_sketch_constraint_command(
+            CanonicalCommand::CreateSketchConstraint {
+                id: feature_id,
+                constraint: SketchConstraint {
+                    id: constraint_id,
+                    kind: SketchConstraintKind::Horizontal { entity: entity_id },
+                },
+            },
+            "feature-history-action-add-constraint",
+        )
+    }
+
+    fn prepare_replace_sketch_constraint(&mut self) -> bool {
+        let (Some(feature_id), Some(entity_id), Some(constraint_id)) = (
+            self.feature_history.selected_feature,
+            self.feature_history.selected_sketch_entity,
+            self.feature_history.selected_sketch_constraint,
+        ) else {
+            self.feature_history_error(
+                self.catalog
+                    .text("feature-history-error-no-sketch-constraint"),
+            );
+            return false;
+        };
+        let snapshot = self.document.current();
+        let Some(feature) = snapshot.feature(feature_id) else {
+            self.feature_history_error(
+                self.catalog
+                    .text("feature-history-error-no-sketch-constraint"),
+            );
+            return false;
+        };
+        let FeatureKind::Sketch(spec) = feature.kind() else {
+            self.feature_history_error(
+                self.catalog
+                    .text("feature-history-error-no-sketch-constraint"),
+            );
+            return false;
+        };
+        if !spec
+            .entities
+            .iter()
+            .any(|entity| matches!(entity, SketchEntity::Line { id, .. } if *id == entity_id))
+        {
+            self.feature_history_error(self.catalog.text("feature-history-error-line-constraint"));
+            return false;
+        }
+        let Some(existing) = spec
+            .constraints
+            .iter()
+            .find(|constraint| constraint.id == constraint_id)
+        else {
+            self.feature_history_error(
+                self.catalog
+                    .text("feature-history-error-no-sketch-constraint"),
+            );
+            return false;
+        };
+        let kind = if matches!(existing.kind, SketchConstraintKind::Horizontal { .. }) {
+            SketchConstraintKind::Vertical { entity: entity_id }
+        } else {
+            SketchConstraintKind::Horizontal { entity: entity_id }
+        };
+        self.prepare_sketch_constraint_command(
+            CanonicalCommand::ReplaceSketchConstraint {
+                id: feature_id,
+                constraint: SketchConstraint {
+                    id: constraint_id,
+                    kind,
+                },
+            },
+            "feature-history-action-replace-constraint",
+        )
+    }
+
+    fn prepare_delete_sketch_constraint(&mut self) -> bool {
+        let (Some(feature_id), Some(constraint_id)) = (
+            self.feature_history.selected_feature,
+            self.feature_history.selected_sketch_constraint,
+        ) else {
+            self.feature_history_error(
+                self.catalog
+                    .text("feature-history-error-no-sketch-constraint"),
+            );
+            return false;
+        };
+        self.prepare_sketch_constraint_command(
+            CanonicalCommand::DeleteSketchConstraint {
+                id: feature_id,
+                constraint_id,
+            },
+            "feature-history-action-delete-constraint",
+        )
+    }
+
+    fn prepare_sketch_construction(&mut self, construction: bool) -> bool {
+        let (Some(feature_id), Some(entity_id)) = (
+            self.feature_history.selected_feature,
+            self.feature_history.selected_sketch_entity,
+        ) else {
+            self.feature_history_error(self.catalog.text("feature-history-error-no-sketch-entity"));
+            return false;
+        };
+        let snapshot = self.document.current();
+        let Some(feature) = snapshot.feature(feature_id) else {
+            self.feature_history_error(self.catalog.text("feature-history-error-no-sketch-entity"));
+            return false;
+        };
+        let FeatureKind::Sketch(spec) = feature.kind() else {
+            self.feature_history_error(self.catalog.text("feature-history-error-no-sketch-entity"));
+            return false;
+        };
+        let constraint_id = if construction {
+            let used = spec
+                .constraints
+                .iter()
+                .map(|constraint| constraint.id)
+                .collect::<BTreeSet<_>>();
+            let Some(id) = (1..=MAX_SKETCH_CONSTRAINTS as u64)
+                .map(SketchConstraintId)
+                .find(|id| !used.contains(id))
+            else {
+                self.feature_history_error(SketchError::ResourceLimit);
+                return false;
+            };
+            id
+        } else {
+            let Some(id) = spec.constraints.iter().find_map(|constraint| {
+                matches!(
+                    constraint.kind,
+                    SketchConstraintKind::Construction { entity } if entity == entity_id
+                )
+                .then_some(constraint.id)
+            }) else {
+                self.feature_history_error(
+                    self.catalog.text("feature-history-error-no-sketch-entity"),
+                );
+                return false;
+            };
+            id
+        };
+        let source = FeatureHistoryPreviewSource::SketchConstruction {
+            source_revision: snapshot.revision_id(),
+            source_digest: snapshot.canonical_digest(),
+            feature_id,
+            entity_id,
+            construction,
+            constraint_id,
+        };
+        let preview = match self.derive_feature_history_preview(&source) {
+            Ok(preview) => preview,
+            Err(error) => {
+                self.feature_history_error(error);
+                return false;
+            }
+        };
+        let action = preview.action.clone();
+        self.feature_history.preview = Some(preview);
+        self.digest = self.catalog.format(
+            "feature-history-preview-ready",
+            &BTreeMap::from([("action", action)]),
+        );
+        true
     }
 
     fn prepare_feature_history_edit(&mut self) -> bool {
@@ -1133,6 +1511,18 @@ impl KetchupApp {
                     ketchup_core::drawing::OrthographicViewKind::Right => {
                         "feature-history-shared-impact-view-right"
                     }
+                    ketchup_core::drawing::OrthographicViewKind::Isometric => {
+                        "feature-history-shared-impact-view-isometric"
+                    }
+                    ketchup_core::drawing::OrthographicViewKind::Auxiliary(_) => {
+                        "feature-history-shared-impact-view-auxiliary"
+                    }
+                    ketchup_core::drawing::OrthographicViewKind::Section(_) => {
+                        "feature-history-shared-impact-view-section"
+                    }
+                    ketchup_core::drawing::OrthographicViewKind::Detail(_) => {
+                        "feature-history-shared-impact-view-detail"
+                    }
                 });
                 format!("{}:{kind}", view.sheet_id.0)
             })
@@ -1287,6 +1677,18 @@ impl KetchupApp {
                     }
                     ketchup_core::drawing::OrthographicViewKind::Right => {
                         "feature-history-shared-impact-view-right"
+                    }
+                    ketchup_core::drawing::OrthographicViewKind::Isometric => {
+                        "feature-history-shared-impact-view-isometric"
+                    }
+                    ketchup_core::drawing::OrthographicViewKind::Auxiliary(_) => {
+                        "feature-history-shared-impact-view-auxiliary"
+                    }
+                    ketchup_core::drawing::OrthographicViewKind::Section(_) => {
+                        "feature-history-shared-impact-view-section"
+                    }
+                    ketchup_core::drawing::OrthographicViewKind::Detail(_) => {
+                        "feature-history-shared-impact-view-detail"
                     }
                 });
                 format!("{}:{kind}", view.sheet_id.0)
@@ -1476,6 +1878,18 @@ impl KetchupApp {
                     ketchup_core::drawing::OrthographicViewKind::Right => {
                         "feature-history-shared-impact-view-right"
                     }
+                    ketchup_core::drawing::OrthographicViewKind::Isometric => {
+                        "feature-history-shared-impact-view-isometric"
+                    }
+                    ketchup_core::drawing::OrthographicViewKind::Auxiliary(_) => {
+                        "feature-history-shared-impact-view-auxiliary"
+                    }
+                    ketchup_core::drawing::OrthographicViewKind::Section(_) => {
+                        "feature-history-shared-impact-view-section"
+                    }
+                    ketchup_core::drawing::OrthographicViewKind::Detail(_) => {
+                        "feature-history-shared-impact-view-detail"
+                    }
                 });
                 format!("{}:{kind}", view.sheet_id.0)
             })
@@ -1548,6 +1962,230 @@ impl KetchupApp {
         );
     }
 
+    fn show_revision_catalog(&mut self, ui: &mut egui::Ui) {
+        let catalog = self.document.revision_catalog();
+        let Some(first) = catalog.first() else {
+            return;
+        };
+        let current = self.document.current();
+        let revision_exists = |id| catalog.iter().any(|entry| entry.revision_id == id);
+        if self
+            .feature_history
+            .revision_before
+            .is_none_or(|id| !revision_exists(id))
+        {
+            self.feature_history.revision_before = Some(first.revision_id);
+        }
+        if self
+            .feature_history
+            .revision_after
+            .is_none_or(|id| !revision_exists(id))
+        {
+            self.feature_history.revision_after = Some(current.revision_id());
+        }
+        if self
+            .feature_history
+            .rollback_revision
+            .is_none_or(|id| !revision_exists(id))
+        {
+            self.feature_history.rollback_revision = Some(first.revision_id);
+        }
+
+        ui.label(self.catalog.text("revision-history-title"));
+        let checkpoint_label = self.catalog.text("revision-history-checkpoint-name");
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut self.feature_history.checkpoint_input)
+                .hint_text(&checkpoint_label),
+        );
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &checkpoint_label)
+        });
+        if ui
+            .button(self.catalog.text("revision-history-create-checkpoint"))
+            .clicked()
+        {
+            match self.document.create_checkpoint(
+                current.revision_id(),
+                &current.canonical_digest(),
+                &self.feature_history.checkpoint_input,
+            ) {
+                Ok(()) => {
+                    self.feature_history.checkpoint_input.clear();
+                    self.digest = self.catalog.text("revision-history-checkpoint-created");
+                }
+                Err(error) => {
+                    self.digest = self.catalog.format(
+                        "revision-history-error",
+                        &BTreeMap::from([("reason", error.to_string())]),
+                    );
+                }
+            }
+        }
+
+        for entry in &catalog {
+            let principal = match entry.origin {
+                ketchup_core::document::RevisionOrigin::Initial => {
+                    self.catalog.text("revision-history-origin-initial")
+                }
+                ketchup_core::document::RevisionOrigin::Principal(
+                    ProposalPrincipal::ManualClient,
+                ) => self.catalog.text("revision-history-origin-manual"),
+                ketchup_core::document::RevisionOrigin::Principal(
+                    ProposalPrincipal::LocalAssistant,
+                ) => self.catalog.text("revision-history-origin-assistant"),
+                ketchup_core::document::RevisionOrigin::Principal(ProposalPrincipal::Human(id)) => {
+                    format!(
+                        "{} {id}",
+                        self.catalog.text("revision-history-origin-human")
+                    )
+                }
+                ketchup_core::document::RevisionOrigin::Principal(ProposalPrincipal::Plugin(
+                    id,
+                )) => {
+                    format!(
+                        "{} {id}",
+                        self.catalog.text("revision-history-origin-plugin")
+                    )
+                }
+                ketchup_core::document::RevisionOrigin::Rollback {
+                    target_revision, ..
+                } => self.catalog.format(
+                    "revision-history-origin-rollback",
+                    &BTreeMap::from([("revision", target_revision.to_string())]),
+                ),
+            };
+            ui.label(self.catalog.format(
+                "revision-history-entry",
+                &BTreeMap::from([
+                    ("revision", entry.revision_id.to_string()),
+                    ("origin", principal),
+                    (
+                        "checkpoint",
+                        entry.checkpoint.clone().unwrap_or_else(|| "—".to_owned()),
+                    ),
+                    (
+                        "current",
+                        if entry.current {
+                            self.catalog.text("revision-history-current")
+                        } else {
+                            String::new()
+                        },
+                    ),
+                ]),
+            ));
+        }
+
+        let revision_label = |id: u64| {
+            catalog
+                .iter()
+                .find(|entry| entry.revision_id == id)
+                .map(|entry| {
+                    entry.checkpoint.as_ref().map_or_else(
+                        || format!("r{}", entry.revision_id),
+                        |name| format!("r{} · {name}", entry.revision_id),
+                    )
+                })
+                .unwrap_or_else(|| format!("r{id}"))
+        };
+        ui.separator();
+        ui.label(self.catalog.text("revision-history-compare"));
+        let mut before = self.feature_history.revision_before.unwrap();
+        egui::ComboBox::from_id_salt("revision-history-before")
+            .selected_text(revision_label(before))
+            .show_ui(ui, |ui| {
+                for entry in &catalog {
+                    ui.selectable_value(
+                        &mut before,
+                        entry.revision_id,
+                        revision_label(entry.revision_id),
+                    );
+                }
+            });
+        self.feature_history.revision_before = Some(before);
+        let mut after = self.feature_history.revision_after.unwrap();
+        egui::ComboBox::from_id_salt("revision-history-after")
+            .selected_text(revision_label(after))
+            .show_ui(ui, |ui| {
+                for entry in &catalog {
+                    ui.selectable_value(
+                        &mut after,
+                        entry.revision_id,
+                        revision_label(entry.revision_id),
+                    );
+                }
+            });
+        self.feature_history.revision_after = Some(after);
+        if let Ok(diff) = self.document.compare_revisions(before, after) {
+            let changes = if diff.changes.is_empty() {
+                self.catalog.text("revision-history-no-changes")
+            } else {
+                diff.changes
+                    .iter()
+                    .map(|change| {
+                        format!(
+                            "{} {}→{}",
+                            change.structure, change.before_count, change.after_count
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            ui.label(self.catalog.format(
+                "revision-history-diff",
+                &BTreeMap::from([("changes", changes)]),
+            ));
+        }
+
+        ui.label(self.catalog.text("revision-history-rollback-target"));
+        let mut rollback = self.feature_history.rollback_revision.unwrap();
+        egui::ComboBox::from_id_salt("revision-history-rollback")
+            .selected_text(revision_label(rollback))
+            .show_ui(ui, |ui| {
+                for entry in &catalog {
+                    ui.selectable_value(
+                        &mut rollback,
+                        entry.revision_id,
+                        revision_label(entry.revision_id),
+                    );
+                }
+            });
+        self.feature_history.rollback_revision = Some(rollback);
+        if ui
+            .add_enabled(
+                rollback != current.revision_id(),
+                egui::Button::new(self.catalog.text("revision-history-rollback")),
+            )
+            .clicked()
+        {
+            match self.document.rollback_to_revision(
+                current.revision_id(),
+                &current.canonical_digest(),
+                rollback,
+                ProposalPrincipal::ManualClient,
+            ) {
+                Ok(_) => {
+                    self.invalidate_pending_import_reviews();
+                    self.clear_ephemeral_edit_state();
+                    self.parameter_editor_node = None;
+                    self.parameter_provenance = None;
+                    self.parameter_last_recomputed_nodes.clear();
+                    self.reconcile_selection();
+                    self.digest = self.catalog.format(
+                        "revision-history-rolled-back",
+                        &BTreeMap::from([("revision", rollback.to_string())]),
+                    );
+                }
+                Err(error) => {
+                    self.digest = self.catalog.format(
+                        "revision-history-error",
+                        &BTreeMap::from([("reason", error.to_string())]),
+                    );
+                }
+            }
+        }
+        ui.separator();
+    }
+
     pub(super) fn show_feature_history(&mut self, ui: &mut egui::Ui) {
         egui::CollapsingHeader::new(self.catalog.text("feature-history-title"))
             .id_salt("feature-history")
@@ -1562,6 +2200,7 @@ impl KetchupApp {
     }
 
     fn show_feature_history_content(&mut self, ui: &mut egui::Ui) {
+        self.show_revision_catalog(ui);
         let snapshot = self.document.current();
         let Some(projection) = self.reconcile_feature_history(&snapshot) else {
             ui.label(self.catalog.text("feature-history-unavailable"));
@@ -1777,6 +2416,35 @@ impl KetchupApp {
                     ("suppressed", ids(&preview.suppressed_feature_ids)),
                 ]),
             ));
+            if let Some(diagnostic) = preview.sketch_diagnostic.as_ref() {
+                let key = match diagnostic.status {
+                    SketchDiagnosticStatus::UnderConstrained { .. } => {
+                        "feature-history-sketch-diagnostic-under"
+                    }
+                    SketchDiagnosticStatus::FullyConstrained => {
+                        "feature-history-sketch-diagnostic-fully"
+                    }
+                    SketchDiagnosticStatus::Conflicting => {
+                        "feature-history-sketch-diagnostic-conflicting"
+                    }
+                };
+                let remaining_dof = match diagnostic.status {
+                    SketchDiagnosticStatus::UnderConstrained { remaining_dof } => remaining_dof,
+                    SketchDiagnosticStatus::FullyConstrained
+                    | SketchDiagnosticStatus::Conflicting => 0,
+                };
+                ui.label(self.catalog.format(
+                    key,
+                    &BTreeMap::from([
+                        ("dof", remaining_dof.to_string()),
+                        ("entities", sketch_entity_ids(&diagnostic.entity_ids)),
+                        (
+                            "constraints",
+                            sketch_constraint_ids(&diagnostic.constraint_ids),
+                        ),
+                    ]),
+                ));
+            }
             if let Some(impact) = preview.execution.shared_impact() {
                 self.show_shared_change_impact(ui, impact);
             }
@@ -1836,6 +2504,172 @@ impl KetchupApp {
                 action = Some(FeatureHistoryUiAction::PreviewReplacement);
             }
         } else if let Some(feature_id) = self.feature_history.selected_feature {
+            if let Some(feature) = snapshot.feature(feature_id)
+                && let FeatureKind::Sketch(spec) = feature.kind()
+            {
+                if self
+                    .feature_history
+                    .selected_sketch_entity
+                    .is_none_or(|selected| {
+                        !spec.entities.iter().any(|entity| entity.id() == selected)
+                    })
+                {
+                    self.feature_history.selected_sketch_entity =
+                        spec.entities.first().map(|entity| entity.id());
+                }
+                if let Some(mut entity_id) = self.feature_history.selected_sketch_entity {
+                    let label = self.catalog.text("feature-history-sketch-entity");
+                    let response = egui::ComboBox::from_id_salt("feature-history-sketch-entity")
+                        .width(ui.available_width())
+                        .selected_text(self.catalog.format(
+                            "feature-history-sketch-entity-label",
+                            &BTreeMap::from([("id", entity_id.0.to_string())]),
+                        ))
+                        .show_ui(ui, |ui| {
+                            for entity in &spec.entities {
+                                let id = entity.id();
+                                ui.selectable_value(
+                                    &mut entity_id,
+                                    id,
+                                    self.catalog.format(
+                                        "feature-history-sketch-entity-label",
+                                        &BTreeMap::from([("id", id.0.to_string())]),
+                                    ),
+                                );
+                            }
+                        });
+                    response.response.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, &label)
+                    });
+                    if self.feature_history.selected_sketch_entity != Some(entity_id) {
+                        action = Some(FeatureHistoryUiAction::SelectSketchEntity(entity_id));
+                    } else {
+                        let projected = spec.is_projected_entity(entity_id);
+                        let construction = spec.is_construction_entity(entity_id);
+                        if projected {
+                            ui.label(
+                                self.catalog
+                                    .text("feature-history-sketch-projected-read-only"),
+                            );
+                        } else {
+                            let make_construction = !construction;
+                            let key = if make_construction {
+                                "feature-history-preview-make-construction"
+                            } else {
+                                "feature-history-preview-make-geometry"
+                            };
+                            if ui
+                                .add_enabled(
+                                    self.feature_history.change_scope
+                                        == FeatureHistoryChangeScope::Shared,
+                                    egui::Button::new(self.catalog.text(key)),
+                                )
+                                .clicked()
+                            {
+                                action = Some(FeatureHistoryUiAction::PreviewSketchConstruction(
+                                    make_construction,
+                                ));
+                            }
+                        }
+                    }
+                }
+                let editable_constraints = spec
+                    .constraints
+                    .iter()
+                    .filter(|constraint| {
+                        !matches!(
+                            constraint.kind,
+                            SketchConstraintKind::Projection { .. }
+                                | SketchConstraintKind::Construction { .. }
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                if self
+                    .feature_history
+                    .selected_sketch_constraint
+                    .is_none_or(|selected| {
+                        !editable_constraints
+                            .iter()
+                            .any(|constraint| constraint.id == selected)
+                    })
+                {
+                    self.feature_history.selected_sketch_constraint =
+                        editable_constraints.first().map(|constraint| constraint.id);
+                }
+                let selected_is_line =
+                    self.feature_history
+                        .selected_sketch_entity
+                        .is_some_and(|selected| {
+                            spec.entities.iter().any(|entity| {
+                            matches!(entity, SketchEntity::Line { id, .. } if *id == selected)
+                        })
+                        });
+                if ui
+                    .add_enabled(
+                        selected_is_line
+                            && self.feature_history.change_scope
+                                == FeatureHistoryChangeScope::Shared,
+                        egui::Button::new(
+                            self.catalog
+                                .text("feature-history-preview-add-horizontal-constraint"),
+                        ),
+                    )
+                    .clicked()
+                {
+                    action = Some(FeatureHistoryUiAction::PreviewCreateSketchConstraint);
+                }
+                if let Some(mut constraint_id) = self.feature_history.selected_sketch_constraint {
+                    let label = self.catalog.text("feature-history-sketch-constraint");
+                    let response =
+                        egui::ComboBox::from_id_salt("feature-history-sketch-constraint")
+                            .width(ui.available_width())
+                            .selected_text(self.catalog.format(
+                                "feature-history-sketch-constraint-label",
+                                &BTreeMap::from([("id", constraint_id.0.to_string())]),
+                            ))
+                            .show_ui(ui, |ui| {
+                                for constraint in &editable_constraints {
+                                    ui.selectable_value(
+                                        &mut constraint_id,
+                                        constraint.id,
+                                        self.catalog.format(
+                                            "feature-history-sketch-constraint-label",
+                                            &BTreeMap::from([("id", constraint.id.0.to_string())]),
+                                        ),
+                                    );
+                                }
+                            });
+                    response.response.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, &label)
+                    });
+                    if self.feature_history.selected_sketch_constraint != Some(constraint_id) {
+                        action = Some(FeatureHistoryUiAction::SelectSketchConstraint(
+                            constraint_id,
+                        ));
+                    }
+                    if ui
+                        .add_enabled(
+                            selected_is_line,
+                            egui::Button::new(
+                                self.catalog
+                                    .text("feature-history-preview-replace-constraint"),
+                            ),
+                        )
+                        .clicked()
+                    {
+                        action = Some(FeatureHistoryUiAction::PreviewReplaceSketchConstraint);
+                    }
+                    if ui
+                        .button(
+                            self.catalog
+                                .text("feature-history-preview-delete-constraint"),
+                        )
+                        .clicked()
+                    {
+                        action = Some(FeatureHistoryUiAction::PreviewDeleteSketchConstraint);
+                    }
+                }
+            }
             let is_profile = snapshot.feature(feature_id).is_some_and(|feature| {
                 matches!(
                     feature.kind(),
@@ -1979,12 +2813,20 @@ impl KetchupApp {
             }
             Some(FeatureHistoryUiAction::SelectFeature(id)) => {
                 self.feature_history.selected_feature = Some(id);
+                self.feature_history.selected_sketch_entity = None;
+                self.feature_history.selected_sketch_constraint = None;
                 self.feature_history.selected_parameter = None;
                 self.feature_history.parameter_source = None;
                 self.digest = self.catalog.format(
                     "feature-history-selected-feature",
                     &BTreeMap::from([("id", id.0.to_string())]),
                 );
+            }
+            Some(FeatureHistoryUiAction::SelectSketchEntity(entity_id)) => {
+                self.feature_history.selected_sketch_entity = Some(entity_id);
+            }
+            Some(FeatureHistoryUiAction::SelectSketchConstraint(constraint_id)) => {
+                self.feature_history.selected_sketch_constraint = Some(constraint_id);
             }
             Some(FeatureHistoryUiAction::SelectParameter(target)) => {
                 self.feature_history.selected_parameter = Some(target);
@@ -2011,6 +2853,18 @@ impl KetchupApp {
             }
             Some(FeatureHistoryUiAction::PreviewReplacement) => {
                 self.prepare_component_replacement();
+            }
+            Some(FeatureHistoryUiAction::PreviewSketchConstruction(construction)) => {
+                self.prepare_sketch_construction(construction);
+            }
+            Some(FeatureHistoryUiAction::PreviewCreateSketchConstraint) => {
+                self.prepare_create_sketch_constraint();
+            }
+            Some(FeatureHistoryUiAction::PreviewReplaceSketchConstraint) => {
+                self.prepare_replace_sketch_constraint();
+            }
+            Some(FeatureHistoryUiAction::PreviewDeleteSketchConstraint) => {
+                self.prepare_delete_sketch_constraint();
             }
             Some(FeatureHistoryUiAction::Confirm) => {
                 self.confirm_feature_history_preview();

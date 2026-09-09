@@ -1,4 +1,13 @@
-use std::fmt;
+use std::{
+    fmt,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, RecvTimeoutError, TryRecvError},
+    },
+    time::{Duration, Instant},
+};
 
 use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentId, DocumentStore, FeatureId,
@@ -8,14 +17,19 @@ use ketchup_core::exact_brep_graph::{ExactBRepGraph, ExactBRepGraphError};
 use ketchup_core::exact_product::ExactBRepGraphPackage;
 use ketchup_core::mesh_recognition::{
     CylinderRecognition, MeshRecognition, MeshRecognitionCandidate, MeshRecognitionResiduals,
-    recognize_mesh_body,
+    recognize_mesh_body_cancellable,
 };
 use ketchup_core::sketch::{
     FeatureDirection, FeatureExtent, PadSpec, SketchEntity, SketchEntityId, SketchSpec,
     WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
 };
+use ketchup_scheduler::ExactWorkerSupervisor;
 
-const MAX_DISTANCE_COMPARISONS: usize = 4_000_000;
+const MESH_CONVERSION_PROGRESS_STEPS: u8 = 3;
+const MAX_VERIFICATION_WORK_UNITS: usize = 32_000_000;
+const MAX_VERIFICATION_VERTICES: usize = 1_000_000;
+const TRIANGLE_BVH_LEAF_SIZE: usize = 8;
+static NEVER_CANCELLED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum MeshConversionError {
@@ -30,6 +44,8 @@ pub enum MeshConversionError {
     ExactVerificationRequired,
     ExactVerificationMismatch,
     VerificationResourceLimit,
+    Cancelled,
+    TimedOut,
     Stale,
 }
 
@@ -61,6 +77,8 @@ impl fmt::Display for MeshConversionError {
             Self::VerificationResourceLimit => {
                 formatter.write_str("mesh is too large for bounded exact conversion verification")
             }
+            Self::Cancelled => formatter.write_str("mesh conversion was cancelled"),
+            Self::TimedOut => formatter.write_str("mesh conversion timed out"),
             Self::Stale => formatter.write_str("mesh conversion plan is stale"),
         }
     }
@@ -72,6 +90,7 @@ impl std::error::Error for MeshConversionError {}
 pub struct MeshConversionPlan {
     document_id: DocumentId,
     source_revision: u64,
+    target_revision: u64,
     source_digest: String,
     mutation_epoch: u64,
     source_definition_id: DefinitionId,
@@ -125,6 +144,14 @@ impl MeshConversionPlan {
     pub fn batch_digest(&self) -> String {
         self.batch.digest()
     }
+
+    #[must_use]
+    pub fn matches_source(&self, snapshot: &Snapshot, mutation_epoch: u64) -> bool {
+        self.document_id == snapshot.document_id()
+            && self.source_revision == snapshot.revision_id()
+            && self.source_digest == snapshot.canonical_digest()
+            && self.mutation_epoch == mutation_epoch
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -153,12 +180,245 @@ impl MeshConversionVerification {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MeshConversionSource {
+    document_id: DocumentId,
+    revision: u64,
+    canonical_digest: String,
+    mutation_epoch: u64,
+}
+
+impl MeshConversionSource {
+    fn new(snapshot: &Snapshot, mutation_epoch: u64) -> Self {
+        Self {
+            document_id: snapshot.document_id(),
+            revision: snapshot.revision_id(),
+            canonical_digest: snapshot.canonical_digest(),
+            mutation_epoch,
+        }
+    }
+
+    #[must_use]
+    pub fn matches(&self, snapshot: &Snapshot, mutation_epoch: u64) -> bool {
+        self.document_id == snapshot.document_id()
+            && self.revision == snapshot.revision_id()
+            && self.canonical_digest == snapshot.canonical_digest()
+            && self.mutation_epoch == mutation_epoch
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MeshConversionStage {
+    Recognizing,
+    EvaluatingExact,
+    Verifying,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MeshConversionProgress {
+    pub stage: MeshConversionStage,
+    pub completed: u8,
+    pub total: u8,
+}
+
+pub struct PreparedMeshConversion {
+    pub plan: MeshConversionPlan,
+    pub verification: MeshConversionVerification,
+}
+
+pub enum MeshConversionTaskEvent {
+    Progress(MeshConversionProgress),
+    Finished(Box<Result<PreparedMeshConversion, MeshConversionError>>),
+}
+
+pub struct MeshConversionTask {
+    pub source: MeshConversionSource,
+    cancelled: Arc<AtomicBool>,
+    receiver: Receiver<MeshConversionTaskEvent>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for MeshConversionTask {
+    fn drop(&mut self) {
+        self.cancel();
+        if let Some(worker) = self.worker.take() {
+            if worker.is_finished() {
+                let _ = worker.join();
+            } else {
+                let _ = std::thread::Builder::new()
+                    .name("mesh-conversion-reaper".to_owned())
+                    .spawn(move || {
+                        let _ = worker.join();
+                    });
+            }
+        }
+    }
+}
+
+impl MeshConversionTask {
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    pub fn poll(&self) -> Result<MeshConversionTaskEvent, TryRecvError> {
+        self.receiver.try_recv().map(|event| match event {
+            MeshConversionTaskEvent::Finished(result) if self.is_cancelled() && result.is_ok() => {
+                MeshConversionTaskEvent::Finished(Box::new(Err(MeshConversionError::Cancelled)))
+            }
+            event => event,
+        })
+    }
+
+    pub fn wait(self, timeout: Duration) -> Result<PreparedMeshConversion, MeshConversionError> {
+        let started_at = Instant::now();
+        loop {
+            let remaining = timeout.saturating_sub(started_at.elapsed());
+            match self.receiver.recv_timeout(remaining) {
+                Ok(MeshConversionTaskEvent::Progress(_)) => {}
+                Ok(MeshConversionTaskEvent::Finished(result)) => {
+                    return if self.is_cancelled() && result.is_ok() {
+                        Err(MeshConversionError::Cancelled)
+                    } else {
+                        *result
+                    };
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    self.cancel();
+                    return Err(MeshConversionError::TimedOut);
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(MeshConversionError::Cancelled);
+                }
+            }
+        }
+    }
+}
+
+pub fn start_mesh_conversion(
+    document: &DocumentStore,
+    source_feature_id: FeatureId,
+    tolerance_mm: f64,
+    executable: PathBuf,
+    timeout: Duration,
+    completed: impl FnOnce() + Send + 'static,
+) -> Result<MeshConversionTask, String> {
+    let snapshot = document.current();
+    let mutation_epoch = document.mutation_epoch();
+    let next_revision_id = document.next_revision_id();
+    let source = MeshConversionSource::new(&snapshot, mutation_epoch);
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let worker_cancelled = Arc::clone(&cancelled);
+    let (sender, receiver) = mpsc::channel();
+    let started_at = Instant::now();
+    let worker = std::thread::Builder::new()
+        .name("mesh-to-exact-conversion".to_owned())
+        .spawn(move || {
+            let timed_out = Arc::new(AtomicBool::new(false));
+            let timeout_cancelled = Arc::clone(&worker_cancelled);
+            let timeout_flag = Arc::clone(&timed_out);
+            let (done_sender, done_receiver) = mpsc::channel();
+            let watchdog_started_at = started_at;
+            let watchdog = std::thread::spawn(move || {
+                let remaining = timeout.saturating_sub(watchdog_started_at.elapsed());
+                if done_receiver.recv_timeout(remaining).is_err() {
+                    timeout_flag.store(true, Ordering::Release);
+                    timeout_cancelled.store(true, Ordering::Release);
+                }
+            });
+            let send_progress = |stage, completed| {
+                sender.send(MeshConversionTaskEvent::Progress(MeshConversionProgress {
+                    stage,
+                    completed,
+                    total: MESH_CONVERSION_PROGRESS_STEPS,
+                }))
+            };
+            let result = (|| {
+                send_progress(MeshConversionStage::Recognizing, 0)
+                    .map_err(|_| MeshConversionError::Cancelled)?;
+                let plan = prepare_mesh_conversion_from_snapshot(
+                    snapshot,
+                    mutation_epoch,
+                    next_revision_id,
+                    source_feature_id,
+                    tolerance_mm,
+                    &worker_cancelled,
+                )?;
+                if worker_cancelled.load(Ordering::Acquire) {
+                    return Err(MeshConversionError::Cancelled);
+                }
+                send_progress(MeshConversionStage::EvaluatingExact, 1)
+                    .map_err(|_| MeshConversionError::Cancelled)?;
+                let mut worker =
+                    ExactWorkerSupervisor::spawn_with_cancellation(executable, &worker_cancelled)
+                        .map_err(|error| MeshConversionError::ExactGraph(error.to_string()))?;
+                let package = worker
+                    .evaluate_exact_brep_graph_with_imported_sources_and_cancellation(
+                        plan.graph(),
+                        &[],
+                        &worker_cancelled,
+                    )
+                    .map_err(|error| MeshConversionError::ExactGraph(error.to_string()))?;
+                send_progress(MeshConversionStage::Verifying, 2)
+                    .map_err(|_| MeshConversionError::Cancelled)?;
+                let verification =
+                    verify_mesh_conversion_with_cancellation(&plan, package, &worker_cancelled)?;
+                Ok(PreparedMeshConversion { plan, verification })
+            })();
+            let _ = done_sender.send(());
+            let _ = watchdog.join();
+            let result = if timed_out.load(Ordering::Acquire) || started_at.elapsed() >= timeout {
+                Err(MeshConversionError::TimedOut)
+            } else if worker_cancelled.load(Ordering::Acquire) {
+                Err(MeshConversionError::Cancelled)
+            } else {
+                result
+            };
+            if sender
+                .send(MeshConversionTaskEvent::Finished(Box::new(result)))
+                .is_ok()
+            {
+                let _ = std::thread::Builder::new()
+                    .name("mesh-conversion-completed".to_owned())
+                    .spawn(completed);
+            }
+        })
+        .map_err(|error| error.to_string())?;
+    Ok(MeshConversionTask {
+        source,
+        cancelled,
+        receiver,
+        worker: Some(worker),
+    })
+}
+
 pub fn prepare_mesh_conversion(
     document: &DocumentStore,
     source_feature_id: FeatureId,
     tolerance_mm: f64,
 ) -> Result<MeshConversionPlan, MeshConversionError> {
-    let snapshot = document.current();
+    prepare_mesh_conversion_from_snapshot(
+        document.current(),
+        document.mutation_epoch(),
+        document.next_revision_id(),
+        source_feature_id,
+        tolerance_mm,
+        &NEVER_CANCELLED,
+    )
+}
+
+fn prepare_mesh_conversion_from_snapshot(
+    snapshot: Snapshot,
+    mutation_epoch: u64,
+    next_revision_id: u64,
+    source_feature_id: FeatureId,
+    tolerance_mm: f64,
+    cancelled: &AtomicBool,
+) -> Result<MeshConversionPlan, MeshConversionError> {
     let source = snapshot
         .feature(source_feature_id)
         .ok_or(MeshConversionError::SourceNotFound)?;
@@ -171,7 +431,13 @@ pub fn prepare_mesh_conversion(
     if definition.feature_ids() != [source_feature_id] {
         return Err(MeshConversionError::SourceIsNotSoleMeshBody);
     }
-    let (candidate, residuals) = match recognize_mesh_body(source_mesh, tolerance_mm) {
+    let recognition = recognize_mesh_body_cancellable(source_mesh, tolerance_mm, || {
+        cancelled.load(Ordering::Acquire)
+    });
+    if cancelled.load(Ordering::Acquire) {
+        return Err(MeshConversionError::Cancelled);
+    }
+    let (candidate, residuals) = match recognition {
         MeshRecognition::Candidate {
             candidate,
             residuals,
@@ -203,8 +469,8 @@ pub fn prepare_mesh_conversion(
     )?;
     let producer_feature_id = chain.producer_feature_id;
     let batch = CommandBatch::new(chain.commands);
-    let preview = document
-        .preview_batch(&batch)
+    let preview = snapshot
+        .preview_batch_at_revision(&batch, next_revision_id)
         .map_err(|error| MeshConversionError::InvalidBatch(error.to_string()))?;
     let graph =
         ExactBRepGraph::from_snapshot(&preview, source.definition_id(), producer_feature_id)
@@ -212,8 +478,9 @@ pub fn prepare_mesh_conversion(
     Ok(MeshConversionPlan {
         document_id: snapshot.document_id(),
         source_revision: snapshot.revision_id(),
+        target_revision: next_revision_id,
         source_digest: snapshot.canonical_digest(),
-        mutation_epoch: document.mutation_epoch(),
+        mutation_epoch,
         source_definition_id: source.definition_id(),
         source_feature_id,
         source_mesh: source_mesh.clone(),
@@ -230,6 +497,17 @@ pub fn verify_mesh_conversion(
     plan: &MeshConversionPlan,
     package: ExactBRepGraphPackage,
 ) -> Result<MeshConversionVerification, MeshConversionError> {
+    verify_mesh_conversion_with_cancellation(plan, package, &NEVER_CANCELLED)
+}
+
+fn verify_mesh_conversion_with_cancellation(
+    plan: &MeshConversionPlan,
+    package: ExactBRepGraphPackage,
+    cancelled: &AtomicBool,
+) -> Result<MeshConversionVerification, MeshConversionError> {
+    if cancelled.load(Ordering::Acquire) {
+        return Err(MeshConversionError::Cancelled);
+    }
     if package.graph != plan.graph
         || package.identity.document_id != plan.preview.document_id()
         || package.identity.source_revision != plan.preview.revision_id()
@@ -241,14 +519,37 @@ pub fn verify_mesh_conversion(
     }
     let source_triangles = plan.source_mesh.triangles.len();
     let exact_triangles = package.triangles.len();
-    if source_triangles == 0
-        || exact_triangles == 0
-        || source_triangles
-            .checked_mul(exact_triangles)
-            .is_none_or(|count| count > MAX_DISTANCE_COMPARISONS)
-    {
+    if source_triangles == 0 || exact_triangles == 0 {
+        return Err(MeshConversionError::ExactVerificationMismatch);
+    }
+    let total_vertices = plan
+        .source_mesh
+        .vertices_mm
+        .len()
+        .checked_add(package.vertices.len())
+        .ok_or(MeshConversionError::VerificationResourceLimit)?;
+    let sampled_points = source_triangles
+        .checked_add(exact_triangles)
+        .and_then(|count| count.checked_mul(7))
+        .ok_or(MeshConversionError::VerificationResourceLimit)?;
+    if total_vertices > MAX_VERIFICATION_VERTICES || sampled_points > MAX_VERIFICATION_WORK_UNITS {
         return Err(MeshConversionError::VerificationResourceLimit);
     }
+    if package.vertices.iter().any(|vertex| {
+        vertex
+            .position_mm
+            .into_iter()
+            .any(|value| !value.is_finite())
+    }) || package.triangles.iter().any(|triangle| {
+        triangle
+            .vertex_indices
+            .into_iter()
+            .any(|index| index as usize >= package.vertices.len())
+    }) {
+        return Err(MeshConversionError::ExactVerificationMismatch);
+    }
+    let mut work_budget = VerificationWorkBudget::new(MAX_VERIFICATION_WORK_UNITS);
+    work_budget.consume(package.vertices.len())?;
     let source_vertices = plan.source_mesh.vertices_mm.as_slice();
     let source_faces = plan.source_mesh.triangles.as_slice();
     let exact_vertices = package
@@ -266,12 +567,16 @@ pub fn verify_mesh_conversion(
         source_faces,
         &exact_vertices,
         &exact_faces,
+        cancelled,
+        &mut work_budget,
     )?;
     let exact_to_source = directed_mesh_sample_distance(
         &exact_vertices,
         &exact_faces,
         source_vertices,
         source_faces,
+        cancelled,
+        &mut work_budget,
     )?;
     if source_to_exact > plan.tolerance_mm || exact_to_source > plan.tolerance_mm {
         return Err(MeshConversionError::ExactVerificationMismatch);
@@ -294,39 +599,29 @@ pub fn commit_mesh_conversion(
     if document.mutation_epoch() != plan.mutation_epoch
         || current.document_id() != plan.document_id
         || current.revision_id() != plan.source_revision
+        || document.next_revision_id() != plan.target_revision
+        || plan.preview.revision_id() != plan.target_revision
         || current.canonical_digest() != plan.source_digest
         || verification.graph_digest != plan.graph.graph_digest
+        || verification.package.graph != plan.graph
+        || verification.package.identity.document_id != plan.preview.document_id()
+        || verification.package.identity.source_revision != plan.preview.revision_id()
+        || verification.package.identity.source_digest != plan.preview.canonical_digest()
+        || verification.package.identity.definition_id != plan.source_definition_id
+        || verification.package.identity.producer_feature_id
+            != FeatureId(plan.graph.producer_feature_id)
         || verification.result_fingerprint != verification.package.identity.result_fingerprint
-    {
-        return Err(MeshConversionError::Stale);
-    }
-    let current_mesh = current
-        .feature(plan.source_feature_id)
-        .and_then(|feature| match feature.kind() {
-            FeatureKind::MeshBody(mesh) => Some(mesh),
-            _ => None,
-        })
-        .ok_or(MeshConversionError::Stale)?;
-    if current_mesh != &plan.source_mesh {
-        return Err(MeshConversionError::Stale);
-    }
-    let repeated = prepare_mesh_conversion(document, plan.source_feature_id, plan.tolerance_mm)?;
-    if repeated.batch.digest() != plan.batch.digest()
-        || repeated.graph.graph_digest != plan.graph.graph_digest
-        || repeated.candidate != plan.candidate
-        || repeated.residuals != plan.residuals
     {
         return Err(MeshConversionError::Stale);
     }
     document
         .apply_batch(&plan.batch)
         .map_err(|error| MeshConversionError::InvalidBatch(error.to_string()))?;
-    let committed = document.current();
-    if committed.canonical_digest() != plan.preview.canonical_digest()
-        || committed.revision_id() != plan.preview.revision_id()
-    {
-        return Err(MeshConversionError::Stale);
-    }
+    debug_assert_eq!(
+        document.current().canonical_digest(),
+        plan.preview.canonical_digest()
+    );
+    debug_assert_eq!(document.current().revision_id(), plan.target_revision);
     Ok(verification.package)
 }
 
@@ -548,14 +843,297 @@ fn perpendicular_basis(axis: [f64; 3]) -> [[f64; 3]; 2] {
     }
 }
 
+struct VerificationWorkBudget {
+    remaining: usize,
+}
+
+impl VerificationWorkBudget {
+    const fn new(limit: usize) -> Self {
+        Self { remaining: limit }
+    }
+
+    fn consume(&mut self, units: usize) -> Result<(), MeshConversionError> {
+        self.remaining = self
+            .remaining
+            .checked_sub(units)
+            .ok_or(MeshConversionError::VerificationResourceLimit)?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+struct AxisAlignedBounds {
+    minimum: [f64; 3],
+    maximum: [f64; 3],
+}
+
+impl AxisAlignedBounds {
+    fn from_triangle(vertices: &[[f64; 3]], triangle: [u32; 3]) -> Self {
+        let [a, b, c] = triangle.map(|index| vertices[index as usize]);
+        let mut bounds = Self {
+            minimum: a,
+            maximum: a,
+        };
+        bounds.include_point(b);
+        bounds.include_point(c);
+        bounds
+    }
+
+    fn include_point(&mut self, point: [f64; 3]) {
+        for (axis, value) in point.into_iter().enumerate() {
+            self.minimum[axis] = self.minimum[axis].min(value);
+            self.maximum[axis] = self.maximum[axis].max(value);
+        }
+    }
+
+    fn include_bounds(&mut self, other: Self) {
+        self.include_point(other.minimum);
+        self.include_point(other.maximum);
+    }
+
+    fn distance_squared(self, point: [f64; 3]) -> f64 {
+        (0..3)
+            .map(|axis| {
+                if point[axis] < self.minimum[axis] {
+                    self.minimum[axis] - point[axis]
+                } else if point[axis] > self.maximum[axis] {
+                    point[axis] - self.maximum[axis]
+                } else {
+                    0.0
+                }
+            })
+            .map(|distance| distance * distance)
+            .sum()
+    }
+}
+
+struct TriangleSpatialEntry {
+    face_index: usize,
+    bounds: AxisAlignedBounds,
+    centroid: [f64; 3],
+}
+
+struct TriangleBvhNode {
+    bounds: AxisAlignedBounds,
+    kind: TriangleBvhNodeKind,
+}
+
+enum TriangleBvhNodeKind {
+    Leaf(Vec<usize>),
+    Branch { left: usize, right: usize },
+}
+
+struct TriangleSpatialIndex {
+    nodes: Vec<TriangleBvhNode>,
+    root: usize,
+}
+
+impl TriangleSpatialIndex {
+    fn build(
+        vertices: &[[f64; 3]],
+        faces: &[[u32; 3]],
+        cancelled: &AtomicBool,
+        budget: &mut VerificationWorkBudget,
+    ) -> Result<Self, MeshConversionError> {
+        let mut entries = Vec::with_capacity(faces.len());
+        for (face_index, triangle) in faces.iter().copied().enumerate() {
+            if cancelled.load(Ordering::Acquire) {
+                return Err(MeshConversionError::Cancelled);
+            }
+            budget.consume(1)?;
+            let [a, b, c] = triangle.map(|index| vertices[index as usize]);
+            entries.push(TriangleSpatialEntry {
+                face_index,
+                bounds: AxisAlignedBounds::from_triangle(vertices, triangle),
+                centroid: scale_3d(add_3d(add_3d(a, b), c), 1.0 / 3.0),
+            });
+        }
+        if entries.is_empty() {
+            return Err(MeshConversionError::ExactVerificationMismatch);
+        }
+        let mut nodes = Vec::with_capacity(faces.len().saturating_mul(2));
+        let root = Self::build_node(entries, &mut nodes, cancelled, budget)?;
+        Ok(Self { nodes, root })
+    }
+
+    fn build_node(
+        entries: Vec<TriangleSpatialEntry>,
+        nodes: &mut Vec<TriangleBvhNode>,
+        cancelled: &AtomicBool,
+        budget: &mut VerificationWorkBudget,
+    ) -> Result<usize, MeshConversionError> {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(MeshConversionError::Cancelled);
+        }
+        budget.consume(
+            entries
+                .len()
+                .checked_mul(3)
+                .ok_or(MeshConversionError::VerificationResourceLimit)?,
+        )?;
+        let mut bounds = entries[0].bounds;
+        let mut centroid_bounds = AxisAlignedBounds {
+            minimum: entries[0].centroid,
+            maximum: entries[0].centroid,
+        };
+        for entry in entries.iter().skip(1) {
+            if cancelled.load(Ordering::Acquire) {
+                return Err(MeshConversionError::Cancelled);
+            }
+            bounds.include_bounds(entry.bounds);
+            centroid_bounds.include_point(entry.centroid);
+        }
+        if entries.len() <= TRIANGLE_BVH_LEAF_SIZE {
+            let node = nodes.len();
+            nodes.push(TriangleBvhNode {
+                bounds,
+                kind: TriangleBvhNodeKind::Leaf(
+                    entries.into_iter().map(|entry| entry.face_index).collect(),
+                ),
+            });
+            return Ok(node);
+        }
+
+        let mut axis = 0;
+        for candidate in 1..3 {
+            let candidate_extent =
+                centroid_bounds.maximum[candidate] - centroid_bounds.minimum[candidate];
+            let current_extent = centroid_bounds.maximum[axis] - centroid_bounds.minimum[axis];
+            if candidate_extent.total_cmp(&current_extent).is_gt() {
+                axis = candidate;
+            }
+        }
+        let split = (centroid_bounds.minimum[axis] + centroid_bounds.maximum[axis]) * 0.5;
+        let mut left_count = 0;
+        for entry in &entries {
+            if cancelled.load(Ordering::Acquire) {
+                return Err(MeshConversionError::Cancelled);
+            }
+            left_count += usize::from(entry.centroid[axis] < split);
+        }
+        let minimum_balanced = entries.len() / 8;
+        let (left_entries, right_entries) =
+            if left_count < minimum_balanced || entries.len() - left_count < minimum_balanced {
+                let mut entries = entries;
+                let right = entries.split_off(entries.len() / 2);
+                (entries, right)
+            } else {
+                let mut left = Vec::with_capacity(left_count);
+                let mut right = Vec::with_capacity(entries.len() - left_count);
+                for entry in entries {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(MeshConversionError::Cancelled);
+                    }
+                    if entry.centroid[axis] < split {
+                        left.push(entry);
+                    } else {
+                        right.push(entry);
+                    }
+                }
+                (left, right)
+            };
+        let left = Self::build_node(left_entries, nodes, cancelled, budget)?;
+        let right = Self::build_node(right_entries, nodes, cancelled, budget)?;
+        let node = nodes.len();
+        nodes.push(TriangleBvhNode {
+            bounds,
+            kind: TriangleBvhNodeKind::Branch { left, right },
+        });
+        Ok(node)
+    }
+
+    fn nearest_distance(
+        &self,
+        point: [f64; 3],
+        vertices: &[[f64; 3]],
+        faces: &[[u32; 3]],
+        cancelled: &AtomicBool,
+        budget: &mut VerificationWorkBudget,
+    ) -> Result<f64, MeshConversionError> {
+        TriangleNearestQuery {
+            index: self,
+            vertices,
+            faces,
+            cancelled,
+            budget,
+        }
+        .nearest_distance_from(self.root, point, f64::INFINITY)
+    }
+}
+
+struct TriangleNearestQuery<'a> {
+    index: &'a TriangleSpatialIndex,
+    vertices: &'a [[f64; 3]],
+    faces: &'a [[u32; 3]],
+    cancelled: &'a AtomicBool,
+    budget: &'a mut VerificationWorkBudget,
+}
+
+impl TriangleNearestQuery<'_> {
+    fn nearest_distance_from(
+        &mut self,
+        node_index: usize,
+        point: [f64; 3],
+        mut nearest: f64,
+    ) -> Result<f64, MeshConversionError> {
+        if self.cancelled.load(Ordering::Acquire) {
+            return Err(MeshConversionError::Cancelled);
+        }
+        self.budget.consume(1)?;
+        let node = &self.index.nodes[node_index];
+        if node.bounds.distance_squared(point) > nearest * nearest {
+            return Ok(nearest);
+        }
+        match &node.kind {
+            TriangleBvhNodeKind::Leaf(face_indices) => {
+                for face_index in face_indices {
+                    if self.cancelled.load(Ordering::Acquire) {
+                        return Err(MeshConversionError::Cancelled);
+                    }
+                    self.budget.consume(1)?;
+                    let [a, b, c] =
+                        self.faces[*face_index].map(|index| self.vertices[index as usize]);
+                    let distance = point_triangle_distance(point, a, b, c);
+                    if distance.total_cmp(&nearest).is_lt() {
+                        nearest = distance;
+                    }
+                }
+                Ok(nearest)
+            }
+            TriangleBvhNodeKind::Branch { left, right } => {
+                let left_distance = self.index.nodes[*left].bounds.distance_squared(point);
+                let right_distance = self.index.nodes[*right].bounds.distance_squared(point);
+                let (first, second, second_distance) = if left_distance <= right_distance {
+                    (*left, *right, right_distance)
+                } else {
+                    (*right, *left, left_distance)
+                };
+                nearest = self.nearest_distance_from(first, point, nearest)?;
+                if second_distance <= nearest * nearest {
+                    nearest = self.nearest_distance_from(second, point, nearest)?;
+                }
+                Ok(nearest)
+            }
+        }
+    }
+}
+
 fn directed_mesh_sample_distance(
     sample_vertices: &[[f64; 3]],
     sample_faces: &[[u32; 3]],
     target_vertices: &[[f64; 3]],
     target_faces: &[[u32; 3]],
+    cancelled: &AtomicBool,
+    budget: &mut VerificationWorkBudget,
 ) -> Result<f64, MeshConversionError> {
+    let target_index =
+        TriangleSpatialIndex::build(target_vertices, target_faces, cancelled, budget)?;
     let mut maximum: f64 = 0.0;
     for face in sample_faces {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(MeshConversionError::Cancelled);
+        }
+        budget.consume(1)?;
         let [a, b, c] = face.map(|index| sample_vertices[index as usize]);
         let samples = [
             a,
@@ -567,15 +1145,17 @@ fn directed_mesh_sample_distance(
             scale_3d(add_3d(add_3d(a, b), c), 1.0 / 3.0),
         ];
         for point in samples {
-            let distance = target_faces
-                .iter()
-                .map(|triangle| {
-                    let [x, y, z] = triangle.map(|index| target_vertices[index as usize]);
-                    point_triangle_distance(point, x, y, z)
-                })
-                .min_by(f64::total_cmp)
-                .ok_or(MeshConversionError::ExactVerificationMismatch)?;
-            maximum = maximum.max(distance);
+            let minimum = target_index.nearest_distance(
+                point,
+                target_vertices,
+                target_faces,
+                cancelled,
+                budget,
+            )?;
+            if !minimum.is_finite() {
+                return Err(MeshConversionError::ExactVerificationMismatch);
+            }
+            maximum = maximum.max(minimum);
         }
     }
     Ok(maximum)
@@ -658,4 +1238,35 @@ fn length_3d(value: [f64; 3]) -> f64 {
 fn determinant(u: [f64; 3], v: [f64; 3], w: [f64; 3]) -> f64 {
     u[0] * (v[1] * w[2] - v[2] * w[1]) - u[1] * (v[0] * w[2] - v[2] * w[0])
         + u[2] * (v[0] * w[1] - v[1] * w[0])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timed_out_wait_reaps_an_unresponsive_worker_asynchronously() {
+        let document = DocumentStore::new();
+        let source = MeshConversionSource::new(&document.current(), document.mutation_epoch());
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let (_event_sender, receiver) = mpsc::channel();
+        let (release_sender, release_receiver) = mpsc::channel::<()>();
+        let worker = std::thread::spawn(move || {
+            let _ = release_receiver.recv();
+        });
+        let task = MeshConversionTask {
+            source,
+            cancelled,
+            receiver,
+            worker: Some(worker),
+        };
+
+        let started_at = Instant::now();
+        let result = task.wait(Duration::ZERO);
+        let elapsed = started_at.elapsed();
+        let _ = release_sender.send(());
+
+        assert!(matches!(result, Err(MeshConversionError::TimedOut)));
+        assert!(elapsed < Duration::from_millis(500), "elapsed={elapsed:?}");
+    }
 }

@@ -9,10 +9,6 @@ use ketchup_application::diagnostics::{
     assistant_planning_rejection, assistant_rejection,
 };
 use ketchup_application::evaluation::{ExactEvaluationTask, ExactSource, exact_worker_candidates};
-use ketchup_application::mesh_conversion::{
-    MeshConversionPlan, MeshConversionVerification, commit_mesh_conversion,
-    prepare_mesh_conversion, verify_mesh_conversion,
-};
 pub use ketchup_application::topology::GeneralFinishKind;
 use ketchup_application::topology::{
     MAX_TOPOLOGICAL_FINISH_REFERENCES, assistant_topology_references, plan_topology_finish_kind,
@@ -65,6 +61,7 @@ use ketchup_core::document::{
     OverrideParameterSpec, ParameterValueType, PersistentDimension, PersistentDimensionTarget,
     SlotResolution,
 };
+use ketchup_core::dxf_export::{DxfProfileExport, export_visible_profiles_dxf};
 use ketchup_core::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation};
 use ketchup_core::exact_product::{
     AssemblySelectionTarget, ExactBodyPackage, ExactBodyView, ExactFaceRole,
@@ -93,10 +90,11 @@ use ketchup_core::graph::{
 use ketchup_core::import::{
     DxfImportOptions, ImportDiagnosticSeverity, ImportFormat, ImportLengthUnit,
     ImportUnitAuthority, ImportUnitDecision, MAX_DXF_SOURCE_BYTES, MAX_GLB_SOURCE_BYTES,
-    MAX_SKETCHUP_SCENE_SOURCE_BYTES, MAX_STEP_SOURCE_BYTES, MAX_STL_SOURCE_BYTES, ParsedDxf,
-    ParsedGlbScene, ParsedSketchupScene, ParsedStlMesh, StepImportEvidence, inspect_dxf,
-    inspect_glb, inspect_sketchup_scene, parse_stl, plan_dxf_import, plan_glb_import,
-    plan_sketchup_scene_import, plan_step_import, plan_stl_import,
+    MAX_IGES_SOURCE_BYTES, MAX_SKETCHUP_SCENE_SOURCE_BYTES, MAX_STEP_SOURCE_BYTES,
+    MAX_STL_SOURCE_BYTES, ParsedDxf, ParsedGlbScene, ParsedSketchupScene, ParsedStlMesh,
+    StepImportEvidence, inspect_dxf, inspect_glb, inspect_sketchup_scene, parse_stl,
+    plan_dxf_import, plan_glb_import, plan_iges_import, plan_sketchup_scene_import,
+    plan_step_import, plan_stl_import,
 };
 #[cfg(test)]
 use ketchup_core::import::{StepImportMesh, StepMeshTriangle};
@@ -111,6 +109,9 @@ use ketchup_core::sketch::{
 use ketchup_core::space::ClearanceOwner;
 use ketchup_core::space::{ClearanceSeverity, ClearanceVolumeId, SpaceId};
 use ketchup_core::state_view::{AGENT_STATE_VIEW_V1, encode_semantic_state};
+use ketchup_core::three_mf_export::{
+    ExactThreeMfExport, ExactThreeMfInstance, exact_model_three_mf_export,
+};
 use ketchup_core::topology::{TopologicalElementKind, TopologicalElementRef};
 #[cfg(feature = "named-product-fixtures")]
 use ketchup_core::validation::ValidationReport;
@@ -133,22 +134,26 @@ use ketchup_interaction::{
         RectangleDirection, RectangleFaceAuthoring, RectangleFeatureIds, RectangleSize,
     },
 };
-use ketchup_scheduler::{
-    ExactWorkerSupervisor,
-    assistant::{AssistantCancellation, AssistantProcessClient},
-};
+use ketchup_scheduler::{ExactWorkerSupervisor, assistant::AssistantCancellation};
 mod assembly_ui;
+mod assistant_runtime;
 mod body_ui;
 pub mod dialogs;
 mod face_workflow_ui;
 mod feature_history_ui;
+mod glb_import_ui;
 pub mod live_bridge;
+mod mesh_conversion_ui;
 mod native_document_inspection;
 mod occurrence_color_ui;
 #[cfg(feature = "named-product-fixtures")]
 mod part_authoring_ui;
 mod validator_ui;
-#[doc(hidden)]
+use assistant_runtime::ProcessAssistantTransport;
+pub use assistant_runtime::{
+    private_assistant_launch, private_assistant_launch_for_executable,
+    public_assistant_launch_for_install_root, verify_public_assistant_runtime,
+};
 pub use face_workflow_ui::HeadlessFaceWorkflowFailure;
 pub use native_document_inspection::{NativeDocumentInspection, inspect_native_document};
 pub mod theme;
@@ -212,7 +217,6 @@ const ASSISTANT_CHAT_NAMESPACE: &str = "org.ketchup.assistant";
 const ASSISTANT_CHAT_PATH: &str = "conversation-v1.json";
 const ASSISTANT_MEMORY_PATH: &str = "project-memory-v1.json";
 const ASSISTANT_MEMORY_SCHEMA: &str = "ketchup.project-memory.v1";
-const ASSISTANT_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_ASSISTANT_PROVIDER_CONTEXT_BYTES: usize = 24 * 1024;
 const MAX_ASSISTANT_PROVIDER_STATE_VIEW_BYTES: usize = 1024;
 const MAX_ASSISTANT_PROVIDER_CONVERSATION_MESSAGES: usize = 6;
@@ -3153,11 +3157,15 @@ pub enum AppCommand {
     ImportMeshStl,
     ImportDrawingDxf,
     ImportExactStep,
+    ImportExactIges,
     ImportSketchupScene,
     ImportBlenderGlb,
     ConvertSelectedMeshToExact,
+    ExportDrawingDxf,
     ExportExactStep,
+    ExportExactIges,
     ExportMeshStl,
+    ExportPrintThreeMf,
     ExportBlenderGlb,
     ExportHundeggerBtlx,
     Select,
@@ -3327,7 +3335,7 @@ struct CommandSpec {
 struct CommandRegistry;
 
 impl CommandRegistry {
-    const COMMANDS: [CommandSpec; 110] = [
+    const COMMANDS: [CommandSpec; 114] = [
         CommandSpec {
             id: AppCommand::New,
             label_key: "file-new",
@@ -3378,6 +3386,13 @@ impl CommandRegistry {
             implemented: true,
         },
         CommandSpec {
+            id: AppCommand::ImportExactIges,
+            label_key: "file-import-iges",
+            shortcut_key: "shortcut-none",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
             id: AppCommand::ImportSketchupScene,
             label_key: "file-import-sketchup-scene",
             shortcut_key: "shortcut-none",
@@ -3399,6 +3414,13 @@ impl CommandRegistry {
             implemented: true,
         },
         CommandSpec {
+            id: AppCommand::ExportDrawingDxf,
+            label_key: "file-export-dxf",
+            shortcut_key: "shortcut-none",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
             id: AppCommand::ExportExactStep,
             label_key: "file-export-exact",
             shortcut_key: "shortcut-none",
@@ -3406,8 +3428,22 @@ impl CommandRegistry {
             implemented: true,
         },
         CommandSpec {
+            id: AppCommand::ExportExactIges,
+            label_key: "file-export-iges",
+            shortcut_key: "shortcut-none",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
             id: AppCommand::ExportMeshStl,
             label_key: "file-export-mesh",
+            shortcut_key: "shortcut-none",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::ExportPrintThreeMf,
+            label_key: "file-export-print-3mf",
             shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
@@ -4939,51 +4975,6 @@ pub trait AssistantTransport: Send + Sync {
     }
 }
 
-struct ProcessAssistantTransport;
-
-impl AssistantTransport for ProcessAssistantTransport {
-    fn chat(
-        &self,
-        handshake: AssistantHandshake,
-        request_id: &str,
-        message: &str,
-        context: &serde_json::Value,
-        cancellation: AssistantCancellation,
-    ) -> Result<AssistantChatResult, String> {
-        self.chat_with_diagnostics(handshake, request_id, message, context, cancellation)
-            .map(|response| response.result)
-    }
-
-    fn chat_with_diagnostics(
-        &self,
-        handshake: AssistantHandshake,
-        request_id: &str,
-        message: &str,
-        context: &serde_json::Value,
-        cancellation: AssistantCancellation,
-    ) -> Result<AssistantTransportResponse, String> {
-        let (program, arguments) = assistant_sidecar_command(handshake.distribution)?;
-        let mut client = AssistantProcessClient::spawn_with_cancellation(
-            program,
-            &arguments,
-            handshake,
-            ASSISTANT_TIMEOUT,
-            cancellation,
-        )
-        .map_err(|error| error.to_string())?;
-        let answer = client
-            .chat_exchange(request_id, message, context)
-            .map(|exchange| AssistantTransportResponse {
-                result: exchange.result,
-                cad_edit_program: exchange.cad_edit_program,
-                diagnostics: exchange.diagnostics,
-            })
-            .map_err(|error| error.to_string());
-        let _ = client.shutdown();
-        answer
-    }
-}
-
 struct AssistantChatTask {
     receiver: Receiver<Result<AssistantTransportResponse, String>>,
     request_id: String,
@@ -5991,6 +5982,12 @@ struct PendingStepImport {
     invalidated: bool,
 }
 
+#[derive(Clone, Debug)]
+struct PendingIgesImport {
+    plan: StepImportPreviewPlan,
+    invalidated: bool,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct DxfImportSourcePlan {
     path: PathBuf,
@@ -6040,35 +6037,6 @@ struct SketchupSceneImportPreviewPlan {
 struct PendingSketchupSceneImport {
     plan: SketchupSceneImportPreviewPlan,
     invalidated: bool,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct GlbImportSourcePlan {
-    path: PathBuf,
-    source: Vec<u8>,
-    document_id: DocumentId,
-    revision_id: u64,
-    canonical_digest: String,
-    source_sha256: [u8; 32],
-    source_byte_len: u64,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct GlbImportPreviewPlan {
-    source: GlbImportSourcePlan,
-    review: ParsedGlbScene,
-    batch: CommandBatch,
-}
-
-#[derive(Clone, Debug)]
-struct PendingGlbImport {
-    plan: GlbImportPreviewPlan,
-    invalidated: bool,
-}
-
-struct PendingMeshConversion {
-    plan: MeshConversionPlan,
-    verification: MeshConversionVerification,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -6273,9 +6241,10 @@ pub struct KetchupApp {
     pending_stl_import: Option<PendingStlImport>,
     pending_dxf_import: Option<PendingDxfImport>,
     pending_step_import: Option<PendingStepImport>,
+    pending_iges_import: Option<PendingIgesImport>,
     pending_sketchup_scene_import: Option<PendingSketchupSceneImport>,
-    pending_glb_import: Option<PendingGlbImport>,
-    pending_mesh_conversion: Option<PendingMeshConversion>,
+    pending_glb_import: Option<glb_import_ui::PendingGlbImport>,
+    mesh_conversion_state: mesh_conversion_ui::MeshConversionUiState,
     viewport_rect: Option<Rect>,
     dialogs: Box<dyn FileDialogs>,
     exact_worker_path: Option<PathBuf>,
@@ -6358,7 +6327,7 @@ impl KetchupApp {
             .expect("the built-in initial document is valid");
         document.discard_history_before_current();
         let assistant_memory = AssistantProjectMemory::empty(document.current().document_id().0);
-        let saved_digest = document.current().canonical_digest();
+        let saved_digest = document.history_digest();
         let digest = catalog.text("status-ready");
         Self {
             document,
@@ -6525,9 +6494,10 @@ impl KetchupApp {
             pending_stl_import: None,
             pending_dxf_import: None,
             pending_step_import: None,
+            pending_iges_import: None,
             pending_sketchup_scene_import: None,
             pending_glb_import: None,
-            pending_mesh_conversion: None,
+            mesh_conversion_state: mesh_conversion_ui::MeshConversionUiState::default(),
             viewport_rect: None,
             dialogs: Box::new(NativeFileDialogs::default()),
             exact_worker_path: None,
@@ -6637,6 +6607,9 @@ impl KetchupApp {
         if let Some(pending) = self.pending_step_import.as_mut() {
             pending.invalidated = true;
         }
+        if let Some(pending) = self.pending_iges_import.as_mut() {
+            pending.invalidated = true;
+        }
         if let Some(pending) = self.pending_sketchup_scene_import.as_mut() {
             pending.invalidated = true;
         }
@@ -6647,6 +6620,7 @@ impl KetchupApp {
 
     fn reset_document_presentation(&mut self) {
         self.invalidate_pending_import_reviews();
+        self.cancel_mesh_conversion();
         self.preview = None;
         self.preview_box = None;
         self.preview_definition_id = None;
@@ -6785,16 +6759,10 @@ impl KetchupApp {
     fn prepare_migration_review_plan(
         &self,
         path: &Path,
+        effective_path: PathBuf,
+        source: Vec<u8>,
         outcome: &ketchup_core::persistence::LoadOutcome,
     ) -> Result<MigrationReviewPlan, String> {
-        let effective_path = if outcome.audit().recovered_from_backup {
-            let mut recovery = path.as_os_str().to_os_string();
-            recovery.push(".recovery");
-            PathBuf::from(recovery)
-        } else {
-            path.to_owned()
-        };
-        let source = std::fs::read(&effective_path).map_err(|error| error.to_string())?;
         let rederived =
             ketchup_core::persistence::load(&source).map_err(|error| error.to_string())?;
         let review = Self::migration_review_identity(outcome)?;
@@ -6819,10 +6787,16 @@ impl KetchupApp {
 
     fn open_document_from(&mut self, path: &Path) -> bool {
         self.cancel_pending_assistant_work();
-        match ketchup_core::persistence::load_file(path) {
-            Ok(outcome) => {
+        match ketchup_core::persistence::load_file_with_source(path) {
+            Ok(loaded_file) => {
+                let (outcome, effective_path, source) = loaded_file.into_parts();
                 if !outcome.is_editable() {
-                    let plan = match self.prepare_migration_review_plan(path, &outcome) {
+                    let plan = match self.prepare_migration_review_plan(
+                        path,
+                        effective_path,
+                        source,
+                        &outcome,
+                    ) {
                         Ok(plan) => plan,
                         Err(reason) => {
                             self.review_candidate = None;
@@ -6855,7 +6829,6 @@ impl KetchupApp {
                 else {
                     unreachable!("editable load outcome must contain an editable document");
                 };
-                document.discard_history_before_current();
                 document
                     .configure_human_confirmation_policy(
                         self.confirmation_surface.verifying_key(),
@@ -6867,7 +6840,7 @@ impl KetchupApp {
                 self.review_candidate = None;
                 self.migration_review_plan = None;
                 self.document_path = Some(path.to_owned());
-                self.saved_digest = self.document.current().canonical_digest();
+                self.saved_digest = self.document.history_digest();
                 self.reset_document_presentation();
                 self.load_assistant_conversation();
                 self.load_assistant_memory();
@@ -7027,8 +7000,8 @@ impl KetchupApp {
         }
         self.store_assistant_conversation();
         self.store_assistant_memory();
-        let snapshot = self.document.current();
-        let prepared = ketchup_core::persistence::save_container(&snapshot, &self.container_data);
+        let prepared =
+            ketchup_core::persistence::save_document_store(&self.document, &self.container_data);
         if path.exists()
             && let Err(error) = prepared
                 .as_ref()
@@ -7042,9 +7015,9 @@ impl KetchupApp {
             return false;
         }
         let result = prepared.map_err(|error| error.to_string()).and_then(|_| {
-            ketchup_core::persistence::save_atomic_with_container(
+            ketchup_core::persistence::save_atomic_document_store_with_container(
                 path,
-                &snapshot,
+                &self.document,
                 &self.container_data,
             )
             .map_err(|error| error.to_string())
@@ -7052,7 +7025,7 @@ impl KetchupApp {
         match result {
             Ok(()) => {
                 self.document_path = Some(path.to_owned());
-                self.saved_digest = snapshot.canonical_digest();
+                self.saved_digest = self.document.history_digest();
                 self.saved_assistant_conversation_digest =
                     assistant_conversation_digest(&self.assistant_messages);
                 self.digest = self.catalog.format(
@@ -7103,11 +7076,16 @@ impl KetchupApp {
 
     fn choose_export_path(&mut self, extension: &str) -> Option<PathBuf> {
         let (filter_key, suffix) = match extension {
+            "dxf" => ("file-filter-dxf", "dxf"),
             "step" => ("file-filter-step", "step"),
+            "iges" => ("file-filter-iges", "iges"),
             "stl" => ("file-filter-stl", "stl"),
+            "3mf" => ("file-filter-3mf", "3mf"),
             "glb" => ("file-filter-glb", "glb"),
             "btlx" => ("file-filter-btlx", "btlx"),
-            _ => unreachable!("the File menu exposes only STEP, STL, GLB, and BTLx export"),
+            _ => unreachable!(
+                "the File menu exposes only DXF, STEP, IGES, STL, 3MF, GLB, and BTLx export"
+            ),
         };
         let filter_label = self.catalog.text(filter_key);
         let stem = self
@@ -7245,6 +7223,16 @@ impl KetchupApp {
     }
 
     fn read_dxf_source(path: &Path) -> Result<Vec<u8>, String> {
+        if !path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("dxf"))
+        {
+            return Err(
+                "native DWG import is unavailable; convert through an audited DXF workflow"
+                    .to_owned(),
+            );
+        }
         if std::fs::metadata(path)
             .map_err(|error| error.to_string())?
             .len()
@@ -7527,6 +7515,140 @@ impl KetchupApp {
         }
     }
 
+    fn choose_iges_import_path(&mut self) -> Option<PathBuf> {
+        let filter_label = self.catalog.text("file-filter-iges");
+        self.dialogs.pick_import_path(ImportDialogRequest {
+            format: ImportFormat::Iges,
+            filter_label: &filter_label,
+            extensions: &["iges", "igs"],
+        })
+    }
+
+    fn read_iges_source(path: &Path) -> Result<Vec<u8>, String> {
+        if std::fs::metadata(path)
+            .map_err(|error| error.to_string())?
+            .len()
+            > MAX_IGES_SOURCE_BYTES
+        {
+            return Err("IGES source exceeds the bounded 32 MiB envelope".to_owned());
+        }
+        let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+        let mut source = Vec::new();
+        std::io::Read::by_ref(&mut file)
+            .take(MAX_IGES_SOURCE_BYTES + 1)
+            .read_to_end(&mut source)
+            .map_err(|error| error.to_string())?;
+        if source.len() as u64 > MAX_IGES_SOURCE_BYTES {
+            return Err("IGES source exceeds the bounded 32 MiB envelope".to_owned());
+        }
+        Ok(source)
+    }
+
+    fn prepare_iges_import_preview_plan(
+        &mut self,
+        source: StepImportSourcePlan,
+    ) -> Result<StepImportPreviewPlan, String> {
+        let snapshot = self.document.current();
+        if snapshot.document_id() != source.document_id
+            || snapshot.revision_id() != source.revision_id
+            || snapshot.canonical_digest() != source.canonical_digest
+        {
+            return Err("IGES import review is stale for the active document".to_owned());
+        }
+        if source.source.len() as u64 != source.source_byte_len
+            || sha256_bytes(&source.source) != source.source_sha256
+        {
+            return Err("sealed IGES source identity does not match its bytes".to_owned());
+        }
+        let source_name = source
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| "IGES source name is not valid UTF-8".to_owned())?;
+        let mut temporary = tempfile::Builder::new()
+            .suffix(".iges")
+            .tempfile()
+            .map_err(|error| error.to_string())?;
+        temporary
+            .write_all(&source.source)
+            .and_then(|()| temporary.flush())
+            .map_err(|error| error.to_string())?;
+        let executable = self.exact_worker_executable()?;
+        let source_sha256 = source
+            .source_sha256
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let cancelled = AtomicBool::new(false);
+        let mut worker = ExactWorkerSupervisor::spawn_with_cancellation(executable, &cancelled)
+            .map_err(|error| error.to_string())?;
+        let evidence = worker
+            .inspect_iges_import_with_cancellation(temporary.path(), &source_sha256, &cancelled)
+            .map_err(|error| error.to_string())?;
+        let batch = plan_iges_import(&snapshot, &source.source, source_name, &evidence)
+            .map_err(|error| error.to_string())?;
+        let proposal = self
+            .document
+            .prepare_proposal_with_context(batch, ProposalContext::canonical_preview())
+            .map_err(|error| error.to_string())?;
+        let mut staged_container = self.container_data.clone();
+        let blob_hash = staged_container
+            .insert_import_blob(source.source.clone())
+            .map_err(|error| error.to_string())?;
+        Ok(StepImportPreviewPlan {
+            source,
+            evidence,
+            proposal,
+            blob_hash,
+        })
+    }
+
+    fn import_iges_from(&mut self, pending: &PendingIgesImport) -> bool {
+        let path = &pending.plan.source.path;
+        let result = (|| {
+            if pending.invalidated {
+                return Err("IGES import review is stale for the active document".to_owned());
+            }
+            let source = Self::read_iges_source(path)?;
+            if source != pending.plan.source.source {
+                return Err("IGES source changed after it was selected for review".to_owned());
+            }
+            let rederived = self.prepare_iges_import_preview_plan(pending.plan.source.clone())?;
+            if rederived != pending.plan {
+                return Err("IGES import evidence or proposal changed after review".to_owned());
+            }
+            let mut staged_container = self.container_data.clone();
+            if staged_container
+                .insert_import_blob(source)
+                .map_err(|error| error.to_string())?
+                != pending.plan.blob_hash
+            {
+                return Err("IGES content-addressed blob identity changed".to_owned());
+            }
+            self.document
+                .commit_verified_proposal(&pending.plan.proposal)
+                .map_err(|error| error.to_string())?;
+            self.container_data = staged_container;
+            Ok::<(), String>(())
+        })();
+        match result {
+            Ok(()) => {
+                self.digest = self.catalog.format(
+                    "digest-imported-iges",
+                    &BTreeMap::from([("path", path.display().to_string())]),
+                );
+                true
+            }
+            Err(reason) => {
+                self.digest = self.catalog.format(
+                    "error-import-iges",
+                    &BTreeMap::from([("path", path.display().to_string()), ("reason", reason)]),
+                );
+                false
+            }
+        }
+    }
+
     fn choose_sketchup_scene_import_path(&mut self) -> Option<PathBuf> {
         let filter_label = self.catalog.text("file-filter-sketchup-scene");
         self.dialogs.pick_import_path(ImportDialogRequest {
@@ -7647,199 +7769,6 @@ impl KetchupApp {
         }
     }
 
-    fn choose_glb_import_path(&mut self) -> Option<PathBuf> {
-        let filter_label = self.catalog.text("file-filter-glb");
-        self.dialogs.pick_import_path(ImportDialogRequest {
-            format: ImportFormat::Glb,
-            filter_label: &filter_label,
-            extensions: &["glb"],
-        })
-    }
-
-    fn read_glb_source(path: &Path) -> Result<Vec<u8>, String> {
-        if std::fs::metadata(path)
-            .map_err(|error| error.to_string())?
-            .len()
-            > MAX_GLB_SOURCE_BYTES
-        {
-            return Err("GLB source exceeds the bounded 32 MiB envelope".to_owned());
-        }
-        let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
-        let mut source = Vec::new();
-        std::io::Read::by_ref(&mut file)
-            .take(MAX_GLB_SOURCE_BYTES + 1)
-            .read_to_end(&mut source)
-            .map_err(|error| error.to_string())?;
-        if source.len() as u64 > MAX_GLB_SOURCE_BYTES {
-            return Err("GLB source exceeds the bounded 32 MiB envelope".to_owned());
-        }
-        Ok(source)
-    }
-
-    fn prepare_glb_import_preview_plan(
-        &self,
-        source: GlbImportSourcePlan,
-    ) -> Result<GlbImportPreviewPlan, String> {
-        let snapshot = self.document.current();
-        if snapshot.document_id() != source.document_id
-            || snapshot.revision_id() != source.revision_id
-            || snapshot.canonical_digest() != source.canonical_digest
-        {
-            return Err("GLB import review is stale for the active document".to_owned());
-        }
-        if source.source.len() as u64 != source.source_byte_len
-            || sha256_bytes(&source.source) != source.source_sha256
-        {
-            return Err("sealed GLB source identity does not match its bytes".to_owned());
-        }
-        let source_name = source
-            .path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| "GLB source name is not valid UTF-8".to_owned())?;
-        let review = std::panic::catch_unwind(|| inspect_glb(&source.source))
-            .map_err(|_| "bounded GLB parser stopped without publishing geometry".to_owned())?
-            .map_err(|error| error.to_string())?;
-        let batch =
-            std::panic::catch_unwind(|| plan_glb_import(&snapshot, &source.source, source_name))
-                .map_err(|_| "bounded GLB parser stopped without publishing geometry".to_owned())?
-                .map_err(|error| error.to_string())?;
-        Ok(GlbImportPreviewPlan {
-            source,
-            review,
-            batch,
-        })
-    }
-
-    fn import_glb_from(&mut self, pending: &PendingGlbImport) -> bool {
-        let path = &pending.plan.source.path;
-        let result = (|| {
-            if pending.invalidated {
-                return Err("GLB import review is stale for the active document".to_owned());
-            }
-            let source = Self::read_glb_source(path)?;
-            if source.len() as u64 != pending.plan.source.source_byte_len
-                || sha256_bytes(&source) != pending.plan.source.source_sha256
-                || source != pending.plan.source.source
-            {
-                return Err("GLB source changed after it was selected for review".to_owned());
-            }
-            let rederived = self.prepare_glb_import_preview_plan(pending.plan.source.clone())?;
-            if rederived != pending.plan {
-                return Err("GLB review or canonical batch changed after preview".to_owned());
-            }
-            self.document
-                .apply_batch(&pending.plan.batch)
-                .map_err(|error| error.to_string())?;
-            Ok::<(), String>(())
-        })();
-        match result {
-            Ok(()) => {
-                self.digest = self.catalog.format(
-                    "digest-imported-glb",
-                    &BTreeMap::from([("path", path.display().to_string())]),
-                );
-                true
-            }
-            Err(reason) => {
-                self.digest = self.catalog.format(
-                    "error-import-glb",
-                    &BTreeMap::from([("path", path.display().to_string()), ("reason", reason)]),
-                );
-                false
-            }
-        }
-    }
-
-    fn selected_mesh_feature_id(&self) -> Option<FeatureId> {
-        let selected = self.selected_occurrence_ids();
-        if selected.len() != 1 {
-            return None;
-        }
-        let snapshot = self.document.current();
-        let occurrence = snapshot.occurrence(*selected.iter().next()?)?;
-        let definition = snapshot.definition(occurrence.definition_id())?;
-        let [feature_id] = definition.feature_ids() else {
-            return None;
-        };
-        snapshot
-            .feature(*feature_id)
-            .is_some_and(|feature| matches!(feature.kind(), FeatureKind::MeshBody(_)))
-            .then_some(*feature_id)
-    }
-
-    fn begin_mesh_conversion_review(&mut self) {
-        self.pending_mesh_conversion = None;
-        let result = (|| {
-            let feature_id = self
-                .selected_mesh_feature_id()
-                .ok_or_else(|| "select exactly one mesh body occurrence".to_owned())?;
-            let plan =
-                prepare_mesh_conversion(&self.document, feature_id, MESH_CONVERSION_TOLERANCE_MM)
-                    .map_err(|error| error.to_string())?;
-            let executable = self.exact_worker_executable()?;
-            let mut worker =
-                ExactWorkerSupervisor::spawn(executable).map_err(|error| error.to_string())?;
-            let package = worker
-                .evaluate_exact_brep_graph(plan.graph())
-                .map_err(|error| error.to_string())?;
-            let verification =
-                verify_mesh_conversion(&plan, package).map_err(|error| error.to_string())?;
-            Ok::<_, String>(PendingMeshConversion { plan, verification })
-        })();
-        match result {
-            Ok(pending) => {
-                self.pending_mesh_conversion = Some(pending);
-                self.digest = self.catalog.text("digest-mesh-conversion-verified");
-            }
-            Err(reason) => {
-                self.digest = self.catalog.format(
-                    "error-mesh-conversion",
-                    &BTreeMap::from([("reason", reason)]),
-                );
-            }
-        }
-    }
-
-    fn confirm_mesh_conversion(&mut self) {
-        let Some(pending) = self.pending_mesh_conversion.take() else {
-            return;
-        };
-        match commit_mesh_conversion(&mut self.document, &pending.plan, pending.verification) {
-            Ok(package) => {
-                if let Some(task) = self.exact_task.take() {
-                    task.cancelled.store(true, Ordering::Release);
-                }
-                let snapshot = self.document.current();
-                self.rebind_exact_results(&snapshot);
-                let package = Arc::new(ExactBodyPackage::from(package));
-                self.exact_results
-                    .insert_current(&snapshot, Arc::clone(&package))
-                    .expect("verified conversion package matches committed snapshot");
-                if !package.topological_references().is_empty() {
-                    self.topology_results
-                        .insert_current(&snapshot, package)
-                        .expect("verified topology package matches committed snapshot");
-                }
-                self.exact_source = None;
-                self.exact_retry_at = None;
-                self.render_plan = Some(Arc::new(InstancedRenderPlan::from_snapshot(
-                    &snapshot,
-                    &self.exact_results,
-                    &mut self.render_cache,
-                )));
-                self.interaction_projection_cache.get_mut().take();
-                self.digest = self.catalog.text("digest-mesh-conversion-committed");
-            }
-            Err(error) => {
-                self.digest = self.catalog.format(
-                    "error-mesh-conversion",
-                    &BTreeMap::from([("reason", error.to_string())]),
-                );
-            }
-        }
-    }
-
     fn current_visible_exact_scene(
         &self,
         snapshot: &Snapshot,
@@ -7911,6 +7840,82 @@ impl KetchupApp {
                 .map(|(package, occurrence)| (package, occurrence.transform))
                 .collect()
         })
+    }
+
+    fn export_current_profiles_dxf_to(&mut self, path: &Path) -> bool {
+        self.side_effect_receipts.clear();
+        let snapshot = self.document.current();
+        let result = if path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("dxf"))
+        {
+            export_visible_profiles_dxf(&snapshot).map_err(|error| error.to_string())
+        } else {
+            Err("native DWG export is unavailable; choose an explicit .dxf destination".to_owned())
+        }
+        .and_then(|bundle| {
+            let report_path = path.with_extension("dxf.loss.txt");
+            let precondition = ExportBundlePrecondition::capture(path, &report_path)?;
+            let evidence = dxf_profile_export_evidence(path, &bundle);
+            let title = self.catalog.text("dialog-export-dxf-title");
+            let risk = self.catalog.text("dialog-export-dxf-risk");
+            self.authorize_path_side_effect(
+                HighRiskClass::LossyConversion,
+                "export-current-profiles-dxf-with-loss-report",
+                &title,
+                &risk,
+                path,
+                &evidence,
+            )?;
+            if precondition.primary_sha256.is_some() {
+                let title = self.catalog.text("dialog-export-overwrite-title");
+                let risk = self.catalog.text("dialog-export-overwrite-risk");
+                self.authorize_path_side_effect(
+                    HighRiskClass::Overwrite,
+                    "overwrite-current-profiles-dxf-export",
+                    &title,
+                    &risk,
+                    path,
+                    &evidence,
+                )?;
+            }
+            if precondition.report_sha256.is_some() {
+                let title = self.catalog.text("dialog-export-overwrite-title");
+                let risk = self.catalog.text("dialog-export-overwrite-risk");
+                self.authorize_path_side_effect(
+                    HighRiskClass::Overwrite,
+                    "overwrite-current-profiles-dxf-loss-report",
+                    &title,
+                    &risk,
+                    &report_path,
+                    &evidence,
+                )?;
+            }
+            write_export_bundle(
+                path,
+                &bundle.dxf,
+                &report_path,
+                bundle.loss_report.as_bytes(),
+                &precondition,
+            )
+        });
+        match result {
+            Ok(()) => {
+                self.digest = self.catalog.format(
+                    "digest-exported-dxf",
+                    &BTreeMap::from([("path", path.display().to_string())]),
+                );
+                true
+            }
+            Err(error) => {
+                self.digest = self.catalog.format(
+                    "error-export-dxf",
+                    &BTreeMap::from([("path", path.display().to_string()), ("reason", error)]),
+                );
+                false
+            }
+        }
     }
 
     fn export_current_model_stl_to(&mut self, path: &Path) -> bool {
@@ -7988,6 +7993,86 @@ impl KetchupApp {
             Err(error) => {
                 self.digest = self.catalog.format(
                     "error-export-stl",
+                    &BTreeMap::from([("path", path.display().to_string()), ("reason", error)]),
+                );
+                false
+            }
+        }
+    }
+
+    fn export_current_model_three_mf_to(&mut self, path: &Path) -> bool {
+        self.side_effect_receipts.clear();
+        let snapshot = self.document.current();
+        let result = self
+            .current_visible_exact_scene(&snapshot)
+            .and_then(|scene| {
+                let instances = scene
+                    .iter()
+                    .map(|(package, occurrence)| ExactThreeMfInstance {
+                        package,
+                        occurrence,
+                    })
+                    .collect::<Vec<_>>();
+                exact_model_three_mf_export(&snapshot, &instances)
+                    .map_err(|error| error.to_string())
+            })
+            .and_then(|bundle| {
+                let report_path = path.with_extension("3mf.loss.txt");
+                let precondition = ExportBundlePrecondition::capture(path, &report_path)?;
+                let evidence = exact_three_mf_export_evidence(path, &bundle);
+                let title = self.catalog.text("dialog-export-lossy-title");
+                let risk = self.catalog.text("dialog-export-lossy-risk");
+                self.authorize_path_side_effect(
+                    HighRiskClass::LossyConversion,
+                    "export-current-model-3mf-with-loss-report",
+                    &title,
+                    &risk,
+                    path,
+                    &evidence,
+                )?;
+                if precondition.primary_sha256.is_some() {
+                    let title = self.catalog.text("dialog-export-overwrite-title");
+                    let risk = self.catalog.text("dialog-export-overwrite-risk");
+                    self.authorize_path_side_effect(
+                        HighRiskClass::Overwrite,
+                        "overwrite-current-model-3mf-export",
+                        &title,
+                        &risk,
+                        path,
+                        &evidence,
+                    )?;
+                }
+                if precondition.report_sha256.is_some() {
+                    let title = self.catalog.text("dialog-export-overwrite-title");
+                    let risk = self.catalog.text("dialog-export-overwrite-risk");
+                    self.authorize_path_side_effect(
+                        HighRiskClass::Overwrite,
+                        "overwrite-current-model-3mf-loss-report",
+                        &title,
+                        &risk,
+                        &report_path,
+                        &evidence,
+                    )?;
+                }
+                write_export_bundle(
+                    path,
+                    &bundle.three_mf,
+                    &report_path,
+                    bundle.loss_report.as_bytes(),
+                    &precondition,
+                )
+            });
+        match result {
+            Ok(()) => {
+                self.digest = self.catalog.format(
+                    "digest-exported-3mf",
+                    &BTreeMap::from([("path", path.display().to_string())]),
+                );
+                true
+            }
+            Err(error) => {
+                self.digest = self.catalog.format(
+                    "error-export-3mf",
                     &BTreeMap::from([("path", path.display().to_string()), ("reason", error)]),
                 );
                 false
@@ -8380,6 +8465,122 @@ impl KetchupApp {
         }
     }
 
+    fn export_current_model_iges_to(&mut self, path: &Path) -> bool {
+        self.side_effect_receipts.clear();
+        let snapshot = self.document.current();
+        let result = (|| {
+            let model = self.current_visible_exact_model(&snapshot)?;
+            let executable = self
+                .exact_worker_path
+                .clone()
+                .or_else(|| {
+                    exact_worker_candidates()
+                        .into_iter()
+                        .find(|candidate| candidate.is_file())
+                })
+                .ok_or_else(|| "exact worker is unavailable".to_owned())?;
+            let parent = path.parent().unwrap_or_else(|| Path::new("."));
+            let prepared_directory = tempfile::Builder::new()
+                .prefix(".ketchup-prepared-iges-export-")
+                .tempdir_in(parent)
+                .map_err(|error| error.to_string())?;
+            let prepared_step = prepared_directory.path().join("model.step");
+            let prepared_iges = prepared_directory.path().join("model.iges");
+            let mut worker =
+                ExactWorkerSupervisor::spawn(executable).map_err(|error| error.to_string())?;
+            worker
+                .export_current_model_step_with_imported_sources(
+                    &snapshot,
+                    &model,
+                    &prepared_step,
+                    self.container_data.blobs(),
+                )
+                .map_err(|error| error.to_string())?;
+            worker
+                .convert_step_to_iges_with_cancellation(
+                    &prepared_step,
+                    &prepared_iges,
+                    &AtomicBool::new(false),
+                )
+                .map_err(|error| error.to_string())?;
+            let iges = std::fs::read(&prepared_iges).map_err(|error| error.to_string())?;
+            let iges_sha256 = ketchup_core::graph::sha256_hex(&iges);
+            let exported_evidence = worker
+                .inspect_iges_import_with_cancellation(
+                    &prepared_iges,
+                    &iges_sha256,
+                    &AtomicBool::new(false),
+                )
+                .map_err(|error| {
+                    format!("exported IGES failed exact worker reinspection: {error}")
+                })?;
+            if exported_evidence.source_unit != ImportLengthUnit::Millimetre {
+                return Err("exported IGES did not preserve millimetre units".to_owned());
+            }
+            let report = exact_model_iges_loss_report(&snapshot, &model);
+            let report_path = path.with_extension("iges.loss.txt");
+            let evidence = export_bundle_evidence(
+                b"ketchup.current-model-iges-export.v1",
+                path,
+                &iges,
+                &report_path,
+                report.as_bytes(),
+            );
+            let precondition = ExportBundlePrecondition::capture(path, &report_path)?;
+            let title = self.catalog.text("dialog-export-iges-title");
+            let risk = self.catalog.text("dialog-export-iges-risk");
+            self.authorize_path_side_effect(
+                HighRiskClass::LossyConversion,
+                "export-current-model-iges-with-loss-report",
+                &title,
+                &risk,
+                path,
+                &evidence,
+            )?;
+            if precondition.primary_sha256.is_some() {
+                let title = self.catalog.text("dialog-export-iges-overwrite-title");
+                let risk = self.catalog.text("dialog-export-overwrite-risk");
+                self.authorize_path_side_effect(
+                    HighRiskClass::Overwrite,
+                    "overwrite-current-model-iges-export",
+                    &title,
+                    &risk,
+                    path,
+                    &evidence,
+                )?;
+            }
+            if precondition.report_sha256.is_some() {
+                let title = self.catalog.text("dialog-export-iges-overwrite-title");
+                let risk = self.catalog.text("dialog-export-overwrite-risk");
+                self.authorize_path_side_effect(
+                    HighRiskClass::Overwrite,
+                    "overwrite-current-model-iges-loss-report",
+                    &title,
+                    &risk,
+                    &report_path,
+                    &evidence,
+                )?;
+            }
+            write_export_bundle(path, &iges, &report_path, report.as_bytes(), &precondition)
+        })();
+        match result {
+            Ok(()) => {
+                self.digest = self.catalog.format(
+                    "digest-exported-iges",
+                    &BTreeMap::from([("path", path.display().to_string())]),
+                );
+                true
+            }
+            Err(error) => {
+                self.digest = self.catalog.format(
+                    "error-export-iges",
+                    &BTreeMap::from([("path", path.display().to_string()), ("reason", error)]),
+                );
+                false
+            }
+        }
+    }
+
     fn dispatch_file_command(&mut self, id: AppCommand) {
         match id {
             AppCommand::New if self.confirm_discard_if_dirty() => self.new_document(),
@@ -8471,6 +8672,40 @@ impl KetchupApp {
                     }
                 }
             }
+            AppCommand::ImportExactIges => {
+                if let Some(path) = self.choose_iges_import_path() {
+                    let result = Self::read_iges_source(&path).and_then(|source| {
+                        let snapshot = self.document.current();
+                        let source_plan = StepImportSourcePlan {
+                            path: path.clone(),
+                            source_sha256: sha256_bytes(&source),
+                            source_byte_len: source.len() as u64,
+                            source,
+                            document_id: snapshot.document_id(),
+                            revision_id: snapshot.revision_id(),
+                            canonical_digest: snapshot.canonical_digest(),
+                        };
+                        let plan = self.prepare_iges_import_preview_plan(source_plan)?;
+                        Ok(PendingIgesImport {
+                            plan,
+                            invalidated: false,
+                        })
+                    });
+                    match result {
+                        Ok(pending) => self.pending_iges_import = Some(pending),
+                        Err(reason) => {
+                            self.pending_iges_import = None;
+                            self.digest = self.catalog.format(
+                                "error-import-iges",
+                                &BTreeMap::from([
+                                    ("path", path.display().to_string()),
+                                    ("reason", reason),
+                                ]),
+                            );
+                        }
+                    }
+                }
+            }
             AppCommand::ImportSketchupScene => {
                 if let Some(path) = self.choose_sketchup_scene_import_path() {
                     let result = Self::read_sketchup_scene_source(&path).and_then(|source| {
@@ -8505,40 +8740,7 @@ impl KetchupApp {
                     }
                 }
             }
-            AppCommand::ImportBlenderGlb => {
-                if let Some(path) = self.choose_glb_import_path() {
-                    let result = Self::read_glb_source(&path).and_then(|source| {
-                        let snapshot = self.document.current();
-                        let source_plan = GlbImportSourcePlan {
-                            path: path.clone(),
-                            source_sha256: sha256_bytes(&source),
-                            source_byte_len: source.len() as u64,
-                            source,
-                            document_id: snapshot.document_id(),
-                            revision_id: snapshot.revision_id(),
-                            canonical_digest: snapshot.canonical_digest(),
-                        };
-                        let plan = self.prepare_glb_import_preview_plan(source_plan)?;
-                        Ok(PendingGlbImport {
-                            plan,
-                            invalidated: false,
-                        })
-                    });
-                    match result {
-                        Ok(pending) => self.pending_glb_import = Some(pending),
-                        Err(reason) => {
-                            self.pending_glb_import = None;
-                            self.digest = self.catalog.format(
-                                "error-import-glb",
-                                &BTreeMap::from([
-                                    ("path", path.display().to_string()),
-                                    ("reason", reason),
-                                ]),
-                            );
-                        }
-                    }
-                }
-            }
+            AppCommand::ImportBlenderGlb => self.begin_glb_import(),
             AppCommand::ImportDrawingDxf => {
                 if let Some(path) = self.choose_dxf_import_path() {
                     let result = Self::read_dxf_source(&path).and_then(|source| {
@@ -8579,14 +8781,29 @@ impl KetchupApp {
                     }
                 }
             }
+            AppCommand::ExportDrawingDxf => {
+                if let Some(path) = self.choose_export_path("dxf") {
+                    self.export_current_profiles_dxf_to(&path);
+                }
+            }
             AppCommand::ExportExactStep => {
                 if let Some(path) = self.choose_export_path("step") {
                     self.export_current_model_step_to(&path);
                 }
             }
+            AppCommand::ExportExactIges => {
+                if let Some(path) = self.choose_export_path("iges") {
+                    self.export_current_model_iges_to(&path);
+                }
+            }
             AppCommand::ExportMeshStl => {
                 if let Some(path) = self.choose_export_path("stl") {
                     self.export_current_model_stl_to(&path);
+                }
+            }
+            AppCommand::ExportPrintThreeMf => {
+                if let Some(path) = self.choose_export_path("3mf") {
+                    self.export_current_model_three_mf_to(&path);
                 }
             }
             AppCommand::ExportBlenderGlb => {
@@ -9022,6 +9239,11 @@ impl KetchupApp {
         self.document.current()
     }
 
+    #[must_use]
+    pub fn revision_catalog(&self) -> Vec<ketchup_core::document::RevisionCatalogEntry> {
+        self.document.revision_catalog()
+    }
+
     #[doc(hidden)]
     pub fn headless_select_occurrence(&mut self, occurrence_id: OccurrenceId) -> bool {
         if self.document.current().occurrence(occurrence_id).is_none() {
@@ -9137,7 +9359,8 @@ impl KetchupApp {
                 return Err("sealed migration source identity does not match its bytes".to_owned());
             }
             let current_source =
-                std::fs::read(&plan.source.effective_path).map_err(|error| error.to_string())?;
+                ketchup_core::persistence::read_native_document_file(&plan.source.effective_path)
+                    .map_err(|error| error.to_string())?;
             if current_source != plan.source.source
                 || current_source.len() as u64 != plan.source.source_byte_len
                 || sha256_bytes(&current_source) != plan.source.source_sha256
@@ -9171,9 +9394,9 @@ impl KetchupApp {
             temporary
                 .persist_noclobber(destination)
                 .map_err(|error| error.error.to_string())?;
-            Ok((document, container_data, snapshot.canonical_digest()))
+            Ok((document, container_data))
         })();
-        let (mut document, container_data, saved_digest) = match result {
+        let (mut document, container_data) = match result {
             Ok(confirmed) => confirmed,
             Err(reason) => {
                 self.digest = self.catalog.format(
@@ -9185,6 +9408,7 @@ impl KetchupApp {
         };
 
         document.discard_history_before_current();
+        let saved_digest = document.history_digest();
         self.document = document;
         self.container_data = container_data;
         self.review_candidate = None;
@@ -9200,7 +9424,7 @@ impl KetchupApp {
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.document.current().canonical_digest() != self.saved_digest
+        self.document.history_digest() != self.saved_digest
             || assistant_conversation_digest(&self.assistant_messages)
                 != self.saved_assistant_conversation_digest
     }
@@ -15221,8 +15445,7 @@ impl KetchupApp {
                 AppCommand::MakeComponent => self.make_component_source_plan().is_some(),
                 AppCommand::MakeUnique => self.make_unique_source_plan().is_some(),
                 AppCommand::ConvertSelectedMeshToExact => {
-                    self.selected_mesh_feature_id().is_some()
-                        && self.pending_mesh_conversion.is_none()
+                    self.selected_mesh_feature_id().is_some() && !self.mesh_conversion_active()
                 }
                 AppCommand::ReplaceComponent => self.component_replacement_source_plan().is_some(),
                 AppCommand::SelectAllInstances => self.select_all_instances_source_plan().is_some(),
@@ -15391,10 +15614,14 @@ impl KetchupApp {
             | AppCommand::ImportMeshStl
             | AppCommand::ImportDrawingDxf
             | AppCommand::ImportExactStep
+            | AppCommand::ImportExactIges
             | AppCommand::ImportSketchupScene
             | AppCommand::ImportBlenderGlb
+            | AppCommand::ExportDrawingDxf
             | AppCommand::ExportExactStep
+            | AppCommand::ExportExactIges
             | AppCommand::ExportMeshStl
+            | AppCommand::ExportPrintThreeMf
             | AppCommand::ExportBlenderGlb
             | AppCommand::ExportHundeggerBtlx => {
                 self.dispatch_file_command(id);
@@ -29899,11 +30126,15 @@ impl KetchupApp {
                 self.menu_command(ui, AppCommand::ImportMeshStl);
                 self.menu_command(ui, AppCommand::ImportDrawingDxf);
                 self.menu_command(ui, AppCommand::ImportExactStep);
+                self.menu_command(ui, AppCommand::ImportExactIges);
                 self.menu_command(ui, AppCommand::ImportSketchupScene);
                 self.menu_command(ui, AppCommand::ImportBlenderGlb);
                 ui.separator();
+                self.menu_command(ui, AppCommand::ExportDrawingDxf);
                 self.menu_command(ui, AppCommand::ExportExactStep);
+                self.menu_command(ui, AppCommand::ExportExactIges);
                 self.menu_command(ui, AppCommand::ExportMeshStl);
+                self.menu_command(ui, AppCommand::ExportPrintThreeMf);
                 self.menu_command(ui, AppCommand::ExportBlenderGlb);
                 ui.menu_button(self.catalog.text("file-export-btlx-options"), |ui| {
                     ui.selectable_value(
@@ -34724,6 +34955,57 @@ impl KetchupApp {
         }
     }
 
+    fn show_iges_import_window(&mut self, context: &egui::Context) {
+        let Some(pending) = self.pending_iges_import.as_ref() else {
+            return;
+        };
+        let path = pending.plan.source.path.clone();
+        let evidence = pending.plan.evidence.clone();
+        let mut import = false;
+        let mut cancel = false;
+        egui::Window::new(self.catalog.text("dialog-import-iges-title"))
+            .id(egui::Id::new("iges-import-review"))
+            .collapsible(false)
+            .resizable(true)
+            .show(context, |ui| {
+                ui.label(self.catalog.format(
+                    "dialog-import-iges-source",
+                    &BTreeMap::from([("path", path.display().to_string())]),
+                ));
+                ui.label(self.catalog.format(
+                    "dialog-import-iges-summary",
+                    &BTreeMap::from([
+                        ("solids", evidence.solid_count.to_string()),
+                        ("volume", format!("{:.6}", evidence.volume_mm3)),
+                    ]),
+                ));
+                ui.label(self.catalog.text("dialog-import-iges-preserved"));
+                ui.colored_label(
+                    Color32::YELLOW,
+                    self.catalog.text("dialog-import-iges-loss-warning"),
+                );
+                ui.separator();
+                ui.horizontal(|ui| {
+                    import = ui
+                        .button(self.catalog.text("dialog-import-iges-confirm"))
+                        .clicked();
+                    cancel = ui
+                        .button(self.catalog.text("dialog-import-iges-cancel"))
+                        .clicked();
+                });
+            });
+        if cancel {
+            self.pending_iges_import = None;
+            self.digest = self.catalog.text("digest-cancelled");
+        } else if import {
+            let pending = self
+                .pending_iges_import
+                .take()
+                .expect("the IGES review window has a pending import");
+            self.import_iges_from(&pending);
+        }
+    }
+
     fn show_sketchup_scene_import_window(&mut self, context: &egui::Context) {
         let Some(pending) = self.pending_sketchup_scene_import.as_ref() else {
             return;
@@ -34805,162 +35087,6 @@ impl KetchupApp {
                 .take()
                 .expect("the SketchUp scene review window has a pending import");
             self.import_sketchup_scene_from(&pending);
-        }
-    }
-
-    fn show_glb_import_window(&mut self, context: &egui::Context) {
-        let Some(pending) = self.pending_glb_import.as_ref() else {
-            return;
-        };
-        let path = pending.plan.source.path.display().to_string();
-        let mesh_count = pending.plan.review.mesh_primitive_count().to_string();
-        let node_count = pending.plan.review.node_count().to_string();
-        let instance_count = pending.plan.review.instance_count().to_string();
-        let triangle_count = pending.plan.review.triangle_count().to_string();
-        let diagnostics = pending
-            .plan
-            .review
-            .diagnostics()
-            .iter()
-            .map(|diagnostic| {
-                (
-                    diagnostic.severity(),
-                    diagnostic.code().to_owned(),
-                    diagnostic.count(),
-                )
-            })
-            .collect::<Vec<_>>();
-        let mut import = false;
-        let mut cancel = false;
-        egui::Window::new(self.catalog.text("dialog-import-glb-title"))
-            .id(egui::Id::new("glb-import-review"))
-            .collapsible(false)
-            .resizable(true)
-            .show(context, |ui| {
-                ui.label(self.catalog.format(
-                    "dialog-import-glb-source",
-                    &BTreeMap::from([("path", path.clone())]),
-                ));
-                ui.label(self.catalog.format(
-                    "dialog-import-glb-summary",
-                    &BTreeMap::from([
-                        ("meshes", mesh_count.clone()),
-                        ("nodes", node_count.clone()),
-                        ("instances", instance_count.clone()),
-                        ("triangles", triangle_count.clone()),
-                    ]),
-                ));
-                ui.label(self.catalog.text("dialog-import-glb-preserved"));
-                ui.separator();
-                ui.label(self.catalog.text("dialog-import-glb-losses"));
-                egui::ScrollArea::vertical()
-                    .max_height(160.0)
-                    .show(ui, |ui| {
-                        for (severity, code, count) in &diagnostics {
-                            let severity = match severity {
-                                ImportDiagnosticSeverity::Info => {
-                                    self.catalog.text("dialog-import-glb-diagnostic-info")
-                                }
-                                ImportDiagnosticSeverity::Warning => {
-                                    self.catalog.text("dialog-import-glb-diagnostic-warning")
-                                }
-                            };
-                            ui.label(format!("{severity} · {code} · {count}"));
-                        }
-                    });
-                ui.colored_label(
-                    Color32::YELLOW,
-                    self.catalog.text("dialog-import-glb-warning"),
-                );
-                ui.separator();
-                ui.horizontal(|ui| {
-                    import = ui
-                        .button(self.catalog.text("dialog-import-glb-confirm"))
-                        .clicked();
-                    cancel = ui
-                        .button(self.catalog.text("dialog-import-glb-cancel"))
-                        .clicked();
-                });
-            });
-        if cancel {
-            self.pending_glb_import = None;
-            self.digest = self.catalog.text("digest-cancelled");
-        } else if import {
-            let pending = self
-                .pending_glb_import
-                .take()
-                .expect("the GLB review window has a pending import");
-            self.import_glb_from(&pending);
-        }
-    }
-
-    fn show_mesh_conversion_window(&mut self, context: &egui::Context) {
-        let Some(pending) = self.pending_mesh_conversion.as_ref() else {
-            return;
-        };
-        let kind_key = match pending.plan.candidate().kind() {
-            ketchup_core::mesh_recognition::RecognizedMeshKind::Box => {
-                "dialog-mesh-conversion-kind-box"
-            }
-            ketchup_core::mesh_recognition::RecognizedMeshKind::Cylinder => {
-                "dialog-mesh-conversion-kind-cylinder"
-            }
-            ketchup_core::mesh_recognition::RecognizedMeshKind::LinearExtrusion => {
-                "dialog-mesh-conversion-kind-extrusion"
-            }
-        };
-        let values = BTreeMap::from([
-            ("kind", self.catalog.text(kind_key)),
-            ("tolerance", format!("{:.6}", pending.plan.tolerance_mm())),
-            (
-                "recognition",
-                format!("{:.6}", pending.plan.residuals().maximum_mm()),
-            ),
-            (
-                "source_to_exact",
-                format!("{:.6}", pending.verification.max_source_to_exact_mm()),
-            ),
-            (
-                "exact_to_source",
-                format!("{:.6}", pending.verification.max_exact_to_source_mm()),
-            ),
-        ]);
-        let mut confirm = false;
-        let mut cancel = false;
-        egui::Window::new(self.catalog.text("dialog-mesh-conversion-title"))
-            .id(egui::Id::new("mesh-conversion-review"))
-            .collapsible(false)
-            .resizable(false)
-            .show(context, |ui| {
-                ui.label(self.catalog.format("dialog-mesh-conversion-kind", &values));
-                ui.label(
-                    self.catalog
-                        .format("dialog-mesh-conversion-tolerance", &values),
-                );
-                ui.label(
-                    self.catalog
-                        .format("dialog-mesh-conversion-recognition", &values),
-                );
-                ui.label(self.catalog.format("dialog-mesh-conversion-exact", &values));
-                ui.colored_label(
-                    Color32::YELLOW,
-                    self.catalog.text("dialog-mesh-conversion-warning"),
-                );
-                ui.separator();
-                ui.horizontal(|ui| {
-                    confirm = ui
-                        .button(self.catalog.text("dialog-mesh-conversion-confirm"))
-                        .clicked();
-                    cancel = ui
-                        .button(self.catalog.text("dialog-mesh-conversion-cancel"))
-                        .clicked();
-                });
-            });
-        if cancel {
-            self.pending_mesh_conversion = None;
-            self.digest = self.catalog.text("digest-cancelled");
-        } else if confirm {
-            self.confirm_mesh_conversion();
         }
     }
 
@@ -35150,71 +35276,6 @@ fn assistant_models_for(provider: AssistantProvider) -> Vec<String> {
         .collect()
 }
 
-fn first_existing_assistant_path(
-    candidates: impl IntoIterator<Item = Option<PathBuf>>,
-) -> Option<PathBuf> {
-    candidates.into_iter().flatten().find(|path| path.is_file())
-}
-
-#[cfg(windows)]
-fn persistent_user_environment_path(name: &str) -> Option<PathBuf> {
-    use winreg::RegKey;
-    use winreg::enums::HKEY_CURRENT_USER;
-
-    RegKey::predef(HKEY_CURRENT_USER)
-        .open_subkey("Environment")
-        .ok()?
-        .get_value::<String, _>(name)
-        .ok()
-        .map(PathBuf::from)
-}
-
-#[cfg(not(windows))]
-fn persistent_user_environment_path(_name: &str) -> Option<PathBuf> {
-    None
-}
-
-pub fn assistant_sidecar_command(
-    distribution: AssistantDistribution,
-) -> Result<(PathBuf, Vec<std::ffi::OsString>), String> {
-    match distribution {
-        AssistantDistribution::PrivateOauth => {
-            let beside_app = std::env::current_exe().ok().and_then(|path| {
-                path.parent()
-                    .map(|parent| parent.join("KetchupPrivateAssistant.exe"))
-            });
-            let path = first_existing_assistant_path([
-                std::env::var_os("KETCHUP_PRIVATE_ASSISTANT").map(PathBuf::from),
-                beside_app,
-                persistent_user_environment_path("KETCHUP_PRIVATE_ASSISTANT"),
-            ])
-            .ok_or_else(|| "KetchupPrivateAssistant.exe was not found".to_owned())?;
-            Ok((path, Vec::new()))
-        }
-        AssistantDistribution::PublicApi => {
-            let script = std::env::var_os("KETCHUP_PUBLIC_ASSISTANT")
-                .map(PathBuf::from)
-                .or_else(|| {
-                    std::env::current_dir()
-                        .ok()
-                        .map(|root| root.join("sdk/python/ketchup_assistant.py"))
-                })
-                .filter(|path| path.is_file())
-                .ok_or_else(|| "sdk/python/ketchup_assistant.py was not found".to_owned())?;
-            let python = std::env::var_os("KETCHUP_PYTHON")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| {
-                    PathBuf::from(if cfg!(windows) {
-                        "python.exe"
-                    } else {
-                        "python3"
-                    })
-                });
-            Ok((python, vec![script.into_os_string()]))
-        }
-    }
-}
-
 impl eframe::App for KetchupApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         self.ui(context);
@@ -35304,6 +35365,7 @@ impl KetchupApp {
         self.begin_live_image_frame();
         self.poll_live_bridge(context);
         self.poll_validator_panel(context);
+        self.poll_mesh_conversion(context);
         self.refresh_exact_products(context);
         #[cfg(feature = "named-product-fixtures")]
         self.refresh_beam_m5_products(context);
@@ -35442,6 +35504,7 @@ impl KetchupApp {
         self.show_stl_import_window(context);
         self.show_dxf_import_window(context);
         self.show_step_import_window(context);
+        self.show_iges_import_window(context);
         self.show_sketchup_scene_import_window(context);
         self.show_glb_import_window(context);
         self.show_mesh_conversion_window(context);
@@ -36282,12 +36345,48 @@ fn exact_model_step_loss_report(
     )
 }
 
+fn exact_model_iges_loss_report(
+    snapshot: &Snapshot,
+    model: &[(ExactBodyPackage, Transform)],
+) -> String {
+    let fingerprints = model
+        .iter()
+        .map(|(package, _)| package.result_key().result_fingerprint)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "authority=accepted exact OCCT B-Rep\nformat=IGES 5.3\nunits=millimetre\nconversion=current-visible-exact-model-to-world-space-step-then-iges-brep\neditability_loss=canonical Ketchup features, rules, dimensions, names, colors, hierarchy, and Undo history are not preserved\ntopology_loss=exact B-Rep geometry is transferred, but durable Ketchup subshape and occurrence identity are not preserved\nassembly_loss=world-space occurrences are flattened because this bounded IGES workflow does not claim assembly reconstruction\ntolerance_loss=no tessellation loss; receiving systems may apply a different modeling tolerance\nsource_digest={}\noccurrence_count={}\nresult_fingerprints={fingerprints}\n",
+        snapshot.canonical_digest(),
+        model.len(),
+    )
+}
+
+fn dxf_profile_export_evidence(path: &Path, bundle: &DxfProfileExport) -> Vec<u8> {
+    export_bundle_evidence(
+        b"ketchup.current-profiles-dxf-export.v1",
+        path,
+        &bundle.dxf,
+        &path.with_extension("dxf.loss.txt"),
+        bundle.loss_report.as_bytes(),
+    )
+}
+
 fn exact_stl_export_evidence(path: &Path, bundle: &ExactStlExport) -> Vec<u8> {
     export_bundle_evidence(
         b"ketchup.current-model-stl-export.v1",
         path,
         bundle.mesh_stl.as_bytes(),
         &path.with_extension("stl.loss.txt"),
+        bundle.loss_report.as_bytes(),
+    )
+}
+
+fn exact_three_mf_export_evidence(path: &Path, bundle: &ExactThreeMfExport) -> Vec<u8> {
+    export_bundle_evidence(
+        b"ketchup.current-model-3mf-export.v1",
+        path,
+        &bundle.three_mf,
+        &path.with_extension("3mf.loss.txt"),
         bundle.loss_report.as_bytes(),
     )
 }

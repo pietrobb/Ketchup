@@ -3,9 +3,9 @@ use ketchup_core::document::{
     OccurrenceId, ProposalCommitError, Transform,
 };
 use ketchup_core::import::{
-    ImportDiagnostic, ImportDiagnosticSeverity, ImportFormat, ImportId, ImportLengthUnit,
-    ImportOutputRef, ImportReceipt, ImportUnitAuthority, ImportUnitDecision, StepImportEvidence,
-    StepImportPlanError, plan_step_import,
+    IgesImportEvidence, ImportDiagnostic, ImportDiagnosticSeverity, ImportFormat, ImportId,
+    ImportLengthUnit, ImportOutputRef, ImportReceipt, ImportUnitAuthority, ImportUnitDecision,
+    StepImportEvidence, StepImportPlanError, plan_iges_import, plan_step_import,
 };
 use ketchup_core::persistence;
 
@@ -174,6 +174,70 @@ fn exact_step_import_is_one_deterministic_persistent_undoable_transaction() {
     assert_eq!(
         persistence::save_container(&reopened.snapshot(), reopened.container_data()).unwrap(),
         encoded
+    );
+}
+
+#[test]
+fn exact_iges_import_is_deterministic_persistent_and_explicit_about_losses() {
+    let source = b"IGES exact source";
+    let evidence = IgesImportEvidence {
+        source_unit: ImportLengthUnit::Millimetre,
+        result_fingerprint: "fnv1a64:0123456789abcdef".to_owned(),
+        solid_count: 1,
+        topology_counts: [8, 12, 6, 1, 1],
+        volume_mm3: 1_000.0,
+        bounds_mm: [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]],
+        backend: "occt-test".to_owned(),
+        tolerance: "test-tolerance".to_owned(),
+    };
+    let mut document = DocumentStore::new();
+    let before = document.current().canonical_digest();
+    let batch = plan_iges_import(&document.current(), source, "part.iges", &evidence).unwrap();
+    assert_eq!(
+        batch.digest(),
+        plan_iges_import(&document.current(), source, "part.iges", &evidence)
+            .unwrap()
+            .digest()
+    );
+    document.apply_batch(&batch).unwrap();
+    let committed = document.current();
+    let receipt = committed.import_receipt(ImportId(1)).unwrap();
+    assert_eq!(receipt.format(), ImportFormat::Iges);
+    assert_eq!(receipt.parser_id(), "ketchup-occt-iges");
+    assert_eq!(
+        receipt
+            .diagnostics()
+            .iter()
+            .map(|diagnostic| diagnostic.code())
+            .collect::<Vec<_>>(),
+        vec![
+            "iges_exact_brep_preserved",
+            "iges_color_metadata_unavailable",
+            "iges_hierarchy_flattened",
+            "iges_name_metadata_unavailable",
+            "iges_parametric_reconstruction_unavailable",
+        ]
+    );
+    let mut container = persistence::ContainerData::default();
+    container.insert_import_blob(source.to_vec()).unwrap();
+    let encoded = persistence::save_container(&committed, &container).unwrap();
+    let reopened = persistence::load(&encoded).unwrap();
+    assert_eq!(
+        reopened.snapshot().canonical_digest(),
+        committed.canonical_digest()
+    );
+    assert_eq!(
+        reopened
+            .snapshot()
+            .import_receipt(ImportId(1))
+            .unwrap()
+            .format(),
+        ImportFormat::Iges
+    );
+    assert_eq!(document.undo().unwrap().canonical_digest(), before);
+    assert_eq!(
+        document.redo().unwrap().canonical_digest(),
+        committed.canonical_digest()
     );
 }
 

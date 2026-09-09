@@ -1,7 +1,9 @@
 use ketchup_core::assistant_sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantCapability, AssistantDistribution, AssistantHandshake,
 };
-use ketchup_scheduler::assistant::{AssistantProcessClient, AssistantProcessError};
+use ketchup_scheduler::assistant::{
+    AssistantCancellation, AssistantProcessClient, AssistantProcessError, AssistantProcessLaunch,
+};
 use serde_json::json;
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -31,6 +33,7 @@ fn write_mock(temp: &TempDir, mode: &str) -> PathBuf {
     fs::write(
         &script,
         r#"import json
+import os
 import sys
 import time
 
@@ -46,6 +49,9 @@ if mode == "bad-ready":
     time.sleep(30)
     raise SystemExit(0)
 print(json.dumps({"type":"ready","protocol_version":hello["protocol_version"],"distribution":hello["distribution"],"provider":hello["provider"],"model":hello["model"],"capabilities":hello["capabilities"]}), flush=True)
+if mode == "no-read":
+    time.sleep(30)
+    raise SystemExit(0)
 request = json.loads(sys.stdin.readline())
 if mode == "remote-error":
     print(json.dumps({"type":"error","error":"provider unavailable"}), flush=True)
@@ -53,6 +59,15 @@ elif mode == "malformed":
     print("not-json", flush=True)
 elif mode == "chat":
     print(json.dumps({"type":"chat-result","request_id":request["request_id"],"message":"bounded answer","model_intent":None}), flush=True)
+    shutdown = json.loads(sys.stdin.readline())
+    print(json.dumps({"type":"bye"}), flush=True)
+elif mode == "shutdown-error":
+    print(json.dumps({"type":"chat-result","request_id":request["request_id"],"message":"bounded answer","model_intent":None}), flush=True)
+    shutdown = json.loads(sys.stdin.readline())
+    print(json.dumps({"type":"error","error":"shutdown refused"}), flush=True)
+elif mode == "isolated":
+    observed = json.dumps({"cwd":os.getcwd(),"allowed":os.environ.get("KETCHUP_ALLOWED"),"path":("PATH" in os.environ),"pythonpath":("PYTHONPATH" in os.environ)})
+    print(json.dumps({"type":"chat-result","request_id":request["request_id"],"message":observed,"model_intent":None}), flush=True)
     shutdown = json.loads(sys.stdin.readline())
     print(json.dumps({"type":"bye"}), flush=True)
 elif mode == "cad-edit":
@@ -81,6 +96,17 @@ fn python() -> &'static str {
     }
 }
 
+fn absolute_python() -> PathBuf {
+    let output = Command::new(python())
+        .args(["-c", "import sys; print(sys.executable)"])
+        .output()
+        .expect("locate Python interpreter");
+    assert!(output.status.success());
+    PathBuf::from(String::from_utf8(output.stdout).unwrap().trim())
+        .canonicalize()
+        .expect("absolute Python interpreter")
+}
+
 fn arguments(script: &Path, mode: &str) -> Vec<OsString> {
     vec![script.as_os_str().to_owned(), OsString::from(mode)]
 }
@@ -104,6 +130,81 @@ fn assistant_process_completes_bounded_handshake_chat_and_shutdown() {
     assert!(result.model_intent.is_none());
     assert_eq!(client.shutdown(), Ok(()));
     assert_eq!(client.shutdown(), Ok(()));
+}
+
+#[test]
+fn assistant_process_terminates_when_shutdown_is_refused() {
+    let temp = TempDir::new().unwrap();
+    let script = write_mock(&temp, "shutdown-error");
+    let mut client = AssistantProcessClient::spawn(
+        python(),
+        &arguments(&script, "shutdown-error"),
+        public_handshake(),
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    assert_eq!(
+        client.chat("request", "hello", &json!({})).unwrap().message,
+        "bounded answer"
+    );
+    assert_eq!(
+        client.shutdown(),
+        Err(AssistantProcessError::Remote("shutdown refused".to_owned()))
+    );
+    assert_eq!(client.shutdown(), Ok(()));
+}
+
+#[test]
+fn assistant_process_isolated_launch_uses_explicit_cwd_and_minimal_environment() {
+    let temp = TempDir::new().unwrap();
+    let working_directory = temp.path().canonicalize().unwrap();
+    let script = write_mock(&temp, "isolated").canonicalize().unwrap();
+    let mut environment = vec![(OsString::from("KETCHUP_ALLOWED"), OsString::from("yes"))];
+    #[cfg(windows)]
+    if let Some(system_root) = std::env::var_os("SYSTEMROOT") {
+        environment.push((OsString::from("SYSTEMROOT"), system_root));
+    }
+    let executable = absolute_python();
+    let launch = AssistantProcessLaunch {
+        executable_sha256: ketchup_core::graph::sha256_hex(&fs::read(&executable).unwrap()),
+        executable,
+        arguments: vec![script.into_os_string(), OsString::from("isolated")],
+        working_directory,
+        environment,
+    };
+    let mut client = AssistantProcessClient::spawn_isolated_with_cancellation(
+        &launch,
+        public_handshake(),
+        Duration::from_secs(10),
+        AssistantCancellation::default(),
+    )
+    .unwrap();
+
+    let result = client
+        .chat("request-isolated", "hello", &json!({}))
+        .unwrap();
+    let observed: serde_json::Value = serde_json::from_str(&result.message).unwrap();
+    assert_eq!(
+        PathBuf::from(observed["cwd"].as_str().unwrap())
+            .canonicalize()
+            .unwrap(),
+        launch.working_directory.canonicalize().unwrap()
+    );
+    assert_eq!(observed["allowed"], "yes");
+    assert_eq!(observed["path"], false);
+    assert_eq!(observed["pythonpath"], false);
+    assert_eq!(client.shutdown(), Ok(()));
+
+    let mut rejected = launch.clone();
+    rejected.executable_sha256 = "0".repeat(64);
+    let error = AssistantProcessClient::spawn_isolated_with_cancellation(
+        &rejected,
+        public_handshake(),
+        Duration::from_secs(10),
+        AssistantCancellation::default(),
+    )
+    .unwrap_err();
+    assert!(matches!(error, AssistantProcessError::Spawn(_)));
 }
 
 #[test]
@@ -138,6 +239,10 @@ fn assistant_process_transports_only_bounded_cad_edit_programs() {
         invalid_client.chat_exchange("request-unbounded", "Pattern selection", &json!({})),
         Err(AssistantProcessError::Protocol(_))
     ));
+    assert_eq!(
+        invalid_client.chat("request-after-rejection", "hello", &json!({})),
+        Err(AssistantProcessError::Closed)
+    );
 }
 
 #[test]
@@ -239,6 +344,24 @@ fn assistant_process_times_out_and_terminates_during_handshake_or_chat() {
             );
         }
     }
+}
+
+#[test]
+fn assistant_process_times_out_when_the_sidecar_stops_reading_requests() {
+    let temp = TempDir::new().unwrap();
+    let script = write_mock(&temp, "no-read");
+    let mut client = AssistantProcessClient::spawn(
+        python(),
+        &arguments(&script, "no-read"),
+        public_handshake(),
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    let message = "x".repeat(120 * 1024);
+    assert_eq!(
+        client.chat("request", &message, &json!({})),
+        Err(AssistantProcessError::TimedOut)
+    );
 }
 
 #[test]

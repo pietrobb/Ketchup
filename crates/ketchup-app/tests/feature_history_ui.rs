@@ -10,11 +10,15 @@ use ketchup_core::assembly::{
 };
 use ketchup_core::document::{
     BodyId, CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
-    FeatureKind, OccurrenceId, ProfileSegment, Transform,
+    FeatureKind, OccurrenceId, ProfileSegment, ProposalPrincipal, RevisionOrigin, Transform,
 };
 use ketchup_core::drawing::{DrawingSheet, DrawingSheetId, DrawingSource};
 use ketchup_core::exact_product::{ExactFaceRole, ExactFeatureChainRequest};
 use ketchup_core::persistence;
+use ketchup_core::sketch::{
+    FeatureDirection, FeatureExtent, PadSpec, PrincipalPlane, SketchConstraint, SketchConstraintId,
+    SketchConstraintKind, SketchEntity, SketchEntityId, SketchSpec, WorkplaneSpec,
+};
 use ketchup_scheduler::ExactWorkerSupervisor;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -37,6 +41,10 @@ const REPLACEMENT_TARGET_OCCURRENCE: OccurrenceId = OccurrenceId(200);
 const REPLACEMENT_PLANAR_MATE: AssemblyMateId = AssemblyMateId(300);
 const REPLACEMENT_SECOND_PLANAR_MATE: AssemblyMateId = AssemblyMateId(301);
 const REPLACEMENT_SHEET: DrawingSheetId = DrawingSheetId(400);
+const CONSTRUCTION_DEFINITION: DefinitionId = DefinitionId(71);
+const CONSTRUCTION_WORKPLANE: FeatureId = FeatureId(72);
+const CONSTRUCTION_SKETCH: FeatureId = FeatureId(73);
+const CONSTRUCTION_PAD: FeatureId = FeatureId(74);
 
 fn exact_worker_path() -> PathBuf {
     let name = if cfg!(windows) {
@@ -331,6 +339,92 @@ fn write_movable_fitting_pocket_fixture(path: &Path) {
     persistence::save_atomic(path, &document.current()).unwrap();
 }
 
+fn write_sketch_construction_fixture(path: &Path, constraint_editing: bool) {
+    let first_entity = if constraint_editing {
+        SketchEntity::Line {
+            id: SketchEntityId(1),
+            start_mm: [0.0, 0.0],
+            end_mm: [10.0, 2.0],
+        }
+    } else {
+        SketchEntity::Circle {
+            id: SketchEntityId(1),
+            center_mm: [0.0, 0.0],
+            radius_mm: 5.0,
+        }
+    };
+    let sketch = SketchSpec {
+        workplane: CONSTRUCTION_WORKPLANE,
+        entities: vec![
+            first_entity,
+            SketchEntity::Circle {
+                id: SketchEntityId(2),
+                center_mm: [20.0, 0.0],
+                radius_mm: 4.0,
+            },
+        ],
+        constraints: constraint_editing
+            .then_some(SketchConstraint {
+                id: SketchConstraintId(10),
+                kind: SketchConstraintKind::Construction {
+                    entity: SketchEntityId(1),
+                },
+            })
+            .into_iter()
+            .collect(),
+    };
+    let pad_region = sketch
+        .solved_regions()
+        .unwrap()
+        .into_iter()
+        .find(|region| region.entity_ids == vec![SketchEntityId(2)])
+        .unwrap()
+        .id;
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: CONSTRUCTION_DEFINITION,
+                name: "Construction geometry".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: CONSTRUCTION_WORKPLANE,
+                definition_id: CONSTRUCTION_DEFINITION,
+                name: "XY workplane".to_owned(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: CONSTRUCTION_SKETCH,
+                definition_id: CONSTRUCTION_DEFINITION,
+                name: "Layout sketch".to_owned(),
+                kind: FeatureKind::Sketch(sketch),
+            },
+            CanonicalCommand::CreateFeature {
+                id: CONSTRUCTION_PAD,
+                definition_id: CONSTRUCTION_DEFINITION,
+                name: "Pad".to_owned(),
+                kind: FeatureKind::Pad(PadSpec {
+                    sketch: CONSTRUCTION_SKETCH,
+                    region: pad_region,
+                    direction: FeatureDirection::AlongNormal,
+                    extent: FeatureExtent::Blind(Dimension::from_decimal("10").unwrap()),
+                }),
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(75),
+                definition_id: CONSTRUCTION_DEFINITION,
+                name: "Construction part".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    document.discard_history_before_current();
+    persistence::save_atomic(path, &document.current()).unwrap();
+}
+
 fn open_history(shell: &mut Shell) {
     let title = shell.catalog().text("feature-history-title");
     shell.click_role_and_label(Role::Button, &title);
@@ -384,6 +478,227 @@ fn confirm(shell: &mut Shell) {
         "{}",
         shell.app().action_digest()
     );
+}
+
+#[test]
+fn revision_catalog_checkpoint_diff_rollback_and_save_open_work_through_accesskit() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = directory.path().join("revision-catalog.ketchup");
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_save(&fixture)
+        .queue_open(&fixture)
+        .always_discard();
+    let mut shell = Shell::with_dialogs(dialogs);
+    let base_revision = shell.app().document_revision();
+    let base_digest = shell.app().canonical_digest();
+
+    shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+    shell.click_menu_command("menu-edit", AppCommand::Copy);
+    shell.click_menu_command("menu-edit", AppCommand::Paste);
+    let changed_revision = shell.app().document_revision();
+    let changed_digest = shell.app().canonical_digest();
+    assert_ne!(changed_digest, base_digest);
+
+    open_history(&mut shell);
+    let checkpoint_label = shell.catalog().text("revision-history-checkpoint-name");
+    assert!(shell.has_role_and_label(Role::TextInput, &checkpoint_label));
+    shell.focus_text_input(&checkpoint_label);
+    shell.type_text("Reviewed option");
+    shell.click_button_label(&shell.catalog().text("revision-history-create-checkpoint"));
+    assert_eq!(
+        shell
+            .app()
+            .revision_catalog()
+            .iter()
+            .find(|entry| entry.revision_id == changed_revision)
+            .and_then(|entry| entry.checkpoint.as_deref()),
+        Some("Reviewed option")
+    );
+    assert!(shell.has_visible_label(&shell.catalog().format(
+        "revision-history-diff",
+        &BTreeMap::from([(
+            "changes",
+            "occurrences 1→2, canonical-document 1→1".to_owned(),
+        )]),
+    )));
+
+    shell.click_button_label(&shell.catalog().text("revision-history-rollback"));
+    assert_eq!(shell.app().document_revision(), changed_revision + 1);
+    assert_eq!(shell.app().canonical_digest(), base_digest);
+    assert_eq!(
+        shell.app().revision_catalog().last().unwrap().origin,
+        RevisionOrigin::Rollback {
+            principal: ProposalPrincipal::ManualClient,
+            target_revision: base_revision,
+        }
+    );
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), changed_digest);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().canonical_digest(), base_digest);
+
+    shell.click_menu_command("menu-file", AppCommand::SaveAs);
+    assert!(fixture.is_file(), "{}", shell.app().action_digest());
+    let saved_catalog = shell.app().revision_catalog();
+    assert_eq!(
+        persistence::load_file(&fixture)
+            .unwrap()
+            .into_editable()
+            .ok()
+            .unwrap()
+            .revision_catalog(),
+        saved_catalog,
+    );
+    shell.click_menu_command("menu-file", AppCommand::New);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert_eq!(shell.app().revision_catalog(), saved_catalog);
+    assert_eq!(shell.app().canonical_digest(), base_digest);
+    assert_eq!(
+        shell
+            .app()
+            .revision_catalog()
+            .iter()
+            .find(|entry| entry.revision_id == changed_revision)
+            .and_then(|entry| entry.checkpoint.as_deref()),
+        Some("Reviewed option")
+    );
+}
+
+#[test]
+fn sketch_construction_previews_confirms_and_undoes_through_accesskit() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = directory.path().join("sketch-construction.ketchup");
+    write_sketch_construction_fixture(&fixture, false);
+
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_open(&fixture)
+        .always_discard();
+    let mut shell =
+        Shell::with_catalog_and_dialogs(ketchup_interaction::LocaleCatalog::english(), dialogs);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    open_history(&mut shell);
+    let sketch_label = feature_label(&shell, CONSTRUCTION_SKETCH);
+    shell.click_role_and_label(Role::Button, &sketch_label);
+    assert_eq!(
+        shell.app().feature_history_selected_feature_id(),
+        Some(CONSTRUCTION_SKETCH)
+    );
+    assert!(shell.has_role_and_label(
+        Role::ComboBox,
+        &shell.catalog().text("feature-history-sketch-entity")
+    ));
+
+    let before = stamp(&shell);
+    let preview = shell
+        .catalog()
+        .text("feature-history-preview-make-construction");
+    shell.click_role_and_label(Role::Button, &preview);
+    assert!(shell.app().feature_history_preview_pending());
+    assert_eq!(stamp(&shell), before);
+
+    confirm(&mut shell);
+    assert_eq!(shell.app().document_revision(), before.0 + 1);
+    assert_eq!(shell.app().undo_step_count(), before.2 + 1);
+    let snapshot = shell.app().document_snapshot();
+    let FeatureKind::Sketch(spec) = snapshot.feature(CONSTRUCTION_SKETCH).unwrap().kind() else {
+        panic!("expected construction sketch")
+    };
+    assert!(spec.is_construction_entity(SketchEntityId(1)));
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), before.1);
+    let snapshot = shell.app().document_snapshot();
+    let FeatureKind::Sketch(spec) = snapshot.feature(CONSTRUCTION_SKETCH).unwrap().kind() else {
+        panic!("expected restored sketch")
+    };
+    assert!(!spec.is_construction_entity(SketchEntityId(1)));
+}
+
+#[test]
+fn sketch_constraints_create_replace_delete_through_accesskit() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = directory.path().join("sketch-constraints.ketchup");
+    write_sketch_construction_fixture(&fixture, true);
+
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_open(&fixture)
+        .always_discard();
+    let mut shell =
+        Shell::with_catalog_and_dialogs(ketchup_interaction::LocaleCatalog::english(), dialogs);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    open_history(&mut shell);
+    shell.click_role_and_label(Role::Button, &feature_label(&shell, CONSTRUCTION_SKETCH));
+    let initial = stamp(&shell);
+
+    let add = shell
+        .catalog()
+        .text("feature-history-preview-add-horizontal-constraint");
+    shell.click_role_and_label(Role::Button, &add);
+    assert!(shell.app().feature_history_preview_pending());
+    assert_eq!(stamp(&shell), initial);
+    let diagnostic = shell.catalog().format(
+        "feature-history-sketch-diagnostic-under",
+        &BTreeMap::from([("dof", "6".to_owned()), ("entities", "1, 2".to_owned())]),
+    );
+    assert!(
+        shell.has_visible_label(&diagnostic),
+        "missing {diagnostic:?} in {:#?}",
+        shell.visible_accesskit_rects()
+    );
+    confirm(&mut shell);
+    let horizontal_digest = shell.app().canonical_digest();
+    let horizontal_undo_steps = shell.app().undo_step_count();
+    let snapshot = shell.app().document_snapshot();
+    let FeatureKind::Sketch(spec) = snapshot.feature(CONSTRUCTION_SKETCH).unwrap().kind() else {
+        panic!("expected sketch")
+    };
+    assert!(spec.constraints.iter().any(|constraint| {
+        constraint.id.0 == 1
+            && matches!(constraint.kind, SketchConstraintKind::Horizontal { entity } if entity == SketchEntityId(1))
+    }));
+    assert!(shell.has_role_and_label(
+        Role::ComboBox,
+        &shell.catalog().text("feature-history-sketch-constraint")
+    ));
+
+    let replace = shell
+        .catalog()
+        .text("feature-history-preview-replace-constraint");
+    shell.click_role_and_label(Role::Button, &replace);
+    assert!(shell.app().feature_history_preview_pending());
+    assert_eq!(shell.app().canonical_digest(), horizontal_digest);
+    confirm(&mut shell);
+    let vertical_digest = shell.app().canonical_digest();
+    let snapshot = shell.app().document_snapshot();
+    let FeatureKind::Sketch(spec) = snapshot.feature(CONSTRUCTION_SKETCH).unwrap().kind() else {
+        panic!("expected sketch")
+    };
+    assert!(spec.constraints.iter().any(|constraint| {
+        constraint.id.0 == 1
+            && matches!(constraint.kind, SketchConstraintKind::Vertical { entity } if entity == SketchEntityId(1))
+    }));
+
+    let delete = shell
+        .catalog()
+        .text("feature-history-preview-delete-constraint");
+    shell.click_role_and_label(Role::Button, &delete);
+    assert!(shell.app().feature_history_preview_pending());
+    assert_eq!(shell.app().canonical_digest(), vertical_digest);
+    confirm(&mut shell);
+    let deleted_digest = shell.app().canonical_digest();
+    let snapshot = shell.app().document_snapshot();
+    let FeatureKind::Sketch(spec) = snapshot.feature(CONSTRUCTION_SKETCH).unwrap().kind() else {
+        panic!("expected sketch")
+    };
+    assert!(!spec.constraints.iter().any(|constraint| {
+        !matches!(constraint.kind, SketchConstraintKind::Construction { .. })
+    }));
+    assert_eq!(shell.app().undo_step_count(), horizontal_undo_steps + 2);
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), vertical_digest);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().canonical_digest(), deleted_digest);
 }
 
 #[test]

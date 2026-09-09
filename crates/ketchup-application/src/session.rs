@@ -88,7 +88,7 @@ impl DocumentSession {
         let (document, container_data) = outcome
             .into_editable_with_container()
             .map_err(|_| SessionError::ReviewOnly)?;
-        let saved_digest = Some(document.current().canonical_digest());
+        let saved_digest = Some(document.history_digest());
         Ok(Self {
             document,
             container_data,
@@ -107,12 +107,15 @@ impl DocumentSession {
         options: SaveOptions,
     ) -> Result<(), SessionError> {
         let path = path.as_ref();
-        let snapshot = self.snapshot();
         if options.overwrite {
-            persistence::save_atomic_with_container(path, &snapshot, &self.container_data)
-                .map_err(|error| SessionError::Persistence(error.to_string()))?;
+            persistence::save_atomic_document_store_with_container(
+                path,
+                &self.document,
+                &self.container_data,
+            )
+            .map_err(|error| SessionError::Persistence(error.to_string()))?;
         } else {
-            let bytes = persistence::save_container(&snapshot, &self.container_data)
+            let bytes = persistence::save_document_store(&self.document, &self.container_data)
                 .map_err(|error| SessionError::Persistence(error.to_string()))?;
             persistence::load(&bytes)
                 .map_err(|error| SessionError::Persistence(error.to_string()))?;
@@ -131,7 +134,7 @@ impl DocumentSession {
                 .map_err(|error| SessionError::Persistence(error.to_string()))?;
         }
         self.path = Some(path.to_owned());
-        self.saved_digest = Some(snapshot.canonical_digest());
+        self.saved_digest = Some(self.document.history_digest());
         Ok(())
     }
     pub fn snapshot(&self) -> Snapshot {
@@ -144,7 +147,7 @@ impl DocumentSession {
         self.path.as_deref()
     }
     pub fn is_modified(&self) -> bool {
-        self.saved_digest.as_ref() != Some(&self.snapshot().canonical_digest())
+        self.saved_digest.as_ref() != Some(&self.document.history_digest())
     }
     pub fn visible_undo_steps(&self) -> usize {
         self.document.visible_undo_steps()

@@ -124,6 +124,12 @@ pub enum AssemblyJointKind {
         limits: Option<AssemblyJointLimits>,
         position_mm: f64,
     },
+    Helical {
+        axis: AssemblyJointAxis,
+        limits: Option<AssemblyJointLimits>,
+        lead_mm_per_revolution: f64,
+        position_degrees: f64,
+    },
 }
 
 impl AssemblyJointKind {
@@ -156,6 +162,23 @@ impl AssemblyJointKind {
                         limits.is_valid_for(MAX_LINEAR_POSITION_MM) && limits.contains(position_mm)
                     })
             }
+            Self::Helical {
+                axis,
+                limits,
+                lead_mm_per_revolution,
+                position_degrees,
+            } => {
+                axis.is_valid()
+                    && lead_mm_per_revolution.is_finite()
+                    && lead_mm_per_revolution > 0.0
+                    && lead_mm_per_revolution <= MAX_LINEAR_POSITION_MM
+                    && position_degrees.is_finite()
+                    && position_degrees.abs() <= MAX_ANGULAR_POSITION_DEGREES
+                    && limits.is_none_or(|limits| {
+                        limits.is_valid_for(MAX_ANGULAR_POSITION_DEGREES)
+                            && limits.contains(position_degrees)
+                    })
+            }
         }
     }
 
@@ -163,7 +186,9 @@ impl AssemblyJointKind {
     pub const fn axis(self) -> Option<AssemblyJointAxis> {
         match self {
             Self::Fixed => None,
-            Self::Revolute { axis, .. } | Self::Prismatic { axis, .. } => Some(axis),
+            Self::Revolute { axis, .. }
+            | Self::Prismatic { axis, .. }
+            | Self::Helical { axis, .. } => Some(axis),
         }
     }
 
@@ -171,7 +196,9 @@ impl AssemblyJointKind {
     pub const fn limits(self) -> Option<AssemblyJointLimits> {
         match self {
             Self::Fixed => None,
-            Self::Revolute { limits, .. } | Self::Prismatic { limits, .. } => limits,
+            Self::Revolute { limits, .. }
+            | Self::Prismatic { limits, .. }
+            | Self::Helical { limits, .. } => limits,
         }
     }
 
@@ -180,6 +207,9 @@ impl AssemblyJointKind {
         match self {
             Self::Fixed => None,
             Self::Revolute {
+                position_degrees, ..
+            }
+            | Self::Helical {
                 position_degrees, ..
             } => Some(position_degrees),
             Self::Prismatic { position_mm, .. } => Some(position_mm),
@@ -199,6 +229,17 @@ impl AssemblyJointKind {
                 axis,
                 limits,
                 position_mm: position,
+            }),
+            Self::Helical {
+                axis,
+                limits,
+                lead_mm_per_revolution,
+                ..
+            } => Some(Self::Helical {
+                axis,
+                limits,
+                lead_mm_per_revolution,
+                position_degrees: position,
             }),
         }
     }
@@ -222,6 +263,17 @@ impl AssemblyJointKind {
                 axis,
                 limits: replacement,
                 position_mm,
+            }),
+            Self::Helical {
+                axis,
+                lead_mm_per_revolution,
+                position_degrees,
+                ..
+            } => Some(Self::Helical {
+                axis,
+                limits: replacement,
+                lead_mm_per_revolution,
+                position_degrees,
             }),
         }
     }
@@ -1267,6 +1319,154 @@ pub fn analyze_assembly_motion_clearance(
     })
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct AssemblyJointDragPreview {
+    joint_id: AssemblyJointId,
+    requested_position: f64,
+    applied_position: f64,
+    solution: AssemblyKinematicSolution,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AssemblyJointDragClearancePreview {
+    drag: AssemblyJointDragPreview,
+    clearance: AssemblyMotionClearanceAnalysis,
+}
+
+impl AssemblyJointDragClearancePreview {
+    #[must_use]
+    pub const fn drag(&self) -> &AssemblyJointDragPreview {
+        &self.drag
+    }
+
+    #[must_use]
+    pub const fn clearance(&self) -> &AssemblyMotionClearanceAnalysis {
+        &self.clearance
+    }
+}
+
+impl AssemblyJointDragPreview {
+    #[must_use]
+    pub const fn joint_id(&self) -> AssemblyJointId {
+        self.joint_id
+    }
+
+    #[must_use]
+    pub const fn requested_position(&self) -> f64 {
+        self.requested_position
+    }
+
+    #[must_use]
+    pub const fn applied_position(&self) -> f64 {
+        self.applied_position
+    }
+
+    #[must_use]
+    pub fn was_clamped(&self) -> bool {
+        self.requested_position != self.applied_position
+    }
+
+    #[must_use]
+    pub const fn solution(&self) -> &AssemblyKinematicSolution {
+        &self.solution
+    }
+}
+
+pub fn preview_assembly_joint_drag(
+    snapshot: &Snapshot,
+    joint_id: AssemblyJointId,
+    requested_position: f64,
+    clamp_to_limits: bool,
+) -> Result<AssemblyJointDragPreview, AssemblyKinematicSolveError> {
+    let joint = snapshot
+        .assembly_joint(joint_id)
+        .ok_or(AssemblyKinematicSolveError::UnknownDriverJoint(joint_id))?;
+    if !requested_position.is_finite() {
+        return Err(AssemblyKinematicSolveError::InvalidDriverPosition(joint_id));
+    }
+    if joint.kind().position().is_none() {
+        return Err(AssemblyKinematicSolveError::FixedJointDriven(joint_id));
+    }
+    let applied_position = if clamp_to_limits {
+        joint.kind().limits().map_or(requested_position, |limits| {
+            requested_position.clamp(limits.min(), limits.max())
+        })
+    } else {
+        requested_position
+    };
+    let solution = solve_assembly_joint_kinematics_internal(
+        snapshot,
+        &[AssemblyMotionDriver::new(joint_id, applied_position)],
+        true,
+        &BTreeMap::new(),
+    )?;
+    Ok(AssemblyJointDragPreview {
+        joint_id,
+        requested_position,
+        applied_position,
+        solution,
+    })
+}
+
+pub fn preview_assembly_joint_drag_clearance(
+    snapshot: &Snapshot,
+    joint_id: AssemblyJointId,
+    requested_position: f64,
+    clamp_to_limits: bool,
+    sample_intervals: u32,
+    bodies: &[AssemblyMotionCollisionBody],
+    contact_tolerance_mm: f64,
+) -> Result<AssemblyJointDragClearancePreview, AssemblyMotionClearancePreviewError> {
+    if !(1..=MAX_ASSEMBLY_MOTION_SAMPLE_INTERVALS).contains(&sample_intervals) {
+        return Err(AssemblyMotionSamplingError::InvalidSampleIntervals(sample_intervals).into());
+    }
+    let drag = preview_assembly_joint_drag(snapshot, joint_id, requested_position, clamp_to_limits)
+        .map_err(AssemblyMotionSamplingError::from)?;
+    let start_position = snapshot
+        .assembly_joint(joint_id)
+        .and_then(|joint| joint.kind().position())
+        .ok_or(AssemblyKinematicSolveError::FixedJointDriven(joint_id))
+        .map_err(AssemblyMotionSamplingError::from)?;
+    let samples = (0..=sample_intervals)
+        .map(|index| {
+            let progress = f64::from(index) / f64::from(sample_intervals);
+            let position = if index == 0 {
+                start_position
+            } else if index == sample_intervals {
+                drag.applied_position()
+            } else {
+                start_position + (drag.applied_position() - start_position) * progress
+            };
+            let drivers = vec![AssemblyMotionDriver::new(joint_id, position)];
+            let solution = if index == sample_intervals {
+                drag.solution().clone()
+            } else {
+                solve_assembly_joint_kinematics_internal(
+                    snapshot,
+                    &drivers,
+                    true,
+                    &BTreeMap::new(),
+                )?
+            };
+            Ok(AssemblyMotionSample {
+                progress,
+                drivers,
+                solution,
+            })
+        })
+        .collect::<Result<Vec<_>, AssemblyKinematicSolveError>>()
+        .map_err(AssemblyMotionSamplingError::from)?;
+    let path = AssemblyMotionPath {
+        source_revision: snapshot.revision_id(),
+        source_digest: snapshot.canonical_digest(),
+        study_id: AssemblyMotionStudyId(0),
+        sample_intervals,
+        samples,
+    };
+    let clearance = analyze_assembly_motion_clearance(&path, bodies, contact_tolerance_mm)?;
+    Ok(AssemblyJointDragClearancePreview { drag, clearance })
+}
+
 pub fn solve_assembly_joint_kinematics(
     snapshot: &Snapshot,
 ) -> Result<AssemblyKinematicSolution, AssemblyKinematicSolveError> {
@@ -1290,7 +1490,7 @@ pub fn solve_assembly_motion_study(
     solve_assembly_joint_kinematics_internal(snapshot, study.drivers(), true, &BTreeMap::new())
 }
 
-pub(crate) fn solve_assembly_joint_kinematics_with_kind_overrides(
+pub fn solve_assembly_joint_kinematics_with_kind_overrides(
     snapshot: &Snapshot,
     kind_overrides: &BTreeMap<AssemblyJointId, AssemblyJointKind>,
 ) -> Result<AssemblyKinematicSolution, AssemblyKinematicSolveError> {
@@ -1300,7 +1500,7 @@ pub(crate) fn solve_assembly_joint_kinematics_with_kind_overrides(
 fn solve_assembly_joint_kinematics_internal(
     snapshot: &Snapshot,
     drivers: &[AssemblyMotionDriver],
-    motion_study_solution: bool,
+    publish_driven_positions: bool,
     kind_overrides: &BTreeMap<AssemblyJointId, AssemblyJointKind>,
 ) -> Result<AssemblyKinematicSolution, AssemblyKinematicSolveError> {
     let driver_overrides = validate_driver_overrides(snapshot, drivers)?;
@@ -1435,7 +1635,7 @@ fn solve_assembly_joint_kinematics_internal(
         remaining_dof,
         joint_diagnostics,
         redundant_driver_joint_ids,
-        driven_joint_positions: if motion_study_solution {
+        driven_joint_positions: if publish_driven_positions {
             position_overrides
                 .iter()
                 .map(|(id, driver)| (*id, driver.position))
@@ -1671,6 +1871,55 @@ fn joint_motion_transform(kind: AssemblyJointKind) -> Transform {
             ])
             .expect("validated revolute joint has a finite transform")
         }
+        AssemblyJointKind::Helical {
+            axis,
+            lead_mm_per_revolution,
+            position_degrees,
+            ..
+        } => {
+            let [x, y, z] = axis.direction_in_parent();
+            let [px, py, pz] = axis.pivot_in_parent_mm();
+            let angle = position_degrees.to_radians();
+            let cosine = angle.cos();
+            let sine = angle.sin();
+            let complement = 1.0 - cosine;
+            let rotation = [
+                x * x * complement + cosine,
+                x * y * complement - z * sine,
+                x * z * complement + y * sine,
+                y * x * complement + z * sine,
+                y * y * complement + cosine,
+                y * z * complement - x * sine,
+                z * x * complement - y * sine,
+                z * y * complement + x * sine,
+                z * z * complement + cosine,
+            ];
+            let travel_mm = lead_mm_per_revolution * position_degrees / 360.0;
+            let translation = [
+                px - (rotation[0] * px + rotation[1] * py + rotation[2] * pz) + x * travel_mm,
+                py - (rotation[3] * px + rotation[4] * py + rotation[5] * pz) + y * travel_mm,
+                pz - (rotation[6] * px + rotation[7] * py + rotation[8] * pz) + z * travel_mm,
+            ];
+            Transform::from_matrix([
+                rotation[0],
+                rotation[1],
+                rotation[2],
+                translation[0],
+                rotation[3],
+                rotation[4],
+                rotation[5],
+                translation[1],
+                rotation[6],
+                rotation[7],
+                rotation[8],
+                translation[2],
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+            ])
+            .expect("validated helical joint has a finite transform")
+        }
     }
 }
 
@@ -1701,6 +1950,20 @@ pub(crate) fn joint_motion_states_equal(left: AssemblyJointKind, right: Assembly
                 ..
             },
         ) => left_axis == right_axis && left_position == right_position,
+        (
+            AssemblyJointKind::Helical {
+                axis: left_axis,
+                lead_mm_per_revolution: left_lead,
+                position_degrees: left_position,
+                ..
+            },
+            AssemblyJointKind::Helical {
+                axis: right_axis,
+                lead_mm_per_revolution: right_lead,
+                position_degrees: right_position,
+                ..
+            },
+        ) => left_axis == right_axis && left_lead == right_lead && left_position == right_position,
         _ => false,
     }
 }

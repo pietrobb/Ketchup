@@ -121,6 +121,7 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
         (Some("CAPS"), Some("M21_STEP_MODEL_V1"), None) => {
             Some("CAPS M21_STEP_MODEL_V1".to_owned())
         }
+        (Some("CAPS"), Some("M21_IGES_V1"), None) => Some("CAPS M21_IGES_V1".to_owned()),
         (Some("CAPS"), Some("EXACT_BREP_GRAPH_V6"), None) => {
             Some("CAPS EXACT_BREP_GRAPH_V6".to_owned())
         }
@@ -231,6 +232,27 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
         (Some("TESSELLATE_STEP_PART_M21_V1"), Some(source_sha256), Some(source_path)) => {
             let remaining = fields.collect::<Vec<_>>();
             Some(m21_step_part_mesh_response(
+                backend,
+                source_sha256,
+                source_path,
+                &remaining,
+            ))
+        }
+        (Some("INSPECT_IGES_PART_M21_V1"), Some(source_sha256), Some(source_path)) => Some(
+            m21_iges_part_inspection_response(backend, source_sha256, source_path),
+        ),
+        (Some("TESSELLATE_IGES_PART_M21_V1"), Some(source_sha256), Some(source_path)) => {
+            let remaining = fields.collect::<Vec<_>>();
+            Some(m21_iges_part_mesh_response(
+                backend,
+                source_sha256,
+                source_path,
+                &remaining,
+            ))
+        }
+        (Some("CONVERT_STEP_TO_IGES_M21_V1"), Some(source_sha256), Some(source_path)) => {
+            let remaining = fields.collect::<Vec<_>>();
+            Some(m21_step_to_iges_response(
                 backend,
                 source_sha256,
                 source_path,
@@ -5736,6 +5758,7 @@ fn verified_step_copy(
     source_sha256: &str,
     operation: &'static str,
 ) -> Result<tempfile::NamedTempFile, String> {
+    let source_path = std::path::Path::new(source_path);
     let mut source = std::fs::File::open(source_path)
         .map_err(|error| transport_error_response(operation, &error.to_string()))?;
     let mut source_bytes = Vec::new();
@@ -5758,12 +5781,217 @@ fn verified_step_copy(
     let mut copy = tempfile::Builder::new()
         .prefix("ketchup-verified-step-")
         .suffix(".step")
-        .tempfile()
+        .tempfile_in(
+            source_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new(".")),
+        )
         .map_err(|error| transport_error_response(operation, &error.to_string()))?;
     copy.write_all(&source_bytes)
         .and_then(|()| copy.flush())
         .map_err(|error| transport_error_response(operation, &error.to_string()))?;
     Ok(copy)
+}
+
+fn verified_iges_copy(
+    source_path: &str,
+    source_sha256: &str,
+    operation: &'static str,
+) -> Result<tempfile::NamedTempFile, String> {
+    let source_path = std::path::Path::new(source_path);
+    let mut source = std::fs::File::open(source_path)
+        .map_err(|error| transport_error_response(operation, &error.to_string()))?;
+    let mut source_bytes = Vec::new();
+    std::io::Read::by_ref(&mut source)
+        .take(MAX_STEP_SOURCE_BYTES + 1)
+        .read_to_end(&mut source_bytes)
+        .map_err(|error| transport_error_response(operation, &error.to_string()))?;
+    if source_bytes.len() as u64 > MAX_STEP_SOURCE_BYTES {
+        return Err(transport_error_response(
+            operation,
+            "IGES source exceeds the bounded 32 MiB envelope",
+        ));
+    }
+    if sha256_hex(&source_bytes) != source_sha256 {
+        return Err(transport_error_response(
+            operation,
+            "IGES bytes do not match the declared SHA-256",
+        ));
+    }
+    let mut copy = tempfile::Builder::new()
+        .prefix("ketchup-verified-iges-")
+        .suffix(".iges")
+        .tempfile_in(
+            source_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new(".")),
+        )
+        .map_err(|error| transport_error_response(operation, &error.to_string()))?;
+    copy.write_all(&source_bytes)
+        .and_then(|()| copy.flush())
+        .map_err(|error| transport_error_response(operation, &error.to_string()))?;
+    Ok(copy)
+}
+
+fn m21_iges_part_inspection_response(
+    backend: &ExactBackend,
+    source_sha256: &str,
+    source_path: &str,
+) -> String {
+    if !is_canonical_digest(source_sha256) {
+        return "ERR invalid_request".to_owned();
+    }
+    let Some(source_path) = decode_hex_utf8(source_path) else {
+        return "ERR invalid_request".to_owned();
+    };
+    let source = match verified_iges_copy(&source_path, source_sha256, "inspect_iges_part") {
+        Ok(source) => source,
+        Err(response) => return response,
+    };
+    let source_path = source.path().to_string_lossy();
+    let Some(raw_unit) = backend.iges_length_unit_name(&source_path) else {
+        return transport_error_response(
+            "inspect_iges_part",
+            "IGES source has missing or ambiguous representation length units",
+        );
+    };
+    let source_unit = match raw_unit.as_str() {
+        "mm" | "millimetre" | "millimeter" => "millimetre",
+        "cm" | "centimetre" | "centimeter" => "centimetre",
+        "m" | "metre" | "meter" => "metre",
+        "in" | "inch" => "inch",
+        "ft" | "foot" => "foot",
+        _ => {
+            return transport_error_response(
+                "inspect_iges_part",
+                "IGES source declares an unsupported length unit",
+            );
+        }
+    };
+    match backend.import_iges(&source_path) {
+        Ok(output) => {
+            let topology = &output.body.topology;
+            format!(
+                "OK_M21_IGES_PART_V1 {source_sha256} {} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {} {}",
+                step_import_result_fingerprint(source_sha256, &output),
+                topology.solid_count,
+                topology.volume_mm3.to_bits(),
+                topology.bounds_mm.min.x.to_bits(),
+                topology.bounds_mm.min.y.to_bits(),
+                topology.bounds_mm.min.z.to_bits(),
+                topology.bounds_mm.max.x.to_bits(),
+                topology.bounds_mm.max.y.to_bits(),
+                topology.bounds_mm.max.z.to_bits(),
+                topology.vertex_count,
+                topology.edge_count,
+                topology.face_count,
+                topology.shell_count,
+                encode_hex(source_unit.as_bytes()),
+                encode_hex(output.backend_fingerprint.as_bytes()),
+                encode_hex(output.tolerance_report.profile.as_bytes()),
+            )
+        }
+        Err(error) => geometry_error_response(&error),
+    }
+}
+
+fn m21_iges_part_mesh_response(
+    backend: &ExactBackend,
+    source_sha256: &str,
+    source_path: &str,
+    fields: &[&str],
+) -> String {
+    if !is_canonical_digest(source_sha256) || fields.len() != 1 {
+        return "ERR invalid_request".to_owned();
+    }
+    let (Some(source_path), Some(output_path)) =
+        (decode_hex_utf8(source_path), decode_hex_utf8(fields[0]))
+    else {
+        return "ERR invalid_request".to_owned();
+    };
+    let source = match verified_iges_copy(&source_path, source_sha256, "tessellate_iges_part") {
+        Ok(source) => source,
+        Err(response) => return response,
+    };
+    let output = match backend.import_iges(&source.path().to_string_lossy()) {
+        Ok(output) => output,
+        Err(error) => return geometry_error_response(&error),
+    };
+    let bounds = output.body.topology.bounds_mm;
+    let diagonal = ((bounds.max.x - bounds.min.x).powi(2)
+        + (bounds.max.y - bounds.min.y).powi(2)
+        + (bounds.max.z - bounds.min.z).powi(2))
+    .sqrt();
+    if !diagonal.is_finite() || diagonal <= 0.0 {
+        return transport_error_response(
+            "tessellate_iges_part",
+            "IGES part has no measurable extent to tessellate",
+        );
+    }
+    let deflection = (diagonal * 1.0e-3).max(1.0e-3);
+    let mesh = match backend.tessellate_body(
+        &output.body,
+        deflection,
+        STEP_MESH_ANGULAR_DEFLECTION,
+        MAX_STEP_MESH_TRIANGLES,
+    ) {
+        Ok(mesh) => mesh,
+        Err(error) => return geometry_error_response(&error),
+    };
+    let mesh = StepImportMesh {
+        vertices_mm: mesh.vertices_mm,
+        triangles: mesh
+            .triangles
+            .into_iter()
+            .map(|triangle| StepMeshTriangle {
+                vertex_indices: triangle.vertex_indices,
+                face_ordinal: triangle.face_ordinal,
+            })
+            .collect(),
+    };
+    let encoded = mesh.encode();
+    if let Err(error) = std::fs::write(&output_path, &encoded) {
+        return transport_error_response("tessellate_iges_part", &error.to_string());
+    }
+    format!(
+        "OK_M21_IGES_MESH_V1 {source_sha256} {} {} {} {} {:016x}",
+        step_import_result_fingerprint(source_sha256, &output),
+        mesh.vertices_mm.len(),
+        mesh.triangles.len(),
+        sha256_hex(&encoded),
+        deflection.to_bits(),
+    )
+}
+
+fn m21_step_to_iges_response(
+    backend: &ExactBackend,
+    source_sha256: &str,
+    source_path: &str,
+    fields: &[&str],
+) -> String {
+    if !is_canonical_digest(source_sha256) || fields.len() != 1 {
+        return "ERR invalid_request".to_owned();
+    }
+    let (Some(source_path), Some(output_path)) =
+        (decode_hex_utf8(source_path), decode_hex_utf8(fields[0]))
+    else {
+        return "ERR invalid_request".to_owned();
+    };
+    let source = match verified_step_copy(&source_path, source_sha256, "convert_step_to_iges") {
+        Ok(source) => source,
+        Err(response) => return response,
+    };
+    let imported = match backend.import_step(&source.path().to_string_lossy()) {
+        Ok(output) => output,
+        Err(error) => return geometry_error_response(&error),
+    };
+    match backend.export_iges(&imported.body, &output_path) {
+        Ok(()) => format!(
+            "OK_M21_IGES_EXPORT_V1 {source_sha256} {}",
+            step_import_result_fingerprint(source_sha256, &imported)
+        ),
+        Err(error) => geometry_error_response(&error),
+    }
 }
 
 fn m21_step_part_inspection_response(

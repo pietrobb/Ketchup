@@ -2504,6 +2504,55 @@ fn step_import_can_address_each_transferred_solid_independently() {
 }
 
 #[test]
+fn iges_round_trip_preserves_exact_body_units_and_rejects_invalid_sources() {
+    let backend = ExactBackend::new();
+    let source = backend
+        .make_box(BoxSpec {
+            origin_mm: Point3 {
+                x: -10.0,
+                y: 20.0,
+                z: 5.0,
+            },
+            size_mm: Size3 {
+                x: 30.0,
+                y: 40.0,
+                z: 50.0,
+            },
+        })
+        .unwrap();
+    let path = std::env::temp_dir().join(format!(
+        "ketchup-iges-round-trip-{}.iges",
+        std::process::id()
+    ));
+    backend
+        .export_iges(&source.body, path.to_str().unwrap())
+        .unwrap();
+
+    let imported = backend.import_iges(path.to_str().unwrap()).unwrap();
+    assert_valid(&imported);
+    assert_close(imported.body.topology.volume_mm3, 60_000.0);
+    assert_eq!(imported.body.topology.solid_count, 1);
+    assert_eq!(
+        backend.iges_length_unit_name(path.to_str().unwrap()),
+        Some("mm".to_owned())
+    );
+
+    let malformed =
+        path.with_file_name(format!("ketchup-invalid-iges-{}.iges", std::process::id()));
+    std::fs::write(&malformed, b"not an IGES model").unwrap();
+    let error = backend
+        .import_iges(malformed.to_str().unwrap())
+        .unwrap_err();
+    assert_eq!(error.code, GeometryErrorCode::InvalidShape);
+    assert_eq!(
+        backend.export_iges(&source.body, "").unwrap_err().code,
+        GeometryErrorCode::InvalidParameter
+    );
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_file(malformed).unwrap();
+}
+
+#[test]
 fn cubic_planar_region_extrusion_preserves_hole_bounds_volume_and_fingerprint() {
     let outer = PlanarProfileLoop::Segments(vec![
         PlanarProfileSegment::Line {

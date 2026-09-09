@@ -590,7 +590,7 @@ mod tests {
             caps["result"]["cad_program_schema"]["$defs"]["AssistantCadEditOperation"]["oneOf"]
                 .as_array()
                 .unwrap();
-        assert_eq!(variants.len(), 10);
+        assert_eq!(variants.len(), 13);
         assert!(
             variants
                 .iter()

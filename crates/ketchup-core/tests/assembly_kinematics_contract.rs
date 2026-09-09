@@ -4,13 +4,18 @@ use ketchup_core::assembly_joint::{
     AssemblyKinematicSolveStatus, AssemblyMotionClearanceError, AssemblyMotionCollisionBody,
     AssemblyMotionCollisionPair, AssemblyMotionDriver, AssemblyMotionSamplingError,
     AssemblyMotionStudy, AssemblyMotionStudyId, MAX_ASSEMBLY_MOTION_SAMPLE_INTERVALS,
-    analyze_assembly_motion_clearance, preview_assembly_motion_study_clearance,
+    analyze_assembly_motion_clearance, preview_assembly_joint_drag,
+    preview_assembly_joint_drag_clearance, preview_assembly_motion_study_clearance,
     sample_assembly_motion_study, solve_assembly_joint_kinematics,
     solve_assembly_joint_kinematics_with_drivers, solve_assembly_motion_study,
 };
 use ketchup_core::document::{
     CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, DocumentStore, GroupId,
     OccurrenceId, ProposalCommitError, ProposalPrepareError, Transform,
+};
+use ketchup_core::mechanical_coupling::{
+    AssemblyMotionCoupling, AssemblyMotionCouplingId, AssemblyMotionDirection,
+    AssemblyTransmissionKind,
 };
 use ketchup_core::persistence;
 use ketchup_core::prismatic::Aabb;
@@ -821,6 +826,51 @@ fn swept_clearance_detects_a_crossing_between_clear_endpoint_samples() {
         analyze_assembly_motion_clearance(&path, &bodies, 0.0).unwrap(),
         analysis
     );
+    assert_eq!(store_stamp(&document), before);
+}
+
+#[test]
+fn interactive_drag_clearance_reports_safe_motion_and_first_contact_without_mutation() {
+    let document = crossing_motion_document();
+    let before = store_stamp(&document);
+    let unit = Aabb::bounded_volume([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]).unwrap();
+    let bodies = [
+        AssemblyMotionCollisionBody::new(FIRST, unit),
+        AssemblyMotionCollisionBody::new(SECOND, unit),
+    ];
+
+    let safe = preview_assembly_joint_drag_clearance(
+        &document.current(),
+        PRISMATIC_JOINT,
+        4.0,
+        false,
+        1,
+        &bodies,
+        0.0,
+    )
+    .unwrap();
+    assert_eq!(safe.drag().applied_position(), 4.0);
+    assert_eq!(safe.clearance().minimum_clearance_mm(), 5.0);
+    assert_eq!(safe.clearance().first_contact(), None);
+
+    let crossing = preview_assembly_joint_drag_clearance(
+        &document.current(),
+        PRISMATIC_JOINT,
+        20.0,
+        false,
+        1,
+        &bodies,
+        0.0,
+    )
+    .unwrap();
+    assert_eq!(crossing.drag().applied_position(), 20.0);
+    assert_eq!(crossing.clearance().minimum_clearance_mm(), 0.0);
+    let first_contact = crossing.clearance().first_contact().unwrap();
+    assert_eq!(
+        first_contact.pair(),
+        AssemblyMotionCollisionPair::new(FIRST, SECOND).unwrap()
+    );
+    assert!((first_contact.progress_start() - 0.45).abs() <= 1.0e-12);
     assert_eq!(store_stamp(&document), before);
 }
 
@@ -2362,4 +2412,330 @@ fn generic_telescopic_mechanism_proves_nested_limited_motion_and_swept_collision
         document.redo().unwrap().canonical_digest(),
         committed_digest
     );
+}
+
+#[test]
+fn helical_joint_solves_samples_publishes_and_persists_losslessly() {
+    let joint_id = AssemblyJointId(70);
+    let study_id = AssemblyMotionStudyId(71);
+    let axis = AssemblyJointAxis::new([1.0, 1.0, 0.0], [4.0, -2.0, 3.0]);
+    let initial_kind = AssemblyJointKind::Helical {
+        axis,
+        limits: Some(AssemblyJointLimits::new(-180.0, 180.0)),
+        lead_mm_per_revolution: 8.0,
+        position_degrees: 0.0,
+    };
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Helical assembly".into(),
+            },
+            occurrence(FIRST, "Root", 0.0),
+            CanonicalCommand::CreateOccurrence {
+                id: SECOND,
+                definition_id: DEFINITION,
+                name: "Screw follower".into(),
+                transform: Transform::from_translation(6.0, -2.0, 3.0).unwrap(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+            CanonicalCommand::CreateAssemblyJoint(AssemblyJoint::new(
+                joint_id,
+                FIRST,
+                SECOND,
+                initial_kind,
+            )),
+            CanonicalCommand::CreateAssemblyMotionStudy(AssemblyMotionStudy::new(
+                study_id,
+                "One half turn",
+                vec![AssemblyMotionDriver::new(joint_id, 180.0)],
+            )),
+        ]))
+        .unwrap();
+
+    let before = store_stamp(&document);
+    let solution = solve_assembly_motion_study(&document.current(), study_id).unwrap();
+    assert_eq!(
+        solution.status(),
+        AssemblyKinematicSolveStatus::FullyConstrained
+    );
+    assert_eq!(solution.remaining_dof(), 0);
+    assert_eq!(solution.driven_joint_positions(), &[(joint_id, 180.0)]);
+    let root_two = 2.0_f64.sqrt();
+    let expected = Transform::from_matrix([
+        0.0,
+        1.0,
+        0.0,
+        4.0 + 2.0 * root_two,
+        1.0,
+        0.0,
+        0.0,
+        2.0 * root_two,
+        0.0,
+        0.0,
+        -1.0,
+        3.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ])
+    .unwrap();
+    assert_transform_near(solution.pose(SECOND).unwrap().local_transform(), expected);
+    assert_eq!(store_stamp(&document), before);
+
+    let path = sample_assembly_motion_study(&document.current(), study_id, 2).unwrap();
+    assert_eq!(path.samples().len(), 3);
+    assert_eq!(path.samples()[0].drivers()[0].position(), 0.0);
+    assert_eq!(path.samples()[1].drivers()[0].position(), 90.0);
+    assert_eq!(path.samples()[2].drivers()[0].position(), 180.0);
+    assert_transform_near(
+        path.samples()[2]
+            .solution()
+            .pose(SECOND)
+            .unwrap()
+            .local_transform(),
+        expected,
+    );
+
+    for invalid_position in [180.000_001, f64::NAN] {
+        assert_eq!(
+            solve_assembly_joint_kinematics_with_drivers(
+                &document.current(),
+                &[AssemblyMotionDriver::new(joint_id, invalid_position)],
+            ),
+            Err(AssemblyKinematicSolveError::InvalidDriverPosition(joint_id))
+        );
+        assert_eq!(store_stamp(&document), before);
+    }
+    let invalid_lead = AssemblyJointKind::Helical {
+        axis,
+        limits: initial_kind.limits(),
+        lead_mm_per_revolution: 0.0,
+        position_degrees: 0.0,
+    };
+    assert!(!invalid_lead.is_valid());
+    assert!(matches!(
+        document.apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetAssemblyJointKind {
+                id: joint_id,
+                kind: invalid_lead,
+            },
+        ])),
+        Err(CanonicalError::InvalidAssemblyJoint(id)) if id == joint_id
+    ));
+    assert_eq!(store_stamp(&document), before);
+
+    let proposal = solution.prepare_publication(&document).unwrap();
+    assert_eq!(store_stamp(&document), before);
+    document.commit_proposal(&proposal).unwrap();
+    let committed = store_stamp(&document);
+    assert_eq!(committed.undo_steps, before.undo_steps + 1);
+    assert_transform_near(
+        document.current().occurrence(SECOND).unwrap().transform(),
+        expected,
+    );
+    assert_eq!(
+        solve_assembly_motion_study(&document.current(), study_id)
+            .unwrap()
+            .publication_batch(&document.current()),
+        Err(AssemblyKinematicPublishError::NoCanonicalChanges)
+    );
+    assert!(matches!(
+        document.commit_proposal(&proposal),
+        Err(ProposalCommitError::Stale(_))
+    ));
+    assert_eq!(store_stamp(&document), committed);
+
+    let semantic_state = encode_semantic_state(&document.current()).complete_v1();
+    assert!(semantic_state.contains("kind:helical"));
+    assert!(semantic_state.contains("lead_mm_per_revolution_f64_bits:"));
+    let bytes = persistence::save(&document.current());
+    let mut mislabeled_legacy = bytes.clone();
+    mislabeled_legacy[10..12].copy_from_slice(&63_u16.to_le_bytes());
+    assert!(matches!(
+        persistence::load(&mislabeled_legacy),
+        Err(persistence::PersistenceError::InvalidAssemblyJoint)
+    ));
+    let reopened = persistence::load(&bytes).unwrap();
+    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.snapshot().canonical_digest(), committed.digest);
+    assert_eq!(persistence::save(&reopened.snapshot()), bytes);
+    assert_eq!(
+        reopened.snapshot().assembly_joint(joint_id).unwrap().kind(),
+        AssemblyJointKind::Helical {
+            axis,
+            limits: initial_kind.limits(),
+            lead_mm_per_revolution: 8.0,
+            position_degrees: 180.0,
+        }
+    );
+
+    assert_eq!(document.undo().unwrap().canonical_digest(), before.digest);
+    assert_eq!(
+        document.redo().unwrap().canonical_digest(),
+        committed.digest
+    );
+}
+
+#[test]
+fn interactive_joint_drag_clamps_propagates_publishes_and_rejects_stale_or_invalid_targets() {
+    let coupling_id = AssemblyMotionCouplingId(80);
+    let mut document = seeded_with_joints();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateAssemblyMotionCoupling(AssemblyMotionCoupling::new(
+                coupling_id,
+                REVOLUTE_JOINT,
+                PRISMATIC_JOINT,
+                15.0,
+                25.0,
+                AssemblyTransmissionKind::RackAndPinion {
+                    pinion_pitch_diameter_mm: 20.0,
+                    direction: AssemblyMotionDirection::Same,
+                },
+            )),
+        ]))
+        .unwrap();
+    let before = store_stamp(&document);
+
+    let preview =
+        preview_assembly_joint_drag(&document.current(), REVOLUTE_JOINT, 45.0, false).unwrap();
+    assert_eq!(preview.joint_id(), REVOLUTE_JOINT);
+    assert_eq!(preview.requested_position(), 45.0);
+    assert_eq!(preview.applied_position(), 45.0);
+    assert!(!preview.was_clamped());
+    let coupled_position = 25.0 + 30.0 * std::f64::consts::PI * 20.0 / 360.0;
+    assert_eq!(
+        preview.solution().driven_joint_positions(),
+        &[(REVOLUTE_JOINT, 45.0), (PRISMATIC_JOINT, coupled_position),]
+    );
+    let unit = Aabb::bounded_volume([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]).unwrap();
+    let clearance_preview = preview_assembly_joint_drag_clearance(
+        &document.current(),
+        REVOLUTE_JOINT,
+        45.0,
+        false,
+        8,
+        &[
+            AssemblyMotionCollisionBody::new(FIRST, unit),
+            AssemblyMotionCollisionBody::new(THIRD, unit),
+            AssemblyMotionCollisionBody::new(FOURTH, unit),
+        ],
+        0.0,
+    )
+    .unwrap();
+    assert_eq!(
+        clearance_preview.drag().solution().driven_joint_positions(),
+        preview.solution().driven_joint_positions()
+    );
+    assert_eq!(clearance_preview.clearance().first_contact(), None);
+    let proposal = preview.solution().prepare_publication(&document).unwrap();
+    assert_eq!(store_stamp(&document), before);
+    document.commit_proposal(&proposal).unwrap();
+    assert_eq!(document.visible_undo_steps(), before.undo_steps + 1);
+    assert_eq!(
+        document
+            .current()
+            .assembly_joint(REVOLUTE_JOINT)
+            .unwrap()
+            .kind()
+            .position(),
+        Some(45.0)
+    );
+    assert_eq!(
+        document
+            .current()
+            .assembly_joint(PRISMATIC_JOINT)
+            .unwrap()
+            .kind()
+            .position(),
+        Some(coupled_position)
+    );
+
+    let no_op =
+        preview_assembly_joint_drag(&document.current(), REVOLUTE_JOINT, 45.0, false).unwrap();
+    assert_eq!(
+        no_op.solution().publication_batch(&document.current()),
+        Err(AssemblyKinematicPublishError::NoCanonicalChanges)
+    );
+    assert_eq!(
+        preview_assembly_joint_drag(&document.current(), REVOLUTE_JOINT, 200.0, false),
+        Err(AssemblyKinematicSolveError::InvalidDriverPosition(
+            REVOLUTE_JOINT
+        ))
+    );
+    let clamped =
+        preview_assembly_joint_drag(&document.current(), REVOLUTE_JOINT, 200.0, true).unwrap();
+    assert!(clamped.was_clamped());
+    assert_eq!(clamped.applied_position(), 90.0);
+
+    let committed_digest = document.current().canonical_digest();
+    let bytes = persistence::save(&document.current());
+    let reopened = persistence::load(&bytes).unwrap();
+    assert_eq!(reopened.snapshot().canonical_digest(), committed_digest);
+    assert_eq!(persistence::save(&reopened.snapshot()), bytes);
+    assert_ne!(
+        document.undo().unwrap().canonical_digest(),
+        committed_digest
+    );
+    assert_eq!(
+        document.redo().unwrap().canonical_digest(),
+        committed_digest
+    );
+
+    let helical_joint = AssemblyJointId(70);
+    let helical_child = OccurrenceId(14);
+    let mut helical = seeded_document();
+    helical
+        .apply_batch(&CommandBatch::new(vec![
+            occurrence(helical_child, "Helical follower", 80.0),
+            CanonicalCommand::CreateAssemblyJoint(AssemblyJoint::new(
+                helical_joint,
+                FIRST,
+                helical_child,
+                AssemblyJointKind::Helical {
+                    axis: axis_z(),
+                    limits: Some(AssemblyJointLimits::new(-180.0, 180.0)),
+                    lead_mm_per_revolution: 8.0,
+                    position_degrees: 0.0,
+                },
+            )),
+        ]))
+        .unwrap();
+    let helical_preview =
+        preview_assembly_joint_drag(&helical.current(), helical_joint, 90.0, false).unwrap();
+    assert_eq!(
+        helical_preview.solution().driven_joint_positions(),
+        &[(helical_joint, 90.0)]
+    );
+    let stale_proposal = helical_preview
+        .solution()
+        .prepare_publication(&helical)
+        .unwrap();
+    helical
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceVisibility {
+                id: SECOND,
+                visible: false,
+            },
+        ]))
+        .unwrap();
+    let stale = store_stamp(&helical);
+    assert_eq!(
+        helical_preview
+            .solution()
+            .publication_batch(&helical.current()),
+        Err(AssemblyKinematicPublishError::Stale)
+    );
+    assert!(matches!(
+        helical.commit_proposal(&stale_proposal),
+        Err(ProposalCommitError::Preparation(
+            ProposalPrepareError::Canonical(CanonicalError::StaleAssemblySolve)
+        ))
+    ));
+    assert_eq!(store_stamp(&helical), stale);
 }

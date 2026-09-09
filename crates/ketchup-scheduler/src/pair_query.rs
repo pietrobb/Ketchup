@@ -117,7 +117,8 @@ impl ExactWorkerSupervisor {
             .map_err(|error| WorkerError::Transport(error.to_string()))?
             .is_some()
         {
-            self.client = Self::spawn_verified_client(&self.executable, cancelled)?;
+            self.client =
+                Self::spawn_verified_client(&self.executable, &self.executable_sha256, cancelled)?;
         }
         let result = (|| {
             self.client

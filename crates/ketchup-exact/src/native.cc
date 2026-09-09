@@ -46,10 +46,15 @@
 #include <STEPControl_Reader.hxx>
 #include <STEPControl_Writer.hxx>
 #include <IFSelect_ReturnStatus.hxx>
+#include <IGESControl_Reader.hxx>
+#include <IGESControl_Writer.hxx>
+#include <IGESData_GlobalSection.hxx>
+#include <IGESData_IGESModel.hxx>
 #include <TopAbs_Orientation.hxx>
 #include <TopAbs_ShapeEnum.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
+#include <TopLoc_Location.hxx>
 #include <NCollection_List.hxx>
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
@@ -4396,6 +4401,42 @@ rust::String step_length_unit_native(rust::Str path) noexcept {
   }
 }
 
+std::unique_ptr<NativeOperationResult> import_iges_native(rust::Str path) noexcept {
+  return guarded([&] {
+    const std::string native_path(path.data(), path.size());
+    IGESControl_Reader reader;
+    if (reader.ReadFile(native_path.c_str()) != IFSelect_RetDone) {
+      return error_result(STATUS_INVALID_PARAMETER, "IGES reader could not read the source");
+    }
+    if (reader.TransferRoots() == 0) {
+      return error_result(STATUS_INVALID_SHAPE, "IGES source contains no transferable roots");
+    }
+    const TopoDS_Shape shape = reader.OneShape();
+    return success_result(shape, {}, count_subshapes(shape, TopAbs_SOLID) >= 2);
+  });
+}
+
+rust::String iges_length_unit_native(rust::Str path) noexcept {
+  try {
+    const std::string native_path(path.data(), path.size());
+    IGESControl_Reader reader;
+    if (reader.ReadFile(native_path.c_str()) != IFSelect_RetDone || reader.IGESModel().IsNull()) {
+      return rust::String();
+    }
+    const auto unit_name = reader.IGESModel()->GlobalSection().UnitName();
+    if (unit_name.IsNull()) {
+      return rust::String();
+    }
+    std::string unit(unit_name->ToCString());
+    std::transform(unit.begin(), unit.end(), unit.begin(), [](unsigned char character) {
+      return static_cast<char>(std::tolower(character));
+    });
+    return rust::String(unit);
+  } catch (...) {
+    return rust::String();
+  }
+}
+
 std::unique_ptr<NativeOperationResult> transform_body_native(
     const NativeOperationResult& body, rust::Slice<const double> matrix) noexcept {
   return guarded([&] {
@@ -4661,6 +4702,44 @@ rust::String export_step_native(
     return rust::String(failure.what());
   } catch (...) {
     return rust::String("Unknown native STEP export failure");
+  }
+}
+
+rust::String export_iges_native(
+    const NativeOperationResult& body, rust::Str path) noexcept {
+  try {
+    if (!body.valid() || body.impl().shape.IsNull()) {
+      return rust::String("Exact body is unavailable or invalid");
+    }
+    const std::string native_path(path.data(), path.size());
+    IGESControl_Writer writer("MM", 1);
+    std::size_t solid_count = 0;
+    for (TopExp_Explorer explorer(body.impl().shape, TopAbs_SOLID);
+         explorer.More(); explorer.Next()) {
+      const TopoDS_Shape located_solid = explorer.Current();
+      const gp_Trsf placement = located_solid.Location().Transformation();
+      const TopoDS_Shape local_solid = located_solid.Located(TopLoc_Location());
+      BRepBuilderAPI_Transform bake_placement(local_solid, placement, true);
+      if (!bake_placement.IsDone()
+          || !writer.AddShape(bake_placement.Shape())) {
+        return rust::String("IGES writer could not transfer an exact solid");
+      }
+      ++solid_count;
+    }
+    if (solid_count == 0) {
+      return rust::String("IGES export requires at least one exact solid");
+    }
+    writer.ComputeModel();
+    if (!writer.Write(native_path.c_str())) {
+      return rust::String("IGES writer could not write the target");
+    }
+    return rust::String();
+  } catch (const Standard_Failure& failure) {
+    return rust::String(standard_failure_message(failure));
+  } catch (const std::exception& failure) {
+    return rust::String(failure.what());
+  } catch (...) {
+    return rust::String("Unknown native IGES export failure");
   }
 }
 

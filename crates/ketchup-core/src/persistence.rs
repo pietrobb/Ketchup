@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -27,10 +27,17 @@ use crate::document::{
     InstancePath, InstancePathStep, LocalGroup, LocalGroupId, LocalGroupKey, LocalOccurrence,
     LocalOccurrenceId, LocalOccurrenceKey, LoftSection, MeshAuthority, MeshBodySpec, NodeId,
     Occurrence, OccurrenceId, ParameterPath, ParameterValueType, PersistentDimension,
-    PersistentDimensionId, PersistentDimensionTarget, ProductModel, ProfileSegment, Snapshot,
-    SpatialPathSegment, StableEdgeRole, StableFaceRole, Tag, TagId, Transform, UnitSystem,
+    PersistentDimensionId, PersistentDimensionTarget, ProductModel, ProfileSegment,
+    ProposalPrincipal, RevisionOrigin, Snapshot, SpatialPathSegment, StableEdgeRole,
+    StableFaceRole, Tag, TagId, Transform, UnitSystem,
 };
-use crate::drawing::{DrawingSheet, DrawingSheetId, DrawingSource, ORTHOGRAPHIC_DRAWING_SCHEMA_V1};
+use crate::drawing::{
+    DrawingAnnotations, DrawingDetailRegion, DrawingDimensionId, DrawingDimensionTolerance,
+    DrawingLinearDimension, DrawingMargins, DrawingNote, DrawingNoteId, DrawingPageOrientation,
+    DrawingPageSize, DrawingPageTemplate, DrawingScale, DrawingSectionPlane, DrawingSheet,
+    DrawingSheetId, DrawingSource, DrawingTitleBlock, DrawingViewFrame, MAX_DRAWING_NOTES,
+    ORTHOGRAPHIC_DRAWING_SCHEMA_V1, ORTHOGRAPHIC_DRAWING_SCHEMA_V2, OrthographicViewKind,
+};
 use crate::exact_product::{BODY_SUBSHAPE_REF_SCHEMA_V1, BodySubshapeRef, ReferenceStability};
 use crate::graph::{
     CanonicalOverride, DerivedIdentity, EvaluatorNodeKind, OverrideMergePolicy,
@@ -67,6 +74,9 @@ use crate::topology::TopologicalElementRef;
 const MAGIC: &[u8; 10] = b"KETCHUPDOC";
 const CONTAINER_MAGIC: &[u8; 10] = b"KETCHUPCTR";
 const CONTAINER_SCHEMA: u16 = 1;
+const HISTORY_MAGIC: &[u8; 10] = b"KETCHUPHST";
+const HISTORY_SCHEMA: u16 = 2;
+const MAX_HISTORY_REVISIONS: u32 = 4_096;
 const MESH_BODY_SCHEMA: u16 = 16;
 const SPACE_CLEARANCE_SCHEMA: u16 = 17;
 const POCKET_SCHEMA: u16 = 18;
@@ -105,7 +115,18 @@ const AXIAL_ATTACHMENT_SCHEMA: u16 = 51;
 const FREE_WORKPLANE_SCHEMA: u16 = 52;
 const OCCURRENCE_COLOR_SCHEMA: u16 = 53;
 const GLB_IMPORT_SCHEMA: u16 = 54;
-pub const CURRENT_SCHEMA: u16 = GLB_IMPORT_SCHEMA;
+const DRAWING_PAGE_CONTRACT_SCHEMA: u16 = 55;
+const DRAWING_VIEW_CONTRACT_SCHEMA: u16 = 56;
+const DRAWING_SECTION_CONTRACT_SCHEMA: u16 = 57;
+const DRAWING_DETAIL_CONTRACT_SCHEMA: u16 = 58;
+const DRAWING_DIMENSION_CONTRACT_SCHEMA: u16 = 59;
+const DRAWING_TOLERANCE_CONTRACT_SCHEMA: u16 = 60;
+const DRAWING_ANNOTATION_CONTRACT_SCHEMA: u16 = 61;
+const SKETCH_PROJECTION_SCHEMA: u16 = 62;
+const SKETCH_CONSTRUCTION_SCHEMA: u16 = 63;
+const HELICAL_ASSEMBLY_JOINT_SCHEMA: u16 = 64;
+const IGES_IMPORT_SCHEMA: u16 = 65;
+pub const CURRENT_SCHEMA: u16 = IGES_IMPORT_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -157,6 +178,13 @@ struct ProductSchemaCapabilities {
     workplane_sketch: bool,
     assembly_contract: bool,
     orthographic_drawing: bool,
+    drawing_page_contract: bool,
+    drawing_view_contract: bool,
+    drawing_section_contract: bool,
+    drawing_detail_contract: bool,
+    drawing_dimension_contract: bool,
+    drawing_tolerance_contract: bool,
+    drawing_annotation_contract: bool,
     body_contract: bool,
     body_consumption: bool,
     body_feature_suppression: bool,
@@ -175,6 +203,10 @@ struct ProductSchemaCapabilities {
     free_workplanes: bool,
     occurrence_colors: bool,
     glb_import: bool,
+    iges_import: bool,
+    sketch_projection: bool,
+    sketch_construction: bool,
+    helical_assembly_joints: bool,
 }
 
 impl ProductSchemaCapabilities {
@@ -211,6 +243,13 @@ impl ProductSchemaCapabilities {
         workplane_sketch: false,
         assembly_contract: false,
         orthographic_drawing: false,
+        drawing_page_contract: false,
+        drawing_view_contract: false,
+        drawing_section_contract: false,
+        drawing_detail_contract: false,
+        drawing_dimension_contract: false,
+        drawing_tolerance_contract: false,
+        drawing_annotation_contract: false,
         body_contract: false,
         body_consumption: false,
         body_feature_suppression: false,
@@ -229,6 +268,10 @@ impl ProductSchemaCapabilities {
         free_workplanes: false,
         occurrence_colors: false,
         glb_import: false,
+        iges_import: false,
+        sketch_projection: false,
+        sketch_construction: false,
+        helical_assembly_joints: false,
     };
 
     const fn current(schema: u16) -> Self {
@@ -265,6 +308,13 @@ impl ProductSchemaCapabilities {
             workplane_sketch: schema >= WORKPLANE_SKETCH_SCHEMA,
             assembly_contract: schema >= ASSEMBLY_CONTRACT_SCHEMA,
             orthographic_drawing: schema >= ORTHOGRAPHIC_DRAWING_SCHEMA,
+            drawing_page_contract: schema >= DRAWING_PAGE_CONTRACT_SCHEMA,
+            drawing_view_contract: schema >= DRAWING_VIEW_CONTRACT_SCHEMA,
+            drawing_section_contract: schema >= DRAWING_SECTION_CONTRACT_SCHEMA,
+            drawing_detail_contract: schema >= DRAWING_DETAIL_CONTRACT_SCHEMA,
+            drawing_dimension_contract: schema >= DRAWING_DIMENSION_CONTRACT_SCHEMA,
+            drawing_tolerance_contract: schema >= DRAWING_TOLERANCE_CONTRACT_SCHEMA,
+            drawing_annotation_contract: schema >= DRAWING_ANNOTATION_CONTRACT_SCHEMA,
             body_contract: schema >= BODY_CONTRACT_SCHEMA,
             body_consumption: schema >= BODY_CONSUMPTION_SCHEMA,
             body_feature_suppression: schema >= BODY_FEATURE_SUPPRESSION_SCHEMA,
@@ -283,6 +333,10 @@ impl ProductSchemaCapabilities {
             free_workplanes: schema >= FREE_WORKPLANE_SCHEMA,
             occurrence_colors: schema >= OCCURRENCE_COLOR_SCHEMA,
             glb_import: schema >= GLB_IMPORT_SCHEMA,
+            iges_import: schema >= IGES_IMPORT_SCHEMA,
+            sketch_projection: schema >= SKETCH_PROJECTION_SCHEMA,
+            sketch_construction: schema >= SKETCH_CONSTRUCTION_SCHEMA,
+            helical_assembly_joints: schema >= HELICAL_ASSEMBLY_JOINT_SCHEMA,
         }
     }
 }
@@ -300,7 +354,8 @@ const MAX_MANIFEST_BYTES: usize = MANIFEST_BYTES;
 const MAX_PAYLOAD_BYTES: usize = MAX_FILE_BYTES - HEADER_BYTES - MANIFEST_BYTES;
 const MAX_STRING_BYTES: usize = 1024 * 1024;
 const MAX_COLLECTION_ITEMS: u32 = 500_000;
-const MAX_CONTAINER_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_NATIVE_DOCUMENT_BYTES: usize = 64 * 1024 * 1024;
+const MAX_CONTAINER_BYTES: usize = MAX_NATIVE_DOCUMENT_BYTES;
 const MAX_CONTAINER_ENTRIES: u32 = 4_096;
 const MAX_CONTAINER_PATH_BYTES: usize = 1_024;
 const MAX_SIDECAR_BYTES: usize = 32 * 1024 * 1024;
@@ -663,6 +718,10 @@ impl LoadOutcome {
 
 #[must_use]
 pub fn save(snapshot: &Snapshot) -> Vec<u8> {
+    save_with_schema(snapshot, CURRENT_SCHEMA)
+}
+
+fn save_with_schema(snapshot: &Snapshot, schema: u16) -> Vec<u8> {
     let product = snapshot.product();
     let mut payload = Vec::new();
     push_u64(&mut payload, snapshot.revision_id());
@@ -776,7 +835,11 @@ pub fn save(snapshot: &Snapshot) -> Vec<u8> {
     }
     push_u32(&mut payload, product.drawing_sheets.len() as u32);
     for sheet in product.drawing_sheets.values() {
-        write_drawing_sheet(&mut payload, sheet);
+        write_drawing_sheet(
+            &mut payload,
+            sheet,
+            ProductSchemaCapabilities::current(schema),
+        );
     }
     push_u32(&mut payload, product.definitions.len() as u32);
     for definition in product.definitions.values() {
@@ -854,7 +917,7 @@ pub fn save(snapshot: &Snapshot) -> Vec<u8> {
 
     let mut bytes = Vec::new();
     bytes.extend_from_slice(MAGIC);
-    push_u16(&mut bytes, CURRENT_SCHEMA);
+    push_u16(&mut bytes, schema);
     push_u32(&mut bytes, manifest.len() as u32);
     bytes.extend_from_slice(&manifest);
     bytes.extend_from_slice(&payload);
@@ -876,13 +939,114 @@ fn imported_source_blob_hashes(snapshot: &Snapshot) -> BTreeSet<String> {
         .collect()
 }
 
+fn write_revision_principal(bytes: &mut Vec<u8>, principal: ProposalPrincipal) {
+    match principal {
+        ProposalPrincipal::ManualClient => push_u8(bytes, 0),
+        ProposalPrincipal::Human(id) => {
+            push_u8(bytes, 1);
+            push_u64(bytes, id);
+        }
+        ProposalPrincipal::LocalAssistant => push_u8(bytes, 2),
+        ProposalPrincipal::Plugin(id) => {
+            push_u8(bytes, 3);
+            push_u64(bytes, id);
+        }
+    }
+}
+
+fn write_revision_origin(bytes: &mut Vec<u8>, origin: RevisionOrigin) {
+    match origin {
+        RevisionOrigin::Initial => push_u8(bytes, 0),
+        RevisionOrigin::Principal(principal) => {
+            push_u8(bytes, 1);
+            write_revision_principal(bytes, principal);
+        }
+        RevisionOrigin::Rollback {
+            principal,
+            target_revision,
+        } => {
+            push_u8(bytes, 2);
+            write_revision_principal(bytes, principal);
+            push_u64(bytes, target_revision);
+        }
+    }
+}
+
+fn encode_revision_history(document: &DocumentStore) -> Result<Vec<u8>, PersistenceError> {
+    let count =
+        u32::try_from(document.revision_count()).map_err(|_| PersistenceError::ResourceLimit)?;
+    if count == 0 || count > MAX_HISTORY_REVISIONS {
+        return Err(PersistenceError::ResourceLimit);
+    }
+    let cursor =
+        u32::try_from(document.history_cursor()).map_err(|_| PersistenceError::ResourceLimit)?;
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(HISTORY_MAGIC);
+    push_u16(&mut bytes, HISTORY_SCHEMA);
+    push_u32(&mut bytes, count);
+    push_u32(&mut bytes, cursor);
+    push_u64(&mut bytes, document.next_revision_id());
+    for revision in document.revision_history() {
+        let snapshot = save(revision.snapshot());
+        push_u64(&mut bytes, revision.id());
+        push_string(&mut bytes, revision.batch_digest());
+        write_revision_origin(&mut bytes, revision.origin());
+        if let Some(checkpoint) = revision.checkpoint() {
+            push_u8(&mut bytes, 1);
+            push_string(&mut bytes, checkpoint);
+        } else {
+            push_u8(&mut bytes, 0);
+        }
+        push_u64(&mut bytes, snapshot.len() as u64);
+        bytes.extend_from_slice(&crate::graph::sha256_bytes(&snapshot));
+        bytes.extend_from_slice(&snapshot);
+        if bytes.len() > MAX_SIDECAR_BYTES {
+            return Err(PersistenceError::ResourceLimit);
+        }
+    }
+    Ok(bytes)
+}
+
 pub fn save_container(
     snapshot: &Snapshot,
     container_data: &ContainerData,
 ) -> Result<Vec<u8>, PersistenceError> {
+    save_container_entries(
+        snapshot,
+        container_data,
+        imported_source_blob_hashes(snapshot),
+        None,
+    )
+}
+
+pub fn save_document_store(
+    document: &DocumentStore,
+    container_data: &ContainerData,
+) -> Result<Vec<u8>, PersistenceError> {
+    let snapshot = document.current();
+    let mut imported_sources = BTreeSet::new();
+    for revision in document.revision_history() {
+        imported_sources.extend(imported_source_blob_hashes(revision.snapshot()));
+    }
+    save_container_entries(
+        &snapshot,
+        container_data,
+        imported_sources,
+        Some(encode_revision_history(document)?),
+    )
+}
+
+fn save_container_entries(
+    snapshot: &Snapshot,
+    container_data: &ContainerData,
+    imported_sources: BTreeSet<String>,
+    revision_history: Option<Vec<u8>>,
+) -> Result<Vec<u8>, PersistenceError> {
     let mut entries = BTreeMap::<String, (bool, Vec<u8>)>::new();
     entries.insert("document.bin".to_owned(), (true, save(snapshot)));
-    let imported_sources = imported_source_blob_hashes(snapshot);
+    if let Some(revision_history) = revision_history {
+        entries.insert("history.bin".to_owned(), (true, revision_history));
+    }
     if imported_sources
         .iter()
         .any(|hash| !container_data.blobs.contains_key(hash))
@@ -1480,6 +1644,21 @@ fn write_sketch(bytes: &mut Vec<u8>, spec: &SketchSpec) {
                 write_sketch_point_ref(bytes, *point);
                 push_u64(bytes, curve.0);
             }
+            SketchConstraintKind::Projection {
+                entity,
+                source_feature,
+                source_entity,
+                ..
+            } => {
+                push_u8(bytes, 17);
+                push_u64(bytes, entity.0);
+                push_u64(bytes, source_feature.0);
+                push_u64(bytes, source_entity.0);
+            }
+            SketchConstraintKind::Construction { entity } => {
+                push_u8(bytes, 18);
+                push_u64(bytes, entity.0);
+            }
         }
     }
 }
@@ -1993,6 +2172,18 @@ fn write_assembly_joint(bytes: &mut Vec<u8>, joint: &AssemblyJoint) {
             write_assembly_joint_limits(bytes, limits);
             push_u64(bytes, position_mm.to_bits());
         }
+        AssemblyJointKind::Helical {
+            axis,
+            limits,
+            lead_mm_per_revolution,
+            position_degrees,
+        } => {
+            push_u8(bytes, 4);
+            write_assembly_joint_axis(bytes, axis);
+            write_assembly_joint_limits(bytes, limits);
+            push_u64(bytes, lead_mm_per_revolution.to_bits());
+            push_u64(bytes, position_degrees.to_bits());
+        }
     }
 }
 
@@ -2183,8 +2374,26 @@ fn write_assembly_motion_study(bytes: &mut Vec<u8>, study: &AssemblyMotionStudy)
     }
 }
 
-fn write_drawing_sheet(bytes: &mut Vec<u8>, sheet: &DrawingSheet) {
-    push_string(bytes, sheet.schema());
+fn write_drawing_sheet(
+    bytes: &mut Vec<u8>,
+    sheet: &DrawingSheet,
+    capabilities: ProductSchemaCapabilities,
+) {
+    let page_contract = capabilities.drawing_page_contract;
+    let view_contract = capabilities.drawing_view_contract;
+    let section_contract = capabilities.drawing_section_contract;
+    let detail_contract = capabilities.drawing_detail_contract;
+    let dimension_contract = capabilities.drawing_dimension_contract;
+    let tolerance_contract = capabilities.drawing_tolerance_contract;
+    let annotation_contract = capabilities.drawing_annotation_contract;
+    push_string(
+        bytes,
+        if page_contract {
+            sheet.schema()
+        } else {
+            ORTHOGRAPHIC_DRAWING_SCHEMA_V1
+        },
+    );
     push_u64(bytes, sheet.id().0);
     push_string(bytes, sheet.name());
     match sheet.source() {
@@ -2197,6 +2406,140 @@ fn write_drawing_sheet(bytes: &mut Vec<u8>, sheet: &DrawingSheet) {
             write_ids(bytes, occurrence_ids.iter().map(|id| id.0));
         }
     }
+    if !page_contract {
+        return;
+    }
+    let page = sheet.page();
+    push_u8(
+        bytes,
+        match page.size() {
+            DrawingPageSize::A0 => 1,
+            DrawingPageSize::A1 => 2,
+            DrawingPageSize::A2 => 3,
+            DrawingPageSize::A3 => 4,
+            DrawingPageSize::A4 => 5,
+        },
+    );
+    push_u8(
+        bytes,
+        match page.orientation() {
+            DrawingPageOrientation::Portrait => 1,
+            DrawingPageOrientation::Landscape => 2,
+        },
+    );
+    push_u32(bytes, page.scale().numerator());
+    push_u32(bytes, page.scale().denominator());
+    for margin in page.margins().values_mm() {
+        push_u16(bytes, margin);
+    }
+    let title_block = sheet.title_block();
+    push_string(bytes, title_block.title());
+    push_string(bytes, title_block.drawing_number());
+    push_string(bytes, title_block.revision());
+    push_string(bytes, title_block.author());
+    if !view_contract {
+        return;
+    }
+    push_u32(bytes, sheet.views().len() as u32);
+    for view in sheet.views() {
+        match view {
+            OrthographicViewKind::Front => push_u8(bytes, 1),
+            OrthographicViewKind::Top => push_u8(bytes, 2),
+            OrthographicViewKind::Right => push_u8(bytes, 3),
+            OrthographicViewKind::Isometric => push_u8(bytes, 4),
+            OrthographicViewKind::Auxiliary(frame) => {
+                push_u8(bytes, 5);
+                for component in frame
+                    .horizontal()
+                    .into_iter()
+                    .chain(frame.vertical())
+                    .chain(frame.direction())
+                {
+                    push_u64(bytes, component.to_bits());
+                }
+            }
+            OrthographicViewKind::Section(section) => {
+                assert!(section_contract, "section views require schema 57");
+                push_u8(bytes, 6);
+                let frame = section.frame();
+                for component in frame
+                    .horizontal()
+                    .into_iter()
+                    .chain(frame.vertical())
+                    .chain(frame.direction())
+                {
+                    push_u64(bytes, component.to_bits());
+                }
+                push_u64(bytes, section.depth_mm().to_bits());
+            }
+            OrthographicViewKind::Detail(detail) => {
+                assert!(detail_contract, "detail views require schema 58");
+                push_u8(bytes, 7);
+                let frame = detail.frame();
+                for component in frame
+                    .horizontal()
+                    .into_iter()
+                    .chain(frame.vertical())
+                    .chain(frame.direction())
+                {
+                    push_u64(bytes, component.to_bits());
+                }
+                for coordinate in detail.center_mm() {
+                    push_u64(bytes, coordinate.to_bits());
+                }
+                push_u64(bytes, detail.radius_mm().to_bits());
+                push_u32(bytes, detail.magnification().numerator());
+                push_u32(bytes, detail.magnification().denominator());
+            }
+        }
+    }
+    if !dimension_contract {
+        assert!(
+            sheet.linear_dimensions().is_empty(),
+            "drawing dimensions require schema 59"
+        );
+        return;
+    }
+    push_u32(bytes, sheet.linear_dimensions().len() as u32);
+    for dimension in sheet.linear_dimensions() {
+        push_u64(bytes, dimension.id().0);
+        push_string(bytes, dimension.view_stable_name());
+        push_string(bytes, dimension.source_line_id());
+        push_u64(bytes, dimension.offset_page_mm().to_bits());
+        match dimension.tolerance() {
+            DrawingDimensionTolerance::None => push_u8(bytes, 0),
+            DrawingDimensionTolerance::Symmetric { deviation_bits } => {
+                assert!(tolerance_contract, "drawing tolerances require schema 60");
+                push_u8(bytes, 1);
+                push_u64(bytes, deviation_bits);
+            }
+            DrawingDimensionTolerance::Bilateral {
+                upper_bits,
+                lower_bits,
+            } => {
+                assert!(tolerance_contract, "drawing tolerances require schema 60");
+                push_u8(bytes, 2);
+                push_u64(bytes, upper_bits);
+                push_u64(bytes, lower_bits);
+            }
+        }
+    }
+    if !annotation_contract {
+        assert!(
+            !sheet.title_block().is_parametric() && sheet.notes().is_empty(),
+            "drawing annotations require schema 61"
+        );
+        return;
+    }
+    push_u8(bytes, u8::from(sheet.title_block().is_parametric()));
+    push_u32(bytes, sheet.notes().len() as u32);
+    for note in sheet.notes() {
+        push_u64(bytes, note.id().0);
+        for coordinate in note.position_page_mm() {
+            push_u64(bytes, coordinate.to_bits());
+        }
+        push_string(bytes, note.text_template());
+    }
 }
 
 fn write_groups(bytes: &mut Vec<u8>, product: &ProductModel) {
@@ -2207,6 +2550,25 @@ fn write_groups(bytes: &mut Vec<u8>, product: &ProductModel) {
         push_transform(bytes, group.transform());
         push_optional_id(bytes, group.parent().map(|id| id.0));
     }
+}
+
+pub fn read_native_document_file(path: impl AsRef<Path>) -> Result<Vec<u8>, FilePersistenceError> {
+    let path = path.as_ref();
+    let file = fs::File::open(path)?;
+    if file.metadata()?.len() > MAX_NATIVE_DOCUMENT_BYTES as u64 {
+        return Err(FilePersistenceError::Format(
+            PersistenceError::ResourceLimit,
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_NATIVE_DOCUMENT_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_NATIVE_DOCUMENT_BYTES {
+        return Err(FilePersistenceError::Format(
+            PersistenceError::ResourceLimit,
+        ));
+    }
+    Ok(bytes)
 }
 
 pub fn save_atomic(
@@ -2221,15 +2583,34 @@ pub fn save_atomic_with_container(
     snapshot: &Snapshot,
     container_data: &ContainerData,
 ) -> Result<(), FilePersistenceError> {
-    let path = path.as_ref();
     let bytes = save_container(snapshot, container_data).map_err(FilePersistenceError::Format)?;
-    load(&bytes).map_err(FilePersistenceError::Format)?;
-    if let Ok(previous) = fs::read(path)
-        && load(&previous).is_ok()
-    {
-        write_atomic(&recovery_path(path), &previous)?;
+    save_atomic_bytes(path.as_ref(), &bytes)
+}
+
+pub fn save_atomic_document_store_with_container(
+    path: impl AsRef<Path>,
+    document: &DocumentStore,
+    container_data: &ContainerData,
+) -> Result<(), FilePersistenceError> {
+    let bytes =
+        save_document_store(document, container_data).map_err(FilePersistenceError::Format)?;
+    save_atomic_bytes(path.as_ref(), &bytes)
+}
+
+fn save_atomic_bytes(path: &Path, bytes: &[u8]) -> Result<(), FilePersistenceError> {
+    load(bytes).map_err(FilePersistenceError::Format)?;
+    match read_native_document_file(path) {
+        Ok(previous) if load(&previous).is_ok() => {
+            write_atomic(&recovery_path(path), &previous)?;
+        }
+        Err(FilePersistenceError::Format(PersistenceError::ResourceLimit)) => {
+            return Err(FilePersistenceError::Format(
+                PersistenceError::ResourceLimit,
+            ));
+        }
+        _ => {}
     }
-    write_atomic(path, &bytes)
+    write_atomic(path, bytes)
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), FilePersistenceError> {
@@ -2252,32 +2633,87 @@ fn recovery_path(path: &Path) -> PathBuf {
     PathBuf::from(recovery)
 }
 
+pub struct LoadedFile {
+    outcome: LoadOutcome,
+    source_path: PathBuf,
+    source_bytes: Vec<u8>,
+}
+
+impl LoadedFile {
+    #[must_use]
+    pub fn outcome(&self) -> &LoadOutcome {
+        &self.outcome
+    }
+
+    #[must_use]
+    pub fn source_path(&self) -> &Path {
+        &self.source_path
+    }
+
+    #[must_use]
+    pub fn source_bytes(&self) -> &[u8] {
+        &self.source_bytes
+    }
+
+    #[must_use]
+    pub fn into_parts(self) -> (LoadOutcome, PathBuf, Vec<u8>) {
+        (self.outcome, self.source_path, self.source_bytes)
+    }
+}
+
 pub fn load_file(path: impl AsRef<Path>) -> Result<LoadOutcome, FilePersistenceError> {
+    Ok(load_file_with_source(path)?.outcome)
+}
+
+pub fn load_file_with_source(path: impl AsRef<Path>) -> Result<LoadedFile, FilePersistenceError> {
     let path = path.as_ref();
-    match fs::read(path) {
+    match read_native_document_file(path) {
         Ok(bytes) => match load(&bytes) {
-            Ok(outcome) => Ok(outcome),
+            Ok(outcome) => Ok(LoadedFile {
+                outcome,
+                source_path: path.to_owned(),
+                source_bytes: bytes,
+            }),
             Err(primary_error @ PersistenceError::LegacyFeatureRequiresMigration { .. }) => {
                 Err(FilePersistenceError::Format(primary_error))
             }
             Err(primary_error) => {
-                try_load_recovery(path).ok_or(FilePersistenceError::Format(primary_error))
+                try_load_recovery(path)?.ok_or(FilePersistenceError::Format(primary_error))
             }
         },
-        Err(primary_error) => {
-            try_load_recovery(path).ok_or(FilePersistenceError::Io(primary_error))
+        Err(error @ FilePersistenceError::Format(PersistenceError::ResourceLimit)) => Err(error),
+        Err(FilePersistenceError::Io(primary_error)) => {
+            try_load_recovery(path)?.ok_or(FilePersistenceError::Io(primary_error))
         }
+        Err(FilePersistenceError::Format(error)) => Err(FilePersistenceError::Format(error)),
     }
 }
 
-fn try_load_recovery(path: &Path) -> Option<LoadOutcome> {
-    let bytes = fs::read(recovery_path(path)).ok()?;
-    let mut outcome = load(&bytes).ok()?;
+fn try_load_recovery(path: &Path) -> Result<Option<LoadedFile>, FilePersistenceError> {
+    let source_path = recovery_path(path);
+    let bytes = match read_native_document_file(&source_path) {
+        Ok(bytes) => bytes,
+        Err(error @ FilePersistenceError::Format(PersistenceError::ResourceLimit)) => {
+            return Err(error);
+        }
+        Err(FilePersistenceError::Io(_)) => return Ok(None),
+        Err(FilePersistenceError::Format(error)) => {
+            return Err(FilePersistenceError::Format(error));
+        }
+    };
+    let mut outcome = match load(&bytes) {
+        Ok(outcome) => outcome,
+        Err(_) => return Ok(None),
+    };
     match &mut outcome {
         LoadOutcome::Editable { audit, .. } => audit.recovered_from_backup = true,
         LoadOutcome::ReviewOnly(candidate) => candidate.audit.recovered_from_backup = true,
     }
-    Some(outcome)
+    Ok(Some(LoadedFile {
+        outcome,
+        source_path,
+        source_bytes: bytes,
+    }))
 }
 
 pub fn load(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
@@ -2332,6 +2768,11 @@ fn load_container(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
     if !document_required {
         return Err(PersistenceError::DocumentEntryNotRequired);
     }
+    let revision_history = match entries.remove("history.bin") {
+        Some((true, content)) => Some(content),
+        Some((false, _)) => return Err(PersistenceError::HistoryEntryNotRequired),
+        None => None,
+    };
     let mut container_data = ContainerData::default();
     for (path, (required, content)) in entries {
         if let Some(hash) = path.strip_prefix("blobs/") {
@@ -2359,7 +2800,172 @@ fn load_container(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {
             return Err(PersistenceError::UnsupportedContainerEntry(path));
         }
     }
-    load_document(&document, container_data)
+    let history_container_data = ContainerData {
+        blobs: container_data.blobs.clone(),
+        imported_source_blobs: Arc::new(BTreeSet::new()),
+        extensions: BTreeMap::new(),
+    };
+    let mut outcome = load_document(&document, container_data)?;
+    if let Some(revision_history) = revision_history {
+        let restored = decode_revision_history(
+            &revision_history,
+            &outcome.snapshot(),
+            &history_container_data,
+        )?;
+        if let LoadOutcome::Editable { document, .. } = &mut outcome {
+            *document = restored;
+        }
+    }
+    Ok(outcome)
+}
+
+fn read_revision_principal(reader: &mut Reader<'_>) -> Result<ProposalPrincipal, PersistenceError> {
+    match reader.u8()? {
+        0 => Ok(ProposalPrincipal::ManualClient),
+        1 => Ok(ProposalPrincipal::Human(reader.u64()?)),
+        2 => Ok(ProposalPrincipal::LocalAssistant),
+        3 => Ok(ProposalPrincipal::Plugin(reader.u64()?)),
+        _ => Err(PersistenceError::InvalidRevisionHistory),
+    }
+}
+
+fn read_revision_origin(reader: &mut Reader<'_>) -> Result<RevisionOrigin, PersistenceError> {
+    match reader.u8()? {
+        0 => Ok(RevisionOrigin::Initial),
+        1 => Ok(RevisionOrigin::Principal(read_revision_principal(reader)?)),
+        2 => Ok(RevisionOrigin::Rollback {
+            principal: read_revision_principal(reader)?,
+            target_revision: reader.u64()?,
+        }),
+        _ => Err(PersistenceError::InvalidRevisionHistory),
+    }
+}
+
+fn decode_revision_history(
+    bytes: &[u8],
+    expected_current: &Snapshot,
+    container_data: &ContainerData,
+) -> Result<DocumentStore, PersistenceError> {
+    if bytes.len() > MAX_SIDECAR_BYTES {
+        return Err(PersistenceError::ResourceLimit);
+    }
+    let mut reader = Reader::new(bytes);
+    if reader.take(HISTORY_MAGIC.len())? != HISTORY_MAGIC {
+        return Err(PersistenceError::InvalidHistoryMagic);
+    }
+    let schema = reader.u16()?;
+    if schema != 1 && schema != HISTORY_SCHEMA {
+        return Err(PersistenceError::UnsupportedHistorySchema(schema));
+    }
+    let count = reader.count_with_limit(MAX_HISTORY_REVISIONS)? as usize;
+    let cursor = reader.u32()? as usize;
+    let next_revision_id = reader.u64()?;
+    if count == 0 || cursor >= count {
+        return Err(PersistenceError::InvalidRevisionHistory);
+    }
+
+    let mut revisions = Vec::with_capacity(count);
+    let mut previous_revision_id = None;
+    let mut document_id = None;
+    let mut checkpoint_names = BTreeSet::new();
+    for index in 0..count {
+        let revision_id = reader.u64()?;
+        if previous_revision_id.is_some_and(|previous| revision_id <= previous) {
+            return Err(PersistenceError::InvalidRevisionHistory);
+        }
+        let batch_digest = reader.string()?;
+        if !batch_digest.is_empty()
+            && (batch_digest.len() != 16
+                || !batch_digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+        {
+            return Err(PersistenceError::InvalidRevisionHistory);
+        }
+        let (origin, checkpoint) = if schema == 1 {
+            (
+                if index == 0 {
+                    RevisionOrigin::Initial
+                } else {
+                    RevisionOrigin::Principal(ProposalPrincipal::ManualClient)
+                },
+                None,
+            )
+        } else {
+            let origin = read_revision_origin(&mut reader)?;
+            let checkpoint = match reader.u8()? {
+                0 => None,
+                1 => Some(reader.string()?),
+                _ => return Err(PersistenceError::InvalidRevisionHistory),
+            };
+            (origin, checkpoint)
+        };
+        if (index > 0 && matches!(origin, RevisionOrigin::Initial))
+            || matches!(origin, RevisionOrigin::Rollback { target_revision, .. } if target_revision >= revision_id)
+            || matches!(
+                origin,
+                RevisionOrigin::Principal(
+                    ProposalPrincipal::Human(0) | ProposalPrincipal::Plugin(0)
+                )
+            )
+        {
+            return Err(PersistenceError::InvalidRevisionHistory);
+        }
+        if let Some(name) = checkpoint.as_ref()
+            && (name.is_empty()
+                || name.len() > 80
+                || name.trim() != name
+                || name.chars().any(char::is_control)
+                || !checkpoint_names.insert(name.clone()))
+        {
+            return Err(PersistenceError::InvalidRevisionHistory);
+        }
+        let length =
+            usize::try_from(reader.u64()?).map_err(|_| PersistenceError::LengthOverflow)?;
+        if length > MAX_FILE_BYTES {
+            return Err(PersistenceError::ResourceLimit);
+        }
+        let checksum: [u8; 32] = reader
+            .take(32)?
+            .try_into()
+            .map_err(|_| PersistenceError::Truncated)?;
+        let encoded_snapshot = reader.take(length)?;
+        if crate::graph::sha256_bytes(encoded_snapshot) != checksum {
+            return Err(PersistenceError::HistoryChecksumMismatch);
+        }
+        let loaded = load_document(encoded_snapshot, container_data.clone())?;
+        if loaded.source_schema() != CURRENT_SCHEMA || !loaded.is_editable() {
+            return Err(PersistenceError::InvalidRevisionHistory);
+        }
+        let snapshot = loaded
+            .into_editable()
+            .map_err(|_| PersistenceError::InvalidRevisionHistory)?
+            .current();
+        if snapshot.revision_id() != revision_id || save(&snapshot) != encoded_snapshot {
+            return Err(PersistenceError::InvalidRevisionHistory);
+        }
+        if document_id.is_some_and(|id| id != snapshot.document_id()) {
+            return Err(PersistenceError::InvalidRevisionHistory);
+        }
+        document_id = Some(snapshot.document_id());
+        previous_revision_id = Some(revision_id);
+        revisions.push((snapshot, batch_digest, origin, checkpoint));
+    }
+    if !reader.is_finished()
+        || previous_revision_id.is_none_or(|revision_id| next_revision_id <= revision_id)
+    {
+        return Err(PersistenceError::InvalidRevisionHistory);
+    }
+    let current = &revisions[cursor].0;
+    if current.document_id() != expected_current.document_id()
+        || current.revision_id() != expected_current.revision_id()
+        || current.canonical_digest() != expected_current.canonical_digest()
+        || save(current) != save(expected_current)
+    {
+        return Err(PersistenceError::InvalidRevisionHistory);
+    }
+    DocumentStore::from_revision_history(revisions, cursor, next_revision_id)
+        .map_err(PersistenceError::InvalidCanonicalData)
 }
 
 fn load_document(
@@ -2428,6 +3034,17 @@ fn load_document(
             | PLANAR_FACE_ATTACHMENT_SCHEMA
             | FREE_WORKPLANE_SCHEMA
             | AXIAL_ATTACHMENT_SCHEMA
+            | OCCURRENCE_COLOR_SCHEMA
+            | GLB_IMPORT_SCHEMA
+            | DRAWING_PAGE_CONTRACT_SCHEMA
+            | DRAWING_VIEW_CONTRACT_SCHEMA
+            | DRAWING_SECTION_CONTRACT_SCHEMA
+            | DRAWING_DETAIL_CONTRACT_SCHEMA
+            | DRAWING_DIMENSION_CONTRACT_SCHEMA
+            | DRAWING_TOLERANCE_CONTRACT_SCHEMA
+            | SKETCH_PROJECTION_SCHEMA
+            | SKETCH_CONSTRUCTION_SCHEMA
+            | HELICAL_ASSEMBLY_JOINT_SCHEMA
             | CURRENT_SCHEMA
     ) {
         return Err(PersistenceError::UnsupportedSchema(schema));
@@ -3139,6 +3756,7 @@ fn write_import_receipt(bytes: &mut Vec<u8>, receipt: &ImportReceipt) {
             ImportFormat::Step => 3,
             ImportFormat::SketchupScene => 4,
             ImportFormat::Glb => 5,
+            ImportFormat::Iges => 6,
         },
     );
     bytes.extend_from_slice(receipt.source_sha256());
@@ -3209,6 +3827,7 @@ fn read_import_receipt(
     reader: &mut Reader<'_>,
     sketchup_scene: bool,
     glb_import: bool,
+    iges_import: bool,
 ) -> Result<ImportReceipt, PersistenceError> {
     let id = ImportId(reader.u64()?);
     let format = match reader.u8()? {
@@ -3217,6 +3836,7 @@ fn read_import_receipt(
         3 => ImportFormat::Step,
         4 if sketchup_scene => ImportFormat::SketchupScene,
         5 if glb_import => ImportFormat::Glb,
+        6 if iges_import => ImportFormat::Iges,
         value => return Err(PersistenceError::InvalidImportFormat(value)),
     };
     let source_sha256 = reader
@@ -3351,6 +3971,8 @@ fn read_sketch(
     reader: &mut Reader<'_>,
     full_constraint_vocabulary: bool,
     cubic_bezier_sketch: bool,
+    sketch_projection: bool,
+    sketch_construction: bool,
 ) -> Result<SketchSpec, PersistenceError> {
     let workplane = FeatureId(reader.u64()?);
     let point = |reader: &mut Reader<'_>| -> Result<[f64; 2], PersistenceError> {
@@ -3454,6 +4076,25 @@ fn read_sketch(
             16 if full_constraint_vocabulary => SketchConstraintKind::PointOnCurve {
                 point: read_sketch_point_ref(reader, cubic_bezier_sketch)?,
                 curve: SketchEntityId(reader.u64()?),
+            },
+            17 if sketch_projection => {
+                let entity = SketchEntityId(reader.u64()?);
+                let source_feature = FeatureId(reader.u64()?);
+                let source_entity = SketchEntityId(reader.u64()?);
+                let target = entities
+                    .iter()
+                    .find(|candidate| candidate.id() == entity)
+                    .cloned()
+                    .ok_or(PersistenceError::InvalidFeatureKind(17))?;
+                SketchConstraintKind::Projection {
+                    entity,
+                    source_feature,
+                    source_entity,
+                    target: Box::new(target),
+                }
+            }
+            18 if sketch_construction => SketchConstraintKind::Construction {
+                entity: SketchEntityId(reader.u64()?),
             },
             value => return Err(PersistenceError::InvalidFeatureKind(value)),
         };
@@ -3563,7 +4204,10 @@ fn read_assembly_mate(
     })
 }
 
-fn read_assembly_joint(reader: &mut Reader<'_>) -> Result<AssemblyJoint, PersistenceError> {
+fn read_assembly_joint(
+    reader: &mut Reader<'_>,
+    allow_helical: bool,
+) -> Result<AssemblyJoint, PersistenceError> {
     let schema = reader.string()?;
     if schema != ASSEMBLY_JOINT_SCHEMA_V1 {
         return Err(PersistenceError::InvalidAssemblyJoint);
@@ -3582,6 +4226,12 @@ fn read_assembly_joint(reader: &mut Reader<'_>) -> Result<AssemblyJoint, Persist
             axis: read_assembly_joint_axis(reader)?,
             limits: read_assembly_joint_limits(reader)?,
             position_mm: f64::from_bits(reader.u64()?),
+        },
+        4 if allow_helical => AssemblyJointKind::Helical {
+            axis: read_assembly_joint_axis(reader)?,
+            limits: read_assembly_joint_limits(reader)?,
+            lead_mm_per_revolution: f64::from_bits(reader.u64()?),
+            position_degrees: f64::from_bits(reader.u64()?),
         },
         _ => return Err(PersistenceError::InvalidAssemblyJoint),
     };
@@ -3795,11 +4445,45 @@ fn read_assembly_motion_study(
     })
 }
 
-fn read_drawing_sheet(reader: &mut Reader<'_>) -> Result<DrawingSheet, PersistenceError> {
-    if reader.string()? != ORTHOGRAPHIC_DRAWING_SCHEMA_V1 {
-        return Err(PersistenceError::InvalidCanonicalData(
-            CanonicalError::Drawing(crate::drawing::DrawingError::InvalidSheet),
-        ));
+#[cfg(test)]
+fn read_drawing_sheet(
+    reader: &mut Reader<'_>,
+    page_contract: bool,
+    view_contract: bool,
+    section_contract: bool,
+    detail_contract: bool,
+    dimension_contract: bool,
+    tolerance_contract: bool,
+) -> Result<DrawingSheet, PersistenceError> {
+    read_drawing_sheet_with_annotations(
+        reader,
+        page_contract,
+        view_contract,
+        section_contract,
+        detail_contract,
+        dimension_contract,
+        (tolerance_contract, false),
+    )
+}
+
+fn read_drawing_sheet_with_annotations(
+    reader: &mut Reader<'_>,
+    page_contract: bool,
+    view_contract: bool,
+    section_contract: bool,
+    detail_contract: bool,
+    dimension_contract: bool,
+    extended_contracts: (bool, bool),
+) -> Result<DrawingSheet, PersistenceError> {
+    let (tolerance_contract, annotation_contract) = extended_contracts;
+    let persisted_schema = reader.string()?;
+    let expected_schema = if page_contract {
+        ORTHOGRAPHIC_DRAWING_SCHEMA_V2
+    } else {
+        ORTHOGRAPHIC_DRAWING_SCHEMA_V1
+    };
+    if persisted_schema != expected_schema {
+        return Err(invalid_drawing_sheet());
     }
     let id = DrawingSheetId(reader.u64()?);
     let name = reader.string()?;
@@ -3808,14 +4492,202 @@ fn read_drawing_sheet(reader: &mut Reader<'_>) -> Result<DrawingSheet, Persisten
         2 => DrawingSource::RigidAssembly {
             occurrence_ids: read_ids(reader)?.into_iter().map(OccurrenceId).collect(),
         },
-        _ => {
-            return Err(PersistenceError::InvalidCanonicalData(
-                CanonicalError::Drawing(crate::drawing::DrawingError::InvalidSheet),
-            ));
-        }
+        _ => return Err(invalid_drawing_sheet()),
     };
-    DrawingSheet::new(id, name, source)
-        .map_err(|error| PersistenceError::InvalidCanonicalData(CanonicalError::Drawing(error)))
+    if !page_contract {
+        return DrawingSheet::new(id, name, source).map_err(|error| {
+            PersistenceError::InvalidCanonicalData(CanonicalError::Drawing(error))
+        });
+    }
+    let size = match reader.u8()? {
+        1 => DrawingPageSize::A0,
+        2 => DrawingPageSize::A1,
+        3 => DrawingPageSize::A2,
+        4 => DrawingPageSize::A3,
+        5 => DrawingPageSize::A4,
+        _ => return Err(invalid_drawing_sheet()),
+    };
+    let orientation = match reader.u8()? {
+        1 => DrawingPageOrientation::Portrait,
+        2 => DrawingPageOrientation::Landscape,
+        _ => return Err(invalid_drawing_sheet()),
+    };
+    let scale_numerator = reader.u32()?;
+    let scale_denominator = reader.u32()?;
+    let scale = DrawingScale::new(scale_numerator, scale_denominator)
+        .map_err(|_| invalid_drawing_sheet())?;
+    if scale.numerator() != scale_numerator || scale.denominator() != scale_denominator {
+        return Err(invalid_drawing_sheet());
+    }
+    let page = DrawingPageTemplate::new(
+        size,
+        orientation,
+        scale,
+        DrawingMargins::new(reader.u16()?, reader.u16()?, reader.u16()?, reader.u16()?),
+    )
+    .map_err(|_| invalid_drawing_sheet())?;
+    let title_block = DrawingTitleBlock::new(
+        reader.string()?,
+        reader.string()?,
+        reader.string()?,
+        reader.string()?,
+    )
+    .map_err(|_| invalid_drawing_sheet())?;
+    if !view_contract {
+        return DrawingSheet::with_contract(id, name, source, page, title_block).map_err(|error| {
+            PersistenceError::InvalidCanonicalData(CanonicalError::Drawing(error))
+        });
+    }
+    let mut views = Vec::new();
+    for _ in 0..reader.count()? {
+        let view = match reader.u8()? {
+            1 => OrthographicViewKind::Front,
+            2 => OrthographicViewKind::Top,
+            3 => OrthographicViewKind::Right,
+            4 => OrthographicViewKind::Isometric,
+            5 => {
+                let mut components = [0.0; 9];
+                for component in &mut components {
+                    *component = f64::from_bits(reader.u64()?);
+                }
+                OrthographicViewKind::Auxiliary(
+                    DrawingViewFrame::from_persisted_axes(
+                        [components[0], components[1], components[2]],
+                        [components[3], components[4], components[5]],
+                        [components[6], components[7], components[8]],
+                    )
+                    .map_err(|_| invalid_drawing_sheet())?,
+                )
+            }
+            6 if section_contract => {
+                let mut components = [0.0; 9];
+                for component in &mut components {
+                    *component = f64::from_bits(reader.u64()?);
+                }
+                let frame = DrawingViewFrame::from_persisted_axes(
+                    [components[0], components[1], components[2]],
+                    [components[3], components[4], components[5]],
+                    [components[6], components[7], components[8]],
+                )
+                .map_err(|_| invalid_drawing_sheet())?;
+                OrthographicViewKind::Section(
+                    DrawingSectionPlane::new(frame, f64::from_bits(reader.u64()?))
+                        .map_err(|_| invalid_drawing_sheet())?,
+                )
+            }
+            7 if detail_contract => {
+                let mut components = [0.0; 9];
+                for component in &mut components {
+                    *component = f64::from_bits(reader.u64()?);
+                }
+                let frame = DrawingViewFrame::from_persisted_axes(
+                    [components[0], components[1], components[2]],
+                    [components[3], components[4], components[5]],
+                    [components[6], components[7], components[8]],
+                )
+                .map_err(|_| invalid_drawing_sheet())?;
+                let center_mm = [f64::from_bits(reader.u64()?), f64::from_bits(reader.u64()?)];
+                let radius_mm = f64::from_bits(reader.u64()?);
+                let numerator = reader.u32()?;
+                let denominator = reader.u32()?;
+                let magnification = DrawingScale::new(numerator, denominator)
+                    .map_err(|_| invalid_drawing_sheet())?;
+                if magnification.numerator() != numerator
+                    || magnification.denominator() != denominator
+                {
+                    return Err(invalid_drawing_sheet());
+                }
+                OrthographicViewKind::Detail(
+                    DrawingDetailRegion::new(frame, center_mm, radius_mm, magnification)
+                        .map_err(|_| invalid_drawing_sheet())?,
+                )
+            }
+            _ => return Err(invalid_drawing_sheet()),
+        };
+        views.push(view);
+    }
+    if !dimension_contract {
+        return DrawingSheet::with_contract_and_views(id, name, source, page, title_block, views)
+            .map_err(|error| {
+                PersistenceError::InvalidCanonicalData(CanonicalError::Drawing(error))
+            });
+    }
+    let mut linear_dimensions = Vec::new();
+    for _ in 0..reader.count()? {
+        let dimension_id = DrawingDimensionId(reader.u64()?);
+        let view_stable_name = reader.string()?;
+        let source_line_id = reader.string()?;
+        let offset_page_mm = f64::from_bits(reader.u64()?);
+        let tolerance = match reader.u8()? {
+            0 => DrawingDimensionTolerance::None,
+            1 if tolerance_contract => {
+                DrawingDimensionTolerance::symmetric(f64::from_bits(reader.u64()?))
+                    .map_err(|_| invalid_drawing_sheet())?
+            }
+            2 if tolerance_contract => DrawingDimensionTolerance::bilateral(
+                f64::from_bits(reader.u64()?),
+                f64::from_bits(reader.u64()?),
+            )
+            .map_err(|_| invalid_drawing_sheet())?,
+            _ => return Err(invalid_drawing_sheet()),
+        };
+        linear_dimensions.push(
+            DrawingLinearDimension::from_persisted(
+                dimension_id,
+                view_stable_name,
+                source_line_id,
+                offset_page_mm,
+                tolerance,
+            )
+            .map_err(|_| invalid_drawing_sheet())?,
+        );
+    }
+    let (title_block, notes) = if annotation_contract {
+        let parametric = match reader.u8()? {
+            0 => false,
+            1 => true,
+            _ => return Err(invalid_drawing_sheet()),
+        };
+        let title_block = DrawingTitleBlock::from_persisted(
+            title_block.title().to_owned(),
+            title_block.drawing_number().to_owned(),
+            title_block.revision().to_owned(),
+            title_block.author().to_owned(),
+            parametric,
+        )
+        .map_err(|_| invalid_drawing_sheet())?;
+        let note_count = reader.count_with_limit(MAX_DRAWING_NOTES as u32)?;
+        let mut notes = Vec::with_capacity(note_count as usize);
+        for _ in 0..note_count {
+            notes.push(
+                DrawingNote::new(
+                    DrawingNoteId(reader.u64()?),
+                    [f64::from_bits(reader.u64()?), f64::from_bits(reader.u64()?)],
+                    reader.string()?,
+                )
+                .map_err(|_| invalid_drawing_sheet())?,
+            );
+        }
+        (title_block, notes)
+    } else {
+        (title_block, Vec::new())
+    };
+    DrawingSheet::with_contract_views_and_annotations(
+        id,
+        name,
+        source,
+        page,
+        title_block,
+        views,
+        DrawingAnnotations::new(linear_dimensions, notes),
+    )
+    .map_err(|error| PersistenceError::InvalidCanonicalData(CanonicalError::Drawing(error)))
+}
+
+fn invalid_drawing_sheet() -> PersistenceError {
+    PersistenceError::InvalidCanonicalData(CanonicalError::Drawing(
+        crate::drawing::DrawingError::InvalidSheet,
+    ))
 }
 
 fn read_product(
@@ -3913,6 +4785,8 @@ fn read_product(
                 reader,
                 capabilities.sketch_constraint_vocabulary,
                 capabilities.cubic_bezier_sketch,
+                capabilities.sketch_projection,
+                capabilities.sketch_construction,
             )?),
             1 => {
                 let mut points_mm = Vec::new();
@@ -4504,6 +5378,7 @@ fn read_product(
                     reader,
                     capabilities.sketchup_scene,
                     capabilities.glb_import,
+                    capabilities.iges_import,
                 )?;
                 let id = receipt.id();
                 if product
@@ -4557,7 +5432,18 @@ fn read_product(
         }
         if capabilities.orthographic_drawing && !reader.is_finished() {
             for _ in 0..reader.count()? {
-                let sheet = read_drawing_sheet(reader)?;
+                let sheet = read_drawing_sheet_with_annotations(
+                    reader,
+                    capabilities.drawing_page_contract,
+                    capabilities.drawing_view_contract,
+                    capabilities.drawing_section_contract,
+                    capabilities.drawing_detail_contract,
+                    capabilities.drawing_dimension_contract,
+                    (
+                        capabilities.drawing_tolerance_contract,
+                        capabilities.drawing_annotation_contract,
+                    ),
+                )?;
                 let id = sheet.id();
                 if product.drawing_sheets.insert(id, Arc::new(sheet)).is_some() {
                     return Err(PersistenceError::InvalidCanonicalData(
@@ -4716,7 +5602,7 @@ fn read_product(
         }
         if capabilities.assembly_kinematics {
             for _ in 0..reader.count()? {
-                let joint = read_assembly_joint(reader)?;
+                let joint = read_assembly_joint(reader, capabilities.helical_assembly_joints)?;
                 if product
                     .assembly_joints
                     .insert(joint.id(), Arc::new(joint))
@@ -4841,8 +5727,13 @@ pub enum PersistenceError {
     InvalidContainerMagic,
     UnsupportedSchema(u16),
     UnsupportedContainerSchema(u16),
+    UnsupportedHistorySchema(u16),
+    InvalidHistoryMagic,
+    InvalidRevisionHistory,
+    HistoryChecksumMismatch,
     MissingDocumentEntry,
     DocumentEntryNotRequired,
+    HistoryEntryNotRequired,
     DuplicateContainerEntry,
     InvalidContainerPath(String),
     UnsupportedContainerEntry(String),
@@ -4928,9 +5819,20 @@ impl fmt::Display for PersistenceError {
             Self::UnsupportedContainerSchema(schema) => {
                 write!(formatter, "container schema {schema} is unsupported")
             }
+            Self::UnsupportedHistorySchema(schema) => {
+                write!(formatter, "revision history schema {schema} is unsupported")
+            }
+            Self::InvalidHistoryMagic => formatter.write_str("revision history magic is invalid"),
+            Self::InvalidRevisionHistory => formatter.write_str("revision history is invalid"),
+            Self::HistoryChecksumMismatch => {
+                formatter.write_str("revision history snapshot checksum does not match")
+            }
             Self::MissingDocumentEntry => formatter.write_str("container has no document.bin"),
             Self::DocumentEntryNotRequired => {
                 formatter.write_str("container document.bin must be required")
+            }
+            Self::HistoryEntryNotRequired => {
+                formatter.write_str("container history.bin must be required")
             }
             Self::DuplicateContainerEntry => formatter.write_str("container repeats an entry"),
             Self::InvalidContainerPath(path) => {
@@ -5267,5 +6169,648 @@ fn push_optional_id(bytes: &mut Vec<u8>, id: Option<u64>) {
             push_u64(bytes, id);
         }
         None => push_u8(bytes, 0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn schema_54_drawing_sheet_loads_with_explicit_lossless_default_contract() {
+        let mut document = DocumentStore::new();
+        let legacy_name = format!("Legacy\n{}", "x".repeat(300));
+        let sheet = DrawingSheet::new(
+            DrawingSheetId(10),
+            legacy_name,
+            DrawingSource::Definition(DefinitionId(1)),
+        )
+        .unwrap();
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(1),
+                    name: "Legacy part".into(),
+                },
+                CanonicalCommand::CreateDrawingSheet(sheet.clone()),
+            ]))
+            .unwrap();
+        let original = document.current();
+
+        let bytes = save_with_schema(&original, GLB_IMPORT_SCHEMA);
+        assert_eq!(u16::from_le_bytes(bytes[10..12].try_into().unwrap()), 54);
+        let loaded = load(&bytes).unwrap();
+        assert_eq!(loaded.source_schema(), 54);
+        assert!(loaded.migration_losses().is_empty());
+        let reopened = loaded.into_editable().ok().unwrap();
+        assert_eq!(
+            reopened.current().drawing_sheet(DrawingSheetId(10)),
+            Some(&sheet)
+        );
+        assert_eq!(
+            reopened.current().canonical_digest(),
+            original.canonical_digest()
+        );
+
+        let upgraded = save(&reopened.current());
+        assert_eq!(
+            u16::from_le_bytes(upgraded[10..12].try_into().unwrap()),
+            CURRENT_SCHEMA
+        );
+        assert_eq!(
+            load(&upgraded).unwrap().snapshot().canonical_digest(),
+            original.canonical_digest()
+        );
+    }
+
+    #[test]
+    fn schema_56_custom_drawing_views_remain_lossless() {
+        let mut document = DocumentStore::new();
+        let auxiliary = OrthographicViewKind::auxiliary([1.0, -2.0, 3.0], [0.0, 0.0, 1.0]).unwrap();
+        let sheet = DrawingSheet::with_contract_and_views(
+            DrawingSheetId(10),
+            "Custom views",
+            DrawingSource::Definition(DefinitionId(1)),
+            DrawingPageTemplate::default(),
+            DrawingTitleBlock::new("Custom views", "", "", "").unwrap(),
+            vec![OrthographicViewKind::Isometric, auxiliary],
+        )
+        .unwrap();
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(1),
+                    name: "Legacy custom views".into(),
+                },
+                CanonicalCommand::CreateDrawingSheet(sheet.clone()),
+            ]))
+            .unwrap();
+
+        let bytes = save_with_schema(&document.current(), DRAWING_VIEW_CONTRACT_SCHEMA);
+        let loaded = load(&bytes).unwrap();
+        assert_eq!(loaded.source_schema(), 56);
+        assert!(loaded.migration_losses().is_empty());
+        assert_eq!(
+            loaded.snapshot().drawing_sheet(DrawingSheetId(10)),
+            Some(&sheet)
+        );
+    }
+
+    #[test]
+    fn schema_57_section_parser_rejects_invalid_depth_and_schema_56_tag() {
+        let section =
+            OrthographicViewKind::section([0.0, -1.0, 0.0], [0.0, 0.0, 1.0], -5.0).unwrap();
+        let sheet = DrawingSheet::with_contract_and_views(
+            DrawingSheetId(10),
+            "Section",
+            DrawingSource::Definition(DefinitionId(1)),
+            DrawingPageTemplate::default(),
+            DrawingTitleBlock::new("Section", "", "", "").unwrap(),
+            vec![section],
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        write_drawing_sheet(
+            &mut bytes,
+            &sheet,
+            ProductSchemaCapabilities::current(DRAWING_SECTION_CONTRACT_SCHEMA),
+        );
+        assert!(
+            read_drawing_sheet(
+                &mut Reader::new(&bytes),
+                true,
+                true,
+                true,
+                false,
+                false,
+                false,
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            read_drawing_sheet(
+                &mut Reader::new(&bytes),
+                true,
+                true,
+                false,
+                false,
+                false,
+                false,
+            ),
+            Err(PersistenceError::InvalidCanonicalData(_))
+        ));
+
+        let depth_offset = bytes.len() - std::mem::size_of::<u64>();
+        bytes[depth_offset..].copy_from_slice(&f64::NAN.to_bits().to_le_bytes());
+        assert!(matches!(
+            read_drawing_sheet(
+                &mut Reader::new(&bytes),
+                true,
+                true,
+                true,
+                false,
+                false,
+                false,
+            ),
+            Err(PersistenceError::InvalidCanonicalData(_))
+        ));
+    }
+
+    #[test]
+    fn schema_58_detail_parser_rejects_malformed_contract_and_schema_57_tag() {
+        let detail = OrthographicViewKind::detail(
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [4.0, 6.0],
+            8.0,
+            DrawingScale::new(3, 2).unwrap(),
+        )
+        .unwrap();
+        let sheet = DrawingSheet::with_contract_and_views(
+            DrawingSheetId(10),
+            "Detail",
+            DrawingSource::Definition(DefinitionId(1)),
+            DrawingPageTemplate::default(),
+            DrawingTitleBlock::new("Detail", "", "", "").unwrap(),
+            vec![detail],
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        write_drawing_sheet(
+            &mut bytes,
+            &sheet,
+            ProductSchemaCapabilities::current(DRAWING_DETAIL_CONTRACT_SCHEMA),
+        );
+        assert!(
+            read_drawing_sheet(
+                &mut Reader::new(&bytes),
+                true,
+                true,
+                true,
+                true,
+                false,
+                false,
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            read_drawing_sheet(
+                &mut Reader::new(&bytes),
+                true,
+                true,
+                true,
+                false,
+                false,
+                false,
+            ),
+            Err(PersistenceError::InvalidCanonicalData(_))
+        ));
+
+        const DETAIL_PAYLOAD_BYTES: usize = 9 * 8 + 2 * 8 + 8 + 2 * 4;
+        let detail_offset = bytes.len() - DETAIL_PAYLOAD_BYTES;
+
+        let mut invalid_frame = bytes.clone();
+        invalid_frame[detail_offset..detail_offset + 8]
+            .copy_from_slice(&f64::NAN.to_bits().to_le_bytes());
+        assert!(matches!(
+            read_drawing_sheet(
+                &mut Reader::new(&invalid_frame),
+                true,
+                true,
+                true,
+                true,
+                false,
+                false,
+            ),
+            Err(PersistenceError::InvalidCanonicalData(_))
+        ));
+
+        let mut invalid_center = bytes.clone();
+        invalid_center[detail_offset + 72..detail_offset + 80]
+            .copy_from_slice(&f64::NAN.to_bits().to_le_bytes());
+        assert!(matches!(
+            read_drawing_sheet(
+                &mut Reader::new(&invalid_center),
+                true,
+                true,
+                true,
+                true,
+                false,
+                false,
+            ),
+            Err(PersistenceError::InvalidCanonicalData(_))
+        ));
+
+        let mut invalid_radius = bytes.clone();
+        invalid_radius[detail_offset + 88..detail_offset + 96]
+            .copy_from_slice(&0.0_f64.to_bits().to_le_bytes());
+        assert!(matches!(
+            read_drawing_sheet(
+                &mut Reader::new(&invalid_radius),
+                true,
+                true,
+                true,
+                true,
+                false,
+                false,
+            ),
+            Err(PersistenceError::InvalidCanonicalData(_))
+        ));
+
+        let mut non_canonical_scale = bytes;
+        non_canonical_scale[detail_offset + 96..detail_offset + 100]
+            .copy_from_slice(&2_u32.to_le_bytes());
+        non_canonical_scale[detail_offset + 100..detail_offset + 104]
+            .copy_from_slice(&4_u32.to_le_bytes());
+        assert!(matches!(
+            read_drawing_sheet(
+                &mut Reader::new(&non_canonical_scale),
+                true,
+                true,
+                true,
+                true,
+                false,
+                false,
+            ),
+            Err(PersistenceError::InvalidCanonicalData(_))
+        ));
+    }
+
+    #[test]
+    fn schema_59_linear_dimension_is_lossless_and_rejects_malformed_offset() {
+        let dimension = DrawingLinearDimension::new(
+            DrawingDimensionId(1),
+            OrthographicViewKind::Front,
+            "sheet-10/view-front/definition-1:0:1",
+            8.0,
+        )
+        .unwrap();
+        let sheet = DrawingSheet::with_contract_views_and_dimensions(
+            DrawingSheetId(10),
+            "Dimensioned",
+            DrawingSource::Definition(DefinitionId(1)),
+            DrawingPageTemplate::default(),
+            DrawingTitleBlock::new("Dimensioned", "DIM-001", "A", "Kečup").unwrap(),
+            vec![OrthographicViewKind::Front],
+            vec![dimension],
+        )
+        .unwrap();
+        let mut document = DocumentStore::new();
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(1),
+                    name: "Dimensioned part".into(),
+                },
+                CanonicalCommand::CreateDrawingSheet(sheet.clone()),
+            ]))
+            .unwrap();
+        let saved = save(&document.current());
+        let loaded = load(&saved).unwrap();
+        assert_eq!(loaded.source_schema(), CURRENT_SCHEMA);
+        assert_eq!(
+            loaded.snapshot().drawing_sheet(DrawingSheetId(10)),
+            Some(&sheet)
+        );
+
+        let mut encoded = Vec::new();
+        write_drawing_sheet(
+            &mut encoded,
+            &sheet,
+            ProductSchemaCapabilities::current(DRAWING_DIMENSION_CONTRACT_SCHEMA),
+        );
+        assert_eq!(
+            read_drawing_sheet(
+                &mut Reader::new(&encoded),
+                true,
+                true,
+                true,
+                true,
+                true,
+                false,
+            )
+            .unwrap(),
+            sheet
+        );
+        let offset_position = encoded.len() - 1 - std::mem::size_of::<u64>();
+        let mut invalid_offset = encoded.clone();
+        invalid_offset[offset_position..offset_position + 8]
+            .copy_from_slice(&f64::NAN.to_bits().to_le_bytes());
+        assert!(matches!(
+            read_drawing_sheet(
+                &mut Reader::new(&invalid_offset),
+                true,
+                true,
+                true,
+                true,
+                true,
+                false,
+            ),
+            Err(PersistenceError::InvalidCanonicalData(_))
+        ));
+        let last = encoded.len() - 1;
+        encoded[last] = 9;
+        assert!(matches!(
+            read_drawing_sheet(
+                &mut Reader::new(&encoded),
+                true,
+                true,
+                true,
+                true,
+                true,
+                false,
+            ),
+            Err(PersistenceError::InvalidCanonicalData(_))
+        ));
+
+        let legacy_sheet = DrawingSheet::with_contract_and_views(
+            DrawingSheetId(11),
+            "Legacy detail schema",
+            DrawingSource::Definition(DefinitionId(1)),
+            DrawingPageTemplate::default(),
+            DrawingTitleBlock::new("Legacy detail schema", "", "", "").unwrap(),
+            vec![OrthographicViewKind::Front],
+        )
+        .unwrap();
+        let mut legacy_document = DocumentStore::new();
+        legacy_document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(1),
+                    name: "Legacy part".into(),
+                },
+                CanonicalCommand::CreateDrawingSheet(legacy_sheet.clone()),
+            ]))
+            .unwrap();
+        let legacy = load(&save_with_schema(
+            &legacy_document.current(),
+            DRAWING_DETAIL_CONTRACT_SCHEMA,
+        ))
+        .unwrap();
+        assert_eq!(legacy.source_schema(), 58);
+        assert_eq!(
+            legacy
+                .snapshot()
+                .drawing_sheet(DrawingSheetId(11))
+                .unwrap()
+                .linear_dimensions(),
+            &[]
+        );
+    }
+
+    #[test]
+    fn schema_60_dimension_tolerances_are_lossless_versioned_and_fail_closed() {
+        let sheet = DrawingSheet::with_contract_views_and_dimensions(
+            DrawingSheetId(10),
+            "Toleranced",
+            DrawingSource::Definition(DefinitionId(1)),
+            DrawingPageTemplate::default(),
+            DrawingTitleBlock::new("Toleranced", "TOL-001", "A", "Kečup").unwrap(),
+            vec![OrthographicViewKind::Front],
+            vec![
+                DrawingLinearDimension::with_tolerance(
+                    DrawingDimensionId(1),
+                    OrthographicViewKind::Front,
+                    "sheet-10/view-front/definition-1:0:1",
+                    8.0,
+                    DrawingDimensionTolerance::symmetric(0.2).unwrap(),
+                )
+                .unwrap(),
+                DrawingLinearDimension::with_tolerance(
+                    DrawingDimensionId(2),
+                    OrthographicViewKind::Front,
+                    "sheet-10/view-front/definition-1:0:1",
+                    16.0,
+                    DrawingDimensionTolerance::bilateral(0.3, 0.1).unwrap(),
+                )
+                .unwrap(),
+            ],
+        )
+        .unwrap();
+        let mut encoded = Vec::new();
+        write_drawing_sheet(
+            &mut encoded,
+            &sheet,
+            ProductSchemaCapabilities::current(DRAWING_TOLERANCE_CONTRACT_SCHEMA),
+        );
+        assert_eq!(
+            read_drawing_sheet(
+                &mut Reader::new(&encoded),
+                true,
+                true,
+                true,
+                true,
+                true,
+                true,
+            )
+            .unwrap(),
+            sheet
+        );
+        assert!(matches!(
+            read_drawing_sheet(
+                &mut Reader::new(&encoded),
+                true,
+                true,
+                true,
+                true,
+                true,
+                false,
+            ),
+            Err(PersistenceError::InvalidCanonicalData(_))
+        ));
+
+        let bilateral_tag_offset = encoded.len() - 2 * std::mem::size_of::<u64>() - 1;
+        assert_eq!(encoded[bilateral_tag_offset], 2);
+        let mut invalid_tag = encoded.clone();
+        invalid_tag[bilateral_tag_offset] = 9;
+        assert!(matches!(
+            read_drawing_sheet(
+                &mut Reader::new(&invalid_tag),
+                true,
+                true,
+                true,
+                true,
+                true,
+                true,
+            ),
+            Err(PersistenceError::InvalidCanonicalData(_))
+        ));
+
+        let upper_offset = bilateral_tag_offset + 1;
+        encoded[upper_offset..upper_offset + 8].copy_from_slice(&f64::NAN.to_bits().to_le_bytes());
+        assert!(matches!(
+            read_drawing_sheet(
+                &mut Reader::new(&encoded),
+                true,
+                true,
+                true,
+                true,
+                true,
+                true,
+            ),
+            Err(PersistenceError::InvalidCanonicalData(_))
+        ));
+    }
+
+    #[test]
+    fn drawing_annotations_schema_round_trips_and_rejects_malformed_templates() {
+        let template = "Build {source_name}";
+        let sheet = DrawingSheet::with_contract_views_and_annotations(
+            DrawingSheetId(10),
+            "Annotated",
+            DrawingSource::Definition(DefinitionId(1)),
+            DrawingPageTemplate::default(),
+            DrawingTitleBlock::parametric("{source_name}", "{sheet_name}", "A", "Kečup").unwrap(),
+            vec![OrthographicViewKind::Front],
+            DrawingAnnotations::new(
+                Vec::new(),
+                vec![DrawingNote::new(DrawingNoteId(1), [30.0, 60.0], template).unwrap()],
+            ),
+        )
+        .unwrap();
+        let mut encoded = Vec::new();
+        write_drawing_sheet(
+            &mut encoded,
+            &sheet,
+            ProductSchemaCapabilities::current(DRAWING_ANNOTATION_CONTRACT_SCHEMA),
+        );
+        assert_eq!(
+            read_drawing_sheet_with_annotations(
+                &mut Reader::new(&encoded),
+                true,
+                true,
+                true,
+                true,
+                true,
+                (true, true),
+            )
+            .unwrap(),
+            sheet
+        );
+
+        let annotation_flag_offset = encoded.len() - (1 + 4 + 8 + 16 + 4 + template.len());
+        let mut invalid_flag = encoded.clone();
+        invalid_flag[annotation_flag_offset] = 9;
+        assert!(matches!(
+            read_drawing_sheet_with_annotations(
+                &mut Reader::new(&invalid_flag),
+                true,
+                true,
+                true,
+                true,
+                true,
+                (true, true),
+            ),
+            Err(PersistenceError::InvalidCanonicalData(_))
+        ));
+
+        let mut invalid_template = encoded;
+        let template_offset = invalid_template.len() - template.len();
+        invalid_template[template_offset..].copy_from_slice(b"Build {unknown____}");
+        assert!(matches!(
+            read_drawing_sheet_with_annotations(
+                &mut Reader::new(&invalid_template),
+                true,
+                true,
+                true,
+                true,
+                true,
+                (true, true),
+            ),
+            Err(PersistenceError::InvalidCanonicalData(_))
+        ));
+    }
+
+    fn encoded_current_sheet() -> (Vec<u8>, usize) {
+        let sheet = DrawingSheet::new(
+            DrawingSheetId(10),
+            "Page",
+            DrawingSource::Definition(DefinitionId(1)),
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        write_drawing_sheet(
+            &mut bytes,
+            &sheet,
+            ProductSchemaCapabilities::current(DRAWING_PAGE_CONTRACT_SCHEMA),
+        );
+        let mut reader = Reader::new(&bytes);
+        assert_eq!(reader.string().unwrap(), ORTHOGRAPHIC_DRAWING_SCHEMA_V2);
+        assert_eq!(reader.u64().unwrap(), 10);
+        assert_eq!(reader.string().unwrap(), "Page");
+        assert_eq!(reader.u8().unwrap(), 1);
+        assert_eq!(reader.u64().unwrap(), 1);
+        let page_offset = reader.cursor;
+        (bytes, page_offset)
+    }
+
+    fn assert_invalid_current_sheet(bytes: &[u8]) {
+        assert!(matches!(
+            read_drawing_sheet(
+                &mut Reader::new(bytes),
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+            ),
+            Err(PersistenceError::InvalidCanonicalData(_)) | Err(PersistenceError::Truncated)
+        ));
+    }
+
+    #[test]
+    fn schema_55_drawing_sheet_parser_rejects_malformed_contract_fields() {
+        let (valid, page_offset) = encoded_current_sheet();
+        assert!(
+            read_drawing_sheet(
+                &mut Reader::new(&valid),
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+            )
+            .is_ok()
+        );
+
+        let mut invalid_size = valid.clone();
+        invalid_size[page_offset] = 9;
+        assert_invalid_current_sheet(&invalid_size);
+
+        let mut invalid_orientation = valid.clone();
+        invalid_orientation[page_offset + 1] = 9;
+        assert_invalid_current_sheet(&invalid_orientation);
+
+        let mut zero_scale = valid.clone();
+        zero_scale[page_offset + 2..page_offset + 6].copy_from_slice(&0_u32.to_le_bytes());
+        assert_invalid_current_sheet(&zero_scale);
+
+        let mut non_canonical_scale = valid.clone();
+        non_canonical_scale[page_offset + 2..page_offset + 6].copy_from_slice(&2_u32.to_le_bytes());
+        non_canonical_scale[page_offset + 6..page_offset + 10]
+            .copy_from_slice(&4_u32.to_le_bytes());
+        assert_invalid_current_sheet(&non_canonical_scale);
+
+        let mut invalid_margin = valid.clone();
+        invalid_margin[page_offset + 10..page_offset + 12].copy_from_slice(&0_u16.to_le_bytes());
+        assert_invalid_current_sheet(&invalid_margin);
+
+        let title_length_offset = page_offset + 18;
+        let title_length = u32::from_le_bytes(
+            valid[title_length_offset..title_length_offset + 4]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        let title_offset = title_length_offset + 4;
+        let mut oversized_title = valid.clone();
+        oversized_title[title_length_offset..title_offset].copy_from_slice(&257_u32.to_le_bytes());
+        oversized_title.splice(title_offset..title_offset + title_length, vec![b'x'; 257]);
+        assert_invalid_current_sheet(&oversized_title);
+
+        let mut truncated = valid;
+        truncated.pop();
+        assert_invalid_current_sheet(&truncated);
     }
 }

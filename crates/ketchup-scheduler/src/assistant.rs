@@ -2,13 +2,15 @@ use ketchup_core::assistant_sidecar::{
     AssistantApiDiagnostics, AssistantCadEditProgram, AssistantCapability, AssistantChatResult,
     AssistantDistribution, AssistantHandshake, AssistantModelIntent,
 };
+use ketchup_core::graph::sha256_hex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fmt;
-use std::io::{self, BufRead, BufReader, Write};
-use std::path::Path;
+use std::fs;
+use std::io::{self, BufRead, BufReader, Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,6 +20,7 @@ use std::time::{Duration, Instant};
 pub const MAX_ASSISTANT_REQUEST_LINE_BYTES: usize = 128 * 1024;
 pub const MAX_ASSISTANT_RESPONSE_LINE_BYTES: usize = 256 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
+pub const MAX_ASSISTANT_EXECUTABLE_BYTES: u64 = 96 * 1024 * 1024;
 
 #[derive(Clone, Debug, Default)]
 pub struct AssistantCancellation(Arc<AtomicBool>);
@@ -39,10 +42,24 @@ pub struct AssistantProcessChatResult {
     pub diagnostics: Option<AssistantApiDiagnostics>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AssistantProcessLaunch {
+    pub executable: PathBuf,
+    pub executable_sha256: String,
+    pub arguments: Vec<OsString>,
+    pub working_directory: PathBuf,
+    pub environment: Vec<(OsString, OsString)>,
+}
+
+struct AssistantWriteRequest {
+    line: String,
+    acknowledgment: mpsc::Sender<Result<(), String>>,
+}
+
 #[derive(Debug)]
 pub struct AssistantProcessClient {
     child: Child,
-    stdin: Option<ChildStdin>,
+    write_sender: Option<mpsc::Sender<AssistantWriteRequest>>,
     receiver: Receiver<Result<Option<String>, String>>,
     timeout: Duration,
     cancelled: AssistantCancellation,
@@ -116,11 +133,79 @@ impl AssistantProcessClient {
         timeout: Duration,
         cancelled: AssistantCancellation,
     ) -> Result<Self, AssistantProcessError> {
+        let mut command = Command::new(executable.as_ref());
+        command.args(arguments);
+        Self::spawn_command(command, handshake, timeout, cancelled)
+    }
+
+    pub fn spawn_isolated_with_cancellation(
+        launch: &AssistantProcessLaunch,
+        handshake: AssistantHandshake,
+        timeout: Duration,
+        cancelled: AssistantCancellation,
+    ) -> Result<Self, AssistantProcessError> {
+        if !launch.executable.is_absolute() || !launch.working_directory.is_absolute() {
+            return Err(AssistantProcessError::Spawn(
+                "isolated assistant paths must be absolute".to_owned(),
+            ));
+        }
+        if launch.executable_sha256.len() != 64
+            || !launch
+                .executable_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return Err(AssistantProcessError::Spawn(
+                "isolated assistant executable identity is invalid".to_owned(),
+            ));
+        }
+        if cancelled.is_cancelled() {
+            return Err(AssistantProcessError::Cancelled);
+        }
+        let executable_file = fs::File::open(&launch.executable)
+            .map_err(|error| AssistantProcessError::Spawn(error.to_string()))?;
+        let metadata = executable_file
+            .metadata()
+            .map_err(|error| AssistantProcessError::Spawn(error.to_string()))?;
+        if !metadata.is_file() || metadata.len() > MAX_ASSISTANT_EXECUTABLE_BYTES {
+            return Err(AssistantProcessError::Spawn(
+                "isolated assistant executable is not a bounded file".to_owned(),
+            ));
+        }
+        let mut executable = Vec::new();
+        executable_file
+            .take(MAX_ASSISTANT_EXECUTABLE_BYTES + 1)
+            .read_to_end(&mut executable)
+            .map_err(|error| AssistantProcessError::Spawn(error.to_string()))?;
+        if executable.len() as u64 > MAX_ASSISTANT_EXECUTABLE_BYTES {
+            return Err(AssistantProcessError::Spawn(
+                "isolated assistant executable is not a bounded file".to_owned(),
+            ));
+        }
+        if sha256_hex(&executable) != launch.executable_sha256 {
+            return Err(AssistantProcessError::Spawn(
+                "isolated assistant executable identity mismatch".to_owned(),
+            ));
+        }
+        let mut command = Command::new(&launch.executable);
+        command
+            .args(&launch.arguments)
+            .current_dir(&launch.working_directory)
+            .env_clear()
+            .envs(launch.environment.iter().cloned());
+        Self::spawn_command(command, handshake, timeout, cancelled)
+    }
+
+    fn spawn_command(
+        mut command: Command,
+        handshake: AssistantHandshake,
+        timeout: Duration,
+        cancelled: AssistantCancellation,
+    ) -> Result<Self, AssistantProcessError> {
         handshake
             .validate()
             .map_err(|error| AssistantProcessError::Protocol(error.to_string()))?;
-        let mut child = Command::new(executable.as_ref())
-            .args(arguments)
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -132,10 +217,11 @@ impl AssistantProcessClient {
         let stdout = child.stdout.take().ok_or_else(|| {
             AssistantProcessError::Spawn("assistant stdout was not piped".to_owned())
         })?;
+        let write_sender = spawn_bounded_writer(stdin);
         let receiver = spawn_bounded_reader(stdout);
         let mut client = Self {
             child,
-            stdin: Some(stdin),
+            write_sender: Some(write_sender),
             receiver,
             timeout,
             cancelled,
@@ -221,21 +307,23 @@ impl AssistantProcessClient {
                     message,
                     model_intent: *model_intent,
                 };
-                result.validate().map_err(AssistantProcessError::Protocol)?;
+                if let Err(error) = result.validate() {
+                    return self.fail(AssistantProcessError::Protocol(error));
+                }
                 if result.model_intent.is_some() && cad_edit_program.is_some() {
-                    return Err(AssistantProcessError::Protocol(
+                    return self.fail(AssistantProcessError::Protocol(
                         "assistant returned multiple mutation programs".to_owned(),
                     ));
                 }
-                if let Some(program) = cad_edit_program.as_ref() {
-                    program
-                        .validate()
-                        .map_err(AssistantProcessError::Protocol)?;
+                if let Some(program) = cad_edit_program.as_ref()
+                    && let Err(error) = program.validate()
+                {
+                    return self.fail(AssistantProcessError::Protocol(error));
                 }
-                if let Some(diagnostics) = diagnostics.as_ref() {
-                    diagnostics
-                        .validate()
-                        .map_err(AssistantProcessError::Protocol)?;
+                if let Some(diagnostics) = diagnostics.as_ref()
+                    && let Err(error) = diagnostics.validate()
+                {
+                    return self.fail(AssistantProcessError::Protocol(error));
                 }
                 Ok(AssistantProcessChatResult {
                     result,
@@ -259,12 +347,12 @@ impl AssistantProcessClient {
         self.write_json(&serde_json::json!({"type": "shutdown"}))?;
         match self.receive_response()? {
             SidecarResponse::Bye => {
-                self.stdin.take();
+                self.write_sender.take();
                 self.wait_for_exit()?;
                 self.closed = true;
                 Ok(())
             }
-            SidecarResponse::Error { error } => Err(AssistantProcessError::Remote(error)),
+            SidecarResponse::Error { error } => self.fail(AssistantProcessError::Remote(error)),
             _ => self.fail_protocol("assistant did not acknowledge shutdown"),
         }
     }
@@ -275,10 +363,43 @@ impl AssistantProcessClient {
         if line.len() > MAX_ASSISTANT_REQUEST_LINE_BYTES {
             return Err(AssistantProcessError::RequestLineTooLarge);
         }
-        let stdin = self.stdin.as_mut().ok_or(AssistantProcessError::Closed)?;
-        writeln!(stdin, "{line}")
-            .and_then(|()| stdin.flush())
-            .map_err(|error| AssistantProcessError::Transport(error.to_string()))
+        let sender = self
+            .write_sender
+            .as_ref()
+            .ok_or(AssistantProcessError::Closed)?
+            .clone();
+        let (acknowledgment, receiver) = mpsc::channel();
+        sender
+            .send(AssistantWriteRequest {
+                line,
+                acknowledgment,
+            })
+            .map_err(|_| AssistantProcessError::Closed)?;
+        let deadline = Instant::now() + self.timeout;
+        loop {
+            if self.cancelled.is_cancelled() {
+                self.terminate();
+                return Err(AssistantProcessError::Cancelled);
+            }
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                self.terminate();
+                return Err(AssistantProcessError::TimedOut);
+            };
+            match receiver.recv_timeout(remaining.min(POLL_INTERVAL)) {
+                Ok(Ok(())) => return Ok(()),
+                Ok(Err(error)) => {
+                    self.terminate();
+                    return Err(AssistantProcessError::Transport(error));
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    self.terminate();
+                    return Err(AssistantProcessError::Transport(
+                        "assistant request writer disconnected".to_owned(),
+                    ));
+                }
+            }
+        }
     }
 
     fn receive_response(&mut self) -> Result<SidecarResponse, AssistantProcessError> {
@@ -300,9 +421,13 @@ impl AssistantProcessClient {
         })
     }
 
-    fn fail_protocol<T>(&mut self, message: &str) -> Result<T, AssistantProcessError> {
+    fn fail<T>(&mut self, error: AssistantProcessError) -> Result<T, AssistantProcessError> {
         self.terminate();
-        Err(AssistantProcessError::Protocol(message.to_owned()))
+        Err(error)
+    }
+
+    fn fail_protocol<T>(&mut self, message: &str) -> Result<T, AssistantProcessError> {
+        self.fail(AssistantProcessError::Protocol(message.to_owned()))
     }
 
     fn wait_for_exit(&mut self) -> Result<(), AssistantProcessError> {
@@ -332,7 +457,7 @@ impl AssistantProcessClient {
     }
 
     fn terminate(&mut self) {
-        self.stdin.take();
+        self.write_sender.take();
         let _ = self.child.kill();
         let _ = self.child.wait();
         self.closed = true;
@@ -347,10 +472,28 @@ impl Drop for AssistantProcessClient {
     }
 }
 
+fn spawn_bounded_writer(stdin: ChildStdin) -> mpsc::Sender<AssistantWriteRequest> {
+    let (sender, receiver) = mpsc::channel::<AssistantWriteRequest>();
+    let _ = std::thread::spawn(move || {
+        let mut stdin = stdin;
+        while let Ok(request) = receiver.recv() {
+            let result = writeln!(stdin, "{}", request.line)
+                .and_then(|()| stdin.flush())
+                .map_err(|error| error.to_string());
+            let failed = result.is_err();
+            let _ = request.acknowledgment.send(result);
+            if failed {
+                break;
+            }
+        }
+    });
+    sender
+}
+
 fn spawn_bounded_reader(
     stdout: impl io::Read + Send + 'static,
 ) -> Receiver<Result<Option<String>, String>> {
-    let (sender, receiver) = mpsc::channel();
+    let (sender, receiver) = mpsc::sync_channel(1);
     let _ = std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
         loop {

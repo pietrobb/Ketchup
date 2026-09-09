@@ -6,14 +6,23 @@ use ketchup_core::assembly::{
 };
 use ketchup_core::assembly_joint::{
     AssemblyJoint, AssemblyJointAxis, AssemblyJointId, AssemblyJointKind, AssemblyJointLimits,
-    AssemblyMotionDriver, AssemblyMotionStudy, AssemblyMotionStudyId,
-    solve_assembly_joint_kinematics_with_drivers,
+    AssemblyKinematicPublishError, AssemblyKinematicSolution, AssemblyKinematicSolveError,
+    AssemblyKinematicSolveStatus, AssemblyMotionClearanceAnalysis, AssemblyMotionCollisionBody,
+    AssemblyMotionDriver, AssemblyMotionStudy, AssemblyMotionStudyId, preview_assembly_joint_drag,
+    preview_assembly_joint_drag_clearance, solve_assembly_joint_kinematics_with_drivers,
+    solve_assembly_joint_kinematics_with_kind_overrides, solve_assembly_motion_study,
 };
 use ketchup_core::drawing::project_orthographic_drawing;
 use ketchup_core::drawing::{
     DrawingSheet, DrawingSheetId, DrawingSource, prepare_create_drawing_sheet,
 };
 use ketchup_core::exact_product::BodySubshapeRef;
+use ketchup_core::mechanical_coupling::{
+    AssemblyMotionCoupling, AssemblyMotionCouplingId, AssemblyMotionDirection,
+    AssemblyTransmissionKind, CoupledJointKind, GearMeshKind, ScrewHandedness,
+};
+use ketchup_core::prismatic::Aabb;
+use ketchup_interaction::projection::CanonicalInteractionProjection;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum MateKindChoice {
@@ -50,6 +59,94 @@ impl MateKindChoice {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum AssemblyJointKindChoice {
+    #[default]
+    Prismatic,
+    Helical,
+}
+
+impl AssemblyJointKindChoice {
+    const ALL: [Self; 2] = [Self::Prismatic, Self::Helical];
+
+    const fn label_key(self) -> &'static str {
+        match self {
+            Self::Prismatic => "assembly-joint-kind-prismatic",
+            Self::Helical => "assembly-joint-kind-helical",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum AssemblyCouplingKindChoice {
+    #[default]
+    GearPair,
+    Belt,
+    Chain,
+    RackAndPinion,
+    LeadScrew,
+}
+
+impl AssemblyCouplingKindChoice {
+    const ALL: [Self; 5] = [
+        Self::GearPair,
+        Self::Belt,
+        Self::Chain,
+        Self::RackAndPinion,
+        Self::LeadScrew,
+    ];
+
+    const fn label_key(self) -> &'static str {
+        match self {
+            Self::GearPair => "assembly-coupling-kind-gear",
+            Self::Belt => "assembly-coupling-kind-belt",
+            Self::Chain => "assembly-coupling-kind-chain",
+            Self::RackAndPinion => "assembly-coupling-kind-rack",
+            Self::LeadScrew => "assembly-coupling-kind-screw",
+        }
+    }
+
+    const fn joint_kinds(self) -> (CoupledJointKind, CoupledJointKind) {
+        match self {
+            Self::GearPair | Self::Belt | Self::Chain => {
+                (CoupledJointKind::Revolute, CoupledJointKind::Revolute)
+            }
+            Self::RackAndPinion | Self::LeadScrew => {
+                (CoupledJointKind::Revolute, CoupledJointKind::Prismatic)
+            }
+        }
+    }
+
+    const fn parameter_label_keys(self) -> (&'static str, Option<&'static str>) {
+        match self {
+            Self::GearPair => (
+                "assembly-coupling-input-teeth",
+                Some("assembly-coupling-output-teeth"),
+            ),
+            Self::Belt => (
+                "assembly-coupling-input-diameter",
+                Some("assembly-coupling-output-diameter"),
+            ),
+            Self::Chain => (
+                "assembly-coupling-input-sprocket-teeth",
+                Some("assembly-coupling-output-sprocket-teeth"),
+            ),
+            Self::RackAndPinion => ("assembly-coupling-pinion-diameter", None),
+            Self::LeadScrew => ("assembly-coupling-lead", None),
+        }
+    }
+
+    const fn option_label_key(self) -> Option<&'static str> {
+        match self {
+            Self::GearPair => Some("assembly-coupling-internal-mesh"),
+            Self::Belt => Some("assembly-coupling-crossed-belt"),
+            Self::Chain => None,
+            Self::RackAndPinion => Some("assembly-coupling-opposite-direction"),
+            Self::LeadScrew => Some("assembly-coupling-left-handed"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum AssemblyPreviewSource {
     InsertOccurrence {
@@ -77,6 +174,17 @@ pub(super) enum AssemblyPreviewSource {
         selected_occurrences: [OccurrenceId; 2],
         editing: bool,
     },
+    Coupling {
+        coupling: AssemblyMotionCoupling,
+        editing: bool,
+    },
+    Drag {
+        joint_id: AssemblyJointId,
+        requested_position: f64,
+        clamp_to_limits: bool,
+        check_collisions: bool,
+        allow_contact: bool,
+    },
     MotionStudy {
         study: AssemblyMotionStudy,
         selected_occurrences: [OccurrenceId; 2],
@@ -99,6 +207,9 @@ impl AssemblyPreviewSource {
             Self::RemoveMate(_) => "assembly-action-remove-mate",
             Self::Joint { editing: true, .. } => "assembly-action-edit-joint",
             Self::Joint { editing: false, .. } => "assembly-action-create-joint",
+            Self::Coupling { editing: true, .. } => "assembly-action-edit-coupling",
+            Self::Coupling { editing: false, .. } => "assembly-action-create-coupling",
+            Self::Drag { .. } => "assembly-action-drag-joint",
             Self::MotionStudy { editing: true, .. } => "assembly-action-edit-motion-study",
             Self::MotionStudy { editing: false, .. } => "assembly-action-create-motion-study",
             Self::Solve => "assembly-action-solve",
@@ -116,6 +227,8 @@ struct AssemblyPreviewPlan {
     proposal: Proposal,
     solve_required: bool,
     solve_result: Option<AssemblySolveResult>,
+    kinematic_result: Option<AssemblyKinematicSolution>,
+    drag_clearance: Option<AssemblyMotionClearanceAnalysis>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -125,7 +238,6 @@ struct AssemblyProposalPreview {
     clear_occurrence_name: bool,
 }
 
-#[derive(Default)]
 pub(super) struct AssemblyEditorState {
     definition: Option<DefinitionId>,
     occurrence_name: String,
@@ -137,11 +249,65 @@ pub(super) struct AssemblyEditorState {
     value_input: String,
     reversed: bool,
     selected_mate: Option<AssemblyMateId>,
+    joint_kind: AssemblyJointKindChoice,
     joint_position_input: String,
+    joint_lead_input: String,
+    selected_coupling: Option<AssemblyMotionCouplingId>,
+    coupling_kind: AssemblyCouplingKindChoice,
+    coupling_input_joint: Option<AssemblyJointId>,
+    coupling_output_joint: Option<AssemblyJointId>,
+    coupling_input_reference: String,
+    coupling_output_reference: String,
+    coupling_first_parameter: String,
+    coupling_second_parameter: String,
+    coupling_option: bool,
+    drag_joint: Option<AssemblyJointId>,
+    drag_position_input: String,
+    drag_clamp_to_limits: bool,
+    drag_check_collisions: bool,
+    drag_allow_contact: bool,
     motion_position_input: String,
     motion_name_input: String,
     preview: Option<AssemblyProposalPreview>,
     solve_result: Option<AssemblySolveResult>,
+}
+
+impl Default for AssemblyEditorState {
+    fn default() -> Self {
+        Self {
+            definition: None,
+            occurrence_name: String::new(),
+            endpoint_a: None,
+            endpoint_b: None,
+            reference_a: None,
+            reference_b: None,
+            kind: MateKindChoice::default(),
+            value_input: String::new(),
+            reversed: false,
+            selected_mate: None,
+            joint_kind: AssemblyJointKindChoice::default(),
+            joint_position_input: String::new(),
+            joint_lead_input: String::new(),
+            selected_coupling: None,
+            coupling_kind: AssemblyCouplingKindChoice::default(),
+            coupling_input_joint: None,
+            coupling_output_joint: None,
+            coupling_input_reference: String::new(),
+            coupling_output_reference: String::new(),
+            coupling_first_parameter: String::new(),
+            coupling_second_parameter: String::new(),
+            coupling_option: false,
+            drag_joint: None,
+            drag_position_input: String::new(),
+            drag_clamp_to_limits: false,
+            drag_check_collisions: true,
+            drag_allow_contact: false,
+            motion_position_input: String::new(),
+            motion_name_input: String::new(),
+            preview: None,
+            solve_result: None,
+        }
+    }
 }
 
 enum AssemblyUiAction {
@@ -154,6 +320,9 @@ enum AssemblyUiAction {
     RemoveMate(AssemblyMateId),
     PreviewMate,
     PreviewJoint,
+    PreviewCoupling,
+    EditCoupling(AssemblyMotionCouplingId),
+    PreviewDrag,
     PreviewMotionStudy,
     Solve,
 }
@@ -199,6 +368,28 @@ impl KetchupApp {
         references
     }
 
+    fn assembly_coupling_joint_ids(
+        snapshot: &Snapshot,
+        expected: CoupledJointKind,
+    ) -> Vec<AssemblyJointId> {
+        snapshot
+            .assembly_joints()
+            .filter(|joint| {
+                matches!(
+                    (joint.kind(), expected),
+                    (
+                        AssemblyJointKind::Revolute { .. } | AssemblyJointKind::Helical { .. },
+                        CoupledJointKind::Revolute
+                    ) | (
+                        AssemblyJointKind::Prismatic { .. },
+                        CoupledJointKind::Prismatic
+                    )
+                )
+            })
+            .map(AssemblyJoint::id)
+            .collect()
+    }
+
     fn reconcile_assembly_editor(&mut self, snapshot: &Snapshot) {
         let definitions = snapshot
             .definitions()
@@ -239,11 +430,89 @@ impl KetchupApp {
         {
             self.assembly_editor.selected_mate = None;
         }
+        if self
+            .assembly_editor
+            .selected_coupling
+            .is_some_and(|id| snapshot.assembly_motion_coupling(id).is_none())
+        {
+            self.assembly_editor.selected_coupling = None;
+        }
+        let movable_joint_ids = snapshot
+            .assembly_joints()
+            .filter(|joint| joint.kind().position().is_some())
+            .map(AssemblyJoint::id)
+            .collect::<Vec<_>>();
+        if self
+            .assembly_editor
+            .drag_joint
+            .is_none_or(|id| !movable_joint_ids.contains(&id))
+        {
+            self.assembly_editor.drag_joint = movable_joint_ids.first().copied();
+            self.assembly_editor.drag_position_input.clear();
+        }
+        let (input_kind, output_kind) = self.assembly_editor.coupling_kind.joint_kinds();
+        let input_joints = Self::assembly_coupling_joint_ids(snapshot, input_kind);
+        let output_joints = Self::assembly_coupling_joint_ids(snapshot, output_kind);
+        if self
+            .assembly_editor
+            .coupling_input_joint
+            .is_none_or(|id| !input_joints.contains(&id))
+        {
+            self.assembly_editor.coupling_input_joint = input_joints.first().copied();
+            self.assembly_editor.selected_coupling = None;
+        }
+        if self
+            .assembly_editor
+            .coupling_output_joint
+            .is_none_or(|id| !output_joints.contains(&id))
+        {
+            self.assembly_editor.coupling_output_joint = output_joints
+                .iter()
+                .copied()
+                .find(|id| Some(*id) != self.assembly_editor.coupling_input_joint);
+            self.assembly_editor.selected_coupling = None;
+        }
         if self.assembly_editor.value_input.is_empty() {
             self.assembly_editor.value_input = "0".to_owned();
         }
         if self.assembly_editor.joint_position_input.is_empty() {
             self.assembly_editor.joint_position_input = "0".to_owned();
+        }
+        if self.assembly_editor.joint_lead_input.is_empty() {
+            self.assembly_editor.joint_lead_input = "8".to_owned();
+        }
+        if self.assembly_editor.coupling_input_reference.is_empty() {
+            self.assembly_editor.coupling_input_reference = self
+                .assembly_editor
+                .coupling_input_joint
+                .and_then(|id| snapshot.assembly_joint(id))
+                .and_then(|joint| joint.kind().position())
+                .unwrap_or(0.0)
+                .to_string();
+        }
+        if self.assembly_editor.coupling_output_reference.is_empty() {
+            self.assembly_editor.coupling_output_reference = self
+                .assembly_editor
+                .coupling_output_joint
+                .and_then(|id| snapshot.assembly_joint(id))
+                .and_then(|joint| joint.kind().position())
+                .unwrap_or(0.0)
+                .to_string();
+        }
+        if self.assembly_editor.coupling_first_parameter.is_empty() {
+            self.assembly_editor.coupling_first_parameter = "20".to_owned();
+        }
+        if self.assembly_editor.coupling_second_parameter.is_empty() {
+            self.assembly_editor.coupling_second_parameter = "40".to_owned();
+        }
+        if self.assembly_editor.drag_position_input.is_empty() {
+            self.assembly_editor.drag_position_input = self
+                .assembly_editor
+                .drag_joint
+                .and_then(|id| snapshot.assembly_joint(id))
+                .and_then(|joint| joint.kind().position())
+                .unwrap_or(0.0)
+                .to_string();
         }
         if self.assembly_editor.motion_position_input.is_empty() {
             self.assembly_editor.motion_position_input = "25".to_owned();
@@ -412,14 +681,26 @@ impl KetchupApp {
                     return Err(self.catalog.text("error-preview-stale"));
                 }
                 if *editing {
+                    let existing = snapshot
+                        .assembly_joint(joint.id())
+                        .expect("editing requires the selected joint to exist");
                     let position = joint
                         .kind()
                         .position()
                         .ok_or_else(|| self.catalog.text("assembly-error-joint-position"))?;
-                    let solution = solve_assembly_joint_kinematics_with_drivers(
-                        &snapshot,
-                        &[AssemblyMotionDriver::new(joint.id(), position)],
-                    )
+                    let position_only =
+                        existing.kind().with_position(position) == Some(joint.kind());
+                    let solution = if position_only {
+                        solve_assembly_joint_kinematics_with_drivers(
+                            &snapshot,
+                            &[AssemblyMotionDriver::new(joint.id(), position)],
+                        )
+                    } else {
+                        solve_assembly_joint_kinematics_with_kind_overrides(
+                            &snapshot,
+                            &BTreeMap::from([(joint.id(), joint.kind())]),
+                        )
+                    }
                     .map_err(|error| error.to_string())?;
                     let transforms = solution
                         .poses()
@@ -433,11 +714,19 @@ impl KetchupApp {
                                 .map(|_| (pose.occurrence_id(), pose.local_transform()))
                         })
                         .collect::<Vec<_>>();
-                    CommandBatch::new(vec![
+                    let edit = if position_only {
                         CanonicalCommand::SetAssemblyJointPosition {
                             id: joint.id(),
                             position,
-                        },
+                        }
+                    } else {
+                        CanonicalCommand::SetAssemblyJointKind {
+                            id: joint.id(),
+                            kind: joint.kind(),
+                        }
+                    };
+                    CommandBatch::new(vec![
+                        edit,
                         CanonicalCommand::ApplyAssemblySolve {
                             source_revision: snapshot.revision_id(),
                             source_digest: snapshot.canonical_digest(),
@@ -448,6 +737,37 @@ impl KetchupApp {
                     CommandBatch::new(vec![CanonicalCommand::CreateAssemblyJoint(joint.clone())])
                 }
             }
+            AssemblyPreviewSource::Coupling { coupling, editing } => {
+                if *editing != snapshot.assembly_motion_coupling(coupling.id()).is_some() {
+                    return Err(self.catalog.text("error-preview-stale"));
+                }
+                let command = if *editing {
+                    CanonicalCommand::UpdateAssemblyMotionCoupling(coupling.clone())
+                } else {
+                    CanonicalCommand::CreateAssemblyMotionCoupling(coupling.clone())
+                };
+                CommandBatch::new(vec![command])
+            }
+            AssemblyPreviewSource::Drag {
+                joint_id,
+                requested_position,
+                clamp_to_limits,
+                ..
+            } => preview_assembly_joint_drag(
+                &snapshot,
+                *joint_id,
+                *requested_position,
+                *clamp_to_limits,
+            )
+            .map_err(|error| self.localized_kinematic_error(error))?
+            .solution()
+            .publication_batch(&snapshot)
+            .map_err(|error| match error {
+                AssemblyKinematicPublishError::NoCanonicalChanges => {
+                    self.catalog.text("assembly-error-drag-no-change")
+                }
+                error => error.to_string(),
+            })?,
             AssemblyPreviewSource::MotionStudy {
                 study,
                 selected_occurrences,
@@ -480,12 +800,147 @@ impl KetchupApp {
             .map_err(|error| error.to_string())
     }
 
+    fn localized_kinematic_error(&self, error: AssemblyKinematicSolveError) -> String {
+        match error {
+            AssemblyKinematicSolveError::UnknownDriverJoint(id) => self.catalog.format(
+                "assembly-error-drag-missing-joint",
+                &BTreeMap::from([("id", id.0.to_string())]),
+            ),
+            AssemblyKinematicSolveError::FixedJointDriven(id) => self.catalog.format(
+                "assembly-error-drag-fixed-joint",
+                &BTreeMap::from([("id", id.0.to_string())]),
+            ),
+            AssemblyKinematicSolveError::InvalidDriverPosition(id) => self.catalog.format(
+                "assembly-error-drag-unreachable",
+                &BTreeMap::from([("id", id.0.to_string())]),
+            ),
+            AssemblyKinematicSolveError::OverConstrainedDriver(id) => self.catalog.format(
+                "assembly-error-kinematic-conflict-joint",
+                &BTreeMap::from([("id", id.0.to_string())]),
+            ),
+            AssemblyKinematicSolveError::CouplingConflict(id) => self.catalog.format(
+                "assembly-error-kinematic-conflict-coupling",
+                &BTreeMap::from([("id", id.0.to_string())]),
+            ),
+            AssemblyKinematicSolveError::CoupledPositionOutsideLimits(id) => self.catalog.format(
+                "assembly-error-kinematic-limit-joint",
+                &BTreeMap::from([("id", id.0.to_string())]),
+            ),
+            error => error.to_string(),
+        }
+    }
+
+    fn derive_assembly_preview_kinematics(
+        &self,
+        source: &AssemblyPreviewSource,
+        proposal: &Proposal,
+    ) -> Result<Option<AssemblyKinematicSolution>, String> {
+        let candidate = self
+            .document
+            .preview_batch(proposal.batch())
+            .map_err(|error| error.to_string())?;
+        match source {
+            AssemblyPreviewSource::Joint { .. } | AssemblyPreviewSource::Coupling { .. } => {
+                solve_assembly_joint_kinematics_with_drivers(&candidate, &[])
+                    .map(Some)
+                    .map_err(|error| self.localized_kinematic_error(error))
+            }
+            AssemblyPreviewSource::Drag {
+                joint_id,
+                requested_position,
+                clamp_to_limits,
+                ..
+            } => preview_assembly_joint_drag(
+                &self.document.current(),
+                *joint_id,
+                *requested_position,
+                *clamp_to_limits,
+            )
+            .map(|preview| Some(preview.solution().clone()))
+            .map_err(|error| self.localized_kinematic_error(error)),
+            AssemblyPreviewSource::MotionStudy { study, .. } => {
+                solve_assembly_motion_study(&candidate, study.id())
+                    .map(Some)
+                    .map_err(|error| self.localized_kinematic_error(error))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn assembly_drag_collision_bodies(
+        &self,
+        snapshot: &Snapshot,
+    ) -> Vec<AssemblyMotionCollisionBody> {
+        let projection = CanonicalInteractionProjection::from_snapshot(snapshot);
+        let mut bodies = BTreeMap::new();
+        for occurrence in projection
+            .occurrences()
+            .iter()
+            .filter(|occurrence| occurrence.visible)
+        {
+            let Some([minimum, maximum]) = self.definition_local_bounds(
+                snapshot,
+                occurrence.body.definition_id,
+                occurrence.local_box,
+                true,
+            ) else {
+                continue;
+            };
+            let Ok(bounds) = Aabb::bounded_volume(
+                [minimum.x, minimum.y, minimum.z],
+                [maximum.x, maximum.y, maximum.z],
+            ) else {
+                continue;
+            };
+            bodies.entry(occurrence.occurrence_id).or_insert_with(|| {
+                AssemblyMotionCollisionBody::new(occurrence.occurrence_id, bounds)
+            });
+        }
+        bodies.into_values().collect()
+    }
+
+    fn derive_assembly_drag_clearance(
+        &self,
+        source: &AssemblyPreviewSource,
+    ) -> Result<Option<AssemblyMotionClearanceAnalysis>, String> {
+        let AssemblyPreviewSource::Drag {
+            joint_id,
+            requested_position,
+            clamp_to_limits,
+            check_collisions: true,
+            ..
+        } = source
+        else {
+            return Ok(None);
+        };
+        let snapshot = self.document.current();
+        let bodies = self.assembly_drag_collision_bodies(&snapshot);
+        if bodies.len() < 2 {
+            return Err(self
+                .catalog
+                .text("assembly-error-drag-collision-unavailable"));
+        }
+        preview_assembly_joint_drag_clearance(
+            &snapshot,
+            *joint_id,
+            *requested_position,
+            *clamp_to_limits,
+            32,
+            &bodies,
+            0.0,
+        )
+        .map(|preview| Some(preview.clearance().clone()))
+        .map_err(|error| error.to_string())
+    }
+
     fn derive_assembly_preview_plan(
         &self,
         source: &AssemblyPreviewSource,
     ) -> Result<AssemblyPreviewPlan, String> {
         let proposal = self.derive_assembly_preview_proposal(source)?;
         let solve_result = self.derive_assembly_preview_solve(&proposal)?;
+        let kinematic_result = self.derive_assembly_preview_kinematics(source, &proposal)?;
+        let drag_clearance = self.derive_assembly_drag_clearance(source)?;
         if !Self::assembly_preview_solve_is_acceptable(solve_result.as_ref()) {
             return Err(self.catalog.text("assembly-error-solve-refused"));
         }
@@ -494,6 +949,8 @@ impl KetchupApp {
             proposal,
             solve_required: solve_result.is_some(),
             solve_result,
+            kinematic_result,
+            drag_clearance,
         })
     }
 
@@ -512,6 +969,20 @@ impl KetchupApp {
                 return false;
             }
         };
+        let kinematic_result = match self.derive_assembly_preview_kinematics(&source, &proposal) {
+            Ok(result) => result,
+            Err(error) => {
+                self.assembly_error(error);
+                return false;
+            }
+        };
+        let drag_clearance = match self.derive_assembly_drag_clearance(&source) {
+            Ok(result) => result,
+            Err(error) => {
+                self.assembly_error(error);
+                return false;
+            }
+        };
         self.assembly_editor.solve_result = solve_result.clone();
         if !Self::assembly_preview_solve_is_acceptable(solve_result.as_ref()) {
             self.assembly_error(self.catalog.text("assembly-error-solve-refused"));
@@ -524,6 +995,8 @@ impl KetchupApp {
                 proposal,
                 solve_required: solve_result.is_some(),
                 solve_result,
+                kinematic_result,
+                drag_clearance,
             },
             action: action.clone(),
             clear_occurrence_name: source.clear_occurrence_name(),
@@ -590,12 +1063,36 @@ impl KetchupApp {
             joint.parent_occurrence_id() == selected_occurrences[0]
                 && joint.child_occurrence_id() == selected_occurrences[1]
         });
-        let position_mm = self
+        let position = self
             .assembly_editor
             .joint_position_input
             .trim()
             .parse::<f64>()
             .map_err(|_| self.catalog.text("assembly-error-joint-position"))?;
+        let kind = match self.assembly_editor.joint_kind {
+            AssemblyJointKindChoice::Prismatic => AssemblyJointKind::Prismatic {
+                axis: AssemblyJointAxis::new([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+                limits: Some(AssemblyJointLimits::new(-100.0, 100.0)),
+                position_mm: position,
+            },
+            AssemblyJointKindChoice::Helical => {
+                let lead_mm_per_revolution = self
+                    .assembly_editor
+                    .joint_lead_input
+                    .trim()
+                    .parse::<f64>()
+                    .map_err(|_| self.catalog.text("assembly-error-joint-lead"))?;
+                if !lead_mm_per_revolution.is_finite() || lead_mm_per_revolution <= 0.0 {
+                    return Err(self.catalog.text("assembly-error-joint-lead"));
+                }
+                AssemblyJointKind::Helical {
+                    axis: AssemblyJointAxis::new([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+                    limits: Some(AssemblyJointLimits::new(-360.0, 360.0)),
+                    lead_mm_per_revolution,
+                    position_degrees: position,
+                }
+            }
+        };
         let id = existing.map_or_else(
             || {
                 AssemblyJointId(
@@ -610,18 +1107,157 @@ impl KetchupApp {
             AssemblyJoint::id,
         );
         Ok(AssemblyPreviewSource::Joint {
-            joint: AssemblyJoint::new(
-                id,
-                selected_occurrences[0],
-                selected_occurrences[1],
-                AssemblyJointKind::Prismatic {
-                    axis: AssemblyJointAxis::new([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
-                    limits: Some(AssemblyJointLimits::new(-100.0, 100.0)),
-                    position_mm,
-                },
-            ),
+            joint: AssemblyJoint::new(id, selected_occurrences[0], selected_occurrences[1], kind),
             selected_occurrences,
             editing: existing.is_some(),
+        })
+    }
+
+    fn assembly_coupling_preview_source(&self) -> Result<AssemblyPreviewSource, String> {
+        let snapshot = self.document.current();
+        let input_joint_id = self
+            .assembly_editor
+            .coupling_input_joint
+            .ok_or_else(|| self.catalog.text("assembly-error-coupling-joints"))?;
+        let output_joint_id = self
+            .assembly_editor
+            .coupling_output_joint
+            .ok_or_else(|| self.catalog.text("assembly-error-coupling-joints"))?;
+        if input_joint_id == output_joint_id
+            || snapshot.assembly_joint(input_joint_id).is_none()
+            || snapshot.assembly_joint(output_joint_id).is_none()
+        {
+            return Err(self.catalog.text("assembly-error-coupling-joints"));
+        }
+        let input_reference_position = self
+            .assembly_editor
+            .coupling_input_reference
+            .trim()
+            .parse::<f64>()
+            .map_err(|_| self.catalog.text("assembly-error-coupling-parameter"))?;
+        let output_reference_position = self
+            .assembly_editor
+            .coupling_output_reference
+            .trim()
+            .parse::<f64>()
+            .map_err(|_| self.catalog.text("assembly-error-coupling-parameter"))?;
+        let first = &self.assembly_editor.coupling_first_parameter;
+        let second = &self.assembly_editor.coupling_second_parameter;
+        let option = self.assembly_editor.coupling_option;
+        let parameter_error = || self.catalog.text("assembly-error-coupling-parameter");
+        let transmission = match self.assembly_editor.coupling_kind {
+            AssemblyCouplingKindChoice::GearPair => AssemblyTransmissionKind::GearPair {
+                input_teeth: first.trim().parse::<u32>().map_err(|_| parameter_error())?,
+                output_teeth: second
+                    .trim()
+                    .parse::<u32>()
+                    .map_err(|_| parameter_error())?,
+                mesh: if option {
+                    GearMeshKind::Internal
+                } else {
+                    GearMeshKind::External
+                },
+            },
+            AssemblyCouplingKindChoice::Belt => AssemblyTransmissionKind::Belt {
+                input_pitch_diameter_mm: first
+                    .trim()
+                    .parse::<f64>()
+                    .map_err(|_| parameter_error())?,
+                output_pitch_diameter_mm: second
+                    .trim()
+                    .parse::<f64>()
+                    .map_err(|_| parameter_error())?,
+                crossed: option,
+            },
+            AssemblyCouplingKindChoice::Chain => AssemblyTransmissionKind::Chain {
+                input_sprocket_teeth: first.trim().parse::<u32>().map_err(|_| parameter_error())?,
+                output_sprocket_teeth: second
+                    .trim()
+                    .parse::<u32>()
+                    .map_err(|_| parameter_error())?,
+            },
+            AssemblyCouplingKindChoice::RackAndPinion => AssemblyTransmissionKind::RackAndPinion {
+                pinion_pitch_diameter_mm: first
+                    .trim()
+                    .parse::<f64>()
+                    .map_err(|_| parameter_error())?,
+                direction: if option {
+                    AssemblyMotionDirection::Opposite
+                } else {
+                    AssemblyMotionDirection::Same
+                },
+            },
+            AssemblyCouplingKindChoice::LeadScrew => AssemblyTransmissionKind::LeadScrew {
+                lead_mm_per_revolution: first
+                    .trim()
+                    .parse::<f64>()
+                    .map_err(|_| parameter_error())?,
+                handedness: if option {
+                    ScrewHandedness::Left
+                } else {
+                    ScrewHandedness::Right
+                },
+            },
+        };
+        let (id, editing) = self.assembly_editor.selected_coupling.map_or_else(
+            || {
+                (
+                    AssemblyMotionCouplingId(
+                        snapshot
+                            .assembly_motion_couplings()
+                            .map(|coupling| coupling.id().0)
+                            .max()
+                            .unwrap_or(0)
+                            + 1,
+                    ),
+                    false,
+                )
+            },
+            |id| (id, true),
+        );
+        let coupling = AssemblyMotionCoupling::new(
+            id,
+            input_joint_id,
+            output_joint_id,
+            input_reference_position,
+            output_reference_position,
+            transmission,
+        );
+        if !coupling.has_valid_shape() {
+            return Err(parameter_error());
+        }
+        Ok(AssemblyPreviewSource::Coupling { coupling, editing })
+    }
+
+    fn assembly_drag_preview_source(&self) -> Result<AssemblyPreviewSource, String> {
+        let joint_id = self
+            .assembly_editor
+            .drag_joint
+            .ok_or_else(|| self.catalog.text("assembly-error-drag-joint"))?;
+        let joint = self
+            .document
+            .current()
+            .assembly_joint(joint_id)
+            .cloned()
+            .ok_or_else(|| self.catalog.text("assembly-error-drag-joint"))?;
+        if joint.kind().position().is_none() {
+            return Err(self.catalog.text("assembly-error-drag-joint"));
+        }
+        let requested_position = self
+            .assembly_editor
+            .drag_position_input
+            .trim()
+            .parse::<f64>()
+            .map_err(|_| self.catalog.text("assembly-error-drag-position"))?;
+        if !requested_position.is_finite() {
+            return Err(self.catalog.text("assembly-error-drag-position"));
+        }
+        Ok(AssemblyPreviewSource::Drag {
+            joint_id,
+            requested_position,
+            clamp_to_limits: self.assembly_editor.drag_clamp_to_limits,
+            check_collisions: self.assembly_editor.drag_check_collisions,
+            allow_contact: self.assembly_editor.drag_allow_contact,
         })
     }
 
@@ -706,6 +1342,93 @@ impl KetchupApp {
                 false
             }
         }
+    }
+
+    fn preview_assembly_coupling(&mut self) -> bool {
+        match self.assembly_coupling_preview_source() {
+            Ok(source) => self.prepare_assembly_preview(source),
+            Err(error) => {
+                self.assembly_error(error);
+                false
+            }
+        }
+    }
+
+    fn preview_assembly_drag(&mut self) -> bool {
+        match self.assembly_drag_preview_source() {
+            Ok(source) => self.prepare_assembly_preview(source),
+            Err(error) => {
+                self.assembly_error(error);
+                false
+            }
+        }
+    }
+
+    fn edit_assembly_coupling(&mut self, id: AssemblyMotionCouplingId) {
+        let snapshot = self.document.current();
+        let Some(coupling) = snapshot.assembly_motion_coupling(id) else {
+            return;
+        };
+        self.assembly_editor.selected_coupling = Some(id);
+        self.assembly_editor.coupling_input_joint = Some(coupling.input_joint_id());
+        self.assembly_editor.coupling_output_joint = Some(coupling.output_joint_id());
+        self.assembly_editor.coupling_input_reference =
+            coupling.input_reference_position().to_string();
+        self.assembly_editor.coupling_output_reference =
+            coupling.output_reference_position().to_string();
+        let (kind, first, second, option) = match coupling.transmission() {
+            AssemblyTransmissionKind::GearPair {
+                input_teeth,
+                output_teeth,
+                mesh,
+            } => (
+                AssemblyCouplingKindChoice::GearPair,
+                input_teeth.to_string(),
+                output_teeth.to_string(),
+                mesh == GearMeshKind::Internal,
+            ),
+            AssemblyTransmissionKind::Belt {
+                input_pitch_diameter_mm,
+                output_pitch_diameter_mm,
+                crossed,
+            } => (
+                AssemblyCouplingKindChoice::Belt,
+                input_pitch_diameter_mm.to_string(),
+                output_pitch_diameter_mm.to_string(),
+                crossed,
+            ),
+            AssemblyTransmissionKind::Chain {
+                input_sprocket_teeth,
+                output_sprocket_teeth,
+            } => (
+                AssemblyCouplingKindChoice::Chain,
+                input_sprocket_teeth.to_string(),
+                output_sprocket_teeth.to_string(),
+                false,
+            ),
+            AssemblyTransmissionKind::RackAndPinion {
+                pinion_pitch_diameter_mm,
+                direction,
+            } => (
+                AssemblyCouplingKindChoice::RackAndPinion,
+                pinion_pitch_diameter_mm.to_string(),
+                String::new(),
+                direction == AssemblyMotionDirection::Opposite,
+            ),
+            AssemblyTransmissionKind::LeadScrew {
+                lead_mm_per_revolution,
+                handedness,
+            } => (
+                AssemblyCouplingKindChoice::LeadScrew,
+                lead_mm_per_revolution.to_string(),
+                String::new(),
+                handedness == ScrewHandedness::Left,
+            ),
+        };
+        self.assembly_editor.coupling_kind = kind;
+        self.assembly_editor.coupling_first_parameter = first;
+        self.assembly_editor.coupling_second_parameter = second;
+        self.assembly_editor.coupling_option = option;
     }
 
     fn preview_assembly_motion_study_from_selection(&mut self) -> bool {
@@ -1137,6 +1860,49 @@ impl KetchupApp {
         ));
     }
 
+    fn show_assembly_kinematic_diagnostic(
+        &self,
+        ui: &mut egui::Ui,
+        result: Option<&AssemblyKinematicSolution>,
+    ) {
+        let Some(result) = result else {
+            return;
+        };
+        let status = self.catalog.text(match result.status() {
+            AssemblyKinematicSolveStatus::UnderConstrained => "assembly-kinematic-under",
+            AssemblyKinematicSolveStatus::FullyConstrained => "assembly-kinematic-fully",
+        });
+        ui.label(self.catalog.format(
+            "assembly-kinematic-summary",
+            &BTreeMap::from([
+                ("status", status),
+                ("dof", result.remaining_dof().to_string()),
+            ]),
+        ));
+        for diagnostic in result.joint_diagnostics() {
+            ui.label(self.catalog.format(
+                "assembly-kinematic-joint-diagnostic",
+                &BTreeMap::from([
+                    ("id", diagnostic.joint_id().0.to_string()),
+                    ("dof", diagnostic.remaining_dof().to_string()),
+                    ("drivers", diagnostic.driver_count().to_string()),
+                ]),
+            ));
+        }
+        if !result.redundant_driver_joint_ids().is_empty() {
+            let ids = result
+                .redundant_driver_joint_ids()
+                .iter()
+                .map(|id| id.0.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            ui.label(self.catalog.format(
+                "assembly-kinematic-redundant-drivers",
+                &BTreeMap::from([("ids", ids)]),
+            ));
+        }
+    }
+
     pub(super) fn show_assembly_editor(&mut self, ui: &mut egui::Ui) {
         let title = self.catalog.text("assembly-title");
         egui::CollapsingHeader::new(title)
@@ -1161,8 +1927,98 @@ impl KetchupApp {
                 &BTreeMap::from([("action", preview.action.clone())]),
             ));
             self.show_assembly_solve_diagnostic(ui, &snapshot, preview.plan.solve_result.as_ref());
+            self.show_assembly_kinematic_diagnostic(ui, preview.plan.kinematic_result.as_ref());
+            if let AssemblyPreviewSource::Drag {
+                joint_id,
+                requested_position,
+                ..
+            } = &preview.plan.source
+                && let Some(applied_position) =
+                    preview.plan.kinematic_result.as_ref().and_then(|result| {
+                        result
+                            .driven_joint_positions()
+                            .iter()
+                            .find_map(|(id, position)| (id == joint_id).then_some(*position))
+                    })
+            {
+                ui.label(
+                    self.catalog.format(
+                        "assembly-drag-result",
+                        &BTreeMap::from([
+                            ("id", joint_id.0.to_string()),
+                            ("requested", requested_position.to_string()),
+                            ("applied", applied_position.to_string()),
+                            (
+                                "limited",
+                                self.catalog
+                                    .text(if requested_position == &applied_position {
+                                        "assembly-drag-not-limited"
+                                    } else {
+                                        "assembly-drag-limited"
+                                    }),
+                            ),
+                        ]),
+                    ),
+                );
+            }
+            if let Some(clearance) = preview.plan.drag_clearance.as_ref() {
+                let minimum = clearance.minimum_clearance();
+                let pair = minimum.pair();
+                ui.label(self.catalog.format(
+                    "assembly-drag-clearance-minimum",
+                    &BTreeMap::from([
+                        ("clearance", clearance.minimum_clearance_mm().to_string()),
+                        ("first", pair.first_occurrence_id().0.to_string()),
+                        ("second", pair.second_occurrence_id().0.to_string()),
+                        ("progress", minimum.progress_start().to_string()),
+                    ]),
+                ));
+                if let Some(contact) = clearance.first_contact() {
+                    let pair = contact.pair();
+                    let allowed = matches!(
+                        &preview.plan.source,
+                        AssemblyPreviewSource::Drag {
+                            allow_contact: true,
+                            ..
+                        }
+                    );
+                    ui.label(self.catalog.format(
+                        "assembly-drag-clearance-contact",
+                        &BTreeMap::from([
+                            ("first", pair.first_occurrence_id().0.to_string()),
+                            ("second", pair.second_occurrence_id().0.to_string()),
+                            ("progress", contact.progress_start().to_string()),
+                            (
+                                "policy",
+                                self.catalog.text(if allowed {
+                                    "assembly-drag-contact-allowed"
+                                } else {
+                                    "assembly-drag-contact-blocked"
+                                }),
+                            ),
+                        ]),
+                    ));
+                } else {
+                    ui.label(self.catalog.text("assembly-drag-clearance-safe"));
+                }
+            }
+            let contact_blocked = preview
+                .plan
+                .drag_clearance
+                .as_ref()
+                .is_some_and(|clearance| clearance.first_contact().is_some())
+                && !matches!(
+                    &preview.plan.source,
+                    AssemblyPreviewSource::Drag {
+                        allow_contact: true,
+                        ..
+                    }
+                );
             let confirm = ui
-                .button(self.catalog.text("assembly-confirm-preview"))
+                .add_enabled(
+                    !contact_blocked,
+                    egui::Button::new(self.catalog.text("assembly-confirm-preview")),
+                )
                 .clicked();
             let cancel = ui
                 .button(self.catalog.text("assembly-cancel-preview"))
@@ -1299,6 +2155,25 @@ impl KetchupApp {
 
         ui.separator();
         ui.label(self.catalog.text("assembly-kinematics-title"));
+        let joint_kind_label = self.catalog.text("assembly-joint-kind");
+        let joint_kind_response = egui::ComboBox::from_id_salt("assembly-joint-kind")
+            .width(ui.available_width())
+            .selected_text(
+                self.catalog
+                    .text(self.assembly_editor.joint_kind.label_key()),
+            )
+            .show_ui(ui, |ui| {
+                for kind in AssemblyJointKindChoice::ALL {
+                    ui.selectable_value(
+                        &mut self.assembly_editor.joint_kind,
+                        kind,
+                        self.catalog.text(kind.label_key()),
+                    );
+                }
+            });
+        joint_kind_response.response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, &joint_kind_label)
+        });
         let joint_position_label = self.catalog.text("assembly-joint-position");
         let joint_position = ui.add(
             egui::TextEdit::singleline(&mut self.assembly_editor.joint_position_input)
@@ -1307,6 +2182,16 @@ impl KetchupApp {
         joint_position.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &joint_position_label)
         });
+        if self.assembly_editor.joint_kind == AssemblyJointKindChoice::Helical {
+            let joint_lead_label = self.catalog.text("assembly-joint-lead");
+            let joint_lead = ui.add(
+                egui::TextEdit::singleline(&mut self.assembly_editor.joint_lead_input)
+                    .hint_text(&joint_lead_label),
+            );
+            joint_lead.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &joint_lead_label)
+            });
+        }
         let has_kinematic_selection = self.assembly_kinematic_selection().is_some();
         if ui
             .add_enabled(
@@ -1317,6 +2202,223 @@ impl KetchupApp {
         {
             action = Some(AssemblyUiAction::PreviewJoint);
         }
+
+        ui.label(self.catalog.text("assembly-drag-title"));
+        let movable_joints = snapshot
+            .assembly_joints()
+            .filter(|joint| joint.kind().position().is_some())
+            .map(AssemblyJoint::id)
+            .collect::<Vec<_>>();
+        let drag_joint_label = self.catalog.text("assembly-drag-joint");
+        let drag_joint_before = self.assembly_editor.drag_joint;
+        let drag_joint_response = egui::ComboBox::from_id_salt("assembly-drag-joint")
+            .width(ui.available_width())
+            .selected_text(self.assembly_editor.drag_joint.map_or_else(
+                || self.catalog.text("assembly-drag-joint-unavailable"),
+                |id| id.0.to_string(),
+            ))
+            .show_ui(ui, |ui| {
+                for id in movable_joints {
+                    ui.selectable_value(
+                        &mut self.assembly_editor.drag_joint,
+                        Some(id),
+                        id.0.to_string(),
+                    );
+                }
+            });
+        drag_joint_response.response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, &drag_joint_label)
+        });
+        if drag_joint_before != self.assembly_editor.drag_joint {
+            self.assembly_editor.drag_position_input = self
+                .assembly_editor
+                .drag_joint
+                .and_then(|id| snapshot.assembly_joint(id))
+                .and_then(|joint| joint.kind().position())
+                .unwrap_or(0.0)
+                .to_string();
+        }
+        let drag_position_label = self.catalog.text("assembly-drag-position");
+        let drag_position = ui.add(
+            egui::TextEdit::singleline(&mut self.assembly_editor.drag_position_input)
+                .hint_text(&drag_position_label),
+        );
+        drag_position.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &drag_position_label)
+        });
+        ui.checkbox(
+            &mut self.assembly_editor.drag_clamp_to_limits,
+            self.catalog.text("assembly-drag-clamp"),
+        );
+        ui.checkbox(
+            &mut self.assembly_editor.drag_check_collisions,
+            self.catalog.text("assembly-drag-check-collisions"),
+        );
+        ui.add_enabled_ui(self.assembly_editor.drag_check_collisions, |ui| {
+            ui.checkbox(
+                &mut self.assembly_editor.drag_allow_contact,
+                self.catalog.text("assembly-drag-allow-contact"),
+            );
+        });
+        if ui
+            .add_enabled(
+                self.assembly_editor.drag_joint.is_some(),
+                egui::Button::new(self.catalog.text("assembly-preview-drag")),
+            )
+            .clicked()
+        {
+            action = Some(AssemblyUiAction::PreviewDrag);
+        }
+
+        ui.label(self.catalog.text("assembly-coupling-title"));
+        let previous_coupling_kind = self.assembly_editor.coupling_kind;
+        let coupling_kind_label = self.catalog.text("assembly-coupling-kind");
+        let coupling_kind_response = egui::ComboBox::from_id_salt("assembly-coupling-kind")
+            .width(ui.available_width())
+            .selected_text(
+                self.catalog
+                    .text(self.assembly_editor.coupling_kind.label_key()),
+            )
+            .show_ui(ui, |ui| {
+                for kind in AssemblyCouplingKindChoice::ALL {
+                    ui.selectable_value(
+                        &mut self.assembly_editor.coupling_kind,
+                        kind,
+                        self.catalog.text(kind.label_key()),
+                    );
+                }
+            });
+        coupling_kind_response.response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, &coupling_kind_label)
+        });
+        if previous_coupling_kind != self.assembly_editor.coupling_kind {
+            self.assembly_editor.selected_coupling = None;
+            self.assembly_editor.coupling_input_joint = None;
+            self.assembly_editor.coupling_output_joint = None;
+            self.assembly_editor.coupling_input_reference.clear();
+            self.assembly_editor.coupling_output_reference.clear();
+            self.assembly_editor.coupling_option = false;
+            self.reconcile_assembly_editor(&snapshot);
+        }
+        let (input_kind, output_kind) = self.assembly_editor.coupling_kind.joint_kinds();
+        let input_joints = Self::assembly_coupling_joint_ids(&snapshot, input_kind);
+        let output_joints = Self::assembly_coupling_joint_ids(&snapshot, output_kind);
+        for (side, joint_ids) in [("input", input_joints), ("output", output_joints)] {
+            let (label_key, selected) = if side == "input" {
+                (
+                    "assembly-coupling-input-joint",
+                    &mut self.assembly_editor.coupling_input_joint,
+                )
+            } else {
+                (
+                    "assembly-coupling-output-joint",
+                    &mut self.assembly_editor.coupling_output_joint,
+                )
+            };
+            let label = self.catalog.text(label_key);
+            let selected_text = selected.map_or_else(
+                || self.catalog.text("assembly-coupling-joint-unavailable"),
+                |id| id.0.to_string(),
+            );
+            let before = *selected;
+            let response = egui::ComboBox::from_id_salt(("assembly-coupling-joint", side))
+                .width(ui.available_width())
+                .selected_text(selected_text)
+                .show_ui(ui, |ui| {
+                    for id in joint_ids {
+                        ui.selectable_value(selected, Some(id), id.0.to_string());
+                    }
+                });
+            response.response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, &label)
+            });
+            if before != *selected {
+                self.assembly_editor.selected_coupling = None;
+                let reference = selected
+                    .and_then(|id| snapshot.assembly_joint(id))
+                    .and_then(|joint| joint.kind().position())
+                    .unwrap_or(0.0)
+                    .to_string();
+                if side == "input" {
+                    self.assembly_editor.coupling_input_reference = reference;
+                } else {
+                    self.assembly_editor.coupling_output_reference = reference;
+                }
+            }
+        }
+        for (label_key, value) in [
+            (
+                "assembly-coupling-input-reference",
+                &mut self.assembly_editor.coupling_input_reference,
+            ),
+            (
+                "assembly-coupling-output-reference",
+                &mut self.assembly_editor.coupling_output_reference,
+            ),
+        ] {
+            let label = self.catalog.text(label_key);
+            let response = ui.add(egui::TextEdit::singleline(value).hint_text(&label));
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &label)
+            });
+        }
+        let (first_label_key, second_label_key) =
+            self.assembly_editor.coupling_kind.parameter_label_keys();
+        let first_label = self.catalog.text(first_label_key);
+        let first = ui.add(
+            egui::TextEdit::singleline(&mut self.assembly_editor.coupling_first_parameter)
+                .hint_text(&first_label),
+        );
+        first.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &first_label)
+        });
+        if let Some(second_label_key) = second_label_key {
+            let second_label = self.catalog.text(second_label_key);
+            let second = ui.add(
+                egui::TextEdit::singleline(&mut self.assembly_editor.coupling_second_parameter)
+                    .hint_text(&second_label),
+            );
+            second.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &second_label)
+            });
+        }
+        if let Some(option_label_key) = self.assembly_editor.coupling_kind.option_label_key() {
+            ui.checkbox(
+                &mut self.assembly_editor.coupling_option,
+                self.catalog.text(option_label_key),
+            );
+        }
+        if ui
+            .add_enabled(
+                self.assembly_editor.coupling_input_joint.is_some()
+                    && self.assembly_editor.coupling_output_joint.is_some(),
+                egui::Button::new(self.catalog.text("assembly-preview-coupling")),
+            )
+            .clicked()
+        {
+            action = Some(AssemblyUiAction::PreviewCoupling);
+        }
+        for coupling in snapshot.assembly_motion_couplings() {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(self.catalog.format(
+                    "assembly-coupling-row",
+                    &BTreeMap::from([
+                        ("id", coupling.id().0.to_string()),
+                        ("kind", coupling.transmission().label().to_owned()),
+                    ]),
+                ));
+                if ui
+                    .button(self.catalog.format(
+                        "assembly-edit-coupling",
+                        &BTreeMap::from([("id", coupling.id().0.to_string())]),
+                    ))
+                    .clicked()
+                {
+                    action = Some(AssemblyUiAction::EditCoupling(coupling.id()));
+                }
+            });
+        }
+
         let motion_name_label = self.catalog.text("assembly-motion-name");
         let motion_name = ui.add(
             egui::TextEdit::singleline(&mut self.assembly_editor.motion_name_input)
@@ -1522,6 +2624,15 @@ impl KetchupApp {
             Some(AssemblyUiAction::PreviewJoint) => {
                 self.preview_assembly_joint_from_selection();
             }
+            Some(AssemblyUiAction::PreviewCoupling) => {
+                self.preview_assembly_coupling();
+            }
+            Some(AssemblyUiAction::EditCoupling(id)) => {
+                self.edit_assembly_coupling(id);
+            }
+            Some(AssemblyUiAction::PreviewDrag) => {
+                self.preview_assembly_drag();
+            }
             Some(AssemblyUiAction::PreviewMotionStudy) => {
                 self.preview_assembly_motion_study_from_selection();
             }
@@ -1548,8 +2659,58 @@ impl KetchupApp {
     }
 
     #[must_use]
+    pub fn assembly_motion_coupling_count(&self) -> usize {
+        self.document.current().assembly_motion_couplings().count()
+    }
+
+    #[must_use]
     pub fn assembly_motion_study_count(&self) -> usize {
         self.document.current().assembly_motion_studies().count()
+    }
+
+    #[doc(hidden)]
+    pub fn headless_set_assembly_joint_parameters(&mut self, position: f64, lead: f64) {
+        self.assembly_editor.joint_position_input = position.to_string();
+        self.assembly_editor.joint_lead_input = lead.to_string();
+    }
+
+    #[doc(hidden)]
+    pub fn headless_set_assembly_coupling_parameters(
+        &mut self,
+        joint_ids: [u64; 2],
+        reference_positions: [f64; 2],
+        parameters: [&str; 2],
+        option: bool,
+    ) {
+        self.assembly_editor.coupling_input_joint = Some(AssemblyJointId(joint_ids[0]));
+        self.assembly_editor.coupling_output_joint = Some(AssemblyJointId(joint_ids[1]));
+        self.assembly_editor.coupling_input_reference = reference_positions[0].to_string();
+        self.assembly_editor.coupling_output_reference = reference_positions[1].to_string();
+        self.assembly_editor.coupling_first_parameter = parameters[0].to_owned();
+        self.assembly_editor.coupling_second_parameter = parameters[1].to_owned();
+        self.assembly_editor.coupling_option = option;
+    }
+
+    #[doc(hidden)]
+    pub fn headless_set_assembly_drag(
+        &mut self,
+        joint_id: u64,
+        position: f64,
+        clamp_to_limits: bool,
+    ) {
+        self.assembly_editor.drag_joint = Some(AssemblyJointId(joint_id));
+        self.assembly_editor.drag_position_input = position.to_string();
+        self.assembly_editor.drag_clamp_to_limits = clamp_to_limits;
+    }
+
+    #[doc(hidden)]
+    pub fn headless_set_assembly_drag_collision_policy(
+        &mut self,
+        check_collisions: bool,
+        allow_contact: bool,
+    ) {
+        self.assembly_editor.drag_check_collisions = check_collisions;
+        self.assembly_editor.drag_allow_contact = allow_contact;
     }
 
     #[doc(hidden)]
@@ -1612,7 +2773,7 @@ impl KetchupApp {
     pub fn headless_drawing_fingerprint(
         &self,
         sheet_id: DrawingSheetId,
-    ) -> Option<(String, Vec<&'static str>)> {
+    ) -> Option<(String, Vec<String>)> {
         let snapshot = self.document.current();
         let sheet = snapshot.drawing_sheet(sheet_id)?;
         let drawing = project_orthographic_drawing(&snapshot, &self.exact_results, sheet).ok()?;
@@ -1628,7 +2789,7 @@ impl KetchupApp {
 
     #[cfg(debug_assertions)]
     #[doc(hidden)]
-    pub fn headless_capstone_drawing_fingerprint(&self) -> Option<(String, Vec<&'static str>)> {
+    pub fn headless_capstone_drawing_fingerprint(&self) -> Option<(String, Vec<String>)> {
         let snapshot = self.document.current();
         let sheet = snapshot.drawing_sheets().next()?;
         let drawing = project_orthographic_drawing(&snapshot, &self.exact_results, sheet).ok()?;

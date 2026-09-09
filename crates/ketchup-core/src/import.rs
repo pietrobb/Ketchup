@@ -22,6 +22,7 @@ pub enum ImportFormat {
     Stl,
     Dxf,
     Step,
+    Iges,
     SketchupScene,
     Glb,
 }
@@ -344,6 +345,8 @@ mod sketchup_scene;
 pub use sketchup_scene::*;
 mod glb;
 pub use glb::*;
+mod iges;
+pub use iges::*;
 
 pub const STEP_PARSER_ID: &str = "ketchup-occt-step";
 pub const STEP_PARSER_VERSION: &str = "2";

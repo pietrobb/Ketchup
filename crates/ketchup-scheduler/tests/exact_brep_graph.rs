@@ -48,6 +48,54 @@ fn assert_geometry_error(error: WorkerError, code: &str) {
     }
 }
 
+#[test]
+fn exact_worker_converts_verified_step_to_iges_and_reinspects_exact_evidence() {
+    let source = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../corpora/r0/step/self-authored-box.step");
+    let directory = tempfile::tempdir().unwrap();
+    let iges = directory.path().join("box.iges");
+    let cancelled = AtomicBool::new(false);
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+
+    supervisor
+        .convert_step_to_iges_with_cancellation(&source, &iges, &cancelled)
+        .unwrap();
+    let bytes = std::fs::read(&iges).unwrap();
+    let evidence = supervisor
+        .inspect_iges_import_with_cancellation(&iges, &sha256_hex(&bytes), &cancelled)
+        .unwrap();
+
+    assert_eq!(
+        evidence.source_unit,
+        ketchup_core::import::ImportLengthUnit::Millimetre
+    );
+    assert_eq!(evidence.solid_count, 1);
+    assert!((evidence.volume_mm3 - 6_000.0).abs() <= 1.0e-7);
+    assert_eq!(evidence.topology_counts, [8, 12, 6, 1, 1]);
+    let mesh_path = directory.path().join("box.mesh");
+    let mesh = supervisor
+        .tessellate_iges_import_with_cancellation(
+            &iges,
+            &sha256_hex(&bytes),
+            &evidence.result_fingerprint,
+            &mesh_path,
+            &cancelled,
+        )
+        .unwrap();
+    assert!(!mesh.vertices_mm.is_empty());
+    assert!(!mesh.triangles.is_empty());
+    assert!(mesh_path.is_file());
+
+    std::fs::write(&iges, b"not an IGES model").unwrap();
+    let malformed = std::fs::read(&iges).unwrap();
+    assert!(
+        supervisor
+            .inspect_iges_import_with_cancellation(&iges, &sha256_hex(&malformed), &cancelled,)
+            .is_err()
+    );
+}
+
 fn simple_extrusion_graph() -> ExactBRepGraph {
     let definition = DefinitionId(90);
     let profile = FeatureId(900);

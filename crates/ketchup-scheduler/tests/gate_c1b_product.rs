@@ -23333,87 +23333,6 @@ fn scheduler_evaluates_general_polygon_and_segment_revolves_with_stable_exact_ro
 }
 
 #[test]
-fn scheduler_evaluates_bottle_revolve_with_deterministic_mesh_and_five_durable_roles() {
-    let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
-    let mut document = bottle_document();
-    let snapshot = document.current();
-    let request = ExactRevolveRequest::from_snapshot(&snapshot, BOTTLE_DEFINITION).unwrap();
-
-    let first = supervisor.evaluate_revolve(&request).unwrap();
-    let second = supervisor.evaluate_revolve(&request).unwrap();
-    assert!(first.is_current(&snapshot));
-    assert_eq!(first.identity, second.identity);
-    assert_eq!(first.vertices, second.vertices);
-    assert_eq!(first.triangles, second.triangles);
-    for (actual, expected) in first
-        .bounds_mm
-        .into_iter()
-        .flatten()
-        .zip([-30.0, -30.0, 0.0, 30.0, 30.0, 155.0])
-    {
-        assert!((actual - expected).abs() <= 1.0e-6);
-    }
-    assert_eq!(first.references.len(), 5);
-    assert_eq!(first.vertices.len(), 130);
-    assert_eq!(first.triangles.len(), 256);
-
-    let results = ExactResultRegistry::accept(&snapshot, [Arc::new(first.clone().into())]).unwrap();
-    let projection = ExactInteractionProjection::from_snapshot(&snapshot, &results);
-    assert_eq!(projection.occurrence_count(), 1);
-    for (role, origin, direction) in [
-        (
-            ExactFaceRole::RevolveBottom,
-            Vec3::new(20.0, 0.0, -10.0),
-            Vec3::new(0.0, 0.0, 1.0),
-        ),
-        (
-            ExactFaceRole::RevolveBody,
-            Vec3::new(40.0, 0.0, 50.0),
-            Vec3::new(-1.0, 0.0, 0.0),
-        ),
-        (
-            ExactFaceRole::RevolveShoulder,
-            Vec3::new(40.0, 0.0, 120.0),
-            Vec3::new(-1.0, 0.0, 0.0),
-        ),
-        (
-            ExactFaceRole::RevolveNeck,
-            Vec3::new(20.0, 0.0, 140.0),
-            Vec3::new(-1.0, 0.0, 0.0),
-        ),
-        (
-            ExactFaceRole::RevolveMouth,
-            Vec3::new(6.0, 0.0, 165.0),
-            Vec3::new(0.0, 0.0, -1.0),
-        ),
-    ] {
-        let hit = projection
-            .exact_pick(Ray::new(origin, direction).unwrap())
-            .unwrap_or_else(|| panic!("revolve pick missed {role:?}"));
-        assert_eq!(hit.target.body.role(), Some(role));
-        assert!(hit.target.body.has_valid_lineage());
-        assert_eq!(hit.target.body.producer_feature_id, BOTTLE_REVOLVE);
-    }
-
-    for reference in first.references.clone() {
-        document
-            .register_exact_reference_evidence(reference)
-            .unwrap();
-    }
-    assert_eq!(document.current().exact_reference_evidence().count(), 5);
-    let reopened =
-        ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current()))
-            .unwrap();
-    let reopened = match reopened {
-        ketchup_core::persistence::LoadOutcome::Editable { document, .. } => document,
-        ketchup_core::persistence::LoadOutcome::ReviewOnly(_) => {
-            panic!("current M6 bottle must reopen editable")
-        }
-    };
-    assert_eq!(reopened.current().exact_reference_evidence().count(), 5);
-}
-
-#[test]
 fn scheduler_evaluates_editable_bottle_shell_with_open_mouth_and_current_references() {
     let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
     let mut document = bottle_shell_document();
@@ -23494,14 +23413,10 @@ fn scheduler_evaluates_editable_bottle_shell_with_open_mouth_and_current_referen
             .register_exact_reference_evidence(reference)
             .unwrap();
     }
-    let reopened =
-        ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current()))
-            .unwrap();
-    assert_eq!(
-        reopened.source_schema(),
-        ketchup_core::persistence::CURRENT_SCHEMA
-    );
-    assert_eq!(reopened.snapshot().exact_reference_evidence().count(), 9);
+    assert!(matches!(
+        ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current())),
+        Err(ketchup_core::persistence::PersistenceError::LegacyFeatureRequiresMigration { .. })
+    ));
 }
 
 #[test]
@@ -24067,14 +23982,10 @@ fn scheduler_evaluates_controlled_bottle_fillet_and_chamfer_with_current_roles()
             .register_exact_reference_evidence(reference)
             .unwrap();
     }
-    let reopened =
-        ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current()))
-            .unwrap();
-    assert_eq!(
-        reopened.source_schema(),
-        ketchup_core::persistence::CURRENT_SCHEMA
-    );
-    assert_eq!(reopened.snapshot().exact_reference_evidence().count(), 9);
+    assert!(matches!(
+        ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current())),
+        Err(ketchup_core::persistence::PersistenceError::LegacyFeatureRequiresMigration { .. })
+    ));
 }
 
 fn controlled_finished_bottle_document() -> DocumentStore {

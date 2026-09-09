@@ -9,7 +9,8 @@ use ketchup_core::exact_product::{
 use ketchup_core::exact_revolve::ExactRevolveRequest;
 use ketchup_core::graph::sha256_bytes;
 use ketchup_core::import::{
-    ImportFormat, ImportUnitAuthority, STEP_PARSER_ID, STEP_PARSER_VERSION, StepImportEvidence,
+    IGES_PARSER_ID, IGES_PARSER_VERSION, ImportFormat, ImportUnitAuthority, STEP_PARSER_ID,
+    STEP_PARSER_VERSION, StepImportEvidence,
 };
 use ketchup_core::persistence::ContainerData;
 use ketchup_core::sketch::{WorkplaneSpec, WorkplaneSupport};
@@ -486,16 +487,18 @@ pub fn start_exact_evaluation(
                     snapshot.import_receipt(spec.import_id).ok_or_else(
                         || "imported STEP receipt is unavailable".to_owned(),
                     )?;
-                if receipt.format() != ImportFormat::Step
-                    || receipt.units().authority()
-                        != ImportUnitAuthority::FileDeclared
-                    || receipt.parser_id() != STEP_PARSER_ID
-                    || receipt.parser_version() != STEP_PARSER_VERSION
+                let (format_name, parser_id, parser_version, suffix) = match receipt.format() {
+                    ImportFormat::Step => ("STEP", STEP_PARSER_ID, STEP_PARSER_VERSION, ".step"),
+                    ImportFormat::Iges => ("IGES", IGES_PARSER_ID, IGES_PARSER_VERSION, ".iges"),
+                    _ => return Err("imported exact receipt format is unsupported".to_owned()),
+                };
+                if receipt.units().authority() != ImportUnitAuthority::FileDeclared
+                    || receipt.parser_id() != parser_id
+                    || receipt.parser_version() != parser_version
                 {
-                    return Err(
-                        "imported STEP receipt provenance is not authoritative"
-                            .to_owned(),
-                    );
+                    return Err(format!(
+                        "imported {format_name} receipt provenance is not authoritative"
+                    ));
                 }
                 let source_unit = receipt.units().source_unit();
                 let mut expected = StepImportEvidence {
@@ -509,8 +512,8 @@ pub fn start_exact_evaluation(
                     tolerance: spec.tolerance.clone(),
                 };
                 let mut temporary = tempfile::Builder::new()
-                    .prefix("ketchup-imported-step-")
-                    .suffix(".step")
+                    .prefix("ketchup-imported-exact-")
+                    .suffix(suffix)
                     .tempfile()
                     .map_err(|error| error.to_string())?;
                 temporary
@@ -518,19 +521,26 @@ pub fn start_exact_evaluation(
                     .and_then(|_| temporary.flush())
                     .map_err(|error| error.to_string())?;
                 let source_sha256 = ketchup_core::graph::sha256_hex(&source);
-                let actual = worker
-                    .inspect_step_import_with_cancellation(
+                let actual = match receipt.format() {
+                    ImportFormat::Step => worker.inspect_step_import_with_cancellation(
                         temporary.path(),
                         &source_sha256,
                         &worker_cancelled,
-                    )
-                    .map_err(|error| error.to_string())?;
+                    ),
+                    ImportFormat::Iges => worker.inspect_iges_import_with_cancellation(
+                        temporary.path(),
+                        &source_sha256,
+                        &worker_cancelled,
+                    ),
+                    _ => unreachable!("receipt format was validated above"),
+                }
+                .map_err(|error| error.to_string())?;
                 if spec.topology_counts.is_none() {
                     expected.topology_counts = actual.topology_counts;
                 }
                 if actual != expected {
                     return Err(format!(
-                        "imported STEP worker evidence does not match canonical specification: expected={expected:?}, actual={actual:?}"
+                        "imported {format_name} worker evidence does not match canonical specification: expected={expected:?}, actual={actual:?}"
                     ));
                 }
                 let mesh_target = tempfile::Builder::new()
@@ -538,15 +548,24 @@ pub fn start_exact_evaluation(
                     .suffix(".bin")
                     .tempfile()
                     .map_err(|error| error.to_string())?;
-                let mesh = worker
-                    .tessellate_step_import_with_cancellation(
+                let mesh = match receipt.format() {
+                    ImportFormat::Step => worker.tessellate_step_import_with_cancellation(
                         temporary.path(),
                         &source_sha256,
                         &spec.result_fingerprint,
                         mesh_target.path(),
                         &worker_cancelled,
-                    )
-                    .map_err(|error| error.to_string())?;
+                    ),
+                    ImportFormat::Iges => worker.tessellate_iges_import_with_cancellation(
+                        temporary.path(),
+                        &source_sha256,
+                        &spec.result_fingerprint,
+                        mesh_target.path(),
+                        &worker_cancelled,
+                    ),
+                    _ => unreachable!("receipt format was validated above"),
+                }
+                .map_err(|error| error.to_string())?;
                 let package = ImportedExactPackage::from_snapshot(
                     &snapshot,
                     definition_id,

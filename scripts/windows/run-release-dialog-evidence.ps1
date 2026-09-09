@@ -283,6 +283,8 @@ function Assert-PackageManifestProvenance([object]$PackageManifest) {
     $expected = @{
         "ketchup-app.exe" = [ordered]@{ role = "desktop-application"; pinned = $null }
         "ketchup-exact-worker.exe" = [ordered]@{ role = "exact-worker"; pinned = $null }
+        "ketchup_assistant.py" = [ordered]@{ role = "public-assistant-entry"; pinned = $null }
+        "ketchup_assistant_protocol.py" = [ordered]@{ role = "public-assistant-protocol"; pinned = $null }
     }
     foreach ($record in $pinnedRecords) {
         $name = [IO.Path]::GetFileName([string]$record.path)

@@ -38,8 +38,10 @@ impl NativeDocumentInspection {
 }
 
 pub fn inspect_native_document(path: &Path) -> Result<NativeDocumentInspection, String> {
-    let container_bytes = std::fs::read(path).map_err(|error| error.to_string())?;
-    let loaded = ketchup_core::persistence::load_file(path).map_err(|error| error.to_string())?;
+    let loaded_file = ketchup_core::persistence::load_file_with_source(path)
+        .map_err(|error| error.to_string())?;
+    let container_sha256 = ketchup_core::graph::sha256_hex(loaded_file.source_bytes());
+    let loaded = loaded_file.outcome();
     if loaded.source_schema() != ketchup_core::persistence::CURRENT_SCHEMA
         || loaded.disposition() != ketchup_core::persistence::LoadDisposition::EditableLossless
     {
@@ -95,7 +97,7 @@ pub fn inspect_native_document(path: &Path) -> Result<NativeDocumentInspection, 
         document_id: snapshot.document_id().0,
         revision: snapshot.revision_id(),
         canonical_digest: snapshot.canonical_digest(),
-        container_sha256: ketchup_core::graph::sha256_hex(&container_bytes),
+        container_sha256,
         definitions: snapshot.definitions().count(),
         root_occurrences: snapshot.occurrences().count(),
         profiles,

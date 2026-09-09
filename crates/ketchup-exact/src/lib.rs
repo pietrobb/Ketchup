@@ -335,6 +335,8 @@ mod ffi {
             solid_ordinal: u32,
         ) -> UniquePtr<NativeOperationResult>;
         fn step_length_unit_native(path: &str) -> String;
+        fn import_iges_native(path: &str) -> UniquePtr<NativeOperationResult>;
+        fn iges_length_unit_native(path: &str) -> String;
         fn transform_body_native(
             body: &NativeOperationResult,
             matrix: &[f64],
@@ -353,6 +355,7 @@ mod ffi {
             operation: u8,
         ) -> UniquePtr<NativeOperationResult>;
         fn export_step_native(body: &NativeOperationResult, path: &str) -> String;
+        fn export_iges_native(body: &NativeOperationResult, path: &str) -> String;
         fn tessellate_body_native(
             body: &NativeOperationResult,
             deflection: f64,
@@ -2904,6 +2907,30 @@ impl ExactBackend {
         (!unit.is_empty()).then_some(unit)
     }
 
+    pub fn import_iges(&self, path: &str) -> Result<ExactOpOutput, GeometryError> {
+        let input = format!("import_iges:{path}");
+        if path.trim().is_empty() {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidParameter,
+                "import_iges",
+                &input,
+                "IGES path must not be empty".to_owned(),
+            ));
+        }
+        collect_output(
+            ffi::import_iges_native(path),
+            "import_iges",
+            &input,
+            HistoryConfidence::None,
+        )
+    }
+
+    #[must_use]
+    pub fn iges_length_unit_name(&self, path: &str) -> Option<String> {
+        let unit = ffi::iges_length_unit_native(path);
+        (!unit.is_empty()).then_some(unit)
+    }
+
     pub fn transform_body(
         &self,
         body: &ExactBody,
@@ -3097,6 +3124,37 @@ impl ExactBackend {
                 code: GeometryErrorCode::BackendException,
                 diagnostic,
                 operation: "export_step",
+                input_digest: stable_digest(&input),
+                backend_fingerprint: BACKEND_FINGERPRINT,
+            })
+        }
+    }
+
+    pub fn export_iges(&self, body: &ExactBody, path: &str) -> Result<(), GeometryError> {
+        let input = format!("export_iges:{}:{path}", body.result_fingerprint);
+        if path.trim().is_empty() {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidParameter,
+                "export_iges",
+                &input,
+                "IGES path must not be empty".to_owned(),
+            ));
+        }
+        let native = body.native.as_ref().ok_or_else(|| GeometryError {
+            code: GeometryErrorCode::NullResult,
+            diagnostic: "Exact body lost its owned native shape".to_owned(),
+            operation: "export_iges",
+            input_digest: stable_digest(&input),
+            backend_fingerprint: BACKEND_FINGERPRINT,
+        })?;
+        let diagnostic = ffi::export_iges_native(native, path);
+        if diagnostic.is_empty() {
+            Ok(())
+        } else {
+            Err(GeometryError {
+                code: GeometryErrorCode::BackendException,
+                diagnostic,
+                operation: "export_iges",
                 input_digest: stable_digest(&input),
                 backend_fingerprint: BACKEND_FINGERPRINT,
             })

@@ -1762,6 +1762,87 @@ def test_plan_linear_array_uses_union_bounds_and_fails_closed():
         assistant._plan_linear_array(missing_bounds, valid)
 
 
+def test_provider_http_response_is_bounded_before_json_parsing(monkeypatch):
+    class Response:
+        def __init__(self, body, content_length=None):
+            self.body = body
+            self.headers = {}
+            if content_length is not None:
+                self.headers["Content-Length"] = content_length
+            self.read_sizes = []
+            self.offset = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self, size):
+            self.read_sizes.append(size)
+            chunk = self.body[self.offset : self.offset + size]
+            self.offset += len(chunk)
+            return chunk
+
+    monkeypatch.setattr(assistant, "MAX_PROVIDER_RESPONSE_BYTES", 64)
+    valid = Response(b'{"model":"bounded"}')
+    monkeypatch.setattr(assistant.urllib.request, "urlopen", lambda *_args, **_kwargs: valid)
+    assert assistant._post_json("https://provider.invalid", {}, {}) == {"model": "bounded"}
+    assert valid.read_sizes[0] == assistant.MAX_PROVIDER_RESPONSE_BYTES + 1
+    assert len(valid.read_sizes) == 2
+
+    oversized = Response(b"x" * (assistant.MAX_PROVIDER_RESPONSE_BYTES + 1), "1")
+    monkeypatch.setattr(
+        assistant.urllib.request, "urlopen", lambda *_args, **_kwargs: oversized
+    )
+    with pytest.raises(assistant.ProtocolError, match="byte limit"):
+        assistant._post_json("https://provider.invalid", {}, {})
+    assert oversized.read_sizes == [assistant.MAX_PROVIDER_RESPONSE_BYTES + 1]
+
+    declared_oversized = Response(b"{}", str(assistant.MAX_PROVIDER_RESPONSE_BYTES + 1))
+    monkeypatch.setattr(
+        assistant.urllib.request, "urlopen", lambda *_args, **_kwargs: declared_oversized
+    )
+    with pytest.raises(assistant.ProtocolError, match="byte limit"):
+        assistant._post_json("https://provider.invalid", {}, {})
+    assert declared_oversized.read_sizes == []
+
+    truncated = Response(b"{}", "3")
+    monkeypatch.setattr(
+        assistant.urllib.request, "urlopen", lambda *_args, **_kwargs: truncated
+    )
+    with pytest.raises(assistant.ProtocolError, match="Content-Length"):
+        assistant._post_json("https://provider.invalid", {}, {})
+
+
+@pytest.mark.parametrize("body", (b"\xff", b"not-json", b"[]"))
+def test_provider_http_response_requires_a_utf8_json_object(monkeypatch, body):
+    class Response:
+        headers = {}
+
+        def __init__(self):
+            self.sent = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self, size):
+            assert 0 < size <= assistant.PROVIDER_RESPONSE_READ_CHUNK_BYTES
+            if self.sent:
+                return b""
+            self.sent = True
+            return body
+
+    monkeypatch.setattr(
+        assistant.urllib.request, "urlopen", lambda *_args, **_kwargs: Response()
+    )
+    with pytest.raises(assistant.ProtocolError, match="UTF-8 JSON|JSON object"):
+        assistant._post_json("https://provider.invalid", {}, {})
+
+
 def test_provider_payloads_expose_only_the_read_only_inspection_tools(monkeypatch):
     requests = []
 

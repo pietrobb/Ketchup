@@ -2244,6 +2244,18 @@ pub fn encode_semantic_state_with_results(
                 axis.pivot_in_parent_mm(),
                 position_mm.to_bits()
             ),
+            AssemblyJointKind::Helical {
+                axis,
+                limits,
+                lead_mm_per_revolution,
+                position_degrees,
+            } => format!(
+                "helical,axis:{:?},pivot_mm:{:?},limits:{limits:?},lead_mm_per_revolution_f64_bits:{:016x},position_degrees_f64_bits:{:016x}",
+                axis.direction_in_parent(),
+                axis.pivot_in_parent_mm(),
+                lead_mm_per_revolution.to_bits(),
+                position_degrees.to_bits()
+            ),
         };
         writeln!(
             complete,

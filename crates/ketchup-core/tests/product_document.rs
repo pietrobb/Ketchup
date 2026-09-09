@@ -4877,7 +4877,10 @@ fn occurrence_color_is_persisted_atomic_and_geometry_independent() {
         before.features().collect::<Vec<_>>()
     );
     let bytes = persistence::save(&colored);
-    assert_eq!(u16::from_le_bytes(bytes[10..12].try_into().unwrap()), 53);
+    assert_eq!(
+        u16::from_le_bytes(bytes[10..12].try_into().unwrap()),
+        persistence::CURRENT_SCHEMA
+    );
     let loaded = persistence::load(&bytes).unwrap();
     assert_eq!(
         loaded.document().canonical_digest(),

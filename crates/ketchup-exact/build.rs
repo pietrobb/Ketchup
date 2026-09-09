@@ -71,6 +71,7 @@ fn main() {
         "TKOffset",
         "TKXSBase",
         "TKDESTEP",
+        "TKDEIGES",
     ] {
         println!("cargo:rustc-link-lib=dylib={library}");
     }

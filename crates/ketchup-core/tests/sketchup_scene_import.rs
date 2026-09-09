@@ -124,6 +124,29 @@ fn schema_30_sketchup_document_remains_losslessly_loadable() {
     let mut encoded = persistence::save(&snapshot);
     let manifest_length = u32::from_le_bytes(encoded[12..16].try_into().unwrap()) as usize;
     let payload_offset = 16 + manifest_length;
+    for occurrence in snapshot.occurrences() {
+        assert_eq!(occurrence.color(), None);
+        let mut record_prefix = Vec::new();
+        record_prefix.extend_from_slice(&occurrence.id().0.to_le_bytes());
+        record_prefix.extend_from_slice(&occurrence.definition_id().0.to_le_bytes());
+        record_prefix.extend_from_slice(&(occurrence.name().len() as u32).to_le_bytes());
+        record_prefix.extend_from_slice(occurrence.name().as_bytes());
+        let offsets = encoded
+            .windows(record_prefix.len())
+            .enumerate()
+            .filter_map(|(offset, value)| (value == record_prefix).then_some(offset))
+            .collect::<Vec<_>>();
+        assert_eq!(offsets.len(), 1);
+        let color_offset = offsets[0]
+            + record_prefix.len()
+            + 16 * 8
+            + 1
+            + usize::from(occurrence.parent().is_some()) * 8
+            + 1
+            + usize::from(occurrence.tag().is_some()) * 8
+            + 1;
+        assert_eq!(encoded.remove(color_offset), 0);
+    }
     let body_contract_bytes = 4 + snapshot
         .definitions()
         .map(|definition| {

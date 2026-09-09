@@ -25,7 +25,7 @@ Ketchup is an AI-native desktop modeler for creating, editing, assembling, valid
 | Model | Organize and edit | Deliver |
 |---|---|---|
 | Draw line, arc, circle, and rectangle geometry; evaluate represented cubic Bézier sketch curves | Reuse definitions through occurrences and components | Save checksummed `.ketchup` documents with recovery support |
-| Extract bounded regions, including profiles with holes | Move, copy, rotate, align, distribute, group, and Make Unique | Import reviewed STEP, STL, DXF, and `.kscene` subsets |
+| Extract bounded regions, including profiles with holes | Move, copy, rotate, align, distribute, group, and Make Unique | Import reviewed STEP, STL, DXF, Blender GLB, and `.kscene` subsets |
 | Push/Pull, pocket, revolve, sweep, loft, shell, fillet, chamfer, and offset | Build linear, rectangular, and circular patterns | Export current exact geometry to STEP and tessellation to STL |
 | Run exact cut, union, intersect, and split operations | Edit ordered feature history, dimensions, visibility, and active bodies | Persist drawing sheets that generate Front/Top/Right assembly views |
 | Constrain sketches with dimensional and geometric relationships | Assemble rigid occurrences with stable-reference mates | Inspect validation, loss, reference-health, and failure diagnostics |
@@ -92,6 +92,7 @@ Ketchup supports reusable occurrences, grounding, stable-reference planar/axial 
 - **STEP:** exact B-Rep import with preserved source bytes and explicit flattening diagnostics.
 - **STL:** binary/ASCII import with declared units and strict closed-manifold validation; no silent repair.
 - **DXF:** reviewed bounded 2D geometry subset with a loss report.
+- **Blender GLB:** reviewed bounded mesh import preserving names, hierarchy, transforms, opaque colors, and shared instances. Imported geometry remains an explicit `MeshBody`; only recognized simple solids can be explicitly converted after exact verification.
 - **SketchUp bridge:** open `.kscene` interchange subset rather than native `.skp` parsing.
 - **Export:** current visible exact model to STEP and current tessellation to STL, both with fail-closed freshness/loss checks.
 
@@ -125,7 +126,7 @@ cargo run -p ketchup-app --no-default-features
 Validate the workspace:
 
 ```powershell
-cargo test --locked --workspace --all-targets -- --test-threads=1
+cargo test --locked --workspace --all-targets --no-fail-fast -- --test-threads=1
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo fmt --all -- --check
 ```

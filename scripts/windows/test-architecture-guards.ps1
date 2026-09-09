@@ -417,7 +417,7 @@ $editableCandidate = $openDocumentBlock.IndexOf("outcome.into_editable_with_cont
 $historyBaseline = $openDocumentBlock.IndexOf("document.discard_history_before_current()", [StringComparison]::Ordinal)
 $storeSwap = $openDocumentBlock.IndexOf("self.document = document", [StringComparison]::Ordinal)
 $failureBranch = $openDocumentBlock.IndexOf("Err(error)", [StringComparison]::Ordinal)
-if (-not $newDocumentBlock.Contains("*self = Self::new()") -or
+if (-not $newDocumentBlock.Contains("*self = Self::with_catalog(catalog)") -or
     -not $newDocumentBlock.Contains(".with_dialogs(dialogs)") -or
     -not $newDocumentBlock.Contains(".with_assistant_transport(assistant_transport)") -or
     $loadCandidate -lt 0 -or $successBranch -lt $loadCandidate -or
@@ -444,6 +444,7 @@ $rendererSource = if (Test-Path $rendererPath -PathType Leaf) {
 }
 $viewportBlock = Get-BracedBlock $appSource "fn viewport(" "exact-body-authority"
 $viewportBoxesBlock = Get-BracedBlock $appSource "fn viewport_boxes" "exact-body-authority"
+$visibleSceneBlock = Get-BracedBlock $appSource "fn current_visible_exact_scene(" "exact-body-authority"
 $visibleModelBlock = Get-BracedBlock $appSource "fn current_visible_exact_model(" "exact-body-authority"
 $exactExportBlock = Get-BracedBlock $appSource "pub fn export_exact_occurrence_mesh_to" "exact-body-authority"
 $geometrySourcesBlock = Get-BracedBlock $rendererSource "fn geometry_sources(" "exact-body-authority"
@@ -455,8 +456,9 @@ if ($exactProjectionSource -notmatch 'results\.render_values\(snapshot\)' -or
     -not $viewportBlock.Contains('for triangle in package.triangles()') -or
     -not $geometrySourcesBlock.Contains('.render_values(snapshot)') -or
     -not $geometrySourcesBlock.Contains('.filter(|package| package.definition_id() == definition_id)') -or
-    -not $visibleModelBlock.Contains('.render_values(snapshot)') -or
-    -not $visibleModelBlock.Contains('model.extend(') -or
+    -not $visibleSceneBlock.Contains('.render_values(snapshot)') -or
+    -not $visibleSceneBlock.Contains('scene.extend(') -or
+    -not $visibleModelBlock.Contains('.current_visible_exact_scene(snapshot)') -or
     -not $exactExportBlock.Contains('.get_render(&snapshot, occurrence.definition_id)') -or
     -not $exactExportBlock.Contains('package.mesh_export(occurrence.transform)')) {
     Fail-Guard "exact-body-authority" "Current visible body-terminal results must suppress box proxies and share deterministic multi-body render, pick, and transformed export authority."

@@ -8,7 +8,9 @@ use crate::assembly_joint::{
     joint_motion_states_equal, solve_assembly_joint_kinematics_with_kind_overrides,
     transforms_equivalent,
 };
-use crate::drawing::{DrawingError, DrawingSheet, DrawingSheetId, DrawingSource};
+use crate::drawing::{
+    DrawingDimensionTolerance, DrawingError, DrawingSheet, DrawingSheetId, DrawingSource,
+};
 use crate::exact_brep_graph::{
     ExactBRepGraph, MAX_EXACT_BREP_GRAPH_NODES, MAX_EXACT_BREP_GRAPH_PROFILES,
     MAX_EXACT_BREP_LOFT_CONTROL_POINTS, MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS,
@@ -46,9 +48,9 @@ use crate::mechanical_coupling::{
 use crate::prismatic::{CanonicalJoint, JointId, PrismaticError};
 use crate::sketch::{
     FeatureExtent, FeatureExtentEnd, PadPocketOperation, PadSpec, PocketSpec, PrincipalPlane,
-    SketchConstraintId, SketchConstraintKind, SketchEntity, SketchError, SketchPointKind,
-    SketchSpec, SolvedSketchRegionProfile, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
-    WorkplaneSupportHealth,
+    SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity, SketchError,
+    SketchOffsetSide, SketchPointKind, SketchSpec, SolvedSketchRegionProfile, WorkplaneFrame,
+    WorkplaneSpec, WorkplaneSupport, WorkplaneSupportHealth,
 };
 use crate::space::{
     CanonicalClearanceVolume, CanonicalSpace, ClearanceCoordinateFrame, ClearanceOwner,
@@ -695,6 +697,9 @@ impl FeatureKind {
             ),
             Self::Sketch(spec) => {
                 for entity in &spec.entities {
+                    if spec.is_projected_entity(entity.id()) {
+                        continue;
+                    }
                     let id = entity.id().0;
                     match entity {
                         SketchEntity::Line { .. } => {
@@ -780,7 +785,9 @@ impl FeatureKind {
                         | SketchConstraintKind::Concentric { .. }
                         | SketchConstraintKind::Collinear { .. }
                         | SketchConstraintKind::Midpoint { .. }
-                        | SketchConstraintKind::PointOnCurve { .. } => {}
+                        | SketchConstraintKind::PointOnCurve { .. }
+                        | SketchConstraintKind::Projection { .. }
+                        | SketchConstraintKind::Construction { .. } => {}
                     }
                 }
             }
@@ -909,7 +916,18 @@ impl FeatureKind {
                         .collect()
                 }
             },
-            Self::Sketch(spec) => [spec.workplane].into_iter().collect(),
+            Self::Sketch(spec) => std::iter::once(spec.workplane)
+                .chain(
+                    spec.constraints
+                        .iter()
+                        .filter_map(|constraint| match constraint.kind {
+                            SketchConstraintKind::Projection { source_feature, .. } => {
+                                Some(source_feature)
+                            }
+                            _ => None,
+                        }),
+                )
+                .collect(),
             Self::Profile { .. }
             | Self::SegmentProfile { .. }
             | Self::SpatialPath { .. }
@@ -2151,10 +2169,68 @@ pub enum CanonicalCommand {
         id: FeatureId,
         dimension: Dimension,
     },
+    CreateSketchConstraint {
+        id: FeatureId,
+        constraint: SketchConstraint,
+    },
+    ReplaceSketchConstraint {
+        id: FeatureId,
+        constraint: SketchConstraint,
+    },
+    DeleteSketchConstraint {
+        id: FeatureId,
+        constraint_id: SketchConstraintId,
+    },
     SetSketchConstraintDimension {
         id: FeatureId,
         constraint_id: SketchConstraintId,
         dimension: Dimension,
+    },
+    SplitSketchEntity {
+        id: FeatureId,
+        entity_id: crate::sketch::SketchEntityId,
+        new_entity_id: crate::sketch::SketchEntityId,
+        parameter: f64,
+        joint_constraint_ids: Vec<SketchConstraintId>,
+    },
+    JoinSketchEntities {
+        id: FeatureId,
+        source_entity_id: crate::sketch::SketchEntityId,
+        source_endpoint: SketchPointKind,
+        consumed_entity_id: crate::sketch::SketchEntityId,
+        consumed_endpoint: SketchPointKind,
+    },
+    TrimSketchEntity {
+        id: FeatureId,
+        entity_id: crate::sketch::SketchEntityId,
+        start_parameter: f64,
+        end_parameter: f64,
+    },
+    ExtendSketchEntity {
+        id: FeatureId,
+        entity_id: crate::sketch::SketchEntityId,
+        endpoint: SketchPointKind,
+        parameter: f64,
+    },
+    OffsetSketchEntity {
+        id: FeatureId,
+        entity_id: crate::sketch::SketchEntityId,
+        new_entity_id: crate::sketch::SketchEntityId,
+        distance_mm: f64,
+        side: SketchOffsetSide,
+    },
+    ProjectSketchEntity {
+        id: FeatureId,
+        source_feature_id: FeatureId,
+        source_entity_id: crate::sketch::SketchEntityId,
+        new_entity_id: crate::sketch::SketchEntityId,
+        projection_constraint_id: SketchConstraintId,
+    },
+    SetSketchEntityConstruction {
+        id: FeatureId,
+        entity_id: crate::sketch::SketchEntityId,
+        construction: bool,
+        construction_constraint_id: SketchConstraintId,
     },
     TranslateProfile {
         id: FeatureId,
@@ -2902,9 +2978,25 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    pub(crate) fn preview_batch(&self, batch: &CommandBatch) -> Result<Self, CanonicalError> {
+    pub fn preview_batch(&self, batch: &CommandBatch) -> Result<Self, CanonicalError> {
+        self.preview_batch_at_revision(
+            batch,
+            self.revision_id
+                .checked_add(1)
+                .ok_or(CanonicalError::RevisionExhausted)?,
+        )
+    }
+
+    pub fn preview_batch_at_revision(
+        &self,
+        batch: &CommandBatch,
+        revision_id: u64,
+    ) -> Result<Self, CanonicalError> {
+        let base_revision = revision_id
+            .checked_sub(1)
+            .ok_or(CanonicalError::RevisionExhausted)?;
         let mut candidate =
-            DocumentStore::from_product(self.revision_id, self.product.as_ref().clone())?;
+            DocumentStore::from_product(base_revision, self.product.as_ref().clone())?;
         candidate.apply_batch(batch)?;
         Ok(candidate.current())
     }
@@ -3838,11 +3930,89 @@ fn project_local_occurrences_bounded(
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RevisionOrigin {
+    Initial,
+    Principal(ProposalPrincipal),
+    Rollback {
+        principal: ProposalPrincipal,
+        target_revision: u64,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RevisionCatalogEntry {
+    pub revision_id: u64,
+    pub canonical_digest: String,
+    pub batch_digest: String,
+    pub origin: RevisionOrigin,
+    pub checkpoint: Option<String>,
+    pub current: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RevisionDiffEntry {
+    pub structure: &'static str,
+    pub before_count: usize,
+    pub after_count: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RevisionDiff {
+    pub before_revision: u64,
+    pub after_revision: u64,
+    pub before_digest: String,
+    pub after_digest: String,
+    pub changes: Vec<RevisionDiffEntry>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RevisionHistoryError {
+    Stale,
+    RevisionNotFound(u64),
+    InvalidCheckpointName,
+    DuplicateCheckpointName,
+    NoOpRollback,
+    RevisionExhausted,
+}
+
+impl fmt::Display for RevisionHistoryError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Stale => formatter.write_str("revision history request is stale"),
+            Self::RevisionNotFound(id) => write!(formatter, "revision {id} was not found"),
+            Self::InvalidCheckpointName => formatter.write_str("checkpoint name is invalid"),
+            Self::DuplicateCheckpointName => formatter.write_str("checkpoint name already exists"),
+            Self::NoOpRollback => formatter.write_str("rollback target is already current"),
+            Self::RevisionExhausted => formatter.write_str("revision identifiers are exhausted"),
+        }
+    }
+}
+
+impl std::error::Error for RevisionHistoryError {}
+
+fn update_revision_principal_digest(digest: &mut Sha256, principal: ProposalPrincipal) {
+    match principal {
+        ProposalPrincipal::ManualClient => digest.update([0]),
+        ProposalPrincipal::Human(id) => {
+            digest.update([1]);
+            digest.update(id.to_le_bytes());
+        }
+        ProposalPrincipal::LocalAssistant => digest.update([2]),
+        ProposalPrincipal::Plugin(id) => {
+            digest.update([3]);
+            digest.update(id.to_le_bytes());
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Revision {
     id: u64,
     snapshot: Snapshot,
     batch_digest: String,
+    origin: RevisionOrigin,
+    checkpoint: Option<String>,
     recomputed_nodes: BTreeSet<NodeId>,
     dirty_features: BTreeSet<FeatureId>,
     feature_states: BTreeMap<FeatureId, FeatureEvaluationState>,
@@ -3863,6 +4033,16 @@ impl Revision {
     #[must_use]
     pub fn batch_digest(&self) -> &str {
         &self.batch_digest
+    }
+
+    #[must_use]
+    pub const fn origin(&self) -> RevisionOrigin {
+        self.origin
+    }
+
+    #[must_use]
+    pub fn checkpoint(&self) -> Option<&str> {
+        self.checkpoint.as_deref()
     }
 
     #[must_use]
@@ -3996,6 +4176,11 @@ impl DocumentStore {
         self.mutation_epoch
     }
 
+    #[must_use]
+    pub const fn next_revision_id(&self) -> u64 {
+        self.next_revision_id
+    }
+
     fn fresh_mutation_epoch() -> u64 {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         NEXT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
@@ -4037,6 +4222,7 @@ impl DocumentStore {
         validate_graph(&product.evaluator_nodes)?;
         validate_overrides(&product)?;
         validate_product(&product)?;
+        validate_sketch_projections(&product)?;
         let next_revision_id = revision_id
             .checked_add(1)
             .ok_or(CanonicalError::RevisionExhausted)?;
@@ -4050,6 +4236,8 @@ impl DocumentStore {
             id: revision_id,
             snapshot,
             batch_digest: String::new(),
+            origin: RevisionOrigin::Initial,
+            checkpoint: None,
             recomputed_nodes: BTreeSet::new(),
             dirty_features: BTreeSet::new(),
             feature_states,
@@ -4068,6 +4256,38 @@ impl DocumentStore {
     #[must_use]
     pub fn current(&self) -> Snapshot {
         self.revisions[self.cursor].snapshot.clone()
+    }
+
+    pub(crate) fn from_revision_history(
+        revisions: Vec<(Snapshot, String, RevisionOrigin, Option<String>)>,
+        cursor: usize,
+        next_revision_id: u64,
+    ) -> Result<Self, CanonicalError> {
+        let mut restored = Vec::with_capacity(revisions.len());
+        for (snapshot, batch_digest, origin, checkpoint) in revisions {
+            let validated =
+                Self::from_product(snapshot.revision_id(), snapshot.product.as_ref().clone())?;
+            let feature_states = validated.revisions[0].feature_states.clone();
+            restored.push(Arc::new(Revision {
+                id: snapshot.revision_id(),
+                snapshot,
+                batch_digest,
+                origin,
+                checkpoint,
+                recomputed_nodes: BTreeSet::new(),
+                dirty_features: BTreeSet::new(),
+                feature_states,
+                evaluation: None,
+            }));
+        }
+        Ok(Self {
+            revisions: restored,
+            cursor,
+            next_revision_id,
+            mutation_epoch: Self::fresh_mutation_epoch(),
+            evaluation_registry: BTreeMap::new(),
+            human_confirmation_policy: None,
+        })
     }
 
     pub fn register_exact_reference_evidence(
@@ -4217,6 +4437,8 @@ impl DocumentStore {
                         product: Arc::new(product),
                     },
                     batch_digest: current.batch_digest.clone(),
+                    origin: current.origin,
+                    checkpoint: current.checkpoint.clone(),
                     recomputed_nodes: current.recomputed_nodes.clone(),
                     dirty_features: current.dirty_features.clone(),
                     feature_states: current.feature_states.clone(),
@@ -4289,6 +4511,8 @@ impl DocumentStore {
                         product: Arc::new(product),
                     },
                     batch_digest: current.batch_digest.clone(),
+                    origin: current.origin,
+                    checkpoint: current.checkpoint.clone(),
                     recomputed_nodes: current.recomputed_nodes.clone(),
                     dirty_features: current.dirty_features.clone(),
                     feature_states: current.feature_states.clone(),
@@ -4302,6 +4526,249 @@ impl DocumentStore {
     #[must_use]
     pub fn revision_count(&self) -> usize {
         self.revisions.len()
+    }
+
+    pub fn revision_history(&self) -> impl ExactSizeIterator<Item = &Revision> {
+        self.revisions.iter().map(Arc::as_ref)
+    }
+
+    #[must_use]
+    pub const fn history_cursor(&self) -> usize {
+        self.cursor
+    }
+
+    #[must_use]
+    pub fn history_digest(&self) -> String {
+        let mut digest = Sha256::new();
+        digest.update(b"ketchup.revision-history.v1");
+        digest.update((self.cursor as u64).to_le_bytes());
+        digest.update(self.next_revision_id.to_le_bytes());
+        for revision in &self.revisions {
+            digest.update(revision.id.to_le_bytes());
+            digest.update(revision.snapshot.canonical_digest().as_bytes());
+            digest.update(revision.batch_digest.as_bytes());
+            match revision.origin {
+                RevisionOrigin::Initial => digest.update([0]),
+                RevisionOrigin::Principal(principal) => {
+                    digest.update([1]);
+                    update_revision_principal_digest(&mut digest, principal);
+                }
+                RevisionOrigin::Rollback {
+                    principal,
+                    target_revision,
+                } => {
+                    digest.update([2]);
+                    update_revision_principal_digest(&mut digest, principal);
+                    digest.update(target_revision.to_le_bytes());
+                }
+            }
+            if let Some(checkpoint) = revision.checkpoint.as_ref() {
+                digest.update([1]);
+                digest.update((checkpoint.len() as u64).to_le_bytes());
+                digest.update(checkpoint.as_bytes());
+            } else {
+                digest.update([0]);
+            }
+        }
+        format!("{:x}", digest.finalize())[..16].to_owned()
+    }
+
+    #[must_use]
+    pub fn revision_catalog(&self) -> Vec<RevisionCatalogEntry> {
+        self.revisions
+            .iter()
+            .enumerate()
+            .map(|(index, revision)| RevisionCatalogEntry {
+                revision_id: revision.id,
+                canonical_digest: revision.snapshot.canonical_digest(),
+                batch_digest: revision.batch_digest.clone(),
+                origin: revision.origin,
+                checkpoint: revision.checkpoint.clone(),
+                current: index == self.cursor,
+            })
+            .collect()
+    }
+
+    pub fn create_checkpoint(
+        &mut self,
+        expected_revision: u64,
+        expected_digest: &str,
+        name: &str,
+    ) -> Result<(), RevisionHistoryError> {
+        let current = &self.revisions[self.cursor];
+        if current.id != expected_revision || current.snapshot.canonical_digest() != expected_digest
+        {
+            return Err(RevisionHistoryError::Stale);
+        }
+        if name.is_empty()
+            || name.len() > 80
+            || name.trim() != name
+            || name.chars().any(char::is_control)
+        {
+            return Err(RevisionHistoryError::InvalidCheckpointName);
+        }
+        if self.revisions.iter().any(|revision| {
+            revision.checkpoint.as_deref() == Some(name) && revision.id != expected_revision
+        }) {
+            return Err(RevisionHistoryError::DuplicateCheckpointName);
+        }
+        let mut replacement = current.as_ref().clone();
+        replacement.checkpoint = Some(name.to_owned());
+        self.revisions[self.cursor] = Arc::new(replacement);
+        self.mutation_epoch = Self::fresh_mutation_epoch();
+        Ok(())
+    }
+
+    pub fn compare_revisions(
+        &self,
+        before_revision: u64,
+        after_revision: u64,
+    ) -> Result<RevisionDiff, RevisionHistoryError> {
+        let before = self
+            .revisions
+            .iter()
+            .find(|revision| revision.id == before_revision)
+            .ok_or(RevisionHistoryError::RevisionNotFound(before_revision))?;
+        let after = self
+            .revisions
+            .iter()
+            .find(|revision| revision.id == after_revision)
+            .ok_or(RevisionHistoryError::RevisionNotFound(after_revision))?;
+        let before_digest = before.snapshot.canonical_digest();
+        let after_digest = after.snapshot.canonical_digest();
+        let mut changes = Vec::new();
+        let counts = [
+            (
+                "definitions",
+                before.snapshot.product.definitions.len(),
+                after.snapshot.product.definitions.len(),
+            ),
+            (
+                "features",
+                before.snapshot.product.features.len(),
+                after.snapshot.product.features.len(),
+            ),
+            (
+                "occurrences",
+                before.snapshot.product.occurrences.len(),
+                after.snapshot.product.occurrences.len(),
+            ),
+            (
+                "groups",
+                before.snapshot.product.groups.len(),
+                after.snapshot.product.groups.len(),
+            ),
+            (
+                "tags",
+                before.snapshot.product.tags.len(),
+                after.snapshot.product.tags.len(),
+            ),
+            (
+                "collections",
+                before.snapshot.product.collections.len(),
+                after.snapshot.product.collections.len(),
+            ),
+            (
+                "assembly-mates",
+                before.snapshot.product.assembly_mates.len(),
+                after.snapshot.product.assembly_mates.len(),
+            ),
+            (
+                "assembly-joints",
+                before.snapshot.product.assembly_joints.len(),
+                after.snapshot.product.assembly_joints.len(),
+            ),
+            (
+                "drawing-sheets",
+                before.snapshot.product.drawing_sheets.len(),
+                after.snapshot.product.drawing_sheets.len(),
+            ),
+            (
+                "imports",
+                before.snapshot.product.import_receipts.len(),
+                after.snapshot.product.import_receipts.len(),
+            ),
+        ];
+        changes.extend(
+            counts
+                .into_iter()
+                .filter(|(_, before_count, after_count)| before_count != after_count)
+                .map(|(structure, before_count, after_count)| RevisionDiffEntry {
+                    structure,
+                    before_count,
+                    after_count,
+                }),
+        );
+        if before_digest != after_digest {
+            changes.push(RevisionDiffEntry {
+                structure: "canonical-document",
+                before_count: 1,
+                after_count: 1,
+            });
+        }
+        Ok(RevisionDiff {
+            before_revision,
+            after_revision,
+            before_digest,
+            after_digest,
+            changes,
+        })
+    }
+
+    pub fn rollback_to_revision(
+        &mut self,
+        expected_revision: u64,
+        expected_digest: &str,
+        target_revision: u64,
+        principal: ProposalPrincipal,
+    ) -> Result<Arc<Revision>, RevisionHistoryError> {
+        let current = &self.revisions[self.cursor];
+        if current.id != expected_revision || current.snapshot.canonical_digest() != expected_digest
+        {
+            return Err(RevisionHistoryError::Stale);
+        }
+        let target = self
+            .revisions
+            .iter()
+            .find(|revision| revision.id == target_revision)
+            .cloned()
+            .ok_or(RevisionHistoryError::RevisionNotFound(target_revision))?;
+        if target.snapshot.canonical_digest() == current.snapshot.canonical_digest() {
+            return Err(RevisionHistoryError::NoOpRollback);
+        }
+        let revision_id = self.next_revision_id;
+        let following_revision_id = revision_id
+            .checked_add(1)
+            .ok_or(RevisionHistoryError::RevisionExhausted)?;
+        let evidence = format!(
+            "ketchup.rollback.v1:{target_revision}:{}",
+            target.snapshot.canonical_digest()
+        );
+        let operation_digest = format!("{:x}", Sha256::digest(evidence.as_bytes()));
+        let revision = Arc::new(Revision {
+            id: revision_id,
+            snapshot: Snapshot {
+                revision_id,
+                product: Arc::clone(&target.snapshot.product),
+            },
+            batch_digest: operation_digest[..16].to_owned(),
+            origin: RevisionOrigin::Rollback {
+                principal,
+                target_revision,
+            },
+            checkpoint: None,
+            recomputed_nodes: BTreeSet::new(),
+            dirty_features: target.snapshot.product.features.keys().copied().collect(),
+            feature_states: target.feature_states.clone(),
+            evaluation: None,
+        });
+        self.revisions.truncate(self.cursor + 1);
+        self.revisions.push(Arc::clone(&revision));
+        self.cursor += 1;
+        self.next_revision_id = following_revision_id;
+        self.mutation_epoch = Self::fresh_mutation_epoch();
+        self.evaluation_registry.clear();
+        Ok(revision)
     }
 
     #[must_use]
@@ -4334,6 +4801,17 @@ impl DocumentStore {
     }
 
     pub fn apply_batch(&mut self, batch: &CommandBatch) -> Result<Arc<Revision>, CanonicalError> {
+        self.apply_batch_with_origin(
+            batch,
+            RevisionOrigin::Principal(ProposalPrincipal::ManualClient),
+        )
+    }
+
+    fn apply_batch_with_origin(
+        &mut self,
+        batch: &CommandBatch,
+        origin: RevisionOrigin,
+    ) -> Result<Arc<Revision>, CanonicalError> {
         if batch.schema != COMMAND_SCHEMA_V1 {
             return Err(CanonicalError::UnsupportedCommandSchema);
         }
@@ -5273,6 +5751,84 @@ impl DocumentStore {
                         }),
                     );
                 }
+                CanonicalCommand::CreateSketchConstraint { id, constraint } => {
+                    let feature = product
+                        .features
+                        .get(id)
+                        .ok_or(CanonicalError::FeatureNotFound(*id))?;
+                    let FeatureKind::Sketch(spec) = &feature.kind else {
+                        return Err(CanonicalError::FeatureIsNotProfile(*id));
+                    };
+                    let mut updated = spec.clone();
+                    updated.create_constraint(constraint.clone())?;
+                    validate_sketch_constraint_edit_dependents(
+                        &product,
+                        *id,
+                        &updated,
+                        constraint.id,
+                    )?;
+                    product.features.insert(
+                        *id,
+                        Arc::new(Feature {
+                            id: *id,
+                            definition_id: feature.definition_id,
+                            name: feature.name.clone(),
+                            kind: FeatureKind::Sketch(updated),
+                        }),
+                    );
+                }
+                CanonicalCommand::ReplaceSketchConstraint { id, constraint } => {
+                    let feature = product
+                        .features
+                        .get(id)
+                        .ok_or(CanonicalError::FeatureNotFound(*id))?;
+                    let FeatureKind::Sketch(spec) = &feature.kind else {
+                        return Err(CanonicalError::FeatureIsNotProfile(*id));
+                    };
+                    let mut updated = spec.clone();
+                    updated.replace_constraint(constraint.clone())?;
+                    validate_sketch_constraint_edit_dependents(
+                        &product,
+                        *id,
+                        &updated,
+                        constraint.id,
+                    )?;
+                    product.features.insert(
+                        *id,
+                        Arc::new(Feature {
+                            id: *id,
+                            definition_id: feature.definition_id,
+                            name: feature.name.clone(),
+                            kind: FeatureKind::Sketch(updated),
+                        }),
+                    );
+                }
+                CanonicalCommand::DeleteSketchConstraint { id, constraint_id } => {
+                    let feature = product
+                        .features
+                        .get(id)
+                        .ok_or(CanonicalError::FeatureNotFound(*id))?;
+                    let FeatureKind::Sketch(spec) = &feature.kind else {
+                        return Err(CanonicalError::FeatureIsNotProfile(*id));
+                    };
+                    let mut updated = spec.clone();
+                    updated.delete_constraint(*constraint_id)?;
+                    validate_sketch_constraint_edit_dependents(
+                        &product,
+                        *id,
+                        &updated,
+                        *constraint_id,
+                    )?;
+                    product.features.insert(
+                        *id,
+                        Arc::new(Feature {
+                            id: *id,
+                            definition_id: feature.definition_id,
+                            name: feature.name.clone(),
+                            kind: FeatureKind::Sketch(updated),
+                        }),
+                    );
+                }
                 CanonicalCommand::SetSketchConstraintDimension {
                     id,
                     constraint_id,
@@ -5303,6 +5859,211 @@ impl DocumentStore {
                         }
                         _ => return Err(CanonicalError::FeatureHasNoDimension(*id)),
                     }
+                    product.features.insert(
+                        *id,
+                        Arc::new(Feature {
+                            id: *id,
+                            definition_id: feature.definition_id,
+                            name: feature.name.clone(),
+                            kind: FeatureKind::Sketch(updated),
+                        }),
+                    );
+                }
+                CanonicalCommand::SplitSketchEntity {
+                    id,
+                    entity_id,
+                    new_entity_id,
+                    parameter,
+                    joint_constraint_ids,
+                } => {
+                    let feature = product
+                        .features
+                        .get(id)
+                        .ok_or(CanonicalError::FeatureNotFound(*id))?;
+                    let FeatureKind::Sketch(spec) = &feature.kind else {
+                        return Err(CanonicalError::FeatureIsNotProfile(*id));
+                    };
+                    let mut updated = spec.clone();
+                    updated.split_entity(
+                        *entity_id,
+                        *new_entity_id,
+                        *parameter,
+                        joint_constraint_ids,
+                    )?;
+                    product.features.insert(
+                        *id,
+                        Arc::new(Feature {
+                            id: *id,
+                            definition_id: feature.definition_id,
+                            name: feature.name.clone(),
+                            kind: FeatureKind::Sketch(updated),
+                        }),
+                    );
+                }
+                CanonicalCommand::JoinSketchEntities {
+                    id,
+                    source_entity_id,
+                    source_endpoint,
+                    consumed_entity_id,
+                    consumed_endpoint,
+                } => {
+                    let feature = product
+                        .features
+                        .get(id)
+                        .ok_or(CanonicalError::FeatureNotFound(*id))?;
+                    let FeatureKind::Sketch(spec) = &feature.kind else {
+                        return Err(CanonicalError::FeatureIsNotProfile(*id));
+                    };
+                    let mut updated = spec.clone();
+                    updated.join_entities(
+                        *source_entity_id,
+                        *source_endpoint,
+                        *consumed_entity_id,
+                        *consumed_endpoint,
+                    )?;
+                    product.features.insert(
+                        *id,
+                        Arc::new(Feature {
+                            id: *id,
+                            definition_id: feature.definition_id,
+                            name: feature.name.clone(),
+                            kind: FeatureKind::Sketch(updated),
+                        }),
+                    );
+                }
+                CanonicalCommand::TrimSketchEntity {
+                    id,
+                    entity_id,
+                    start_parameter,
+                    end_parameter,
+                } => {
+                    let feature = product
+                        .features
+                        .get(id)
+                        .ok_or(CanonicalError::FeatureNotFound(*id))?;
+                    let FeatureKind::Sketch(spec) = &feature.kind else {
+                        return Err(CanonicalError::FeatureIsNotProfile(*id));
+                    };
+                    let mut updated = spec.clone();
+                    updated.trim_entity(*entity_id, *start_parameter, *end_parameter)?;
+                    product.features.insert(
+                        *id,
+                        Arc::new(Feature {
+                            id: *id,
+                            definition_id: feature.definition_id,
+                            name: feature.name.clone(),
+                            kind: FeatureKind::Sketch(updated),
+                        }),
+                    );
+                }
+                CanonicalCommand::ExtendSketchEntity {
+                    id,
+                    entity_id,
+                    endpoint,
+                    parameter,
+                } => {
+                    let feature = product
+                        .features
+                        .get(id)
+                        .ok_or(CanonicalError::FeatureNotFound(*id))?;
+                    let FeatureKind::Sketch(spec) = &feature.kind else {
+                        return Err(CanonicalError::FeatureIsNotProfile(*id));
+                    };
+                    let mut updated = spec.clone();
+                    updated.extend_entity(*entity_id, *endpoint, *parameter)?;
+                    product.features.insert(
+                        *id,
+                        Arc::new(Feature {
+                            id: *id,
+                            definition_id: feature.definition_id,
+                            name: feature.name.clone(),
+                            kind: FeatureKind::Sketch(updated),
+                        }),
+                    );
+                }
+                CanonicalCommand::OffsetSketchEntity {
+                    id,
+                    entity_id,
+                    new_entity_id,
+                    distance_mm,
+                    side,
+                } => {
+                    let feature = product
+                        .features
+                        .get(id)
+                        .ok_or(CanonicalError::FeatureNotFound(*id))?;
+                    let FeatureKind::Sketch(spec) = &feature.kind else {
+                        return Err(CanonicalError::FeatureIsNotProfile(*id));
+                    };
+                    let mut updated = spec.clone();
+                    updated.offset_entity(*entity_id, *new_entity_id, *distance_mm, *side)?;
+                    product.features.insert(
+                        *id,
+                        Arc::new(Feature {
+                            id: *id,
+                            definition_id: feature.definition_id,
+                            name: feature.name.clone(),
+                            kind: FeatureKind::Sketch(updated),
+                        }),
+                    );
+                }
+                CanonicalCommand::ProjectSketchEntity {
+                    id,
+                    source_feature_id,
+                    source_entity_id,
+                    new_entity_id,
+                    projection_constraint_id,
+                } => {
+                    let projected = project_sketch_entity(
+                        &product,
+                        *id,
+                        *source_feature_id,
+                        *source_entity_id,
+                        *new_entity_id,
+                    )?;
+                    let feature = product
+                        .features
+                        .get(id)
+                        .ok_or(CanonicalError::FeatureNotFound(*id))?;
+                    let FeatureKind::Sketch(spec) = &feature.kind else {
+                        return Err(CanonicalError::FeatureIsNotProfile(*id));
+                    };
+                    let mut updated = spec.clone();
+                    updated.add_projection(
+                        projected,
+                        *source_feature_id,
+                        *source_entity_id,
+                        *projection_constraint_id,
+                    )?;
+                    product.features.insert(
+                        *id,
+                        Arc::new(Feature {
+                            id: *id,
+                            definition_id: feature.definition_id,
+                            name: feature.name.clone(),
+                            kind: FeatureKind::Sketch(updated),
+                        }),
+                    );
+                }
+                CanonicalCommand::SetSketchEntityConstruction {
+                    id,
+                    entity_id,
+                    construction,
+                    construction_constraint_id,
+                } => {
+                    let feature = product
+                        .features
+                        .get(id)
+                        .ok_or(CanonicalError::FeatureNotFound(*id))?;
+                    let FeatureKind::Sketch(spec) = &feature.kind else {
+                        return Err(CanonicalError::FeatureIsNotProfile(*id));
+                    };
+                    let mut updated = spec.clone();
+                    updated.set_entity_construction(
+                        *entity_id,
+                        *construction,
+                        *construction_constraint_id,
+                    )?;
                     product.features.insert(
                         *id,
                         Arc::new(Feature {
@@ -5367,6 +6128,15 @@ impl DocumentStore {
                             control_points_mm.iter_mut().for_each(translate);
                         }
                         FeatureKind::Sketch(spec) => {
+                            if spec
+                                .entities
+                                .iter()
+                                .any(|entity| spec.is_projected_entity(entity.id()))
+                            {
+                                return Err(CanonicalError::Sketch(
+                                    SketchError::InvalidProjectionSource,
+                                ));
+                            }
                             for entity in &mut spec.entities {
                                 match entity {
                                     SketchEntity::Line {
@@ -6117,10 +6887,12 @@ impl DocumentStore {
             .exact_reference_evidence
             .retain(|lineage, _| anchored_reference_lineages.contains(lineage));
 
+        refresh_sketch_projections(&mut product)?;
         validate_graph(&product.evaluator_nodes)?;
         refresh_override_health(&mut product);
         validate_overrides(&product)?;
         validate_product(&product)?;
+        validate_sketch_projections(&product)?;
         validate_assembly_joint_motion_publication(&current, &product, batch)?;
         let revision_id = self.next_revision_id;
         let following_revision_id = revision_id
@@ -6162,6 +6934,8 @@ impl DocumentStore {
             id: revision_id,
             snapshot,
             batch_digest: batch.digest(),
+            origin,
+            checkpoint: None,
             recomputed_nodes,
             dirty_features,
             feature_states,
@@ -7040,7 +7814,10 @@ impl DocumentStore {
         let previous_next_revision_id = self.next_revision_id;
         let previous_registry = self.evaluation_registry.clone();
         let revision = self
-            .apply_batch(&proposal.batch)
+            .apply_batch_with_origin(
+                &proposal.batch,
+                RevisionOrigin::Principal(proposal.principal),
+            )
             .map_err(ProposalCommitError::Canonical)?;
         let actual_result_digest =
             dependency_digest(revision.snapshot(), &proposal.authoritative_writes);
@@ -9726,6 +10503,260 @@ pub(crate) fn migrate_legacy_body_contract(
         product
             .definitions
             .insert(definition_id, Arc::new(definition));
+    }
+    Ok(())
+}
+
+fn sketch_workplane_frame(
+    product: &ProductModel,
+    sketch_feature_id: FeatureId,
+) -> Result<WorkplaneFrame, CanonicalError> {
+    let sketch = product
+        .features
+        .get(&sketch_feature_id)
+        .ok_or(CanonicalError::FeatureNotFound(sketch_feature_id))?;
+    let FeatureKind::Sketch(spec) = &sketch.kind else {
+        return Err(CanonicalError::FeatureIsNotProfile(sketch_feature_id));
+    };
+    let workplane_id = spec.workplane;
+    let workplane = product
+        .features
+        .get(&workplane_id)
+        .ok_or(CanonicalError::Sketch(
+            SketchError::MissingWorkplaneSupport(workplane_id),
+        ))?;
+    let FeatureKind::Workplane(spec) = &workplane.kind else {
+        return Err(CanonicalError::Sketch(
+            SketchError::MissingWorkplaneSupport(workplane_id),
+        ));
+    };
+    spec.validate_local()?;
+    Ok(spec.frame)
+}
+
+fn project_sketch_entity(
+    product: &ProductModel,
+    target_feature_id: FeatureId,
+    source_feature_id: FeatureId,
+    source_entity_id: crate::sketch::SketchEntityId,
+    new_entity_id: crate::sketch::SketchEntityId,
+) -> Result<SketchEntity, CanonicalError> {
+    if target_feature_id == source_feature_id || source_entity_id.0 == 0 || new_entity_id.0 == 0 {
+        return Err(CanonicalError::Sketch(SketchError::InvalidProjectionSource));
+    }
+    let target_feature = product
+        .features
+        .get(&target_feature_id)
+        .ok_or(CanonicalError::FeatureNotFound(target_feature_id))?;
+    let source_feature = product
+        .features
+        .get(&source_feature_id)
+        .ok_or(CanonicalError::FeatureNotFound(source_feature_id))?;
+    if target_feature.definition_id != source_feature.definition_id {
+        return Err(CanonicalError::Sketch(SketchError::InvalidProjectionSource));
+    }
+    let FeatureKind::Sketch(source_spec) = &source_feature.kind else {
+        return Err(CanonicalError::FeatureIsNotProfile(source_feature_id));
+    };
+    let source = source_spec
+        .entities
+        .iter()
+        .find(|entity| entity.id() == source_entity_id)
+        .ok_or(CanonicalError::Sketch(SketchError::EntityNotFound(
+            source_entity_id,
+        )))?;
+    let source_frame = sketch_workplane_frame(product, source_feature_id)?;
+    let target_frame = sketch_workplane_frame(product, target_feature_id)?;
+    let dot3 = |left: [f64; 3], right: [f64; 3]| {
+        left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
+    };
+    let project_point = |point: [f64; 2]| {
+        let world = [
+            source_frame.origin_mm[0]
+                + source_frame.x_axis[0] * point[0]
+                + source_frame.y_axis[0] * point[1],
+            source_frame.origin_mm[1]
+                + source_frame.x_axis[1] * point[0]
+                + source_frame.y_axis[1] * point[1],
+            source_frame.origin_mm[2]
+                + source_frame.x_axis[2] * point[0]
+                + source_frame.y_axis[2] * point[1],
+        ];
+        let delta = [
+            world[0] - target_frame.origin_mm[0],
+            world[1] - target_frame.origin_mm[1],
+            world[2] - target_frame.origin_mm[2],
+        ];
+        [
+            dot3(delta, target_frame.x_axis),
+            dot3(delta, target_frame.y_axis),
+        ]
+        .map(|value| if value == 0.0 { 0.0 } else { value })
+    };
+    let normal_alignment = dot3(source_frame.normal, target_frame.normal);
+    let projected = match source {
+        SketchEntity::Line {
+            start_mm, end_mm, ..
+        } => SketchEntity::Line {
+            id: new_entity_id,
+            start_mm: project_point(*start_mm),
+            end_mm: project_point(*end_mm),
+        },
+        SketchEntity::Arc {
+            start_mm,
+            end_mm,
+            center_mm,
+            clockwise,
+            ..
+        } if normal_alignment.abs() >= 1.0 - 1.0e-9 => SketchEntity::Arc {
+            id: new_entity_id,
+            start_mm: project_point(*start_mm),
+            end_mm: project_point(*end_mm),
+            center_mm: project_point(*center_mm),
+            clockwise: if normal_alignment < 0.0 {
+                !clockwise
+            } else {
+                *clockwise
+            },
+        },
+        SketchEntity::Circle {
+            center_mm,
+            radius_mm,
+            ..
+        } if normal_alignment.abs() >= 1.0 - 1.0e-9 => SketchEntity::Circle {
+            id: new_entity_id,
+            center_mm: project_point(*center_mm),
+            radius_mm: *radius_mm,
+        },
+        SketchEntity::CubicBezier {
+            start_mm,
+            control_1_mm,
+            control_2_mm,
+            end_mm,
+            ..
+        } => SketchEntity::CubicBezier {
+            id: new_entity_id,
+            start_mm: project_point(*start_mm),
+            control_1_mm: project_point(*control_1_mm),
+            control_2_mm: project_point(*control_2_mm),
+            end_mm: project_point(*end_mm),
+        },
+        SketchEntity::Arc { .. } | SketchEntity::Circle { .. } => {
+            return Err(CanonicalError::Sketch(SketchError::InvalidProjectionSource));
+        }
+    };
+    Ok(projected)
+}
+
+fn refresh_sketch_projections(product: &mut ProductModel) -> Result<(), CanonicalError> {
+    let graph = FeatureDependencyGraph::from_product(product)?;
+    for feature_id in graph.topological_order().iter().copied() {
+        let Some(feature) = product.features.get(&feature_id).cloned() else {
+            continue;
+        };
+        let FeatureKind::Sketch(spec) = &feature.kind else {
+            continue;
+        };
+        let projections = spec
+            .constraints
+            .iter()
+            .filter_map(|constraint| match constraint.kind {
+                SketchConstraintKind::Projection {
+                    entity,
+                    source_feature,
+                    source_entity,
+                    ..
+                } => Some((entity, source_feature, source_entity)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if projections.is_empty() {
+            continue;
+        }
+        let mut updated = spec.clone();
+        for (entity, source_feature, source_entity) in projections {
+            let target =
+                project_sketch_entity(product, feature_id, source_feature, source_entity, entity)?;
+            updated.refresh_projection(entity, target)?;
+        }
+        product.features.insert(
+            feature_id,
+            Arc::new(Feature {
+                kind: FeatureKind::Sketch(updated),
+                ..feature.as_ref().clone()
+            }),
+        );
+    }
+    Ok(())
+}
+
+fn validate_sketch_constraint_edit_dependents(
+    product: &ProductModel,
+    sketch_id: FeatureId,
+    updated: &SketchSpec,
+    constraint_id: SketchConstraintId,
+) -> Result<(), CanonicalError> {
+    let required_regions = product
+        .features
+        .values()
+        .filter_map(|feature| match &feature.kind {
+            FeatureKind::Pad(spec) if spec.sketch == sketch_id => Some(spec.region),
+            FeatureKind::SketchPocket(spec) if spec.sketch == sketch_id => Some(spec.region),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    if required_regions.is_empty() {
+        return Ok(());
+    }
+    let available_regions = updated
+        .solved_regions()
+        .map_err(|_| {
+            CanonicalError::Sketch(SketchError::ConstraintEditInvalidatesProfile(constraint_id))
+        })?
+        .into_iter()
+        .map(|region| region.id)
+        .collect::<BTreeSet<_>>();
+    if required_regions.is_subset(&available_regions) {
+        Ok(())
+    } else {
+        Err(CanonicalError::Sketch(
+            SketchError::ConstraintEditInvalidatesProfile(constraint_id),
+        ))
+    }
+}
+
+fn validate_sketch_projections(product: &ProductModel) -> Result<(), CanonicalError> {
+    FeatureDependencyGraph::from_product(product)?;
+    for (feature_id, feature) in &product.features {
+        let FeatureKind::Sketch(spec) = &feature.kind else {
+            continue;
+        };
+        for constraint in &spec.constraints {
+            let SketchConstraintKind::Projection {
+                entity,
+                source_feature,
+                source_entity,
+                target,
+            } = &constraint.kind
+            else {
+                continue;
+            };
+            let expected = project_sketch_entity(
+                product,
+                *feature_id,
+                *source_feature,
+                *source_entity,
+                *entity,
+            )?;
+            let actual = spec
+                .entities
+                .iter()
+                .find(|candidate| candidate.id() == *entity)
+                .ok_or(CanonicalError::Sketch(SketchError::InvalidProjectionSource))?;
+            if actual != &expected || target.as_ref() != &expected {
+                return Err(CanonicalError::Sketch(SketchError::InvalidProjectionSource));
+            }
+        }
     }
     Ok(())
 }
@@ -13125,7 +14156,9 @@ fn validate_mechanical_condition(
 fn joint_kind_class(kind: AssemblyJointKind) -> Option<CoupledJointKind> {
     match kind {
         AssemblyJointKind::Fixed => None,
-        AssemblyJointKind::Revolute { .. } => Some(CoupledJointKind::Revolute),
+        AssemblyJointKind::Revolute { .. } | AssemblyJointKind::Helical { .. } => {
+            Some(CoupledJointKind::Revolute)
+        }
         AssemblyJointKind::Prismatic { .. } => Some(CoupledJointKind::Prismatic),
     }
 }
@@ -13229,7 +14262,7 @@ fn validate_drawing_sheet(
 ) -> Result<(), CanonicalError> {
     ensure_product_id(sheet.id().0)?;
     ensure_name(sheet.name())?;
-    if sheet.schema() != crate::drawing::ORTHOGRAPHIC_DRAWING_SCHEMA_V1 {
+    if sheet.schema() != crate::drawing::ORTHOGRAPHIC_DRAWING_SCHEMA_V2 {
         return Err(CanonicalError::Drawing(DrawingError::InvalidSheet));
     }
     let snapshot = Snapshot {
@@ -14078,7 +15111,7 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
                         .import_receipts
                         .get(&spec.import_id)
                         .is_none_or(|receipt| {
-                            receipt.format() != ImportFormat::Step
+                            !matches!(receipt.format(), ImportFormat::Step | ImportFormat::Iges)
                                 || receipt.source_sha256() != &spec.source_sha256
                                 || receipt.source_byte_len() != spec.source_byte_len
                         });
@@ -15127,7 +16160,17 @@ fn authoritative_writes(
                 }
             }
             CanonicalCommand::SetFeatureDimension { id, .. }
+            | CanonicalCommand::CreateSketchConstraint { id, .. }
+            | CanonicalCommand::ReplaceSketchConstraint { id, .. }
+            | CanonicalCommand::DeleteSketchConstraint { id, .. }
             | CanonicalCommand::SetSketchConstraintDimension { id, .. }
+            | CanonicalCommand::SplitSketchEntity { id, .. }
+            | CanonicalCommand::JoinSketchEntities { id, .. }
+            | CanonicalCommand::TrimSketchEntity { id, .. }
+            | CanonicalCommand::ExtendSketchEntity { id, .. }
+            | CanonicalCommand::OffsetSketchEntity { id, .. }
+            | CanonicalCommand::ProjectSketchEntity { id, .. }
+            | CanonicalCommand::SetSketchEntityConstruction { id, .. }
             | CanonicalCommand::TranslateProfile { id, .. }
             | CanonicalCommand::SetBottleControlDimension { id, .. }
             | CanonicalCommand::SetBottleEdgeFinishKind { id, .. }
@@ -15355,6 +16398,17 @@ fn authoritative_dependencies(
                     },
                     FeatureKind::Sketch(spec) => {
                         add_feature_dependency_closure(snapshot, spec.workplane, &mut dependencies);
+                        for constraint in &spec.constraints {
+                            if let SketchConstraintKind::Projection { source_feature, .. } =
+                                constraint.kind
+                            {
+                                add_feature_dependency_closure(
+                                    snapshot,
+                                    source_feature,
+                                    &mut dependencies,
+                                );
+                            }
+                        }
                     }
                     FeatureKind::Pad(spec) => {
                         add_feature_dependency_closure(snapshot, spec.sketch, &mut dependencies);
@@ -15413,8 +16467,25 @@ fn authoritative_dependencies(
                 add_feature_dependency_closure(snapshot, *id, &mut dependencies);
                 dependencies.insert(AuthoritativeDependency::FeatureUsers(*id));
             }
+            CanonicalCommand::ProjectSketchEntity {
+                id,
+                source_feature_id,
+                ..
+            } => {
+                add_feature_dependency_closure(snapshot, *id, &mut dependencies);
+                add_feature_dependency_closure(snapshot, *source_feature_id, &mut dependencies);
+            }
             CanonicalCommand::SetFeatureDimension { id, .. }
+            | CanonicalCommand::CreateSketchConstraint { id, .. }
+            | CanonicalCommand::ReplaceSketchConstraint { id, .. }
+            | CanonicalCommand::DeleteSketchConstraint { id, .. }
             | CanonicalCommand::SetSketchConstraintDimension { id, .. }
+            | CanonicalCommand::SplitSketchEntity { id, .. }
+            | CanonicalCommand::JoinSketchEntities { id, .. }
+            | CanonicalCommand::TrimSketchEntity { id, .. }
+            | CanonicalCommand::ExtendSketchEntity { id, .. }
+            | CanonicalCommand::OffsetSketchEntity { id, .. }
+            | CanonicalCommand::SetSketchEntityConstruction { id, .. }
             | CanonicalCommand::TranslateProfile { id, .. }
             | CanonicalCommand::SetBottleControlDimension { id, .. }
             | CanonicalCommand::SetBottleEdgeFinishKind { id, .. }

@@ -2,8 +2,9 @@ use ketchup_core::document::{
     BOTTLE_SHELL_OPENING_FACE_ROLE, BottleEdgeFinishKind, CanonicalCommand, CanonicalError,
     CanonicalOverride, ClassificationCategoryId, ClassificationDimensionId, CommandBatch,
     DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind, NodeId, OccurrenceId,
-    OverrideParameterSpec, PortSpec, RuleOutput, SlotPath, SlotResolution, SlotSegment,
-    StableEdgeRole, StableFaceRole, Transform,
+    OverrideParameterSpec, PortSpec, ProposalContext, ProposalPrincipal, RevisionHistoryError,
+    RevisionOrigin, RuleOutput, SlotPath, SlotResolution, SlotSegment, StableEdgeRole,
+    StableFaceRole, Transform,
 };
 #[cfg(not(feature = "named-product-fixtures"))]
 use ketchup_core::persistence::LegacyFeatureKind;
@@ -24,6 +25,38 @@ fn rewrite_envelope_schema(bytes: &mut [u8], schema: u16) {
     bytes[16..24].copy_from_slice(&payload_length.to_le_bytes());
     let checksum = ketchup_core::graph::sha256_bytes(&bytes[payload_offset..]);
     bytes[24..56].copy_from_slice(&checksum);
+}
+
+fn container_entry_offsets(bytes: &[u8], target: &str) -> (usize, usize, usize) {
+    let mut cursor = 16;
+    let count = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
+    for _ in 0..count {
+        let path_len = u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().unwrap()) as usize;
+        cursor += 4;
+        let path = std::str::from_utf8(&bytes[cursor..cursor + path_len]).unwrap();
+        cursor += path_len + 1;
+        let content_len =
+            u64::from_le_bytes(bytes[cursor..cursor + 8].try_into().unwrap()) as usize;
+        cursor += 8;
+        let checksum_offset = cursor;
+        cursor += 32;
+        let content_offset = cursor;
+        cursor += content_len;
+        if path == target {
+            return (checksum_offset, content_offset, content_len);
+        }
+    }
+    panic!("container entry {target:?} was not found");
+}
+
+fn rehash_container_entry(
+    bytes: &mut [u8],
+    checksum_offset: usize,
+    content_offset: usize,
+    len: usize,
+) {
+    let checksum = ketchup_core::graph::sha256_bytes(&bytes[content_offset..content_offset + len]);
+    bytes[checksum_offset..checksum_offset + 32].copy_from_slice(&checksum);
 }
 
 fn graph_document() -> DocumentStore {
@@ -668,6 +701,246 @@ fn unknown_required_extension_is_preserved_but_blocks_editing() {
 }
 
 #[test]
+fn revision_history_round_trips_with_cursor_and_monotonic_branching() {
+    let mut store = graph_document();
+    for value in ["5", "8"] {
+        store
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetEvaluatorDimension {
+                    id: NodeId(1),
+                    dimension: Dimension::new(value, value.parse().unwrap()).unwrap(),
+                },
+            ]))
+            .unwrap();
+    }
+    store.undo().unwrap();
+    let expected_revision_ids = store
+        .revision_history()
+        .map(ketchup_core::document::Revision::id)
+        .collect::<Vec<_>>();
+    let expected_digests = store
+        .revision_history()
+        .map(|revision| revision.snapshot().canonical_digest())
+        .collect::<Vec<_>>();
+    let expected_cursor = store.history_cursor();
+    let expected_next_revision_id = store.next_revision_id();
+
+    let first =
+        persistence::save_document_store(&store, &persistence::ContainerData::default()).unwrap();
+    let second =
+        persistence::save_document_store(&store, &persistence::ContainerData::default()).unwrap();
+    assert_eq!(second, first);
+
+    let loaded = persistence::load(&first).unwrap();
+    let container_data = loaded.container_data().clone();
+    let mut reopened = loaded.into_editable().ok().unwrap();
+    assert_eq!(reopened.history_cursor(), expected_cursor);
+    assert_eq!(reopened.next_revision_id(), expected_next_revision_id);
+    assert_eq!(reopened.visible_undo_steps(), expected_cursor);
+    assert_eq!(reopened.visible_redo_steps(), 1);
+    assert_eq!(
+        reopened
+            .revision_history()
+            .map(ketchup_core::document::Revision::id)
+            .collect::<Vec<_>>(),
+        expected_revision_ids
+    );
+    assert_eq!(
+        reopened
+            .revision_history()
+            .map(|revision| revision.snapshot().canonical_digest())
+            .collect::<Vec<_>>(),
+        expected_digests
+    );
+    assert_eq!(
+        persistence::save_document_store(&reopened, &container_data).unwrap(),
+        first
+    );
+
+    let before = reopened.current().canonical_digest();
+    reopened.undo().unwrap();
+    assert_ne!(reopened.current().canonical_digest(), before);
+    reopened.redo().unwrap();
+    assert_eq!(reopened.current().canonical_digest(), before);
+    reopened
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetEvaluatorDimension {
+                id: NodeId(1),
+                dimension: Dimension::new("13", 13.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+    assert_eq!(reopened.current().revision_id(), expected_next_revision_id);
+    assert_eq!(reopened.visible_redo_steps(), 0);
+}
+
+#[test]
+fn revision_history_rejects_corruption_and_incompatible_schema_inside_valid_container() {
+    let store = graph_document();
+    let encoded =
+        persistence::save_document_store(&store, &persistence::ContainerData::default()).unwrap();
+    let (checksum_offset, history_offset, history_len) =
+        container_entry_offsets(&encoded, "history.bin");
+
+    let mut corrupt = encoded.clone();
+    *corrupt.last_mut().unwrap() ^= 0xff;
+    rehash_container_entry(&mut corrupt, checksum_offset, history_offset, history_len);
+    assert_eq!(
+        load_error(&corrupt),
+        PersistenceError::HistoryChecksumMismatch
+    );
+
+    let mut incompatible = encoded;
+    incompatible[history_offset + 10..history_offset + 12].copy_from_slice(&3_u16.to_le_bytes());
+    rehash_container_entry(
+        &mut incompatible,
+        checksum_offset,
+        history_offset,
+        history_len,
+    );
+    assert_eq!(
+        load_error(&incompatible),
+        PersistenceError::UnsupportedHistorySchema(3)
+    );
+}
+
+#[test]
+fn revision_catalog_checkpoint_diff_and_rollback_are_auditable_and_persistent() {
+    let mut store = graph_document();
+    let base = store.current();
+    store
+        .create_checkpoint(
+            base.revision_id(),
+            &base.canonical_digest(),
+            "Reviewed base",
+        )
+        .unwrap();
+
+    let proposal = store
+        .prepare_proposal_with_context(
+            CommandBatch::new(vec![CanonicalCommand::SetEvaluatorDimension {
+                id: NodeId(1),
+                dimension: Dimension::new("5", 5.0).unwrap(),
+            }]),
+            ProposalContext::local_assistant_model(),
+        )
+        .unwrap();
+    store.commit_verified_proposal(&proposal).unwrap();
+    let assistant = store.current();
+    assert_eq!(
+        store.revision_history().last().unwrap().origin(),
+        RevisionOrigin::Principal(ProposalPrincipal::LocalAssistant)
+    );
+    assert!(
+        store
+            .compare_revisions(base.revision_id(), base.revision_id())
+            .unwrap()
+            .changes
+            .is_empty()
+    );
+    assert_eq!(
+        store
+            .compare_revisions(base.revision_id(), assistant.revision_id())
+            .unwrap()
+            .changes
+            .last()
+            .unwrap()
+            .structure,
+        "canonical-document"
+    );
+    assert_eq!(
+        store.create_checkpoint(
+            assistant.revision_id(),
+            &assistant.canonical_digest(),
+            "Reviewed base",
+        ),
+        Err(RevisionHistoryError::DuplicateCheckpointName)
+    );
+    store
+        .create_checkpoint(
+            assistant.revision_id(),
+            &assistant.canonical_digest(),
+            "Assistant option",
+        )
+        .unwrap();
+
+    let bytes =
+        persistence::save_document_store(&store, &persistence::ContainerData::default()).unwrap();
+    let mut reopened = persistence::load(&bytes)
+        .unwrap()
+        .into_editable()
+        .ok()
+        .unwrap();
+    assert_eq!(reopened.revision_catalog(), store.revision_catalog());
+
+    let rolled_back = reopened
+        .rollback_to_revision(
+            assistant.revision_id(),
+            &assistant.canonical_digest(),
+            base.revision_id(),
+            ProposalPrincipal::ManualClient,
+        )
+        .unwrap();
+    assert_eq!(
+        rolled_back.snapshot().canonical_digest(),
+        base.canonical_digest()
+    );
+    assert_eq!(
+        rolled_back.origin(),
+        RevisionOrigin::Rollback {
+            principal: ProposalPrincipal::ManualClient,
+            target_revision: base.revision_id(),
+        }
+    );
+    assert_eq!(
+        reopened.undo().unwrap().canonical_digest(),
+        assistant.canonical_digest()
+    );
+    assert_eq!(
+        reopened.redo().unwrap().canonical_digest(),
+        base.canonical_digest()
+    );
+}
+
+#[test]
+fn revision_metadata_and_rollback_reject_invalid_or_stale_requests_without_mutation() {
+    let mut store = graph_document();
+    let current = store.current();
+    let catalog = store.revision_catalog();
+    assert_eq!(
+        store.create_checkpoint(current.revision_id(), &current.canonical_digest(), " bad"),
+        Err(RevisionHistoryError::InvalidCheckpointName)
+    );
+    assert_eq!(
+        store.create_checkpoint(
+            current.revision_id() + 1,
+            &current.canonical_digest(),
+            "Valid"
+        ),
+        Err(RevisionHistoryError::Stale)
+    );
+    assert!(matches!(
+        store.rollback_to_revision(
+            current.revision_id(),
+            &current.canonical_digest(),
+            current.revision_id(),
+            ProposalPrincipal::ManualClient,
+        ),
+        Err(RevisionHistoryError::NoOpRollback)
+    ));
+    assert!(matches!(
+        store.rollback_to_revision(
+            current.revision_id(),
+            &current.canonical_digest(),
+            u64::MAX,
+            ProposalPrincipal::ManualClient,
+        ),
+        Err(RevisionHistoryError::RevisionNotFound(id)) if id == u64::MAX
+    ));
+    assert_eq!(store.revision_catalog(), catalog);
+}
+
+#[test]
 fn native_container_fails_closed_on_unsafe_paths_and_corruption() {
     assert!(matches!(
         persistence::ExtensionEntry::new("org.example", "../escape", false, vec![]),
@@ -708,6 +981,57 @@ fn interrupted_or_corrupt_primary_recovers_the_last_verified_container() {
     let recovered = persistence::load_file(&path).unwrap();
     assert_eq!(recovered.snapshot().canonical_digest(), first_digest);
     assert!(recovered.audit().recovered_from_backup);
+}
+
+#[test]
+fn sparse_native_documents_and_recovery_fail_before_unbounded_reads() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("oversized.ketchup");
+    let recovery = path.with_extension("ketchup.recovery");
+    let store = graph_document();
+    let valid =
+        persistence::save_container(&store.current(), &persistence::ContainerData::default())
+            .unwrap();
+
+    std::fs::File::create(&path)
+        .unwrap()
+        .set_len(persistence::MAX_NATIVE_DOCUMENT_BYTES as u64 + 1)
+        .unwrap();
+    std::fs::write(&recovery, &valid).unwrap();
+    assert!(matches!(
+        persistence::load_file(&path),
+        Err(persistence::FilePersistenceError::Format(
+            PersistenceError::ResourceLimit
+        ))
+    ));
+
+    std::fs::write(&path, b"corrupt primary").unwrap();
+    std::fs::File::create(&recovery)
+        .unwrap()
+        .set_len(persistence::MAX_NATIVE_DOCUMENT_BYTES as u64 + 1)
+        .unwrap();
+    assert!(matches!(
+        persistence::load_file(&path),
+        Err(persistence::FilePersistenceError::Format(
+            PersistenceError::ResourceLimit
+        ))
+    ));
+
+    let save_path = directory.path().join("oversized-existing.ketchup");
+    std::fs::File::create(&save_path)
+        .unwrap()
+        .set_len(persistence::MAX_NATIVE_DOCUMENT_BYTES as u64 + 1)
+        .unwrap();
+    assert!(matches!(
+        persistence::save_atomic(&save_path, &store.current()),
+        Err(persistence::FilePersistenceError::Format(
+            PersistenceError::ResourceLimit
+        ))
+    ));
+    assert_eq!(
+        std::fs::metadata(save_path).unwrap().len(),
+        persistence::MAX_NATIVE_DOCUMENT_BYTES as u64 + 1
+    );
 }
 
 #[test]

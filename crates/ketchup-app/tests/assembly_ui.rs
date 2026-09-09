@@ -2,7 +2,7 @@
 
 mod harness;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -12,11 +12,13 @@ use ketchup_app::dialogs::ScriptedFileDialogs;
 use ketchup_app::{AppCommand, AssistantWorkspaceMode};
 use ketchup_core::assembly::{AssemblyMateKind, AssemblySolveStatus};
 use ketchup_core::assembly_joint::{
-    AssemblyJointId, AssemblyJointKind, AssemblyMotionDriver,
+    AssemblyJoint, AssemblyJointAxis, AssemblyJointId, AssemblyJointKind, AssemblyJointLimits,
+    AssemblyMotionDriver, AssemblyMotionStudy, AssemblyMotionStudyId,
     solve_assembly_joint_kinematics_with_drivers,
 };
 use ketchup_core::document::{
-    CanonicalCommand, CommandBatch, DefinitionId, DocumentStore, FeatureId, FeatureKind, Transform,
+    CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
+    OccurrenceId, TagId, Transform,
 };
 use ketchup_core::drawing::{DrawingSheetId, DrawingSource};
 use ketchup_core::import::ImportFormat;
@@ -24,6 +26,10 @@ use ketchup_core::intent::WorkflowIntent;
 use ketchup_core::mechanical_contract::{
     MechanicalAxisAlignment, MechanicalCondition, MechanicalConditionKind, MechanicalInterface,
     MechanicalPlanarFrame, MechanicalRole, MechanicalViolationKind, preview_mechanical_contract,
+};
+use ketchup_core::mechanical_coupling::{
+    AssemblyMotionCoupling, AssemblyMotionCouplingId, AssemblyMotionDirection,
+    AssemblyTransmissionKind, GearMeshKind, ScrewHandedness,
 };
 use ketchup_core::persistence;
 use ketchup_core::reference_examples::{
@@ -100,6 +106,239 @@ fn insert_occurrence(shell: &mut Shell) {
     confirm_preview(shell);
     assert_eq!(shell.app().document_revision(), revision + 1);
     assert_eq!(shell.app().undo_step_count(), undo + 1);
+}
+
+#[derive(Clone, Copy)]
+enum KinematicFailureFixture {
+    CouplingConflict,
+    CoupledLimit,
+}
+
+fn write_kinematic_failure_fixture(path: &Path, fixture: KinematicFailureFixture) {
+    let definition = DefinitionId(1);
+    let selected_tag = TagId(50);
+    let root = OccurrenceId(10);
+    let input_child = OccurrenceId(11);
+    let output_child = OccurrenceId(12);
+    let input_joint = AssemblyJointId(101);
+    let output_joint = AssemblyJointId(102);
+    let output_limits = match fixture {
+        KinematicFailureFixture::CouplingConflict => AssemblyJointLimits::new(-100.0, 100.0),
+        KinematicFailureFixture::CoupledLimit => AssemblyJointLimits::new(-5.0, 5.0),
+    };
+    let drivers = match fixture {
+        KinematicFailureFixture::CouplingConflict => vec![
+            AssemblyMotionDriver::new(input_joint, 180.0),
+            AssemblyMotionDriver::new(output_joint, 0.0),
+        ],
+        KinematicFailureFixture::CoupledLimit => {
+            vec![AssemblyMotionDriver::new(input_joint, 180.0)]
+        }
+    };
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Kinematic fixture".into(),
+            },
+            CanonicalCommand::CreateTag {
+                id: selected_tag,
+                name: "Driven pair".into(),
+                visible: true,
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: root,
+                definition_id: definition,
+                name: "Root".into(),
+                transform: Transform::from_translation(0.0, 0.0, 0.0).unwrap(),
+                parent: None,
+                tag: Some(selected_tag),
+                visible: true,
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: input_child,
+                definition_id: definition,
+                name: "Input".into(),
+                transform: Transform::from_translation(20.0, 0.0, 0.0).unwrap(),
+                parent: None,
+                tag: Some(selected_tag),
+                visible: true,
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: output_child,
+                definition_id: definition,
+                name: "Output".into(),
+                transform: Transform::from_translation(40.0, 0.0, 0.0).unwrap(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+            CanonicalCommand::CreateAssemblyJoint(AssemblyJoint::new(
+                input_joint,
+                root,
+                input_child,
+                AssemblyJointKind::Revolute {
+                    axis: AssemblyJointAxis::new([0.0, 0.0, 1.0], [0.0, 0.0, 0.0]),
+                    limits: Some(AssemblyJointLimits::new(-360.0, 360.0)),
+                    position_degrees: 0.0,
+                },
+            )),
+            CanonicalCommand::CreateAssemblyJoint(AssemblyJoint::new(
+                output_joint,
+                root,
+                output_child,
+                AssemblyJointKind::Prismatic {
+                    axis: AssemblyJointAxis::new([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+                    limits: Some(output_limits),
+                    position_mm: 0.0,
+                },
+            )),
+            CanonicalCommand::CreateAssemblyMotionCoupling(AssemblyMotionCoupling::new(
+                AssemblyMotionCouplingId(201),
+                input_joint,
+                output_joint,
+                0.0,
+                0.0,
+                AssemblyTransmissionKind::RackAndPinion {
+                    pinion_pitch_diameter_mm: 20.0,
+                    direction: AssemblyMotionDirection::Same,
+                },
+            )),
+            CanonicalCommand::CreateAssemblyMotionStudy(AssemblyMotionStudy::new(
+                AssemblyMotionStudyId(300),
+                "Failure preview",
+                drivers,
+            )),
+        ]))
+        .unwrap();
+    std::fs::write(path, persistence::save(&document.current())).unwrap();
+}
+
+fn write_coupling_authoring_fixture(path: &Path) {
+    let definition = DefinitionId(1);
+    let root = OccurrenceId(10);
+    let mut commands = vec![
+        CanonicalCommand::CreateDefinition {
+            id: definition,
+            name: "Coupling authoring fixture".into(),
+        },
+        CanonicalCommand::CreateOccurrence {
+            id: root,
+            definition_id: definition,
+            name: "Root".into(),
+            transform: Transform::identity(),
+            parent: None,
+            tag: None,
+            visible: true,
+        },
+    ];
+    for offset in 1..=10_u64 {
+        let occurrence_id = OccurrenceId(10 + offset);
+        let joint_id = AssemblyJointId(100 + offset);
+        commands.push(CanonicalCommand::CreateOccurrence {
+            id: occurrence_id,
+            definition_id: definition,
+            name: format!("Driven {offset}"),
+            transform: Transform::from_translation(offset as f64 * 20.0, 0.0, 0.0).unwrap(),
+            parent: None,
+            tag: None,
+            visible: true,
+        });
+        let kind = if matches!(joint_id.0, 108 | 110) {
+            AssemblyJointKind::Prismatic {
+                axis: AssemblyJointAxis::new([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+                limits: Some(AssemblyJointLimits::new(-100.0, 100.0)),
+                position_mm: 0.0,
+            }
+        } else if joint_id.0 == 109 {
+            AssemblyJointKind::Helical {
+                axis: AssemblyJointAxis::new([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+                limits: Some(AssemblyJointLimits::new(-360.0, 360.0)),
+                lead_mm_per_revolution: 8.0,
+                position_degrees: 0.0,
+            }
+        } else {
+            AssemblyJointKind::Revolute {
+                axis: AssemblyJointAxis::new([0.0, 0.0, 1.0], [0.0, 0.0, 0.0]),
+                limits: Some(AssemblyJointLimits::new(-360.0, 360.0)),
+                position_degrees: 0.0,
+            }
+        };
+        commands.push(CanonicalCommand::CreateAssemblyJoint(AssemblyJoint::new(
+            joint_id,
+            root,
+            occurrence_id,
+            kind,
+        )));
+    }
+    let mut document = DocumentStore::new();
+    document.apply_batch(&CommandBatch::new(commands)).unwrap();
+    std::fs::write(path, persistence::save(&document.current())).unwrap();
+}
+
+fn write_collision_drag_fixture(path: &Path) {
+    let definition = DefinitionId(1);
+    let profile = FeatureId(1);
+    let extrusion = FeatureId(2);
+    let obstacle = OccurrenceId(10);
+    let mover = OccurrenceId(11);
+    let joint = AssemblyJointId(101);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Collision drag fixture".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: profile,
+                definition_id: definition,
+                name: "Unit profile".into(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: extrusion,
+                definition_id: definition,
+                name: "Unit body".into(),
+                kind: FeatureKind::Extrusion {
+                    profile,
+                    height: Dimension::from_decimal("1").unwrap(),
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: obstacle,
+                definition_id: definition,
+                name: "Obstacle".into(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: mover,
+                definition_id: definition,
+                name: "Mover".into(),
+                transform: Transform::from_translation(-10.0, 0.0, 0.0).unwrap(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+            CanonicalCommand::CreateAssemblyJoint(AssemblyJoint::new(
+                joint,
+                obstacle,
+                mover,
+                AssemblyJointKind::Prismatic {
+                    axis: AssemblyJointAxis::new([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+                    limits: Some(AssemblyJointLimits::new(0.0, 20.0)),
+                    position_mm: 0.0,
+                },
+            )),
+        ]))
+        .unwrap();
+    std::fs::write(path, persistence::save(&document.current())).unwrap();
 }
 
 #[test]
@@ -268,6 +507,21 @@ fn joints_and_motion_studies_share_ui_and_assistant_atomic_preview_contract() {
     assert!(shell.app().assembly_preview_pending());
     assert_eq!(shell.app().assembly_joint_count(), 0);
     assert_eq!(shell.app().canonical_digest(), baseline.1);
+    assert!(shell.has_visible_label(&shell.catalog().format(
+        "assembly-kinematic-summary",
+        &BTreeMap::from([
+            ("status", shell.catalog().text("assembly-kinematic-under"),),
+            ("dof", "1".to_owned()),
+        ]),
+    )));
+    assert!(shell.has_visible_label(&shell.catalog().format(
+        "assembly-kinematic-joint-diagnostic",
+        &BTreeMap::from([
+            ("id", "1".to_owned()),
+            ("dof", "1".to_owned()),
+            ("drivers", "0".to_owned()),
+        ]),
+    )));
     shell.click_button_label(&assembly_cancel);
     assert_eq!(shell.app().assembly_joint_count(), 0);
     assert_eq!(shell.app().canonical_digest(), baseline.1);
@@ -356,6 +610,21 @@ fn joints_and_motion_studies_share_ui_and_assistant_atomic_preview_contract() {
     shell.app_mut().headless_set_assembly_motion_position(35.0);
     let motion_preview = shell.catalog().text("assembly-preview-motion-study");
     shell.click_button_label(&motion_preview);
+    assert!(shell.has_visible_label(&shell.catalog().format(
+        "assembly-kinematic-summary",
+        &BTreeMap::from([
+            ("status", shell.catalog().text("assembly-kinematic-fully"),),
+            ("dof", "0".to_owned()),
+        ]),
+    )));
+    assert!(shell.has_visible_label(&shell.catalog().format(
+        "assembly-kinematic-joint-diagnostic",
+        &BTreeMap::from([
+            ("id", "1".to_owned()),
+            ("dof", "0".to_owned()),
+            ("drivers", "1".to_owned()),
+        ]),
+    )));
     confirm_preview(&mut shell);
     assert_eq!(
         shell
@@ -423,6 +692,863 @@ fn joints_and_motion_studies_share_ui_and_assistant_atomic_preview_contract() {
     assert_eq!(shell.app().assembly_joint_count(), 1);
     assert_eq!(shell.app().assembly_motion_study_count(), 1);
     assert!(!shell.app().can_undo());
+}
+
+#[test]
+fn helical_joint_is_created_edited_driven_and_reopened_through_accesskit() {
+    let directory = tempfile::tempdir().unwrap();
+    let saved = directory.path().join("helical-assembly.ketchup");
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_save(&saved)
+        .queue_open(&saved)
+        .always_discard();
+    let mut shell = Shell::with_dialogs(dialogs);
+    open_assembly_editor(&mut shell);
+    insert_occurrence(&mut shell);
+    shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+    assert_eq!(shell.app().selected_occurrence_count(), 2);
+
+    let kind_label = shell.catalog().text("assembly-joint-kind");
+    shell.click_role_and_label(Role::ComboBox, &kind_label);
+    shell.click_button_label(&shell.catalog().text("assembly-joint-kind-helical"));
+    let lead_label = shell.catalog().text("assembly-joint-lead");
+    assert!(shell.has_role_and_label(Role::TextInput, &lead_label));
+    shell
+        .app_mut()
+        .headless_set_assembly_joint_parameters(0.0, 0.0);
+    shell.settle();
+
+    let preview = shell.catalog().text("assembly-preview-joint");
+    let before_invalid = (
+        shell.app().document_revision(),
+        shell.app().canonical_digest(),
+        shell.app().undo_step_count(),
+    );
+    shell.click_button_label(&preview);
+    assert!(!shell.app().assembly_preview_pending());
+    assert_eq!(
+        (
+            shell.app().document_revision(),
+            shell.app().canonical_digest(),
+            shell.app().undo_step_count(),
+        ),
+        before_invalid
+    );
+    assert!(
+        shell
+            .app()
+            .action_digest()
+            .contains(&shell.catalog().text("assembly-error-joint-lead"))
+    );
+
+    shell
+        .app_mut()
+        .headless_set_assembly_joint_parameters(0.0, 8.0);
+    shell.settle();
+    shell.click_button_label(&preview);
+    assert!(shell.app().assembly_preview_pending());
+    assert_eq!(shell.app().assembly_joint_count(), 0);
+    assert!(shell.has_visible_label(&shell.catalog().format(
+        "assembly-kinematic-summary",
+        &BTreeMap::from([
+            ("status", shell.catalog().text("assembly-kinematic-under")),
+            ("dof", "1".to_owned()),
+        ]),
+    )));
+    confirm_preview(&mut shell);
+    let joint_id = shell
+        .app()
+        .document_snapshot()
+        .assembly_joints()
+        .next()
+        .unwrap()
+        .id();
+    assert!(matches!(
+        shell
+            .app()
+            .document_snapshot()
+            .assembly_joint(joint_id)
+            .unwrap()
+            .kind(),
+        AssemblyJointKind::Helical {
+            lead_mm_per_revolution: 8.0,
+            position_degrees: 0.0,
+            ..
+        }
+    ));
+
+    assert!(shell.has_role_and_label(
+        Role::TextInput,
+        &shell.catalog().text("assembly-joint-position")
+    ));
+    shell
+        .app_mut()
+        .headless_set_assembly_joint_parameters(180.0, 12.0);
+    shell.settle();
+    let before_edit = (
+        shell.app().canonical_digest(),
+        shell.app().undo_step_count(),
+    );
+    shell.click_button_label(&preview);
+    assert!(shell.app().assembly_preview_pending());
+    assert_eq!(shell.app().canonical_digest(), before_edit.0);
+    confirm_preview(&mut shell);
+    assert_eq!(shell.app().undo_step_count(), before_edit.1 + 1);
+    assert!(matches!(
+        shell
+            .app()
+            .document_snapshot()
+            .assembly_joint(joint_id)
+            .unwrap()
+            .kind(),
+        AssemblyJointKind::Helical {
+            lead_mm_per_revolution: 12.0,
+            position_degrees: 180.0,
+            ..
+        }
+    ));
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert!(matches!(
+        shell
+            .app()
+            .document_snapshot()
+            .assembly_joint(joint_id)
+            .unwrap()
+            .kind(),
+        AssemblyJointKind::Helical {
+            lead_mm_per_revolution: 8.0,
+            position_degrees: 0.0,
+            ..
+        }
+    ));
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+
+    shell.app_mut().headless_set_assembly_motion_position(90.0);
+    let motion_preview = shell.catalog().text("assembly-preview-motion-study");
+    shell.click_button_label(&motion_preview);
+    assert!(shell.has_visible_label(&shell.catalog().format(
+        "assembly-kinematic-summary",
+        &BTreeMap::from([
+            ("status", shell.catalog().text("assembly-kinematic-fully")),
+            ("dof", "0".to_owned()),
+        ]),
+    )));
+    confirm_preview(&mut shell);
+    assert_eq!(shell.app().assembly_motion_study_count(), 1);
+
+    let persisted_digest = shell.app().canonical_digest();
+    shell.click_menu_command("menu-file", AppCommand::SaveAs);
+    let persisted = persistence::load_file(&saved).unwrap();
+    assert_eq!(persisted.snapshot().canonical_digest(), persisted_digest);
+    let core_bytes = persistence::save(&persisted.snapshot());
+    assert_eq!(
+        persistence::save(&persistence::load(&core_bytes).unwrap().snapshot()),
+        core_bytes
+    );
+    shell.click_menu_command("menu-file", AppCommand::New);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert_eq!(shell.app().canonical_digest(), persisted_digest);
+    assert_eq!(shell.app().assembly_joint_count(), 1);
+    assert_eq!(shell.app().assembly_motion_study_count(), 1);
+    assert!(!shell.app().can_undo());
+}
+
+#[test]
+fn all_motion_couplings_are_authored_edited_and_reopened_through_accesskit() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("coupling-source.ketchup");
+    let saved = directory.path().join("coupling-saved.ketchup");
+    write_coupling_authoring_fixture(&source);
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_open(&source)
+        .queue_save(&saved)
+        .queue_open(&saved)
+        .always_discard();
+    let mut shell = Shell::with_dialogs(dialogs);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    open_assembly_editor(&mut shell);
+
+    let preview = shell.catalog().text("assembly-preview-coupling");
+    let cancel = shell.catalog().text("assembly-cancel-preview");
+    shell.app_mut().headless_set_assembly_coupling_parameters(
+        [101, 102],
+        [0.0, 0.0],
+        ["0", "40"],
+        false,
+    );
+    shell.settle();
+    let before_invalid = (
+        shell.app().document_revision(),
+        shell.app().canonical_digest(),
+        shell.app().undo_step_count(),
+    );
+    shell.click_button_label(&preview);
+    assert!(!shell.app().assembly_preview_pending());
+    assert_eq!(shell.app().assembly_motion_coupling_count(), 0);
+    assert_eq!(
+        (
+            shell.app().document_revision(),
+            shell.app().canonical_digest(),
+            shell.app().undo_step_count(),
+        ),
+        before_invalid
+    );
+    assert!(
+        shell
+            .app()
+            .action_digest()
+            .contains(&shell.catalog().text("assembly-error-coupling-parameter"))
+    );
+
+    for (index, kind_key, input, output, first, second, option) in [
+        (
+            0,
+            "assembly-coupling-kind-gear",
+            101,
+            102,
+            "20",
+            "40",
+            false,
+        ),
+        (1, "assembly-coupling-kind-belt", 103, 104, "40", "20", true),
+        (
+            2,
+            "assembly-coupling-kind-chain",
+            105,
+            106,
+            "15",
+            "30",
+            false,
+        ),
+        (3, "assembly-coupling-kind-rack", 107, 108, "20", "", true),
+        (4, "assembly-coupling-kind-screw", 109, 110, "8", "", false),
+    ] {
+        if index != 0 {
+            shell.click_role_and_label(
+                Role::ComboBox,
+                &shell.catalog().text("assembly-coupling-kind"),
+            );
+            shell.click_button_label(&shell.catalog().text(kind_key));
+        }
+        shell.app_mut().headless_set_assembly_coupling_parameters(
+            [input, output],
+            [0.0, 0.0],
+            [first, second],
+            option,
+        );
+        shell.settle();
+        let before = (
+            shell.app().document_revision(),
+            shell.app().canonical_digest(),
+            shell.app().undo_step_count(),
+        );
+        shell.click_button_label(&preview);
+        assert!(shell.app().assembly_preview_pending());
+        assert_eq!(shell.app().assembly_motion_coupling_count(), index);
+        assert_eq!(shell.app().canonical_digest(), before.1);
+        assert!(shell.has_visible_label(&shell.catalog().format(
+            "assembly-kinematic-summary",
+            &BTreeMap::from([
+                ("status", shell.catalog().text("assembly-kinematic-under")),
+                ("dof", (10 - index - 1).to_string()),
+            ]),
+        )));
+        if index == 0 {
+            shell.click_button_label(&cancel);
+            assert_eq!(shell.app().assembly_motion_coupling_count(), 0);
+            assert_eq!(shell.app().canonical_digest(), before.1);
+            shell.click_button_label(&preview);
+        }
+        confirm_preview(&mut shell);
+        assert_eq!(shell.app().assembly_motion_coupling_count(), index + 1);
+        assert_eq!(shell.app().document_revision(), before.0 + 1);
+        assert_eq!(shell.app().undo_step_count(), before.2 + 1);
+    }
+
+    let snapshot = shell.app().document_snapshot();
+    assert!(matches!(
+        snapshot
+            .assembly_motion_coupling(AssemblyMotionCouplingId(1))
+            .unwrap()
+            .transmission(),
+        AssemblyTransmissionKind::GearPair {
+            input_teeth: 20,
+            output_teeth: 40,
+            mesh: GearMeshKind::External,
+        }
+    ));
+    assert!(matches!(
+        snapshot
+            .assembly_motion_coupling(AssemblyMotionCouplingId(2))
+            .unwrap()
+            .transmission(),
+        AssemblyTransmissionKind::Belt {
+            input_pitch_diameter_mm: 40.0,
+            output_pitch_diameter_mm: 20.0,
+            crossed: true,
+        }
+    ));
+    assert!(matches!(
+        snapshot
+            .assembly_motion_coupling(AssemblyMotionCouplingId(3))
+            .unwrap()
+            .transmission(),
+        AssemblyTransmissionKind::Chain {
+            input_sprocket_teeth: 15,
+            output_sprocket_teeth: 30,
+        }
+    ));
+    assert!(matches!(
+        snapshot
+            .assembly_motion_coupling(AssemblyMotionCouplingId(4))
+            .unwrap()
+            .transmission(),
+        AssemblyTransmissionKind::RackAndPinion {
+            pinion_pitch_diameter_mm: 20.0,
+            direction: AssemblyMotionDirection::Opposite,
+        }
+    ));
+    assert!(matches!(
+        snapshot
+            .assembly_motion_coupling(AssemblyMotionCouplingId(5))
+            .unwrap()
+            .transmission(),
+        AssemblyTransmissionKind::LeadScrew {
+            lead_mm_per_revolution: 8.0,
+            handedness: ScrewHandedness::Right,
+        }
+    ));
+
+    let edit = shell.catalog().format(
+        "assembly-edit-coupling",
+        &BTreeMap::from([("id", "5".to_owned())]),
+    );
+    shell.click_button_label(&edit);
+    shell.app_mut().headless_set_assembly_coupling_parameters(
+        [109, 110],
+        [0.0, 0.0],
+        ["16", ""],
+        true,
+    );
+    shell.settle();
+    let before_edit = (
+        shell.app().canonical_digest(),
+        shell.app().undo_step_count(),
+    );
+    shell.click_button_label(&preview);
+    assert_eq!(shell.app().canonical_digest(), before_edit.0);
+    confirm_preview(&mut shell);
+    assert_eq!(shell.app().undo_step_count(), before_edit.1 + 1);
+    assert!(matches!(
+        shell
+            .app()
+            .document_snapshot()
+            .assembly_motion_coupling(AssemblyMotionCouplingId(5))
+            .unwrap()
+            .transmission(),
+        AssemblyTransmissionKind::LeadScrew {
+            lead_mm_per_revolution: 16.0,
+            handedness: ScrewHandedness::Left,
+        }
+    ));
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert!(matches!(
+        shell
+            .app()
+            .document_snapshot()
+            .assembly_motion_coupling(AssemblyMotionCouplingId(5))
+            .unwrap()
+            .transmission(),
+        AssemblyTransmissionKind::LeadScrew {
+            lead_mm_per_revolution: 8.0,
+            handedness: ScrewHandedness::Right,
+        }
+    ));
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+
+    shell.app_mut().headless_set_assembly_coupling_parameters(
+        [109, 110],
+        [0.0, 0.0],
+        ["24", ""],
+        true,
+    );
+    shell.settle();
+    shell.click_button_label(&preview);
+    assert!(shell.app().assembly_preview_pending());
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    let after_intervening_undo = (
+        shell.app().document_revision(),
+        shell.app().canonical_digest(),
+        shell.app().undo_step_count(),
+    );
+    shell.click_button_label(&shell.catalog().text("assembly-confirm-preview"));
+    assert!(!shell.app().assembly_preview_pending());
+    assert_eq!(
+        (
+            shell.app().document_revision(),
+            shell.app().canonical_digest(),
+            shell.app().undo_step_count(),
+        ),
+        after_intervening_undo
+    );
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+
+    let persisted_digest = shell.app().canonical_digest();
+    shell.click_menu_command("menu-file", AppCommand::SaveAs);
+    let bytes = std::fs::read(&saved).unwrap();
+    let persisted = persistence::load(&bytes).unwrap();
+    assert_eq!(persisted.snapshot().canonical_digest(), persisted_digest);
+    assert_eq!(persisted.snapshot().assembly_motion_couplings().count(), 5);
+    let core_bytes = persistence::save(&persisted.snapshot());
+    assert_eq!(
+        persistence::save(&persistence::load(&core_bytes).unwrap().snapshot()),
+        core_bytes
+    );
+    shell.click_menu_command("menu-file", AppCommand::New);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert_eq!(shell.app().canonical_digest(), persisted_digest);
+    assert_eq!(shell.app().assembly_motion_coupling_count(), 5);
+    assert!(!shell.app().can_undo());
+}
+
+#[test]
+fn mechanism_drag_collision_preview_blocks_or_allows_contact_through_accesskit() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("collision-drag-source.ketchup");
+    let saved = directory.path().join("collision-drag-saved.ketchup");
+    write_collision_drag_fixture(&source);
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_open(&source)
+        .queue_save(&saved)
+        .queue_open(&saved)
+        .always_discard();
+    let mut shell = Shell::with_dialogs(dialogs);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    open_assembly_editor(&mut shell);
+
+    assert!(shell.has_role_and_label(
+        Role::CheckBox,
+        &shell.catalog().text("assembly-drag-check-collisions")
+    ));
+    assert!(shell.has_role_and_label(
+        Role::CheckBox,
+        &shell.catalog().text("assembly-drag-allow-contact")
+    ));
+    let preview = shell.catalog().text("assembly-preview-drag");
+    let confirm = shell.catalog().text("assembly-confirm-preview");
+    let cancel = shell.catalog().text("assembly-cancel-preview");
+    let baseline = (
+        shell.app().document_revision(),
+        shell.app().canonical_digest(),
+        shell.app().undo_step_count(),
+    );
+
+    shell.app_mut().headless_set_assembly_drag(101, 4.0, false);
+    shell.settle();
+    shell.click_button_label(&preview);
+    assert!(shell.has_visible_label(&shell.catalog().text("assembly-drag-clearance-safe")));
+    assert!(shell.has_visible_label(&shell.catalog().format(
+        "assembly-drag-clearance-minimum",
+        &BTreeMap::from([
+            ("clearance", "5".to_owned()),
+            ("first", "10".to_owned()),
+            ("second", "11".to_owned()),
+            ("progress", "1".to_owned()),
+        ]),
+    )));
+    confirm_preview(&mut shell);
+    assert_eq!(shell.app().undo_step_count(), baseline.2 + 1);
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), baseline.1);
+
+    shell.app_mut().headless_set_assembly_drag(101, 20.0, false);
+    shell.settle();
+    shell.click_button_label(&preview);
+    assert!(shell.has_visible_label(&shell.catalog().format(
+        "assembly-drag-clearance-contact",
+        &BTreeMap::from([
+            ("first", "10".to_owned()),
+            ("second", "11".to_owned()),
+            ("progress", "0.45".to_owned()),
+            (
+                "policy",
+                shell.catalog().text("assembly-drag-contact-blocked"),
+            ),
+        ]),
+    )));
+    shell.click_button_label(&confirm);
+    assert!(shell.app().assembly_preview_pending());
+    assert_eq!(shell.app().canonical_digest(), baseline.1);
+    assert_eq!(shell.app().undo_step_count(), baseline.2);
+    shell.click_button_label(&cancel);
+
+    shell
+        .app_mut()
+        .headless_set_assembly_drag_collision_policy(true, true);
+    shell.click_button_label(&preview);
+    assert!(shell.has_visible_label(&shell.catalog().format(
+        "assembly-drag-clearance-contact",
+        &BTreeMap::from([
+            ("first", "10".to_owned()),
+            ("second", "11".to_owned()),
+            ("progress", "0.45".to_owned()),
+            (
+                "policy",
+                shell.catalog().text("assembly-drag-contact-allowed"),
+            ),
+        ]),
+    )));
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    let stale_document = (
+        shell.app().document_revision(),
+        shell.app().canonical_digest(),
+        shell.app().undo_step_count(),
+    );
+    shell.click_button_label(&confirm);
+    assert!(!shell.app().assembly_preview_pending());
+    assert_eq!(
+        (
+            shell.app().document_revision(),
+            shell.app().canonical_digest(),
+            shell.app().undo_step_count(),
+        ),
+        stale_document
+    );
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    shell.app_mut().headless_set_assembly_drag(101, 20.0, false);
+    shell.settle();
+    shell.click_button_label(&preview);
+    confirm_preview(&mut shell);
+    assert_eq!(shell.app().undo_step_count(), baseline.2 + 1);
+    assert_eq!(
+        shell
+            .app()
+            .document_snapshot()
+            .assembly_joint(AssemblyJointId(101))
+            .unwrap()
+            .kind()
+            .position(),
+        Some(20.0)
+    );
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+
+    shell.app_mut().headless_set_assembly_drag(101, 20.0, false);
+    shell.settle();
+    shell.click_button_label(&preview);
+    assert!(!shell.app().assembly_preview_pending());
+    assert!(
+        shell
+            .app()
+            .action_digest()
+            .contains(&shell.catalog().text("assembly-error-drag-no-change"))
+    );
+
+    let persisted_digest = shell.app().canonical_digest();
+    shell.click_menu_command("menu-file", AppCommand::SaveAs);
+    shell.click_menu_command("menu-file", AppCommand::New);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert_eq!(shell.app().canonical_digest(), persisted_digest);
+    assert_eq!(
+        shell
+            .app()
+            .document_snapshot()
+            .assembly_joint(AssemblyJointId(101))
+            .unwrap()
+            .kind()
+            .position(),
+        Some(20.0)
+    );
+    assert!(!shell.app().can_undo());
+}
+
+#[test]
+fn mechanism_drag_is_previewed_clamped_coupled_and_reopened_through_accesskit() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("drag-source.ketchup");
+    let saved = directory.path().join("drag-saved.ketchup");
+    write_coupling_authoring_fixture(&source);
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_open(&source)
+        .queue_save(&saved)
+        .queue_open(&saved)
+        .always_discard();
+    let mut shell = Shell::with_dialogs(dialogs);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    open_assembly_editor(&mut shell);
+    shell
+        .app_mut()
+        .headless_set_assembly_drag_collision_policy(false, false);
+
+    assert!(shell.has_role_and_label(Role::ComboBox, &shell.catalog().text("assembly-drag-joint")));
+    assert!(shell.has_role_and_label(
+        Role::TextInput,
+        &shell.catalog().text("assembly-drag-position")
+    ));
+    let preview = shell.catalog().text("assembly-preview-drag");
+    let before_invalid = (
+        shell.app().document_revision(),
+        shell.app().canonical_digest(),
+        shell.app().undo_step_count(),
+    );
+    shell
+        .app_mut()
+        .headless_set_assembly_drag(101, 500.0, false);
+    shell.settle();
+    shell.click_button_label(&preview);
+    assert!(!shell.app().assembly_preview_pending());
+    assert_eq!(
+        (
+            shell.app().document_revision(),
+            shell.app().canonical_digest(),
+            shell.app().undo_step_count(),
+        ),
+        before_invalid
+    );
+    assert!(
+        shell
+            .app()
+            .action_digest()
+            .contains(&shell.catalog().format(
+                "assembly-error-drag-unreachable",
+                &BTreeMap::from([("id", "101".to_owned())]),
+            ))
+    );
+
+    shell.app_mut().headless_set_assembly_drag(101, 500.0, true);
+    shell.settle();
+    shell.click_button_label(&preview);
+    assert!(shell.app().assembly_preview_pending());
+    assert_eq!(shell.app().canonical_digest(), before_invalid.1);
+    assert!(shell.has_visible_label(&shell.catalog().format(
+        "assembly-drag-result",
+        &BTreeMap::from([
+            ("id", "101".to_owned()),
+            ("requested", "500".to_owned()),
+            ("applied", "360".to_owned()),
+            ("limited", shell.catalog().text("assembly-drag-limited")),
+        ]),
+    )));
+    confirm_preview(&mut shell);
+    assert_eq!(shell.app().undo_step_count(), before_invalid.2 + 1);
+    assert_eq!(
+        shell
+            .app()
+            .document_snapshot()
+            .assembly_joint(AssemblyJointId(101))
+            .unwrap()
+            .kind()
+            .position(),
+        Some(360.0)
+    );
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(
+        shell
+            .app()
+            .document_snapshot()
+            .assembly_joint(AssemblyJointId(101))
+            .unwrap()
+            .kind()
+            .position(),
+        Some(0.0)
+    );
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+
+    for (joint_id, position) in [(108, 25.0), (109, 90.0)] {
+        shell
+            .app_mut()
+            .headless_set_assembly_drag(joint_id, position, false);
+        shell.settle();
+        shell.click_button_label(&preview);
+        assert!(shell.app().assembly_preview_pending());
+        confirm_preview(&mut shell);
+        assert_eq!(
+            shell
+                .app()
+                .document_snapshot()
+                .assembly_joint(AssemblyJointId(joint_id))
+                .unwrap()
+                .kind()
+                .position(),
+            Some(position)
+        );
+    }
+
+    shell.click_role_and_label(
+        Role::ComboBox,
+        &shell.catalog().text("assembly-coupling-kind"),
+    );
+    shell.click_button_label(&shell.catalog().text("assembly-coupling-kind-screw"));
+    shell.app_mut().headless_set_assembly_coupling_parameters(
+        [109, 110],
+        [90.0, 0.0],
+        ["8", ""],
+        false,
+    );
+    shell.settle();
+    shell.click_button_label(&shell.catalog().text("assembly-preview-coupling"));
+    confirm_preview(&mut shell);
+
+    shell
+        .app_mut()
+        .headless_set_assembly_drag(109, 180.0, false);
+    shell.settle();
+    let before_coupled_drag = shell.app().undo_step_count();
+    shell.click_button_label(&preview);
+    assert!(shell.has_visible_label(&shell.catalog().format(
+        "assembly-kinematic-summary",
+        &BTreeMap::from([
+            ("status", shell.catalog().text("assembly-kinematic-under")),
+            ("dof", "8".to_owned()),
+        ]),
+    )));
+    confirm_preview(&mut shell);
+    assert_eq!(shell.app().undo_step_count(), before_coupled_drag + 1);
+    let snapshot = shell.app().document_snapshot();
+    assert_eq!(
+        snapshot
+            .assembly_joint(AssemblyJointId(109))
+            .unwrap()
+            .kind()
+            .position(),
+        Some(180.0)
+    );
+    assert_eq!(
+        snapshot
+            .assembly_joint(AssemblyJointId(110))
+            .unwrap()
+            .kind()
+            .position(),
+        Some(2.0)
+    );
+
+    shell.app_mut().headless_set_assembly_drag(109, 90.0, false);
+    shell.settle();
+    shell.click_button_label(&preview);
+    assert!(shell.app().assembly_preview_pending());
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    let after_intervening_undo = (
+        shell.app().document_revision(),
+        shell.app().canonical_digest(),
+        shell.app().undo_step_count(),
+    );
+    shell.click_button_label(&shell.catalog().text("assembly-confirm-preview"));
+    assert!(!shell.app().assembly_preview_pending());
+    assert_eq!(
+        (
+            shell.app().document_revision(),
+            shell.app().canonical_digest(),
+            shell.app().undo_step_count(),
+        ),
+        after_intervening_undo
+    );
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+
+    shell
+        .app_mut()
+        .headless_set_assembly_drag(109, 180.0, false);
+    shell.settle();
+    shell.click_button_label(&preview);
+    assert!(!shell.app().assembly_preview_pending());
+    assert!(
+        shell
+            .app()
+            .action_digest()
+            .contains(&shell.catalog().text("assembly-error-drag-no-change"))
+    );
+
+    let persisted_digest = shell.app().canonical_digest();
+    shell.click_menu_command("menu-file", AppCommand::SaveAs);
+    let bytes = std::fs::read(&saved).unwrap();
+    let persisted = persistence::load(&bytes).unwrap();
+    assert_eq!(persisted.snapshot().canonical_digest(), persisted_digest);
+    let core_bytes = persistence::save(&persisted.snapshot());
+    assert_eq!(
+        persistence::save(&persistence::load(&core_bytes).unwrap().snapshot()),
+        core_bytes
+    );
+    shell.click_menu_command("menu-file", AppCommand::New);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert_eq!(shell.app().canonical_digest(), persisted_digest);
+    assert_eq!(
+        shell
+            .app()
+            .document_snapshot()
+            .assembly_joint(AssemblyJointId(110))
+            .unwrap()
+            .kind()
+            .position(),
+        Some(2.0)
+    );
+    assert!(!shell.app().can_undo());
+}
+
+#[test]
+fn kinematic_conflict_and_coupled_limit_are_localized_and_fail_closed_in_preview() {
+    let directory = tempfile::tempdir().unwrap();
+    for (index, fixture, error_key, id) in [
+        (
+            0,
+            KinematicFailureFixture::CouplingConflict,
+            "assembly-error-kinematic-conflict-coupling",
+            "201",
+        ),
+        (
+            1,
+            KinematicFailureFixture::CoupledLimit,
+            "assembly-error-kinematic-limit-joint",
+            "102",
+        ),
+    ] {
+        let source = directory
+            .path()
+            .join(format!("kinematic-failure-{index}.ketchup"));
+        write_kinematic_failure_fixture(&source, fixture);
+        let mut shell = Shell::with_dialogs(
+            ScriptedFileDialogs::new()
+                .queue_open(&source)
+                .always_discard(),
+        );
+        shell.click_menu_command("menu-file", AppCommand::Open);
+        assert!(shell.app_mut().select_tag_occurrences(TagId(50)));
+        shell.settle();
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        shell.app_mut().headless_set_assembly_motion_position(180.0);
+        open_assembly_editor(&mut shell);
+
+        let before = (
+            shell.app().document_revision(),
+            shell.app().canonical_digest(),
+            shell.app().undo_step_count(),
+        );
+        let preview = shell.catalog().text("assembly-preview-motion-study");
+        shell.click_button_label(&preview);
+        assert!(!shell.app().assembly_preview_pending());
+        assert_eq!(
+            (
+                shell.app().document_revision(),
+                shell.app().canonical_digest(),
+                shell.app().undo_step_count(),
+            ),
+            before
+        );
+        let reason = shell
+            .catalog()
+            .format(error_key, &BTreeMap::from([("id", id.to_owned())]));
+        let error = shell
+            .catalog()
+            .format("assembly-error", &BTreeMap::from([("reason", reason)]));
+        assert_eq!(shell.app().action_digest(), error);
+        let accessible_status = format!(
+            "{}  ·  {error}",
+            shell.catalog().format(
+                "status-selected",
+                &BTreeMap::from([("count", "2".to_owned())]),
+            )
+        );
+        assert!(shell.has_visible_label(&accessible_status));
+    }
 }
 
 #[test]

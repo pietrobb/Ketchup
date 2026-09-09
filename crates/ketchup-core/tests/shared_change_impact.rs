@@ -7,8 +7,9 @@ use ketchup_core::document::{
     ProposalPrincipal, StableFaceRole, Transform,
 };
 use ketchup_core::drawing::{
-    DrawingSheet, DrawingSheetId, DrawingSource, OrthographicDrawing, OrthographicViewKind,
-    project_orthographic_drawing,
+    DrawingMargins, DrawingPageOrientation, DrawingPageSize, DrawingPageTemplate, DrawingScale,
+    DrawingSheet, DrawingSheetId, DrawingSource, DrawingTitleBlock, OrthographicDrawing,
+    OrthographicViewKind, project_orthographic_drawing,
 };
 use ketchup_core::exact_product::{
     ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactPlanarFaceAttachmentInput,
@@ -301,12 +302,21 @@ fn seed_rigid_dependencies() -> DocumentStore {
                 },
             )),
             CanonicalCommand::UpdateDrawingSheet(
-                DrawingSheet::new(
+                DrawingSheet::with_contract(
                     SHEET,
                     "Rigid shared assembly",
                     DrawingSource::RigidAssembly {
                         occurrence_ids: vec![FIRST, SECOND],
                     },
+                    DrawingPageTemplate::new(
+                        DrawingPageSize::A4,
+                        DrawingPageOrientation::Portrait,
+                        DrawingScale::new(1, 2).unwrap(),
+                        DrawingMargins::new(20, 10, 10, 10),
+                    )
+                    .unwrap(),
+                    DrawingTitleBlock::new("Rigid shared assembly", "ASM-050", "B", "Kečup")
+                        .unwrap(),
                 )
                 .unwrap(),
             ),
@@ -333,6 +343,7 @@ fn dependency_aware_delete_is_one_reviewed_atomic_proposal() {
     let source = document.current();
     let before = stamp(&document);
     let unrelated_before = source.occurrence(OTHER).unwrap().clone();
+    let drawing_contract_before = source.drawing_sheet(SHEET).unwrap().clone();
 
     let impact = project_occurrence_edit_impact(
         &document,
@@ -424,6 +435,14 @@ fn dependency_aware_delete_is_one_reviewed_atomic_proposal() {
         &DrawingSource::RigidAssembly {
             occurrence_ids: vec![SECOND],
         }
+    );
+    assert_eq!(
+        committed.drawing_sheet(SHEET).unwrap().page(),
+        drawing_contract_before.page()
+    );
+    assert_eq!(
+        committed.drawing_sheet(SHEET).unwrap().title_block(),
+        drawing_contract_before.title_block()
     );
     assert_eq!(document.revision_count(), before.revisions + 1);
     assert_eq!(document.visible_undo_steps(), before.undo + 1);

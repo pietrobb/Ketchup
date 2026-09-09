@@ -90,11 +90,21 @@ fn real_worker_session_save_open_and_read_only_reports() {
         reopened.snapshot().canonical_digest(),
         snapshot.canonical_digest()
     );
-    assert_eq!(reopened.visible_undo_steps(), 0);
+    assert_eq!(reopened.visible_undo_steps(), 1);
     assert!(reopened.evaluate().unwrap().complete);
     assert_eq!(
         reopened.validators(&AssistantValidationSelection::only(&["collision"])),
         validation
+    );
+    reopened.undo().unwrap();
+    assert_eq!(
+        reopened.snapshot().canonical_digest(),
+        empty.canonical_digest()
+    );
+    reopened.redo().unwrap();
+    assert_eq!(
+        reopened.snapshot().canonical_digest(),
+        snapshot.canonical_digest()
     );
     session.undo().unwrap();
     assert_eq!(

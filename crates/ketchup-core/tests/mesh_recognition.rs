@@ -1,6 +1,9 @@
+use std::cell::Cell;
+
 use ketchup_core::document::{MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec};
 use ketchup_core::mesh_recognition::{
     MeshRecognition, MeshRecognitionCandidate, RecognizedMeshKind, recognize_mesh_body,
+    recognize_mesh_body_cancellable,
 };
 
 fn prism(profile: &[[f64; 2]], height: f64) -> MeshBodySpec {
@@ -68,6 +71,21 @@ fn reindexed(mesh: &MeshBodySpec, order: &[usize]) -> MeshBodySpec {
             .collect(),
         authority: mesh.authority.clone(),
     }
+}
+
+#[test]
+fn large_recognition_stops_when_cancellation_is_observed() {
+    let mesh = prism(&regular_polygon(1_000, 10.0), 25.0);
+    let checks = Cell::new(0_u32);
+
+    let result = recognize_mesh_body_cancellable(&mesh, 0.2, || {
+        let next = checks.get() + 1;
+        checks.set(next);
+        next > 20_000
+    });
+
+    assert!(matches!(result, MeshRecognition::NoMatch { .. }));
+    assert!(checks.get() <= 20_010, "checks={}", checks.get());
 }
 
 #[test]
@@ -201,6 +219,50 @@ fn tolerance_boundary_is_reported_and_deterministic_without_mutation() {
         recognize_mesh_body(&mesh, 0.01),
         MeshRecognition::NoMatch { .. }
     ));
+}
+
+#[test]
+fn projected_pairing_crosses_neighboring_tolerance_buckets() {
+    let profile = [
+        [-3.0, -2.0],
+        [2.0, -2.0],
+        [4.0, 0.5],
+        [1.0, 3.0],
+        [-2.0, 2.0],
+    ];
+    for shift in [-0.04, 0.04] {
+        let mut mesh = prism(&profile, 7.0);
+        for point in mesh.vertices_mm.iter_mut().skip(profile.len()) {
+            point[0] += shift;
+        }
+
+        let MeshRecognition::Candidate { residuals, .. } = recognize_mesh_body(&mesh, 0.05) else {
+            panic!("expected pairing across an adjacent spatial bucket")
+        };
+        assert!((residuals.max_pairing_distance_mm - shift.abs()).abs() < 1.0e-12);
+    }
+}
+
+#[test]
+fn tiny_tolerance_at_large_coordinates_does_not_collapse_spatial_buckets() {
+    let mesh = prism(
+        &[
+            [999_998.0, -1.0],
+            [1_000_002.0, -1.0],
+            [1_000_002.0, 1.0],
+            [999_998.0, 1.0],
+        ],
+        8.0,
+    );
+
+    let MeshRecognition::Candidate {
+        candidate: MeshRecognitionCandidate::Box(_),
+        residuals,
+    } = recognize_mesh_body(&mesh, 1.0e-15)
+    else {
+        panic!("expected exact pairing without saturated buckets")
+    };
+    assert_eq!(residuals.max_pairing_distance_mm, 0.0);
 }
 
 #[test]

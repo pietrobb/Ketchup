@@ -100,6 +100,35 @@ struct PrismEvidence {
     residuals: MeshRecognitionResiduals,
 }
 
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+enum ToleranceBucketCoordinate {
+    Cell(i64),
+    Exact(u64),
+}
+
+fn tolerance_bucket_coordinate(value: f64, tolerance_mm: f64) -> ToleranceBucketCoordinate {
+    let scaled = value / tolerance_mm;
+    if scaled.is_finite() && scaled > i64::MIN as f64 && scaled < i64::MAX as f64 {
+        ToleranceBucketCoordinate::Cell(scaled.floor() as i64)
+    } else {
+        // Beyond 2^63 cells, adjacent finite f64 values are farther apart than the tolerance.
+        ToleranceBucketCoordinate::Exact(if value == 0.0 { 0 } else { value.to_bits() })
+    }
+}
+
+fn neighboring_bucket_coordinates(
+    coordinate: ToleranceBucketCoordinate,
+) -> [Option<ToleranceBucketCoordinate>; 3] {
+    match coordinate {
+        ToleranceBucketCoordinate::Cell(cell) => [
+            cell.checked_sub(1).map(ToleranceBucketCoordinate::Cell),
+            Some(coordinate),
+            cell.checked_add(1).map(ToleranceBucketCoordinate::Cell),
+        ],
+        ToleranceBucketCoordinate::Exact(_) => [None, Some(coordinate), None],
+    }
+}
+
 /// Examines a closed mesh without changing the document or the mesh.
 ///
 /// The recognizer deliberately supports only Cartesian linear extrusions. A
@@ -107,7 +136,16 @@ struct PrismEvidence {
 /// conversion based on the returned candidate.
 #[must_use]
 pub fn recognize_mesh_body(mesh: &MeshBodySpec, tolerance_mm: f64) -> MeshRecognition {
-    if !tolerance_mm.is_finite() || tolerance_mm <= 0.0 {
+    recognize_mesh_body_cancellable(mesh, tolerance_mm, || false)
+}
+
+#[must_use]
+pub fn recognize_mesh_body_cancellable(
+    mesh: &MeshBodySpec,
+    tolerance_mm: f64,
+    cancelled: impl Fn() -> bool,
+) -> MeshRecognition {
+    if cancelled() || !tolerance_mm.is_finite() || tolerance_mm <= 0.0 {
         return MeshRecognition::NoMatch {
             reason: "recognition tolerance must be finite and positive".to_owned(),
         };
@@ -118,13 +156,13 @@ pub fn recognize_mesh_body(mesh: &MeshBodySpec, tolerance_mm: f64) -> MeshRecogn
             .vertices_mm
             .iter()
             .flatten()
-            .any(|value| !value.is_finite())
+            .any(|value| cancelled() || !value.is_finite())
         || mesh
             .triangles
             .iter()
             .flatten()
-            .any(|index| *index as usize >= mesh.vertices_mm.len())
-        || !closed_oriented_triangle_manifold(mesh)
+            .any(|index| cancelled() || *index as usize >= mesh.vertices_mm.len())
+        || !closed_oriented_triangle_manifold(mesh, &cancelled)
     {
         return MeshRecognition::NoMatch {
             reason: "mesh is not a finite indexed triangle body".to_owned(),
@@ -132,7 +170,7 @@ pub fn recognize_mesh_body(mesh: &MeshBodySpec, tolerance_mm: f64) -> MeshRecogn
     }
 
     let mut prisms = (0..3)
-        .filter_map(|axis| prism_evidence(mesh, axis, tolerance_mm))
+        .filter_map(|axis| prism_evidence(mesh, axis, tolerance_mm, &cancelled))
         .collect::<Vec<_>>();
     prisms.sort_by(|left, right| {
         left.residuals
@@ -165,7 +203,7 @@ pub fn recognize_mesh_body(mesh: &MeshBodySpec, tolerance_mm: f64) -> MeshRecogn
 
     let mut cylinders = prisms
         .iter()
-        .filter_map(|evidence| cylinder_candidate(evidence, tolerance_mm))
+        .filter_map(|evidence| cylinder_candidate(evidence, tolerance_mm, &cancelled))
         .collect::<Vec<_>>();
     cylinders.sort_by(|left, right| left.1.maximum_mm().total_cmp(&right.1.maximum_mm()));
     if let Some((candidate, residuals)) = cylinders.first().cloned() {
@@ -209,11 +247,11 @@ fn candidate_dimensions(candidate: &MeshRecognitionCandidate) -> f64 {
     }
 }
 
-fn closed_oriented_triangle_manifold(mesh: &MeshBodySpec) -> bool {
+fn closed_oriented_triangle_manifold(mesh: &MeshBodySpec, cancelled: &dyn Fn() -> bool) -> bool {
     let mut edges = BTreeMap::<(u32, u32), (usize, i32)>::new();
     let mut triangles = BTreeSet::new();
     for [a, b, c] in &mesh.triangles {
-        if a == b || b == c || a == c {
+        if cancelled() || a == b || b == c || a == c {
             return false;
         }
         let mut canonical = [*a, *b, *c];
@@ -237,6 +275,9 @@ fn closed_oriented_triangle_manifold(mesh: &MeshBodySpec) -> bool {
     }
     let mut adjacency = BTreeMap::<u32, Vec<u32>>::new();
     for (a, b) in edges.keys() {
+        if cancelled() {
+            return false;
+        }
         adjacency.entry(*a).or_default().push(*b);
         adjacency.entry(*b).or_default().push(*a);
     }
@@ -246,6 +287,9 @@ fn closed_oriented_triangle_manifold(mesh: &MeshBodySpec) -> bool {
     let mut pending = vec![start];
     let mut visited = BTreeSet::new();
     while let Some(vertex) = pending.pop() {
+        if cancelled() {
+            return false;
+        }
         if visited.insert(vertex) {
             pending.extend(adjacency.get(&vertex).into_iter().flatten().copied());
         }
@@ -253,7 +297,12 @@ fn closed_oriented_triangle_manifold(mesh: &MeshBodySpec) -> bool {
     visited.len() == mesh.vertices_mm.len()
 }
 
-fn prism_evidence(mesh: &MeshBodySpec, axis: usize, tolerance_mm: f64) -> Option<PrismEvidence> {
+fn prism_evidence(
+    mesh: &MeshBodySpec,
+    axis: usize,
+    tolerance_mm: f64,
+    cancelled: &dyn Fn() -> bool,
+) -> Option<PrismEvidence> {
     let low = mesh
         .vertices_mm
         .iter()
@@ -271,6 +320,9 @@ fn prism_evidence(mesh: &MeshBodySpec, axis: usize, tolerance_mm: f64) -> Option
     let mut layer_is_low = Vec::with_capacity(mesh.vertices_mm.len());
     let mut max_layer_distance: f64 = 0.0;
     for point in &mesh.vertices_mm {
+        if cancelled() {
+            return None;
+        }
         let low_distance = (point[axis] - low).abs();
         let high_distance = (point[axis] - high).abs();
         let distance = low_distance.min(high_distance);
@@ -283,46 +335,81 @@ fn prism_evidence(mesh: &MeshBodySpec, axis: usize, tolerance_mm: f64) -> Option
 
     let [u_axis, v_axis] = profile_axes(axis);
     let low_boundary = canonical_cycle(
-        cap_boundary(mesh, &layer_is_low, true)?,
+        cap_boundary(mesh, &layer_is_low, true, cancelled)?,
         mesh,
         u_axis,
         v_axis,
+        cancelled,
     )?;
     let high_boundary = canonical_cycle(
-        cap_boundary(mesh, &layer_is_low, false)?,
+        cap_boundary(mesh, &layer_is_low, false, cancelled)?,
         mesh,
         u_axis,
         v_axis,
+        cancelled,
     )?;
     if low_boundary.len() != high_boundary.len() || low_boundary.len() < 3 {
         return None;
+    }
+    let bucket = |point: [f64; 3]| {
+        [
+            tolerance_bucket_coordinate(point[u_axis], tolerance_mm),
+            tolerance_bucket_coordinate(point[v_axis], tolerance_mm),
+        ]
+    };
+    let mut high_buckets = BTreeMap::<[ToleranceBucketCoordinate; 2], Vec<u32>>::new();
+    for high_index in &high_boundary {
+        if cancelled() {
+            return None;
+        }
+        high_buckets
+            .entry(bucket(mesh.vertices_mm[*high_index as usize]))
+            .or_default()
+            .push(*high_index);
     }
     let mut pairing = BTreeMap::new();
     let mut used_high = BTreeSet::new();
     let mut max_pairing_distance: f64 = 0.0;
     for low_index in &low_boundary {
-        let low_point = mesh.vertices_mm[*low_index as usize];
-        let matches = high_boundary
-            .iter()
-            .filter_map(|high_index| {
-                let high_point = mesh.vertices_mm[*high_index as usize];
-                let distance = ((low_point[u_axis] - high_point[u_axis]).powi(2)
-                    + (low_point[v_axis] - high_point[v_axis]).powi(2))
-                .sqrt();
-                (distance <= tolerance_mm).then_some((*high_index, distance))
-            })
-            .collect::<Vec<_>>();
-        let [(matched, distance)] = matches.as_slice() else {
-            return None;
-        };
-        if !used_high.insert(*matched) {
+        if cancelled() {
             return None;
         }
-        pairing.insert(*low_index, *matched);
-        max_pairing_distance = max_pairing_distance.max(*distance);
+        let low_point = mesh.vertices_mm[*low_index as usize];
+        let low_bucket = bucket(low_point);
+        let mut matched = None;
+        for u in neighboring_bucket_coordinates(low_bucket[0])
+            .into_iter()
+            .flatten()
+        {
+            for v in neighboring_bucket_coordinates(low_bucket[1])
+                .into_iter()
+                .flatten()
+            {
+                for high_index in high_buckets.get(&[u, v]).into_iter().flatten() {
+                    if cancelled() {
+                        return None;
+                    }
+                    let high_point = mesh.vertices_mm[*high_index as usize];
+                    let distance = ((low_point[u_axis] - high_point[u_axis]).powi(2)
+                        + (low_point[v_axis] - high_point[v_axis]).powi(2))
+                    .sqrt();
+                    if distance <= tolerance_mm
+                        && matched.replace((*high_index, distance)).is_some()
+                    {
+                        return None;
+                    }
+                }
+            }
+        }
+        let (matched_index, distance) = matched?;
+        if !used_high.insert(matched_index) {
+            return None;
+        }
+        pairing.insert(*low_index, matched_index);
+        max_pairing_distance = max_pairing_distance.max(distance);
     }
     if used_high.len() != high_boundary.len()
-        || !side_band_matches(mesh, &layer_is_low, &low_boundary, &pairing)
+        || !side_band_matches(mesh, &layer_is_low, &low_boundary, &pairing, cancelled)
     {
         return None;
     }
@@ -355,9 +442,17 @@ fn prism_evidence(mesh: &MeshBodySpec, axis: usize, tolerance_mm: f64) -> Option
     })
 }
 
-fn cap_boundary(mesh: &MeshBodySpec, layer_is_low: &[bool], low: bool) -> Option<Vec<u32>> {
+fn cap_boundary(
+    mesh: &MeshBodySpec,
+    layer_is_low: &[bool],
+    low: bool,
+    cancelled: &dyn Fn() -> bool,
+) -> Option<Vec<u32>> {
     let mut edge_counts = BTreeMap::<(u32, u32), usize>::new();
     for triangle in &mesh.triangles {
+        if cancelled() {
+            return None;
+        }
         if triangle
             .iter()
             .all(|index| layer_is_low[*index as usize] == low)
@@ -380,6 +475,9 @@ fn cap_boundary(mesh: &MeshBodySpec, layer_is_low: &[bool], low: bool) -> Option
     }
     let mut adjacency = BTreeMap::<u32, Vec<u32>>::new();
     for (a, b) in boundary_edges {
+        if cancelled() {
+            return None;
+        }
         adjacency.entry(a).or_default().push(b);
         adjacency.entry(b).or_default().push(a);
     }
@@ -391,9 +489,13 @@ fn cap_boundary(mesh: &MeshBodySpec, layer_is_low: &[bool], low: bool) -> Option
     }
     let start = *adjacency.keys().next()?;
     let mut cycle = vec![start];
+    let mut visited = BTreeSet::from([start]);
     let mut previous = None;
     let mut current = start;
     loop {
+        if cancelled() {
+            return None;
+        }
         let neighbors = adjacency.get(&current)?;
         let next = neighbors
             .iter()
@@ -402,7 +504,7 @@ fn cap_boundary(mesh: &MeshBodySpec, layer_is_low: &[bool], low: bool) -> Option
         if next == start {
             break;
         }
-        if cycle.len() >= adjacency.len() || cycle.contains(&next) {
+        if cycle.len() >= adjacency.len() || !visited.insert(next) {
             return None;
         }
         cycle.push(next);
@@ -417,6 +519,7 @@ fn canonical_cycle(
     mesh: &MeshBodySpec,
     u_axis: usize,
     v_axis: usize,
+    cancelled: &dyn Fn() -> bool,
 ) -> Option<Vec<u32>> {
     let point = |index: u32| {
         let vertex = mesh.vertices_mm[index as usize];
@@ -424,6 +527,9 @@ fn canonical_cycle(
     };
     let mut seen = BTreeSet::new();
     for index in &cycle {
+        if cancelled() {
+            return None;
+        }
         let value = point(*index);
         if !seen.insert((value[0].to_bits(), value[1].to_bits())) {
             return None;
@@ -460,9 +566,14 @@ fn side_band_matches(
     layer_is_low: &[bool],
     low_boundary: &[u32],
     pairing: &BTreeMap<u32, u32>,
+    cancelled: &dyn Fn() -> bool,
 ) -> bool {
     let mut expected = Vec::<([u32; 4], usize)>::with_capacity(low_boundary.len());
+    let mut edge_to_quad = BTreeMap::<(u32, u32), usize>::new();
     for index in 0..low_boundary.len() {
+        if cancelled() {
+            return false;
+        }
         let low_a = low_boundary[index];
         let low_b = low_boundary[(index + 1) % low_boundary.len()];
         let Some(high_a) = pairing.get(&low_a).copied() else {
@@ -471,6 +582,11 @@ fn side_band_matches(
         let Some(high_b) = pairing.get(&low_b).copied() else {
             return false;
         };
+        for (a, b) in [(low_a, low_b), (high_a, high_b)] {
+            if edge_to_quad.insert((a.min(b), a.max(b)), index).is_some() {
+                return false;
+            }
+        }
         let mut quad = [low_a, low_b, high_a, high_b];
         quad.sort_unstable();
         expected.push((quad, 0));
@@ -478,6 +594,9 @@ fn side_band_matches(
 
     let mut mixed_triangle_count = 0;
     for triangle in &mesh.triangles {
+        if cancelled() {
+            return false;
+        }
         let low_count = triangle
             .iter()
             .filter(|index| layer_is_low[**index as usize])
@@ -486,20 +605,26 @@ fn side_band_matches(
             continue;
         }
         mixed_triangle_count += 1;
-        let matches = expected
-            .iter()
-            .enumerate()
-            .filter_map(|(index, (quad, _))| {
-                triangle
-                    .iter()
-                    .all(|vertex| quad.contains(vertex))
-                    .then_some(index)
-            })
-            .collect::<Vec<_>>();
-        let [matched] = matches.as_slice() else {
+        let same_layer_edge = [
+            (triangle[0], triangle[1]),
+            (triangle[1], triangle[2]),
+            (triangle[2], triangle[0]),
+        ]
+        .into_iter()
+        .find(|(a, b)| layer_is_low[*a as usize] == layer_is_low[*b as usize]);
+        let Some((a, b)) = same_layer_edge else {
             return false;
         };
-        expected[*matched].1 += 1;
+        let Some(matched) = edge_to_quad.get(&(a.min(b), a.max(b))).copied() else {
+            return false;
+        };
+        if !triangle
+            .iter()
+            .all(|vertex| expected[matched].0.contains(vertex))
+        {
+            return false;
+        }
+        expected[matched].1 += 1;
     }
     mixed_triangle_count == low_boundary.len() * 2 && expected.iter().all(|(_, count)| *count == 2)
 }
@@ -551,6 +676,7 @@ fn box_candidate(
 fn cylinder_candidate(
     evidence: &PrismEvidence,
     tolerance_mm: f64,
+    cancelled: &dyn Fn() -> bool,
 ) -> Option<(MeshRecognitionCandidate, MeshRecognitionResiduals)> {
     let side_count = evidence.profile.len();
     if side_count < MIN_CYLINDER_SIDES {
@@ -573,6 +699,9 @@ fn cylinder_candidate(
     let mut angular_residual: f64 = 0.0;
     let mut tessellation_residual: f64 = 0.0;
     for index in 0..evidence.profile.len() {
+        if cancelled() {
+            return None;
+        }
         let first = subtract_2d(evidence.profile[index], evidence.center_2d);
         let second = subtract_2d(
             evidence.profile[(index + 1) % evidence.profile.len()],

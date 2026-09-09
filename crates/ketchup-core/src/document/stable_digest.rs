@@ -390,6 +390,7 @@ impl StableDigest {
             ImportFormat::Step => 3,
             ImportFormat::SketchupScene => 4,
             ImportFormat::Glb => 5,
+            ImportFormat::Iges => 6,
         });
         self.bytes(receipt.source_sha256());
         self.u64(receipt.source_byte_len());
@@ -495,6 +496,115 @@ impl StableDigest {
             SketchPointKind::Control1 => 4,
             SketchPointKind::Control2 => 5,
         });
+    }
+
+    fn sketch_constraint(&mut self, constraint: &SketchConstraint) {
+        self.u64(constraint.id.0);
+        match &constraint.kind {
+            SketchConstraintKind::Horizontal { entity } => {
+                self.byte(1);
+                self.u64(entity.0);
+            }
+            SketchConstraintKind::Vertical { entity } => {
+                self.byte(2);
+                self.u64(entity.0);
+            }
+            SketchConstraintKind::Coincident { a, b } => {
+                self.byte(3);
+                self.sketch_point_ref(*a);
+                self.sketch_point_ref(*b);
+            }
+            SketchConstraintKind::Distance { a, b, value } => {
+                self.byte(4);
+                self.sketch_point_ref(*a);
+                self.sketch_point_ref(*b);
+                self.bytes(value.source_token().as_bytes());
+                self.u64(value.millimetres().to_bits());
+            }
+            SketchConstraintKind::Radius { entity, value } => {
+                self.byte(5);
+                self.u64(entity.0);
+                self.bytes(value.source_token().as_bytes());
+                self.u64(value.millimetres().to_bits());
+            }
+            SketchConstraintKind::FixedPoint { point, position_mm } => {
+                self.byte(6);
+                self.sketch_point_ref(*point);
+                self.u64(position_mm[0].to_bits());
+                self.u64(position_mm[1].to_bits());
+            }
+            SketchConstraintKind::Parallel { a, b } => {
+                self.byte(7);
+                self.u64(a.0);
+                self.u64(b.0);
+            }
+            SketchConstraintKind::Perpendicular { a, b } => {
+                self.byte(8);
+                self.u64(a.0);
+                self.u64(b.0);
+            }
+            SketchConstraintKind::Tangent { a, b } => {
+                self.byte(9);
+                self.u64(a.0);
+                self.u64(b.0);
+            }
+            SketchConstraintKind::Angle {
+                a,
+                b,
+                angle_degrees,
+            } => {
+                self.byte(10);
+                self.u64(a.0);
+                self.u64(b.0);
+                self.u64(angle_degrees.to_bits());
+            }
+            SketchConstraintKind::Equal { a, b } => {
+                self.byte(11);
+                self.u64(a.0);
+                self.u64(b.0);
+            }
+            SketchConstraintKind::Symmetric { a, b, axis } => {
+                self.byte(12);
+                self.sketch_point_ref(*a);
+                self.sketch_point_ref(*b);
+                self.u64(axis.0);
+            }
+            SketchConstraintKind::Concentric { a, b } => {
+                self.byte(13);
+                self.u64(a.0);
+                self.u64(b.0);
+            }
+            SketchConstraintKind::Collinear { a, b } => {
+                self.byte(14);
+                self.u64(a.0);
+                self.u64(b.0);
+            }
+            SketchConstraintKind::Midpoint { point, line } => {
+                self.byte(15);
+                self.sketch_point_ref(*point);
+                self.u64(line.0);
+            }
+            SketchConstraintKind::PointOnCurve { point, curve } => {
+                self.byte(16);
+                self.sketch_point_ref(*point);
+                self.u64(curve.0);
+            }
+            SketchConstraintKind::Projection {
+                entity,
+                source_feature,
+                source_entity,
+                ..
+            } => {
+                self.byte(17);
+                self.u64(entity.0);
+                self.u64(source_feature.0);
+                self.u64(source_entity.0);
+            }
+            SketchConstraintKind::Construction { entity } => {
+                self.byte(18);
+                self.u64(entity.0);
+            }
+        }
     }
 
     fn body_subshape_reference(&mut self, reference: &BodySubshapeRef) {
@@ -762,6 +872,21 @@ impl StableDigest {
                             self.byte(16);
                             self.sketch_point_ref(*point);
                             self.u64(curve.0);
+                        }
+                        SketchConstraintKind::Projection {
+                            entity,
+                            source_feature,
+                            source_entity,
+                            ..
+                        } => {
+                            self.byte(17);
+                            self.u64(entity.0);
+                            self.u64(source_feature.0);
+                            self.u64(source_entity.0);
+                        }
+                        SketchConstraintKind::Construction { entity } => {
+                            self.byte(18);
+                            self.u64(entity.0);
                         }
                     }
                 }
@@ -1233,6 +1358,18 @@ impl StableDigest {
                 self.assembly_joint_limits(limits);
                 self.u64(position_mm.to_bits());
             }
+            AssemblyJointKind::Helical {
+                axis,
+                limits,
+                lead_mm_per_revolution,
+                position_degrees,
+            } => {
+                self.byte(4);
+                self.assembly_joint_axis(axis);
+                self.assembly_joint_limits(limits);
+                self.u64(lead_mm_per_revolution.to_bits());
+                self.u64(position_degrees.to_bits());
+            }
         }
     }
 
@@ -1434,6 +1571,54 @@ impl StableDigest {
                     self.u64(id.0);
                 }
             }
+        }
+        let page = sheet.page();
+        self.bytes(page.size().stable_name().as_bytes());
+        self.bytes(page.orientation().stable_name().as_bytes());
+        self.u64(u64::from(page.scale().numerator()));
+        self.u64(u64::from(page.scale().denominator()));
+        for margin in page.margins().values_mm() {
+            self.u64(u64::from(margin));
+        }
+        let title_block = sheet.title_block();
+        self.bytes(title_block.title().as_bytes());
+        self.bytes(title_block.drawing_number().as_bytes());
+        self.bytes(title_block.revision().as_bytes());
+        self.bytes(title_block.author().as_bytes());
+        self.byte(u8::from(title_block.is_parametric()));
+        self.u64(sheet.views().len() as u64);
+        for view in sheet.views() {
+            self.bytes(view.stable_name().as_bytes());
+        }
+        self.u64(sheet.linear_dimensions().len() as u64);
+        for dimension in sheet.linear_dimensions() {
+            self.u64(dimension.id().0);
+            self.bytes(dimension.view_stable_name().as_bytes());
+            self.bytes(dimension.source_line_id().as_bytes());
+            self.u64(dimension.offset_page_mm().to_bits());
+            match dimension.tolerance() {
+                DrawingDimensionTolerance::None => self.byte(0),
+                DrawingDimensionTolerance::Symmetric { deviation_bits } => {
+                    self.byte(1);
+                    self.u64(deviation_bits);
+                }
+                DrawingDimensionTolerance::Bilateral {
+                    upper_bits,
+                    lower_bits,
+                } => {
+                    self.byte(2);
+                    self.u64(upper_bits);
+                    self.u64(lower_bits);
+                }
+            }
+        }
+        self.u64(sheet.notes().len() as u64);
+        for note in sheet.notes() {
+            self.u64(note.id().0);
+            for coordinate in note.position_page_mm() {
+                self.u64(coordinate.to_bits());
+            }
+            self.bytes(note.text_template().as_bytes());
         }
     }
 
@@ -2088,6 +2273,21 @@ impl StableDigest {
                 self.bytes(dimension.source_token.as_bytes());
                 self.u64(dimension.millimetres.to_bits());
             }
+            CanonicalCommand::CreateSketchConstraint { id, constraint } => {
+                self.byte(98);
+                self.u64(id.0);
+                self.sketch_constraint(constraint);
+            }
+            CanonicalCommand::ReplaceSketchConstraint { id, constraint } => {
+                self.byte(99);
+                self.u64(id.0);
+                self.sketch_constraint(constraint);
+            }
+            CanonicalCommand::DeleteSketchConstraint { id, constraint_id } => {
+                self.byte(100);
+                self.u64(id.0);
+                self.u64(constraint_id.0);
+            }
             CanonicalCommand::SetSketchConstraintDimension {
                 id,
                 constraint_id,
@@ -2098,6 +2298,122 @@ impl StableDigest {
                 self.u64(constraint_id.0);
                 self.bytes(dimension.source_token.as_bytes());
                 self.u64(dimension.millimetres.to_bits());
+            }
+            CanonicalCommand::SplitSketchEntity {
+                id,
+                entity_id,
+                new_entity_id,
+                parameter,
+                joint_constraint_ids,
+            } => {
+                self.byte(91);
+                self.u64(id.0);
+                self.u64(entity_id.0);
+                self.u64(new_entity_id.0);
+                self.u64(parameter.to_bits());
+                self.u64(joint_constraint_ids.len() as u64);
+                for constraint_id in joint_constraint_ids {
+                    self.u64(constraint_id.0);
+                }
+            }
+            CanonicalCommand::JoinSketchEntities {
+                id,
+                source_entity_id,
+                source_endpoint,
+                consumed_entity_id,
+                consumed_endpoint,
+            } => {
+                self.byte(97);
+                self.u64(id.0);
+                self.u64(source_entity_id.0);
+                self.byte(match source_endpoint {
+                    SketchPointKind::Start => 1,
+                    SketchPointKind::End => 2,
+                    SketchPointKind::Center => 3,
+                    SketchPointKind::Control1 => 4,
+                    SketchPointKind::Control2 => 5,
+                });
+                self.u64(consumed_entity_id.0);
+                self.byte(match consumed_endpoint {
+                    SketchPointKind::Start => 1,
+                    SketchPointKind::End => 2,
+                    SketchPointKind::Center => 3,
+                    SketchPointKind::Control1 => 4,
+                    SketchPointKind::Control2 => 5,
+                });
+            }
+            CanonicalCommand::TrimSketchEntity {
+                id,
+                entity_id,
+                start_parameter,
+                end_parameter,
+            } => {
+                self.byte(92);
+                self.u64(id.0);
+                self.u64(entity_id.0);
+                self.u64(start_parameter.to_bits());
+                self.u64(end_parameter.to_bits());
+            }
+            CanonicalCommand::ExtendSketchEntity {
+                id,
+                entity_id,
+                endpoint,
+                parameter,
+            } => {
+                self.byte(93);
+                self.u64(id.0);
+                self.u64(entity_id.0);
+                self.byte(match endpoint {
+                    SketchPointKind::Start => 1,
+                    SketchPointKind::End => 2,
+                    SketchPointKind::Center => 3,
+                    SketchPointKind::Control1 => 4,
+                    SketchPointKind::Control2 => 5,
+                });
+                self.u64(parameter.to_bits());
+            }
+            CanonicalCommand::OffsetSketchEntity {
+                id,
+                entity_id,
+                new_entity_id,
+                distance_mm,
+                side,
+            } => {
+                self.byte(94);
+                self.u64(id.0);
+                self.u64(entity_id.0);
+                self.u64(new_entity_id.0);
+                self.u64(distance_mm.to_bits());
+                self.byte(match side {
+                    SketchOffsetSide::Left => 1,
+                    SketchOffsetSide::Right => 2,
+                });
+            }
+            CanonicalCommand::ProjectSketchEntity {
+                id,
+                source_feature_id,
+                source_entity_id,
+                new_entity_id,
+                projection_constraint_id,
+            } => {
+                self.byte(95);
+                self.u64(id.0);
+                self.u64(source_feature_id.0);
+                self.u64(source_entity_id.0);
+                self.u64(new_entity_id.0);
+                self.u64(projection_constraint_id.0);
+            }
+            CanonicalCommand::SetSketchEntityConstruction {
+                id,
+                entity_id,
+                construction,
+                construction_constraint_id,
+            } => {
+                self.byte(96);
+                self.u64(id.0);
+                self.u64(entity_id.0);
+                self.byte(u8::from(*construction));
+                self.u64(construction_constraint_id.0);
             }
             CanonicalCommand::TranslateProfile { id, delta_mm } => {
                 self.byte(71);

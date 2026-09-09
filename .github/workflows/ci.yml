@@ -32,6 +32,70 @@ jobs:
           KETCHUP_CI_BASE_REF: ${{ github.event.pull_request.base.sha }}
         run: .\scripts\windows\invoke-ci-governance.ps1 -ArchitectureOnly -BaseRef $env:KETCHUP_CI_BASE_REF
 
+      - name: Verify deliberate-red PR group paths
+        shell: powershell
+        run: .\scripts\windows\test-pr-ci-red-paths.ps1
+
+  pull-request-quality-build:
+    name: quality and complete build
+    if: github.event_name == 'pull_request'
+    runs-on: [self-hosted, Windows, X64, ketchup-occt-r0-v1]
+    timeout-minutes: 60
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@11bd71901bbe5b163ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Run formatting, strict Clippy, and complete build
+        shell: powershell
+        run: .\scripts\windows\invoke-pr-ci-group.ps1 -Group quality-build
+
+  pull-request-foundations:
+    name: foundation product tests
+    if: github.event_name == 'pull_request'
+    runs-on: [self-hosted, Windows, X64, ketchup-occt-r0-v1]
+    timeout-minutes: 60
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@11bd71901bbe5b163ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Run foundation tests without fail-fast
+        shell: powershell
+        run: .\scripts\windows\invoke-pr-ci-group.ps1 -Group foundations
+
+  pull-request-scheduler:
+    name: scheduler and exact-worker product tests
+    if: github.event_name == 'pull_request'
+    runs-on: [self-hosted, Windows, X64, ketchup-occt-r0-v1]
+    timeout-minutes: 60
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@11bd71901bbe5b163ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Run scheduler tests without fail-fast
+        shell: powershell
+        run: .\scripts\windows\invoke-pr-ci-group.ps1 -Group scheduler
+
+  pull-request-app:
+    name: app and headless product tests
+    if: github.event_name == 'pull_request'
+    runs-on: [self-hosted, Windows, X64, ketchup-occt-r0-v1]
+    timeout-minutes: 60
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@11bd71901bbe5b163ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Run app tests without fail-fast
+        shell: powershell
+        run: .\scripts\windows\invoke-pr-ci-group.ps1 -Group app
+
   governance:
     name: governed Windows build
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

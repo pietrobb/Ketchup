@@ -197,6 +197,12 @@ pub enum SketchPointKind {
     Control2,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SketchOffsetSide {
+    Left,
+    Right,
+}
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SketchPointRef {
     pub entity: SketchEntityId,
@@ -424,6 +430,15 @@ pub enum SketchConstraintKind {
         point: SketchPointRef,
         curve: SketchEntityId,
     },
+    Projection {
+        entity: SketchEntityId,
+        source_feature: FeatureId,
+        source_entity: SketchEntityId,
+        target: Box<SketchEntity>,
+    },
+    Construction {
+        entity: SketchEntityId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -481,6 +496,21 @@ pub struct SketchSolveReport {
     pub entity_count: usize,
     pub constraint_count: usize,
     pub equation_count: usize,
+    pub unconstrained_entity_ids: Vec<SketchEntityId>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SketchDiagnosticStatus {
+    UnderConstrained { remaining_dof: usize },
+    FullyConstrained,
+    Conflicting,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SketchDiagnosticReport {
+    pub status: SketchDiagnosticStatus,
+    pub entity_ids: Vec<SketchEntityId>,
+    pub constraint_ids: Vec<SketchConstraintId>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -755,6 +785,1492 @@ pub struct SketchSpec {
 }
 
 impl SketchSpec {
+    #[must_use]
+    pub fn is_projected_entity(&self, entity_id: SketchEntityId) -> bool {
+        self.constraints.iter().any(|constraint| {
+            matches!(
+                constraint.kind,
+                SketchConstraintKind::Projection { entity, .. } if entity == entity_id
+            )
+        })
+    }
+
+    #[must_use]
+    pub fn is_construction_entity(&self, entity_id: SketchEntityId) -> bool {
+        self.constraints.iter().any(|constraint| {
+            matches!(
+                constraint.kind,
+                SketchConstraintKind::Projection { entity, .. }
+                    | SketchConstraintKind::Construction { entity }
+                    if entity == entity_id
+            )
+        })
+    }
+
+    pub fn create_constraint(&mut self, constraint: SketchConstraint) -> Result<(), SketchError> {
+        if constraint.id.0 == 0 {
+            return Err(SketchError::ReservedConstraintId);
+        }
+        if matches!(
+            constraint.kind,
+            SketchConstraintKind::Projection { .. } | SketchConstraintKind::Construction { .. }
+        ) {
+            return Err(SketchError::ManagedConstraintReadOnly(constraint.id));
+        }
+        if self.constraints.len() >= MAX_SKETCH_CONSTRAINTS {
+            return Err(SketchError::ResourceLimit);
+        }
+        if self
+            .constraints
+            .iter()
+            .any(|candidate| candidate.id == constraint.id)
+        {
+            return Err(SketchError::ConstraintIdCollision(constraint.id));
+        }
+        let mut updated = self.clone();
+        updated.constraints.push(constraint);
+        updated.constraints.sort_by_key(|candidate| candidate.id);
+        updated.solve()?;
+        *self = updated;
+        Ok(())
+    }
+
+    pub fn replace_constraint(&mut self, constraint: SketchConstraint) -> Result<(), SketchError> {
+        if constraint.id.0 == 0 {
+            return Err(SketchError::ReservedConstraintId);
+        }
+        let Some(index) = self
+            .constraints
+            .iter()
+            .position(|candidate| candidate.id == constraint.id)
+        else {
+            return Err(SketchError::InvalidConstraintReference(constraint.id));
+        };
+        if matches!(
+            self.constraints[index].kind,
+            SketchConstraintKind::Projection { .. } | SketchConstraintKind::Construction { .. }
+        ) || matches!(
+            constraint.kind,
+            SketchConstraintKind::Projection { .. } | SketchConstraintKind::Construction { .. }
+        ) {
+            return Err(SketchError::ManagedConstraintReadOnly(constraint.id));
+        }
+        let mut updated = self.clone();
+        updated.constraints[index] = constraint;
+        updated.solve()?;
+        *self = updated;
+        Ok(())
+    }
+
+    pub fn delete_constraint(
+        &mut self,
+        constraint_id: SketchConstraintId,
+    ) -> Result<(), SketchError> {
+        let Some(index) = self
+            .constraints
+            .iter()
+            .position(|constraint| constraint.id == constraint_id)
+        else {
+            return Err(SketchError::InvalidConstraintReference(constraint_id));
+        };
+        if matches!(
+            self.constraints[index].kind,
+            SketchConstraintKind::Projection { .. } | SketchConstraintKind::Construction { .. }
+        ) {
+            return Err(SketchError::ManagedConstraintReadOnly(constraint_id));
+        }
+        let mut updated = self.clone();
+        updated.constraints.remove(index);
+        updated.solve()?;
+        *self = updated;
+        Ok(())
+    }
+
+    pub fn set_entity_construction(
+        &mut self,
+        entity_id: SketchEntityId,
+        construction: bool,
+        constraint_id: SketchConstraintId,
+    ) -> Result<(), SketchError> {
+        if entity_id.0 == 0 || !self.entities.iter().any(|entity| entity.id() == entity_id) {
+            return Err(SketchError::EntityNotFound(entity_id));
+        }
+        if self.is_projected_entity(entity_id) {
+            return Err(SketchError::ProjectedEntityReadOnly(entity_id));
+        }
+        let existing = self.constraints.iter().position(|constraint| {
+            matches!(
+                constraint.kind,
+                SketchConstraintKind::Construction { entity } if entity == entity_id
+            )
+        });
+        let mut updated = self.clone();
+        if construction {
+            if constraint_id.0 == 0 {
+                return Err(SketchError::ReservedConstraintId);
+            }
+            if existing.is_some() {
+                return Err(SketchError::InvalidConstructionState(entity_id));
+            }
+            if updated.constraints.len() >= MAX_SKETCH_CONSTRAINTS {
+                return Err(SketchError::ResourceLimit);
+            }
+            if updated
+                .constraints
+                .iter()
+                .any(|constraint| constraint.id == constraint_id)
+            {
+                return Err(SketchError::ConstraintIdCollision(constraint_id));
+            }
+            updated.constraints.push(SketchConstraint {
+                id: constraint_id,
+                kind: SketchConstraintKind::Construction { entity: entity_id },
+            });
+            updated.constraints.sort_by_key(|constraint| constraint.id);
+        } else {
+            let Some(index) = existing else {
+                return Err(SketchError::InvalidConstructionState(entity_id));
+            };
+            if updated.constraints[index].id != constraint_id {
+                return Err(SketchError::InvalidConstructionState(entity_id));
+            }
+            updated.constraints.remove(index);
+        }
+        updated.solve()?;
+        *self = updated;
+        Ok(())
+    }
+
+    pub fn add_projection(
+        &mut self,
+        entity: SketchEntity,
+        source_feature: FeatureId,
+        source_entity: SketchEntityId,
+        constraint_id: SketchConstraintId,
+    ) -> Result<(), SketchError> {
+        if source_feature.0 == 0 || source_entity.0 == 0 {
+            return Err(SketchError::InvalidProjectionSource);
+        }
+        if entity.id().0 == 0 {
+            return Err(SketchError::ReservedEntityId);
+        }
+        if constraint_id.0 == 0 {
+            return Err(SketchError::ReservedConstraintId);
+        }
+        if self.entities.len() >= MAX_SKETCH_ENTITIES
+            || self.constraints.len() >= MAX_SKETCH_CONSTRAINTS
+        {
+            return Err(SketchError::ResourceLimit);
+        }
+        if self
+            .entities
+            .iter()
+            .any(|candidate| candidate.id() == entity.id())
+        {
+            return Err(SketchError::EntityIdCollision(entity.id()));
+        }
+        if self
+            .constraints
+            .iter()
+            .any(|constraint| constraint.id == constraint_id)
+        {
+            return Err(SketchError::ConstraintIdCollision(constraint_id));
+        }
+        entity.validate()?;
+        let mut updated = self.clone();
+        updated.entities.push(entity.clone());
+        updated.entities.sort_by_key(SketchEntity::id);
+        updated.constraints.push(SketchConstraint {
+            id: constraint_id,
+            kind: SketchConstraintKind::Projection {
+                entity: entity.id(),
+                source_feature,
+                source_entity,
+                target: Box::new(entity),
+            },
+        });
+        updated.constraints.sort_by_key(|constraint| constraint.id);
+        updated.solve()?;
+        *self = updated;
+        Ok(())
+    }
+
+    pub fn refresh_projection(
+        &mut self,
+        entity_id: SketchEntityId,
+        target: SketchEntity,
+    ) -> Result<(), SketchError> {
+        if target.id() != entity_id {
+            return Err(SketchError::InvalidProjectionSource);
+        }
+        target.validate()?;
+        let entity = self
+            .entities
+            .iter_mut()
+            .find(|entity| entity.id() == entity_id)
+            .ok_or(SketchError::EntityNotFound(entity_id))?;
+        let constraint = self
+            .constraints
+            .iter_mut()
+            .find(|constraint| {
+                matches!(
+                    constraint.kind,
+                    SketchConstraintKind::Projection { entity, .. } if entity == entity_id
+                )
+            })
+            .ok_or(SketchError::InvalidProjectionSource)?;
+        let SketchConstraintKind::Projection {
+            target: stored_target,
+            ..
+        } = &mut constraint.kind
+        else {
+            unreachable!();
+        };
+        *entity = target.clone();
+        **stored_target = target;
+        self.solve()?;
+        Ok(())
+    }
+
+    pub fn split_entity(
+        &mut self,
+        entity_id: SketchEntityId,
+        new_entity_id: SketchEntityId,
+        parameter: f64,
+        joint_constraint_ids: &[SketchConstraintId],
+    ) -> Result<(), SketchError> {
+        if self.is_projected_entity(entity_id) {
+            return Err(SketchError::ProjectedEntityReadOnly(entity_id));
+        }
+        if !parameter.is_finite() || parameter <= EPSILON_MM || parameter >= 1.0 - EPSILON_MM {
+            return Err(SketchError::InvalidSplitParameter);
+        }
+        if new_entity_id.0 == 0 {
+            return Err(SketchError::ReservedEntityId);
+        }
+        if self.entities.len() >= MAX_SKETCH_ENTITIES {
+            return Err(SketchError::ResourceLimit);
+        }
+        if self
+            .entities
+            .iter()
+            .any(|entity| entity.id() == new_entity_id)
+        {
+            return Err(SketchError::EntityIdCollision(new_entity_id));
+        }
+        let source_index = self
+            .entities
+            .iter()
+            .position(|entity| entity.id() == entity_id)
+            .ok_or(SketchError::EntityNotFound(entity_id))?;
+        let source = self.entities[source_index].clone();
+        let required_joint_count = usize::from(matches!(source, SketchEntity::Circle { .. })) + 1;
+        if joint_constraint_ids.len() != required_joint_count
+            || joint_constraint_ids.iter().any(|id| id.0 == 0)
+            || joint_constraint_ids.windows(2).any(|ids| ids[0] >= ids[1])
+            || joint_constraint_ids.iter().any(|id| {
+                self.constraints
+                    .iter()
+                    .any(|constraint| constraint.id == *id)
+            })
+            || self
+                .constraints
+                .len()
+                .checked_add(required_joint_count)
+                .is_none_or(|count| count > MAX_SKETCH_CONSTRAINTS)
+        {
+            return Err(SketchError::InvalidSplitConstraintIds);
+        }
+
+        let remap_point = |reference: &mut SketchPointRef| -> Result<(), SketchError> {
+            if reference.entity != entity_id {
+                return Ok(());
+            }
+            match reference.point {
+                SketchPointKind::Start => Ok(()),
+                SketchPointKind::End => {
+                    reference.entity = new_entity_id;
+                    Ok(())
+                }
+                SketchPointKind::Center | SketchPointKind::Control1 | SketchPointKind::Control2 => {
+                    Err(SketchError::AmbiguousSplitConstraint)
+                }
+            }
+        };
+        let mut constraints = self.constraints.clone();
+        for constraint in &mut constraints {
+            match &mut constraint.kind {
+                SketchConstraintKind::Horizontal { entity }
+                | SketchConstraintKind::Vertical { entity }
+                | SketchConstraintKind::Radius { entity, .. }
+                    if *entity == entity_id =>
+                {
+                    return Err(SketchError::AmbiguousSplitConstraint);
+                }
+                SketchConstraintKind::Coincident { a, b }
+                | SketchConstraintKind::Distance { a, b, .. } => {
+                    remap_point(a)?;
+                    remap_point(b)?;
+                }
+                SketchConstraintKind::FixedPoint { point, .. } => remap_point(point)?,
+                SketchConstraintKind::Parallel { a, b }
+                | SketchConstraintKind::Perpendicular { a, b }
+                | SketchConstraintKind::Tangent { a, b }
+                | SketchConstraintKind::Angle { a, b, .. }
+                | SketchConstraintKind::Equal { a, b }
+                | SketchConstraintKind::Concentric { a, b }
+                | SketchConstraintKind::Collinear { a, b }
+                    if *a == entity_id || *b == entity_id =>
+                {
+                    return Err(SketchError::AmbiguousSplitConstraint);
+                }
+                SketchConstraintKind::Symmetric { a, b, axis } => {
+                    if *axis == entity_id {
+                        return Err(SketchError::AmbiguousSplitConstraint);
+                    }
+                    remap_point(a)?;
+                    remap_point(b)?;
+                }
+                SketchConstraintKind::Midpoint { point, line } => {
+                    if *line == entity_id {
+                        return Err(SketchError::AmbiguousSplitConstraint);
+                    }
+                    remap_point(point)?;
+                }
+                SketchConstraintKind::PointOnCurve { point, curve } => {
+                    if *curve == entity_id {
+                        return Err(SketchError::AmbiguousSplitConstraint);
+                    }
+                    remap_point(point)?;
+                }
+                SketchConstraintKind::Projection { .. } => {}
+                SketchConstraintKind::Construction { entity } if *entity == entity_id => {
+                    return Err(SketchError::AmbiguousSplitConstraint);
+                }
+                SketchConstraintKind::Horizontal { .. }
+                | SketchConstraintKind::Vertical { .. }
+                | SketchConstraintKind::Radius { .. }
+                | SketchConstraintKind::Parallel { .. }
+                | SketchConstraintKind::Perpendicular { .. }
+                | SketchConstraintKind::Tangent { .. }
+                | SketchConstraintKind::Angle { .. }
+                | SketchConstraintKind::Equal { .. }
+                | SketchConstraintKind::Concentric { .. }
+                | SketchConstraintKind::Collinear { .. }
+                | SketchConstraintKind::Construction { .. } => {}
+            }
+        }
+
+        let lerp =
+            |a: [f64; 2], b: [f64; 2], t: f64| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+        let (first, second, joints) = match source {
+            SketchEntity::Line {
+                id,
+                start_mm,
+                end_mm,
+            } => {
+                let split = lerp(start_mm, end_mm, parameter);
+                (
+                    SketchEntity::Line {
+                        id,
+                        start_mm,
+                        end_mm: split,
+                    },
+                    SketchEntity::Line {
+                        id: new_entity_id,
+                        start_mm: split,
+                        end_mm,
+                    },
+                    vec![(
+                        SketchPointRef {
+                            entity: id,
+                            point: SketchPointKind::End,
+                        },
+                        SketchPointRef {
+                            entity: new_entity_id,
+                            point: SketchPointKind::Start,
+                        },
+                    )],
+                )
+            }
+            SketchEntity::Arc {
+                id,
+                start_mm,
+                end_mm,
+                center_mm,
+                clockwise,
+            } => {
+                let start_angle = (start_mm[1] - center_mm[1]).atan2(start_mm[0] - center_mm[0]);
+                let end_angle = (end_mm[1] - center_mm[1]).atan2(end_mm[0] - center_mm[0]);
+                let sweep = if clockwise {
+                    -((start_angle - end_angle).rem_euclid(std::f64::consts::TAU))
+                } else {
+                    (end_angle - start_angle).rem_euclid(std::f64::consts::TAU)
+                };
+                let angle = start_angle + sweep * parameter;
+                let radius = distance2(start_mm, center_mm);
+                let split = [
+                    center_mm[0] + radius * angle.cos(),
+                    center_mm[1] + radius * angle.sin(),
+                ];
+                (
+                    SketchEntity::Arc {
+                        id,
+                        start_mm,
+                        end_mm: split,
+                        center_mm,
+                        clockwise,
+                    },
+                    SketchEntity::Arc {
+                        id: new_entity_id,
+                        start_mm: split,
+                        end_mm,
+                        center_mm,
+                        clockwise,
+                    },
+                    vec![(
+                        SketchPointRef {
+                            entity: id,
+                            point: SketchPointKind::End,
+                        },
+                        SketchPointRef {
+                            entity: new_entity_id,
+                            point: SketchPointKind::Start,
+                        },
+                    )],
+                )
+            }
+            SketchEntity::Circle {
+                id,
+                center_mm,
+                radius_mm,
+            } => {
+                if constraints.iter().any(|constraint| match &constraint.kind {
+                    SketchConstraintKind::Radius { entity, .. } => *entity == entity_id,
+                    SketchConstraintKind::Concentric { a, b } => *a == entity_id || *b == entity_id,
+                    SketchConstraintKind::FixedPoint { point, .. }
+                    | SketchConstraintKind::Midpoint { point, .. }
+                    | SketchConstraintKind::PointOnCurve { point, .. } => point.entity == entity_id,
+                    SketchConstraintKind::Coincident { a, b }
+                    | SketchConstraintKind::Distance { a, b, .. } => {
+                        a.entity == entity_id || b.entity == entity_id
+                    }
+                    SketchConstraintKind::Symmetric { a, b, axis } => {
+                        a.entity == entity_id || b.entity == entity_id || *axis == entity_id
+                    }
+                    SketchConstraintKind::Horizontal { entity }
+                    | SketchConstraintKind::Vertical { entity } => *entity == entity_id,
+                    SketchConstraintKind::Parallel { a, b }
+                    | SketchConstraintKind::Perpendicular { a, b }
+                    | SketchConstraintKind::Tangent { a, b }
+                    | SketchConstraintKind::Angle { a, b, .. }
+                    | SketchConstraintKind::Equal { a, b }
+                    | SketchConstraintKind::Collinear { a, b } => {
+                        *a == entity_id || *b == entity_id
+                    }
+                    SketchConstraintKind::Projection { entity, .. }
+                    | SketchConstraintKind::Construction { entity } => *entity == entity_id,
+                }) {
+                    return Err(SketchError::AmbiguousSplitConstraint);
+                }
+                let angle = parameter * std::f64::consts::TAU;
+                let opposite_angle = angle + std::f64::consts::PI;
+                let split = [
+                    center_mm[0] + radius_mm * angle.cos(),
+                    center_mm[1] + radius_mm * angle.sin(),
+                ];
+                let opposite = [
+                    center_mm[0] + radius_mm * opposite_angle.cos(),
+                    center_mm[1] + radius_mm * opposite_angle.sin(),
+                ];
+                (
+                    SketchEntity::Arc {
+                        id,
+                        start_mm: split,
+                        end_mm: opposite,
+                        center_mm,
+                        clockwise: false,
+                    },
+                    SketchEntity::Arc {
+                        id: new_entity_id,
+                        start_mm: opposite,
+                        end_mm: split,
+                        center_mm,
+                        clockwise: false,
+                    },
+                    vec![
+                        (
+                            SketchPointRef {
+                                entity: id,
+                                point: SketchPointKind::End,
+                            },
+                            SketchPointRef {
+                                entity: new_entity_id,
+                                point: SketchPointKind::Start,
+                            },
+                        ),
+                        (
+                            SketchPointRef {
+                                entity: new_entity_id,
+                                point: SketchPointKind::End,
+                            },
+                            SketchPointRef {
+                                entity: id,
+                                point: SketchPointKind::Start,
+                            },
+                        ),
+                    ],
+                )
+            }
+            SketchEntity::CubicBezier {
+                id,
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+            } => {
+                let p01 = lerp(start_mm, control_1_mm, parameter);
+                let p12 = lerp(control_1_mm, control_2_mm, parameter);
+                let p23 = lerp(control_2_mm, end_mm, parameter);
+                let p012 = lerp(p01, p12, parameter);
+                let p123 = lerp(p12, p23, parameter);
+                let split = lerp(p012, p123, parameter);
+                (
+                    SketchEntity::CubicBezier {
+                        id,
+                        start_mm,
+                        control_1_mm: p01,
+                        control_2_mm: p012,
+                        end_mm: split,
+                    },
+                    SketchEntity::CubicBezier {
+                        id: new_entity_id,
+                        start_mm: split,
+                        control_1_mm: p123,
+                        control_2_mm: p23,
+                        end_mm,
+                    },
+                    vec![(
+                        SketchPointRef {
+                            entity: id,
+                            point: SketchPointKind::End,
+                        },
+                        SketchPointRef {
+                            entity: new_entity_id,
+                            point: SketchPointKind::Start,
+                        },
+                    )],
+                )
+            }
+        };
+
+        let mut entities = self.entities.clone();
+        entities[source_index] = first;
+        entities.push(second);
+        entities.sort_by_key(SketchEntity::id);
+        for (id, (a, b)) in joint_constraint_ids.iter().copied().zip(joints) {
+            constraints.push(SketchConstraint {
+                id,
+                kind: SketchConstraintKind::Coincident { a, b },
+            });
+        }
+        constraints.sort_by_key(|constraint| constraint.id);
+        let updated = Self {
+            workplane: self.workplane,
+            entities,
+            constraints,
+        };
+        updated.solve()?;
+        *self = updated;
+        Ok(())
+    }
+
+    pub fn join_entities(
+        &mut self,
+        source_id: SketchEntityId,
+        source_endpoint: SketchPointKind,
+        consumed_id: SketchEntityId,
+        consumed_endpoint: SketchPointKind,
+    ) -> Result<(), SketchError> {
+        if source_id == consumed_id
+            || !matches!(
+                source_endpoint,
+                SketchPointKind::Start | SketchPointKind::End
+            )
+            || !matches!(
+                consumed_endpoint,
+                SketchPointKind::Start | SketchPointKind::End
+            )
+        {
+            return Err(SketchError::IncompatibleJoinGeometry);
+        }
+        let source_index = self
+            .entities
+            .iter()
+            .position(|entity| entity.id() == source_id)
+            .ok_or(SketchError::EntityNotFound(source_id))?;
+        let consumed_index = self
+            .entities
+            .iter()
+            .position(|entity| entity.id() == consumed_id)
+            .ok_or(SketchError::EntityNotFound(consumed_id))?;
+        if self.is_projected_entity(source_id) {
+            return Err(SketchError::ProjectedEntityReadOnly(source_id));
+        }
+        if self.is_projected_entity(consumed_id) {
+            return Err(SketchError::ProjectedEntityReadOnly(consumed_id));
+        }
+        let source = self.entities[source_index].clone();
+        let consumed = self.entities[consumed_index].clone();
+        if matches!(source, SketchEntity::Circle { .. }) {
+            return Err(SketchError::UnsupportedJoinEntity(source_id));
+        }
+        if matches!(consumed, SketchEntity::Circle { .. }) {
+            return Err(SketchError::UnsupportedJoinEntity(consumed_id));
+        }
+        let source_joint = source
+            .point(source_endpoint)
+            .ok_or(SketchError::IncompatibleJoinGeometry)?;
+        let consumed_joint = consumed
+            .point(consumed_endpoint)
+            .ok_or(SketchError::IncompatibleJoinGeometry)?;
+        if distance2(source_joint, consumed_joint) > EPSILON_MM {
+            return Err(SketchError::IncompatibleJoinGeometry);
+        }
+
+        let source_joins_at_end = source_endpoint == SketchPointKind::End;
+        let consumed_joins_at_start = consumed_endpoint == SketchPointKind::Start;
+        let joined = match (source, consumed) {
+            (
+                SketchEntity::Line {
+                    start_mm: source_start,
+                    end_mm: source_end,
+                    ..
+                },
+                SketchEntity::Line {
+                    start_mm: consumed_start,
+                    end_mm: consumed_end,
+                    ..
+                },
+            ) => {
+                let source_outer = if source_joins_at_end {
+                    source_start
+                } else {
+                    source_end
+                };
+                let consumed_outer = if consumed_joins_at_start {
+                    consumed_end
+                } else {
+                    consumed_start
+                };
+                let (start_mm, end_mm) = if source_joins_at_end {
+                    (source_outer, consumed_outer)
+                } else {
+                    (consumed_outer, source_outer)
+                };
+                let left = subtract2(source_joint, start_mm);
+                let right = subtract2(end_mm, source_joint);
+                if point_line_distance(source_joint, start_mm, end_mm) > EPSILON_MM
+                    || left[0] * right[0] + left[1] * right[1] <= 0.0
+                {
+                    return Err(SketchError::IncompatibleJoinGeometry);
+                }
+                SketchEntity::Line {
+                    id: source_id,
+                    start_mm,
+                    end_mm,
+                }
+            }
+            (
+                SketchEntity::Arc {
+                    start_mm: source_start,
+                    end_mm: source_end,
+                    center_mm: source_center,
+                    clockwise: source_clockwise,
+                    ..
+                },
+                SketchEntity::Arc {
+                    start_mm: consumed_start,
+                    end_mm: consumed_end,
+                    center_mm: consumed_center,
+                    clockwise: consumed_clockwise,
+                    ..
+                },
+            ) => {
+                let (consumed_start, consumed_end, consumed_clockwise) =
+                    if consumed_joins_at_start == source_joins_at_end {
+                        (consumed_start, consumed_end, consumed_clockwise)
+                    } else {
+                        (consumed_end, consumed_start, !consumed_clockwise)
+                    };
+                if distance2(source_center, consumed_center) > EPSILON_MM
+                    || source_clockwise != consumed_clockwise
+                    || (distance2(source_start, source_center)
+                        - distance2(consumed_start, consumed_center))
+                    .abs()
+                        > EPSILON_MM
+                {
+                    return Err(SketchError::IncompatibleJoinGeometry);
+                }
+                let arc_sweep = |start: [f64; 2], end: [f64; 2], clockwise: bool| {
+                    let start_angle =
+                        (start[1] - source_center[1]).atan2(start[0] - source_center[0]);
+                    let end_angle = (end[1] - source_center[1]).atan2(end[0] - source_center[0]);
+                    if clockwise {
+                        (start_angle - end_angle).rem_euclid(std::f64::consts::TAU)
+                    } else {
+                        (end_angle - start_angle).rem_euclid(std::f64::consts::TAU)
+                    }
+                };
+                let sweep = arc_sweep(source_start, source_end, source_clockwise)
+                    + arc_sweep(consumed_start, consumed_end, consumed_clockwise);
+                if sweep >= std::f64::consts::TAU - EPSILON_MM {
+                    return Err(SketchError::IncompatibleJoinGeometry);
+                }
+                SketchEntity::Arc {
+                    id: source_id,
+                    start_mm: if source_joins_at_end {
+                        source_start
+                    } else {
+                        consumed_start
+                    },
+                    end_mm: if source_joins_at_end {
+                        consumed_end
+                    } else {
+                        source_end
+                    },
+                    center_mm: source_center,
+                    clockwise: source_clockwise,
+                }
+            }
+            (
+                SketchEntity::CubicBezier {
+                    start_mm: source_start,
+                    control_1_mm: source_control_1,
+                    control_2_mm: source_control_2,
+                    end_mm: source_end,
+                    ..
+                },
+                SketchEntity::CubicBezier {
+                    start_mm: consumed_start,
+                    control_1_mm: consumed_control_1,
+                    control_2_mm: consumed_control_2,
+                    end_mm: consumed_end,
+                    ..
+                },
+            ) => {
+                let source_points = [source_start, source_control_1, source_control_2, source_end];
+                let consumed_points = if consumed_joins_at_start == source_joins_at_end {
+                    [
+                        consumed_start,
+                        consumed_control_1,
+                        consumed_control_2,
+                        consumed_end,
+                    ]
+                } else {
+                    [
+                        consumed_end,
+                        consumed_control_2,
+                        consumed_control_1,
+                        consumed_start,
+                    ]
+                };
+                let (left, right) = if source_joins_at_end {
+                    (source_points, consumed_points)
+                } else {
+                    (consumed_points, source_points)
+                };
+                let left_tangent = subtract2(left[3], left[2]);
+                let right_tangent = subtract2(right[1], right[0]);
+                let left_length = distance2(left[3], left[2]);
+                let right_length = distance2(right[1], right[0]);
+                if left_length <= EPSILON_MM
+                    || right_length <= EPSILON_MM
+                    || cross2(left_tangent, right_tangent).abs()
+                        > EPSILON_MM * left_length.max(right_length)
+                    || left_tangent[0] * right_tangent[0] + left_tangent[1] * right_tangent[1]
+                        <= 0.0
+                {
+                    return Err(SketchError::IncompatibleJoinGeometry);
+                }
+                let parameter = left_length / (left_length + right_length);
+                let inverse = |origin: [f64; 2], point: [f64; 2], scale: f64| {
+                    [
+                        origin[0] + (point[0] - origin[0]) / scale,
+                        origin[1] + (point[1] - origin[1]) / scale,
+                    ]
+                };
+                let control_1 = inverse(left[0], left[1], parameter);
+                let control_2 = inverse(right[3], right[2], 1.0 - parameter);
+                let lerp = |a: [f64; 2], b: [f64; 2], t: f64| {
+                    [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+                };
+                let p01 = lerp(left[0], control_1, parameter);
+                let p12 = lerp(control_1, control_2, parameter);
+                let p23 = lerp(control_2, right[3], parameter);
+                let p012 = lerp(p01, p12, parameter);
+                let p123 = lerp(p12, p23, parameter);
+                let joint = lerp(p012, p123, parameter);
+                let reconstructed_left = [left[0], p01, p012, joint];
+                let reconstructed_right = [joint, p123, p23, right[3]];
+                if reconstructed_left
+                    .iter()
+                    .zip(left)
+                    .chain(reconstructed_right.iter().zip(right))
+                    .any(|(actual, expected)| distance2(*actual, expected) > EPSILON_MM)
+                {
+                    return Err(SketchError::IncompatibleJoinGeometry);
+                }
+                SketchEntity::CubicBezier {
+                    id: source_id,
+                    start_mm: left[0],
+                    control_1_mm: control_1,
+                    control_2_mm: control_2,
+                    end_mm: right[3],
+                }
+            }
+            (SketchEntity::Circle { .. }, _) => {
+                return Err(SketchError::UnsupportedJoinEntity(source_id));
+            }
+            (_, SketchEntity::Circle { .. }) => {
+                return Err(SketchError::UnsupportedJoinEntity(consumed_id));
+            }
+            _ => return Err(SketchError::IncompatibleJoinGeometry),
+        };
+
+        let source_joint_ref = SketchPointRef {
+            entity: source_id,
+            point: source_endpoint,
+        };
+        let consumed_joint_ref = SketchPointRef {
+            entity: consumed_id,
+            point: consumed_endpoint,
+        };
+        let remap_point = |reference: &mut SketchPointRef| -> Result<(), SketchError> {
+            if reference.entity == source_id {
+                if reference.point == source_endpoint
+                    || !matches!(
+                        reference.point,
+                        SketchPointKind::Start | SketchPointKind::End
+                    )
+                {
+                    return Err(SketchError::AmbiguousJoinConstraint);
+                }
+            } else if reference.entity == consumed_id {
+                if reference.point == consumed_endpoint
+                    || !matches!(
+                        reference.point,
+                        SketchPointKind::Start | SketchPointKind::End
+                    )
+                {
+                    return Err(SketchError::AmbiguousJoinConstraint);
+                }
+                reference.entity = source_id;
+                reference.point = source_endpoint;
+            }
+            Ok(())
+        };
+        let touches_joined = |entity: SketchEntityId| entity == source_id || entity == consumed_id;
+        let mut constraints = Vec::with_capacity(self.constraints.len());
+        for constraint in &self.constraints {
+            if matches!(
+                constraint.kind,
+                SketchConstraintKind::Coincident { a, b }
+                    if (a == source_joint_ref && b == consumed_joint_ref)
+                        || (a == consumed_joint_ref && b == source_joint_ref)
+            ) {
+                continue;
+            }
+            let mut constraint = constraint.clone();
+            match &mut constraint.kind {
+                SketchConstraintKind::Horizontal { entity }
+                | SketchConstraintKind::Vertical { entity }
+                | SketchConstraintKind::Radius { entity, .. }
+                | SketchConstraintKind::Projection { entity, .. }
+                | SketchConstraintKind::Construction { entity }
+                    if touches_joined(*entity) =>
+                {
+                    return Err(SketchError::AmbiguousJoinConstraint);
+                }
+                SketchConstraintKind::Coincident { a, b }
+                | SketchConstraintKind::Distance { a, b, .. } => {
+                    remap_point(a)?;
+                    remap_point(b)?;
+                }
+                SketchConstraintKind::FixedPoint { point, .. } => remap_point(point)?,
+                SketchConstraintKind::Parallel { a, b }
+                | SketchConstraintKind::Perpendicular { a, b }
+                | SketchConstraintKind::Tangent { a, b }
+                | SketchConstraintKind::Angle { a, b, .. }
+                | SketchConstraintKind::Equal { a, b }
+                | SketchConstraintKind::Concentric { a, b }
+                | SketchConstraintKind::Collinear { a, b }
+                    if touches_joined(*a) || touches_joined(*b) =>
+                {
+                    return Err(SketchError::AmbiguousJoinConstraint);
+                }
+                SketchConstraintKind::Symmetric { a, b, axis } => {
+                    if touches_joined(*axis) {
+                        return Err(SketchError::AmbiguousJoinConstraint);
+                    }
+                    remap_point(a)?;
+                    remap_point(b)?;
+                }
+                SketchConstraintKind::Midpoint { point, line } => {
+                    if touches_joined(*line) {
+                        return Err(SketchError::AmbiguousJoinConstraint);
+                    }
+                    remap_point(point)?;
+                }
+                SketchConstraintKind::PointOnCurve { point, curve } => {
+                    if touches_joined(*curve) {
+                        return Err(SketchError::AmbiguousJoinConstraint);
+                    }
+                    remap_point(point)?;
+                }
+                SketchConstraintKind::Horizontal { .. }
+                | SketchConstraintKind::Vertical { .. }
+                | SketchConstraintKind::Radius { .. }
+                | SketchConstraintKind::Parallel { .. }
+                | SketchConstraintKind::Perpendicular { .. }
+                | SketchConstraintKind::Tangent { .. }
+                | SketchConstraintKind::Angle { .. }
+                | SketchConstraintKind::Equal { .. }
+                | SketchConstraintKind::Concentric { .. }
+                | SketchConstraintKind::Collinear { .. }
+                | SketchConstraintKind::Projection { .. }
+                | SketchConstraintKind::Construction { .. } => {}
+            }
+            constraints.push(constraint);
+        }
+
+        let mut entities = self.entities.clone();
+        entities[source_index] = joined;
+        entities.remove(consumed_index);
+        entities.sort_by_key(SketchEntity::id);
+        let updated = Self {
+            workplane: self.workplane,
+            entities,
+            constraints,
+        };
+        updated.solve()?;
+        *self = updated;
+        Ok(())
+    }
+
+    pub fn trim_entity(
+        &mut self,
+        entity_id: SketchEntityId,
+        start_parameter: f64,
+        end_parameter: f64,
+    ) -> Result<(), SketchError> {
+        if self.is_projected_entity(entity_id) {
+            return Err(SketchError::ProjectedEntityReadOnly(entity_id));
+        }
+        if !start_parameter.is_finite()
+            || !end_parameter.is_finite()
+            || start_parameter < 0.0
+            || end_parameter > 1.0
+            || end_parameter - start_parameter <= EPSILON_MM
+            || (start_parameter == 0.0 && end_parameter == 1.0)
+        {
+            return Err(SketchError::InvalidTrimInterval);
+        }
+        let source_index = self
+            .entities
+            .iter()
+            .position(|entity| entity.id() == entity_id)
+            .ok_or(SketchError::EntityNotFound(entity_id))?;
+        let point_is_removed = |point: SketchPointRef| {
+            point.entity == entity_id
+                && match point.point {
+                    SketchPointKind::Start => start_parameter > 0.0,
+                    SketchPointKind::End => end_parameter < 1.0,
+                    SketchPointKind::Center => false,
+                    SketchPointKind::Control1 | SketchPointKind::Control2 => true,
+                }
+        };
+        for constraint in &self.constraints {
+            let ambiguous = match &constraint.kind {
+                SketchConstraintKind::Horizontal { entity }
+                | SketchConstraintKind::Vertical { entity }
+                | SketchConstraintKind::Radius { entity, .. } => *entity == entity_id,
+                SketchConstraintKind::Coincident { a, b }
+                | SketchConstraintKind::Distance { a, b, .. } => {
+                    point_is_removed(*a) || point_is_removed(*b)
+                }
+                SketchConstraintKind::FixedPoint { point, .. } => point_is_removed(*point),
+                SketchConstraintKind::Parallel { a, b }
+                | SketchConstraintKind::Perpendicular { a, b }
+                | SketchConstraintKind::Tangent { a, b }
+                | SketchConstraintKind::Angle { a, b, .. }
+                | SketchConstraintKind::Equal { a, b }
+                | SketchConstraintKind::Concentric { a, b }
+                | SketchConstraintKind::Collinear { a, b } => *a == entity_id || *b == entity_id,
+                SketchConstraintKind::Symmetric { a, b, axis } => {
+                    point_is_removed(*a) || point_is_removed(*b) || *axis == entity_id
+                }
+                SketchConstraintKind::Midpoint { point, line } => {
+                    point_is_removed(*point) || *line == entity_id
+                }
+                SketchConstraintKind::PointOnCurve { point, curve } => {
+                    point_is_removed(*point) || *curve == entity_id
+                }
+                SketchConstraintKind::Projection { entity, .. } => *entity == entity_id,
+                SketchConstraintKind::Construction { .. } => false,
+            };
+            if ambiguous {
+                return Err(SketchError::AmbiguousTrimConstraint);
+            }
+        }
+
+        let lerp =
+            |a: [f64; 2], b: [f64; 2], t: f64| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+        let arc_point = |start_mm: [f64; 2],
+                         end_mm: [f64; 2],
+                         center_mm: [f64; 2],
+                         clockwise: bool,
+                         parameter: f64| {
+            let start_angle = (start_mm[1] - center_mm[1]).atan2(start_mm[0] - center_mm[0]);
+            let end_angle = (end_mm[1] - center_mm[1]).atan2(end_mm[0] - center_mm[0]);
+            let sweep = if clockwise {
+                -((start_angle - end_angle).rem_euclid(std::f64::consts::TAU))
+            } else {
+                (end_angle - start_angle).rem_euclid(std::f64::consts::TAU)
+            };
+            let angle = start_angle + sweep * parameter;
+            let radius = distance2(start_mm, center_mm);
+            [
+                center_mm[0] + radius * angle.cos(),
+                center_mm[1] + radius * angle.sin(),
+            ]
+        };
+        let trimmed = match self.entities[source_index].clone() {
+            SketchEntity::Line {
+                id,
+                start_mm,
+                end_mm,
+            } => SketchEntity::Line {
+                id,
+                start_mm: lerp(start_mm, end_mm, start_parameter),
+                end_mm: lerp(start_mm, end_mm, end_parameter),
+            },
+            SketchEntity::Arc {
+                id,
+                start_mm,
+                end_mm,
+                center_mm,
+                clockwise,
+            } => SketchEntity::Arc {
+                id,
+                start_mm: arc_point(start_mm, end_mm, center_mm, clockwise, start_parameter),
+                end_mm: arc_point(start_mm, end_mm, center_mm, clockwise, end_parameter),
+                center_mm,
+                clockwise,
+            },
+            SketchEntity::Circle {
+                id,
+                center_mm,
+                radius_mm,
+            } => {
+                let point = |parameter: f64| {
+                    let angle = parameter * std::f64::consts::TAU;
+                    [
+                        center_mm[0] + radius_mm * angle.cos(),
+                        center_mm[1] + radius_mm * angle.sin(),
+                    ]
+                };
+                SketchEntity::Arc {
+                    id,
+                    start_mm: point(start_parameter),
+                    end_mm: point(end_parameter),
+                    center_mm,
+                    clockwise: false,
+                }
+            }
+            SketchEntity::CubicBezier {
+                id,
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+            } => {
+                let split = |points: [[f64; 2]; 4], parameter: f64| {
+                    let p01 = lerp(points[0], points[1], parameter);
+                    let p12 = lerp(points[1], points[2], parameter);
+                    let p23 = lerp(points[2], points[3], parameter);
+                    let p012 = lerp(p01, p12, parameter);
+                    let p123 = lerp(p12, p23, parameter);
+                    let joint = lerp(p012, p123, parameter);
+                    ([points[0], p01, p012, joint], [joint, p123, p23, points[3]])
+                };
+                let points = [start_mm, control_1_mm, control_2_mm, end_mm];
+                let through_end = if end_parameter < 1.0 {
+                    split(points, end_parameter).0
+                } else {
+                    points
+                };
+                let trimmed = if start_parameter > 0.0 {
+                    split(through_end, start_parameter / end_parameter).1
+                } else {
+                    through_end
+                };
+                SketchEntity::CubicBezier {
+                    id,
+                    start_mm: trimmed[0],
+                    control_1_mm: trimmed[1],
+                    control_2_mm: trimmed[2],
+                    end_mm: trimmed[3],
+                }
+            }
+        };
+        let mut updated = self.clone();
+        updated.entities[source_index] = trimmed;
+        updated.solve()?;
+        *self = updated;
+        Ok(())
+    }
+
+    pub fn extend_entity(
+        &mut self,
+        entity_id: SketchEntityId,
+        endpoint: SketchPointKind,
+        parameter: f64,
+    ) -> Result<(), SketchError> {
+        if self.is_projected_entity(entity_id) {
+            return Err(SketchError::ProjectedEntityReadOnly(entity_id));
+        }
+        let extends_start = endpoint == SketchPointKind::Start && parameter < 0.0;
+        let extends_end = endpoint == SketchPointKind::End && parameter > 1.0;
+        if !parameter.is_finite() || (!extends_start && !extends_end) {
+            return Err(SketchError::InvalidExtendParameter);
+        }
+        let source_index = self
+            .entities
+            .iter()
+            .position(|entity| entity.id() == entity_id)
+            .ok_or(SketchError::EntityNotFound(entity_id))?;
+        if matches!(self.entities[source_index], SketchEntity::Circle { .. }) {
+            return Err(SketchError::UnsupportedExtendEntity(entity_id));
+        }
+        let point_is_changed = |point: SketchPointRef| {
+            point.entity == entity_id
+                && match point.point {
+                    SketchPointKind::Start => extends_start,
+                    SketchPointKind::End => extends_end,
+                    SketchPointKind::Center => false,
+                    SketchPointKind::Control1 | SketchPointKind::Control2 => true,
+                }
+        };
+        for constraint in &self.constraints {
+            let ambiguous = match &constraint.kind {
+                SketchConstraintKind::Horizontal { entity }
+                | SketchConstraintKind::Vertical { entity }
+                | SketchConstraintKind::Radius { entity, .. } => *entity == entity_id,
+                SketchConstraintKind::Coincident { a, b }
+                | SketchConstraintKind::Distance { a, b, .. } => {
+                    point_is_changed(*a) || point_is_changed(*b)
+                }
+                SketchConstraintKind::FixedPoint { point, .. } => point_is_changed(*point),
+                SketchConstraintKind::Parallel { a, b }
+                | SketchConstraintKind::Perpendicular { a, b }
+                | SketchConstraintKind::Tangent { a, b }
+                | SketchConstraintKind::Angle { a, b, .. }
+                | SketchConstraintKind::Equal { a, b }
+                | SketchConstraintKind::Concentric { a, b }
+                | SketchConstraintKind::Collinear { a, b } => *a == entity_id || *b == entity_id,
+                SketchConstraintKind::Symmetric { a, b, axis } => {
+                    point_is_changed(*a) || point_is_changed(*b) || *axis == entity_id
+                }
+                SketchConstraintKind::Midpoint { point, line } => {
+                    point_is_changed(*point) || *line == entity_id
+                }
+                SketchConstraintKind::PointOnCurve { point, curve } => {
+                    point_is_changed(*point) || *curve == entity_id
+                }
+                SketchConstraintKind::Projection { entity, .. } => *entity == entity_id,
+                SketchConstraintKind::Construction { .. } => false,
+            };
+            if ambiguous {
+                return Err(SketchError::AmbiguousExtendConstraint);
+            }
+        }
+
+        let lerp =
+            |a: [f64; 2], b: [f64; 2], t: f64| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+        let extended = match self.entities[source_index].clone() {
+            SketchEntity::Line {
+                id,
+                start_mm,
+                end_mm,
+            } => SketchEntity::Line {
+                id,
+                start_mm: if extends_start {
+                    lerp(start_mm, end_mm, parameter)
+                } else {
+                    start_mm
+                },
+                end_mm: if extends_end {
+                    lerp(start_mm, end_mm, parameter)
+                } else {
+                    end_mm
+                },
+            },
+            SketchEntity::Arc {
+                id,
+                start_mm,
+                end_mm,
+                center_mm,
+                clockwise,
+            } => {
+                let start_angle = (start_mm[1] - center_mm[1]).atan2(start_mm[0] - center_mm[0]);
+                let end_angle = (end_mm[1] - center_mm[1]).atan2(end_mm[0] - center_mm[0]);
+                let sweep = if clockwise {
+                    -((start_angle - end_angle).rem_euclid(std::f64::consts::TAU))
+                } else {
+                    (end_angle - start_angle).rem_euclid(std::f64::consts::TAU)
+                };
+                let angle = start_angle + sweep * parameter;
+                let radius = distance2(start_mm, center_mm);
+                let point = [
+                    center_mm[0] + radius * angle.cos(),
+                    center_mm[1] + radius * angle.sin(),
+                ];
+                SketchEntity::Arc {
+                    id,
+                    start_mm: if extends_start { point } else { start_mm },
+                    end_mm: if extends_end { point } else { end_mm },
+                    center_mm,
+                    clockwise,
+                }
+            }
+            SketchEntity::CubicBezier {
+                id,
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+            } => {
+                let points = [start_mm, control_1_mm, control_2_mm, end_mm];
+                let p01 = lerp(points[0], points[1], parameter);
+                let p12 = lerp(points[1], points[2], parameter);
+                let p23 = lerp(points[2], points[3], parameter);
+                let p012 = lerp(p01, p12, parameter);
+                let p123 = lerp(p12, p23, parameter);
+                let joint = lerp(p012, p123, parameter);
+                let extended = if extends_start {
+                    [joint, p123, p23, points[3]]
+                } else {
+                    [points[0], p01, p012, joint]
+                };
+                SketchEntity::CubicBezier {
+                    id,
+                    start_mm: extended[0],
+                    control_1_mm: extended[1],
+                    control_2_mm: extended[2],
+                    end_mm: extended[3],
+                }
+            }
+            SketchEntity::Circle { .. } => unreachable!(),
+        };
+        let mut updated = self.clone();
+        updated.entities[source_index] = extended;
+        updated.solve()?;
+        *self = updated;
+        Ok(())
+    }
+
+    pub fn offset_entity(
+        &mut self,
+        entity_id: SketchEntityId,
+        new_entity_id: SketchEntityId,
+        distance_mm: f64,
+        side: SketchOffsetSide,
+    ) -> Result<(), SketchError> {
+        if self.is_projected_entity(entity_id) {
+            return Err(SketchError::ProjectedEntityReadOnly(entity_id));
+        }
+        if !distance_mm.is_finite() || distance_mm <= EPSILON_MM || distance_mm > MAX_ABS_MM {
+            return Err(SketchError::InvalidOffsetDistance);
+        }
+        if new_entity_id.0 == 0 {
+            return Err(SketchError::ReservedEntityId);
+        }
+        if self.entities.len() >= MAX_SKETCH_ENTITIES {
+            return Err(SketchError::ResourceLimit);
+        }
+        if self
+            .entities
+            .iter()
+            .any(|entity| entity.id() == new_entity_id)
+        {
+            return Err(SketchError::EntityIdCollision(new_entity_id));
+        }
+        let source = self
+            .entities
+            .iter()
+            .find(|entity| entity.id() == entity_id)
+            .cloned()
+            .ok_or(SketchError::EntityNotFound(entity_id))?;
+        let side_sign = match side {
+            SketchOffsetSide::Left => 1.0,
+            SketchOffsetSide::Right => -1.0,
+        };
+        let left_offset = |tangent: [f64; 2]| -> Result<[f64; 2], SketchError> {
+            let length = tangent[0].hypot(tangent[1]);
+            if !length.is_finite() || length <= EPSILON_MM {
+                return Err(SketchError::AmbiguousOffset);
+            }
+            Ok([
+                -tangent[1] / length * distance_mm * side_sign,
+                tangent[0] / length * distance_mm * side_sign,
+            ])
+        };
+        let translate =
+            |point: [f64; 2], offset: [f64; 2]| [point[0] + offset[0], point[1] + offset[1]];
+        let radial_point = |point: [f64; 2], center: [f64; 2], radius: f64| {
+            let source_radius = distance2(point, center);
+            [
+                center[0] + (point[0] - center[0]) * radius / source_radius,
+                center[1] + (point[1] - center[1]) * radius / source_radius,
+            ]
+        };
+
+        let offset = match source {
+            SketchEntity::Line {
+                start_mm, end_mm, ..
+            } => {
+                let normal = left_offset([end_mm[0] - start_mm[0], end_mm[1] - start_mm[1]])?;
+                SketchEntity::Line {
+                    id: new_entity_id,
+                    start_mm: translate(start_mm, normal),
+                    end_mm: translate(end_mm, normal),
+                }
+            }
+            SketchEntity::Arc {
+                start_mm,
+                end_mm,
+                center_mm,
+                clockwise,
+                ..
+            } => {
+                let source_radius = distance2(start_mm, center_mm);
+                let radial_direction = if clockwise { side_sign } else { -side_sign };
+                let radius = source_radius + distance_mm * radial_direction;
+                if !radius.is_finite() || radius <= EPSILON_MM || radius > MAX_ABS_MM {
+                    return Err(SketchError::AmbiguousOffset);
+                }
+                SketchEntity::Arc {
+                    id: new_entity_id,
+                    start_mm: radial_point(start_mm, center_mm, radius),
+                    end_mm: radial_point(end_mm, center_mm, radius),
+                    center_mm,
+                    clockwise,
+                }
+            }
+            SketchEntity::Circle {
+                center_mm,
+                radius_mm,
+                ..
+            } => {
+                let radius = radius_mm - distance_mm * side_sign;
+                if !radius.is_finite() || radius <= EPSILON_MM || radius > MAX_ABS_MM {
+                    return Err(SketchError::AmbiguousOffset);
+                }
+                SketchEntity::Circle {
+                    id: new_entity_id,
+                    center_mm,
+                    radius_mm: radius,
+                }
+            }
+            SketchEntity::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+                ..
+            } => {
+                let points = [start_mm, control_1_mm, control_2_mm, end_mm];
+                let sample = |parameter: f64| -> Result<[f64; 2], SketchError> {
+                    let inverse = 1.0 - parameter;
+                    let point = [
+                        inverse.powi(3) * points[0][0]
+                            + 3.0 * inverse.powi(2) * parameter * points[1][0]
+                            + 3.0 * inverse * parameter.powi(2) * points[2][0]
+                            + parameter.powi(3) * points[3][0],
+                        inverse.powi(3) * points[0][1]
+                            + 3.0 * inverse.powi(2) * parameter * points[1][1]
+                            + 3.0 * inverse * parameter.powi(2) * points[2][1]
+                            + parameter.powi(3) * points[3][1],
+                    ];
+                    let tangent = [
+                        3.0 * inverse.powi(2) * (points[1][0] - points[0][0])
+                            + 6.0 * inverse * parameter * (points[2][0] - points[1][0])
+                            + 3.0 * parameter.powi(2) * (points[3][0] - points[2][0]),
+                        3.0 * inverse.powi(2) * (points[1][1] - points[0][1])
+                            + 6.0 * inverse * parameter * (points[2][1] - points[1][1])
+                            + 3.0 * parameter.powi(2) * (points[3][1] - points[2][1]),
+                    ];
+                    Ok(translate(point, left_offset(tangent)?))
+                };
+                let q0 = sample(0.0)?;
+                let q1 = sample(1.0 / 3.0)?;
+                let q2 = sample(2.0 / 3.0)?;
+                let q3 = sample(1.0)?;
+                let a = [
+                    27.0 * q1[0] - 8.0 * q0[0] - q3[0],
+                    27.0 * q1[1] - 8.0 * q0[1] - q3[1],
+                ];
+                let b = [
+                    27.0 * q2[0] - q0[0] - 8.0 * q3[0],
+                    27.0 * q2[1] - q0[1] - 8.0 * q3[1],
+                ];
+                SketchEntity::CubicBezier {
+                    id: new_entity_id,
+                    start_mm: q0,
+                    control_1_mm: [(2.0 * a[0] - b[0]) / 18.0, (2.0 * a[1] - b[1]) / 18.0],
+                    control_2_mm: [(2.0 * b[0] - a[0]) / 18.0, (2.0 * b[1] - a[1]) / 18.0],
+                    end_mm: q3,
+                }
+            }
+        };
+
+        let mut updated = self.clone();
+        updated.entities.push(offset);
+        updated.entities.sort_by_key(SketchEntity::id);
+        updated.solve()?;
+        *self = updated;
+        Ok(())
+    }
+
+    pub fn diagnose(&self) -> Result<SketchDiagnosticReport, SketchError> {
+        match self.solve() {
+            Ok(report) => Ok(SketchDiagnosticReport {
+                status: match report.status {
+                    SketchSolveStatus::UnderConstrained { remaining_dof } => {
+                        SketchDiagnosticStatus::UnderConstrained { remaining_dof }
+                    }
+                    SketchSolveStatus::FullyConstrained => SketchDiagnosticStatus::FullyConstrained,
+                },
+                entity_ids: report.unconstrained_entity_ids,
+                constraint_ids: Vec::new(),
+            }),
+            Err(SketchError::OverConstrained(constraint_id)) => {
+                let constraint = self
+                    .constraints
+                    .iter()
+                    .find(|constraint| constraint.id == constraint_id)
+                    .ok_or(SketchError::InvalidConstraintReference(constraint_id))?;
+                Ok(SketchDiagnosticReport {
+                    status: SketchDiagnosticStatus::Conflicting,
+                    entity_ids: constraint_entity_ids(&constraint.kind),
+                    constraint_ids: vec![constraint_id],
+                })
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     pub fn solve(&self) -> Result<SketchSolveReport, SketchError> {
         self.solve_with_policy(SketchSolverPolicy::default())
     }
@@ -864,7 +2380,8 @@ impl SketchSpec {
                 dimensional_targets.insert(target, (constraint.id, value));
             }
         }
-        let constraint_rank = structural_constraint_rank(&rank_equations, variable_count, None);
+        let variable_owners = structural_constraint_matching(&rank_equations, variable_count, None);
+        let constraint_rank = variable_owners.iter().flatten().count();
         for (constraint_id, range) in &constraint_equation_ranges {
             let rank_without =
                 structural_constraint_rank(&rank_equations, variable_count, Some(range.clone()));
@@ -879,6 +2396,15 @@ impl SketchSpec {
                 remaining_dof: degrees_of_freedom - constraint_rank,
             }
         };
+        let unconstrained_entity_ids = variable_layouts
+            .iter()
+            .filter_map(|(entity_id, layout)| {
+                layout
+                    .variable_range()
+                    .any(|variable| variable_owners[variable].is_none())
+                    .then_some(*entity_id)
+            })
+            .collect();
         let mut solved_entities = self.entities.clone();
         solve_constraints(&mut solved_entities, &self.constraints, policy)?;
         for entity in &solved_entities {
@@ -890,6 +2416,7 @@ impl SketchSpec {
                 entity_count: self.entities.len(),
                 constraint_count: self.constraints.len(),
                 equation_count,
+                unconstrained_entity_ids,
             },
             entities: solved_entities,
         })
@@ -897,9 +2424,21 @@ impl SketchSpec {
 
     pub fn solved_regions(&self) -> Result<Vec<SolvedSketchRegion>, SketchError> {
         let solution = self.solve_geometry()?;
+        let construction_entities = self
+            .constraints
+            .iter()
+            .filter_map(|constraint| match constraint.kind {
+                SketchConstraintKind::Projection { entity, .. }
+                | SketchConstraintKind::Construction { entity } => Some(entity),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
         let mut loops = Vec::new();
         let mut boundaries = BTreeMap::new();
         for entity in solution.entities {
+            if construction_entities.contains(&entity.id()) {
+                continue;
+            }
             match entity {
                 SketchEntity::Circle {
                     id,
@@ -1603,7 +3142,28 @@ pub enum SketchError {
     EntitiesNotCanonical,
     ConstraintsNotCanonical,
     InvalidEntity(SketchEntityId),
+    EntityNotFound(SketchEntityId),
+    EntityIdCollision(SketchEntityId),
+    ConstraintIdCollision(SketchConstraintId),
+    ManagedConstraintReadOnly(SketchConstraintId),
+    InvalidProjectionSource,
+    ProjectedEntityReadOnly(SketchEntityId),
+    InvalidConstructionState(SketchEntityId),
+    InvalidSplitParameter,
+    InvalidSplitConstraintIds,
+    AmbiguousSplitConstraint,
+    UnsupportedJoinEntity(SketchEntityId),
+    IncompatibleJoinGeometry,
+    AmbiguousJoinConstraint,
+    InvalidTrimInterval,
+    AmbiguousTrimConstraint,
+    InvalidExtendParameter,
+    UnsupportedExtendEntity(SketchEntityId),
+    AmbiguousExtendConstraint,
+    InvalidOffsetDistance,
+    AmbiguousOffset,
     InvalidConstraintReference(SketchConstraintId),
+    ConstraintEditInvalidatesProfile(SketchConstraintId),
     InvalidDimension,
     InvalidSolverPolicy,
     NonConvergent,
@@ -1649,9 +3209,77 @@ impl fmt::Display for SketchError {
             Self::InvalidEntity(id) => {
                 write!(formatter, "sketch entity {} is invalid or degenerate", id.0)
             }
+            Self::EntityNotFound(id) => {
+                write!(formatter, "sketch entity {} does not exist", id.0)
+            }
+            Self::EntityIdCollision(id) => {
+                write!(formatter, "sketch entity ID {} already exists", id.0)
+            }
+            Self::ConstraintIdCollision(id) => {
+                write!(formatter, "sketch constraint ID {} already exists", id.0)
+            }
+            Self::ManagedConstraintReadOnly(id) => write!(
+                formatter,
+                "managed sketch constraint {} is read-only through direct editing",
+                id.0
+            ),
+            Self::InvalidProjectionSource => formatter.write_str(
+                "sketch projection source and canonical projected geometry must be valid",
+            ),
+            Self::ProjectedEntityReadOnly(id) => {
+                write!(formatter, "projected sketch entity {} is read-only", id.0)
+            }
+            Self::InvalidConstructionState(id) => write!(
+                formatter,
+                "sketch entity {} is already in the requested construction state",
+                id.0
+            ),
+            Self::InvalidSplitParameter => formatter
+                .write_str("sketch split parameter must be finite and strictly inside the curve"),
+            Self::InvalidSplitConstraintIds => formatter.write_str(
+                "sketch split requires unique non-zero joint constraint IDs of the expected count",
+            ),
+            Self::AmbiguousSplitConstraint => formatter.write_str(
+                "sketch split cannot preserve a constraint that refers to the whole source curve",
+            ),
+            Self::UnsupportedJoinEntity(id) => {
+                write!(formatter, "closed sketch entity {} cannot be joined", id.0)
+            }
+            Self::IncompatibleJoinGeometry => formatter.write_str(
+                "sketch join requires compatible open curves with one shared selected endpoint",
+            ),
+            Self::AmbiguousJoinConstraint => formatter.write_str(
+                "sketch join cannot preserve a constraint on removed or whole-curve geometry",
+            ),
+            Self::InvalidTrimInterval => formatter.write_str(
+                "sketch trim keep interval must be finite, non-degenerate, bounded, and not the full curve",
+            ),
+            Self::AmbiguousTrimConstraint => formatter.write_str(
+                "sketch trim cannot preserve a constraint on removed geometry or the whole source curve",
+            ),
+            Self::InvalidExtendParameter => formatter.write_str(
+                "sketch extend requires Start below zero or End above one with a finite parameter",
+            ),
+            Self::UnsupportedExtendEntity(id) => {
+                write!(formatter, "closed sketch entity {} cannot be extended", id.0)
+            }
+            Self::AmbiguousExtendConstraint => formatter.write_str(
+                "sketch extend cannot preserve a constraint on changed geometry or the whole source curve",
+            ),
+            Self::InvalidOffsetDistance => formatter.write_str(
+                "sketch offset distance must be finite, positive, and within the model envelope",
+            ),
+            Self::AmbiguousOffset => formatter.write_str(
+                "sketch offset is degenerate because its radius collapses or its direction is undefined",
+            ),
             Self::InvalidConstraintReference(id) => write!(
                 formatter,
                 "sketch constraint {} has an invalid entity or point reference",
+                id.0
+            ),
+            Self::ConstraintEditInvalidatesProfile(id) => write!(
+                formatter,
+                "editing sketch constraint {} would invalidate a downstream Pad/Pocket region",
                 id.0
             ),
             Self::InvalidDimension => formatter.write_str("sketch dimension is invalid"),
@@ -1686,6 +3314,33 @@ impl fmt::Display for SketchError {
 }
 
 impl std::error::Error for SketchError {}
+
+fn constraint_entity_ids(kind: &SketchConstraintKind) -> Vec<SketchEntityId> {
+    let mut ids = match kind {
+        SketchConstraintKind::Horizontal { entity }
+        | SketchConstraintKind::Vertical { entity }
+        | SketchConstraintKind::Radius { entity, .. }
+        | SketchConstraintKind::Projection { entity, .. }
+        | SketchConstraintKind::Construction { entity } => vec![*entity],
+        SketchConstraintKind::Coincident { a, b } | SketchConstraintKind::Distance { a, b, .. } => {
+            vec![a.entity, b.entity]
+        }
+        SketchConstraintKind::FixedPoint { point, .. } => vec![point.entity],
+        SketchConstraintKind::Parallel { a, b }
+        | SketchConstraintKind::Perpendicular { a, b }
+        | SketchConstraintKind::Tangent { a, b }
+        | SketchConstraintKind::Angle { a, b, .. }
+        | SketchConstraintKind::Equal { a, b }
+        | SketchConstraintKind::Concentric { a, b }
+        | SketchConstraintKind::Collinear { a, b } => vec![*a, *b],
+        SketchConstraintKind::Symmetric { a, b, axis } => vec![a.entity, b.entity, *axis],
+        SketchConstraintKind::Midpoint { point, line } => vec![point.entity, *line],
+        SketchConstraintKind::PointOnCurve { point, curve } => vec![point.entity, *curve],
+    };
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
 
 fn evaluate_constraint(
     constraint: &SketchConstraint,
@@ -1898,6 +3553,38 @@ fn evaluate_constraint(
             signature.extend_from_slice(&curve.0.to_le_bytes());
             1
         }
+        SketchConstraintKind::Projection {
+            entity,
+            source_feature,
+            source_entity,
+            target,
+        } => {
+            let Some(actual) = entities.get(entity).copied() else {
+                return Err(SketchError::InvalidConstraintReference(constraint.id));
+            };
+            if source_feature.0 == 0
+                || source_entity.0 == 0
+                || target.id() != *entity
+                || actual.id() != *entity
+                || actual != target.as_ref()
+            {
+                return Err(SketchError::InvalidProjectionSource);
+            }
+            target.validate()?;
+            signature[0] = 17;
+            signature.extend_from_slice(&entity.0.to_le_bytes());
+            signature.extend_from_slice(&source_feature.0.to_le_bytes());
+            signature.extend_from_slice(&source_entity.0.to_le_bytes());
+            actual.degrees_of_freedom()
+        }
+        SketchConstraintKind::Construction { entity } => {
+            if !entities.contains_key(entity) {
+                return Err(SketchError::InvalidConstraintReference(constraint.id));
+            }
+            signature[0] = 18;
+            signature.extend_from_slice(&entity.0.to_le_bytes());
+            0
+        }
     };
     Ok((signature, equations))
 }
@@ -1992,7 +3679,9 @@ fn dimensional_constraint_target(
         | SketchConstraintKind::Concentric { .. }
         | SketchConstraintKind::Collinear { .. }
         | SketchConstraintKind::Midpoint { .. }
-        | SketchConstraintKind::PointOnCurve { .. } => {
+        | SketchConstraintKind::PointOnCurve { .. }
+        | SketchConstraintKind::Projection { .. }
+        | SketchConstraintKind::Construction { .. } => {
             unreachable!("only dimensional constraints are collected")
         }
     }
@@ -2005,6 +3694,17 @@ enum VariableLayout {
     Arc { base: usize },
     Circle { base: usize },
     CubicBezier { base: usize },
+}
+
+impl VariableLayout {
+    fn variable_range(self) -> std::ops::Range<usize> {
+        match self {
+            Self::Line { base } => base..base + 4,
+            Self::Arc { base } => base..base + 5,
+            Self::Circle { base } => base..base + 3,
+            Self::CubicBezier { base } => base..base + 8,
+        }
+    }
 }
 
 fn variable_layouts(
@@ -2189,16 +3889,20 @@ fn constraint_variable_equations(
             union(point_variables(*point, 0)?, point_variables(*point, 1)?),
             entity_variables(*curve)?,
         )]),
+        SketchConstraintKind::Projection { entity, .. } => Ok(entity_variables(*entity)?
+            .into_iter()
+            .map(|variable| vec![variable])
+            .collect()),
+        SketchConstraintKind::Construction { .. } => Ok(Vec::new()),
     }
 }
 
-fn structural_constraint_rank(
+fn structural_constraint_matching(
     equations: &[Vec<usize>],
     variable_count: usize,
     skipped: Option<std::ops::Range<usize>>,
-) -> usize {
+) -> Vec<Option<usize>> {
     let mut variable_owner = vec![None; variable_count];
-    let mut rank = 0usize;
     for equation in 0..equations.len() {
         if skipped
             .as_ref()
@@ -2207,11 +3911,20 @@ fn structural_constraint_rank(
             continue;
         }
         let mut visited = vec![false; variable_count];
-        if augment_constraint_rank(equation, equations, &mut variable_owner, &mut visited) {
-            rank += 1;
-        }
+        augment_constraint_rank(equation, equations, &mut variable_owner, &mut visited);
     }
-    rank
+    variable_owner
+}
+
+fn structural_constraint_rank(
+    equations: &[Vec<usize>],
+    variable_count: usize,
+    skipped: Option<std::ops::Range<usize>>,
+) -> usize {
+    structural_constraint_matching(equations, variable_count, skipped)
+        .into_iter()
+        .flatten()
+        .count()
 }
 
 fn augment_constraint_rank(
@@ -2837,6 +4550,10 @@ fn project_constraint(
                 constraints,
             )?;
         }
+        SketchConstraintKind::Projection { entity, target, .. } => {
+            *entity_mut(entities, indices, *entity, constraint.id)? = target.as_ref().clone();
+        }
+        SketchConstraintKind::Construction { .. } => {}
         SketchConstraintKind::Parallel { .. }
         | SketchConstraintKind::Perpendicular { .. }
         | SketchConstraintKind::Tangent { .. }
@@ -3224,6 +4941,25 @@ fn constraint_residuals(
                     constraint.id,
                 )?);
             }
+            SketchConstraintKind::Projection { entity, target, .. } => {
+                let actual = pack_solver_parameters(std::slice::from_ref(entity_ref(
+                    entities,
+                    indices,
+                    *entity,
+                    constraint.id,
+                )?));
+                let expected = pack_solver_parameters(std::slice::from_ref(target.as_ref()));
+                if actual.len() != expected.len() {
+                    return Err(SketchError::InvalidProjectionSource);
+                }
+                residuals.extend(
+                    actual
+                        .into_iter()
+                        .zip(expected)
+                        .map(|(actual, expected)| actual - expected),
+                );
+            }
+            SketchConstraintKind::Construction { .. } => {}
         }
     }
     Ok(residuals)

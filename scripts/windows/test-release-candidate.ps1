@@ -55,6 +55,32 @@ try {
 
     [void](New-Item $foreignWorkingDir -ItemType Directory)
     $package = Get-Content (Join-Path $packageDir "package-manifest.json") -Raw | ConvertFrom-Json
+    $pythonPath = [IO.Path]::GetFullPath((Get-Command python.exe -ErrorAction Stop).Source)
+    [IO.File]::WriteAllText((Join-Path $foreignWorkingDir "ketchup_assistant.py"), "raise SystemExit('attacker CWD executed')", [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $foreignWorkingDir "ketchup_assistant_protocol.py"), "raise SystemExit('attacker PYTHONPATH executed')", [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $foreignWorkingDir "python.exe"), "attacker PATH executable", [Text.UTF8Encoding]::new($false))
+    $savedPath = $env:PATH
+    $savedPythonPath = $env:PYTHONPATH
+    $savedKetchupPython = $env:KETCHUP_PYTHON
+    $savedKetchupPythonSha256 = $env:KETCHUP_PYTHON_SHA256
+    try {
+        $env:PATH = $foreignWorkingDir
+        $env:PYTHONPATH = $foreignWorkingDir
+        $env:KETCHUP_PYTHON = $pythonPath
+        $env:KETCHUP_PYTHON_SHA256 = (Get-FileHash $pythonPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        Push-Location $foreignWorkingDir
+        try {
+            & (Join-Path $packageDir "ketchup-app.exe") --verify-public-assistant-runtime
+            if ($LASTEXITCODE -ne 0) { throw "Packaged public Assistant rejected its trusted runtime." }
+        } finally {
+            Pop-Location
+        }
+    } finally {
+        $env:PATH = $savedPath
+        $env:PYTHONPATH = $savedPythonPath
+        $env:KETCHUP_PYTHON = $savedKetchupPython
+        $env:KETCHUP_PYTHON_SHA256 = $savedKetchupPythonSha256
+    }
     $appProcess = Start-Process `
         -FilePath (Join-Path $packageDir "ketchup-app.exe") `
         -WorkingDirectory $foreignWorkingDir `

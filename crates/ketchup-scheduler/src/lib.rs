@@ -49,7 +49,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::fmt::Write as _;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -624,6 +624,7 @@ const M6_REVOLVE_CAPABILITY: &str = "M6_REVOLVE_V1";
 const M6_SHELL_CAPABILITY: &str = "M6_SHELL_V1";
 const M14_STEP_CAPABILITY: &str = "M14_STEP_V1";
 const M21_STEP_MODEL_CAPABILITY: &str = "M21_STEP_MODEL_V1";
+const M21_IGES_CAPABILITY: &str = "M21_IGES_V1";
 const EXACT_BREP_GRAPH_CAPABILITY_V6: &str = "EXACT_BREP_GRAPH_V6";
 const EXACT_BREP_GRAPH_CAPABILITY_V7: &str = "EXACT_BREP_GRAPH_V7";
 const EXACT_BREP_GRAPH_CAPABILITY_V8: &str = "EXACT_BREP_GRAPH_V8";
@@ -866,7 +867,52 @@ impl From<&ExactFeatureChainRequest> for StepFeatureExportSpec {
 }
 const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const MAX_WORKER_RESPONSE_LINE_BYTES: usize = 64 * 1024;
+const MAX_EXACT_WORKER_EXECUTABLE_BYTES: u64 = 128 * 1024 * 1024;
 static NEVER_CANCELLED: AtomicBool = AtomicBool::new(false);
+
+fn exact_worker_identity(executable: &Path) -> Result<(PathBuf, String), WorkerError> {
+    if !executable.is_absolute() {
+        return Err(WorkerError::Spawn(
+            "exact worker executable must be absolute".to_owned(),
+        ));
+    }
+    let executable = executable
+        .canonicalize()
+        .map_err(|error| WorkerError::Spawn(error.to_string()))?;
+    let file =
+        std::fs::File::open(&executable).map_err(|error| WorkerError::Spawn(error.to_string()))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| WorkerError::Spawn(error.to_string()))?;
+    if !metadata.is_file() || metadata.len() > MAX_EXACT_WORKER_EXECUTABLE_BYTES {
+        return Err(WorkerError::Spawn(
+            "exact worker executable is not a bounded file".to_owned(),
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_EXACT_WORKER_EXECUTABLE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| WorkerError::Spawn(error.to_string()))?;
+    if bytes.len() as u64 > MAX_EXACT_WORKER_EXECUTABLE_BYTES {
+        return Err(WorkerError::Spawn(
+            "exact worker executable is not a bounded file".to_owned(),
+        ));
+    }
+    Ok((executable, sha256_hex(&bytes)))
+}
+
+fn verify_exact_worker_identity(
+    executable: &Path,
+    expected_sha256: &str,
+) -> Result<PathBuf, WorkerError> {
+    let (executable, actual_sha256) = exact_worker_identity(executable)?;
+    if actual_sha256 != expected_sha256 {
+        return Err(WorkerError::Spawn(
+            "exact worker executable identity changed".to_owned(),
+        ));
+    }
+    Ok(executable)
+}
 
 struct WorkerWriteRequest {
     line: String,
@@ -889,10 +935,18 @@ pub struct ExactWorkerClient {
 
 impl ExactWorkerClient {
     pub fn spawn(executable: impl AsRef<Path>) -> Result<Self, WorkerError> {
-        let mut child = Command::new(executable.as_ref())
+        let (executable, _) = exact_worker_identity(executable.as_ref())?;
+        let working_directory = executable
+            .parent()
+            .expect("canonical exact worker executable has a parent");
+        let mut command = Command::new(&executable);
+        command
+            .current_dir(working_directory)
+            .env_clear()
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = command
             .spawn()
             .map_err(|error| WorkerError::Spawn(error.to_string()))?;
         let stdin = child
@@ -904,7 +958,7 @@ impl ExactWorkerClient {
             .take()
             .ok_or_else(|| WorkerError::Spawn("worker stdout was not piped".to_owned()))?;
         let (write_sender, write_receiver) = mpsc::channel();
-        let (response_sender, response_receiver) = mpsc::channel();
+        let (response_sender, response_receiver) = mpsc::sync_channel(1);
         spawn_worker_writer(stdin, write_receiver);
         spawn_worker_reader(stdout, response_sender);
         Ok(Self {
@@ -1181,6 +1235,18 @@ impl ExactWorkerClient {
             self.terminate_worker();
             Err(WorkerError::MissingCapability(
                 M21_STEP_MODEL_CAPABILITY.to_owned(),
+            ))
+        }
+    }
+
+    fn verify_m21_iges_capability(&mut self, cancelled: &AtomicBool) -> Result<(), WorkerError> {
+        let response = self.request_with_cancellation("CAPS M21_IGES_V1", cancelled)?;
+        if response == "CAPS M21_IGES_V1" {
+            Ok(())
+        } else {
+            self.terminate_worker();
+            Err(WorkerError::MissingCapability(
+                M21_IGES_CAPABILITY.to_owned(),
             ))
         }
     }
@@ -2463,6 +2529,166 @@ impl ExactWorkerClient {
         }
     }
 
+    fn inspect_iges_part_request_with_cancellation(
+        &mut self,
+        path: &Path,
+        source_sha256: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<StepImportEvidence, WorkerError> {
+        self.verify_m21_iges_capability(cancelled)?;
+        let response = self.request_with_cancellation(
+            &format!(
+                "INSPECT_IGES_PART_M21_V1 {source_sha256} {}",
+                hex_encode(path.to_string_lossy().as_bytes())
+            ),
+            cancelled,
+        )?;
+        let fields = response.split_whitespace().collect::<Vec<_>>();
+        if matches!(fields.first(), Some(&"ERR") | Some(&"ERR_DETAIL")) {
+            return match parse_error_response(&response, &fields) {
+                WorkerError::Protocol(response) => self.fail_protocol(response),
+                error => Err(error),
+            };
+        }
+        let parse_bits = |index: usize| {
+            fields
+                .get(index)
+                .and_then(|value| u64::from_str_radix(value, 16).ok())
+                .map(f64::from_bits)
+        };
+        let evidence = (|| {
+            if fields.len() != 18
+                || fields[0] != "OK_M21_IGES_PART_V1"
+                || fields[1] != source_sha256
+                || !is_fnv1a64_digest(fields[2])
+            {
+                return None;
+            }
+            let solid_count = fields[3].parse::<u32>().ok()?;
+            let source_unit = match hex_decode_utf8(fields[15])?.as_str() {
+                "millimetre" => ImportLengthUnit::Millimetre,
+                "centimetre" => ImportLengthUnit::Centimetre,
+                "metre" => ImportLengthUnit::Metre,
+                "inch" => ImportLengthUnit::Inch,
+                "foot" => ImportLengthUnit::Foot,
+                _ => return None,
+            };
+            Some(StepImportEvidence {
+                source_unit,
+                result_fingerprint: fields[2].to_owned(),
+                solid_count,
+                topology_counts: [
+                    fields[11].parse::<u32>().ok()?,
+                    fields[12].parse::<u32>().ok()?,
+                    fields[13].parse::<u32>().ok()?,
+                    fields[14].parse::<u32>().ok()?,
+                    solid_count,
+                ],
+                volume_mm3: parse_bits(4)?,
+                bounds_mm: [
+                    [parse_bits(5)?, parse_bits(6)?, parse_bits(7)?],
+                    [parse_bits(8)?, parse_bits(9)?, parse_bits(10)?],
+                ],
+                backend: hex_decode_utf8(fields[16])?,
+                tolerance: hex_decode_utf8(fields[17])?,
+            })
+        })();
+        match evidence {
+            Some(evidence) => Ok(evidence),
+            None => self.fail_protocol(response),
+        }
+    }
+
+    fn tessellate_iges_part_request_with_cancellation(
+        &mut self,
+        path: &Path,
+        source_sha256: &str,
+        result_fingerprint: &str,
+        output_path: &Path,
+        cancelled: &AtomicBool,
+    ) -> Result<StepImportMesh, WorkerError> {
+        self.verify_m21_iges_capability(cancelled)?;
+        let response = self.request_with_cancellation(
+            &format!(
+                "TESSELLATE_IGES_PART_M21_V1 {source_sha256} {} {}",
+                hex_encode(path.to_string_lossy().as_bytes()),
+                hex_encode(output_path.to_string_lossy().as_bytes())
+            ),
+            cancelled,
+        )?;
+        let fields = response.split_whitespace().collect::<Vec<_>>();
+        if matches!(fields.first(), Some(&"ERR") | Some(&"ERR_DETAIL")) {
+            return match parse_error_response(&response, &fields) {
+                WorkerError::Protocol(response) => self.fail_protocol(response),
+                error => Err(error),
+            };
+        }
+        if fields.len() != 7
+            || fields[0] != "OK_M21_IGES_MESH_V1"
+            || fields[1] != source_sha256
+            || fields[2] != result_fingerprint
+            || !is_sha256_digest(fields[5])
+        {
+            return self.fail_protocol(response);
+        }
+        let (Ok(vertex_count), Ok(triangle_count)) =
+            (fields[3].parse::<u32>(), fields[4].parse::<u32>())
+        else {
+            return self.fail_protocol(response);
+        };
+        let encoded = std::fs::read(output_path)
+            .map_err(|error| WorkerError::Transport(error.to_string()))?;
+        if sha256_hex(&encoded) != fields[5] {
+            return Err(WorkerError::Transport(
+                "imported IGES display mesh digest does not match the worker receipt".to_owned(),
+            ));
+        }
+        let mesh = StepImportMesh::decode(&encoded)
+            .map_err(|error| WorkerError::Protocol(error.to_string()))?;
+        if mesh.vertices_mm.len() as u32 != vertex_count
+            || mesh.triangles.len() as u32 != triangle_count
+        {
+            return Err(WorkerError::Transport(
+                "imported IGES display mesh size does not match the worker receipt".to_owned(),
+            ));
+        }
+        Ok(mesh)
+    }
+
+    fn convert_step_to_iges_request_with_cancellation(
+        &mut self,
+        source_path: &Path,
+        source_sha256: &str,
+        output_path: &Path,
+        cancelled: &AtomicBool,
+    ) -> Result<(), WorkerError> {
+        self.verify_m21_iges_capability(cancelled)?;
+        let response = self.request_with_cancellation(
+            &format!(
+                "CONVERT_STEP_TO_IGES_M21_V1 {source_sha256} {} {}",
+                hex_encode(source_path.to_string_lossy().as_bytes()),
+                hex_encode(output_path.to_string_lossy().as_bytes()),
+            ),
+            cancelled,
+        )?;
+        let fields = response.split_whitespace().collect::<Vec<_>>();
+        if matches!(fields.first(), Some(&"ERR") | Some(&"ERR_DETAIL")) {
+            return match parse_error_response(&response, &fields) {
+                WorkerError::Protocol(response) => self.fail_protocol(response),
+                error => Err(error),
+            };
+        }
+        if fields.len() == 3
+            && fields[0] == "OK_M21_IGES_EXPORT_V1"
+            && fields[1] == source_sha256
+            && is_fnv1a64_digest(fields[2])
+        {
+            Ok(())
+        } else {
+            self.fail_protocol(response)
+        }
+    }
+
     fn tessellate_step_part_request_with_cancellation(
         &mut self,
         path: &Path,
@@ -2812,7 +3038,7 @@ fn spawn_worker_writer(mut stdin: ChildStdin, receiver: Receiver<WorkerWriteRequ
     });
 }
 
-fn spawn_worker_reader(stdout: ChildStdout, sender: Sender<WorkerResponse>) {
+fn spawn_worker_reader(stdout: ChildStdout, sender: mpsc::SyncSender<WorkerResponse>) {
     let _ = std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
         loop {
@@ -2870,6 +3096,7 @@ impl Drop for ExactWorkerClient {
 
 pub struct ExactWorkerSupervisor {
     executable: PathBuf,
+    executable_sha256: String,
     client: ExactWorkerClient,
 }
 
@@ -2885,18 +3112,24 @@ impl ExactWorkerSupervisor {
         if cancelled.load(Ordering::Acquire) {
             return Err(WorkerError::Cancelled);
         }
-        let executable = executable.as_ref().to_owned();
-        let client = Self::spawn_verified_client(&executable, cancelled)?;
-        Ok(Self { executable, client })
+        let (executable, executable_sha256) = exact_worker_identity(executable.as_ref())?;
+        let client = Self::spawn_verified_client(&executable, &executable_sha256, cancelled)?;
+        Ok(Self {
+            executable,
+            executable_sha256,
+            client,
+        })
     }
 
     fn spawn_verified_client(
         executable: &Path,
+        executable_sha256: &str,
         cancelled: &AtomicBool,
     ) -> Result<ExactWorkerClient, WorkerError> {
         if cancelled.load(Ordering::Acquire) {
             return Err(WorkerError::Cancelled);
         }
+        let executable = verify_exact_worker_identity(executable, executable_sha256)?;
         let mut client = ExactWorkerClient::spawn(executable)?;
         client.ensure_not_cancelled(cancelled)?;
         client.ping_with_cancellation(cancelled)?;
@@ -2927,10 +3160,135 @@ impl ExactWorkerSupervisor {
         ) {
             Ok(evidence) => Ok(evidence),
             Err(error) if error.permits_restart() => {
-                self.client = Self::spawn_verified_client(&self.executable, cancelled)?;
+                self.client = Self::spawn_verified_client(
+                    &self.executable,
+                    &self.executable_sha256,
+                    cancelled,
+                )?;
                 self.client.inspect_step_part_request_with_cancellation(
                     path,
                     source_sha256,
+                    cancelled,
+                )
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    pub fn inspect_iges_import_with_cancellation(
+        &mut self,
+        path: &Path,
+        source_sha256: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<StepImportEvidence, WorkerError> {
+        if std::fs::metadata(path)
+            .map_err(|error| WorkerError::Transport(error.to_string()))?
+            .len()
+            > MAX_STEP_SOURCE_BYTES
+        {
+            return Err(WorkerError::Transport(
+                "IGES source exceeds the bounded 32 MiB envelope".to_owned(),
+            ));
+        }
+        self.client.ensure_not_cancelled(cancelled)?;
+        match self.client.inspect_iges_part_request_with_cancellation(
+            path,
+            source_sha256,
+            cancelled,
+        ) {
+            Ok(evidence) => Ok(evidence),
+            Err(error) if error.permits_restart() => {
+                self.client = Self::spawn_verified_client(
+                    &self.executable,
+                    &self.executable_sha256,
+                    cancelled,
+                )?;
+                self.client.inspect_iges_part_request_with_cancellation(
+                    path,
+                    source_sha256,
+                    cancelled,
+                )
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    pub fn tessellate_iges_import_with_cancellation(
+        &mut self,
+        path: &Path,
+        source_sha256: &str,
+        result_fingerprint: &str,
+        output_path: &Path,
+        cancelled: &AtomicBool,
+    ) -> Result<StepImportMesh, WorkerError> {
+        if std::fs::metadata(path)
+            .map_err(|error| WorkerError::Transport(error.to_string()))?
+            .len()
+            > MAX_STEP_SOURCE_BYTES
+        {
+            return Err(WorkerError::Transport(
+                "IGES source exceeds the bounded 32 MiB envelope".to_owned(),
+            ));
+        }
+        self.client.ensure_not_cancelled(cancelled)?;
+        match self.client.tessellate_iges_part_request_with_cancellation(
+            path,
+            source_sha256,
+            result_fingerprint,
+            output_path,
+            cancelled,
+        ) {
+            Ok(mesh) => Ok(mesh),
+            Err(error) if error.permits_restart() => {
+                self.client = Self::spawn_verified_client(
+                    &self.executable,
+                    &self.executable_sha256,
+                    cancelled,
+                )?;
+                self.client.tessellate_iges_part_request_with_cancellation(
+                    path,
+                    source_sha256,
+                    result_fingerprint,
+                    output_path,
+                    cancelled,
+                )
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    pub fn convert_step_to_iges_with_cancellation(
+        &mut self,
+        source_path: &Path,
+        output_path: &Path,
+        cancelled: &AtomicBool,
+    ) -> Result<(), WorkerError> {
+        let source = std::fs::read(source_path)
+            .map_err(|error| WorkerError::Transport(error.to_string()))?;
+        if source.len() as u64 > MAX_STEP_SOURCE_BYTES {
+            return Err(WorkerError::Transport(
+                "STEP staging source exceeds the bounded 32 MiB envelope".to_owned(),
+            ));
+        }
+        let source_sha256 = sha256_hex(&source);
+        self.client.ensure_not_cancelled(cancelled)?;
+        match self.client.convert_step_to_iges_request_with_cancellation(
+            source_path,
+            &source_sha256,
+            output_path,
+            cancelled,
+        ) {
+            Ok(()) => Ok(()),
+            Err(error) if error.permits_restart() => {
+                self.client = Self::spawn_verified_client(
+                    &self.executable,
+                    &self.executable_sha256,
+                    cancelled,
+                )?;
+                self.client.convert_step_to_iges_request_with_cancellation(
+                    source_path,
+                    &source_sha256,
+                    output_path,
                     cancelled,
                 )
             }
@@ -2967,7 +3325,11 @@ impl ExactWorkerSupervisor {
         ) {
             Ok(mesh) => Ok(mesh),
             Err(error) if error.permits_restart() => {
-                self.client = Self::spawn_verified_client(&self.executable, cancelled)?;
+                self.client = Self::spawn_verified_client(
+                    &self.executable,
+                    &self.executable_sha256,
+                    cancelled,
+                )?;
                 self.client.tessellate_step_part_request_with_cancellation(
                     path,
                     source_sha256,
@@ -2991,7 +3353,11 @@ impl ExactWorkerSupervisor {
         {
             Ok(result) => result,
             Err(error) if error.permits_restart() => {
-                self.client = Self::spawn_verified_client(&self.executable, &NEVER_CANCELLED)?;
+                self.client = Self::spawn_verified_client(
+                    &self.executable,
+                    &self.executable_sha256,
+                    &NEVER_CANCELLED,
+                )?;
                 self.client
                     .evaluate_planar_offset_request_with_cancellation(request, &NEVER_CANCELLED)?
             }
@@ -3039,7 +3405,11 @@ impl ExactWorkerSupervisor {
         {
             Ok(result) => result,
             Err(error) if error.permits_restart() => {
-                self.client = Self::spawn_verified_client(&self.executable, &NEVER_CANCELLED)?;
+                self.client = Self::spawn_verified_client(
+                    &self.executable,
+                    &self.executable_sha256,
+                    &NEVER_CANCELLED,
+                )?;
                 self.client
                     .evaluate_sweep_request_with_cancellation(request, &NEVER_CANCELLED)?
             }
@@ -3099,7 +3469,11 @@ impl ExactWorkerSupervisor {
         {
             Ok(result) => result,
             Err(error) if error.permits_restart() => {
-                self.client = Self::spawn_verified_client(&self.executable, &NEVER_CANCELLED)?;
+                self.client = Self::spawn_verified_client(
+                    &self.executable,
+                    &self.executable_sha256,
+                    &NEVER_CANCELLED,
+                )?;
                 self.client
                     .evaluate_loft_request_with_cancellation(request, &NEVER_CANCELLED)?
             }
@@ -3283,7 +3657,11 @@ impl ExactWorkerSupervisor {
         ) {
             Ok(result) => result,
             Err(error) if error.permits_restart() => {
-                self.client = Self::spawn_verified_client(&self.executable, cancelled)?;
+                self.client = Self::spawn_verified_client(
+                    &self.executable,
+                    &self.executable_sha256,
+                    cancelled,
+                )?;
                 self.client.evaluate_exact_brep_graph_with_cancellation(
                     graph,
                     imported_sources,
@@ -3347,7 +3725,11 @@ impl ExactWorkerSupervisor {
         ) {
             Ok(mesh) => mesh,
             Err(error) if error.permits_restart() => {
-                self.client = Self::spawn_verified_client(&self.executable, cancelled)?;
+                self.client = Self::spawn_verified_client(
+                    &self.executable,
+                    &self.executable_sha256,
+                    cancelled,
+                )?;
                 self.client.tessellate_exact_brep_graph_with_cancellation(
                     graph,
                     &result.result_fingerprint,
@@ -3406,7 +3788,11 @@ impl ExactWorkerSupervisor {
         {
             Ok(result) => result,
             Err(error) if error.permits_restart() => {
-                self.client = Self::spawn_verified_client(&self.executable, cancelled)?;
+                self.client = Self::spawn_verified_client(
+                    &self.executable,
+                    &self.executable_sha256,
+                    cancelled,
+                )?;
                 self.client
                     .extrude_rectangle_request_with_cancellation(request, cancelled)?
             }
@@ -3441,7 +3827,11 @@ impl ExactWorkerSupervisor {
         {
             Ok(result) => result,
             Err(error) if error.permits_restart() => {
-                self.client = Self::spawn_verified_client(&self.executable, cancelled)?;
+                self.client = Self::spawn_verified_client(
+                    &self.executable,
+                    &self.executable_sha256,
+                    cancelled,
+                )?;
                 self.client
                     .evaluate_revolve_request_with_cancellation(request, cancelled)?
             }
@@ -3484,7 +3874,11 @@ impl ExactWorkerSupervisor {
         match export {
             Ok(()) => {}
             Err(error) if error.permits_restart() => {
-                self.client = Self::spawn_verified_client(&self.executable, &NEVER_CANCELLED)?;
+                self.client = Self::spawn_verified_client(
+                    &self.executable,
+                    &self.executable_sha256,
+                    &NEVER_CANCELLED,
+                )?;
                 self.client.export_revolve_step_request_with_cancellation(
                     request,
                     &expected.identity.result_fingerprint,
@@ -3547,7 +3941,11 @@ impl ExactWorkerSupervisor {
         match export {
             Ok(()) => {}
             Err(error) if error.permits_restart() => {
-                self.client = Self::spawn_verified_client(&self.executable, &NEVER_CANCELLED)?;
+                self.client = Self::spawn_verified_client(
+                    &self.executable,
+                    &self.executable_sha256,
+                    &NEVER_CANCELLED,
+                )?;
                 self.client.export_exact_brep_graph_step_with_cancellation(
                     &graph,
                     &expected.identity.result_fingerprint,
@@ -3715,7 +4113,11 @@ impl ExactWorkerSupervisor {
             };
             if let Err(error) = result {
                 if error.permits_restart() {
-                    self.client = Self::spawn_verified_client(&self.executable, &NEVER_CANCELLED)?;
+                    self.client = Self::spawn_verified_client(
+                        &self.executable,
+                        &self.executable_sha256,
+                        &NEVER_CANCELLED,
+                    )?;
                     match package {
                         ExactBodyPackage::Rectangle(expected) => {
                             let request = ExactFeatureChainRequest::from_snapshot(
@@ -3805,7 +4207,11 @@ impl ExactWorkerSupervisor {
         match assembly {
             Ok(()) => {}
             Err(error) if error.permits_restart() => {
-                self.client = Self::spawn_verified_client(&self.executable, &NEVER_CANCELLED)?;
+                self.client = Self::spawn_verified_client(
+                    &self.executable,
+                    &self.executable_sha256,
+                    &NEVER_CANCELLED,
+                )?;
                 self.client.assemble_step_model_request_with_cancellation(
                     &manifest,
                     &sources,
@@ -3847,7 +4253,11 @@ impl ExactWorkerSupervisor {
         {
             Ok(result) => result,
             Err(error) if error.permits_restart() => {
-                self.client = Self::spawn_verified_client(&self.executable, cancelled)?;
+                self.client = Self::spawn_verified_client(
+                    &self.executable,
+                    &self.executable_sha256,
+                    cancelled,
+                )?;
                 self.client
                     .evaluate_beam_piece_request_with_cancellation(request, cancelled)?
             }
@@ -7305,6 +7715,39 @@ mod request_timeout_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_worker_identity_rejects_relative_changed_and_oversized_files() {
+        assert!(matches!(
+            exact_worker_identity(Path::new("relative-worker")),
+            Err(WorkerError::Spawn(message))
+                if message == "exact worker executable must be absolute"
+        ));
+
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("worker.bin");
+        std::fs::write(&executable, b"trusted worker").unwrap();
+        let (canonical, expected_sha256) = exact_worker_identity(&executable).unwrap();
+        assert_eq!(canonical, executable.canonicalize().unwrap());
+
+        std::fs::write(&executable, b"replaced worker").unwrap();
+        assert!(matches!(
+            verify_exact_worker_identity(&canonical, &expected_sha256),
+            Err(WorkerError::Spawn(message))
+                if message == "exact worker executable identity changed"
+        ));
+
+        let oversized = directory.path().join("oversized-worker.bin");
+        std::fs::File::create(&oversized)
+            .unwrap()
+            .set_len(MAX_EXACT_WORKER_EXECUTABLE_BYTES + 1)
+            .unwrap();
+        assert!(matches!(
+            exact_worker_identity(&oversized),
+            Err(WorkerError::Spawn(message))
+                if message == "exact worker executable is not a bounded file"
+        ));
+    }
 
     fn valid_exact_brep_graph_response(protocol: &str) -> String {
         let mut fields = vec![

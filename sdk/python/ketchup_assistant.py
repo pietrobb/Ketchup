@@ -44,6 +44,8 @@ from ketchup_assistant_protocol import (  # noqa: E402
 )
 
 PUBLIC_PROVIDERS = frozenset({"anthropic-api", "openai-api"})
+MAX_PROVIDER_RESPONSE_BYTES = 8 * 1024 * 1024
+PROVIDER_RESPONSE_READ_CHUNK_BYTES = 64 * 1024
 
 
 class PublicAssistantSidecar(AssistantSidecarBase):
@@ -333,9 +335,37 @@ def _post_json(url: str, payload: dict, headers: dict[str, str]) -> dict:
     )
     try:
         with urllib.request.urlopen(request, timeout=120) as response:
-            return json.load(response)
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
+            content_length = response.headers.get("Content-Length")
+            declared_length = None
+            if content_length is not None:
+                try:
+                    declared_length = int(content_length)
+                except ValueError as error:
+                    raise ProtocolError("provider response Content-Length is invalid") from error
+                if declared_length < 0:
+                    raise ProtocolError("provider response Content-Length is invalid")
+                if declared_length > MAX_PROVIDER_RESPONSE_BYTES:
+                    raise ProtocolError("provider response exceeds the byte limit")
+            encoded = bytearray()
+            while len(encoded) <= MAX_PROVIDER_RESPONSE_BYTES:
+                remaining = MAX_PROVIDER_RESPONSE_BYTES + 1 - len(encoded)
+                chunk = response.read(min(PROVIDER_RESPONSE_READ_CHUNK_BYTES, remaining))
+                if not chunk:
+                    break
+                encoded.extend(chunk)
+            if len(encoded) > MAX_PROVIDER_RESPONSE_BYTES:
+                raise ProtocolError("provider response exceeds the byte limit")
+            if declared_length is not None and len(encoded) != declared_length:
+                raise ProtocolError("provider response length does not match Content-Length")
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as error:
         raise ProtocolError(f"provider request failed: {type(error).__name__}") from error
+    try:
+        decoded = json.loads(encoded.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:
+        raise ProtocolError("provider response is not valid UTF-8 JSON") from error
+    if not isinstance(decoded, dict):
+        raise ProtocolError("provider response must be a JSON object")
+    return decoded
 
 
 def _openai_output_text(data: dict) -> str:

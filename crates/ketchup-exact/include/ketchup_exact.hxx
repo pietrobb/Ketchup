@@ -159,6 +159,8 @@ std::unique_ptr<NativeOperationResult> import_step_native(rust::Str path) noexce
 std::unique_ptr<NativeOperationResult> import_step_solid_native(
     rust::Str path, std::uint32_t solid_ordinal) noexcept;
 rust::String step_length_unit_native(rust::Str path) noexcept;
+std::unique_ptr<NativeOperationResult> import_iges_native(rust::Str path) noexcept;
+rust::String iges_length_unit_native(rust::Str path) noexcept;
 std::unique_ptr<NativeOperationResult> transform_body_native(
     const NativeOperationResult& body, rust::Slice<const double> matrix) noexcept;
 std::unique_ptr<NativeOperationResult> combine_bodies_native(
@@ -167,6 +169,8 @@ std::unique_ptr<NativeOperationResult> boolean_bodies_native(
     const NativeOperationResult& target, const NativeOperationResult& tool,
     std::uint8_t operation) noexcept;
 rust::String export_step_native(
+    const NativeOperationResult& body, rust::Str path) noexcept;
+rust::String export_iges_native(
     const NativeOperationResult& body, rust::Str path) noexcept;
 
 class NativeMeshResult final {

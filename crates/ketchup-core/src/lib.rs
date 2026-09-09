@@ -16,6 +16,8 @@ pub mod bottle_m6 {
 }
 pub mod document;
 pub mod drawing;
+pub mod drawing_export;
+pub mod dxf_export;
 pub mod exact_brep_graph;
 pub mod exact_product;
 pub mod exact_validation;
@@ -38,6 +40,7 @@ pub mod shared_change;
 pub mod sketch;
 pub mod space;
 pub mod state_view;
+pub mod three_mf_export;
 pub mod topology;
 pub mod validation;
 pub mod validator_hosting;

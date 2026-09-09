@@ -2,6 +2,7 @@
 
 use ketchup_app::{
     KetchupApp, inspect_native_document, live_bridge::bootstrap::LiveStdinBootstrap,
+    verify_public_assistant_runtime,
 };
 
 fn bootstrap_failed() -> ! {
@@ -17,6 +18,19 @@ fn main() -> eframe::Result {
         .unwrap_or_else(|_| bootstrap_failed());
     let mut arguments = all_arguments.into_iter();
     let first_argument = arguments.next();
+    if first_argument.as_deref() == Some(std::ffi::OsStr::new("--verify-public-assistant-runtime"))
+    {
+        if arguments.next().is_some() {
+            eprintln!("--verify-public-assistant-runtime accepts no arguments");
+            std::process::exit(2);
+        }
+        if let Err(error) = verify_public_assistant_runtime() {
+            eprintln!("public Assistant runtime verification failed: {error}");
+            std::process::exit(2);
+        }
+        println!("public Assistant runtime verified");
+        return Ok(());
+    }
     if first_argument.as_deref() == Some(std::ffi::OsStr::new("--inspect-native-document")) {
         let Some(path) = arguments.next() else {
             eprintln!("--inspect-native-document requires one path");

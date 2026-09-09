@@ -1,0 +1,558 @@
+use crate::document::{
+    DefinitionId, FeatureId, GroupId, InstancePathStep, LocalGroupKey, LocalOccurrenceKey,
+    SceneOccurrence, Snapshot, Transform,
+};
+use crate::exact_product::{ExactBodyPackage, ExactBodyView, ExactProductError};
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
+
+const CONTENT_TYPES: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/></Types>"#;
+const ROOT_RELATIONSHIPS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>"#;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactThreeMfExport {
+    pub three_mf: Vec<u8>,
+    pub loss_report: String,
+}
+
+#[derive(Clone, Copy)]
+pub struct ExactThreeMfInstance<'a> {
+    pub package: &'a ExactBodyPackage,
+    pub occurrence: &'a SceneOccurrence,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct MeshKey {
+    definition_id: DefinitionId,
+    producer_feature_id: FeatureId,
+    result_fingerprint: String,
+    color: Option<[u8; 3]>,
+}
+
+#[derive(Clone)]
+struct AssemblyNode {
+    name: String,
+    transform: Transform,
+    meshes: Vec<MeshKey>,
+    children: Vec<usize>,
+}
+
+pub fn exact_model_three_mf_export(
+    snapshot: &Snapshot,
+    instances: &[ExactThreeMfInstance<'_>],
+) -> Result<ExactThreeMfExport, ExactProductError> {
+    if instances.is_empty() {
+        return Err(ExactProductError::EmptyModelExport);
+    }
+    if instances
+        .iter()
+        .any(|instance| !instance.occurrence.visible || !instance.package.is_current(snapshot))
+    {
+        return Err(ExactProductError::StaleResult);
+    }
+
+    let mut packages = BTreeMap::<MeshKey, &ExactBodyPackage>::new();
+    for instance in instances {
+        validate_mesh(instance.package)?;
+        packages
+            .entry(mesh_key(instance))
+            .or_insert(instance.package);
+    }
+    let (nodes, roots) = build_assembly(snapshot, instances)?;
+
+    let colors = packages
+        .keys()
+        .filter_map(|key| key.color)
+        .collect::<std::collections::BTreeSet<_>>();
+    let material_indices = colors
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, color)| (color, index))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut next_id = if colors.is_empty() { 1_u32 } else { 2_u32 };
+    let mesh_ids = packages
+        .keys()
+        .cloned()
+        .map(|key| {
+            let id = next_id;
+            next_id += 1;
+            (key, id)
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let mut node_ids = BTreeMap::<usize, u32>::new();
+    let mut node_order = Vec::new();
+    for root in &roots {
+        allocate_node_ids(*root, &nodes, &mut node_ids, &mut node_order, &mut next_id)?;
+    }
+
+    let model = encode_model(
+        snapshot,
+        &packages,
+        &mesh_ids,
+        &material_indices,
+        &nodes,
+        &node_ids,
+        &node_order,
+        &roots,
+    )?;
+    let three_mf = encode_package(&[
+        ("[Content_Types].xml", CONTENT_TYPES.as_bytes()),
+        ("_rels/.rels", ROOT_RELATIONSHIPS.as_bytes()),
+        ("3D/3dmodel.model", model.as_bytes()),
+    ])?;
+    let loss_report = format!(
+        "authority=accepted exact OCCT B-Rep\nformat=3MF Core 1.3 package\nconversion=current-visible-exact-model-to-instanced-print-mesh\nunit=millimeter\naxis=Ketchup Z-up preserved\nhierarchy=canonical global groups, component occurrences, local groups, and nested occurrences\nmaterials=resolved occurrence sRGB colors\neditability_loss=canonical features, rules, dimensions, constraints, and Undo history are not preserved\ntopology_loss=exact topology, analytic surfaces, and durable face identity are not preserved\ntolerance_loss=geometry is approximated by each accepted tessellation under its source tolerance profile\nsource_digest={}\noccurrence_body_count={}\nunique_mesh_resource_count={}\nassembly_object_count={}\n",
+        snapshot.canonical_digest(),
+        instances.len(),
+        packages.len(),
+        nodes.len(),
+    );
+    Ok(ExactThreeMfExport {
+        three_mf,
+        loss_report,
+    })
+}
+
+fn mesh_key(instance: &ExactThreeMfInstance<'_>) -> MeshKey {
+    MeshKey {
+        definition_id: instance.package.definition_id(),
+        producer_feature_id: instance.package.producer_feature_id(),
+        result_fingerprint: instance.package.result_fingerprint().to_owned(),
+        color: instance.occurrence.color(),
+    }
+}
+
+fn validate_mesh(package: &ExactBodyPackage) -> Result<(), ExactProductError> {
+    if package.vertices().is_empty() || package.triangles().is_empty() {
+        return Err(ExactProductError::InvalidMeshExport);
+    }
+    if package
+        .vertices()
+        .iter()
+        .flat_map(|vertex| vertex.position_mm)
+        .any(|value| !value.is_finite())
+        || package.triangles().iter().any(|triangle| {
+            triangle
+                .vertex_indices
+                .iter()
+                .any(|index| *index as usize >= package.vertices().len())
+        })
+    {
+        return Err(ExactProductError::InvalidMeshExport);
+    }
+    Ok(())
+}
+
+fn build_assembly(
+    snapshot: &Snapshot,
+    instances: &[ExactThreeMfInstance<'_>],
+) -> Result<(Vec<AssemblyNode>, Vec<usize>), ExactProductError> {
+    let mut nodes = Vec::new();
+    let mut roots = Vec::new();
+    let mut hierarchy = BTreeMap::<String, usize>::new();
+    for instance in instances {
+        let root_id = instance.occurrence.instance_path.root_occurrence();
+        let root_occurrence = snapshot
+            .occurrence(root_id)
+            .ok_or(ExactProductError::InvalidMeshExport)?;
+        let root_key = format!("occurrence:{}", root_id.0);
+        let root_index = if let Some(index) = hierarchy.get(&root_key) {
+            *index
+        } else {
+            let parent = root_occurrence
+                .parent()
+                .map(|group_id| {
+                    ensure_global_group(snapshot, group_id, &mut nodes, &mut roots, &mut hierarchy)
+                })
+                .transpose()?;
+            let index = nodes.len();
+            nodes.push(AssemblyNode {
+                name: root_occurrence.name().to_owned(),
+                transform: root_occurrence.transform(),
+                meshes: Vec::new(),
+                children: Vec::new(),
+            });
+            attach_node(&mut nodes, &mut roots, parent, index);
+            hierarchy.insert(root_key.clone(), index);
+            index
+        };
+
+        let mut owner_definition_id = root_occurrence.definition_id();
+        let mut parent_index = root_index;
+        let mut path_key = root_key;
+        for step in instance.occurrence.instance_path.steps() {
+            match step {
+                InstancePathStep::Group(local_id) => {
+                    path_key.push_str(&format!("/group:{}", local_id.0));
+                    let local = snapshot
+                        .local_group(LocalGroupKey {
+                            definition_id: owner_definition_id,
+                            local_id: *local_id,
+                        })
+                        .ok_or(ExactProductError::InvalidMeshExport)?;
+                    parent_index = ensure_local_node(
+                        &mut nodes,
+                        &mut hierarchy,
+                        parent_index,
+                        &path_key,
+                        local.name(),
+                        local.transform(),
+                    );
+                }
+                InstancePathStep::Occurrence(local_id) => {
+                    path_key.push_str(&format!("/occurrence:{}", local_id.0));
+                    let local = snapshot
+                        .local_occurrence(LocalOccurrenceKey {
+                            definition_id: owner_definition_id,
+                            local_id: *local_id,
+                        })
+                        .ok_or(ExactProductError::InvalidMeshExport)?;
+                    parent_index = ensure_local_node(
+                        &mut nodes,
+                        &mut hierarchy,
+                        parent_index,
+                        &path_key,
+                        local.name(),
+                        local.transform(),
+                    );
+                    owner_definition_id = local.definition_id();
+                }
+            }
+        }
+        if owner_definition_id != instance.occurrence.definition_id {
+            return Err(ExactProductError::InvalidMeshExport);
+        }
+        nodes[parent_index].meshes.push(mesh_key(instance));
+    }
+    Ok((nodes, roots))
+}
+
+fn ensure_global_group(
+    snapshot: &Snapshot,
+    group_id: GroupId,
+    nodes: &mut Vec<AssemblyNode>,
+    roots: &mut Vec<usize>,
+    hierarchy: &mut BTreeMap<String, usize>,
+) -> Result<usize, ExactProductError> {
+    let key = format!("group:{}", group_id.0);
+    if let Some(index) = hierarchy.get(&key) {
+        return Ok(*index);
+    }
+    let group = snapshot
+        .group(group_id)
+        .ok_or(ExactProductError::InvalidMeshExport)?;
+    let parent = group
+        .parent()
+        .map(|parent_id| ensure_global_group(snapshot, parent_id, nodes, roots, hierarchy))
+        .transpose()?;
+    let index = nodes.len();
+    nodes.push(AssemblyNode {
+        name: group.name().to_owned(),
+        transform: group.transform(),
+        meshes: Vec::new(),
+        children: Vec::new(),
+    });
+    attach_node(nodes, roots, parent, index);
+    hierarchy.insert(key, index);
+    Ok(index)
+}
+
+fn ensure_local_node(
+    nodes: &mut Vec<AssemblyNode>,
+    hierarchy: &mut BTreeMap<String, usize>,
+    parent: usize,
+    key: &str,
+    name: &str,
+    transform: Transform,
+) -> usize {
+    if let Some(index) = hierarchy.get(key) {
+        return *index;
+    }
+    let index = nodes.len();
+    nodes.push(AssemblyNode {
+        name: name.to_owned(),
+        transform,
+        meshes: Vec::new(),
+        children: Vec::new(),
+    });
+    nodes[parent].children.push(index);
+    hierarchy.insert(key.to_owned(), index);
+    index
+}
+
+fn attach_node(
+    nodes: &mut [AssemblyNode],
+    roots: &mut Vec<usize>,
+    parent: Option<usize>,
+    index: usize,
+) {
+    if let Some(parent) = parent {
+        nodes[parent].children.push(index);
+    } else {
+        roots.push(index);
+    }
+}
+
+fn allocate_node_ids(
+    node_index: usize,
+    nodes: &[AssemblyNode],
+    ids: &mut BTreeMap<usize, u32>,
+    order: &mut Vec<usize>,
+    next_id: &mut u32,
+) -> Result<(), ExactProductError> {
+    if ids.contains_key(&node_index) {
+        return Ok(());
+    }
+    for child in &nodes[node_index].children {
+        allocate_node_ids(*child, nodes, ids, order, next_id)?;
+    }
+    if nodes[node_index].meshes.is_empty() && nodes[node_index].children.is_empty() {
+        return Err(ExactProductError::InvalidMeshExport);
+    }
+    let id = *next_id;
+    *next_id = next_id
+        .checked_add(1)
+        .ok_or(ExactProductError::InvalidMeshExport)?;
+    ids.insert(node_index, id);
+    order.push(node_index);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_model(
+    snapshot: &Snapshot,
+    packages: &BTreeMap<MeshKey, &ExactBodyPackage>,
+    mesh_ids: &BTreeMap<MeshKey, u32>,
+    material_indices: &BTreeMap<[u8; 3], usize>,
+    nodes: &[AssemblyNode],
+    node_ids: &BTreeMap<usize, u32>,
+    node_order: &[usize],
+    roots: &[usize],
+) -> Result<String, ExactProductError> {
+    let mut xml = String::new();
+    write!(
+        xml,
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<model unit=\"millimeter\" xml:lang=\"en-US\" xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\">\n  <metadata name=\"Title\">Ketchup model</metadata>\n  <metadata name=\"KetchupSourceDigest\">{}</metadata>\n  <resources>\n",
+        xml_escape(&snapshot.canonical_digest())
+    )
+    .expect("writing to a String cannot fail");
+    if !material_indices.is_empty() {
+        xml.push_str("    <basematerials id=\"1\">\n");
+        for color in material_indices.keys() {
+            writeln!(
+                xml,
+                "      <base name=\"Ketchup #{:02X}{:02X}{:02X}\" displaycolor=\"#{:02X}{:02X}{:02X}FF\"/>",
+                color[0], color[1], color[2], color[0], color[1], color[2]
+            )
+            .expect("writing to a String cannot fail");
+        }
+        xml.push_str("    </basematerials>\n");
+    }
+    for (key, package) in packages {
+        let id = mesh_ids[key];
+        writeln!(
+            xml,
+            "    <object id=\"{id}\" type=\"model\" name=\"{} body {}\">",
+            xml_escape(
+                snapshot
+                    .definition(key.definition_id)
+                    .ok_or(ExactProductError::InvalidMeshExport)?
+                    .name()
+            ),
+            key.producer_feature_id.0
+        )
+        .expect("writing to a String cannot fail");
+        xml.push_str("      <mesh>\n        <vertices>\n");
+        for vertex in package.vertices() {
+            writeln!(
+                xml,
+                "          <vertex x=\"{:.17}\" y=\"{:.17}\" z=\"{:.17}\"/>",
+                vertex.position_mm[0], vertex.position_mm[1], vertex.position_mm[2]
+            )
+            .expect("writing to a String cannot fail");
+        }
+        xml.push_str("        </vertices>\n        <triangles>\n");
+        for triangle in package.triangles() {
+            let [v1, v2, v3] = triangle.vertex_indices;
+            if let Some(color) = key.color {
+                let material = material_indices[&color];
+                writeln!(
+                    xml,
+                    "          <triangle v1=\"{v1}\" v2=\"{v2}\" v3=\"{v3}\" pid=\"1\" p1=\"{material}\" p2=\"{material}\" p3=\"{material}\"/>"
+                )
+                .expect("writing to a String cannot fail");
+            } else {
+                writeln!(
+                    xml,
+                    "          <triangle v1=\"{v1}\" v2=\"{v2}\" v3=\"{v3}\"/>"
+                )
+                .expect("writing to a String cannot fail");
+            }
+        }
+        xml.push_str("        </triangles>\n      </mesh>\n    </object>\n");
+    }
+    for node_index in node_order {
+        let node = &nodes[*node_index];
+        writeln!(
+            xml,
+            "    <object id=\"{}\" type=\"model\" name=\"{}\">\n      <components>",
+            node_ids[node_index],
+            xml_escape(&node.name)
+        )
+        .expect("writing to a String cannot fail");
+        for mesh in &node.meshes {
+            writeln!(xml, "        <component objectid=\"{}\"/>", mesh_ids[mesh])
+                .expect("writing to a String cannot fail");
+        }
+        for child in &node.children {
+            writeln!(
+                xml,
+                "        <component objectid=\"{}\" transform=\"{}\"/>",
+                node_ids[child],
+                transform_3mf(nodes[*child].transform)?
+            )
+            .expect("writing to a String cannot fail");
+        }
+        xml.push_str("      </components>\n    </object>\n");
+    }
+    xml.push_str("  </resources>\n  <build>\n");
+    for root in roots {
+        writeln!(
+            xml,
+            "    <item objectid=\"{}\" transform=\"{}\"/>",
+            node_ids[root],
+            transform_3mf(nodes[*root].transform)?
+        )
+        .expect("writing to a String cannot fail");
+    }
+    xml.push_str("  </build>\n</model>\n");
+    Ok(xml)
+}
+
+fn transform_3mf(transform: Transform) -> Result<String, ExactProductError> {
+    let matrix = transform.matrix();
+    let determinant = matrix[0] * (matrix[5] * matrix[10] - matrix[6] * matrix[9])
+        - matrix[1] * (matrix[4] * matrix[10] - matrix[6] * matrix[8])
+        + matrix[2] * (matrix[4] * matrix[9] - matrix[5] * matrix[8]);
+    if matrix.iter().any(|value| !value.is_finite()) || determinant.abs() <= f64::EPSILON {
+        return Err(ExactProductError::InvalidMeshExport);
+    }
+    Ok(format!(
+        "{:.17} {:.17} {:.17} {:.17} {:.17} {:.17} {:.17} {:.17} {:.17} {:.17} {:.17} {:.17}",
+        matrix[0],
+        matrix[1],
+        matrix[2],
+        matrix[4],
+        matrix[5],
+        matrix[6],
+        matrix[8],
+        matrix[9],
+        matrix[10],
+        matrix[3],
+        matrix[7],
+        matrix[11]
+    ))
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn encode_package(entries: &[(&str, &[u8])]) -> Result<Vec<u8>, ExactProductError> {
+    struct CentralEntry<'a> {
+        name: &'a str,
+        crc: u32,
+        size: u32,
+        offset: u32,
+    }
+    let mut archive = Vec::new();
+    let mut central = Vec::new();
+    for (name, bytes) in entries {
+        let name_bytes = name.as_bytes();
+        let name_len =
+            u16::try_from(name_bytes.len()).map_err(|_| ExactProductError::InvalidMeshExport)?;
+        let size = u32::try_from(bytes.len()).map_err(|_| ExactProductError::InvalidMeshExport)?;
+        let offset =
+            u32::try_from(archive.len()).map_err(|_| ExactProductError::InvalidMeshExport)?;
+        let crc = crc32(bytes);
+        archive.extend_from_slice(&0x0403_4b50_u32.to_le_bytes());
+        archive.extend_from_slice(&20_u16.to_le_bytes());
+        archive.extend_from_slice(&0_u16.to_le_bytes());
+        archive.extend_from_slice(&0_u16.to_le_bytes());
+        archive.extend_from_slice(&0_u16.to_le_bytes());
+        archive.extend_from_slice(&0_u16.to_le_bytes());
+        archive.extend_from_slice(&crc.to_le_bytes());
+        archive.extend_from_slice(&size.to_le_bytes());
+        archive.extend_from_slice(&size.to_le_bytes());
+        archive.extend_from_slice(&name_len.to_le_bytes());
+        archive.extend_from_slice(&0_u16.to_le_bytes());
+        archive.extend_from_slice(name_bytes);
+        archive.extend_from_slice(bytes);
+        central.push(CentralEntry {
+            name,
+            crc,
+            size,
+            offset,
+        });
+    }
+    let central_offset =
+        u32::try_from(archive.len()).map_err(|_| ExactProductError::InvalidMeshExport)?;
+    for entry in &central {
+        let name = entry.name.as_bytes();
+        let name_len =
+            u16::try_from(name.len()).map_err(|_| ExactProductError::InvalidMeshExport)?;
+        archive.extend_from_slice(&0x0201_4b50_u32.to_le_bytes());
+        archive.extend_from_slice(&20_u16.to_le_bytes());
+        archive.extend_from_slice(&20_u16.to_le_bytes());
+        archive.extend_from_slice(&0_u16.to_le_bytes());
+        archive.extend_from_slice(&0_u16.to_le_bytes());
+        archive.extend_from_slice(&0_u16.to_le_bytes());
+        archive.extend_from_slice(&0_u16.to_le_bytes());
+        archive.extend_from_slice(&entry.crc.to_le_bytes());
+        archive.extend_from_slice(&entry.size.to_le_bytes());
+        archive.extend_from_slice(&entry.size.to_le_bytes());
+        archive.extend_from_slice(&name_len.to_le_bytes());
+        archive.extend_from_slice(&0_u16.to_le_bytes());
+        archive.extend_from_slice(&0_u16.to_le_bytes());
+        archive.extend_from_slice(&0_u16.to_le_bytes());
+        archive.extend_from_slice(&0_u16.to_le_bytes());
+        archive.extend_from_slice(&0_u32.to_le_bytes());
+        archive.extend_from_slice(&entry.offset.to_le_bytes());
+        archive.extend_from_slice(name);
+    }
+    let central_size = u32::try_from(archive.len())
+        .map_err(|_| ExactProductError::InvalidMeshExport)?
+        .checked_sub(central_offset)
+        .ok_or(ExactProductError::InvalidMeshExport)?;
+    let count = u16::try_from(central.len()).map_err(|_| ExactProductError::InvalidMeshExport)?;
+    archive.extend_from_slice(&0x0605_4b50_u32.to_le_bytes());
+    archive.extend_from_slice(&0_u16.to_le_bytes());
+    archive.extend_from_slice(&0_u16.to_le_bytes());
+    archive.extend_from_slice(&count.to_le_bytes());
+    archive.extend_from_slice(&count.to_le_bytes());
+    archive.extend_from_slice(&central_size.to_le_bytes());
+    archive.extend_from_slice(&central_offset.to_le_bytes());
+    archive.extend_from_slice(&0_u16.to_le_bytes());
+    Ok(archive)
+}
+
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = u32::MAX;
+    for byte in bytes {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ (0xedb8_8320 & 0_u32.wrapping_sub(crc & 1));
+        }
+    }
+    !crc
+}

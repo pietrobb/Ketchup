@@ -56,6 +56,17 @@ fn digest_starts_like(shell: &Shell, key: &str) -> bool {
     !prefix.trim().is_empty() && shell.app().action_digest().starts_with(prefix.trim_end())
 }
 
+fn wait_for_visible_label(shell: &mut Shell, label: &str) {
+    for _ in 0..300 {
+        shell.settle();
+        if shell.has_visible_label(label) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("timed out waiting for visible label {label:?}");
+}
+
 static EXACT_FILE_EXPORT_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -453,6 +464,60 @@ fn save_as_then_new_then_open_restores_the_same_canonical_document() {
 }
 
 #[test]
+fn save_open_preserves_the_complete_undo_redo_history_through_accesskit() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("history.ketchup");
+    let script = ScriptedFileDialogs::new()
+        .queue_save(&path)
+        .queue_open(&path)
+        .always_discard();
+    let mut shell = Shell::with_dialogs(script);
+
+    arrange_one_visible_and_one_hidden_occurrence_with_redo(&mut shell);
+    let expected = canonical_state(&shell);
+    let expected_history = reachable_history_digests(&mut shell);
+    shell.click_menu_command("menu-file", AppCommand::SaveAs);
+    shell.click_menu_command("menu-file", AppCommand::New);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+
+    let reopened = canonical_state(&shell);
+    assert_eq!(reopened.revision, expected.revision);
+    assert_eq!(reopened.digest, expected.digest);
+    assert_eq!(reopened.undo_steps, expected.undo_steps);
+    assert_eq!(reopened.redo_steps, expected.redo_steps);
+    assert!(!reopened.dirty);
+    assert_eq!(reachable_history_digests(&mut shell), expected_history);
+
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().canonical_digest(), expected_history.1[0]);
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), expected.digest);
+}
+
+#[test]
+fn corrupt_persisted_history_fails_open_without_replacing_the_active_document() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("corrupt-history.ketchup");
+    let script = ScriptedFileDialogs::new()
+        .queue_save(&path)
+        .queue_open(&path)
+        .always_discard();
+    let mut shell = Shell::with_dialogs(script);
+
+    arrange_one_visible_and_one_hidden_occurrence_with_redo(&mut shell);
+    shell.click_menu_command("menu-file", AppCommand::SaveAs);
+    shell.click_menu_command("menu-file", AppCommand::New);
+    let active = canonical_state(&shell);
+    let mut corrupt = std::fs::read(&path).unwrap();
+    *corrupt.last_mut().unwrap() ^= 0xff;
+    std::fs::write(&path, corrupt).unwrap();
+
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert_eq!(canonical_state(&shell), active);
+    assert!(digest_starts_like(&shell, "error-open-document"));
+}
+
+#[test]
 fn native_document_inspection_counts_only_visible_modeled_root_occurrences() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("hidden-modeled-root.ketchup");
@@ -467,6 +532,42 @@ fn native_document_inspection_counts_only_visible_modeled_root_occurrences() {
     assert_eq!(inspection.root_occurrences, 2);
     assert_eq!(inspection.profile_extrusion_definitions, 1);
     assert_eq!(inspection.visible_profile_extrusion_root_occurrences, 1);
+}
+
+#[test]
+fn native_document_inspection_rejects_an_oversized_sparse_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("oversized-inspection.ketchup");
+    std::fs::File::create(&path)
+        .unwrap()
+        .set_len(ketchup_core::persistence::MAX_NATIVE_DOCUMENT_BYTES as u64 + 1)
+        .unwrap();
+
+    let error = ketchup_app::inspect_native_document(&path).unwrap_err();
+    assert!(
+        error.contains("document exceeds a resource limit"),
+        "{error}"
+    );
+}
+
+#[test]
+fn native_document_inspection_hashes_the_recovered_source() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("recovered-inspection.ketchup");
+    let recovery = path.with_extension("ketchup.recovery");
+    let script = ScriptedFileDialogs::new().queue_save(&path);
+    let mut shell = Shell::with_dialogs(script);
+    compose_two_shared_occurrences(&mut shell);
+    shell.click_menu_command("menu-file", AppCommand::SaveAs);
+    std::fs::copy(&path, &recovery).unwrap();
+    let recovery_bytes = std::fs::read(&recovery).unwrap();
+    std::fs::write(&path, b"corrupt primary").unwrap();
+
+    let inspection = ketchup_app::inspect_native_document(&path).unwrap();
+    assert_eq!(
+        inspection.container_sha256,
+        ketchup_core::graph::sha256_hex(&recovery_bytes)
+    );
 }
 
 #[test]
@@ -509,6 +610,19 @@ fn confirmed_legacy_migration_writes_and_activates_only_a_new_copy() {
     assert_eq!(std::fs::read(&source).unwrap(), source_bytes);
 
     std::fs::write(&source, b"tampered after review").unwrap();
+    assert!(
+        !shell
+            .app_mut()
+            .confirm_review_candidate_migration_to(&destination)
+    );
+    assert!(!destination.exists());
+    assert!(shell.app().has_review_candidate());
+    assert_eq!(shell.app().canonical_digest(), active_digest);
+
+    std::fs::File::create(&source)
+        .unwrap()
+        .set_len(ketchup_core::persistence::MAX_NATIVE_DOCUMENT_BYTES as u64 + 1)
+        .unwrap();
     assert!(
         !shell
             .app_mut()
@@ -561,6 +675,35 @@ fn confirmed_legacy_migration_writes_and_activates_only_a_new_copy() {
             .disposition(),
         ketchup_core::persistence::LoadDisposition::EditableLossless
     );
+}
+
+#[test]
+fn recovered_migration_review_revalidates_the_recovery_source() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("recovered-legacy.ketchup");
+    let recovery = source.with_extension("ketchup.recovery");
+    let destination = directory.path().join("recovered-migrated.ketchup");
+    std::fs::write(&source, b"corrupt primary").unwrap();
+    std::fs::write(&recovery, lossy_legacy_document()).unwrap();
+    let script = ScriptedFileDialogs::new()
+        .queue_open(&source)
+        .always_discard();
+    let mut shell = Shell::with_dialogs(script);
+
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert!(shell.app().has_review_candidate());
+    std::fs::File::create(&recovery)
+        .unwrap()
+        .set_len(ketchup_core::persistence::MAX_NATIVE_DOCUMENT_BYTES as u64 + 1)
+        .unwrap();
+
+    assert!(
+        !shell
+            .app_mut()
+            .confirm_review_candidate_migration_to(&destination)
+    );
+    assert!(!destination.exists());
+    assert!(shell.app().has_review_candidate());
 }
 
 #[test]
@@ -973,6 +1116,104 @@ fn file_menu_exports_current_visible_exact_model_without_mutating_canonical_stat
 }
 
 #[test]
+fn file_menu_three_mf_export_is_localized_atomic_and_non_mutating() {
+    let _serial = EXACT_FILE_EXPORT_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let directory = tempfile::tempdir().unwrap();
+    let three_mf = directory.path().join("protected.3mf");
+    let loss = three_mf.with_extension("3mf.loss.txt");
+    let original_model = b"preserve 3MF until overwrite approval";
+    let original_loss = b"preserve 3MF loss report until overwrite approval";
+    std::fs::write(&three_mf, original_model).unwrap();
+    std::fs::write(&loss, original_loss).unwrap();
+    let script = ScriptedFileDialogs::new()
+        .queue_export(&three_mf)
+        .queue_export(&three_mf)
+        .queue_refused_high_risk()
+        .queue_high_risk_approval(121)
+        .queue_high_risk_approval(122)
+        .queue_high_risk_approval(123);
+    let mut shell = Shell::with_dialogs(script.clone());
+    arrange_one_visible_and_one_hidden_occurrence_with_redo(&mut shell);
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    wait_for_current_exact_body(&mut shell);
+    let before = canonical_state(&shell);
+    let history = reachable_history_digests(&mut shell);
+
+    shell.click_menu_command("menu-file", AppCommand::ExportPrintThreeMf);
+    assert_eq!(std::fs::read(&three_mf).unwrap(), original_model);
+    assert_eq!(std::fs::read(&loss).unwrap(), original_loss);
+    assert!(shell.app().last_side_effect_receipt().is_none());
+    assert_state_and_history_unchanged(&mut shell, &before, &history);
+
+    shell.click_menu_command("menu-file", AppCommand::ExportPrintThreeMf);
+    let package = std::fs::read(&three_mf).unwrap();
+    assert_eq!(&package[..4], b"PK\x03\x04");
+    assert!(
+        package
+            .windows(b"3D/3dmodel.model".len())
+            .any(|window| window == b"3D/3dmodel.model")
+    );
+    assert!(
+        package
+            .windows(b"unit=\"millimeter\"".len())
+            .any(|window| window == b"unit=\"millimeter\"")
+    );
+    let report = std::fs::read_to_string(&loss).unwrap();
+    assert!(report.contains("format=3MF Core 1.3 package"));
+    assert!(report.contains("hierarchy=canonical global groups"));
+    assert!(report.contains(&format!("source_digest={}", before.digest)));
+    assert!(digest_starts_like(&shell, "digest-exported-3mf"));
+    assert!(shell.app().last_side_effect_receipt().is_some());
+    assert_state_and_history_unchanged(&mut shell, &before, &history);
+
+    let requests = script.export_requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests.iter().all(|request| {
+        request.extension == "3mf"
+            && request.filter_label.to_ascii_lowercase().contains("3mf")
+            && request.suggested_name == "Untitled.3mf"
+    }));
+    let prompts = script.high_risk_prompts();
+    assert_eq!(prompts.len(), 4);
+    assert!(
+        prompts
+            .iter()
+            .all(|prompt| prompt.contains("Payload SHA-256:"))
+    );
+}
+
+#[test]
+fn file_menu_three_mf_export_refuses_mesh_only_scene_before_authorization() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../artifacts/blender/garden-studio-colored.glb");
+    let directory = tempfile::tempdir().unwrap();
+    let target = directory.path().join("blocked.3mf");
+    let script = ScriptedFileDialogs::new()
+        .queue_import(ImportFormat::Glb, &fixture)
+        .queue_export(&target)
+        .always_confirm_high_risk_as(131);
+    let mut shell = Shell::with_dialogs(script.clone());
+
+    shell.click_menu_command("menu-file", AppCommand::ImportBlenderGlb);
+    shell.click_button_label(&shell.catalog().text("dialog-import-glb-confirm"));
+    let before = canonical_state(&shell);
+    let history = reachable_history_digests(&mut shell);
+
+    shell.click_menu_command("menu-file", AppCommand::ExportPrintThreeMf);
+    assert!(!target.exists());
+    assert!(!target.with_extension("3mf.loss.txt").exists());
+    assert!(script.high_risk_prompts().is_empty());
+    assert!(shell.app().last_side_effect_receipt().is_none());
+    assert!(digest_starts_like(&shell, "error-export-3mf"));
+    assert_state_and_history_unchanged(&mut shell, &before, &history);
+}
+
+#[test]
 fn file_menu_step_export_requires_bound_overwrite_approval_without_canonical_mutation() {
     let _serial = EXACT_FILE_EXPORT_LOCK
         .lock()
@@ -1033,6 +1274,193 @@ fn file_menu_step_export_requires_bound_overwrite_approval_without_canonical_mut
         prompts
             .iter()
             .any(|prompt| prompt.contains(&loss.display().to_string()))
+    );
+}
+
+#[test]
+fn file_menu_iges_export_and_localized_import_are_bound_atomic_and_renderable() {
+    let _serial = EXACT_FILE_EXPORT_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let directory = tempfile::tempdir().unwrap();
+    let step_source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../corpora/r0/step/self-authored-box.step");
+    let import_source = directory.path().join("source.iges");
+    let cancelled = AtomicBool::new(false);
+    let mut inspector = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
+    inspector
+        .convert_step_to_iges_with_cancellation(&step_source, &import_source, &cancelled)
+        .unwrap();
+    let source_bytes = std::fs::read(&import_source).unwrap();
+    let source_evidence = inspector
+        .inspect_iges_import_with_cancellation(
+            &import_source,
+            &ketchup_core::graph::sha256_hex(&source_bytes),
+            &cancelled,
+        )
+        .unwrap();
+
+    let exported = directory.path().join("protected.iges");
+    let exported_loss = exported.with_extension("iges.loss.txt");
+    let original_export = b"preserve IGES until overwrite approval";
+    let original_loss = b"preserve IGES loss report until overwrite approval";
+    std::fs::write(&exported, original_export).unwrap();
+    std::fs::write(&exported_loss, original_loss).unwrap();
+    let export_dialogs = ScriptedFileDialogs::new()
+        .queue_import(ImportFormat::Step, &step_source)
+        .queue_export(&exported)
+        .queue_export(&exported)
+        .queue_refused_high_risk()
+        .queue_high_risk_approval(201)
+        .queue_high_risk_approval(202)
+        .queue_high_risk_approval(203);
+    let mut export_shell = Shell::with_dialogs(export_dialogs.clone());
+    export_shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    export_shell.click_at(export_shell.viewport_rect().center());
+    assert!(export_shell.app_mut().delete_selected());
+    export_shell.settle();
+    export_shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    export_shell.click_button_label(&export_shell.catalog().text("dialog-import-step-confirm"));
+    let export_feature = imported_exact_feature_id(&export_shell);
+    for _ in 0..100 {
+        export_shell.settle();
+        if export_shell.app().exact_current_producer_ids() == [export_feature] {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        export_shell.app().exact_current_producer_ids(),
+        [export_feature]
+    );
+    let export_before = canonical_state(&export_shell);
+    let export_history = reachable_history_digests(&mut export_shell);
+    for _ in 0..100 {
+        export_shell.settle();
+        if export_shell.app().exact_current_producer_ids() == [export_feature] {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        export_shell.app().exact_current_producer_ids(),
+        [export_feature]
+    );
+
+    export_shell.click_menu_command("menu-file", AppCommand::ExportExactIges);
+    assert_eq!(std::fs::read(&exported).unwrap(), original_export);
+    assert_eq!(std::fs::read(&exported_loss).unwrap(), original_loss);
+    assert_state_and_history_unchanged(&mut export_shell, &export_before, &export_history);
+    for _ in 0..100 {
+        export_shell.settle();
+        if export_shell.app().exact_current_producer_ids() == [export_feature] {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        export_shell.app().exact_current_producer_ids(),
+        [export_feature]
+    );
+
+    export_shell.click_menu_command("menu-file", AppCommand::ExportExactIges);
+    let exported_bytes = std::fs::read(&exported).unwrap();
+    assert_ne!(
+        exported_bytes,
+        original_export,
+        "IGES export failed with digest {:?}",
+        export_shell.app().action_digest()
+    );
+    let report = std::fs::read_to_string(&exported_loss).unwrap();
+    assert!(report.contains("format=IGES 5.3"));
+    assert!(report.contains("assembly_loss="));
+    assert!(report.contains(&format!("source_digest={}", export_before.digest)));
+    let exported_evidence = inspector
+        .inspect_iges_import_with_cancellation(
+            &exported,
+            &ketchup_core::graph::sha256_hex(&exported_bytes),
+            &cancelled,
+        )
+        .unwrap();
+    assert_eq!(exported_evidence.source_unit, ImportLengthUnit::Millimetre);
+    assert_eq!(exported_evidence.solid_count, 1);
+    assert_state_and_history_unchanged(&mut export_shell, &export_before, &export_history);
+    assert_eq!(export_dialogs.high_risk_prompts().len(), 4);
+
+    let import_dialogs = ScriptedFileDialogs::new()
+        .queue_import(ImportFormat::Iges, &import_source)
+        .queue_import(ImportFormat::Iges, &import_source);
+    let mut import_shell = Shell::with_catalog_and_dialogs(
+        ketchup_interaction::LocaleCatalog::slovak(),
+        import_dialogs.clone(),
+    );
+    import_shell.app_mut().enable_headless_instanced_scene();
+    import_shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    import_shell.click_at(import_shell.viewport_rect().center());
+    assert!(import_shell.app_mut().delete_selected());
+    import_shell.settle();
+    let import_before = canonical_state(&import_shell);
+    let import_history = reachable_history_digests(&mut import_shell);
+
+    import_shell.click_menu_command("menu-file", AppCommand::ImportExactIges);
+    let confirm = import_shell.catalog().text("dialog-import-iges-confirm");
+    assert!(import_shell.has_role_and_label(Role::Button, &confirm));
+    std::fs::write(&import_source, b"changed after IGES preview").unwrap();
+    import_shell.click_button_label(&confirm);
+    assert!(digest_starts_like(&import_shell, "error-import-iges"));
+    assert_state_and_history_unchanged(&mut import_shell, &import_before, &import_history);
+
+    std::fs::write(&import_source, &source_bytes).unwrap();
+    import_shell.click_menu_command("menu-file", AppCommand::ImportExactIges);
+    import_shell.click_button_label(&confirm);
+    assert_eq!(
+        import_shell.app().document_revision(),
+        import_before.revision + 1
+    );
+    assert_eq!(import_shell.app().import_receipt_count(), 1);
+    assert!(digest_starts_like(&import_shell, "digest-imported-iges"));
+    let imported_snapshot = import_shell.app().document_snapshot();
+    let receipt = imported_snapshot
+        .import_receipts()
+        .find(|receipt| receipt.format() == ImportFormat::Iges)
+        .unwrap();
+    assert_eq!(receipt.units().source_unit(), source_evidence.source_unit);
+    assert_eq!(
+        receipt.units().authority(),
+        ImportUnitAuthority::FileDeclared
+    );
+    let imported_feature = imported_exact_feature_id(&import_shell);
+    for _ in 0..100 {
+        import_shell.settle();
+        if import_shell.app().exact_current_producer_ids() == [imported_feature]
+            && import_shell.app().instanced_scene_triangle_count() > 0
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(import_shell.app().exact_render_body_count(), 1);
+    assert!(import_shell.app().exact_render_triangle_count() > 0);
+    assert_eq!(
+        import_dialogs.import_requests(),
+        vec![
+            ketchup_app::dialogs::ImportDialogRequestRecord {
+                format: ImportFormat::Iges,
+                filter_label: import_shell.catalog().text("file-filter-iges"),
+                extensions: vec!["iges".to_owned(), "igs".to_owned()],
+            },
+            ketchup_app::dialogs::ImportDialogRequestRecord {
+                format: ImportFormat::Iges,
+                filter_label: import_shell.catalog().text("file-filter-iges"),
+                extensions: vec!["iges".to_owned(), "igs".to_owned()],
+            },
+        ]
     );
 }
 
@@ -1269,15 +1697,16 @@ fn blender_mesh_exact_conversion_requires_review_and_one_confirmed_undo_step() {
     assert!(shell.app_mut().undo());
     let after_aba = canonical_state(&shell);
     let after_aba_history = reachable_history_digests(&mut shell);
-    shell.click_button_label(&shell.catalog().text("dialog-mesh-conversion-confirm"));
-    assert!(digest_starts_like(&shell, "error-mesh-conversion"));
+    assert!(!shell.has_visible_label(&shell.catalog().text("dialog-mesh-conversion-confirm")));
     assert_state_and_history_unchanged(&mut shell, &after_aba, &after_aba_history);
 
     assert!(shell.app_mut().headless_select_occurrence(occurrence_id));
     shell.settle();
     shell.click_menu_command("menu-model", AppCommand::ConvertSelectedMeshToExact);
     assert_eq!(canonical_state(&shell), after_aba);
-    shell.click_button_label(&shell.catalog().text("dialog-mesh-conversion-confirm"));
+    let confirm_label = shell.catalog().text("dialog-mesh-conversion-confirm");
+    wait_for_visible_label(&mut shell, &confirm_label);
+    shell.click_button_label(&confirm_label);
     assert!(shell.app().document_revision() > after_aba.revision);
     assert_eq!(shell.app().mesh_body_count(), after_aba.mesh_bodies - 1);
     assert_eq!(shell.app().undo_step_count(), after_aba.undo_steps + 1);
@@ -1877,6 +2306,90 @@ fn file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscre
             && diagnostic.subject() == Some("wrapper")
             && diagnostic.count() == 2
     }));
+}
+
+#[test]
+fn file_menu_dxf_export_is_layered_authorized_atomic_and_non_mutating_offscreen() {
+    let directory = tempfile::tempdir().unwrap();
+    let source_path = directory.path().join("profiles.dxf");
+    let exported_path = directory.path().join("round-trip.dxf");
+    let report_path = exported_path.with_extension("dxf.loss.txt");
+    std::fs::write(&source_path, valid_dxf_subset()).unwrap();
+    let script = ScriptedFileDialogs::new()
+        .queue_import(ImportFormat::Dxf, &source_path)
+        .queue_export(&exported_path)
+        .queue_export(&exported_path)
+        .always_confirm_high_risk_as(117);
+    let mut shell = Shell::with_dialogs(script.clone());
+    shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
+    shell.click_button_label(&shell.catalog().text("dialog-import-dxf-confirm"));
+    let before_export = canonical_state(&shell);
+
+    shell.click_menu_command("menu-file", AppCommand::ExportDrawingDxf);
+    assert_eq!(canonical_state(&shell), before_export);
+    let first_dxf = std::fs::read(&exported_path).unwrap();
+    let first_report = std::fs::read_to_string(&report_path).unwrap();
+    let inspected = inspect_dxf(&first_dxf, DxfImportOptions::new(None)).unwrap();
+    assert!(inspected.profiles().len() >= 24);
+    assert!(inspected.layers().iter().any(|layer| layer == "bores"));
+    assert!(inspected.layers().iter().any(|layer| layer == "hatches"));
+    assert!(first_report.contains("schema=ketchup.dxf-profile-export.v1"));
+    assert!(first_report.contains("unit=millimetre"));
+    assert!(first_report.contains("dwg=unsupported"));
+
+    std::fs::write(&exported_path, b"stale primary").unwrap();
+    std::fs::write(&report_path, b"stale report").unwrap();
+    shell.click_menu_command("menu-file", AppCommand::ExportDrawingDxf);
+    assert_eq!(canonical_state(&shell), before_export);
+    assert_eq!(std::fs::read(&exported_path).unwrap(), first_dxf);
+    assert_eq!(std::fs::read_to_string(&report_path).unwrap(), first_report);
+    assert_eq!(
+        script.export_requests(),
+        vec![
+            ketchup_app::dialogs::ExportRequestRecord {
+                filter_label: shell.catalog().text("file-filter-dxf"),
+                extension: "dxf".to_owned(),
+                suggested_name: "Untitled.dxf".to_owned(),
+            },
+            ketchup_app::dialogs::ExportRequestRecord {
+                filter_label: shell.catalog().text("file-filter-dxf"),
+                extension: "dxf".to_owned(),
+                suggested_name: "Untitled.dxf".to_owned(),
+            },
+        ]
+    );
+    let prompts = script.high_risk_prompts();
+    assert_eq!(prompts.len(), 4);
+    assert!(prompts[0].contains(&shell.catalog().text("dialog-export-dxf-title")));
+    assert!(prompts[0].contains(&shell.catalog().text("dialog-export-dxf-risk")));
+    assert!(prompts[2].contains(&shell.catalog().text("dialog-export-overwrite-title")));
+    assert!(prompts[3].contains(&shell.catalog().text("dialog-export-overwrite-title")));
+    assert!(digest_starts_like(&shell, "digest-exported-dxf"));
+}
+
+#[test]
+fn file_menu_refuses_native_dwg_without_preview_authorization_or_side_effects() {
+    let directory = tempfile::tempdir().unwrap();
+    let renamed_source = directory.path().join("renamed.dwg");
+    let destination = directory.path().join("misleading.dwg");
+    std::fs::write(&renamed_source, valid_dxf_subset()).unwrap();
+    let script = ScriptedFileDialogs::new()
+        .queue_import(ImportFormat::Dxf, &renamed_source)
+        .queue_export(&destination)
+        .always_confirm_high_risk_as(118);
+    let mut shell = Shell::with_dialogs(script.clone());
+    let before = canonical_state(&shell);
+
+    shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
+    assert_eq!(canonical_state(&shell), before);
+    assert!(digest_starts_like(&shell, "error-import-dxf"));
+
+    shell.click_menu_command("menu-file", AppCommand::ExportDrawingDxf);
+    assert_eq!(canonical_state(&shell), before);
+    assert!(digest_starts_like(&shell, "error-export-dxf"));
+    assert!(!destination.exists());
+    assert!(!destination.with_extension("dxf.loss.txt").exists());
+    assert!(script.high_risk_prompts().is_empty());
 }
 
 #[test]

@@ -4,7 +4,7 @@ mod harness;
 
 use eframe::egui::accesskit::Role;
 use harness::Shell;
-use ketchup_app::assistant_sidecar_command;
+use ketchup_app::private_assistant_launch;
 use ketchup_core::assistant_sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantBoxIntent, AssistantCapability, AssistantDistribution,
     AssistantHandshake, AssistantModelIntent, AssistantTranslationIntent,
@@ -24,7 +24,7 @@ fn timber(name: &str, size_mm: [f64; 3], origin_mm: [f64; 3]) -> AssistantBoxInt
 }
 
 fn live_verdict(context: &Value, expected_state: &str) -> Value {
-    let (program, arguments) = assistant_sidecar_command(AssistantDistribution::PrivateOauth)
+    let launch = private_assistant_launch()
         .expect("a production private OAuth binary must be configured for this opt-in test");
     let handshake = AssistantHandshake {
         protocol_version: ASSISTANT_PROTOCOL_VERSION,
@@ -39,9 +39,13 @@ fn live_verdict(context: &Value, expected_state: &str) -> Value {
             AssistantCapability::ProposeWorkflowIntent,
         ]),
     };
-    let mut client =
-        AssistantProcessClient::spawn(program, &arguments, handshake, Duration::from_secs(300))
-            .expect("the production handshake must succeed");
+    let mut client = AssistantProcessClient::spawn_isolated_with_cancellation(
+        &launch,
+        handshake,
+        Duration::from_secs(300),
+        ketchup_scheduler::assistant::AssistantCancellation::default(),
+    )
+    .expect("the production handshake must succeed");
     let exchange = client
         .chat_exchange(
             "live-gravity-support",

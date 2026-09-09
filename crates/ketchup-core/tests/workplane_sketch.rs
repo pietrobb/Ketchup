@@ -9,8 +9,9 @@ use ketchup_core::exact_product::{
 };
 use ketchup_core::persistence;
 use ketchup_core::sketch::{
-    MAX_SKETCH_CONSTRAINTS, MAX_SKETCH_ENTITIES, PrincipalPlane, SketchConstraint,
-    SketchConstraintId, SketchConstraintKind, SketchEntity, SketchEntityId, SketchError,
+    FeatureDirection, FeatureExtent, MAX_SKETCH_CONSTRAINTS, MAX_SKETCH_ENTITIES, PadSpec,
+    PrincipalPlane, SketchConstraint, SketchConstraintId, SketchConstraintKind,
+    SketchDiagnosticStatus, SketchEntity, SketchEntityId, SketchError, SketchOffsetSide,
     SketchPointKind, SketchPointRef, SketchSolveStatus, SketchSolverPolicy, SketchSpec,
     SolvedSketchRegionEdge, SolvedSketchRegionProfile, WorkplaneFrame, WorkplaneSpec,
     WorkplaneSupport, WorkplaneSupportHealth,
@@ -156,6 +157,17 @@ fn line_arc_and_circle_keep_stable_ids_and_report_deterministic_remaining_dof() 
         first.status,
         SketchSolveStatus::UnderConstrained { remaining_dof: 11 }
     );
+    assert_eq!(
+        first.unconstrained_entity_ids,
+        vec![SketchEntityId(1), SketchEntityId(2), SketchEntityId(3)]
+    );
+    let diagnostic = sketch.diagnose().unwrap();
+    assert_eq!(
+        diagnostic.status,
+        SketchDiagnosticStatus::UnderConstrained { remaining_dof: 11 }
+    );
+    assert_eq!(diagnostic.entity_ids, first.unconstrained_entity_ids);
+    assert!(diagnostic.constraint_ids.is_empty());
     assert_eq!(
         sketch
             .entities
@@ -612,6 +624,10 @@ fn unsatisfied_geometry_is_solved_deterministically_and_conflicts_fail_closed() 
         conflicting.solve(),
         Err(SketchError::OverConstrained(SketchConstraintId(1)))
     );
+    let diagnostic = conflicting.diagnose().unwrap();
+    assert_eq!(diagnostic.status, SketchDiagnosticStatus::Conflicting);
+    assert_eq!(diagnostic.constraint_ids, vec![SketchConstraintId(1)]);
+    assert_eq!(diagnostic.entity_ids, vec![SketchEntityId(1)]);
 }
 
 #[test]
@@ -1753,6 +1769,1738 @@ fn full_general_constraint_vocabulary_is_lossless_across_save_open() {
 }
 
 #[test]
+fn split_primitive_handles_line_arc_circle_and_cubic_bezier_deterministically() {
+    let cases = [
+        SketchEntity::Line {
+            id: SketchEntityId(1),
+            start_mm: [0.0, 0.0],
+            end_mm: [8.0, 4.0],
+        },
+        SketchEntity::Arc {
+            id: SketchEntityId(1),
+            start_mm: [5.0, 0.0],
+            end_mm: [-5.0, 0.0],
+            center_mm: [0.0, 0.0],
+            clockwise: false,
+        },
+        SketchEntity::Circle {
+            id: SketchEntityId(1),
+            center_mm: [2.0, 3.0],
+            radius_mm: 5.0,
+        },
+        SketchEntity::CubicBezier {
+            id: SketchEntityId(1),
+            start_mm: [0.0, 0.0],
+            control_1_mm: [0.0, 3.0],
+            control_2_mm: [3.0, 3.0],
+            end_mm: [3.0, 0.0],
+        },
+    ];
+
+    for (index, entity) in cases.into_iter().enumerate() {
+        let mut sketch = SketchSpec {
+            workplane: XY,
+            entities: vec![entity],
+            constraints: Vec::new(),
+        };
+        let joint_ids = if index == 2 {
+            vec![SketchConstraintId(1), SketchConstraintId(2)]
+        } else {
+            vec![SketchConstraintId(1)]
+        };
+        sketch
+            .split_entity(SketchEntityId(1), SketchEntityId(2), 0.5, &joint_ids)
+            .unwrap();
+        assert_eq!(sketch.entities.len(), 2);
+        assert_eq!(sketch.constraints.len(), joint_ids.len());
+        assert_eq!(sketch.solve().unwrap().entity_count, 2);
+        assert_eq!(
+            sketch
+                .constraints
+                .iter()
+                .map(|constraint| constraint.id)
+                .collect::<Vec<_>>(),
+            joint_ids
+        );
+
+        match index {
+            0 => assert_eq!(
+                sketch.entities,
+                vec![
+                    SketchEntity::Line {
+                        id: SketchEntityId(1),
+                        start_mm: [0.0, 0.0],
+                        end_mm: [4.0, 2.0],
+                    },
+                    SketchEntity::Line {
+                        id: SketchEntityId(2),
+                        start_mm: [4.0, 2.0],
+                        end_mm: [8.0, 4.0],
+                    },
+                ]
+            ),
+            1 => {
+                let SketchEntity::Arc { end_mm, .. } = sketch.entities[0] else {
+                    panic!("expected first arc")
+                };
+                assert!(end_mm[0].abs() < 1.0e-12);
+                assert!((end_mm[1] - 5.0).abs() < 1.0e-12);
+                let SketchEntity::Arc { start_mm, .. } = sketch.entities[1] else {
+                    panic!("expected second arc")
+                };
+                assert_eq!(start_mm, end_mm);
+            }
+            2 => {
+                assert!(
+                    sketch
+                        .entities
+                        .iter()
+                        .all(|entity| matches!(entity, SketchEntity::Arc { .. }))
+                );
+                let regions = sketch.solved_regions().unwrap();
+                assert_eq!(regions.len(), 1);
+                assert_eq!(
+                    regions[0].entity_ids,
+                    vec![SketchEntityId(1), SketchEntityId(2)]
+                );
+            }
+            3 => assert_eq!(
+                sketch.entities,
+                vec![
+                    SketchEntity::CubicBezier {
+                        id: SketchEntityId(1),
+                        start_mm: [0.0, 0.0],
+                        control_1_mm: [0.0, 1.5],
+                        control_2_mm: [0.75, 2.25],
+                        end_mm: [1.5, 2.25],
+                    },
+                    SketchEntity::CubicBezier {
+                        id: SketchEntityId(2),
+                        start_mm: [1.5, 2.25],
+                        control_1_mm: [2.25, 2.25],
+                        control_2_mm: [3.0, 1.5],
+                        end_mm: [3.0, 0.0],
+                    },
+                ]
+            ),
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[test]
+fn trim_primitive_keeps_exact_subcurves_for_every_sketch_entity_kind() {
+    let cases = [
+        SketchEntity::Line {
+            id: SketchEntityId(1),
+            start_mm: [0.0, 0.0],
+            end_mm: [8.0, 4.0],
+        },
+        SketchEntity::Arc {
+            id: SketchEntityId(1),
+            start_mm: [5.0, 0.0],
+            end_mm: [-5.0, 0.0],
+            center_mm: [0.0, 0.0],
+            clockwise: false,
+        },
+        SketchEntity::Circle {
+            id: SketchEntityId(1),
+            center_mm: [2.0, 3.0],
+            radius_mm: 5.0,
+        },
+        SketchEntity::CubicBezier {
+            id: SketchEntityId(1),
+            start_mm: [0.0, 0.0],
+            control_1_mm: [0.0, 3.0],
+            control_2_mm: [3.0, 3.0],
+            end_mm: [3.0, 0.0],
+        },
+    ];
+
+    for (index, entity) in cases.into_iter().enumerate() {
+        let mut sketch = SketchSpec {
+            workplane: XY,
+            entities: vec![entity],
+            constraints: Vec::new(),
+        };
+        sketch.trim_entity(SketchEntityId(1), 0.25, 0.75).unwrap();
+        assert_eq!(sketch.entities[0].id(), SketchEntityId(1));
+        assert_eq!(sketch.solve().unwrap().entity_count, 1);
+        match &sketch.entities[0] {
+            SketchEntity::Line {
+                start_mm, end_mm, ..
+            } if index == 0 => {
+                assert_eq!(*start_mm, [2.0, 1.0]);
+                assert_eq!(*end_mm, [6.0, 3.0]);
+            }
+            SketchEntity::Arc {
+                start_mm, end_mm, ..
+            } if index == 1 => {
+                let expected = 5.0 / 2.0_f64.sqrt();
+                assert!((start_mm[0] - expected).abs() < 1.0e-12);
+                assert!((start_mm[1] - expected).abs() < 1.0e-12);
+                assert!((end_mm[0] + expected).abs() < 1.0e-12);
+                assert!((end_mm[1] - expected).abs() < 1.0e-12);
+            }
+            SketchEntity::Arc {
+                start_mm, end_mm, ..
+            } if index == 2 => {
+                assert!((start_mm[0] - 2.0).abs() < 1.0e-12);
+                assert!((start_mm[1] - 8.0).abs() < 1.0e-12);
+                assert!((end_mm[0] - 2.0).abs() < 1.0e-12);
+                assert!((end_mm[1] + 2.0).abs() < 1.0e-12);
+            }
+            SketchEntity::CubicBezier {
+                start_mm, end_mm, ..
+            } if index == 3 => {
+                assert_eq!(*start_mm, [0.46875, 1.6875]);
+                assert_eq!(*end_mm, [2.53125, 1.6875]);
+            }
+            _ => panic!("unexpected trimmed entity kind"),
+        }
+    }
+}
+
+#[test]
+fn canonical_trim_is_atomic_persistent_and_rejects_removed_constraints() {
+    let sketch = SketchSpec {
+        workplane: XY,
+        entities: vec![SketchEntity::Line {
+            id: SketchEntityId(1),
+            start_mm: [0.0, 0.0],
+            end_mm: [10.0, 0.0],
+        }],
+        constraints: Vec::new(),
+    };
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Trim part".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: XY,
+                definition_id: DEFINITION,
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: SKETCH,
+                definition_id: DEFINITION,
+                name: "Trimmable sketch".into(),
+                kind: FeatureKind::Sketch(sketch),
+            },
+        ]))
+        .unwrap();
+    let before = document.current().canonical_digest();
+    let trim_batch = CommandBatch::new(vec![CanonicalCommand::TrimSketchEntity {
+        id: SKETCH,
+        entity_id: SketchEntityId(1),
+        start_parameter: 0.2,
+        end_parameter: 1.0,
+    }]);
+    let proposal = document.prepare_proposal(trim_batch).unwrap();
+    assert_eq!(document.current().canonical_digest(), before);
+    document.commit_proposal(&proposal).unwrap();
+    let committed = document.current();
+    let committed_digest = committed.canonical_digest();
+    assert_ne!(committed_digest, before);
+    let FeatureKind::Sketch(committed_sketch) = committed.feature(SKETCH).unwrap().kind() else {
+        panic!("expected trimmed sketch")
+    };
+    assert_eq!(
+        committed_sketch.entities,
+        vec![SketchEntity::Line {
+            id: SketchEntityId(1),
+            start_mm: [2.0, 0.0],
+            end_mm: [10.0, 0.0],
+        }]
+    );
+    let bytes = persistence::save(&committed);
+    let reopened = persistence::load(&bytes).unwrap().snapshot();
+    assert_eq!(reopened.canonical_digest(), committed_digest);
+    assert_eq!(persistence::save(&reopened), bytes);
+    assert_eq!(document.undo().unwrap().canonical_digest(), before);
+    assert_eq!(
+        document.redo().unwrap().canonical_digest(),
+        committed_digest
+    );
+
+    let constrained = SketchSpec {
+        workplane: XY,
+        entities: vec![SketchEntity::Line {
+            id: SketchEntityId(1),
+            start_mm: [0.0, 0.0],
+            end_mm: [10.0, 0.0],
+        }],
+        constraints: vec![SketchConstraint {
+            id: SketchConstraintId(1),
+            kind: SketchConstraintKind::FixedPoint {
+                point: point(1, SketchPointKind::Start),
+                position_mm: [0.0, 0.0],
+            },
+        }],
+    };
+    for (start, end, expected) in [
+        (0.0, 1.0, SketchError::InvalidTrimInterval),
+        (0.5, 0.5, SketchError::InvalidTrimInterval),
+        (f64::NAN, 0.5, SketchError::InvalidTrimInterval),
+        (0.25, 1.0, SketchError::AmbiguousTrimConstraint),
+    ] {
+        let mut rejected = constrained.clone();
+        assert_eq!(
+            rejected.trim_entity(SketchEntityId(1), start, end),
+            Err(expected)
+        );
+        assert_eq!(rejected, constrained);
+    }
+    let mut missing = constrained.clone();
+    assert_eq!(
+        missing.trim_entity(SketchEntityId(99), 0.0, 0.5),
+        Err(SketchError::EntityNotFound(SketchEntityId(99)))
+    );
+    assert_eq!(missing, constrained);
+}
+
+#[test]
+fn extend_primitive_extrapolates_open_curves_and_preserves_the_opposite_endpoint() {
+    let cases = [
+        SketchEntity::Line {
+            id: SketchEntityId(1),
+            start_mm: [0.0, 0.0],
+            end_mm: [10.0, 0.0],
+        },
+        SketchEntity::Arc {
+            id: SketchEntityId(1),
+            start_mm: [5.0, 0.0],
+            end_mm: [-5.0, 0.0],
+            center_mm: [0.0, 0.0],
+            clockwise: false,
+        },
+        SketchEntity::CubicBezier {
+            id: SketchEntityId(1),
+            start_mm: [0.0, 0.0],
+            control_1_mm: [0.0, 3.0],
+            control_2_mm: [3.0, 3.0],
+            end_mm: [3.0, 0.0],
+        },
+    ];
+    for (index, entity) in cases.into_iter().enumerate() {
+        let original_start = match entity {
+            SketchEntity::Line { start_mm, .. }
+            | SketchEntity::Arc { start_mm, .. }
+            | SketchEntity::CubicBezier { start_mm, .. } => start_mm,
+            SketchEntity::Circle { .. } => unreachable!(),
+        };
+        let mut sketch = SketchSpec {
+            workplane: XY,
+            entities: vec![entity],
+            constraints: Vec::new(),
+        };
+        sketch
+            .extend_entity(SketchEntityId(1), SketchPointKind::End, 1.5)
+            .unwrap();
+        assert_eq!(sketch.entities[0].id(), SketchEntityId(1));
+        match &sketch.entities[0] {
+            SketchEntity::Line {
+                start_mm, end_mm, ..
+            } if index == 0 => {
+                assert_eq!(*start_mm, original_start);
+                assert_eq!(*end_mm, [15.0, 0.0]);
+            }
+            SketchEntity::Arc {
+                start_mm, end_mm, ..
+            } if index == 1 => {
+                assert_eq!(*start_mm, original_start);
+                assert!(end_mm[0].abs() < 1.0e-12);
+                assert!((end_mm[1] + 5.0).abs() < 1.0e-12);
+            }
+            SketchEntity::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+                ..
+            } if index == 2 => {
+                assert_eq!(*start_mm, original_start);
+                assert_eq!(*control_1_mm, [0.0, 4.5]);
+                assert_eq!(*control_2_mm, [6.75, 2.25]);
+                assert_eq!(*end_mm, [0.0, -6.75]);
+            }
+            _ => panic!("unexpected extended entity kind"),
+        }
+    }
+}
+
+#[test]
+fn canonical_extend_is_reviewed_persistent_and_fails_closed() {
+    let sketch = SketchSpec {
+        workplane: XY,
+        entities: vec![SketchEntity::Line {
+            id: SketchEntityId(1),
+            start_mm: [0.0, 0.0],
+            end_mm: [10.0, 0.0],
+        }],
+        constraints: Vec::new(),
+    };
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Extend part".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: XY,
+                definition_id: DEFINITION,
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: SKETCH,
+                definition_id: DEFINITION,
+                name: "Extendable sketch".into(),
+                kind: FeatureKind::Sketch(sketch),
+            },
+        ]))
+        .unwrap();
+    let before = document.current().canonical_digest();
+    let proposal = document
+        .prepare_proposal(CommandBatch::new(vec![
+            CanonicalCommand::ExtendSketchEntity {
+                id: SKETCH,
+                entity_id: SketchEntityId(1),
+                endpoint: SketchPointKind::Start,
+                parameter: -0.5,
+            },
+        ]))
+        .unwrap();
+    assert_eq!(document.current().canonical_digest(), before);
+    document.commit_proposal(&proposal).unwrap();
+    let committed = document.current();
+    let committed_digest = committed.canonical_digest();
+    let FeatureKind::Sketch(committed_sketch) = committed.feature(SKETCH).unwrap().kind() else {
+        panic!("expected extended sketch")
+    };
+    assert_eq!(
+        committed_sketch.entities,
+        vec![SketchEntity::Line {
+            id: SketchEntityId(1),
+            start_mm: [-5.0, 0.0],
+            end_mm: [10.0, 0.0],
+        }]
+    );
+    let bytes = persistence::save(&committed);
+    let reopened = persistence::load(&bytes).unwrap().snapshot();
+    assert_eq!(reopened.canonical_digest(), committed_digest);
+    assert_eq!(persistence::save(&reopened), bytes);
+    assert_eq!(document.undo().unwrap().canonical_digest(), before);
+    assert_eq!(
+        document.redo().unwrap().canonical_digest(),
+        committed_digest
+    );
+
+    let mut circle = SketchSpec {
+        workplane: XY,
+        entities: vec![SketchEntity::Circle {
+            id: SketchEntityId(1),
+            center_mm: [0.0, 0.0],
+            radius_mm: 5.0,
+        }],
+        constraints: Vec::new(),
+    };
+    let circle_before = circle.clone();
+    assert_eq!(
+        circle.extend_entity(SketchEntityId(1), SketchPointKind::End, 2.0),
+        Err(SketchError::UnsupportedExtendEntity(SketchEntityId(1)))
+    );
+    assert_eq!(circle, circle_before);
+
+    let constrained = SketchSpec {
+        workplane: XY,
+        entities: vec![SketchEntity::Line {
+            id: SketchEntityId(1),
+            start_mm: [0.0, 0.0],
+            end_mm: [10.0, 0.0],
+        }],
+        constraints: vec![SketchConstraint {
+            id: SketchConstraintId(1),
+            kind: SketchConstraintKind::FixedPoint {
+                point: point(1, SketchPointKind::End),
+                position_mm: [10.0, 0.0],
+            },
+        }],
+    };
+    for (endpoint, parameter, expected) in [
+        (
+            SketchPointKind::End,
+            0.5,
+            SketchError::InvalidExtendParameter,
+        ),
+        (
+            SketchPointKind::Center,
+            2.0,
+            SketchError::InvalidExtendParameter,
+        ),
+        (
+            SketchPointKind::End,
+            f64::NAN,
+            SketchError::InvalidExtendParameter,
+        ),
+        (
+            SketchPointKind::End,
+            1.5,
+            SketchError::AmbiguousExtendConstraint,
+        ),
+    ] {
+        let mut rejected = constrained.clone();
+        assert_eq!(
+            rejected.extend_entity(SketchEntityId(1), endpoint, parameter),
+            Err(expected)
+        );
+        assert_eq!(rejected, constrained);
+    }
+}
+
+#[test]
+fn canonical_split_remaps_endpoint_constraint_and_survives_undo_redo_and_save_open() {
+    let sketch = SketchSpec {
+        workplane: XY,
+        entities: vec![SketchEntity::Line {
+            id: SketchEntityId(1),
+            start_mm: [0.0, 0.0],
+            end_mm: [10.0, 0.0],
+        }],
+        constraints: vec![SketchConstraint {
+            id: SketchConstraintId(1),
+            kind: SketchConstraintKind::FixedPoint {
+                point: point(1, SketchPointKind::End),
+                position_mm: [10.0, 0.0],
+            },
+        }],
+    };
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Split part".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: XY,
+                definition_id: DEFINITION,
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: SKETCH,
+                definition_id: DEFINITION,
+                name: "Editable sketch".into(),
+                kind: FeatureKind::Sketch(sketch),
+            },
+        ]))
+        .unwrap();
+    let before = document.current().canonical_digest();
+    let split = CommandBatch::new(vec![CanonicalCommand::SplitSketchEntity {
+        id: SKETCH,
+        entity_id: SketchEntityId(1),
+        new_entity_id: SketchEntityId(2),
+        parameter: 0.25,
+        joint_constraint_ids: vec![SketchConstraintId(2)],
+    }]);
+    document.apply_batch(&split).unwrap();
+    let committed = document.current();
+    let committed_digest = committed.canonical_digest();
+    assert_ne!(committed_digest, before);
+    let FeatureKind::Sketch(committed_sketch) = committed.feature(SKETCH).unwrap().kind() else {
+        panic!("expected split sketch")
+    };
+    assert_eq!(committed_sketch.entities.len(), 2);
+    assert!(matches!(
+        committed_sketch.constraints[0].kind,
+        SketchConstraintKind::FixedPoint {
+            point: SketchPointRef {
+                entity: SketchEntityId(2),
+                point: SketchPointKind::End,
+            },
+            ..
+        }
+    ));
+    let bytes = persistence::save(&committed);
+    let reopened = persistence::load(&bytes).unwrap().snapshot();
+    assert_eq!(reopened.canonical_digest(), committed_digest);
+    assert_eq!(persistence::save(&reopened), bytes);
+    assert_eq!(document.undo().unwrap().canonical_digest(), before);
+    assert_eq!(
+        document.redo().unwrap().canonical_digest(),
+        committed_digest
+    );
+}
+
+#[test]
+fn invalid_or_ambiguous_split_fails_without_mutation() {
+    let mut constrained = SketchSpec {
+        workplane: XY,
+        entities: vec![SketchEntity::Line {
+            id: SketchEntityId(1),
+            start_mm: [0.0, 0.0],
+            end_mm: [10.0, 0.0],
+        }],
+        constraints: vec![SketchConstraint {
+            id: SketchConstraintId(1),
+            kind: SketchConstraintKind::Horizontal {
+                entity: SketchEntityId(1),
+            },
+        }],
+    };
+    let original = constrained.clone();
+    assert_eq!(
+        constrained.split_entity(
+            SketchEntityId(1),
+            SketchEntityId(2),
+            0.5,
+            &[SketchConstraintId(2)],
+        ),
+        Err(SketchError::AmbiguousSplitConstraint)
+    );
+    assert_eq!(constrained, original);
+
+    for (parameter, joint_ids) in [
+        (f64::NAN, vec![SketchConstraintId(2)]),
+        (0.5, Vec::new()),
+        (0.5, vec![SketchConstraintId(2), SketchConstraintId(2)]),
+    ] {
+        let mut rejected = original.clone();
+        assert!(
+            rejected
+                .split_entity(SketchEntityId(1), SketchEntityId(2), parameter, &joint_ids,)
+                .is_err()
+        );
+        assert_eq!(rejected, original);
+    }
+    let mut entity_limited = SketchSpec {
+        workplane: XY,
+        entities: (1..=MAX_SKETCH_ENTITIES as u64)
+            .map(|id| SketchEntity::Line {
+                id: SketchEntityId(id),
+                start_mm: [id as f64, 0.0],
+                end_mm: [id as f64, 1.0],
+            })
+            .collect(),
+        constraints: Vec::new(),
+    };
+    let limited_before = entity_limited.clone();
+    assert_eq!(
+        entity_limited.split_entity(
+            SketchEntityId(1),
+            SketchEntityId(MAX_SKETCH_ENTITIES as u64 + 1),
+            0.5,
+            &[SketchConstraintId(1)],
+        ),
+        Err(SketchError::ResourceLimit)
+    );
+    assert_eq!(entity_limited, limited_before);
+
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Rejected split".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: XY,
+                definition_id: DEFINITION,
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: SKETCH,
+                definition_id: DEFINITION,
+                name: "Constrained sketch".into(),
+                kind: FeatureKind::Sketch(original),
+            },
+        ]))
+        .unwrap();
+    let before = document.current().canonical_digest();
+    for command in [
+        CanonicalCommand::SplitSketchEntity {
+            id: SKETCH,
+            entity_id: SketchEntityId(1),
+            new_entity_id: SketchEntityId(2),
+            parameter: 0.0,
+            joint_constraint_ids: vec![SketchConstraintId(2)],
+        },
+        CanonicalCommand::SplitSketchEntity {
+            id: SKETCH,
+            entity_id: SketchEntityId(1),
+            new_entity_id: SketchEntityId(1),
+            parameter: 0.5,
+            joint_constraint_ids: vec![SketchConstraintId(2)],
+        },
+        CanonicalCommand::SplitSketchEntity {
+            id: SKETCH,
+            entity_id: SketchEntityId(99),
+            new_entity_id: SketchEntityId(2),
+            parameter: 0.5,
+            joint_constraint_ids: vec![SketchConstraintId(2)],
+        },
+    ] {
+        assert!(
+            document
+                .apply_batch(&CommandBatch::new(vec![command]))
+                .is_err()
+        );
+        assert_eq!(document.current().canonical_digest(), before);
+        assert_eq!(document.visible_undo_steps(), 1);
+    }
+}
+
+#[test]
+fn offset_primitive_creates_stable_parallel_entities_for_every_sketch_entity_kind() {
+    let cases = [
+        SketchEntity::Line {
+            id: SketchEntityId(1),
+            start_mm: [0.0, 0.0],
+            end_mm: [10.0, 0.0],
+        },
+        SketchEntity::Arc {
+            id: SketchEntityId(1),
+            start_mm: [5.0, 0.0],
+            end_mm: [0.0, 5.0],
+            center_mm: [0.0, 0.0],
+            clockwise: false,
+        },
+        SketchEntity::Circle {
+            id: SketchEntityId(1),
+            center_mm: [2.0, 3.0],
+            radius_mm: 5.0,
+        },
+        SketchEntity::CubicBezier {
+            id: SketchEntityId(1),
+            start_mm: [0.0, 0.0],
+            control_1_mm: [3.0, 0.0],
+            control_2_mm: [7.0, 0.0],
+            end_mm: [10.0, 0.0],
+        },
+    ];
+
+    for (index, source) in cases.into_iter().enumerate() {
+        let mut sketch = SketchSpec {
+            workplane: XY,
+            entities: vec![source.clone()],
+            constraints: Vec::new(),
+        };
+        sketch
+            .offset_entity(
+                SketchEntityId(1),
+                SketchEntityId(2),
+                2.0,
+                SketchOffsetSide::Left,
+            )
+            .unwrap();
+        assert_eq!(sketch.entities[0], source);
+        assert_eq!(sketch.entities[1].id(), SketchEntityId(2));
+        assert_eq!(sketch.solve().unwrap().entity_count, 2);
+        match &sketch.entities[1] {
+            SketchEntity::Line {
+                start_mm, end_mm, ..
+            } if index == 0 => {
+                assert_eq!(*start_mm, [0.0, 2.0]);
+                assert_eq!(*end_mm, [10.0, 2.0]);
+            }
+            SketchEntity::Arc {
+                start_mm, end_mm, ..
+            } if index == 1 => {
+                assert!((start_mm[0] - 3.0).abs() < 1.0e-12);
+                assert!(start_mm[1].abs() < 1.0e-12);
+                assert!(end_mm[0].abs() < 1.0e-12);
+                assert!((end_mm[1] - 3.0).abs() < 1.0e-12);
+            }
+            SketchEntity::Circle { radius_mm, .. } if index == 2 => {
+                assert_eq!(*radius_mm, 3.0);
+            }
+            SketchEntity::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+                ..
+            } if index == 3 => {
+                for point in [start_mm, control_1_mm, control_2_mm, end_mm] {
+                    assert!((point[1] - 2.0).abs() < 1.0e-12);
+                }
+                assert!((start_mm[0] - 0.0).abs() < 1.0e-12);
+                assert!((control_1_mm[0] - 3.0).abs() < 1.0e-12);
+                assert!((control_2_mm[0] - 7.0).abs() < 1.0e-12);
+                assert!((end_mm[0] - 10.0).abs() < 1.0e-12);
+            }
+            _ => panic!("unexpected offset entity kind"),
+        }
+    }
+}
+
+#[test]
+fn canonical_offset_is_reviewed_persistent_and_preserves_source_constraints() {
+    let sketch = SketchSpec {
+        workplane: XY,
+        entities: vec![SketchEntity::Line {
+            id: SketchEntityId(1),
+            start_mm: [0.0, 0.0],
+            end_mm: [10.0, 0.0],
+        }],
+        constraints: vec![SketchConstraint {
+            id: SketchConstraintId(1),
+            kind: SketchConstraintKind::Horizontal {
+                entity: SketchEntityId(1),
+            },
+        }],
+    };
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Offset part".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: XY,
+                definition_id: DEFINITION,
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: SKETCH,
+                definition_id: DEFINITION,
+                name: "Offsettable sketch".into(),
+                kind: FeatureKind::Sketch(sketch),
+            },
+        ]))
+        .unwrap();
+    let before = document.current().canonical_digest();
+    let proposal = document
+        .prepare_proposal(CommandBatch::new(vec![
+            CanonicalCommand::OffsetSketchEntity {
+                id: SKETCH,
+                entity_id: SketchEntityId(1),
+                new_entity_id: SketchEntityId(2),
+                distance_mm: 3.0,
+                side: SketchOffsetSide::Right,
+            },
+        ]))
+        .unwrap();
+    assert_eq!(document.current().canonical_digest(), before);
+    document.commit_proposal(&proposal).unwrap();
+    let committed = document.current();
+    let committed_digest = committed.canonical_digest();
+    assert_ne!(committed_digest, before);
+    let FeatureKind::Sketch(committed_sketch) = committed.feature(SKETCH).unwrap().kind() else {
+        panic!("expected offset sketch")
+    };
+    assert_eq!(committed_sketch.constraints.len(), 1);
+    assert_eq!(
+        committed_sketch.entities[1],
+        SketchEntity::Line {
+            id: SketchEntityId(2),
+            start_mm: [0.0, -3.0],
+            end_mm: [10.0, -3.0],
+        }
+    );
+    let bytes = persistence::save(&committed);
+    let reopened = persistence::load(&bytes).unwrap().snapshot();
+    assert_eq!(reopened.canonical_digest(), committed_digest);
+    assert_eq!(persistence::save(&reopened), bytes);
+    assert_eq!(document.undo().unwrap().canonical_digest(), before);
+    assert_eq!(
+        document.redo().unwrap().canonical_digest(),
+        committed_digest
+    );
+    let undo_steps = document.visible_undo_steps();
+    assert!(
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::OffsetSketchEntity {
+                    id: SKETCH,
+                    entity_id: SketchEntityId(1),
+                    new_entity_id: SketchEntityId(2),
+                    distance_mm: 1.0,
+                    side: SketchOffsetSide::Left,
+                },
+            ]))
+            .is_err()
+    );
+    assert_eq!(document.current().canonical_digest(), committed_digest);
+    assert_eq!(document.visible_undo_steps(), undo_steps);
+}
+
+#[test]
+fn invalid_or_ambiguous_offset_fails_without_mutation() {
+    let source = SketchSpec {
+        workplane: XY,
+        entities: vec![SketchEntity::Circle {
+            id: SketchEntityId(1),
+            center_mm: [0.0, 0.0],
+            radius_mm: 5.0,
+        }],
+        constraints: Vec::new(),
+    };
+    for (new_id, distance, expected) in [
+        (
+            SketchEntityId(2),
+            f64::NAN,
+            SketchError::InvalidOffsetDistance,
+        ),
+        (SketchEntityId(2), 0.0, SketchError::InvalidOffsetDistance),
+        (SketchEntityId(2), -1.0, SketchError::InvalidOffsetDistance),
+        (
+            SketchEntityId(1),
+            1.0,
+            SketchError::EntityIdCollision(SketchEntityId(1)),
+        ),
+        (SketchEntityId(2), 5.0, SketchError::AmbiguousOffset),
+    ] {
+        let mut rejected = source.clone();
+        assert_eq!(
+            rejected.offset_entity(SketchEntityId(1), new_id, distance, SketchOffsetSide::Left,),
+            Err(expected)
+        );
+        assert_eq!(rejected, source);
+    }
+    let mut missing = source.clone();
+    assert_eq!(
+        missing.offset_entity(
+            SketchEntityId(99),
+            SketchEntityId(2),
+            1.0,
+            SketchOffsetSide::Left,
+        ),
+        Err(SketchError::EntityNotFound(SketchEntityId(99)))
+    );
+    assert_eq!(missing, source);
+
+    let mut cusp = SketchSpec {
+        workplane: XY,
+        entities: vec![SketchEntity::CubicBezier {
+            id: SketchEntityId(1),
+            start_mm: [0.0, 0.0],
+            control_1_mm: [0.0, 0.0],
+            control_2_mm: [1.0, 1.0],
+            end_mm: [2.0, 0.0],
+        }],
+        constraints: Vec::new(),
+    };
+    let cusp_before = cusp.clone();
+    assert_eq!(
+        cusp.offset_entity(
+            SketchEntityId(1),
+            SketchEntityId(2),
+            1.0,
+            SketchOffsetSide::Right,
+        ),
+        Err(SketchError::AmbiguousOffset)
+    );
+    assert_eq!(cusp, cusp_before);
+
+    let mut limited = SketchSpec {
+        workplane: XY,
+        entities: (1..=MAX_SKETCH_ENTITIES as u64)
+            .map(|id| SketchEntity::Line {
+                id: SketchEntityId(id),
+                start_mm: [id as f64, 0.0],
+                end_mm: [id as f64, 1.0],
+            })
+            .collect(),
+        constraints: Vec::new(),
+    };
+    let limited_before = limited.clone();
+    assert_eq!(
+        limited.offset_entity(
+            SketchEntityId(1),
+            SketchEntityId(MAX_SKETCH_ENTITIES as u64 + 1),
+            1.0,
+            SketchOffsetSide::Left,
+        ),
+        Err(SketchError::ResourceLimit)
+    );
+    assert_eq!(limited, limited_before);
+}
+
+#[test]
+fn canonical_join_merges_compatible_curves_and_fails_closed() {
+    let lerp =
+        |a: [f64; 2], b: [f64; 2], t: f64| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    let cubic = [[0.0, 10.0], [2.0, 14.0], [6.0, 14.0], [8.0, 10.0]];
+    let parameter = 0.4;
+    let p01 = lerp(cubic[0], cubic[1], parameter);
+    let p12 = lerp(cubic[1], cubic[2], parameter);
+    let p23 = lerp(cubic[2], cubic[3], parameter);
+    let p012 = lerp(p01, p12, parameter);
+    let p123 = lerp(p12, p23, parameter);
+    let cubic_joint = lerp(p012, p123, parameter);
+    let sketch = SketchSpec {
+        workplane: XY,
+        entities: vec![
+            SketchEntity::Line {
+                id: SketchEntityId(1),
+                start_mm: [0.0, 0.0],
+                end_mm: [1.0, 0.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(2),
+                start_mm: [1.0, 0.0],
+                end_mm: [3.0, 0.0],
+            },
+            SketchEntity::Arc {
+                id: SketchEntityId(3),
+                start_mm: [1.0, 0.0],
+                end_mm: [0.0, 1.0],
+                center_mm: [0.0, 0.0],
+                clockwise: false,
+            },
+            SketchEntity::Arc {
+                id: SketchEntityId(4),
+                start_mm: [0.0, 1.0],
+                end_mm: [-1.0, 0.0],
+                center_mm: [0.0, 0.0],
+                clockwise: false,
+            },
+            SketchEntity::CubicBezier {
+                id: SketchEntityId(5),
+                start_mm: cubic[0],
+                control_1_mm: p01,
+                control_2_mm: p012,
+                end_mm: cubic_joint,
+            },
+            SketchEntity::CubicBezier {
+                id: SketchEntityId(6),
+                start_mm: cubic_joint,
+                control_1_mm: p123,
+                control_2_mm: p23,
+                end_mm: cubic[3],
+            },
+            SketchEntity::Circle {
+                id: SketchEntityId(7),
+                center_mm: [20.0, 20.0],
+                radius_mm: 2.0,
+            },
+        ],
+        constraints: vec![
+            SketchConstraint {
+                id: SketchConstraintId(10),
+                kind: SketchConstraintKind::Coincident {
+                    a: point(1, SketchPointKind::End),
+                    b: point(2, SketchPointKind::Start),
+                },
+            },
+            SketchConstraint {
+                id: SketchConstraintId(11),
+                kind: SketchConstraintKind::FixedPoint {
+                    point: point(2, SketchPointKind::End),
+                    position_mm: [3.0, 0.0],
+                },
+            },
+            SketchConstraint {
+                id: SketchConstraintId(12),
+                kind: SketchConstraintKind::Coincident {
+                    a: point(3, SketchPointKind::End),
+                    b: point(4, SketchPointKind::Start),
+                },
+            },
+            SketchConstraint {
+                id: SketchConstraintId(13),
+                kind: SketchConstraintKind::Coincident {
+                    a: point(5, SketchPointKind::End),
+                    b: point(6, SketchPointKind::Start),
+                },
+            },
+        ],
+    };
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Joined curves".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: XY,
+                definition_id: DEFINITION,
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: SKETCH,
+                definition_id: DEFINITION,
+                name: "Join sketch".into(),
+                kind: FeatureKind::Sketch(sketch),
+            },
+        ]))
+        .unwrap();
+    document.discard_history_before_current();
+    let before = document.current().canonical_digest();
+    let batch = CommandBatch::new(vec![
+        CanonicalCommand::JoinSketchEntities {
+            id: SKETCH,
+            source_entity_id: SketchEntityId(1),
+            source_endpoint: SketchPointKind::End,
+            consumed_entity_id: SketchEntityId(2),
+            consumed_endpoint: SketchPointKind::Start,
+        },
+        CanonicalCommand::JoinSketchEntities {
+            id: SKETCH,
+            source_entity_id: SketchEntityId(3),
+            source_endpoint: SketchPointKind::End,
+            consumed_entity_id: SketchEntityId(4),
+            consumed_endpoint: SketchPointKind::Start,
+        },
+        CanonicalCommand::JoinSketchEntities {
+            id: SKETCH,
+            source_entity_id: SketchEntityId(5),
+            source_endpoint: SketchPointKind::End,
+            consumed_entity_id: SketchEntityId(6),
+            consumed_endpoint: SketchPointKind::Start,
+        },
+    ]);
+    let proposal = document.prepare_proposal(batch.clone()).unwrap();
+    let duplicate = document.prepare_proposal(batch).unwrap();
+    assert_eq!(proposal.command_digest(), duplicate.command_digest());
+    assert_eq!(
+        proposal.intended_result_digest(),
+        duplicate.intended_result_digest()
+    );
+    assert_eq!(document.current().canonical_digest(), before);
+    document.commit_proposal(&proposal).unwrap();
+    let joined_digest = document.current().canonical_digest();
+    let snapshot = document.current();
+    let FeatureKind::Sketch(joined) = snapshot.feature(SKETCH).unwrap().kind() else {
+        panic!("expected joined sketch")
+    };
+    assert_eq!(
+        joined
+            .entities
+            .iter()
+            .map(SketchEntity::id)
+            .collect::<Vec<_>>(),
+        vec![
+            SketchEntityId(1),
+            SketchEntityId(3),
+            SketchEntityId(5),
+            SketchEntityId(7)
+        ]
+    );
+    assert!(matches!(
+        &joined.entities[0],
+        SketchEntity::Line { start_mm, end_mm, .. }
+            if *start_mm == [0.0, 0.0] && *end_mm == [3.0, 0.0]
+    ));
+    assert!(matches!(
+        &joined.entities[1],
+        SketchEntity::Arc { start_mm, end_mm, center_mm, clockwise, .. }
+            if *start_mm == [1.0, 0.0]
+                && *end_mm == [-1.0, 0.0]
+                && *center_mm == [0.0, 0.0]
+                && !clockwise
+    ));
+    let SketchEntity::CubicBezier {
+        start_mm,
+        control_1_mm,
+        control_2_mm,
+        end_mm,
+        ..
+    } = &joined.entities[2]
+    else {
+        panic!("expected reconstructed cubic")
+    };
+    for (actual, expected) in [*start_mm, *control_1_mm, *control_2_mm, *end_mm]
+        .into_iter()
+        .zip(cubic)
+    {
+        assert!((actual[0] - expected[0]).abs() <= 1.0e-7);
+        assert!((actual[1] - expected[1]).abs() <= 1.0e-7);
+    }
+    assert_eq!(joined.constraints.len(), 1);
+    assert!(matches!(
+        joined.constraints[0].kind,
+        SketchConstraintKind::FixedPoint { point: reference, position_mm }
+            if reference == point(1, SketchPointKind::End) && position_mm == [3.0, 0.0]
+    ));
+
+    let bytes = persistence::save(&snapshot);
+    let reopened = persistence::load(&bytes).unwrap().snapshot();
+    assert_eq!(reopened.canonical_digest(), joined_digest);
+    assert_eq!(persistence::save(&reopened), bytes);
+    assert_eq!(document.undo().unwrap().canonical_digest(), before);
+    assert_eq!(document.redo().unwrap().canonical_digest(), joined_digest);
+
+    let stable = document.current().canonical_digest();
+    let undo_steps = document.visible_undo_steps();
+    for command in [
+        CanonicalCommand::JoinSketchEntities {
+            id: SKETCH,
+            source_entity_id: SketchEntityId(1),
+            source_endpoint: SketchPointKind::End,
+            consumed_entity_id: SketchEntityId(99),
+            consumed_endpoint: SketchPointKind::Start,
+        },
+        CanonicalCommand::JoinSketchEntities {
+            id: SKETCH,
+            source_entity_id: SketchEntityId(1),
+            source_endpoint: SketchPointKind::End,
+            consumed_entity_id: SketchEntityId(3),
+            consumed_endpoint: SketchPointKind::Start,
+        },
+        CanonicalCommand::JoinSketchEntities {
+            id: SKETCH,
+            source_entity_id: SketchEntityId(7),
+            source_endpoint: SketchPointKind::Start,
+            consumed_entity_id: SketchEntityId(1),
+            consumed_endpoint: SketchPointKind::End,
+        },
+    ] {
+        assert!(
+            document
+                .apply_batch(&CommandBatch::new(vec![command]))
+                .is_err()
+        );
+        assert_eq!(document.current().canonical_digest(), stable);
+        assert_eq!(document.visible_undo_steps(), undo_steps);
+    }
+
+    let mut constrained = SketchSpec {
+        workplane: XY,
+        entities: vec![
+            SketchEntity::Line {
+                id: SketchEntityId(1),
+                start_mm: [0.0, 0.0],
+                end_mm: [1.0, 0.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(2),
+                start_mm: [1.0, 0.0],
+                end_mm: [2.0, 0.0],
+            },
+        ],
+        constraints: vec![SketchConstraint {
+            id: SketchConstraintId(1),
+            kind: SketchConstraintKind::Horizontal {
+                entity: SketchEntityId(1),
+            },
+        }],
+    };
+    let constrained_before = constrained.clone();
+    assert_eq!(
+        constrained.join_entities(
+            SketchEntityId(1),
+            SketchPointKind::End,
+            SketchEntityId(2),
+            SketchPointKind::Start,
+        ),
+        Err(SketchError::AmbiguousJoinConstraint)
+    );
+    assert_eq!(constrained, constrained_before);
+}
+
+#[test]
+fn sketch_construction_toggle_is_atomic_persistent_and_excluded_from_profiles() {
+    let entities = vec![
+        SketchEntity::Line {
+            id: SketchEntityId(1),
+            start_mm: [0.0, 0.0],
+            end_mm: [10.0, 0.0],
+        },
+        SketchEntity::Arc {
+            id: SketchEntityId(2),
+            start_mm: [5.0, 0.0],
+            end_mm: [0.0, 5.0],
+            center_mm: [0.0, 0.0],
+            clockwise: false,
+        },
+        SketchEntity::Circle {
+            id: SketchEntityId(3),
+            center_mm: [20.0, 20.0],
+            radius_mm: 4.0,
+        },
+        SketchEntity::CubicBezier {
+            id: SketchEntityId(4),
+            start_mm: [0.0, 1.0],
+            control_1_mm: [2.0, 3.0],
+            control_2_mm: [4.0, 3.0],
+            end_mm: [6.0, 1.0],
+        },
+    ];
+    let horizontal = SketchConstraint {
+        id: SketchConstraintId(10),
+        kind: SketchConstraintKind::Horizontal {
+            entity: SketchEntityId(1),
+        },
+    };
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Construction geometry".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: XY,
+                definition_id: DEFINITION,
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: SKETCH,
+                definition_id: DEFINITION,
+                name: "Layout sketch".into(),
+                kind: FeatureKind::Sketch(SketchSpec {
+                    workplane: XY,
+                    entities: entities.clone(),
+                    constraints: vec![horizontal.clone()],
+                }),
+            },
+        ]))
+        .unwrap();
+    let before = document.current().canonical_digest();
+    let batch = CommandBatch::new(
+        (1..=4)
+            .map(|entity_id| CanonicalCommand::SetSketchEntityConstruction {
+                id: SKETCH,
+                entity_id: SketchEntityId(entity_id),
+                construction: true,
+                construction_constraint_id: SketchConstraintId(100 + entity_id),
+            })
+            .collect(),
+    );
+    let proposal = document.prepare_proposal(batch.clone()).unwrap();
+    let duplicate = document.prepare_proposal(batch).unwrap();
+    assert_eq!(proposal.command_digest(), duplicate.command_digest());
+    assert_eq!(
+        proposal.intended_result_digest(),
+        duplicate.intended_result_digest()
+    );
+    assert_eq!(document.current().canonical_digest(), before);
+    document.commit_proposal(&proposal).unwrap();
+    let construction_digest = document.current().canonical_digest();
+    let snapshot = document.current();
+    let FeatureKind::Sketch(spec) = snapshot.feature(SKETCH).unwrap().kind() else {
+        panic!("expected sketch")
+    };
+    assert_eq!(spec.entities, entities);
+    assert!(spec.constraints.contains(&horizontal));
+    for entity_id in 1..=4 {
+        assert!(spec.is_construction_entity(SketchEntityId(entity_id)));
+    }
+    assert_eq!(
+        spec.solved_regions(),
+        Err(SketchError::InvalidRegionIdentity)
+    );
+
+    let bytes = persistence::save(&snapshot);
+    let reopened = persistence::load(&bytes).unwrap().snapshot();
+    assert_eq!(reopened.canonical_digest(), construction_digest);
+    assert_eq!(persistence::save(&reopened), bytes);
+    assert_eq!(document.undo().unwrap().canonical_digest(), before);
+    assert_eq!(
+        document.redo().unwrap().canonical_digest(),
+        construction_digest
+    );
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetSketchEntityConstruction {
+                id: SKETCH,
+                entity_id: SketchEntityId(3),
+                construction: false,
+                construction_constraint_id: SketchConstraintId(103),
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    let FeatureKind::Sketch(spec) = snapshot.feature(SKETCH).unwrap().kind() else {
+        panic!("expected sketch")
+    };
+    assert!(!spec.is_construction_entity(SketchEntityId(3)));
+    assert_eq!(spec.solved_regions().unwrap().len(), 1);
+    assert_eq!(
+        spec.solved_regions().unwrap()[0].entity_ids,
+        vec![SketchEntityId(3)]
+    );
+
+    let stable = document.current().canonical_digest();
+    let undo_steps = document.visible_undo_steps();
+    for command in [
+        CanonicalCommand::SetSketchEntityConstruction {
+            id: SKETCH,
+            entity_id: SketchEntityId(99),
+            construction: true,
+            construction_constraint_id: SketchConstraintId(200),
+        },
+        CanonicalCommand::SetSketchEntityConstruction {
+            id: SKETCH,
+            entity_id: SketchEntityId(1),
+            construction: true,
+            construction_constraint_id: SketchConstraintId(201),
+        },
+        CanonicalCommand::SetSketchEntityConstruction {
+            id: SKETCH,
+            entity_id: SketchEntityId(2),
+            construction: false,
+            construction_constraint_id: SketchConstraintId(999),
+        },
+        CanonicalCommand::SetSketchEntityConstruction {
+            id: SKETCH,
+            entity_id: SketchEntityId(3),
+            construction: true,
+            construction_constraint_id: SketchConstraintId(10),
+        },
+    ] {
+        assert!(
+            document
+                .apply_batch(&CommandBatch::new(vec![command]))
+                .is_err()
+        );
+        assert_eq!(document.current().canonical_digest(), stable);
+        assert_eq!(document.visible_undo_steps(), undo_steps);
+    }
+
+    let projected_entity = SketchEntity::Line {
+        id: SketchEntityId(1),
+        start_mm: [0.0, 0.0],
+        end_mm: [1.0, 0.0],
+    };
+    let mut projected = SketchSpec {
+        workplane: XY,
+        entities: vec![projected_entity.clone()],
+        constraints: vec![SketchConstraint {
+            id: SketchConstraintId(1),
+            kind: SketchConstraintKind::Projection {
+                entity: SketchEntityId(1),
+                source_feature: FeatureId(99),
+                source_entity: SketchEntityId(1),
+                target: Box::new(projected_entity),
+            },
+        }],
+    };
+    let projected_before = projected.clone();
+    assert_eq!(
+        projected.set_entity_construction(SketchEntityId(1), false, SketchConstraintId(1),),
+        Err(SketchError::ProjectedEntityReadOnly(SketchEntityId(1)))
+    );
+    assert_eq!(projected, projected_before);
+
+    let mut limited = SketchSpec {
+        workplane: XY,
+        entities: vec![SketchEntity::Line {
+            id: SketchEntityId(1),
+            start_mm: [0.0, 0.0],
+            end_mm: [1.0, 0.0],
+        }],
+        constraints: (1..=MAX_SKETCH_CONSTRAINTS)
+            .map(|id| SketchConstraint {
+                id: SketchConstraintId(id as u64),
+                kind: SketchConstraintKind::Horizontal {
+                    entity: SketchEntityId(1),
+                },
+            })
+            .collect(),
+    };
+    let limited_before = limited.clone();
+    assert_eq!(
+        limited.set_entity_construction(
+            SketchEntityId(1),
+            true,
+            SketchConstraintId(MAX_SKETCH_CONSTRAINTS as u64 + 1),
+        ),
+        Err(SketchError::ResourceLimit)
+    );
+    assert_eq!(limited, limited_before);
+}
+
+#[test]
+fn sketch_projection_is_associative_construction_geometry_and_persistent() {
+    let target_sketch = FeatureId(13);
+    let source = SketchSpec {
+        workplane: XY,
+        entities: vec![
+            SketchEntity::Line {
+                id: SketchEntityId(1),
+                start_mm: [0.0, 0.0],
+                end_mm: [10.0, 0.0],
+            },
+            SketchEntity::Arc {
+                id: SketchEntityId(2),
+                start_mm: [5.0, 0.0],
+                end_mm: [0.0, 5.0],
+                center_mm: [0.0, 0.0],
+                clockwise: false,
+            },
+            SketchEntity::Circle {
+                id: SketchEntityId(3),
+                center_mm: [4.0, 4.0],
+                radius_mm: 2.0,
+            },
+            SketchEntity::CubicBezier {
+                id: SketchEntityId(4),
+                start_mm: [0.0, 1.0],
+                control_1_mm: [2.0, 3.0],
+                control_2_mm: [4.0, 3.0],
+                end_mm: [6.0, 1.0],
+            },
+        ],
+        constraints: Vec::new(),
+    };
+    let target = SketchSpec {
+        workplane: OFFSET,
+        entities: vec![SketchEntity::Circle {
+            id: SketchEntityId(100),
+            center_mm: [20.0, 20.0],
+            radius_mm: 3.0,
+        }],
+        constraints: Vec::new(),
+    };
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Projected part".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: XY,
+                definition_id: DEFINITION,
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: OFFSET,
+                definition_id: DEFINITION,
+                name: "Offset plane".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec {
+                    support: WorkplaneSupport::Offset {
+                        base: XY,
+                        distance: Dimension::from_decimal("5").unwrap(),
+                    },
+                    frame: WorkplaneFrame::principal(PrincipalPlane::Xy).offset(5.0),
+                }),
+            },
+            CanonicalCommand::CreateFeature {
+                id: SKETCH,
+                definition_id: DEFINITION,
+                name: "Source sketch".into(),
+                kind: FeatureKind::Sketch(source.clone()),
+            },
+            CanonicalCommand::CreateFeature {
+                id: target_sketch,
+                definition_id: DEFINITION,
+                name: "Target sketch".into(),
+                kind: FeatureKind::Sketch(target),
+            },
+        ]))
+        .unwrap();
+    let before = document.current().canonical_digest();
+    let commands = (1..=4)
+        .map(|source_entity| CanonicalCommand::ProjectSketchEntity {
+            id: target_sketch,
+            source_feature_id: SKETCH,
+            source_entity_id: SketchEntityId(source_entity),
+            new_entity_id: SketchEntityId(100 + source_entity),
+            projection_constraint_id: SketchConstraintId(200 + source_entity),
+        })
+        .collect::<Vec<_>>();
+    let proposal = document
+        .prepare_proposal(CommandBatch::new(commands))
+        .unwrap();
+    assert_eq!(document.current().canonical_digest(), before);
+    document.commit_proposal(&proposal).unwrap();
+    let projected_digest = document.current().canonical_digest();
+    let projected = document.current();
+    let FeatureKind::Sketch(projected_spec) = projected.feature(target_sketch).unwrap().kind()
+    else {
+        panic!("expected projected sketch")
+    };
+    for entity_id in 101..=104 {
+        assert!(projected_spec.is_projected_entity(SketchEntityId(entity_id)));
+    }
+    assert_eq!(projected_spec.solved_regions().unwrap().len(), 1);
+    assert_eq!(
+        projected_spec.solved_regions().unwrap()[0].entity_ids,
+        vec![SketchEntityId(100)]
+    );
+    assert_eq!(
+        projected_spec.entities[1],
+        SketchEntity::Line {
+            id: SketchEntityId(101),
+            start_mm: [0.0, 0.0],
+            end_mm: [10.0, 0.0],
+        }
+    );
+
+    let bytes = persistence::save(&projected);
+    let reopened = persistence::load(&bytes).unwrap().snapshot();
+    assert_eq!(reopened.canonical_digest(), projected_digest);
+    assert_eq!(persistence::save(&reopened), bytes);
+    assert_eq!(document.undo().unwrap().canonical_digest(), before);
+    assert_eq!(
+        document.redo().unwrap().canonical_digest(),
+        projected_digest
+    );
+
+    let stale = document
+        .prepare_proposal(CommandBatch::new(vec![
+            CanonicalCommand::ProjectSketchEntity {
+                id: target_sketch,
+                source_feature_id: SKETCH,
+                source_entity_id: SketchEntityId(1),
+                new_entity_id: SketchEntityId(105),
+                projection_constraint_id: SketchConstraintId(205),
+            },
+        ]))
+        .unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::TranslateProfile {
+                id: SKETCH,
+                delta_mm: [2.0, 3.0],
+            },
+        ]))
+        .unwrap();
+    assert!(document.commit_proposal(&stale).is_err());
+    let refreshed = document.current();
+    let FeatureKind::Sketch(refreshed_spec) = refreshed.feature(target_sketch).unwrap().kind()
+    else {
+        panic!("expected refreshed projected sketch")
+    };
+    assert_eq!(
+        refreshed_spec.entities[1],
+        SketchEntity::Line {
+            id: SketchEntityId(101),
+            start_mm: [2.0, 3.0],
+            end_mm: [12.0, 3.0],
+        }
+    );
+    let refreshed_digest = refreshed.canonical_digest();
+    let undo_steps = document.visible_undo_steps();
+    assert!(matches!(
+        document.apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::TrimSketchEntity {
+                id: target_sketch,
+                entity_id: SketchEntityId(101),
+                start_parameter: 0.0,
+                end_parameter: 0.5,
+            },
+        ])),
+        Err(CanonicalError::Sketch(
+            SketchError::ProjectedEntityReadOnly(SketchEntityId(101))
+        ))
+    ));
+    assert_eq!(document.current().canonical_digest(), refreshed_digest);
+    assert_eq!(document.visible_undo_steps(), undo_steps);
+    assert!(
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::ProjectSketchEntity {
+                    id: SKETCH,
+                    source_feature_id: target_sketch,
+                    source_entity_id: SketchEntityId(100),
+                    new_entity_id: SketchEntityId(5),
+                    projection_constraint_id: SketchConstraintId(5),
+                },
+            ]))
+            .is_err()
+    );
+    assert_eq!(document.current().canonical_digest(), refreshed_digest);
+    assert_eq!(document.visible_undo_steps(), undo_steps);
+}
+
+#[test]
+fn invalid_sketch_projection_sources_fail_without_mutation() {
+    let yz = FeatureId(20);
+    let yz_sketch = FeatureId(21);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Rejected projection".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: XY,
+                definition_id: DEFINITION,
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: yz,
+                definition_id: DEFINITION,
+                name: "YZ".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Yz)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: SKETCH,
+                definition_id: DEFINITION,
+                name: "Source".into(),
+                kind: FeatureKind::Sketch(SketchSpec {
+                    workplane: XY,
+                    entities: vec![SketchEntity::Circle {
+                        id: SketchEntityId(1),
+                        center_mm: [0.0, 0.0],
+                        radius_mm: 5.0,
+                    }],
+                    constraints: Vec::new(),
+                }),
+            },
+            CanonicalCommand::CreateFeature {
+                id: yz_sketch,
+                definition_id: DEFINITION,
+                name: "Target".into(),
+                kind: FeatureKind::Sketch(SketchSpec {
+                    workplane: yz,
+                    entities: vec![SketchEntity::Line {
+                        id: SketchEntityId(10),
+                        start_mm: [0.0, 0.0],
+                        end_mm: [1.0, 0.0],
+                    }],
+                    constraints: Vec::new(),
+                }),
+            },
+        ]))
+        .unwrap();
+    let before = document.current().canonical_digest();
+    let undo_steps = document.visible_undo_steps();
+    for command in [
+        CanonicalCommand::ProjectSketchEntity {
+            id: yz_sketch,
+            source_feature_id: SKETCH,
+            source_entity_id: SketchEntityId(1),
+            new_entity_id: SketchEntityId(11),
+            projection_constraint_id: SketchConstraintId(11),
+        },
+        CanonicalCommand::ProjectSketchEntity {
+            id: yz_sketch,
+            source_feature_id: SKETCH,
+            source_entity_id: SketchEntityId(99),
+            new_entity_id: SketchEntityId(11),
+            projection_constraint_id: SketchConstraintId(11),
+        },
+        CanonicalCommand::ProjectSketchEntity {
+            id: yz_sketch,
+            source_feature_id: yz_sketch,
+            source_entity_id: SketchEntityId(10),
+            new_entity_id: SketchEntityId(11),
+            projection_constraint_id: SketchConstraintId(11),
+        },
+    ] {
+        assert!(
+            document
+                .apply_batch(&CommandBatch::new(vec![command]))
+                .is_err()
+        );
+        assert_eq!(document.current().canonical_digest(), before);
+        assert_eq!(document.visible_undo_steps(), undo_steps);
+    }
+}
+
+#[test]
 fn all_principal_planes_and_one_resolved_planar_face_support_are_canonical() {
     let mut document = DocumentStore::new();
     let document_id = document.current().document_id();
@@ -2524,4 +4272,299 @@ fn cubic_control_points_solve_and_round_trip_with_undo_redo_and_digest() {
     assert_eq!(persistence::save(&reopened.snapshot()), bytes);
     assert_eq!(document.undo().unwrap().canonical_digest(), before);
     assert_eq!(document.redo().unwrap().canonical_digest(), digest);
+}
+
+#[test]
+fn direct_sketch_constraint_crud_is_atomic_stable_and_persistent() {
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Constraint editing".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: XY,
+                definition_id: DEFINITION,
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: SKETCH,
+                definition_id: DEFINITION,
+                name: "Editable sketch".into(),
+                kind: FeatureKind::Sketch(SketchSpec {
+                    workplane: XY,
+                    entities: vec![SketchEntity::Line {
+                        id: SketchEntityId(1),
+                        start_mm: [0.0, 0.0],
+                        end_mm: [10.0, 2.0],
+                    }],
+                    constraints: Vec::new(),
+                }),
+            },
+        ]))
+        .unwrap();
+    document.discard_history_before_current();
+    let initial = document.current().canonical_digest();
+    let horizontal = SketchConstraint {
+        id: SketchConstraintId(7),
+        kind: SketchConstraintKind::Horizontal {
+            entity: SketchEntityId(1),
+        },
+    };
+    let create_batch = CommandBatch::new(vec![CanonicalCommand::CreateSketchConstraint {
+        id: SKETCH,
+        constraint: horizontal.clone(),
+    }]);
+    let proposal = document.prepare_proposal(create_batch.clone()).unwrap();
+    let duplicate = document.prepare_proposal(create_batch).unwrap();
+    assert_eq!(proposal.command_digest(), duplicate.command_digest());
+    assert_eq!(
+        proposal.intended_result_digest(),
+        duplicate.intended_result_digest()
+    );
+    assert_eq!(document.current().canonical_digest(), initial);
+    document.commit_proposal(&proposal).unwrap();
+    let created_snapshot = document.current();
+    let created = created_snapshot.canonical_digest();
+    let FeatureKind::Sketch(spec) = created_snapshot.feature(SKETCH).unwrap().kind() else {
+        panic!("expected sketch")
+    };
+    assert_eq!(spec.constraints, vec![horizontal.clone()]);
+    let bytes = persistence::save(&document.current());
+    let reopened = persistence::load(&bytes).unwrap().snapshot();
+    assert_eq!(reopened.canonical_digest(), created);
+    assert_eq!(persistence::save(&reopened), bytes);
+    assert_eq!(document.undo().unwrap().canonical_digest(), initial);
+    assert_eq!(document.redo().unwrap().canonical_digest(), created);
+
+    let vertical = SketchConstraint {
+        id: horizontal.id,
+        kind: SketchConstraintKind::Vertical {
+            entity: SketchEntityId(1),
+        },
+    };
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::ReplaceSketchConstraint {
+                id: SKETCH,
+                constraint: vertical.clone(),
+            },
+        ]))
+        .unwrap();
+    let replaced_snapshot = document.current();
+    let replaced = replaced_snapshot.canonical_digest();
+    let FeatureKind::Sketch(spec) = replaced_snapshot.feature(SKETCH).unwrap().kind() else {
+        panic!("expected sketch")
+    };
+    assert_eq!(spec.constraints, vec![vertical.clone()]);
+
+    let delete = document
+        .prepare_proposal(CommandBatch::new(vec![
+            CanonicalCommand::DeleteSketchConstraint {
+                id: SKETCH,
+                constraint_id: vertical.id,
+            },
+        ]))
+        .unwrap();
+    assert_eq!(document.current().canonical_digest(), replaced);
+    document.commit_proposal(&delete).unwrap();
+    let deleted_snapshot = document.current();
+    let deleted = deleted_snapshot.canonical_digest();
+    let FeatureKind::Sketch(spec) = deleted_snapshot.feature(SKETCH).unwrap().kind() else {
+        panic!("expected sketch")
+    };
+    assert!(spec.constraints.is_empty());
+    assert_eq!(document.undo().unwrap().canonical_digest(), replaced);
+    assert_eq!(document.redo().unwrap().canonical_digest(), deleted);
+
+    document.undo().unwrap();
+    let stale = document
+        .prepare_proposal(CommandBatch::new(vec![
+            CanonicalCommand::DeleteSketchConstraint {
+                id: SKETCH,
+                constraint_id: vertical.id,
+            },
+        ]))
+        .unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::ReplaceSketchConstraint {
+                id: SKETCH,
+                constraint: horizontal.clone(),
+            },
+        ]))
+        .unwrap();
+    let stable = document.current().canonical_digest();
+    let undo_steps = document.visible_undo_steps();
+    assert!(document.commit_proposal(&stale).is_err());
+    assert_eq!(document.current().canonical_digest(), stable);
+    assert_eq!(document.visible_undo_steps(), undo_steps);
+
+    for command in [
+        CanonicalCommand::CreateSketchConstraint {
+            id: SKETCH,
+            constraint: horizontal.clone(),
+        },
+        CanonicalCommand::CreateSketchConstraint {
+            id: SKETCH,
+            constraint: SketchConstraint {
+                id: SketchConstraintId(8),
+                kind: SketchConstraintKind::Horizontal {
+                    entity: SketchEntityId(99),
+                },
+            },
+        },
+        CanonicalCommand::ReplaceSketchConstraint {
+            id: SKETCH,
+            constraint: SketchConstraint {
+                id: SketchConstraintId(99),
+                kind: SketchConstraintKind::Horizontal {
+                    entity: SketchEntityId(1),
+                },
+            },
+        },
+        CanonicalCommand::DeleteSketchConstraint {
+            id: SKETCH,
+            constraint_id: SketchConstraintId(99),
+        },
+        CanonicalCommand::CreateSketchConstraint {
+            id: SKETCH,
+            constraint: SketchConstraint {
+                id: SketchConstraintId(8),
+                kind: SketchConstraintKind::Construction {
+                    entity: SketchEntityId(1),
+                },
+            },
+        },
+    ] {
+        assert!(
+            document
+                .apply_batch(&CommandBatch::new(vec![command]))
+                .is_err()
+        );
+        assert_eq!(document.current().canonical_digest(), stable);
+        assert_eq!(document.visible_undo_steps(), undo_steps);
+    }
+}
+
+#[test]
+fn constraint_edits_that_invalidate_a_downstream_pad_region_fail_closed() {
+    let closing_constraint = SketchConstraintId(7);
+    let sketch = SketchSpec {
+        workplane: XY,
+        entities: vec![
+            SketchEntity::Line {
+                id: SketchEntityId(1),
+                start_mm: [0.0, 0.0],
+                end_mm: [10.0, 0.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(2),
+                start_mm: [10.0, 0.0],
+                end_mm: [10.0, 10.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(3),
+                start_mm: [10.0, 10.0],
+                end_mm: [0.0, 10.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(4),
+                start_mm: [0.0, 10.0],
+                end_mm: [0.0, 1.0],
+            },
+        ],
+        constraints: vec![SketchConstraint {
+            id: closing_constraint,
+            kind: SketchConstraintKind::Coincident {
+                a: point(4, SketchPointKind::End),
+                b: point(1, SketchPointKind::Start),
+            },
+        }],
+    };
+    let region = sketch.solved_regions().unwrap()[0].id;
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Dependent profile".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: XY,
+                definition_id: DEFINITION,
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: SKETCH,
+                definition_id: DEFINITION,
+                name: "Constraint-defined region".into(),
+                kind: FeatureKind::Sketch(sketch),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(13),
+                definition_id: DEFINITION,
+                name: "Pad".into(),
+                kind: FeatureKind::Pad(PadSpec {
+                    sketch: SKETCH,
+                    region,
+                    direction: FeatureDirection::AlongNormal,
+                    extent: FeatureExtent::Blind(Dimension::from_decimal("5").unwrap()),
+                }),
+            },
+        ]))
+        .unwrap();
+    document.discard_history_before_current();
+
+    for (command, constraint_id) in [
+        (
+            CanonicalCommand::CreateSketchConstraint {
+                id: SKETCH,
+                constraint: SketchConstraint {
+                    id: SketchConstraintId(8),
+                    kind: SketchConstraintKind::Vertical {
+                        entity: SketchEntityId(1),
+                    },
+                },
+            },
+            SketchConstraintId(8),
+        ),
+        (
+            CanonicalCommand::ReplaceSketchConstraint {
+                id: SKETCH,
+                constraint: SketchConstraint {
+                    id: closing_constraint,
+                    kind: SketchConstraintKind::Horizontal {
+                        entity: SketchEntityId(1),
+                    },
+                },
+            },
+            closing_constraint,
+        ),
+        (
+            CanonicalCommand::DeleteSketchConstraint {
+                id: SKETCH,
+                constraint_id: closing_constraint,
+            },
+            closing_constraint,
+        ),
+    ] {
+        let before_revision = document.current().revision_id();
+        let before_digest = document.current().canonical_digest();
+        let before_undo_steps = document.visible_undo_steps();
+        let error = match document.apply_batch(&CommandBatch::new(vec![command])) {
+            Ok(_) => panic!("constraint edit unexpectedly invalidated a downstream Pad region"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error,
+            CanonicalError::Sketch(SketchError::ConstraintEditInvalidatesProfile(constraint_id))
+        );
+        assert_eq!(document.current().revision_id(), before_revision);
+        assert_eq!(document.current().canonical_digest(), before_digest);
+        assert_eq!(document.visible_undo_steps(), before_undo_steps);
+    }
 }
