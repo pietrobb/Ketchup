@@ -67,6 +67,11 @@ fn exact_worker_converts_verified_step_to_iges_and_reinspects_exact_evidence() {
         .unwrap();
 
     assert_eq!(
+        evidence.source_sha256,
+        ketchup_core::graph::sha256_bytes(&bytes)
+    );
+    assert_eq!(evidence.source_byte_len, bytes.len() as u64);
+    assert_eq!(
         evidence.source_unit,
         ketchup_core::import::ImportLengthUnit::Millimetre
     );
@@ -1370,6 +1375,7 @@ fn worker_transforms_a_circle_pad_from_its_arbitrary_workplane_frame() {
                     bounds_mm: result.bounds_mm,
                     backend: result.identity.backend.clone(),
                     tolerance: result.identity.tolerance.clone(),
+                    faces: Vec::new(),
                 },
                 &mesh,
             ),
@@ -2244,6 +2250,7 @@ fn worker_evaluates_planar_offset_face_through_exact_brep_graph() {
         bounds_mm: package.bounds_mm,
         backend: package.identity.backend.clone(),
         tolerance: package.identity.tolerance.clone(),
+        faces: Vec::new(),
     };
     assert!(
         ExactBRepGraphPackage::from_worker_evidence(&graph, evidence(package.area_mm2), &mesh,)
@@ -2398,6 +2405,7 @@ fn worker_evaluates_signed_circle_offset_through_exact_brep_graph_v6() {
             bounds_mm: package.bounds_mm,
             backend: package.identity.backend.clone(),
             tolerance: package.identity.tolerance.clone(),
+            faces: Vec::new(),
         };
         assert!(
             ExactBRepGraphPackage::from_worker_evidence(&graph, evidence.clone(), &mesh).is_ok()

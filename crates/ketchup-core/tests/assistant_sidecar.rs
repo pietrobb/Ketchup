@@ -548,6 +548,42 @@ fn cad_edit_append_boolean_contract_is_strict_bounded_and_host_id_assigned() {
         local_reference
     );
 
+    let typed_pocket = serde_json::json!({
+        "operations": [
+            {
+                "operation": "create_part",
+                "name": "Wall",
+                "workplane": {"type": "principal", "plane": "xy"},
+                "entities": [{"type": "circle", "id": 1, "center_mm": [0, 0], "radius_mm": 10}],
+                "constraints": [],
+                "feature": {"type": "extrusion", "distance_mm": 20},
+                "translation_mm": [0, 0, 0]
+            },
+            {
+                "operation": "create_program_sketch",
+                "definition": {"operation_index": 0, "output": "definition"},
+                "name": "Opening profile",
+                "workplane": {"type": "principal", "plane": "xy"},
+                "entities": [{"type": "circle", "id": 1, "center_mm": [0, 0], "radius_mm": 4}],
+                "constraints": []
+            },
+            {
+                "operation": "append_program_pocket",
+                "definition": {"operation_index": 0, "output": "definition"},
+                "name": "Opening",
+                "target_feature": {"operation_index": 0, "output": "body_feature"},
+                "profile_feature": {"operation_index": 1, "output": "sketch_feature"},
+                "depth_mm": 5
+            }
+        ]
+    });
+    let typed_program =
+        serde_json::from_value::<AssistantCadEditProgram>(typed_pocket.clone()).unwrap();
+    assert_eq!(typed_program.validate(), Ok(()));
+    let serialized = serde_json::to_value(typed_program).unwrap();
+    let reparsed = serde_json::from_value::<AssistantCadEditProgram>(serialized.clone()).unwrap();
+    assert_eq!(serde_json::to_value(reparsed).unwrap(), serialized);
+
     for invalid_reference in [
         serde_json::json!({"operation_index": 1, "output": "body_feature"}),
         serde_json::json!({"operation_index": 2, "output": "body_feature"}),

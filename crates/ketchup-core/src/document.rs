@@ -3972,6 +3972,7 @@ pub enum RevisionHistoryError {
     RevisionNotFound(u64),
     InvalidCheckpointName,
     DuplicateCheckpointName,
+    InvalidPrincipal,
     NoOpRollback,
     RevisionExhausted,
 }
@@ -3983,6 +3984,7 @@ impl fmt::Display for RevisionHistoryError {
             Self::RevisionNotFound(id) => write!(formatter, "revision {id} was not found"),
             Self::InvalidCheckpointName => formatter.write_str("checkpoint name is invalid"),
             Self::DuplicateCheckpointName => formatter.write_str("checkpoint name already exists"),
+            Self::InvalidPrincipal => formatter.write_str("rollback principal is invalid"),
             Self::NoOpRollback => formatter.write_str("rollback target is already current"),
             Self::RevisionExhausted => formatter.write_str("revision identifiers are exhausted"),
         }
@@ -4540,10 +4542,9 @@ impl DocumentStore {
     #[must_use]
     pub fn history_digest(&self) -> String {
         let mut digest = Sha256::new();
-        digest.update(b"ketchup.revision-history.v1");
+        digest.update(b"ketchup.revision-history.v2");
         digest.update((self.cursor as u64).to_le_bytes());
-        digest.update(self.next_revision_id.to_le_bytes());
-        for revision in &self.revisions {
+        for revision in self.revisions.iter().take(self.cursor + 1) {
             digest.update(revision.id.to_le_bytes());
             digest.update(revision.snapshot.canonical_digest().as_bytes());
             digest.update(revision.batch_digest.as_bytes());
@@ -4727,6 +4728,12 @@ impl DocumentStore {
         {
             return Err(RevisionHistoryError::Stale);
         }
+        if matches!(
+            principal,
+            ProposalPrincipal::Human(0) | ProposalPrincipal::Plugin(0)
+        ) {
+            return Err(RevisionHistoryError::InvalidPrincipal);
+        }
         let target = self
             .revisions
             .iter()
@@ -4800,6 +4807,21 @@ impl DocumentStore {
         Ok(candidate.current())
     }
 
+    pub fn preview_dependency_staging_batch(
+        &self,
+        batch: &CommandBatch,
+    ) -> Result<Snapshot, CanonicalError> {
+        let snapshot = self.current();
+        let mut candidate =
+            Self::from_product(snapshot.revision_id(), snapshot.product.as_ref().clone())?;
+        candidate.apply_batch_with_origin_and_validation(
+            batch,
+            RevisionOrigin::Principal(ProposalPrincipal::ManualClient),
+            false,
+        )?;
+        Ok(candidate.current())
+    }
+
     pub fn apply_batch(&mut self, batch: &CommandBatch) -> Result<Arc<Revision>, CanonicalError> {
         self.apply_batch_with_origin(
             batch,
@@ -4811,6 +4833,15 @@ impl DocumentStore {
         &mut self,
         batch: &CommandBatch,
         origin: RevisionOrigin,
+    ) -> Result<Arc<Revision>, CanonicalError> {
+        self.apply_batch_with_origin_and_validation(batch, origin, true)
+    }
+
+    fn apply_batch_with_origin_and_validation(
+        &mut self,
+        batch: &CommandBatch,
+        origin: RevisionOrigin,
+        validate_drawing_sources: bool,
     ) -> Result<Arc<Revision>, CanonicalError> {
         if batch.schema != COMMAND_SCHEMA_V1 {
             return Err(CanonicalError::UnsupportedCommandSchema);
@@ -6891,7 +6922,7 @@ impl DocumentStore {
         validate_graph(&product.evaluator_nodes)?;
         refresh_override_health(&mut product);
         validate_overrides(&product)?;
-        validate_product(&product)?;
+        validate_product_with_drawing_sources(&product, validate_drawing_sources)?;
         validate_sketch_projections(&product)?;
         validate_assembly_joint_motion_publication(&current, &product, batch)?;
         let revision_id = self.next_revision_id;
@@ -7559,6 +7590,23 @@ impl DocumentStore {
         batch: CommandBatch,
         context: ProposalContext,
     ) -> Result<Proposal, ProposalPrepareError> {
+        self.prepare_proposal_with_context_and_validation(batch, context, true)
+    }
+
+    pub(crate) fn prepare_dependency_staging_proposal_with_context(
+        &self,
+        batch: CommandBatch,
+        context: ProposalContext,
+    ) -> Result<Proposal, ProposalPrepareError> {
+        self.prepare_proposal_with_context_and_validation(batch, context, false)
+    }
+
+    fn prepare_proposal_with_context_and_validation(
+        &self,
+        batch: CommandBatch,
+        context: ProposalContext,
+        validate_drawing_sources: bool,
+    ) -> Result<Proposal, ProposalPrepareError> {
         validate_confirmation_requirement(&context)?;
         let snapshot = self.current();
         let authoritative_dependencies = authoritative_dependencies(&snapshot, &batch);
@@ -7569,11 +7617,12 @@ impl DocumentStore {
             write_targets: authoritative_writes.len(),
         };
         validate_proposal_budget(context.requested_budget, cost)?;
-        let (authoritative_diff, intended_result_digest) = proposal_candidate(
+        let (authoritative_diff, intended_result_digest) = proposal_candidate_with_validation(
             &snapshot,
             &batch,
             &authoritative_writes,
             context.goal.clone(),
+            validate_drawing_sources,
         )?;
         Ok(Proposal {
             document_id: snapshot.document_id(),
@@ -14368,6 +14417,13 @@ fn validate_assembly_joint_motion_publication(
 }
 
 fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
+    validate_product_with_drawing_sources(product, true)
+}
+
+fn validate_product_with_drawing_sources(
+    product: &ProductModel,
+    validate_drawing_sources: bool,
+) -> Result<(), CanonicalError> {
     ensure_product_id(product.document_id.0)?;
     if let Some(id) = product
         .grounded_occurrences
@@ -14416,7 +14472,9 @@ fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
         if *id != sheet.id() {
             return Err(CanonicalError::Drawing(DrawingError::InvalidSheet));
         }
-        validate_drawing_sheet(product, sheet)?;
+        if validate_drawing_sources {
+            validate_drawing_sheet(product, sheet)?;
+        }
     }
     FeatureDependencyGraph::from_product(product)?;
     for (id, joint) in &product.joints {
@@ -15597,9 +15655,23 @@ fn proposal_candidate(
     writes: &BTreeSet<AuthoritativeDependency>,
     goal: ProposalGoal,
 ) -> Result<(Vec<ProposalDiffEntry>, String), ProposalPrepareError> {
+    proposal_candidate_with_validation(snapshot, batch, writes, goal, true)
+}
+
+fn proposal_candidate_with_validation(
+    snapshot: &Snapshot,
+    batch: &CommandBatch,
+    writes: &BTreeSet<AuthoritativeDependency>,
+    goal: ProposalGoal,
+    validate_drawing_sources: bool,
+) -> Result<(Vec<ProposalDiffEntry>, String), ProposalPrepareError> {
     let mut candidate =
         DocumentStore::from_product(snapshot.revision_id, snapshot.product.as_ref().clone())?;
-    let revision = candidate.apply_batch(batch)?;
+    let revision = candidate.apply_batch_with_origin_and_validation(
+        batch,
+        RevisionOrigin::Principal(ProposalPrincipal::ManualClient),
+        validate_drawing_sources,
+    )?;
     let after = revision.snapshot();
     let diff = writes
         .iter()

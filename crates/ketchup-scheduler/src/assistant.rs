@@ -22,6 +22,22 @@ pub const MAX_ASSISTANT_RESPONSE_LINE_BYTES: usize = 256 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 pub const MAX_ASSISTANT_EXECUTABLE_BYTES: u64 = 96 * 1024 * 1024;
 
+fn open_guarded_executable(path: &Path) -> io::Result<fs::File> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ: u32 = 0x0000_0001;
+        fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(path)
+    }
+    #[cfg(not(windows))]
+    {
+        fs::File::open(path)
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct AssistantCancellation(Arc<AtomicBool>);
 
@@ -162,7 +178,7 @@ impl AssistantProcessClient {
         if cancelled.is_cancelled() {
             return Err(AssistantProcessError::Cancelled);
         }
-        let executable_file = fs::File::open(&launch.executable)
+        let executable_file = open_guarded_executable(&launch.executable)
             .map_err(|error| AssistantProcessError::Spawn(error.to_string()))?;
         let metadata = executable_file
             .metadata()
@@ -173,7 +189,7 @@ impl AssistantProcessClient {
             ));
         }
         let mut executable = Vec::new();
-        executable_file
+        (&executable_file)
             .take(MAX_ASSISTANT_EXECUTABLE_BYTES + 1)
             .read_to_end(&mut executable)
             .map_err(|error| AssistantProcessError::Spawn(error.to_string()))?;
@@ -193,7 +209,9 @@ impl AssistantProcessClient {
             .current_dir(&launch.working_directory)
             .env_clear()
             .envs(launch.environment.iter().cloned());
-        Self::spawn_command(command, handshake, timeout, cancelled)
+        let result = Self::spawn_command(command, handshake, timeout, cancelled);
+        drop(executable_file);
+        result
     }
 
     fn spawn_command(
@@ -600,3 +618,30 @@ impl fmt::Display for AssistantProcessError {
 }
 
 impl std::error::Error for AssistantProcessError {}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::open_guarded_executable;
+    use std::fs;
+
+    #[test]
+    fn executable_guard_denies_replacement_until_released() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("assistant.exe");
+        fs::write(&path, b"trusted executable").unwrap();
+
+        let guard = open_guarded_executable(&path).unwrap();
+        assert!(
+            fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&path)
+                .is_err()
+        );
+        assert!(fs::remove_file(&path).is_err());
+
+        drop(guard);
+        fs::write(&path, b"replacement").unwrap();
+        fs::remove_file(path).unwrap();
+    }
+}

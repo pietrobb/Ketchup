@@ -7,14 +7,27 @@ use crate::document::{
 use crate::graph::sha256_bytes;
 
 use super::{
-    ImportDiagnostic, ImportDiagnosticSeverity, ImportFormat, ImportOutputRef, ImportReceipt,
-    ImportUnitAuthority, ImportUnitDecision, StepImportEvidence,
+    ImportDiagnostic, ImportDiagnosticSeverity, ImportFormat, ImportLengthUnit, ImportOutputRef,
+    ImportReceipt, ImportUnitAuthority, ImportUnitDecision,
 };
 
 pub const IGES_PARSER_ID: &str = "ketchup-occt-iges";
 pub const IGES_PARSER_VERSION: &str = "1";
 pub const MAX_IGES_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
-pub type IgesImportEvidence = StepImportEvidence;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct IgesImportEvidence {
+    pub source_sha256: [u8; 32],
+    pub source_byte_len: u64,
+    pub source_unit: ImportLengthUnit,
+    pub result_fingerprint: String,
+    pub solid_count: u32,
+    pub topology_counts: [u32; 5],
+    pub volume_mm3: f64,
+    pub bounds_mm: [[f64; 3]; 2],
+    pub backend: String,
+    pub tolerance: String,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IgesImportPlanError {
@@ -57,7 +70,9 @@ pub fn plan_iges_import(
         .flatten()
         .all(|value| value.is_finite())
         && (0..3).all(|axis| evidence.bounds_mm[0][axis] <= evidence.bounds_mm[1][axis]);
-    if evidence.result_fingerprint.is_empty()
+    if evidence.source_sha256 != sha256_bytes(source)
+        || evidence.source_byte_len != source.len() as u64
+        || evidence.result_fingerprint.is_empty()
         || evidence.solid_count == 0
         || evidence.solid_count > 1_024
         || evidence.topology_counts.contains(&0)

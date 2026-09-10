@@ -1465,6 +1465,44 @@ fn boundary_geometry(
     if segments.is_empty() {
         return Err(ExactBRepGraphError::InvalidParameter);
     }
+    if let [
+        ProfileSegment::CircularArc {
+            start_mm: first_start,
+            end_mm: first_end,
+            center_mm: first_center,
+            clockwise: first_clockwise,
+        },
+        ProfileSegment::CircularArc {
+            start_mm: second_start,
+            end_mm: second_end,
+            center_mm: second_center,
+            clockwise: second_clockwise,
+        },
+    ] = segments
+        && closed
+        && first_start == second_end
+        && first_end == second_start
+        && first_center == second_center
+        && first_clockwise == second_clockwise
+    {
+        let start_radius = [
+            first_start[0] - first_center[0],
+            first_start[1] - first_center[1],
+        ];
+        let end_radius = [
+            first_end[0] - first_center[0],
+            first_end[1] - first_center[1],
+        ];
+        let radius = start_radius[0].hypot(start_radius[1]);
+        let antipodal_error =
+            (start_radius[0] + end_radius[0]).hypot(start_radius[1] + end_radius[1]);
+        if antipodal_error <= 1.0e-9 * radius.max(1.0) {
+            return Ok(ExactBRepPlanarGeometry::Circle {
+                center_bits: valid_point(*first_center)?.map(f64::to_bits),
+                radius_bits: positive_distance(radius)?,
+            });
+        }
+    }
     let segments = segments
         .iter()
         .map(|segment| match segment {

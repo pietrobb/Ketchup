@@ -23,7 +23,7 @@ use crate::exact_product::{
 };
 use crate::feature_history::{
     BodyHistoryMutationRequest, BodyParameterEditRequest, prepare_body_history_mutation,
-    prepare_body_parameter_edit,
+    prepare_body_parameter_edit, prepare_dependency_staging_body_parameter_edit,
 };
 use std::fmt;
 use std::sync::Arc;
@@ -2019,7 +2019,7 @@ where
     }
 
     let candidate = document
-        .preview_batch(impact.proposal.batch())
+        .preview_dependency_staging_batch(impact.proposal.batch())
         .map_err(|error| SharedChangePropagationError::InvalidImpact(error.to_string()))?;
     if candidate.canonical_digest() != impact.candidate_digest {
         return Err(SharedChangePropagationError::InvalidImpact(
@@ -2927,10 +2927,34 @@ pub fn project_component_replacement_impact_for_principal(
                 &body_correspondence,
                 mapping,
             )?;
-            rebound_endpoints.push(AssemblyMateEndpoint::resolved(
-                request.selected_occurrence_id,
-                target_reference,
-            ));
+            let rebound_endpoint = match mate.kind() {
+                crate::assembly::AssemblyMateKind::CoincidentPlanar { .. } => exact_results
+                    .planar_face_attachment(&source, &target_reference)
+                    .cloned()
+                    .map(|attachment| {
+                        AssemblyMateEndpoint::resolved_planar_face(
+                            request.selected_occurrence_id,
+                            attachment,
+                        )
+                    }),
+                crate::assembly::AssemblyMateKind::ConcentricAxial { .. } => exact_results
+                    .axial_attachment(&source, &target_reference)
+                    .cloned()
+                    .map(|attachment| {
+                        AssemblyMateEndpoint::resolved_axial(
+                            request.selected_occurrence_id,
+                            attachment,
+                        )
+                    }),
+                _ => None,
+            }
+            .ok_or_else(|| {
+                ComponentReplacementImpactError::Incompatible(format!(
+                    "target subshape {} has no compatible typed assembly attachment",
+                    mapping.semantic_role
+                ))
+            })?;
+            rebound_endpoints.push(rebound_endpoint);
             changed = true;
         }
         if changed {
@@ -4348,8 +4372,9 @@ pub fn project_shared_change_impact(
             SharedDefinitionChange::ExactParameterEdit(change) => {
                 let definition_id = change.definition_id;
                 let body_id = change.body_id;
-                let preview = prepare_body_parameter_edit(document, change, principal)
-                    .map_err(|error| SharedChangeImpactError::Unsupported(error.to_string()))?;
+                let preview =
+                    prepare_dependency_staging_body_parameter_edit(document, change, principal)
+                        .map_err(|error| SharedChangeImpactError::Unsupported(error.to_string()))?;
                 (
                     definition_id,
                     body_id,
@@ -4390,7 +4415,7 @@ pub fn project_shared_change_impact(
 
     let last_valid = current_body_result(exact_results, &source, definition_id, body_id)?;
     let candidate = document
-        .preview_batch(proposal.batch())
+        .preview_dependency_staging_batch(proposal.batch())
         .map_err(|error| SharedChangeImpactError::Unsupported(error.to_string()))?;
     let exact_request =
         ExactFeatureChainRequest::from_snapshot_for_body(&candidate, definition_id, body_id)

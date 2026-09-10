@@ -1919,17 +1919,23 @@ fn export_rollback_preserves_concurrent_destination_and_original_backup() {
     let directory = tempfile::tempdir().unwrap();
     let target = directory.path().join("model.step");
     std::fs::write(&target, b"original").unwrap();
-    let original_sha256 = export_target_sha256(&target).unwrap();
-    let mut backup = export_backup(&target, original_sha256.as_deref()).unwrap();
-    let backup_path = backup.as_ref().unwrap().to_path_buf();
+    let original_sha256 = export_target_sha256(&target).unwrap().unwrap();
+    let backup = empty_export_temp_path(&target, ".ketchup-export-backup-").unwrap();
+    let backup_path = backup.to_path_buf();
+    move_export_target_to_backup(&target, Some(&original_sha256), Some(&backup_path)).unwrap();
     std::fs::write(&target, b"concurrent writer").unwrap();
 
-    let error = restore_export_backup(&target, &mut backup, None).unwrap_err();
+    let error = recover_export_target(
+        &target,
+        Some(&backup_path),
+        Some(&original_sha256),
+        &ketchup_core::graph::sha256_hex(b"intended export"),
+    )
+    .unwrap_err();
 
     assert!(error.contains("changed concurrently"));
     assert_eq!(std::fs::read(&target).unwrap(), b"concurrent writer");
     assert_eq!(std::fs::read(backup_path).unwrap(), b"original");
-    assert!(backup.is_none());
 }
 
 #[test]
@@ -1937,16 +1943,24 @@ fn export_rollback_replaces_only_its_own_published_artifact() {
     let directory = tempfile::tempdir().unwrap();
     let target = directory.path().join("model.step");
     std::fs::write(&target, b"original").unwrap();
-    let original_sha256 = export_target_sha256(&target).unwrap();
-    let mut backup = export_backup(&target, original_sha256.as_deref()).unwrap();
+    let original_sha256 = export_target_sha256(&target).unwrap().unwrap();
+    let backup = empty_export_temp_path(&target, ".ketchup-export-backup-").unwrap();
+    let backup_path = backup.to_path_buf();
+    move_export_target_to_backup(&target, Some(&original_sha256), Some(&backup_path)).unwrap();
     let published = b"ketchup export";
     std::fs::write(&target, published).unwrap();
     let published_sha256 = ketchup_core::graph::sha256_hex(published);
 
-    restore_export_backup(&target, &mut backup, Some(&published_sha256)).unwrap();
+    recover_export_target(
+        &target,
+        Some(&backup_path),
+        Some(&original_sha256),
+        &published_sha256,
+    )
+    .unwrap();
 
     assert_eq!(std::fs::read(&target).unwrap(), b"original");
-    assert!(backup.is_none());
+    assert!(!backup_path.exists());
 }
 
 #[test]
@@ -2045,79 +2059,99 @@ fn active_boxes_cache_invalidates_on_same_revision_exact_results_and_registry_re
 }
 
 #[test]
-fn historical_render_boxes_do_not_read_geometry_from_the_current_tip() {
+fn historical_exact_geometry_is_bound_to_its_own_snapshot() {
     let mut app = KetchupApp::new();
-    app.document = DocumentStore::new();
-    app.document
-        .apply_batch(&CommandBatch::new(vec![
-            CanonicalCommand::CreateDefinition {
-                id: DefinitionId(1),
-                name: "Historical body".to_owned(),
-            },
-            CanonicalCommand::CreateFeature {
-                id: FeatureId(1),
-                definition_id: DefinitionId(1),
-                name: "First parent profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
-                },
-            },
-            CanonicalCommand::CreateFeature {
-                id: FeatureId(2),
-                definition_id: DefinitionId(1),
-                name: "Second parent profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[20.0, 20.0], [30.0, 20.0], [30.0, 30.0], [20.0, 30.0]],
-                },
-            },
-            CanonicalCommand::CreateOccurrence {
-                id: OccurrenceId(1),
-                definition_id: DefinitionId(1),
-                name: "Historical occurrence".to_owned(),
-                transform: Transform::identity(),
-                parent: None,
-                tag: None,
-                visible: true,
-            },
-        ]))
-        .unwrap();
+    assert!(app.headless_install_exact_package((*current_box_package(&app)).clone().into()));
     let parent = app.document.current();
-    assert!(app.active_boxes_for_snapshot(&parent).is_empty());
 
     app.document
         .apply_batch(&CommandBatch::new(vec![
-            CanonicalCommand::DeleteFeature { id: FeatureId(1) },
-            CanonicalCommand::DeleteFeature { id: FeatureId(2) },
-            CanonicalCommand::CreateFeature {
-                id: FeatureId(3),
-                definition_id: DefinitionId(1),
-                name: "Tip profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [20.0, 0.0], [20.0, 30.0], [0.0, 30.0]],
-                },
-            },
-            CanonicalCommand::CreateFeature {
-                id: FeatureId(4),
-                definition_id: DefinitionId(1),
-                name: "Tip extrusion".to_owned(),
-                kind: FeatureKind::Extrusion {
-                    profile: FeatureId(3),
-                    height: Dimension::from_decimal("40").unwrap(),
-                },
+            CanonicalCommand::SetFeatureDimension {
+                id: FeatureId(2),
+                dimension: Dimension::from_decimal("40").unwrap(),
             },
         ]))
         .unwrap();
+    let tip = app.document.current();
+    app.rebind_exact_results(&tip);
+    assert!(app.headless_install_exact_package((*current_box_package(&app)).clone().into()));
 
-    assert_eq!(app.active_boxes()[0].size_mm, Vec3::new(20.0, 30.0, 40.0));
-    assert!(
-        app.active_boxes_for_snapshot(&parent).is_empty(),
-        "the parent snapshot must not inherit render bounds from the current tip"
+    assert_eq!(
+        app.active_boxes_for_snapshot(&parent)[0].size_mm,
+        Vec3::new(100.0, 60.0, 20.0)
     );
+    assert_eq!(
+        app.active_boxes_for_snapshot(&tip)[0].size_mm,
+        Vec3::new(100.0, 60.0, 40.0)
+    );
+    let ray = Ray::new(Vec3::new(50.0, 30.0, 100.0), Vec3::new(0.0, 0.0, -1.0)).unwrap();
+    let parent_hit = app
+        .exact_projection(&parent)
+        .exact_surface_pick(ray)
+        .expect("the parent exact body remains pickable");
+    let tip_hit = app
+        .exact_projection(&tip)
+        .exact_surface_pick(ray)
+        .expect("the tip exact body remains pickable");
+    assert_eq!(parent_hit.position_mm.z, 20.0);
+    assert_eq!(tip_hit.position_mm.z, 40.0);
+
+    for (snapshot, expected_height) in [(&parent, 20.0), (&tip, 40.0)] {
+        app.refresh_interaction_projection_cache(snapshot);
+        let cache = app.interaction_projection_cache.borrow();
+        let cache = cache.as_ref().expect("the requested snapshot is cached");
+        assert_eq!(cache.document_id, snapshot.document_id());
+        assert_eq!(cache.revision_id, snapshot.revision_id());
+        assert_eq!(cache.canonical_digest, snapshot.canonical_digest());
+        assert_eq!(
+            cache
+                .exact
+                .exact_surface_pick(ray)
+                .expect("the cached exact body remains pickable")
+                .position_mm
+                .z,
+            expected_height
+        );
+        assert_eq!(
+            app.render_boxes_from_projection(snapshot, &cache.canonical, true)[0]
+                .size_mm
+                .z,
+            expected_height
+        );
+
+        app.selection.select_exact(
+            SelectionId {
+                definition_id: INITIAL_BOX_DEFINITION,
+                instance_path: InstancePath::root(OccurrenceId(1)),
+                element: ElementId::Face {
+                    axis: Axis::Z,
+                    side: Side::Maximum,
+                },
+            },
+            false,
+        );
+        assert_eq!(
+            app.selected_definition_id_for_snapshot(snapshot),
+            Some(INITIAL_BOX_DEFINITION)
+        );
+        assert_eq!(
+            app.box_height_mm_for_snapshot(snapshot, INITIAL_BOX_DEFINITION),
+            Some(expected_height)
+        );
+    }
+
+    app.document.undo().unwrap();
+    app.rebind_exact_results(&parent);
+    assert_eq!(app.active_boxes()[0].size_mm.z, 20.0);
+    app.document.redo().unwrap();
+    app.rebind_exact_results(&tip);
+    assert_eq!(app.active_boxes()[0].size_mm.z, 40.0);
+
     assert!(
         app.render_boxes_from_projection(
-            &app.document.current(),
+            &tip,
             &CanonicalInteractionProjection::from_snapshot(&parent),
-            false,
+            true,
         )
         .is_empty(),
         "a projection and snapshot from different revisions must fail closed"
@@ -2253,6 +2287,7 @@ fn install_graph_result(
             ],
             backend: "headless-topology-backend.v1".into(),
             tolerance: "1e-7-mm".into(),
+            faces: Vec::new(),
         },
         &StepImportMesh {
             vertices_mm,
@@ -3640,12 +3675,13 @@ fn exact_bottle_can_start_preview_and_commit_the_standard_move_tool() {
     app.exact_results
         .insert_current(&snapshot, package)
         .unwrap();
-    assert!(
-        app.active_boxes()
-            .iter()
-            .all(|item| item.instance_path != bottle_path),
-        "the exact bottle intentionally has no canonical box proxy"
-    );
+    let bottle_proxy = app
+        .active_boxes()
+        .into_iter()
+        .find(|item| item.instance_path == bottle_path)
+        .expect("the exact bottle exposes its evaluated bounds proxy");
+    assert_eq!(bottle_proxy.origin_mm, Vec3::new(60.0, -30.0, 0.0));
+    assert_eq!(bottle_proxy.size_mm, Vec3::new(60.0, 60.0, 155.0));
 
     let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1_000.0, 800.0));
     let pointer = app.project(Vec3::new(120.0, 0.0, 50.0), rect);
@@ -3903,6 +3939,173 @@ fn lossy_mesh_export_requires_payload_bound_receipt_before_any_artifact_write() 
     assert!(script.high_risk_prompts()[0].contains("Payload SHA-256:"));
 }
 
+fn staged_export_restart_journal(
+    primary_path: &Path,
+    report_path: &Path,
+    original_primary: &[u8],
+    original_report: &[u8],
+    published_primary: &[u8],
+    published_report: &[u8],
+) -> ExportBundleJournal {
+    ExportBundleJournal {
+        schema: EXPORT_BUNDLE_JOURNAL_SCHEMA_V1.to_owned(),
+        primary_path_sha256: export_path_identity_sha256(primary_path),
+        report_path_sha256: export_path_identity_sha256(report_path),
+        primary_temporary_name: ".ketchup-export-primary-restart".to_owned(),
+        report_temporary_name: ".ketchup-export-report-restart".to_owned(),
+        primary_backup_name: Some(".ketchup-export-backup-primary-restart".to_owned()),
+        report_backup_name: Some(".ketchup-export-backup-report-restart".to_owned()),
+        original_primary_sha256: Some(ketchup_core::graph::sha256_hex(original_primary)),
+        original_report_sha256: Some(ketchup_core::graph::sha256_hex(original_report)),
+        published_primary_sha256: ketchup_core::graph::sha256_hex(published_primary),
+        published_report_sha256: ketchup_core::graph::sha256_hex(published_report),
+    }
+}
+
+#[test]
+fn export_bundle_restart_rolls_back_a_partially_published_pair() {
+    let directory = tempfile::tempdir().unwrap();
+    let primary_path = directory.path().join("model.step");
+    let report_path = directory.path().join("model.step.loss.txt");
+    let original_primary = b"original CAD";
+    let original_report = b"original loss report";
+    let published_primary = b"new CAD";
+    let published_report = b"new loss report";
+    std::fs::write(&primary_path, original_primary).unwrap();
+    std::fs::write(&report_path, original_report).unwrap();
+    let journal = staged_export_restart_journal(
+        &primary_path,
+        &report_path,
+        original_primary,
+        original_report,
+        published_primary,
+        published_report,
+    );
+    let primary_temporary = directory.path().join(&journal.primary_temporary_name);
+    let report_temporary = directory.path().join(&journal.report_temporary_name);
+    let primary_backup = directory
+        .path()
+        .join(journal.primary_backup_name.as_deref().unwrap());
+    let report_backup = directory
+        .path()
+        .join(journal.report_backup_name.as_deref().unwrap());
+    std::fs::write(&primary_temporary, published_primary).unwrap();
+    std::fs::write(&report_temporary, published_report).unwrap();
+    persist_export_journal(&primary_path, &journal).unwrap();
+    std::fs::rename(&primary_path, &primary_backup).unwrap();
+    std::fs::rename(&report_path, &report_backup).unwrap();
+    std::fs::rename(&primary_temporary, &primary_path).unwrap();
+
+    recover_export_bundle(&primary_path, &report_path).unwrap();
+
+    assert_eq!(std::fs::read(&primary_path).unwrap(), original_primary);
+    assert_eq!(std::fs::read(&report_path).unwrap(), original_report);
+    for path in [
+        export_bundle_journal_path(&primary_path).unwrap(),
+        primary_temporary,
+        report_temporary,
+        primary_backup,
+        report_backup,
+    ] {
+        assert!(!path.exists(), "recovery residue: {}", path.display());
+    }
+}
+
+#[test]
+fn export_bundle_restart_commits_a_fully_published_pair() {
+    let directory = tempfile::tempdir().unwrap();
+    let primary_path = directory.path().join("model.iges");
+    let report_path = directory.path().join("model.iges.loss.txt");
+    let original_primary = b"original CAD";
+    let original_report = b"original loss report";
+    let published_primary = b"new CAD";
+    let published_report = b"new loss report";
+    std::fs::write(&primary_path, original_primary).unwrap();
+    std::fs::write(&report_path, original_report).unwrap();
+    let journal = staged_export_restart_journal(
+        &primary_path,
+        &report_path,
+        original_primary,
+        original_report,
+        published_primary,
+        published_report,
+    );
+    let primary_temporary = directory.path().join(&journal.primary_temporary_name);
+    let report_temporary = directory.path().join(&journal.report_temporary_name);
+    let primary_backup = directory
+        .path()
+        .join(journal.primary_backup_name.as_deref().unwrap());
+    let report_backup = directory
+        .path()
+        .join(journal.report_backup_name.as_deref().unwrap());
+    std::fs::write(&primary_temporary, published_primary).unwrap();
+    std::fs::write(&report_temporary, published_report).unwrap();
+    persist_export_journal(&primary_path, &journal).unwrap();
+    std::fs::rename(&primary_path, &primary_backup).unwrap();
+    std::fs::rename(&report_path, &report_backup).unwrap();
+    std::fs::rename(&primary_temporary, &primary_path).unwrap();
+    std::fs::rename(&report_temporary, &report_path).unwrap();
+
+    recover_export_bundle(&primary_path, &report_path).unwrap();
+
+    assert_eq!(std::fs::read(&primary_path).unwrap(), published_primary);
+    assert_eq!(std::fs::read(&report_path).unwrap(), published_report);
+    for path in [
+        export_bundle_journal_path(&primary_path).unwrap(),
+        primary_temporary,
+        report_temporary,
+        primary_backup,
+        report_backup,
+    ] {
+        assert!(!path.exists(), "recovery residue: {}", path.display());
+    }
+}
+
+#[test]
+fn export_bundle_restart_refuses_concurrent_change_before_recovery_mutation() {
+    let directory = tempfile::tempdir().unwrap();
+    let primary_path = directory.path().join("model.dxf");
+    let report_path = directory.path().join("model.dxf.loss.txt");
+    let original_primary = b"original CAD";
+    let original_report = b"original loss report";
+    let published_primary = b"new CAD";
+    let published_report = b"new loss report";
+    std::fs::write(&primary_path, original_primary).unwrap();
+    std::fs::write(&report_path, original_report).unwrap();
+    let journal = staged_export_restart_journal(
+        &primary_path,
+        &report_path,
+        original_primary,
+        original_report,
+        published_primary,
+        published_report,
+    );
+    let primary_temporary = directory.path().join(&journal.primary_temporary_name);
+    let report_temporary = directory.path().join(&journal.report_temporary_name);
+    let primary_backup = directory
+        .path()
+        .join(journal.primary_backup_name.as_deref().unwrap());
+    let report_backup = directory
+        .path()
+        .join(journal.report_backup_name.as_deref().unwrap());
+    std::fs::write(&primary_temporary, published_primary).unwrap();
+    std::fs::write(&report_temporary, published_report).unwrap();
+    persist_export_journal(&primary_path, &journal).unwrap();
+    std::fs::rename(&primary_path, &primary_backup).unwrap();
+    std::fs::rename(&report_path, &report_backup).unwrap();
+    std::fs::rename(&primary_temporary, &primary_path).unwrap();
+    std::fs::write(&report_path, b"concurrent writer").unwrap();
+
+    let error = recover_export_bundle(&primary_path, &report_path).unwrap_err();
+
+    assert!(error.contains("changed concurrently"));
+    assert_eq!(std::fs::read(&primary_path).unwrap(), published_primary);
+    assert_eq!(std::fs::read(&report_path).unwrap(), b"concurrent writer");
+    assert_eq!(std::fs::read(&primary_backup).unwrap(), original_primary);
+    assert_eq!(std::fs::read(&report_backup).unwrap(), original_report);
+    assert!(export_bundle_journal_path(&primary_path).unwrap().exists());
+}
+
 #[test]
 fn current_exact_occurrence_suppresses_only_the_non_preview_proxy() {
     let mut app = KetchupApp::new();
@@ -3914,7 +4117,7 @@ fn current_exact_occurrence_suppresses_only_the_non_preview_proxy() {
     let exact_projection = app.exact_projection(&snapshot);
 
     assert!(exact_projection.contains_occurrence(&InstancePath::root(OccurrenceId(1))));
-    assert!(app.viewport_boxes(&exact_projection).is_empty());
+    assert!(app.viewport_boxes(&snapshot, &exact_projection).is_empty());
 
     app.selection.primary = Some(SelectionId {
         definition_id: INITIAL_BOX_DEFINITION,
@@ -3926,7 +4129,7 @@ fn current_exact_occurrence_suppresses_only_the_non_preview_proxy() {
     });
     app.set_push_pull_distance_input("5");
     assert!(app.start_preview());
-    assert_eq!(app.viewport_boxes(&exact_projection).len(), 1);
+    assert_eq!(app.viewport_boxes(&snapshot, &exact_projection).len(), 1);
 }
 
 #[test]
@@ -4969,9 +5172,13 @@ fn running_app_uses_one_exact_cut_body_for_render_pick_and_export() {
         ]))
         .unwrap();
     assert_eq!(app.exact_render_body_count(), 0);
-    let stale_projection = app.exact_projection(&app.document.current());
+    let stale_snapshot = app.document.current();
+    let stale_projection = app.exact_projection(&stale_snapshot);
     assert!(!stale_projection.contains_occurrence(&InstancePath::root(OccurrenceId(10))));
-    assert!(app.viewport_boxes(&stale_projection).is_empty());
+    assert!(
+        app.viewport_boxes(&stale_snapshot, &stale_projection)
+            .is_empty()
+    );
     let stale_path = directory.path().join("stale-through-cut.obj");
     assert!(
         !app.export_exact_occurrence_mesh_to(&InstancePath::root(OccurrenceId(10)), &stale_path)
@@ -8007,7 +8214,7 @@ fn linear_pattern_preview_adds_virtual_viewport_occurrences_only() {
 
     let snapshot = app.document.current();
     let exact_projection = app.exact_projection(&snapshot);
-    let boxes = app.viewport_boxes(&exact_projection);
+    let boxes = app.viewport_boxes(&snapshot, &exact_projection);
     assert_eq!(boxes.len(), 4);
     assert_eq!(boxes[3].origin_mm, Vec3::new(0.0, 0.0, 150.0));
     assert_eq!(app.active_box_count(), 1);
@@ -9184,7 +9391,7 @@ fn imported_exact_occurrences_route_through_solid_tool_preview_and_commit() {
     assert_eq!(imported_boxes.len(), 2, "{imported_boxes:?}");
     let snapshot = app.document.current();
     let exact_projection = app.exact_projection(&snapshot);
-    assert!(app.viewport_boxes(&exact_projection).is_empty());
+    assert!(app.viewport_boxes(&snapshot, &exact_projection).is_empty());
     app.refresh_interaction_projection_cache(&snapshot);
     assert_eq!(
         app.interaction_projection_cache
@@ -9663,6 +9870,7 @@ fn solid_tool_preview_survives_accepted_exact_bounds_refresh_and_commits_once() 
             ],
             backend: "solid-tool-headless-backend.v1".into(),
             tolerance: "1e-7-mm".into(),
+            faces: Vec::new(),
         },
         &StepImportMesh {
             vertices_mm,
@@ -12876,6 +13084,49 @@ fn adaptive_grid_keeps_metric_lines_readable_across_camera_scales() {
         let screen_spacing = adaptive_grid_step(scale) * scale;
         assert!(screen_spacing >= 32.0);
         assert!(screen_spacing <= 80.0);
+    }
+}
+
+#[test]
+fn perspective_ground_axes_share_the_projected_world_origin() {
+    let mut app = KetchupApp::new();
+    app.projection_mode = ProjectionMode::Perspective;
+    app.yaw = -0.65;
+    app.pitch = -0.5;
+    app.zoom = 2.8;
+    app.pan = Vec2::ZERO;
+    app.camera_distance_mm = 150.0;
+    let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
+    let origin = app.project(Vec3::ZERO, rect);
+    let context = egui::Context::default();
+    let output = context.run(egui::RawInput::default(), |context| {
+        app.paint_ground_plane(
+            &context.layer_painter(egui::LayerId::new(
+                egui::Order::Middle,
+                egui::Id::new("perspective-ground-axes"),
+            )),
+            rect,
+        );
+    });
+
+    for axis in [Axis::X, Axis::Y, Axis::Z] {
+        let points = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::LineSegment { points, stroke } if stroke.color == axis_color(axis) => {
+                    Some(*points)
+                }
+                _ => None,
+            })
+            .expect("each world axis must be painted");
+        let direction = points[1] - points[0];
+        let amount = ((origin - points[0]).dot(direction) / direction.length_sq()).clamp(0.0, 1.0);
+        let distance = (origin - points[0].lerp(points[1], amount)).length();
+        assert!(
+            distance <= 0.25,
+            "{axis:?} axis misses the projected world origin by {distance} px"
+        );
     }
 }
 

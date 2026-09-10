@@ -1949,6 +1949,22 @@ fn explicit_feature_parameter_recompute_is_deterministic_undoable_and_identity_b
         FeatureParameterFreshness::Current
     );
 
+    let alternate_revision = document.apply_batch(&alternate).unwrap();
+    assert_ne!(alternate_revision.snapshot().canonical_digest(), recomputed);
+    assert_eq!(
+        alternate_revision
+            .snapshot()
+            .feature_parameter_provenance(&target)
+            .unwrap()
+            .applied_value_bits,
+        provenance.applied_value_bits
+    );
+    assert_eq!(
+        document.undo().unwrap().canonical_digest(),
+        recomputed,
+        "provenance identity must affect the canonical digest even when the applied value is equal"
+    );
+
     let saved_digest = document.current().canonical_digest();
     let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
     assert_eq!(reopened.snapshot().canonical_digest(), saved_digest);

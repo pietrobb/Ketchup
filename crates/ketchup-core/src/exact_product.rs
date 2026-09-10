@@ -728,6 +728,22 @@ pub struct ExactBRepGraphPackage {
     pub triangles: Vec<ExactTriangle>,
     pub triangle_face_ordinals: Vec<u32>,
     pub topological_references: Vec<TopologicalElementRef>,
+    pub references: Vec<BodySubshapeRef>,
+    pub planar_face_attachments: Vec<PlanarFaceAttachment>,
+    pub axial_attachments: Vec<AxialAttachment>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExactBRepGraphFaceEvidence {
+    pub semantic_role: String,
+    pub source_element_id: String,
+    pub face_ordinal: u32,
+    pub surface_kind: String,
+    pub corroborating_geometry_fingerprint: String,
+    pub centroid_mm: [f64; 3],
+    pub unit_normal: [f64; 3],
+    pub axis_origin_mm: Option<[f64; 3]>,
+    pub unit_axis_direction: Option<[f64; 3]>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -741,6 +757,12 @@ pub struct ExactBRepGraphWorkerEvidence {
     pub bounds_mm: [[f64; 3]; 2],
     pub backend: String,
     pub tolerance: String,
+    pub faces: Vec<ExactBRepGraphFaceEvidence>,
+}
+
+fn is_finite_unit_vector(vector: [f64; 3]) -> bool {
+    vector.into_iter().all(f64::is_finite)
+        && (vector.into_iter().map(|value| value * value).sum::<f64>() - 1.0).abs() <= 1.0e-12
 }
 
 impl ExactBRepGraphPackage {
@@ -839,6 +861,78 @@ impl ExactBRepGraphPackage {
         let topological_references =
             publish_generated_topological_references(&identity, evidence.topology_counts)
                 .map_err(|_| ExactProductError::InvalidWorkerEvidence)?;
+        let mut references = Vec::new();
+        let mut planar_face_attachments = Vec::new();
+        let mut axial_attachments = Vec::new();
+        for face in evidence.faces {
+            if face.face_ordinal >= evidence.topology_counts[2]
+                || face.corroborating_geometry_fingerprint.is_empty()
+                || !face.centroid_mm.into_iter().all(f64::is_finite)
+                || !is_finite_unit_vector(face.unit_normal)
+                || face.axis_origin_mm.is_some() != face.unit_axis_direction.is_some()
+                || face
+                    .axis_origin_mm
+                    .is_some_and(|origin| !origin.into_iter().all(f64::is_finite))
+                || face
+                    .unit_axis_direction
+                    .is_some_and(|direction| !is_finite_unit_vector(direction))
+            {
+                return Err(ExactProductError::InvalidWorkerEvidence);
+            }
+            let expected_type = match face.surface_kind.as_str() {
+                "plane" => "planar_face",
+                "cylinder" if face.axis_origin_mm.is_some() => "cylindrical_face",
+                _ => continue,
+            };
+            let reference = BodySubshapeRef {
+                schema: BODY_SUBSHAPE_REF_SCHEMA_V1.to_owned(),
+                document_id: identity.document_id,
+                definition_id: identity.definition_id,
+                profile_feature_id: identity.producer_feature_id,
+                producer_feature_id: identity.producer_feature_id,
+                semantic_role: face.semantic_role,
+                source_element_id: face.source_element_id,
+                expected_type: expected_type.to_owned(),
+                expected_cardinality: 1,
+                stability: ReferenceStability::Guaranteed,
+                canonical_input_digest: identity.canonical_input_digest.clone(),
+                exact_input_digest: identity.exact_input_digest.clone(),
+                result_fingerprint: identity.result_fingerprint.clone(),
+                evaluator: identity.evaluator.clone(),
+                backend: identity.backend.clone(),
+                tolerance: identity.tolerance.clone(),
+                lineage_digest: String::new(),
+                corroborating_geometry_fingerprint: face.corroborating_geometry_fingerprint,
+            };
+            let mut reference = reference;
+            reference.lineage_digest = reference_lineage_digest(&reference);
+            if !reference.has_valid_lineage()
+                || references.iter().any(|existing: &BodySubshapeRef| {
+                    existing.semantic_role == reference.semantic_role
+                        && existing.source_element_id == reference.source_element_id
+                })
+            {
+                continue;
+            }
+            if expected_type == "planar_face" {
+                let attachment = PlanarFaceAttachment::new(
+                    reference.clone(),
+                    face.centroid_mm,
+                    face.unit_normal,
+                )
+                .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+                planar_face_attachments.push(attachment);
+            } else {
+                let attachment = AxialAttachment::cylindrical_face(
+                    reference.clone(),
+                    face.axis_origin_mm.expect("validated axis origin"),
+                    face.unit_axis_direction.expect("validated axis direction"),
+                )
+                .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+                axial_attachments.push(attachment);
+            }
+            references.push(reference);
+        }
         Ok(Self {
             identity,
             graph: graph.clone(),
@@ -866,6 +960,9 @@ impl ExactBRepGraphPackage {
                 .map(|triangle| triangle.face_ordinal)
                 .collect(),
             topological_references,
+            references,
+            planar_face_attachments,
+            axial_attachments,
         })
     }
 
@@ -905,6 +1002,40 @@ impl ExactBRepGraphPackage {
         rebound.identity.source_revision = snapshot.revision_id();
         rebound.identity.source_digest = snapshot.canonical_digest();
         rebound.identity.canonical_input_digest = graph.canonical_input_digest.clone();
+        for reference in &mut rebound.references {
+            reference.canonical_input_digest = graph.canonical_input_digest.clone();
+        }
+        rebound.planar_face_attachments = self
+            .planar_face_attachments
+            .iter()
+            .map(|attachment| {
+                let reference = rebound.references.iter().find(|reference| {
+                    reference.semantic_role == attachment.reference().semantic_role
+                        && reference.source_element_id == attachment.reference().source_element_id
+                })?;
+                PlanarFaceAttachment::new(
+                    reference.clone(),
+                    attachment.local_origin_mm(),
+                    attachment.local_unit_normal(),
+                )
+            })
+            .collect::<Option<Vec<_>>>()?;
+        rebound.axial_attachments = self
+            .axial_attachments
+            .iter()
+            .map(|attachment| {
+                let reference = rebound.references.iter().find(|reference| {
+                    reference.semantic_role == attachment.reference().semantic_role
+                        && reference.source_element_id == attachment.reference().source_element_id
+                })?;
+                AxialAttachment::new(
+                    reference.clone(),
+                    attachment.kind(),
+                    attachment.local_origin_mm(),
+                    attachment.local_unit_direction(),
+                )
+            })
+            .collect::<Option<Vec<_>>>()?;
         rebound.graph = graph;
         Some(rebound)
     }
@@ -1295,7 +1426,8 @@ impl ExactBodyPackage {
         match self {
             Self::Rectangle(package) => &package.references,
             Self::Revolve(package) => &package.references,
-            Self::Graph(_) | Self::Imported(_) => &[],
+            Self::Graph(package) => &package.references,
+            Self::Imported(_) => &[],
         }
     }
 
@@ -2196,9 +2328,11 @@ impl ExactResultRegistry {
         };
         match self.packages.get(&key)?.as_ref() {
             ExactBodyPackage::Rectangle(package) => package.planar_face_attachment(reference),
-            ExactBodyPackage::Revolve(_)
-            | ExactBodyPackage::Graph(_)
-            | ExactBodyPackage::Imported(_) => None,
+            ExactBodyPackage::Graph(package) => package
+                .planar_face_attachments
+                .iter()
+                .find(|attachment| attachment.reference() == reference),
+            ExactBodyPackage::Revolve(_) | ExactBodyPackage::Imported(_) => None,
         }
     }
 
@@ -2224,9 +2358,11 @@ impl ExactResultRegistry {
         };
         match self.packages.get(&key)?.as_ref() {
             ExactBodyPackage::Rectangle(package) => package.axial_attachment(reference),
-            ExactBodyPackage::Revolve(_)
-            | ExactBodyPackage::Graph(_)
-            | ExactBodyPackage::Imported(_) => None,
+            ExactBodyPackage::Graph(package) => package
+                .axial_attachments
+                .iter()
+                .find(|attachment| attachment.reference() == reference),
+            ExactBodyPackage::Revolve(_) | ExactBodyPackage::Imported(_) => None,
         }
     }
 
@@ -9647,6 +9783,7 @@ pub enum ExactProductError {
     UnsupportedShell,
     EmptyModelExport,
     InvalidMeshExport,
+    ExportResourceLimit,
     InvalidWorkerEvidence,
     StaleResult,
     BodyOutputNotFound {
@@ -9701,6 +9838,9 @@ impl fmt::Display for ExactProductError {
             Self::EmptyModelExport => formatter.write_str("the visible exact model is empty"),
             Self::InvalidMeshExport => {
                 formatter.write_str("the accepted exact tessellation contains an invalid facet")
+            }
+            Self::ExportResourceLimit => {
+                formatter.write_str("exact mesh export exceeded its resource limit")
             }
             Self::InvalidWorkerEvidence => {
                 formatter.write_str("exact worker evidence does not match the canonical request")

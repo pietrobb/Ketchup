@@ -142,6 +142,11 @@ fn public_sidecar_launch_ignores_attacker_cwd_path_and_python_environment() {
         "PATH",
         "PYTHONPATH",
         "PYTHONHOME",
+        "KETCHUP_PYTHON",
+        "KETCHUP_PYTHON_SHA256",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "SSL_CERT_FILE",
         "KETCHUP_PUBLIC_ASSISTANT",
     ] {
         assert!(

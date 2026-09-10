@@ -919,6 +919,17 @@ fn revision_metadata_and_rollback_reject_invalid_or_stale_requests_without_mutat
         ),
         Err(RevisionHistoryError::Stale)
     );
+    for principal in [ProposalPrincipal::Human(0), ProposalPrincipal::Plugin(0)] {
+        assert!(matches!(
+            store.rollback_to_revision(
+                current.revision_id(),
+                &current.canonical_digest(),
+                current.revision_id(),
+                principal,
+            ),
+            Err(RevisionHistoryError::InvalidPrincipal)
+        ));
+    }
     assert!(matches!(
         store.rollback_to_revision(
             current.revision_id(),

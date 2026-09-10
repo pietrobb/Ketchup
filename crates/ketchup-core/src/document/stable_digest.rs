@@ -19,6 +19,14 @@ pub(super) fn digest_snapshot(snapshot: &Snapshot) -> String {
     for binding in snapshot.product.feature_parameter_bindings.values() {
         digest.feature_parameter_binding(binding);
     }
+    if !snapshot.product.feature_parameter_provenance.is_empty() {
+        digest.bytes(b"feature-parameter-provenance.v1");
+        digest.u64(snapshot.product.feature_parameter_provenance.len() as u64);
+        for (target, provenance) in &snapshot.product.feature_parameter_provenance {
+            digest.feature_parameter_target(target);
+            digest.feature_parameter_provenance(provenance);
+        }
+    }
     digest.u64(snapshot.product.joints.len() as u64);
     for joint in snapshot.product.joints.values() {
         digest.joint(joint);
@@ -246,6 +254,21 @@ impl StableDigest {
         self.feature_parameter_target(&binding.target);
         self.u64(binding.derived_from.root_rule_node_id.0);
         self.slot_path(&binding.derived_from.slot_path);
+    }
+
+    fn feature_parameter_provenance(&mut self, provenance: &FeatureParameterProvenance) {
+        self.bytes(provenance.identity.evaluator.as_bytes());
+        self.bytes(provenance.identity.schema.as_bytes());
+        self.bytes(provenance.identity.tolerance.as_bytes());
+        if let Some(backend) = provenance.identity.backend.as_ref() {
+            self.byte(1);
+            self.bytes(backend.as_bytes());
+        } else {
+            self.byte(0);
+        }
+        self.bytes(provenance.input_digest.as_bytes());
+        self.bytes(provenance.result_digest.as_bytes());
+        self.u64(provenance.applied_value_bits);
     }
 
     fn joint(&mut self, joint: &CanonicalJoint) {

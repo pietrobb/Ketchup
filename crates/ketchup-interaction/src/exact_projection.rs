@@ -892,6 +892,7 @@ mod tests {
                     bounds_mm: [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]],
                     backend: "occt-generated-headless.v1".into(),
                     tolerance: "1e-7-mm".into(),
+                    faces: Vec::new(),
                 },
                 &mesh,
             )

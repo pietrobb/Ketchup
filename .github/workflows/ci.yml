@@ -5,12 +5,15 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-governance-${{ github.ref }}
+  group: ci-governance-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -36,15 +39,39 @@ jobs:
         shell: powershell
         run: .\scripts\windows\test-pr-ci-red-paths.ps1
 
+  pull-request-runner-policy:
+    name: classify PR runner trust
+    if: github.event_name == 'pull_request_target'
+    runs-on: windows-latest
+    timeout-minutes: 5
+    outputs:
+      allow_self_hosted: ${{ steps.policy.outputs.allow_self_hosted }}
+    steps:
+      - name: Check out trusted base policy
+        uses: actions/checkout@11bd71901bbe5b163ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Classify runner trust from the GitHub event
+        id: policy
+        shell: powershell
+        env:
+          KETCHUP_EVENT_PATH: ${{ github.event_path }}
+          KETCHUP_REPOSITORY: ${{ github.repository }}
+        run: .\scripts\windows\get-pr-runner-policy.ps1 -EventPath $env:KETCHUP_EVENT_PATH -Repository $env:KETCHUP_REPOSITORY -OutputPath $env:GITHUB_OUTPUT
+
   pull-request-quality-build:
     name: quality and complete build
-    if: github.event_name == 'pull_request'
+    needs: pull-request-runner-policy
+    if: github.event_name == 'pull_request_target' && needs.pull-request-runner-policy.outputs.allow_self_hosted == 'true' && !github.event.pull_request.head.repo.fork && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Windows, X64, ketchup-occt-r0-v1]
     timeout-minutes: 60
     steps:
       - name: Check out exact revision
         uses: actions/checkout@11bd71901bbe5b163ceea73d27597364c9af683
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
       - name: Run formatting, strict Clippy, and complete build
@@ -53,13 +80,15 @@ jobs:
 
   pull-request-foundations:
     name: foundation product tests
-    if: github.event_name == 'pull_request'
+    needs: pull-request-runner-policy
+    if: github.event_name == 'pull_request_target' && needs.pull-request-runner-policy.outputs.allow_self_hosted == 'true' && !github.event.pull_request.head.repo.fork && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Windows, X64, ketchup-occt-r0-v1]
     timeout-minutes: 60
     steps:
       - name: Check out exact revision
         uses: actions/checkout@11bd71901bbe5b163ceea73d27597364c9af683
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
       - name: Run foundation tests without fail-fast
@@ -68,13 +97,15 @@ jobs:
 
   pull-request-scheduler:
     name: scheduler and exact-worker product tests
-    if: github.event_name == 'pull_request'
+    needs: pull-request-runner-policy
+    if: github.event_name == 'pull_request_target' && needs.pull-request-runner-policy.outputs.allow_self_hosted == 'true' && !github.event.pull_request.head.repo.fork && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Windows, X64, ketchup-occt-r0-v1]
     timeout-minutes: 60
     steps:
       - name: Check out exact revision
         uses: actions/checkout@11bd71901bbe5b163ceea73d27597364c9af683
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
       - name: Run scheduler tests without fail-fast
@@ -83,13 +114,15 @@ jobs:
 
   pull-request-app:
     name: app and headless product tests
-    if: github.event_name == 'pull_request'
+    needs: pull-request-runner-policy
+    if: github.event_name == 'pull_request_target' && needs.pull-request-runner-policy.outputs.allow_self_hosted == 'true' && !github.event.pull_request.head.repo.fork && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Windows, X64, ketchup-occt-r0-v1]
     timeout-minutes: 60
     steps:
       - name: Check out exact revision
         uses: actions/checkout@11bd71901bbe5b163ceea73d27597364c9af683
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
       - name: Run app tests without fail-fast

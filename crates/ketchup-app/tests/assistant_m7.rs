@@ -136,11 +136,12 @@ fn assign_validator_roles(shell: &mut Shell, assignments: &[(&str, &str, &str)])
                 ("visibility", "◉".to_owned()),
             ]),
         );
-        shell.click_row(&row);
+        shell.activate_role_and_label(Role::Button, &row);
         assert!(
             shell
                 .app_mut()
-                .assign_selection_to_classification(dimension_id, Some(role_ids[*role]),)
+                .assign_selection_to_classification(dimension_id, Some(role_ids[*role]),),
+            "failed to assign validator role {role} to {name} ({dimensions})"
         );
     }
     shell
@@ -2201,6 +2202,85 @@ fn scripted_append_pocket_is_exact_persistent_and_one_step() {
     assert_eq!(shell.app().canonical_digest(), committed_digest);
     assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
     assert_eq!(shell.app().redo_step_count(), baseline_redo);
+    assert_eq!(transport.remaining_responses(), 0);
+}
+
+#[test]
+fn scripted_append_pocket_rejects_missing_profile_without_false_success() {
+    let request = "Create an opening from missing profile 999";
+    let rejected_result = || AssistantChatResult {
+        message: "The requested opening was created.".to_owned(),
+        model_intent: None,
+    };
+    let transport = Arc::new(ScriptedAssistantTransport::new([
+        (request.to_owned(), rejected_result()),
+        (request.to_owned(), rejected_result()),
+    ]));
+    let invalid_program = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::AppendFeature {
+            definition_id: 1,
+            name: "Rejected Assistant pocket".to_owned(),
+            feature: AssistantCadBodyFeature::Pocket {
+                target_feature_id: 2,
+                profile_feature_id: 999,
+                depth_mm: 8.0,
+            },
+        }],
+    };
+    transport.queue_cad_edit_program(request, invalid_program.clone());
+    transport.queue_cad_edit_program(request, invalid_program);
+
+    let directory = tempfile::tempdir().unwrap();
+    let fixture_path = directory
+        .path()
+        .join("assistant-invalid-pocket-inputs.ketchup");
+    write_assistant_boolean_fixture(&fixture_path);
+    let mut shell = Shell::with_assistant_transport(transport.clone());
+    assert!(shell.app_mut().open_document_path(&fixture_path));
+    shell.settle();
+    let baseline_revision = shell.app().document_revision();
+    let baseline_digest = shell.app().canonical_digest();
+    let baseline_undo = shell.app().undo_step_count();
+
+    shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
+    shell.type_text(request);
+    shell.press_key(egui::Key::Enter);
+    for _ in 0..200 {
+        shell.step();
+        if shell
+            .app()
+            .assistant_messages()
+            .iter()
+            .filter(|message| message.diagnostic.is_some())
+            .count()
+            == 2
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    shell.settle();
+
+    let diagnostic_messages = shell
+        .app()
+        .assistant_messages()
+        .iter()
+        .filter(|message| message.diagnostic.is_some())
+        .collect::<Vec<_>>();
+    assert_eq!(diagnostic_messages.len(), 2);
+    for message in diagnostic_messages {
+        let diagnostic = message.diagnostic.as_ref().unwrap();
+        assert_eq!(message.role, AssistantMessageRole::Error);
+        assert_eq!(diagnostic.code, "canonical.feature_not_found");
+        assert_eq!(diagnostic.operation, "append_feature");
+        assert!(diagnostic.target.starts_with("document:"));
+        assert!(message.text.contains("feature 999 does not exist"));
+        assert!(shell.has_visible_label(&message.text));
+    }
+    assert!(shell.app().assistant_proposal().is_none());
+    assert_eq!(shell.app().document_revision(), baseline_revision);
+    assert_eq!(shell.app().canonical_digest(), baseline_digest);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo);
     assert_eq!(transport.remaining_responses(), 0);
 }
 

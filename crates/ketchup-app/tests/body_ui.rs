@@ -50,6 +50,26 @@ fn exact_worker_path() -> PathBuf {
     }
 }
 
+fn copy_exact_worker_with_runtime(destination: &Path) {
+    let source = exact_worker_path();
+    std::fs::copy(&source, destination).unwrap();
+    #[cfg(windows)]
+    for entry in std::fs::read_dir(source.parent().unwrap()).unwrap() {
+        let entry = entry.unwrap();
+        if entry
+            .path()
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("dll"))
+        {
+            std::fs::copy(
+                entry.path(),
+                destination.parent().unwrap().join(entry.file_name()),
+            )
+            .unwrap();
+        }
+    }
+}
+
 fn wait_for_exact_bodies(shell: &mut Shell, expected: usize) {
     for _ in 0..500 {
         shell.step();
@@ -418,7 +438,7 @@ fn serial_multibody_accesskit_workflow_recomputes_undoes_and_round_trips() {
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), combined_digest);
     assert_eq!(shell.app().document_revision(), persisted_revision);
-    assert!(!shell.app().can_undo());
+    assert!(shell.app().can_undo());
     wait_for_exact_bodies(&mut shell, 2);
     assert_eq!(shell.app().instanced_scene_triangle_count(), 24);
 
@@ -427,7 +447,7 @@ fn serial_multibody_accesskit_workflow_recomputes_undoes_and_round_trips() {
     } else {
         "body-worker"
     });
-    std::fs::copy(exact_worker_path(), &failing_worker).unwrap();
+    copy_exact_worker_with_runtime(&failing_worker);
     shell
         .app_mut()
         .connect_exact_worker(&failing_worker)
@@ -448,7 +468,9 @@ fn serial_multibody_accesskit_workflow_recomputes_undoes_and_round_trips() {
     )
     .unwrap();
 
-    std::fs::write(&failing_worker, b"not an executable").unwrap();
+    shell
+        .app_mut()
+        .headless_force_exact_worker_path(directory.path().join("missing-body-worker.exe"));
     open_body_editor(&mut shell);
     assert!(
         shell

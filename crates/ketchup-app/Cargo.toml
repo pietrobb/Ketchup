@@ -15,6 +15,7 @@ named-product-fixtures = [
     "ketchup-scheduler/named-product-fixtures",
     "ketchup-application/named-product-fixtures",
 ]
+manual-alpha = []
 
 [dependencies]
 eframe = { version = "0.32.3", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }

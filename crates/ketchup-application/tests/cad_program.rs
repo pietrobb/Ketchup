@@ -259,6 +259,166 @@ fn same_program_boolean_resolves_host_assigned_body_outputs_atomically() {
 }
 
 #[test]
+fn create_part_sketch_and_pocket_resolve_typed_program_outputs_atomically() {
+    let mut document = DocumentStore::new();
+    let baseline = document.current();
+    let undo = document.visible_undo_steps();
+    let output = |operation_index, output| AssistantCadProgramFeatureReference {
+        operation_index,
+        output,
+    };
+    let input = program(vec![
+        part(),
+        AssistantCadEditOperation::CreateProgramSketch {
+            definition: output(0, AssistantCadProgramFeatureOutput::Definition),
+            name: "Opening profile".into(),
+            workplane: AssistantWorkplaneSpec::Principal {
+                plane: AssistantPrincipalPlane::Xy,
+            },
+            entities: vec![AssistantSketchEntity::Circle {
+                id: 1,
+                center_mm: [0.0, 0.0],
+                radius_mm: 4.0,
+            }],
+            constraints: Vec::new(),
+        },
+        AssistantCadEditOperation::AppendProgramPocket {
+            definition: output(0, AssistantCadProgramFeatureOutput::Definition),
+            name: "Opening".into(),
+            target_feature: output(0, AssistantCadProgramFeatureOutput::BodyFeature),
+            profile_feature: output(1, AssistantCadProgramFeatureOutput::SketchFeature),
+            depth_mm: 10.0,
+        },
+    ]);
+    let input: AssistantCadEditProgram =
+        serde_json::from_slice(&serde_json::to_vec(&input).unwrap()).unwrap();
+    let batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &input,
+    )
+    .unwrap();
+    assert_eq!(batch.commands().len(), 8);
+    assert_eq!(
+        document.current().canonical_digest(),
+        baseline.canonical_digest()
+    );
+    assert_eq!(document.visible_undo_steps(), undo);
+
+    let candidate = document.preview_batch(&batch).unwrap();
+    assert!(matches!(
+        candidate.feature(FeatureId(6)).unwrap().kind(),
+        FeatureKind::Pocket {
+            target: FeatureId(3),
+            profile: FeatureId(5),
+            ..
+        }
+    ));
+    ExactBRepGraph::from_snapshot(&candidate, DefinitionId(1), FeatureId(6)).unwrap();
+
+    document.apply_batch(&batch).unwrap();
+    let committed = document.current();
+    assert_eq!(committed.revision_id(), baseline.revision_id() + 1);
+    assert_eq!(document.visible_undo_steps(), undo + 1);
+    document.undo().unwrap();
+    assert_eq!(
+        document.current().canonical_digest(),
+        baseline.canonical_digest()
+    );
+    document.redo().unwrap();
+    assert_eq!(
+        document.current().canonical_digest(),
+        committed.canonical_digest()
+    );
+}
+
+#[test]
+fn typed_program_outputs_reject_forward_and_cross_kind_references_without_mutation() {
+    let document = DocumentStore::new();
+    let baseline = document.current();
+    let output = |operation_index, output| AssistantCadProgramFeatureReference {
+        operation_index,
+        output,
+    };
+    let sketch = |definition| AssistantCadEditOperation::CreateProgramSketch {
+        definition,
+        name: "Opening profile".into(),
+        workplane: AssistantWorkplaneSpec::Principal {
+            plane: AssistantPrincipalPlane::Xy,
+        },
+        entities: vec![AssistantSketchEntity::Circle {
+            id: 1,
+            center_mm: [0.0, 0.0],
+            radius_mm: 4.0,
+        }],
+        constraints: Vec::new(),
+    };
+    let pocket = |target_feature, profile_feature| AssistantCadEditOperation::AppendProgramPocket {
+        definition: output(0, AssistantCadProgramFeatureOutput::Definition),
+        name: "Opening".into(),
+        target_feature,
+        profile_feature,
+        depth_mm: 10.0,
+    };
+    let invalid_programs = [
+        program(vec![
+            part(),
+            sketch(output(0, AssistantCadProgramFeatureOutput::BodyFeature)),
+        ]),
+        program(vec![
+            part(),
+            sketch(output(0, AssistantCadProgramFeatureOutput::Definition)),
+            pocket(
+                output(0, AssistantCadProgramFeatureOutput::BodyFeature),
+                output(0, AssistantCadProgramFeatureOutput::BodyFeature),
+            ),
+        ]),
+        program(vec![
+            part(),
+            sketch(output(0, AssistantCadProgramFeatureOutput::Definition)),
+            pocket(
+                output(2, AssistantCadProgramFeatureOutput::BodyFeature),
+                output(1, AssistantCadProgramFeatureOutput::SketchFeature),
+            ),
+        ]),
+        program(vec![
+            part(),
+            AssistantCadEditOperation::CreateProgramSketch {
+                definition: output(0, AssistantCadProgramFeatureOutput::Definition),
+                name: "Guessed workplane".into(),
+                workplane: AssistantWorkplaneSpec::Offset {
+                    base_feature_id: 1,
+                    distance_mm: 1.0,
+                },
+                entities: vec![AssistantSketchEntity::Circle {
+                    id: 1,
+                    center_mm: [0.0, 0.0],
+                    radius_mm: 4.0,
+                }],
+                constraints: Vec::new(),
+            },
+        ]),
+    ];
+    for input in invalid_programs {
+        let rejection = plan(
+            &document,
+            &BTreeSet::new(),
+            &ExactResultRegistry::default(),
+            &input,
+        )
+        .unwrap_err();
+        assert_eq!(rejection.phase, AssistantRejectionPhase::IntentValidation);
+        assert_eq!(rejection.code, "intent.cad_edit_program_invalid");
+    }
+    assert_eq!(
+        document.current().canonical_digest(),
+        baseline.canonical_digest()
+    );
+    assert_eq!(document.visible_undo_steps(), 0);
+}
+
+#[test]
 fn explicit_targets_ignore_selection_and_current_selection_is_borrowed() {
     let document = seeded();
     let registry = ExactResultRegistry::default();

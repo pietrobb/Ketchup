@@ -6,7 +6,9 @@ use ketchup_core::exact_product::{
     ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactProductError,
     build_box_render_package, canonical_reference_lineage_digest,
 };
-use ketchup_core::three_mf_export::{ExactThreeMfInstance, exact_model_three_mf_export};
+use ketchup_core::three_mf_export::{
+    ExactThreeMfInstance, MAX_THREE_MF_EXPORT_INSTANCES, exact_model_three_mf_export,
+};
 use std::collections::BTreeMap;
 
 const DEFINITION: DefinitionId = DefinitionId(1);
@@ -16,12 +18,16 @@ const FIRST: OccurrenceId = OccurrenceId(10);
 const SECOND: OccurrenceId = OccurrenceId(11);
 
 fn seeded_document() -> DocumentStore {
+    seeded_document_with_definition_name("Reusable <beam>")
+}
+
+fn seeded_document_with_definition_name(definition_name: &str) -> DocumentStore {
     let mut document = DocumentStore::new();
     document
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::CreateDefinition {
                 id: DEFINITION,
-                name: "Reusable <beam>".into(),
+                name: definition_name.into(),
             },
             CanonicalCommand::CreateFeature {
                 id: PROFILE,
@@ -217,5 +223,66 @@ fn three_mf_refuses_empty_hidden_and_stale_inputs_without_mutation() {
     assert_eq!(
         document.current().canonical_digest(),
         current.canonical_digest()
+    );
+}
+
+#[test]
+fn three_mf_refuses_excessive_instances_before_encoding() {
+    let document = seeded_document();
+    let snapshot = document.current();
+    let package = current_package(&snapshot);
+    let occurrence = snapshot.scene_query().remove(0);
+    let instances = vec![
+        ExactThreeMfInstance {
+            package: &package,
+            occurrence: &occurrence,
+        };
+        MAX_THREE_MF_EXPORT_INSTANCES + 1
+    ];
+
+    assert_eq!(
+        exact_model_three_mf_export(&snapshot, &instances).unwrap_err(),
+        ExactProductError::ExportResourceLimit
+    );
+}
+
+#[test]
+fn three_mf_refuses_package_occurrence_definition_mismatch() {
+    let document = seeded_document();
+    let snapshot = document.current();
+    let package = current_package(&snapshot);
+    let mut occurrence = snapshot.scene_query().remove(0);
+    occurrence.definition_id = DefinitionId(999);
+
+    assert_eq!(
+        exact_model_three_mf_export(
+            &snapshot,
+            &[ExactThreeMfInstance {
+                package: &package,
+                occurrence: &occurrence,
+            }],
+        )
+        .unwrap_err(),
+        ExactProductError::InvalidMeshExport
+    );
+}
+
+#[test]
+fn three_mf_refuses_xml_1_0_forbidden_name_characters() {
+    let document = seeded_document_with_definition_name("invalid\u{1}name");
+    let snapshot = document.current();
+    let package = current_package(&snapshot);
+    let occurrence = snapshot.scene_query().remove(0);
+
+    assert_eq!(
+        exact_model_three_mf_export(
+            &snapshot,
+            &[ExactThreeMfInstance {
+                package: &package,
+                occurrence: &occurrence,
+            }],
+        )
+        .unwrap_err(),
+        ExactProductError::InvalidMeshExport
     );
 }

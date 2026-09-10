@@ -1685,6 +1685,15 @@ fn production_exports_are_stable_across_recompute_undo_redo_and_save_open() {
     assert!(dxf.contains("8\nVISIBLE"));
     assert!(dxf.contains("8\nHIDDEN\n6\nHIDDEN"));
     assert!(dxf.contains("8\nDIMENSION"));
+    assert!(dxf.contains("0\nTABLE\n2\nAPPID\n70\n1\n0\nAPPID\n2\nKETCHUP\n70\n0\n0\nENDTAB"));
+    let dxf_lines = dxf.lines().collect::<Vec<_>>();
+    for (index, _) in dxf_lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| **line == "1000")
+    {
+        assert_eq!(&dxf_lines[index - 2..index], &["1001", "KETCHUP"]);
+    }
     assert!(dxf.contains("30 ±0.2 mm"));
     let pdf = std::str::from_utf8(initial.pdf()).unwrap();
     assert!(pdf.starts_with("%PDF-1.7"));

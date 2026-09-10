@@ -19,6 +19,8 @@ $PackageDir = [IO.Path]::GetFullPath($PackageDir)
 $platformDecisionRecordPath = Join-Path $repoRoot "docs\adr\0007-windows-x86-64-first-release.md"
 $expectedPlatformDecisionRecordSha256 = "cb91dbd3f8d2b96f7edb5f1f1eae01c49acf2846f85aeed5546c44c79ac5dc62"
 $expectedOcctManifestSha256 = "1212a72954ed503a6b06618b2813b1d7c04f5b422329d2327594268e431ef48a"
+$pinnedPublicPythonSha256 = "5f7b89a612c9b8af1d6456cdfcd1dbe5ca630849e79aebced9bee9a6694952ec"
+$pinnedPublicPythonRegistryKey = "Software\Python\PythonCore\3.11\InstallPath"
 $maxEvidenceManifestBytes = 1024 * 1024
 $maxProvenanceManifestBytes = 256 * 1024
 if (-not [string]::IsNullOrWhiteSpace($EvidenceDir)) {
@@ -236,8 +238,11 @@ function Read-BoundedUtf8String([byte[]]$Bytes, [ref]$Offset, [int]$End, [string
 function Assert-PackageManifestProvenance([object]$PackageManifest) {
     Assert-ExactProperties $PackageManifest @(
         "schema_version", "kind", "platform", "platform_decision", "platform_decision_record",
-        "platform_decision_record_sha256", "release_eligible", "release_blockers", "cargo_lock_sha256", "occt", "files"
+        "platform_decision_record_sha256", "release_eligible", "release_blockers", "cargo_lock_sha256", "assistant_runtime", "occt", "files"
     ) "Captured package manifest"
+    Assert-ExactProperties $PackageManifest.assistant_runtime @(
+        "kind", "python_version", "registry_hive", "registry_key", "executable_sha256"
+    ) "Captured package Assistant runtime"
     Assert-ExactProperties $PackageManifest.occt @(
         "version", "source_commit", "manifest_sha256", "build_fingerprint", "runtime_dll_count"
     ) "Captured package OCCT provenance"
@@ -263,7 +268,7 @@ function Assert-PackageManifestProvenance([object]$PackageManifest) {
         throw "The current R0 OCCT manifest is not the pinned Windows Release baseline."
     }
     $pinnedRecords = @($pinnedOcct.shared_libraries)
-    if ($PackageManifest.schema_version -ne 1 -or
+    if ($PackageManifest.schema_version -ne 2 -or
         $PackageManifest.kind -ne "technical-release-candidate" -or
         $PackageManifest.platform -ne "windows-x86_64" -or
         $PackageManifest.platform_decision -cne "windows-x86_64-first-release" -or
@@ -278,6 +283,13 @@ function Assert-PackageManifestProvenance([object]$PackageManifest) {
         [string]$PackageManifest.occt.build_fingerprint -cne "occt-8.0.1:b8f597c677811d1f9f4d8a97f5ae2825c0353a42:r0-v1" -or
         [int]$PackageManifest.occt.runtime_dll_count -ne $pinnedRecords.Count) {
         throw "The captured package manifest is not bound to the current Cargo.lock and pinned R0 OCCT baseline."
+    }
+    if ($PackageManifest.assistant_runtime.kind -cne "pep-514-system" -or
+        $PackageManifest.assistant_runtime.python_version -cne "3.11" -or
+        $PackageManifest.assistant_runtime.registry_hive -cne "HKLM" -or
+        $PackageManifest.assistant_runtime.registry_key -cne $pinnedPublicPythonRegistryKey -or
+        $PackageManifest.assistant_runtime.executable_sha256 -cne $pinnedPublicPythonSha256) {
+        throw "The captured package Assistant runtime differs from the product pin."
     }
 
     $expected = @{

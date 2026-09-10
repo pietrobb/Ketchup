@@ -2,10 +2,13 @@
 mod fixture;
 use fixture::*;
 use ketchup_core::document::{
-    BodyId, CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, DocumentStore,
-    FeatureKind, ProfileSegment,
+    BodyId, BooleanOperation, CanonicalCommand, CanonicalError, CommandBatch, DefinitionId,
+    DocumentStore, FeatureId, FeatureKind, ProfileSegment,
 };
-use ketchup_core::exact_brep_graph::{ExactBRepGraph, ExactBRepGraphError, ExactBRepOperation};
+use ketchup_core::exact_brep_graph::{
+    ExactBRepGraph, ExactBRepGraphError, ExactBRepOperation, ExactBRepPlanarGeometry,
+    ExactBRepPlanarLoop, ExactBRepPlanarSegment,
+};
 use ketchup_core::persistence;
 use ketchup_core::sketch::{PrincipalPlane, SketchEntity, SketchEntityId, WorkplaneFrame};
 use std::collections::BTreeSet;
@@ -57,6 +60,98 @@ fn sketch_pocket_preserves_single_region_identity_and_workplane() {
             );
         }
     }
+}
+
+#[test]
+fn circle_mixed_curve_and_compound_regions_compile_without_shape_branches() {
+    let cases = [
+        (circle(PLANE, [60.0, 60.0], 20.0), "circle"),
+        (semicircle(PLANE, [60.0, 60.0], 20.0), "mixed"),
+        (
+            rectangle_with_circular_hole(PLANE, [40.0, 40.0], [80.0, 80.0], [60.0, 60.0], 10.0),
+            "compound",
+        ),
+    ];
+    for (sketch, expected) in cases {
+        let region = sketch.solved_regions().unwrap()[0].clone();
+        let document = document_with_cut_sketch(PrincipalPlane::Xy, 0.0, sketch);
+        let graph = ExactBRepGraph::from_snapshot(&document.current(), DEFINITION, POCKET).unwrap();
+        let ExactBRepOperation::ProfileCut { profile, .. } = graph.nodes.last().unwrap().operation
+        else {
+            panic!("expected cut")
+        };
+        let compiled = &graph.profiles[profile.0 as usize];
+        assert_eq!(compiled.region_id, Some(region.id.0));
+        match (expected, &compiled.geometry) {
+            ("circle", ExactBRepPlanarGeometry::Circle { .. }) => {}
+            (
+                "mixed",
+                ExactBRepPlanarGeometry::Boundary {
+                    closed: true,
+                    segments,
+                },
+            ) => assert!(matches!(
+                segments.as_slice(),
+                [
+                    ExactBRepPlanarSegment::Line { .. },
+                    ExactBRepPlanarSegment::CircularArc { .. }
+                ]
+            )),
+            (
+                "compound",
+                ExactBRepPlanarGeometry::Region {
+                    outer: ExactBRepPlanarLoop::Boundary { .. },
+                    holes,
+                },
+            ) => assert!(matches!(
+                holes.as_slice(),
+                [ExactBRepPlanarLoop::Circle { .. }]
+            )),
+            _ => panic!("unexpected compiled geometry for {expected}"),
+        }
+    }
+}
+
+#[test]
+fn generic_boolean_consumes_a_sketch_pocket_result() {
+    const TOOL_PROFILE: FeatureId = FeatureId(20);
+    const TOOL: FeatureId = FeatureId(21);
+    const BOOLEAN: FeatureId = FeatureId(22);
+    let mut document =
+        document_with_cut_sketch(PrincipalPlane::Xy, 0.0, circle(PLANE, [60.0, 60.0], 20.0));
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            feature(
+                TOOL_PROFILE,
+                FeatureKind::Profile {
+                    points_mm: vec![[100.0, 40.0], [200.0, 40.0], [200.0, 100.0], [100.0, 100.0]],
+                },
+            ),
+            feature(
+                TOOL,
+                FeatureKind::Extrusion {
+                    profile: TOOL_PROFILE,
+                    height: dimension(20.0),
+                },
+            ),
+            feature(
+                BOOLEAN,
+                FeatureKind::Boolean {
+                    operation: BooleanOperation::Intersect,
+                    target: POCKET,
+                    tool: TOOL,
+                },
+            ),
+        ]))
+        .unwrap();
+
+    let graph = ExactBRepGraph::from_snapshot(&document.current(), DEFINITION, BOOLEAN).unwrap();
+    let ExactBRepOperation::Boolean { target, tool, .. } = graph.nodes.last().unwrap().operation
+    else {
+        panic!("expected boolean")
+    };
+    assert_eq!(graph.nodes[target.0 as usize].source_feature_id, POCKET.0);
+    assert_eq!(graph.nodes[tool.0 as usize].source_feature_id, TOOL.0);
 }
 
 #[test]

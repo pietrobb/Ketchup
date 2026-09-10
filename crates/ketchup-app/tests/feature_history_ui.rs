@@ -802,13 +802,15 @@ fn serial_history_panel_edits_cancels_suppresses_resumes_and_undoes_atomically()
 }
 
 #[test]
-fn fitting_pocket_moves_through_accesskit_preview_cancel_confirm_and_undo() {
+fn fitting_pocket_position_and_depth_edit_cancel_undo_and_persist_through_accesskit() {
     let directory = tempfile::tempdir().unwrap();
     let fixture = directory.path().join("movable-fitting-pocket.ketchup");
     write_movable_fitting_pocket_fixture(&fixture);
 
     let dialogs = ScriptedFileDialogs::new()
         .queue_open(&fixture)
+        .queue_open(&fixture)
+        .always_confirm_high_risk_as(352)
         .always_discard();
     let mut shell =
         Shell::with_catalog_and_dialogs(ketchup_interaction::LocaleCatalog::english(), dialogs);
@@ -873,6 +875,45 @@ fn fitting_pocket_moves_through_accesskit_preview_cancel_confirm_and_undo() {
     assert_eq!(shell.app().canonical_digest(), before.1);
     shell.click_menu_command("menu-edit", AppCommand::Redo);
     assert_eq!(shell.app().canonical_digest(), moved_digest);
+
+    shell.click_role_and_label(Role::Button, &feature_label(&shell, FITTING_POCKET));
+    let before_depth = stamp(&shell);
+    replace_exact_value(&mut shell, "8");
+    shell.click_button_label(&shell.catalog().text("feature-history-preview-edit"));
+    assert!(shell.app().feature_history_preview_pending());
+    assert_eq!(stamp(&shell), before_depth);
+    shell.press_key(Key::Escape);
+    assert!(!shell.app().feature_history_preview_pending());
+    assert_eq!(stamp(&shell), before_depth);
+
+    replace_exact_value(&mut shell, "8");
+    shell.click_button_label(&shell.catalog().text("feature-history-preview-edit"));
+    confirm(&mut shell);
+    assert_eq!(shell.app().document_revision(), before_depth.0 + 1);
+    assert_eq!(shell.app().undo_step_count(), before_depth.2 + 1);
+    assert!(matches!(
+        shell.app().document_snapshot().feature(FITTING_POCKET).unwrap().kind(),
+        FeatureKind::Pocket { depth, .. } if depth.millimetres() == 8.0
+    ));
+    let depth_digest = shell.app().canonical_digest();
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), moved_digest);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().canonical_digest(), depth_digest);
+
+    shell.click_menu_command("menu-file", AppCommand::Save);
+    shell.click_menu_command("menu-file", AppCommand::New);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert_eq!(shell.app().canonical_digest(), depth_digest);
+    assert!(matches!(
+        shell.app().document_snapshot().feature(FITTING_POCKET).unwrap().kind(),
+        FeatureKind::Pocket { depth, .. } if depth.millimetres() == 8.0
+    ));
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), moved_digest);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().canonical_digest(), depth_digest);
 
     for catalog in [
         ketchup_interaction::LocaleCatalog::english(),

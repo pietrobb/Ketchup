@@ -133,6 +133,46 @@
       ]
     },
     {
+      "id": "create-checkpoint",
+      "scope": "DocumentStore::create_checkpoint",
+      "source": "crates/ketchup-core/src/document.rs",
+      "kind": "revision_metadata_only",
+      "allowed_state_changes": [
+        "current_revision_checkpoint",
+        "mutation_epoch"
+      ],
+      "forbidden_effects": [
+        "canonical_digest_change",
+        "entity_content_mutation",
+        "revision_append",
+        "id_consumption"
+      ],
+      "evidence": [
+        "crates/ketchup-core/tests/persistence_m2.rs"
+      ]
+    },
+    {
+      "id": "rollback-to-revision",
+      "scope": "DocumentStore::rollback_to_revision",
+      "source": "crates/ketchup-core/src/document.rs",
+      "kind": "validated_revision_restore",
+      "allowed_state_changes": [
+        "revision_append_from_validated_history",
+        "cursor",
+        "next_revision_id",
+        "derived_result_invalidation",
+        "mutation_epoch"
+      ],
+      "forbidden_effects": [
+        "unvalidated_entity_content",
+        "target_revision_mutation",
+        "partial_publication"
+      ],
+      "evidence": [
+        "crates/ketchup-core/tests/persistence_m2.rs"
+      ]
+    },
+    {
       "id": "new-document",
       "scope": "KetchupApp::new_document",
       "source": "crates/ketchup-app/src/lib.rs",

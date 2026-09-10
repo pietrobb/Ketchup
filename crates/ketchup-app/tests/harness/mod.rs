@@ -297,6 +297,51 @@ impl Shell {
         &self.harness.output().shapes
     }
 
+    pub fn initialize_gpu(&mut self) {
+        self.harness
+            .render()
+            .expect("initialize real offscreen wgpu renderer");
+    }
+
+    pub fn enable_live_bridge(&mut self) {
+        let context = self.harness.ctx.clone();
+        self.harness
+            .state_mut()
+            .enable_live_bridge(&context)
+            .expect("enable the headless live bridge");
+    }
+
+    pub fn render_gpu(&mut self) {
+        self.harness
+            .render()
+            .expect("service the isolated CAD image callback");
+    }
+
+    pub fn save_render(&mut self, path: &std::path::Path) -> [u32; 2] {
+        let image = self
+            .harness
+            .render()
+            .expect("render the complete headless Ketchup window");
+        let size = [image.width(), image.height()];
+        image.save(path).expect("save the headless render");
+        size
+    }
+
+    pub fn has_paint_callback(&self) -> bool {
+        fn contains(shape: &egui::Shape) -> bool {
+            match shape {
+                egui::Shape::Callback(_) => true,
+                egui::Shape::Vec(shapes) => shapes.iter().any(contains),
+                _ => false,
+            }
+        }
+        self.harness
+            .output()
+            .shapes
+            .iter()
+            .any(|shape| contains(&shape.shape))
+    }
+
     /// The 3D viewport rectangle of the current layout.
     ///
     /// Panics rather than returning a zero rectangle, so a test that interacts

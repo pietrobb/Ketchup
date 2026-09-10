@@ -214,9 +214,11 @@ impl AssistantCadPartFeature {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Ord, PartialOrd, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AssistantCadProgramFeatureOutput {
+    Definition,
+    SketchFeature,
     BodyFeature,
 }
 
@@ -225,6 +227,45 @@ pub enum AssistantCadProgramFeatureOutput {
 pub struct AssistantCadProgramFeatureReference {
     pub operation_index: u32,
     pub output: AssistantCadProgramFeatureOutput,
+}
+
+impl AssistantCadProgramFeatureReference {
+    fn validate_for(
+        self,
+        operation_index: usize,
+        operations: &[AssistantCadEditOperation],
+        expected_output: AssistantCadProgramFeatureOutput,
+    ) -> Result<(), String> {
+        if self.output != expected_output || self.operation_index as usize >= operation_index {
+            return Err("assistant CAD program feature reference is invalid".to_owned());
+        }
+        let Some(producer) = operations.get(self.operation_index as usize) else {
+            return Err("assistant CAD program feature reference is invalid".to_owned());
+        };
+        let available = match expected_output {
+            AssistantCadProgramFeatureOutput::Definition => {
+                matches!(producer, AssistantCadEditOperation::CreatePart { .. })
+            }
+            AssistantCadProgramFeatureOutput::SketchFeature => matches!(
+                producer,
+                AssistantCadEditOperation::CreatePart { .. }
+                    | AssistantCadEditOperation::CreateProgramSketch { .. }
+            ),
+            AssistantCadProgramFeatureOutput::BodyFeature => match producer {
+                AssistantCadEditOperation::CreatePart { .. }
+                | AssistantCadEditOperation::AppendProgramPocket { .. } => true,
+                AssistantCadEditOperation::AppendFeature { feature, .. } => {
+                    feature.produces_body_feature_output()
+                }
+                _ => false,
+            },
+        };
+        if available {
+            Ok(())
+        } else {
+            Err("assistant CAD program feature reference is invalid".to_owned())
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -453,23 +494,11 @@ impl AssistantCadBodyFeature {
     ) -> Result<(), String> {
         let validate_reference = |reference: AssistantCadFeatureReference| match reference {
             AssistantCadFeatureReference::Existing(_) => Ok(()),
-            AssistantCadFeatureReference::ProgramOutput(reference)
-                if (reference.operation_index as usize) < operation_index
-                    && operations
-                        .get(reference.operation_index as usize)
-                        .is_some_and(|operation| match operation {
-                            AssistantCadEditOperation::CreatePart { .. } => true,
-                            AssistantCadEditOperation::AppendFeature { feature, .. } => {
-                                feature.produces_body_feature_output()
-                            }
-                            _ => false,
-                        }) =>
-            {
-                Ok(())
-            }
-            AssistantCadFeatureReference::ProgramOutput(_) => {
-                Err("assistant CAD program feature reference is invalid".to_owned())
-            }
+            AssistantCadFeatureReference::ProgramOutput(reference) => reference.validate_for(
+                operation_index,
+                operations,
+                AssistantCadProgramFeatureOutput::BodyFeature,
+            ),
         };
         if let Self::Boolean {
             target_feature_id,
@@ -624,6 +653,13 @@ pub enum AssistantCadEditOperation {
         entities: Vec<AssistantSketchEntity>,
         constraints: Vec<AssistantSketchConstraint>,
     },
+    CreateProgramSketch {
+        definition: AssistantCadProgramFeatureReference,
+        name: String,
+        workplane: AssistantWorkplaneSpec,
+        entities: Vec<AssistantSketchEntity>,
+        constraints: Vec<AssistantSketchConstraint>,
+    },
     CreatePart {
         name: String,
         workplane: AssistantWorkplaneSpec,
@@ -638,6 +674,13 @@ pub enum AssistantCadEditOperation {
         definition_id: u64,
         name: String,
         feature: AssistantCadBodyFeature,
+    },
+    AppendProgramPocket {
+        definition: AssistantCadProgramFeatureReference,
+        name: String,
+        target_feature: AssistantCadProgramFeatureReference,
+        profile_feature: AssistantCadProgramFeatureReference,
+        depth_mm: f64,
     },
     SetDimension {
         feature_id: u64,
@@ -1101,7 +1144,9 @@ impl AssistantCadEditProgram {
         for (operation_index, operation) in self.operations.iter().enumerate() {
             let bounded_targets = match operation {
                 AssistantCadEditOperation::CreateSketch { .. }
+                | AssistantCadEditOperation::CreateProgramSketch { .. }
                 | AssistantCadEditOperation::AppendFeature { .. }
+                | AssistantCadEditOperation::AppendProgramPocket { .. }
                 | AssistantCadEditOperation::SetDimension { .. }
                 | AssistantCadEditOperation::UpsertClassificationDimension { .. }
                 | AssistantCadEditOperation::CreateEvaluatorInput { .. } => 0,
@@ -1126,6 +1171,27 @@ impl AssistantCadEditProgram {
                 } => {
                     if *definition_id == 0 {
                         return Err("assistant sketch creation is invalid".to_owned());
+                    }
+                    validate_assistant_sketch_payload(name, workplane, entities, constraints)?;
+                    0
+                }
+                AssistantCadEditOperation::CreateProgramSketch {
+                    definition,
+                    name,
+                    workplane,
+                    entities,
+                    constraints,
+                } => {
+                    definition.validate_for(
+                        operation_index,
+                        &self.operations,
+                        AssistantCadProgramFeatureOutput::Definition,
+                    )?;
+                    if matches!(workplane, AssistantWorkplaneSpec::Offset { .. }) {
+                        return Err(
+                            "assistant CAD program Sketch workplane reference is invalid"
+                                .to_owned(),
+                        );
                     }
                     validate_assistant_sketch_payload(name, workplane, entities, constraints)?;
                     0
@@ -1163,6 +1229,40 @@ impl AssistantCadEditProgram {
                     }
                     feature.validate()?;
                     feature.validate_program_references(operation_index, &self.operations)?;
+                    0
+                }
+                AssistantCadEditOperation::AppendProgramPocket {
+                    definition,
+                    name,
+                    target_feature,
+                    profile_feature,
+                    depth_mm,
+                } => {
+                    if name.trim().is_empty()
+                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.chars().any(char::is_control)
+                        || !depth_mm.is_finite()
+                        || *depth_mm <= 0.0
+                        || *depth_mm > MAX_ASSISTANT_ABS_MM
+                        || target_feature == profile_feature
+                    {
+                        return Err("assistant CAD program Pocket is invalid".to_owned());
+                    }
+                    definition.validate_for(
+                        operation_index,
+                        &self.operations,
+                        AssistantCadProgramFeatureOutput::Definition,
+                    )?;
+                    target_feature.validate_for(
+                        operation_index,
+                        &self.operations,
+                        AssistantCadProgramFeatureOutput::BodyFeature,
+                    )?;
+                    profile_feature.validate_for(
+                        operation_index,
+                        &self.operations,
+                        AssistantCadProgramFeatureOutput::SketchFeature,
+                    )?;
                     0
                 }
                 AssistantCadEditOperation::SetDimension {

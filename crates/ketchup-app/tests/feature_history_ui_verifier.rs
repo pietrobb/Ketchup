@@ -169,6 +169,26 @@ fn exact_worker_path() -> PathBuf {
     }
 }
 
+fn copy_exact_worker_with_runtime(destination: &Path) {
+    let source = exact_worker_path();
+    std::fs::copy(&source, destination).unwrap();
+    #[cfg(windows)]
+    for entry in std::fs::read_dir(source.parent().unwrap()).unwrap() {
+        let entry = entry.unwrap();
+        if entry
+            .path()
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("dll"))
+        {
+            std::fs::copy(
+                entry.path(),
+                destination.parent().unwrap().join(entry.file_name()),
+            )
+            .unwrap();
+        }
+    }
+}
+
 fn wait_for_exact_body(shell: &mut Shell) {
     wait_for_exact_bodies(shell, 1);
 }
@@ -898,7 +918,7 @@ fn component_replacement_serial_accesskit_replay_is_atomic_local_exportable_and_
     wait_for_exact_bodies(&mut shell, 2);
     assert_eq!(shell.app().canonical_digest(), replaced_digest);
     assert_eq!(shell.app().document_revision(), persisted_revision);
-    assert!(!shell.app().can_undo());
+    assert!(shell.app().can_undo());
     assert_eq!(
         shell.app().occurrence_definition_id(REPLACEMENT_SELECTED),
         Some(REPLACEMENT_TARGET)
@@ -1255,7 +1275,7 @@ fn shared_change_serial_accesskit_replay_rebinds_dependencies_exports_and_persis
     open_history(&mut shell);
     assert_eq!(shell.app().canonical_digest(), persisted_digest);
     assert_eq!(shell.app().document_revision(), persisted_revision);
-    assert!(!shell.app().can_undo());
+    assert!(shell.app().can_undo());
     assert_eq!(mate_fingerprints(&shell), persisted_fingerprints);
     assert_eq!(
         shell.app().feature_history_current_dependency_counts(),
@@ -1433,7 +1453,7 @@ fn make_unique_serial_accesskit_replay_rebinds_locally_exports_and_persists() {
     wait_for_exact_bodies(&mut shell, 2);
     assert_eq!(shell.app().canonical_digest(), persisted_digest);
     assert_eq!(shell.app().document_revision(), persisted_revision);
-    assert!(!shell.app().can_undo());
+    assert!(shell.app().can_undo());
     assert_eq!(
         shell.app().occurrence_definition_id(FIRST),
         Some(DEFINITION)
@@ -1671,7 +1691,7 @@ fn make_unique_worker_failure_preserves_history_dependencies_and_last_valid_outp
     });
     let parked_worker = worker.with_extension("parked");
     write_shared_dependency_fixture(&fixture);
-    std::fs::copy(exact_worker_path(), &worker).unwrap();
+    copy_exact_worker_with_runtime(&worker);
     let dialogs = ScriptedFileDialogs::new()
         .queue_open(&fixture)
         .queue_export(&stl)
@@ -1725,7 +1745,7 @@ fn shared_change_worker_failure_preserves_history_dependencies_and_last_valid_ex
     });
     let parked_worker = worker.with_extension("parked");
     write_shared_dependency_fixture(&fixture);
-    std::fs::copy(exact_worker_path(), &worker).unwrap();
+    copy_exact_worker_with_runtime(&worker);
     let dialogs = ScriptedFileDialogs::new()
         .queue_open(&fixture)
         .queue_export(&stl)
@@ -1912,7 +1932,7 @@ fn complete_serial_accesskit_history_replay_is_atomic_stale_safe_and_persistent(
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), persisted_digest);
     assert_eq!(shell.app().document_revision(), persisted_revision);
-    assert!(!shell.app().can_undo());
+    assert!(shell.app().can_undo());
     assert_eq!(
         shell
             .app()

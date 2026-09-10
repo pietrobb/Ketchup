@@ -22776,6 +22776,7 @@ fn scheduler_evaluates_compound_planar_offset_over_v3_and_v8() {
                     bounds_mm: graph_result.bounds_mm,
                     backend: graph_result.identity.backend.clone(),
                     tolerance: graph_result.identity.tolerance.clone(),
+                    faces: Vec::new(),
                 },
                 &graph_mesh,
             ),
@@ -23413,10 +23414,17 @@ fn scheduler_evaluates_editable_bottle_shell_with_open_mouth_and_current_referen
             .register_exact_reference_evidence(reference)
             .unwrap();
     }
-    assert!(matches!(
-        ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current())),
-        Err(ketchup_core::persistence::PersistenceError::LegacyFeatureRequiresMigration { .. })
-    ));
+    let reopened =
+        ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current()))
+            .unwrap();
+    assert_eq!(
+        reopened.source_schema(),
+        ketchup_core::persistence::CURRENT_SCHEMA
+    );
+    assert_eq!(
+        reopened.snapshot().canonical_digest(),
+        document.current().canonical_digest()
+    );
 }
 
 #[test]
@@ -23982,10 +23990,17 @@ fn scheduler_evaluates_controlled_bottle_fillet_and_chamfer_with_current_roles()
             .register_exact_reference_evidence(reference)
             .unwrap();
     }
-    assert!(matches!(
-        ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current())),
-        Err(ketchup_core::persistence::PersistenceError::LegacyFeatureRequiresMigration { .. })
-    ));
+    let reopened =
+        ketchup_core::persistence::load(&ketchup_core::persistence::save(&document.current()))
+            .unwrap();
+    assert_eq!(
+        reopened.source_schema(),
+        ketchup_core::persistence::CURRENT_SCHEMA
+    );
+    assert_eq!(
+        reopened.snapshot().canonical_digest(),
+        document.current().canonical_digest()
+    );
 }
 
 fn controlled_finished_bottle_document() -> DocumentStore {

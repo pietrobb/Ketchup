@@ -35,8 +35,9 @@ use crate::drawing::{
     DrawingAnnotations, DrawingDetailRegion, DrawingDimensionId, DrawingDimensionTolerance,
     DrawingLinearDimension, DrawingMargins, DrawingNote, DrawingNoteId, DrawingPageOrientation,
     DrawingPageSize, DrawingPageTemplate, DrawingScale, DrawingSectionPlane, DrawingSheet,
-    DrawingSheetId, DrawingSource, DrawingTitleBlock, DrawingViewFrame, MAX_DRAWING_NOTES,
-    ORTHOGRAPHIC_DRAWING_SCHEMA_V1, ORTHOGRAPHIC_DRAWING_SCHEMA_V2, OrthographicViewKind,
+    DrawingSheetId, DrawingSource, DrawingTitleBlock, DrawingViewFrame, MAX_DRAWING_DIMENSIONS,
+    MAX_DRAWING_NOTES, MAX_DRAWING_VIEWS, ORTHOGRAPHIC_DRAWING_SCHEMA_V1,
+    ORTHOGRAPHIC_DRAWING_SCHEMA_V2, OrthographicViewKind,
 };
 use crate::exact_product::{BODY_SUBSHAPE_REF_SCHEMA_V1, BodySubshapeRef, ReferenceStability};
 use crate::graph::{
@@ -3042,6 +3043,7 @@ fn load_document(
             | DRAWING_DETAIL_CONTRACT_SCHEMA
             | DRAWING_DIMENSION_CONTRACT_SCHEMA
             | DRAWING_TOLERANCE_CONTRACT_SCHEMA
+            | DRAWING_ANNOTATION_CONTRACT_SCHEMA
             | SKETCH_PROJECTION_SCHEMA
             | SKETCH_CONSTRUCTION_SCHEMA
             | HELICAL_ASSEMBLY_JOINT_SCHEMA
@@ -4538,8 +4540,9 @@ fn read_drawing_sheet_with_annotations(
             PersistenceError::InvalidCanonicalData(CanonicalError::Drawing(error))
         });
     }
-    let mut views = Vec::new();
-    for _ in 0..reader.count()? {
+    let view_count = reader.count_with_limit(MAX_DRAWING_VIEWS as u32)?;
+    let mut views = Vec::with_capacity(view_count as usize);
+    for _ in 0..view_count {
         let view = match reader.u8()? {
             1 => OrthographicViewKind::Front,
             2 => OrthographicViewKind::Top,
@@ -4612,8 +4615,9 @@ fn read_drawing_sheet_with_annotations(
                 PersistenceError::InvalidCanonicalData(CanonicalError::Drawing(error))
             });
     }
-    let mut linear_dimensions = Vec::new();
-    for _ in 0..reader.count()? {
+    let dimension_count = reader.count_with_limit(MAX_DRAWING_DIMENSIONS as u32)?;
+    let mut linear_dimensions = Vec::with_capacity(dimension_count as usize);
+    for _ in 0..dimension_count {
         let dimension_id = DrawingDimensionId(reader.u64()?);
         let view_stable_name = reader.string()?;
         let source_line_id = reader.string()?;
@@ -6257,6 +6261,78 @@ mod tests {
     }
 
     #[test]
+    fn drawing_parser_rejects_view_and_dimension_counts_before_decoding_entries() {
+        let sheet = DrawingSheet::with_contract_and_views(
+            DrawingSheetId(10),
+            "Bounded drawing",
+            DrawingSource::Definition(DefinitionId(1)),
+            DrawingPageTemplate::default(),
+            DrawingTitleBlock::new("Bounded drawing", "", "", "").unwrap(),
+            vec![OrthographicViewKind::Front],
+        )
+        .unwrap();
+        let mut encoded = Vec::new();
+        write_drawing_sheet(
+            &mut encoded,
+            &sheet,
+            ProductSchemaCapabilities::current(DRAWING_DIMENSION_CONTRACT_SCHEMA),
+        );
+
+        let mut locator = Reader::new(&encoded);
+        locator.string().unwrap();
+        locator.u64().unwrap();
+        locator.string().unwrap();
+        assert_eq!(locator.u8().unwrap(), 1);
+        locator.u64().unwrap();
+        locator.u8().unwrap();
+        locator.u8().unwrap();
+        locator.u32().unwrap();
+        locator.u32().unwrap();
+        for _ in 0..4 {
+            locator.u16().unwrap();
+        }
+        for _ in 0..4 {
+            locator.string().unwrap();
+        }
+        let view_count_offset = locator.cursor;
+        assert_eq!(locator.count().unwrap(), 1);
+        assert_eq!(locator.u8().unwrap(), 1);
+        let dimension_count_offset = locator.cursor;
+
+        let mut excessive_views = encoded.clone();
+        excessive_views[view_count_offset..view_count_offset + 4]
+            .copy_from_slice(&((MAX_DRAWING_VIEWS as u32) + 1).to_le_bytes());
+        assert_eq!(
+            read_drawing_sheet(
+                &mut Reader::new(&excessive_views),
+                true,
+                true,
+                false,
+                false,
+                true,
+                false,
+            ),
+            Err(PersistenceError::ResourceLimit)
+        );
+
+        let mut excessive_dimensions = encoded;
+        excessive_dimensions[dimension_count_offset..dimension_count_offset + 4]
+            .copy_from_slice(&((MAX_DRAWING_DIMENSIONS as u32) + 1).to_le_bytes());
+        assert_eq!(
+            read_drawing_sheet(
+                &mut Reader::new(&excessive_dimensions),
+                true,
+                true,
+                false,
+                false,
+                true,
+                false,
+            ),
+            Err(PersistenceError::ResourceLimit)
+        );
+    }
+
+    #[test]
     fn schema_57_section_parser_rejects_invalid_depth_and_schema_56_tag() {
         let section =
             OrthographicViewKind::section([0.0, -1.0, 0.0], [0.0, 0.0, 1.0], -5.0).unwrap();
@@ -6668,6 +6744,27 @@ mod tests {
             ),
         )
         .unwrap();
+        let mut document = DocumentStore::new();
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(1),
+                    name: "Annotated part".into(),
+                },
+                CanonicalCommand::CreateDrawingSheet(sheet.clone()),
+            ]))
+            .unwrap();
+        let loaded = load(&save_with_schema(
+            &document.current(),
+            DRAWING_ANNOTATION_CONTRACT_SCHEMA,
+        ))
+        .unwrap();
+        assert_eq!(loaded.source_schema(), DRAWING_ANNOTATION_CONTRACT_SCHEMA);
+        assert_eq!(
+            loaded.snapshot().drawing_sheet(DrawingSheetId(10)),
+            Some(&sheet)
+        );
+
         let mut encoded = Vec::new();
         write_drawing_sheet(
             &mut encoded,

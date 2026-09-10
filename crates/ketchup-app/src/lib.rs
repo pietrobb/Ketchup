@@ -48,8 +48,8 @@ use ketchup_core::document::{
     MeshAuthority, MeshBodySpec, NodeId, OccurrenceId, PersistentDimensionId, ProfileSegment,
     Proposal, ProposalCommitError, ProposalContext, ProposalGoal, ProposalPrepareError,
     ProposalPrincipal, ProposalValue, SceneOccurrence, SceneQueryContext,
-    SideEffectAuthorizationReceipt, SlotPath, Snapshot, SolidToolPlan, TagId, TipReplacementParent,
-    TipReplacementProposal, Transform, TrustedConfirmationSurface,
+    SideEffectAuthorizationReceipt, SlotPath, Snapshot, SolidToolPlan, SpatialPathSegment, TagId,
+    TipReplacementParent, TipReplacementProposal, Transform, TrustedConfirmationSurface,
 };
 #[cfg(feature = "named-product-fixtures")]
 use ketchup_core::document::{
@@ -88,7 +88,7 @@ use ketchup_core::graph::{
     DerivedIdentity, EvaluationStatus, EvaluatorNodeKind, RuleOutput, SlotSegment, sha256_bytes,
 };
 use ketchup_core::import::{
-    DxfImportOptions, ImportDiagnosticSeverity, ImportFormat, ImportLengthUnit,
+    DxfImportOptions, IgesImportEvidence, ImportDiagnosticSeverity, ImportFormat, ImportLengthUnit,
     ImportUnitAuthority, ImportUnitDecision, MAX_DXF_SOURCE_BYTES, MAX_GLB_SOURCE_BYTES,
     MAX_IGES_SOURCE_BYTES, MAX_SKETCHUP_SCENE_SOURCE_BYTES, MAX_STEP_SOURCE_BYTES,
     MAX_STL_SOURCE_BYTES, ParsedDxf, ParsedGlbScene, ParsedSketchupScene, ParsedStlMesh,
@@ -416,8 +416,10 @@ fn bind_assistant_cad_current_selection(
     for operation in &mut program.operations {
         let Some(selector) = (match operation {
             AssistantCadEditOperation::CreateSketch { .. }
+            | AssistantCadEditOperation::CreateProgramSketch { .. }
             | AssistantCadEditOperation::CreatePart { .. }
             | AssistantCadEditOperation::AppendFeature { .. }
+            | AssistantCadEditOperation::AppendProgramPocket { .. }
             | AssistantCadEditOperation::SetDimension { .. }
             | AssistantCadEditOperation::UpsertClassificationDimension { .. }
             | AssistantCadEditOperation::CreateEvaluatorInput { .. } => None,
@@ -873,7 +875,7 @@ struct SmartThroughCutSourcePlan {
     tool_transform: Transform,
     target_box: RenderBox,
     target_transform: Transform,
-    target_exact_request: ExactFeatureChainRequest,
+    target_exact_request: ExactBRepGraph,
     distance_expression: String,
     distance_mm_bits: u64,
 }
@@ -912,7 +914,7 @@ struct SmartProfilePocketSourcePlan {
     target_definition_id: DefinitionId,
     target_feature_ids: Vec<FeatureId>,
     target_feature_id: FeatureId,
-    target_exact_request: ExactFeatureChainRequest,
+    target_exact_request: ExactBRepGraph,
     distance_expression: String,
     distance_mm_bits: u64,
 }
@@ -928,7 +930,7 @@ struct SmartProfilePocketPreviewPlan {
     pocket_id: FeatureId,
     result_definition_id: DefinitionId,
     commands: Vec<CanonicalCommand>,
-    exact_request: ExactFeatureChainRequest,
+    exact_request: ExactBRepGraph,
     selection_after: SelectionId,
     preview_boxes: BTreeMap<OccurrenceId, RenderBox>,
     hidden_occurrences: BTreeSet<OccurrenceId>,
@@ -3061,6 +3063,7 @@ enum ActiveTool {
     CutThrough,
     Pocket,
     SolidSubtract,
+    SolidTrim,
     SolidUnion,
     SolidIntersect,
     SolidSplit,
@@ -3091,6 +3094,7 @@ impl ActiveTool {
             Self::CutThrough => "feature-cut-through",
             Self::Pocket => "feature-pocket",
             Self::SolidSubtract => "solid-tool-subtract",
+            Self::SolidTrim => "solid-tool-trim",
             Self::SolidUnion => "solid-tool-union",
             Self::SolidIntersect => "solid-tool-intersect",
             Self::SolidSplit => "solid-tool-split",
@@ -3121,6 +3125,7 @@ impl ActiveTool {
             Self::CutThrough => "hint-cut-through",
             Self::Pocket => "hint-pocket",
             Self::SolidSubtract => "hint-solid-subtract",
+            Self::SolidTrim => "hint-solid-trim",
             Self::SolidUnion => "hint-solid-union",
             Self::SolidIntersect => "hint-solid-intersect",
             Self::SolidSplit => "hint-solid-split",
@@ -3176,6 +3181,7 @@ pub enum AppCommand {
     CutThrough,
     Pocket,
     SolidSubtract,
+    SolidTrim,
     SolidUnion,
     SolidIntersect,
     SolidSplit,
@@ -3335,7 +3341,7 @@ struct CommandSpec {
 struct CommandRegistry;
 
 impl CommandRegistry {
-    const COMMANDS: [CommandSpec; 114] = [
+    const COMMANDS: [CommandSpec; 115] = [
         CommandSpec {
             id: AppCommand::New,
             label_key: "file-new",
@@ -3516,6 +3522,13 @@ impl CommandRegistry {
             label_key: "solid-tool-subtract",
             shortcut_key: "shortcut-none",
             tool: Some(ActiveTool::SolidSubtract),
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::SolidTrim,
+            label_key: "solid-tool-trim",
+            shortcut_key: "shortcut-none",
+            tool: Some(ActiveTool::SolidTrim),
             implemented: true,
         },
         CommandSpec {
@@ -4165,6 +4178,7 @@ struct OverlayEdges {
 struct InteractionProjectionCache {
     document_id: DocumentId,
     revision_id: u64,
+    canonical_digest: String,
     edit_context: Vec<EditContext>,
     exact_results_stamp: u64,
     canonical: ketchup_interaction::projection::InteractionProjection,
@@ -5976,6 +5990,14 @@ struct StepImportPreviewPlan {
     blob_hash: String,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct IgesImportPreviewPlan {
+    source: StepImportSourcePlan,
+    evidence: IgesImportEvidence,
+    proposal: Proposal,
+    blob_hash: String,
+}
+
 #[derive(Clone, Debug)]
 struct PendingStepImport {
     plan: StepImportPreviewPlan,
@@ -5984,7 +6006,7 @@ struct PendingStepImport {
 
 #[derive(Clone, Debug)]
 struct PendingIgesImport {
-    plan: StepImportPreviewPlan,
+    plan: IgesImportPreviewPlan,
     invalidated: bool,
 }
 
@@ -6252,6 +6274,8 @@ pub struct KetchupApp {
     exact_task: Option<ExactEvaluationTask>,
     exact_results: ExactResultRegistry,
     topology_results: ExactResultRegistry,
+    exact_result_history: BTreeMap<ExactSource, ExactResultRegistry>,
+    topology_result_history: BTreeMap<ExactSource, ExactResultRegistry>,
     exact_source: Option<ExactSource>,
     exact_retry_at: Option<Instant>,
     #[cfg(feature = "named-product-fixtures")]
@@ -6505,6 +6529,8 @@ impl KetchupApp {
             exact_task: None,
             exact_results: ExactResultRegistry::default(),
             topology_results: ExactResultRegistry::default(),
+            exact_result_history: BTreeMap::new(),
+            topology_result_history: BTreeMap::new(),
             exact_source: None,
             exact_retry_at: None,
             #[cfg(feature = "named-product-fixtures")]
@@ -6566,8 +6592,29 @@ impl KetchupApp {
     }
 
     #[must_use]
+    pub const fn build_version() -> &'static str {
+        match option_env!("KETCHUP_BUILD_VERSION") {
+            Some(version) => version,
+            None => env!("CARGO_PKG_VERSION"),
+        }
+    }
+
+    #[must_use]
+    pub const fn is_manual_alpha_build() -> bool {
+        cfg!(all(
+            feature = "manual-alpha",
+            not(feature = "private-oauth")
+        ))
+    }
+
+    #[must_use]
     pub fn title() -> String {
-        LocaleCatalog::english().text("app-title")
+        let title = LocaleCatalog::english().text("app-title");
+        if Self::is_manual_alpha_build() {
+            format!("{title} Manual Alpha")
+        } else {
+            title
+        }
     }
 
     fn document_title(&self) -> String {
@@ -6692,6 +6739,8 @@ impl KetchupApp {
         }
         self.exact_results.clear();
         self.topology_results.clear();
+        self.exact_result_history.clear();
+        self.topology_result_history.clear();
         self.render_plan = None;
         self.exact_source = None;
         self.exact_retry_at = None;
@@ -7547,7 +7596,7 @@ impl KetchupApp {
     fn prepare_iges_import_preview_plan(
         &mut self,
         source: StepImportSourcePlan,
-    ) -> Result<StepImportPreviewPlan, String> {
+    ) -> Result<IgesImportPreviewPlan, String> {
         let snapshot = self.document.current();
         if snapshot.document_id() != source.document_id
             || snapshot.revision_id() != source.revision_id
@@ -7595,7 +7644,7 @@ impl KetchupApp {
         let blob_hash = staged_container
             .insert_import_blob(source.source.clone())
             .map_err(|error| error.to_string())?;
-        Ok(StepImportPreviewPlan {
+        Ok(IgesImportPreviewPlan {
             source,
             evidence,
             proposal,
@@ -7792,6 +7841,15 @@ impl KetchupApp {
         if occurrences.is_empty() {
             return Err("the visible model is empty".to_owned());
         }
+        if let Some(occurrence) = occurrences
+            .iter()
+            .find(|occurrence| definition_mesh_body(snapshot, occurrence.definition_id).is_some())
+        {
+            return Err(format!(
+                "visible occurrence {:?} is a mesh body without verified exact geometry; exact-derived export is unavailable until explicit exact conversion",
+                occurrence.instance_path
+            ));
+        }
         let mut scene = Vec::new();
         for occurrence in occurrences {
             let packages = self
@@ -7800,22 +7858,6 @@ impl KetchupApp {
                 .filter(|package| package.definition_id() == occurrence.definition_id)
                 .collect::<Vec<_>>();
             if packages.is_empty() {
-                let contains_mesh =
-                    snapshot
-                        .definition(occurrence.definition_id)
-                        .is_some_and(|definition| {
-                            definition.feature_ids().iter().any(|feature_id| {
-                                snapshot.feature(*feature_id).is_some_and(|feature| {
-                                    matches!(feature.kind(), FeatureKind::MeshBody(_))
-                                })
-                            })
-                        });
-                if contains_mesh {
-                    return Err(format!(
-                        "visible occurrence {:?} is a mesh body without verified exact geometry; exact-derived export is unavailable until explicit exact conversion",
-                        occurrence.instance_path
-                    ));
-                }
                 return Err(format!(
                     "visible occurrence {:?} has no current accepted exact result",
                     occurrence.instance_path
@@ -8197,7 +8239,7 @@ impl KetchupApp {
             };
         let result = (|| {
             let tolerance = TolerancePolicy::default();
-            let participants = snapshot
+            let occurrences = snapshot
                 .scene_query()
                 .into_iter()
                 .filter(|occurrence| occurrence.visible)
@@ -8212,22 +8254,18 @@ impl KetchupApp {
                             })
                         })
                 })
+                .collect::<Vec<_>>();
+            if let Some(occurrence) = occurrences.iter().find(|occurrence| {
+                definition_mesh_body(&snapshot, occurrence.definition_id).is_some()
+            }) {
+                return Err(format!(
+                    "visible occurrence {:?} is a mesh body without verified exact geometry; BTLx manufacturing export is unavailable until explicit exact conversion",
+                    occurrence.instance_path
+                ));
+            }
+            let participants = occurrences
+                .into_iter()
                 .map(|occurrence| {
-                    let contains_mesh = snapshot
-                        .definition(occurrence.definition_id)
-                        .is_some_and(|definition| {
-                            definition.feature_ids().iter().any(|feature_id| {
-                                snapshot.feature(*feature_id).is_some_and(|feature| {
-                                    matches!(feature.kind(), FeatureKind::MeshBody(_))
-                                })
-                            })
-                        });
-                    if contains_mesh {
-                        return Err(format!(
-                            "visible occurrence {:?} is a mesh body without verified exact geometry; BTLx manufacturing export is unavailable until explicit exact conversion",
-                            occurrence.instance_path
-                        ));
-                    }
                     GeneralBodyParticipant::accept(
                         &snapshot,
                         &self.exact_results,
@@ -9251,6 +9289,44 @@ impl KetchupApp {
         }
         self.selection.select_occurrence(occurrence_id, false);
         true
+    }
+
+    #[doc(hidden)]
+    pub fn headless_select_solid_tool_operand(
+        &mut self,
+        occurrence_id: OccurrenceId,
+        keep_tool: bool,
+    ) -> bool {
+        if self.active_solid_tool_operation().is_none() {
+            return false;
+        }
+        let Some(definition_id) = self
+            .document
+            .current()
+            .occurrence(occurrence_id)
+            .map(|occurrence| occurrence.definition_id())
+        else {
+            return false;
+        };
+        let selecting_tool = self.solid_tool_target.is_some();
+        self.select_solid_tool_occurrence(
+            Some(SelectionId {
+                definition_id,
+                instance_path: InstancePath::root(occurrence_id),
+                element: ElementId::Face {
+                    axis: Axis::Z,
+                    side: Side::Maximum,
+                },
+            }),
+            keep_tool,
+        );
+        if selecting_tool {
+            self.has_occurrence_operation_preview()
+        } else {
+            self.solid_tool_target
+                .as_ref()
+                .is_some_and(|selection| selection.instance_path.root_occurrence() == occurrence_id)
+        }
     }
 
     #[must_use]
@@ -12327,7 +12403,15 @@ impl KetchupApp {
     }
 
     fn box_height_mm(&self, definition_id: DefinitionId) -> Option<f64> {
-        self.active_boxes()
+        self.box_height_mm_for_snapshot(&self.document.current(), definition_id)
+    }
+
+    fn box_height_mm_for_snapshot(
+        &self,
+        snapshot: &Snapshot,
+        definition_id: DefinitionId,
+    ) -> Option<f64> {
+        self.active_boxes_for_snapshot(snapshot)
             .into_iter()
             .find(|item| item.definition_id == definition_id)
             .map(|item| item.size_mm.z)
@@ -12342,11 +12426,60 @@ impl KetchupApp {
     /// carrying forward re-checks every product against `snapshot` and drops
     /// whatever it no longer carries the evidence for.
     fn rebind_exact_results(&mut self, snapshot: &Snapshot) {
+        Self::archive_exact_registry(&self.exact_results, &mut self.exact_result_history);
+        Self::archive_exact_registry(&self.topology_results, &mut self.topology_result_history);
+        let source = ketchup_application::evaluation::exact_source(snapshot);
+        if let Some(saved) = self.exact_result_history.get(&source) {
+            self.exact_results = saved.clone();
+        }
+        if let Some(saved) = self.topology_result_history.get(&source) {
+            self.topology_results = saved.clone();
+        }
         ketchup_application::evaluation::rebind_exact_results(
             snapshot,
             &mut self.exact_results,
             &mut self.topology_results,
         );
+    }
+
+    fn archive_exact_registry(
+        registry: &ExactResultRegistry,
+        history: &mut BTreeMap<ExactSource, ExactResultRegistry>,
+    ) {
+        let mut packages = registry.values();
+        let Some(first) = packages.next() else {
+            return;
+        };
+        let key = first.result_key();
+        let source = (
+            key.document_id,
+            key.source_revision,
+            key.source_digest.clone(),
+        );
+        if packages.all(|package| {
+            let key = package.result_key();
+            key.document_id == source.0
+                && key.source_revision == source.1
+                && key.source_digest == source.2
+        }) {
+            history.insert(source, registry.clone());
+        }
+    }
+
+    fn exact_results_for_snapshot(&self, snapshot: &Snapshot) -> Option<&ExactResultRegistry> {
+        if !self.exact_results.is_empty() && self.exact_results.is_bound_to(snapshot) {
+            return Some(&self.exact_results);
+        }
+        self.exact_result_history
+            .get(&ketchup_application::evaluation::exact_source(snapshot))
+    }
+
+    fn topology_results_for_snapshot(&self, snapshot: &Snapshot) -> Option<&ExactResultRegistry> {
+        if !self.topology_results.is_empty() && self.topology_results.is_bound_to(snapshot) {
+            return Some(&self.topology_results);
+        }
+        self.topology_result_history
+            .get(&ketchup_application::evaluation::exact_source(snapshot))
     }
 
     fn refresh_exact_products(&mut self, context: &egui::Context) {
@@ -12479,6 +12612,8 @@ impl KetchupApp {
         self.exact_worker_attempted = true;
         self.exact_results.clear();
         self.topology_results.clear();
+        self.exact_result_history.clear();
+        self.topology_result_history.clear();
         self.exact_source = None;
         self.exact_retry_at = None;
         #[cfg(feature = "named-product-fixtures")]
@@ -12574,11 +12709,19 @@ impl KetchupApp {
     }
 
     fn exact_projection(&self, snapshot: &Snapshot) -> ExactInteractionProjection {
-        ExactInteractionProjection::from_snapshot(snapshot, &self.exact_results)
+        ExactInteractionProjection::from_snapshot(
+            snapshot,
+            self.exact_results_for_snapshot(snapshot)
+                .unwrap_or(&self.exact_results),
+        )
     }
 
     fn topology_projection(&self, snapshot: &Snapshot) -> ExactInteractionProjection {
-        ExactInteractionProjection::from_snapshot(snapshot, &self.topology_results)
+        ExactInteractionProjection::from_snapshot(
+            snapshot,
+            self.topology_results_for_snapshot(snapshot)
+                .unwrap_or(&self.topology_results),
+        )
     }
 
     /// The cached feature edges of `definition_id`, rebuilt only when
@@ -12618,25 +12761,37 @@ impl KetchupApp {
         let Ok(cache) = self.interaction_projection_cache.try_borrow() else {
             return;
         };
+        let current = self.document.current();
+        let exact_results = if snapshot.document_id() == current.document_id()
+            && snapshot.revision_id() == current.revision_id()
+            && snapshot.canonical_digest() == current.canonical_digest()
+        {
+            Some(&self.exact_results)
+        } else {
+            self.exact_results_for_snapshot(snapshot)
+        };
+        let exact_results_stamp = exact_results.map_or(0, ExactResultRegistry::contents_stamp);
         let rebuild = cache.as_ref().is_none_or(|cache| {
             cache.document_id != snapshot.document_id()
                 || cache.revision_id != snapshot.revision_id()
+                || cache.canonical_digest != snapshot.canonical_digest()
                 || cache.edit_context != self.selection.edit_context
-                || cache.exact_results_stamp != self.exact_results.contents_stamp()
+                || cache.exact_results_stamp != exact_results_stamp
         });
         drop(cache);
         if rebuild {
             let active_context_paths = self
-                .active_scene_query()
+                .active_scene_query_for_snapshot(snapshot)
                 .into_iter()
                 .map(|occurrence| occurrence.instance_path)
                 .collect::<BTreeSet<_>>();
             let canonical = CanonicalInteractionProjection::from_snapshot(snapshot);
-            let exact = ExactInteractionProjection::from_snapshot_where(
-                snapshot,
-                &self.exact_results,
-                |path| active_context_paths.contains(path),
-            );
+            let empty_exact_results = ExactResultRegistry::default();
+            let exact_results = exact_results.unwrap_or(&empty_exact_results);
+            let exact =
+                ExactInteractionProjection::from_snapshot_where(snapshot, exact_results, |path| {
+                    active_context_paths.contains(path)
+                });
             let mesh = MeshInteractionProjection::from_snapshot_where(snapshot, |path| {
                 active_context_paths.contains(path) && !exact.contains_occurrence(path)
             });
@@ -12662,8 +12817,9 @@ impl KetchupApp {
                 *cache = Some(InteractionProjectionCache {
                     document_id: snapshot.document_id(),
                     revision_id: snapshot.revision_id(),
+                    canonical_digest: snapshot.canonical_digest(),
                     edit_context: self.selection.edit_context.clone(),
-                    exact_results_stamp: self.exact_results.contents_stamp(),
+                    exact_results_stamp,
                     canonical,
                     exact,
                     mesh,
@@ -12804,7 +12960,8 @@ impl KetchupApp {
 
     fn active_boxes_for_snapshot(&self, snapshot: &Snapshot) -> Vec<RenderBox> {
         let current = self.document.current();
-        if snapshot.revision_id() == current.revision_id()
+        if snapshot.document_id() == current.document_id()
+            && snapshot.revision_id() == current.revision_id()
             && snapshot.canonical_digest() == current.canonical_digest()
         {
             return self.active_boxes();
@@ -12812,7 +12969,7 @@ impl KetchupApp {
         self.render_boxes_from_projection(
             snapshot,
             &CanonicalInteractionProjection::from_snapshot(snapshot),
-            false,
+            true,
         )
     }
 
@@ -12825,8 +12982,10 @@ impl KetchupApp {
         if !projection.is_current(snapshot) {
             return Vec::new();
         }
-        let exact_packages =
-            use_exact_bounds.then(|| self.exact_results.render_by_definition(snapshot));
+        let exact_packages = use_exact_bounds
+            .then(|| self.exact_results_for_snapshot(snapshot))
+            .flatten()
+            .map(|results| results.render_by_definition(snapshot));
         let mut exact_solid_tool_features = BTreeMap::new();
         projection
             .occurrences()
@@ -13372,9 +13531,13 @@ impl KetchupApp {
     }
 
     fn selected_definition_id(&self) -> Option<DefinitionId> {
+        self.selected_definition_id_for_snapshot(&self.document.current())
+    }
+
+    fn selected_definition_id_for_snapshot(&self, snapshot: &Snapshot) -> Option<DefinitionId> {
         let selected = self.selected_instance_paths();
         let definitions = self
-            .active_scene_query()
+            .active_scene_query_for_snapshot(snapshot)
             .into_iter()
             .filter(|item| selected.contains(&item.instance_path))
             .map(|item| item.definition_id)
@@ -13579,8 +13742,9 @@ impl KetchupApp {
         locator: &TopologicalPickLocator,
     ) -> Option<SnapshotBoundTopologicalSelection> {
         let snapshot = self.document.current();
+        let topology_results = self.topology_results_for_snapshot(&snapshot)?;
         self.topology_projection(&snapshot)
-            .topological_pick_current(&snapshot, &self.topology_results, locator)
+            .topological_pick_current(&snapshot, topology_results, locator)
             .ok()
     }
 
@@ -14949,6 +15113,7 @@ impl KetchupApp {
             return false;
         }
         self.clear_ephemeral_edit_state();
+        self.loft_input_sections = None;
         self.active_tool = ActiveTool::Select;
         self.status_key = "status-ready";
         self.digest = self.catalog.text("digest-loft-committed");
@@ -15400,6 +15565,7 @@ impl KetchupApp {
                     .selected_general_finish_target(TopologicalElementKind::Edge)
                     .is_some(),
                 AppCommand::SolidSubtract
+                | AppCommand::SolidTrim
                 | AppCommand::SolidUnion
                 | AppCommand::SolidIntersect
                 | AppCommand::SolidSplit => {
@@ -15552,6 +15718,7 @@ impl KetchupApp {
             } else if matches!(
                 tool,
                 ActiveTool::SolidSubtract
+                    | ActiveTool::SolidTrim
                     | ActiveTool::SolidUnion
                     | ActiveTool::SolidIntersect
                     | ActiveTool::SolidSplit
@@ -15788,6 +15955,7 @@ impl KetchupApp {
             | AppCommand::CutThrough
             | AppCommand::Pocket
             | AppCommand::SolidSubtract
+            | AppCommand::SolidTrim
             | AppCommand::SolidUnion
             | AppCommand::SolidIntersect
             | AppCommand::SolidSplit
@@ -19539,6 +19707,113 @@ impl KetchupApp {
         true
     }
 
+    pub fn create_spatial_sweep(
+        &mut self,
+        profile_segments: Vec<ProfileSegment>,
+        path_segments: Vec<SpatialPathSegment>,
+    ) -> bool {
+        let snapshot = self.document.current();
+        let next_definition = snapshot
+            .definitions()
+            .map(|definition| definition.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1);
+        let next_feature = snapshot
+            .features()
+            .map(|feature| feature.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1);
+        let next_occurrence = snapshot
+            .occurrences()
+            .map(|occurrence| occurrence.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1);
+        let (Some(definition), Some(profile), Some(occurrence)) =
+            (next_definition, next_feature, next_occurrence)
+        else {
+            return false;
+        };
+        let Some(path) = profile.checked_add(1) else {
+            return false;
+        };
+        let Some(sweep) = path.checked_add(1) else {
+            return false;
+        };
+        let definition_id = DefinitionId(definition);
+        let profile_feature_id = FeatureId(profile);
+        let path_feature_id = FeatureId(path);
+        let sweep_feature_id = FeatureId(sweep);
+        let occurrence_id = OccurrenceId(occurrence);
+        let name = self.catalog.format(
+            "model-default-box",
+            &BTreeMap::from([("number", definition.to_string())]),
+        );
+        let batch = CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition_id,
+                name: name.clone(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: profile_feature_id,
+                definition_id,
+                name: self.catalog.text("model-default-profile"),
+                kind: FeatureKind::SegmentProfile {
+                    segments: profile_segments,
+                    closed: true,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: path_feature_id,
+                definition_id,
+                name: self.catalog.text("model-sweep-path"),
+                kind: FeatureKind::SpatialPath {
+                    segments: path_segments,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: sweep_feature_id,
+                definition_id,
+                name: self.catalog.text("model-sweep-feature"),
+                kind: FeatureKind::Sweep {
+                    profile: profile_feature_id,
+                    path: path_feature_id,
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: occurrence_id,
+                definition_id,
+                name: self.catalog.format(
+                    "model-default-occurrence",
+                    &BTreeMap::from([("name", name)]),
+                ),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]);
+        if self.document.apply_batch(&batch).is_err() {
+            return false;
+        }
+        self.clear_ephemeral_edit_state();
+        self.selection.select_exact(
+            SelectionId {
+                definition_id,
+                instance_path: InstancePath::root(occurrence_id),
+                element: ElementId::Face {
+                    axis: Axis::Z,
+                    side: Side::Maximum,
+                },
+            },
+            false,
+        );
+        self.status_key = "status-sweep-inputs-selected";
+        true
+    }
+
     pub fn create_loft_inputs(&mut self, sections: Vec<(Vec<[f64; 2]>, f64)>) -> bool {
         if !(2..=16).contains(&sections.len()) {
             return false;
@@ -21923,7 +22198,7 @@ impl KetchupApp {
 
     fn active_solid_tool_operation(&self) -> Option<BooleanOperation> {
         match self.active_tool {
-            ActiveTool::SolidSubtract => Some(BooleanOperation::Cut),
+            ActiveTool::SolidSubtract | ActiveTool::SolidTrim => Some(BooleanOperation::Cut),
             ActiveTool::SolidUnion => Some(BooleanOperation::Union),
             ActiveTool::SolidIntersect => Some(BooleanOperation::Intersect),
             ActiveTool::SolidSplit => Some(BooleanOperation::Split),
@@ -22049,12 +22324,15 @@ impl KetchupApp {
         if !source.same_canonical_identity(&current) {
             return None;
         }
-        let operation_label = self.catalog.text(match source.operation {
-            BooleanOperation::Cut => "solid-tool-subtract",
-            BooleanOperation::Union => "solid-tool-union",
-            BooleanOperation::Intersect => "solid-tool-intersect",
-            BooleanOperation::Split => "solid-tool-split",
-        });
+        let operation_label = self
+            .catalog
+            .text(match (source.operation, source.keep_tool) {
+                (BooleanOperation::Cut, true) => "solid-tool-trim",
+                (BooleanOperation::Cut, false) => "solid-tool-subtract",
+                (BooleanOperation::Union, _) => "solid-tool-union",
+                (BooleanOperation::Intersect, _) => "solid-tool-intersect",
+                (BooleanOperation::Split, _) => "solid-tool-split",
+            });
         let command = CanonicalCommand::ApplySolidTool(SolidToolPlan {
             operation: source.operation,
             target_occurrence_id: source.target_selection.instance_path.root_occurrence(),
@@ -22168,7 +22446,7 @@ impl KetchupApp {
             },
             committed_digest_key: match (source.operation, source.keep_tool) {
                 (BooleanOperation::Cut, false) => "digest-solid-subtract-committed",
-                (BooleanOperation::Cut, true) => "digest-solid-subtract-kept-committed",
+                (BooleanOperation::Cut, true) => "digest-solid-trim-committed",
                 (BooleanOperation::Union, false) => "digest-solid-union-committed",
                 (BooleanOperation::Union, true) => "digest-solid-union-kept-committed",
                 (BooleanOperation::Intersect, false) => "digest-solid-intersect-committed",
@@ -22195,12 +22473,15 @@ impl KetchupApp {
             self.digest = self.catalog.text("digest-solid-tool-invalid");
             return false;
         };
-        let operation_label = self.catalog.text(match source.operation {
-            BooleanOperation::Cut => "solid-tool-subtract",
-            BooleanOperation::Union => "solid-tool-union",
-            BooleanOperation::Intersect => "solid-tool-intersect",
-            BooleanOperation::Split => "solid-tool-split",
-        });
+        let operation_label = self
+            .catalog
+            .text(match (source.operation, source.keep_tool) {
+                (BooleanOperation::Cut, true) => "solid-tool-trim",
+                (BooleanOperation::Cut, false) => "solid-tool-subtract",
+                (BooleanOperation::Union, _) => "solid-tool-union",
+                (BooleanOperation::Intersect, _) => "solid-tool-intersect",
+                (BooleanOperation::Split, _) => "solid-tool-split",
+            });
         let batch = CommandBatch::new(vec![plan.command.clone()]);
         let target_occurrence_id = source.target_selection.instance_path.root_occurrence();
         self.occurrence_operation_preview = Some(OccurrenceOperationPreview {
@@ -23242,14 +23523,12 @@ impl KetchupApp {
         let target_occurrence = planning_snapshot.occurrence(target_occurrence_id)?;
         let target_transform = target_occurrence.transform();
         let target_feature_id = target_box.extrusion_feature_id?;
-        let target_exact_request = ExactFeatureChainRequest::from_snapshot(
+        let target_exact_request = ExactBRepGraph::from_snapshot(
             &planning_snapshot,
             target_occurrence.definition_id(),
+            target_feature_id,
         )
         .ok()?;
-        if target_exact_request.producer_feature_id() != target_feature_id {
-            return None;
-        }
         Some(SmartThroughCutSourcePlan {
             source_document_id: snapshot.document_id(),
             source_revision: snapshot.revision_id(),
@@ -23534,15 +23813,12 @@ impl KetchupApp {
         }
         let target_definition_id = target_occurrence.definition_id();
         let target_definition = planning_snapshot.definition(target_definition_id)?;
-        let target_exact_request =
-            ExactFeatureChainRequest::from_snapshot(&planning_snapshot, target_definition_id)
-                .ok()?;
-        if target_exact_request.producer_feature_id() != target_feature_id
-            || target_exact_request.boolean.is_some()
-            || target_exact_request.pocket_depth_bits.is_some()
-        {
-            return None;
-        }
+        let target_exact_request = ExactBRepGraph::from_snapshot(
+            &planning_snapshot,
+            target_definition_id,
+            target_feature_id,
+        )
+        .ok()?;
         Some(SmartProfilePocketSourcePlan {
             source_document_id: snapshot.document_id(),
             source_revision: snapshot.revision_id(),
@@ -23699,14 +23975,17 @@ impl KetchupApp {
         let proposal = self.prepare_manual_push_pull_proposal(batch.clone())?;
         let preview_snapshot = proposal.preview(&self.document)?;
         let exact_request =
-            ExactFeatureChainRequest::from_snapshot(&preview_snapshot, result_definition_id)
+            ExactBRepGraph::from_snapshot(&preview_snapshot, result_definition_id, pocket_id)
                 .ok()?;
-        if exact_request.pocket_depth_bits != Some(depth_mm.to_bits())
-            || exact_request
-                .boolean
-                .as_ref()
-                .is_none_or(|boolean| boolean.operation != BooleanOperation::Cut)
-        {
+        if exact_request.nodes.last().is_none_or(|node| {
+            !matches!(
+                node.operation,
+                ExactBRepOperation::ProfileCut {
+                    depth_bits: Some(depth_bits),
+                    ..
+                } if depth_bits == depth_mm.to_bits()
+            )
+        }) {
             return None;
         }
         let selection_after = SelectionId {
@@ -24183,6 +24462,18 @@ impl KetchupApp {
                 .ok()
                 .map(|_| ketchup_core::exact_product::EXACT_BREP_GRAPH_EVALUATOR_V1)
             })
+    }
+
+    #[must_use]
+    pub fn push_pull_preview_render_depth_mm(&self) -> Option<f64> {
+        let preview = self.preview_box.as_ref()?;
+        let mesh = self
+            .canonical_profile_viewport_mesh(&self.document.current(), &preview.plan.preview_box)?;
+        let (minimum, maximum) = mesh.0.iter().map(|position| position[2]).fold(
+            (f64::INFINITY, f64::NEG_INFINITY),
+            |(minimum, maximum), z| (minimum.min(z), maximum.max(z)),
+        );
+        (minimum.is_finite() && maximum.is_finite()).then_some(maximum - minimum)
     }
 
     #[must_use]
@@ -24846,6 +25137,22 @@ impl KetchupApp {
         }
     }
 
+    fn push_pull_pointer_target(&self) -> Option<SelectionId> {
+        let selected = self.selection.primary.as_ref().filter(|selection| {
+            matches!(selection.element, ElementId::Face { .. })
+                && self.hover_pick.as_ref().is_some_and(|pick| {
+                    pick.overlapping
+                        .iter()
+                        .any(|hit| hit.reference == **selection)
+                })
+        });
+        selected.cloned().or_else(|| {
+            self.hovered
+                .clone()
+                .filter(|selection| matches!(selection.element, ElementId::Face { .. }))
+        })
+    }
+
     fn push_pull_screen_projection(
         &self,
         selection: &SelectionId,
@@ -25459,8 +25766,9 @@ impl KetchupApp {
         use_exact_bounds: bool,
     ) -> Option<[Vec3; 2]> {
         if let Some(package) = use_exact_bounds
-            .then(|| self.exact_results.get_render(snapshot, definition_id))
+            .then(|| self.exact_results_for_snapshot(snapshot))
             .flatten()
+            .and_then(|results| results.get_render(snapshot, definition_id))
         {
             let [minimum, maximum] = package.bounds_mm();
             return Some([
@@ -25826,6 +26134,25 @@ impl KetchupApp {
         );
     }
 
+    fn canonical_profile_viewport_mesh(
+        &self,
+        snapshot: &Snapshot,
+        item: &RenderBox,
+    ) -> Option<renderer::PlanarProfileMesh> {
+        let mesh = renderer::canonical_planar_profile_mesh(snapshot, item.definition_id)?;
+        match self
+            .preview_box
+            .as_ref()
+            .filter(|preview| preview.plan.source.target.instance_path == item.instance_path)
+        {
+            Some(preview) => renderer::extrude_planar_profile_mesh(
+                mesh,
+                f64::from_bits(preview.plan.new_extent_mm_bits),
+            ),
+            None => Some(mesh),
+        }
+    }
+
     fn proxy_preview_is_active(&self, item: &RenderBox) -> bool {
         let push_pull_preview =
             self.has_preview() && self.preview_definition_id == Some(item.definition_id);
@@ -25854,8 +26181,12 @@ impl KetchupApp {
         push_pull_preview || move_preview || rotate_preview || occurrence_preview
     }
 
-    fn viewport_boxes(&self, exact_projection: &ExactInteractionProjection) -> Vec<RenderBox> {
-        let mut boxes = self.active_boxes();
+    fn viewport_boxes(
+        &self,
+        snapshot: &Snapshot,
+        exact_projection: &ExactInteractionProjection,
+    ) -> Vec<RenderBox> {
+        let mut boxes = self.active_boxes_for_snapshot(snapshot);
         if let Some(drag) = self.move_drag.as_ref().or(self.move_anchor.as_ref())
             && self.move_preview_is_current(drag)
             && drag.profile_target.is_none()
@@ -25939,10 +26270,9 @@ impl KetchupApp {
                         .contains(&item.instance_path.root_occurrence())
             });
         }
-        let snapshot = self.document.current();
         boxes.retain(|item| {
             let proxy_preview = self.proxy_preview_is_active(item);
-            (!Self::definition_is_imported_exact_body(&snapshot, item.definition_id)
+            (!Self::definition_is_imported_exact_body(snapshot, item.definition_id)
                 || proxy_preview)
                 && (!exact_projection.contains_occurrence(&item.instance_path) || proxy_preview)
         });
@@ -27877,12 +28207,14 @@ impl KetchupApp {
             } else if matches!(
                 self.active_tool,
                 ActiveTool::SolidSubtract
+                    | ActiveTool::SolidTrim
                     | ActiveTool::SolidUnion
                     | ActiveTool::SolidIntersect
                     | ActiveTool::SolidSplit
             ) {
                 let selection = self.hovered.clone();
-                let keep_tool = ui.input(|input| input.modifiers.ctrl);
+                let keep_tool = self.active_tool == ActiveTool::SolidTrim
+                    || ui.input(|input| input.modifiers.ctrl);
                 self.select_solid_tool_occurrence(selection, keep_tool);
             } else if self.active_tool == ActiveTool::PushPull {
                 if let Some(anchor) = self.push_pull_anchor.take() {
@@ -27903,12 +28235,8 @@ impl KetchupApp {
                         false
                     }
                 } {
-                    if let Some(hovered) = self
-                        .hovered
-                        .clone()
-                        .filter(|selection| matches!(selection.element, ElementId::Face { .. }))
-                    {
-                        self.select_from_viewport(Some(hovered), false);
+                    if let Some(target) = self.push_pull_pointer_target() {
+                        self.select_from_viewport(Some(target), false);
                     }
                     if self.push_pull_face_selected()
                         && let Some(selection) = self.selection.primary.clone()
@@ -28338,7 +28666,7 @@ impl KetchupApp {
             .expect("interaction cache was built")
             .exact;
         let active_context_paths = self
-            .active_scene_query()
+            .active_scene_query_for_snapshot(&snapshot)
             .into_iter()
             .map(|occurrence| occurrence.instance_path)
             .collect::<BTreeSet<_>>();
@@ -28353,7 +28681,7 @@ impl KetchupApp {
             .collect::<BTreeMap<_, _>>();
         let mut faces = Vec::new();
         let mut edges = Vec::new();
-        let viewport_boxes = self.viewport_boxes(exact_projection);
+        let viewport_boxes = self.viewport_boxes(&snapshot, exact_projection);
         for item in viewport_boxes.iter().cloned() {
             let item = self.render_box(item);
             let proxy_preview = self.proxy_preview_is_active(&item);
@@ -28369,6 +28697,86 @@ impl KetchupApp {
                     || out_of_context);
             let needs_cpu_fill = !use_wgpu_scene || proxy_preview;
             if use_wgpu_scene && !needs_cpu_overlay {
+                continue;
+            }
+            let profile_mesh = self.canonical_profile_viewport_mesh(&snapshot, &item);
+            if let Some((local_positions, triangles)) = profile_mesh {
+                let Some(occurrence) = interaction_projection_cache
+                    .as_ref()
+                    .expect("interaction cache was built")
+                    .canonical
+                    .occurrences()
+                    .iter()
+                    .find(|occurrence| occurrence.instance_path == item.instance_path)
+                else {
+                    continue;
+                };
+                let transform = move_transform_overrides
+                    .get(&item.instance_path)
+                    .copied()
+                    .unwrap_or(occurrence.canonical_world_transform);
+                let positions_mm = local_positions
+                    .iter()
+                    .map(|point| {
+                        transform_model_point(transform, Vec3::new(point[0], point[1], point[2]))
+                    })
+                    .collect::<Vec<_>>();
+                let local_positions_f32 = local_positions
+                    .iter()
+                    .map(|point| point.map(|value| value as f32))
+                    .collect::<Vec<_>>();
+                let boundary_edges = renderer::feature_edges(
+                    &local_positions_f32,
+                    &triangles,
+                    &vec![None::<u8>; triangles.len()],
+                );
+                let selection = SelectionId {
+                    definition_id: item.definition_id,
+                    instance_path: item.instance_path.clone(),
+                    element: ElementId::Face {
+                        axis: Axis::Z,
+                        side: Side::Maximum,
+                    },
+                };
+                for edge in boundary_edges {
+                    let points_mm = edge.map(|index| positions_mm[index as usize]);
+                    edges.push(ProjectedEdge {
+                        selection: selection.clone(),
+                        points: points_mm.map(|point| self.project(point, response.rect)),
+                        depth: points_mm
+                            .into_iter()
+                            .map(|point| point_depth(point, forward))
+                            .sum::<f64>()
+                            / 2.0,
+                        dominant_axis: dominant_edge_axis(points_mm),
+                    });
+                }
+                if needs_cpu_fill {
+                    for triangle in triangles {
+                        let points_mm = triangle.map(|index| positions_mm[index as usize]);
+                        let normal = triangle_normal(points_mm);
+                        if point_depth(normal, forward) >= -1.0e-9 {
+                            continue;
+                        }
+                        let projected = points_mm.map(|point| self.project(point, response.rect));
+                        if !projected_polygon_has_area(&projected) {
+                            continue;
+                        }
+                        faces.push(ProjectedFace {
+                            selection: selection.clone(),
+                            polygon: ProjectedPolygon::Triangle(projected),
+                            color: occurrence_color
+                                .unwrap_or_else(|| face_color_from_normal(normal)),
+                            depth: points_mm
+                                .into_iter()
+                                .map(|point| point_depth(point, forward))
+                                .sum::<f64>()
+                                / 3.0,
+                            previewed: false,
+                            out_of_context,
+                        });
+                    }
+                }
                 continue;
             }
             let corners = box_corners(item.size_mm.x, item.size_mm.y, item.size_mm.z)
@@ -29210,7 +29618,8 @@ impl KetchupApp {
     ) -> Option<SnapshotBoundTopologicalSelection> {
         let ray = self.view_ray(pointer, rect)?;
         let snapshot = self.document.current();
-        let projection = self.topology_projection(&snapshot);
+        let topology_results = self.topology_results_for_snapshot(&snapshot)?;
+        let projection = ExactInteractionProjection::from_snapshot(&snapshot, topology_results);
         let hit = projection.exact_surface_pick(ray)?;
         if hit.definition_id != selection.definition_id
             || hit.instance_path != selection.instance_path
@@ -29220,14 +29629,13 @@ impl KetchupApp {
         match selection.element {
             ElementId::Face { .. } => hit.topological_target,
             ElementId::Edge(ordinal) | ElementId::EdgeMidpoint(ordinal) => {
-                let producer_feature_id = self
-                    .topology_results
+                let producer_feature_id = topology_results
                     .get_render(&snapshot, selection.definition_id)?
                     .producer_feature_id();
                 projection
                     .topological_pick_current(
                         &snapshot,
-                        &self.topology_results,
+                        topology_results,
                         &TopologicalPickLocator {
                             instance_path: selection.instance_path.clone(),
                             producer_feature_id,
@@ -29561,6 +29969,29 @@ impl KetchupApp {
             rect.center().x + self.pan.x + (view_x * scale) as f32,
             rect.center().y + self.pan.y - (view_y * scale) as f32,
         )
+    }
+
+    /// Clip a long world-space line at the eye plane before projecting it.
+    fn project_visible_segment(&self, mut points: [Vec3; 2], rect: Rect) -> Option<[Pos2; 2]> {
+        if self.projection_mode == ProjectionMode::Perspective {
+            let (_, _, forward) = self.camera_basis();
+            let target = self.camera_target();
+            let mut depths =
+                points.map(|point| self.camera_distance() + dot(point - target, forward));
+            if depths.iter().all(|depth| *depth < PERSPECTIVE_NEAR_MM) {
+                return None;
+            }
+            for index in 0..2 {
+                if depths[index] < PERSPECTIVE_NEAR_MM {
+                    let other = 1 - index;
+                    let amount =
+                        (PERSPECTIVE_NEAR_MM - depths[index]) / (depths[other] - depths[index]);
+                    points[index] = points[index] + (points[other] - points[index]) * amount;
+                    depths[index] = PERSPECTIVE_NEAR_MM;
+                }
+            }
+        }
+        Some(points.map(|point| self.project(point, rect)))
     }
 
     fn handle_shortcuts(&mut self, context: &egui::Context) {
@@ -30264,6 +30695,7 @@ impl KetchupApp {
                 self.menu_command(ui, AppCommand::CircularPattern);
                 ui.separator();
                 self.menu_command(ui, AppCommand::SolidSubtract);
+                self.menu_command(ui, AppCommand::SolidTrim);
                 self.menu_command(ui, AppCommand::SolidUnion);
                 self.menu_command(ui, AppCommand::SolidIntersect);
                 self.menu_command(ui, AppCommand::SolidSplit);
@@ -30404,7 +30836,11 @@ impl KetchupApp {
         } else {
             Color32::from_rgba_unmultiplied(8, 12, 18, 48)
         };
+        let snapshot = self.document.current();
         for item in boxes {
+            if renderer::canonical_planar_profile_mesh(&snapshot, item.definition_id).is_some() {
+                continue;
+            }
             let elevation = (item.origin_mm.z + item.size_mm.z).max(0.0);
             let offset_x = elevation * 0.28;
             let offset_y = -elevation * 0.18;
@@ -30490,6 +30926,7 @@ impl KetchupApp {
                     | ActiveTool::CutThrough
                     | ActiveTool::Pocket
                     | ActiveTool::SolidSubtract
+                    | ActiveTool::SolidTrim
                     | ActiveTool::SolidUnion
                     | ActiveTool::SolidIntersect
                     | ActiveTool::SolidSplit
@@ -30743,7 +31180,9 @@ impl KetchupApp {
                     palette.grid
                 },
             );
-            painter.line_segment([self.project(from, rect), self.project(to, rect)], stroke);
+            if let Some(points) = self.project_visible_segment([from, to], rect) {
+                painter.line_segment(points, stroke);
+            }
         };
         for index in x_start..=x_end {
             if index != 0 {
@@ -30783,10 +31222,9 @@ impl KetchupApp {
                 axis_color(Axis::Z),
             ),
         ] {
-            painter.line_segment(
-                [self.project(from, rect), self.project(to, rect)],
-                Stroke::new(1.6_f32, color),
-            );
+            if let Some(points) = self.project_visible_segment([from, to], rect) {
+                painter.line_segment(points, Stroke::new(1.6_f32, color));
+            }
         }
     }
 
@@ -35136,7 +35574,7 @@ impl KetchupApp {
                 ui.label(self.catalog.text("about-description"));
                 ui.label(self.catalog.format(
                     "about-version",
-                    &BTreeMap::from([("version", env!("CARGO_PKG_VERSION").to_owned())]),
+                    &BTreeMap::from([("version", Self::build_version().to_owned())]),
                 ));
                 ui.label(self.catalog.format(
                     "about-license",
@@ -35222,6 +35660,12 @@ impl KetchupApp {
                 )
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(16.0);
+                ui.label(
+                    egui::RichText::new(format!("v{}", Self::build_version()))
+                        .size(9.5)
+                        .color(palette.faint),
+                );
                 for text in chips.into_iter().rev() {
                     status_chip(ui, palette, &text);
                 }
@@ -35434,7 +35878,9 @@ impl KetchupApp {
                         self.show_assembly_editor(ui);
                         self.show_occurrence_color_editor(ui);
                         self.show_parameter_editor(ui);
-                        self.show_assistant(ui);
+                        if !Self::is_manual_alpha_build() {
+                            self.show_assistant(ui);
+                        }
                         self.show_validator_panel(ui);
                     });
                 });
@@ -35484,7 +35930,9 @@ impl KetchupApp {
                         );
                         self.viewport(&mut hidden_viewport);
                     }
-                    self.show_assistant(ui);
+                    if !Self::is_manual_alpha_build() {
+                        self.show_assistant(ui);
+                    }
                 });
         }
         self.show_smart_push_pull_chooser(context);
@@ -36419,6 +36867,25 @@ fn export_bundle_evidence(
     evidence
 }
 
+const EXPORT_BUNDLE_JOURNAL_SCHEMA_V1: &str = "ketchup.export-bundle-journal.v1";
+const MAX_EXPORT_BUNDLE_JOURNAL_BYTES: u64 = 16 * 1024;
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ExportBundleJournal {
+    schema: String,
+    primary_path_sha256: String,
+    report_path_sha256: String,
+    primary_temporary_name: String,
+    report_temporary_name: String,
+    primary_backup_name: Option<String>,
+    report_backup_name: Option<String>,
+    original_primary_sha256: Option<String>,
+    original_report_sha256: Option<String>,
+    published_primary_sha256: String,
+    published_report_sha256: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ExportBundlePrecondition {
     primary_sha256: Option<String>,
@@ -36427,6 +36894,7 @@ struct ExportBundlePrecondition {
 
 impl ExportBundlePrecondition {
     fn capture(primary_path: &Path, report_path: &Path) -> Result<Self, String> {
+        recover_export_bundle(primary_path, report_path)?;
         Ok(Self {
             primary_sha256: export_target_sha256(primary_path)?,
             report_sha256: export_target_sha256(report_path)?,
@@ -36446,6 +36914,87 @@ fn export_target_sha256(path: &Path) -> Result<Option<String>, String> {
         .map_err(|error| error.to_string())
 }
 
+fn export_path_identity_sha256(path: &Path) -> String {
+    #[cfg(unix)]
+    let bytes = {
+        use std::os::unix::ffi::OsStrExt as _;
+        path.as_os_str().as_bytes().to_vec()
+    };
+    #[cfg(windows)]
+    let bytes = {
+        use std::os::windows::ffi::OsStrExt as _;
+        path.as_os_str()
+            .encode_wide()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>()
+    };
+    #[cfg(not(any(unix, windows)))]
+    let bytes = path.to_string_lossy().as_bytes().to_vec();
+    ketchup_core::graph::sha256_hex(&bytes)
+}
+
+fn export_bundle_journal_path(primary_path: &Path) -> Result<PathBuf, String> {
+    let mut name = primary_path
+        .file_name()
+        .ok_or_else(|| "export artifact must have a file name".to_owned())?
+        .to_os_string();
+    name.push(".ketchup-export-journal");
+    Ok(primary_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(name))
+}
+
+fn export_generated_name(path: &Path) -> Result<String, String> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_owned)
+        .ok_or_else(|| "generated export transaction path is not valid UTF-8".to_owned())
+}
+
+fn resolve_export_generated_path(
+    parent: &Path,
+    name: &str,
+    prefix: &str,
+) -> Result<PathBuf, String> {
+    let mut components = Path::new(name).components();
+    if !name.starts_with(prefix)
+        || !matches!(components.next(), Some(std::path::Component::Normal(_)))
+        || components.next().is_some()
+    {
+        return Err("export recovery journal contains an invalid generated path".to_owned());
+    }
+    Ok(parent.join(name))
+}
+
+fn valid_export_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn validate_export_journal_hash(value: Option<&str>) -> Result<(), String> {
+    if value.is_some_and(|value| !valid_export_sha256(value)) {
+        return Err("export recovery journal contains an invalid SHA-256".to_owned());
+    }
+    Ok(())
+}
+
+fn sync_export_parent(parent: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        std::fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = parent;
+        Ok(())
+    }
+}
+
 fn empty_export_temp_path(path: &Path, prefix: &str) -> Result<tempfile::TempPath, String> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let temporary = tempfile::Builder::new()
@@ -36457,120 +37006,242 @@ fn empty_export_temp_path(path: &Path, prefix: &str) -> Result<tempfile::TempPat
     Ok(temporary)
 }
 
-fn persist_export_backup_noclobber(backup: tempfile::TempPath, path: &Path) -> Result<(), String> {
-    match backup.persist_noclobber(path) {
-        Ok(_) => Ok(()),
-        Err(error) => {
-            let persist_error = error.error;
-            let preserved = error
-                .path
-                .keep()
-                .map_err(|keep_error| keep_error.error.to_string())?;
-            Err(format!(
-                "{persist_error}; backup preserved at {}",
-                preserved.display()
-            ))
-        }
-    }
-}
-
-fn export_backup(
+fn move_export_target_to_backup(
     path: &Path,
     expected_sha256: Option<&str>,
-) -> Result<Option<tempfile::TempPath>, String> {
-    let current_sha256 = export_target_sha256(path)?;
-    if current_sha256.as_deref() != expected_sha256 {
+    backup_path: Option<&Path>,
+) -> Result<(), String> {
+    if export_target_sha256(path)?.as_deref() != expected_sha256 {
         return Err(format!(
             "export target {} changed after authorization",
             path.display()
         ));
     }
-    if expected_sha256.is_none() {
-        return Ok(None);
-    }
-    let backup = empty_export_temp_path(path, ".ketchup-export-backup-")?;
-    std::fs::rename(path, &backup).map_err(|error| error.to_string())?;
-    let moved_sha256 = export_target_sha256(&backup);
-    if moved_sha256.as_ref().ok().and_then(Option::as_deref) == expected_sha256 {
-        return Ok(Some(backup));
-    }
-    let mismatch = moved_sha256
-        .err()
-        .unwrap_or_else(|| format!("export target {} changed during backup", path.display()));
-    let restore = persist_export_backup_noclobber(backup, path);
-    Err(match restore {
-        Ok(()) => mismatch,
-        Err(restore) => format!("{mismatch}; concurrent target restore failed: {restore}"),
-    })
-}
-
-fn restore_export_backup(
-    path: &Path,
-    backup: &mut Option<tempfile::TempPath>,
-    published_sha256: Option<&str>,
-) -> Result<(), String> {
-    let quarantined = if path.exists() {
-        let quarantined = empty_export_temp_path(path, ".ketchup-export-rollback-")?;
-        std::fs::rename(path, &quarantined).map_err(|error| error.to_string())?;
-        Some(quarantined)
-    } else {
-        None
-    };
-    if let Some(quarantined) = quarantined {
-        let quarantined_sha256 = export_target_sha256(&quarantined);
-        if quarantined_sha256.as_ref().ok().and_then(Option::as_deref) != published_sha256 {
-            let concurrent_restore = persist_export_backup_noclobber(quarantined, path);
-            let original_preserved = backup
-                .take()
-                .map(tempfile::TempPath::keep)
-                .transpose()
-                .map_err(|error| error.error.to_string())?;
-            return Err(match (concurrent_restore, original_preserved) {
-                (Ok(()), Some(original)) => format!(
-                    "cannot roll back {} because it changed concurrently; original preserved at {}",
-                    path.display(),
-                    original.display()
-                ),
-                (Ok(()), None) => format!(
-                    "cannot roll back {} because it changed concurrently",
-                    path.display()
-                ),
-                (Err(concurrent), Some(original)) => format!(
-                    "cannot roll back {} because it changed concurrently; {concurrent}; original preserved at {}",
-                    path.display(),
-                    original.display()
-                ),
-                (Err(concurrent), None) => format!(
-                    "cannot roll back {} because it changed concurrently; {concurrent}",
-                    path.display()
-                ),
-            });
+    match (expected_sha256, backup_path) {
+        (None, None) => Ok(()),
+        (Some(_), Some(backup_path)) => {
+            std::fs::rename(path, backup_path).map_err(|error| error.to_string())?;
+            sync_export_parent(path.parent().unwrap_or_else(|| Path::new(".")))
         }
+        _ => Err("export transaction backup does not match its precondition".to_owned()),
     }
-    if let Some(saved) = backup.take() {
-        persist_export_backup_noclobber(saved, path)?;
-    }
-    Ok(())
 }
 
-fn rollback_export_bundle(
-    primary_path: &Path,
-    primary_backup: &mut Option<tempfile::TempPath>,
-    primary_published_sha256: Option<&str>,
-    report_path: &Path,
-    report_backup: &mut Option<tempfile::TempPath>,
-    report_published_sha256: Option<&str>,
-) -> Result<(), String> {
-    let primary = restore_export_backup(primary_path, primary_backup, primary_published_sha256);
-    let report = restore_export_backup(report_path, report_backup, report_published_sha256);
-    match (primary, report) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(primary), Ok(())) => Err(format!("primary rollback failed: {primary}")),
-        (Ok(()), Err(report)) => Err(format!("loss-report rollback failed: {report}")),
-        (Err(primary), Err(report)) => Err(format!(
-            "primary rollback failed: {primary}; loss-report rollback failed: {report}"
+fn remove_export_artifact(path: &Path, expected_sha256: &str) -> Result<(), String> {
+    match export_target_sha256(path)? {
+        None => Ok(()),
+        Some(actual) if actual == expected_sha256 => {
+            std::fs::remove_file(path).map_err(|error| error.to_string())
+        }
+        Some(_) => Err(format!(
+            "refusing to remove concurrently changed export transaction artifact {}",
+            path.display()
         )),
     }
+}
+
+fn validate_export_target_recovery(
+    path: &Path,
+    backup_path: Option<&Path>,
+    original_sha256: Option<&str>,
+    published_sha256: &str,
+) -> Result<(), String> {
+    let current_sha256 = export_target_sha256(path)?;
+    if current_sha256.as_deref() == original_sha256
+        || current_sha256.as_deref() == Some(published_sha256)
+    {
+        return Ok(());
+    }
+    if current_sha256.is_none() && original_sha256.is_some() {
+        let backup_path = backup_path
+            .ok_or_else(|| format!("export recovery backup is missing for {}", path.display()))?;
+        if export_target_sha256(backup_path)?.as_deref() == original_sha256 {
+            return Ok(());
+        }
+    }
+    Err(format!(
+        "cannot recover {} because it changed concurrently",
+        path.display()
+    ))
+}
+
+fn recover_export_target(
+    path: &Path,
+    backup_path: Option<&Path>,
+    original_sha256: Option<&str>,
+    published_sha256: &str,
+) -> Result<(), String> {
+    let current_sha256 = export_target_sha256(path)?;
+    match original_sha256 {
+        None => match current_sha256.as_deref() {
+            None => Ok(()),
+            Some(current) if current == published_sha256 => {
+                std::fs::remove_file(path).map_err(|error| error.to_string())
+            }
+            Some(_) => Err(format!(
+                "cannot recover {} because it changed concurrently",
+                path.display()
+            )),
+        },
+        Some(original_sha256) => {
+            if current_sha256.as_deref() == Some(original_sha256) {
+                return Ok(());
+            }
+            if current_sha256.is_some() && current_sha256.as_deref() != Some(published_sha256) {
+                return Err(format!(
+                    "cannot recover {} because it changed concurrently",
+                    path.display()
+                ));
+            }
+            let backup_path = backup_path.ok_or_else(|| {
+                format!("export recovery backup is missing for {}", path.display())
+            })?;
+            if export_target_sha256(backup_path)?.as_deref() != Some(original_sha256) {
+                return Err(format!(
+                    "export recovery backup is missing or invalid for {}",
+                    path.display()
+                ));
+            }
+            if current_sha256.is_some() {
+                std::fs::remove_file(path).map_err(|error| error.to_string())?;
+            }
+            std::fs::rename(backup_path, path).map_err(|error| error.to_string())
+        }
+    }
+}
+
+fn recover_export_bundle(primary_path: &Path, report_path: &Path) -> Result<(), String> {
+    let journal_path = export_bundle_journal_path(primary_path)?;
+    if !journal_path.exists() {
+        return Ok(());
+    }
+    let metadata = std::fs::metadata(&journal_path).map_err(|error| error.to_string())?;
+    if !metadata.is_file() || metadata.len() > MAX_EXPORT_BUNDLE_JOURNAL_BYTES {
+        return Err("export recovery journal is not a bounded regular file".to_owned());
+    }
+    let journal: ExportBundleJournal =
+        serde_json::from_slice(&std::fs::read(&journal_path).map_err(|error| error.to_string())?)
+            .map_err(|error| format!("invalid export recovery journal: {error}"))?;
+    if journal.schema != EXPORT_BUNDLE_JOURNAL_SCHEMA_V1
+        || journal.primary_path_sha256 != export_path_identity_sha256(primary_path)
+        || journal.report_path_sha256 != export_path_identity_sha256(report_path)
+    {
+        return Err("export recovery journal does not match this artifact pair".to_owned());
+    }
+    for hash in [
+        journal.original_primary_sha256.as_deref(),
+        journal.original_report_sha256.as_deref(),
+        Some(journal.published_primary_sha256.as_str()),
+        Some(journal.published_report_sha256.as_str()),
+    ] {
+        validate_export_journal_hash(hash)?;
+    }
+    let parent = primary_path.parent().unwrap_or_else(|| Path::new("."));
+    if parent != report_path.parent().unwrap_or_else(|| Path::new(".")) {
+        return Err("export artifact and loss report must share a directory".to_owned());
+    }
+    let primary_temporary = resolve_export_generated_path(
+        parent,
+        &journal.primary_temporary_name,
+        ".ketchup-export-primary-",
+    )?;
+    let report_temporary = resolve_export_generated_path(
+        parent,
+        &journal.report_temporary_name,
+        ".ketchup-export-report-",
+    )?;
+    let primary_backup = journal
+        .primary_backup_name
+        .as_deref()
+        .map(|name| resolve_export_generated_path(parent, name, ".ketchup-export-backup-"))
+        .transpose()?;
+    let report_backup = journal
+        .report_backup_name
+        .as_deref()
+        .map(|name| resolve_export_generated_path(parent, name, ".ketchup-export-backup-"))
+        .transpose()?;
+
+    let fully_published = export_target_sha256(primary_path)?.as_deref()
+        == Some(journal.published_primary_sha256.as_str())
+        && export_target_sha256(report_path)?.as_deref()
+            == Some(journal.published_report_sha256.as_str());
+    if !fully_published {
+        validate_export_target_recovery(
+            primary_path,
+            primary_backup.as_deref(),
+            journal.original_primary_sha256.as_deref(),
+            &journal.published_primary_sha256,
+        )?;
+        validate_export_target_recovery(
+            report_path,
+            report_backup.as_deref(),
+            journal.original_report_sha256.as_deref(),
+            &journal.published_report_sha256,
+        )?;
+        recover_export_target(
+            primary_path,
+            primary_backup.as_deref(),
+            journal.original_primary_sha256.as_deref(),
+            &journal.published_primary_sha256,
+        )?;
+        recover_export_target(
+            report_path,
+            report_backup.as_deref(),
+            journal.original_report_sha256.as_deref(),
+            &journal.published_report_sha256,
+        )?;
+    }
+    for (path, expected_sha256) in [
+        (
+            primary_temporary.as_path(),
+            &journal.published_primary_sha256,
+        ),
+        (report_temporary.as_path(), &journal.published_report_sha256),
+    ] {
+        remove_export_artifact(path, expected_sha256)?;
+    }
+    for (path, expected_sha256) in [
+        (
+            primary_backup.as_deref(),
+            journal.original_primary_sha256.as_deref(),
+        ),
+        (
+            report_backup.as_deref(),
+            journal.original_report_sha256.as_deref(),
+        ),
+    ] {
+        if let (Some(path), Some(expected_sha256)) = (path, expected_sha256) {
+            remove_export_artifact(path, expected_sha256)?;
+        }
+    }
+    sync_export_parent(parent)?;
+    std::fs::remove_file(&journal_path).map_err(|error| error.to_string())?;
+    sync_export_parent(parent)
+}
+
+fn persist_export_journal(
+    primary_path: &Path,
+    journal: &ExportBundleJournal,
+) -> Result<(), String> {
+    let journal_path = export_bundle_journal_path(primary_path)?;
+    let parent = primary_path.parent().unwrap_or_else(|| Path::new("."));
+    let bytes = serde_json::to_vec(journal).map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > MAX_EXPORT_BUNDLE_JOURNAL_BYTES {
+        return Err("export recovery journal exceeds its resource limit".to_owned());
+    }
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".ketchup-export-journal-")
+        .tempfile_in(parent)
+        .map_err(|error| error.to_string())?;
+    temporary
+        .write_all(&bytes)
+        .and_then(|()| temporary.as_file().sync_all())
+        .map_err(|error| error.to_string())?;
+    temporary
+        .into_temp_path()
+        .persist_noclobber(&journal_path)
+        .map_err(|error| error.error.to_string())?;
+    sync_export_parent(parent)
 }
 
 fn persist_export_temporary(temporary: tempfile::TempPath, path: &Path) -> Result<(), String> {
@@ -36589,12 +37260,15 @@ fn write_export_bundle(
 ) -> Result<(), String> {
     let primary_parent = primary_path.parent().unwrap_or_else(|| Path::new("."));
     let report_parent = report_path.parent().unwrap_or_else(|| Path::new("."));
-    if primary_parent != report_parent {
-        return Err("export artifact and loss report must share a directory".to_owned());
+    if primary_parent != report_parent || primary_path == report_path {
+        return Err(
+            "export artifact and loss report must be distinct files in one directory".to_owned(),
+        );
     }
     if primary_path.is_dir() || report_path.is_dir() {
         return Err("export target must be a regular file path".to_owned());
     }
+    recover_export_bundle(primary_path, report_path)?;
     let mut primary_temporary = tempfile::Builder::new()
         .prefix(".ketchup-export-primary-")
         .tempfile_in(primary_parent)
@@ -36613,49 +37287,60 @@ fn write_export_bundle(
         .map_err(|error| error.to_string())?;
     let primary_temporary = primary_temporary.into_temp_path();
     let report_temporary = report_temporary.into_temp_path();
-
-    let primary_published_sha256 = ketchup_core::graph::sha256_hex(primary);
-    let mut primary_backup = export_backup(primary_path, precondition.primary_sha256.as_deref())?;
-    let mut report_backup = match export_backup(report_path, precondition.report_sha256.as_deref())
-    {
-        Ok(backup) => backup,
-        Err(error) => {
-            let rollback = restore_export_backup(primary_path, &mut primary_backup, None);
-            return Err(match rollback {
-                Ok(()) => error,
-                Err(rollback) => format!("{error}; primary rollback failed: {rollback}"),
-            });
-        }
+    let primary_backup = precondition
+        .primary_sha256
+        .as_ref()
+        .map(|_| empty_export_temp_path(primary_path, ".ketchup-export-backup-"))
+        .transpose()?;
+    let report_backup = precondition
+        .report_sha256
+        .as_ref()
+        .map(|_| empty_export_temp_path(report_path, ".ketchup-export-backup-"))
+        .transpose()?;
+    let journal = ExportBundleJournal {
+        schema: EXPORT_BUNDLE_JOURNAL_SCHEMA_V1.to_owned(),
+        primary_path_sha256: export_path_identity_sha256(primary_path),
+        report_path_sha256: export_path_identity_sha256(report_path),
+        primary_temporary_name: export_generated_name(&primary_temporary)?,
+        report_temporary_name: export_generated_name(&report_temporary)?,
+        primary_backup_name: primary_backup
+            .as_deref()
+            .map(export_generated_name)
+            .transpose()?,
+        report_backup_name: report_backup
+            .as_deref()
+            .map(export_generated_name)
+            .transpose()?,
+        original_primary_sha256: precondition.primary_sha256.clone(),
+        original_report_sha256: precondition.report_sha256.clone(),
+        published_primary_sha256: ketchup_core::graph::sha256_hex(primary),
+        published_report_sha256: ketchup_core::graph::sha256_hex(report),
     };
-    if let Err(error) = persist_export_temporary(primary_temporary, primary_path) {
-        let rollback = rollback_export_bundle(
+    persist_export_journal(primary_path, &journal)?;
+
+    let publish = (|| {
+        move_export_target_to_backup(
             primary_path,
-            &mut primary_backup,
-            None,
+            precondition.primary_sha256.as_deref(),
+            primary_backup.as_deref(),
+        )?;
+        move_export_target_to_backup(
             report_path,
-            &mut report_backup,
-            None,
-        );
-        return Err(match rollback {
+            precondition.report_sha256.as_deref(),
+            report_backup.as_deref(),
+        )?;
+        persist_export_temporary(primary_temporary, primary_path)?;
+        sync_export_parent(primary_parent)?;
+        persist_export_temporary(report_temporary, report_path)?;
+        sync_export_parent(primary_parent)
+    })();
+    if let Err(error) = publish {
+        return Err(match recover_export_bundle(primary_path, report_path) {
             Ok(()) => error,
-            Err(rollback) => format!("{error}; {rollback}"),
+            Err(recovery) => format!("{error}; export recovery failed: {recovery}"),
         });
     }
-    if let Err(error) = persist_export_temporary(report_temporary, report_path) {
-        let rollback = rollback_export_bundle(
-            primary_path,
-            &mut primary_backup,
-            Some(&primary_published_sha256),
-            report_path,
-            &mut report_backup,
-            None,
-        );
-        return Err(match rollback {
-            Ok(()) => error,
-            Err(rollback) => format!("{error}; {rollback}"),
-        });
-    }
-    Ok(())
+    recover_export_bundle(primary_path, report_path)
 }
 
 fn exact_mesh_export_evidence(bundle: &ExactMeshExport) -> Vec<u8> {

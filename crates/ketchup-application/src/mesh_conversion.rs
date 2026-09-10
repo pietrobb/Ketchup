@@ -749,7 +749,7 @@ fn cylinder_feature_chain(
     {
         return Err(MeshConversionError::InvalidCandidate);
     }
-    let [basis_u, basis_v] = perpendicular_basis(cylinder.axis);
+    let [basis_u, basis_v] = perpendicular_basis(cylinder.axis)?;
     let origin = subtract_3d(
         cylinder.center_mm,
         scale_3d(cylinder.axis, cylinder.height_mm * 0.5),
@@ -833,14 +833,27 @@ fn ensure_counter_clockwise_profile(profile: &mut FeatureKind) {
     }
 }
 
-fn perpendicular_basis(axis: [f64; 3]) -> [[f64; 3]; 2] {
-    if axis[0].abs() > 0.5 {
-        [[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
-    } else if axis[1].abs() > 0.5 {
-        [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0]]
-    } else {
-        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+fn perpendicular_basis(axis: [f64; 3]) -> Result<[[f64; 3]; 2], MeshConversionError> {
+    let axis_length = length_3d(axis);
+    if !axis_length.is_finite() || axis_length <= f64::EPSILON {
+        return Err(MeshConversionError::InvalidCandidate);
     }
+    let axis = scale_3d(axis, axis_length.recip());
+    let helper = if axis[0].abs() <= axis[1].abs() && axis[0].abs() <= axis[2].abs() {
+        [1.0, 0.0, 0.0]
+    } else if axis[1].abs() <= axis[2].abs() {
+        [0.0, 1.0, 0.0]
+    } else {
+        [0.0, 0.0, 1.0]
+    };
+    let basis_u = cross_3d(helper, axis);
+    let basis_u_length = length_3d(basis_u);
+    if !basis_u_length.is_finite() || basis_u_length <= f64::EPSILON {
+        return Err(MeshConversionError::InvalidCandidate);
+    }
+    let basis_u = scale_3d(basis_u, basis_u_length.recip());
+    let basis_v = cross_3d(axis, basis_u);
+    Ok([basis_u, basis_v])
 }
 
 struct VerificationWorkBudget {
@@ -1231,6 +1244,14 @@ fn dot_3d(left: [f64; 3], right: [f64; 3]) -> f64 {
     left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
 }
 
+fn cross_3d(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
+    [
+        left[1] * right[2] - left[2] * right[1],
+        left[2] * right[0] - left[0] * right[2],
+        left[0] * right[1] - left[1] * right[0],
+    ]
+}
+
 fn length_3d(value: [f64; 3]) -> f64 {
     dot_3d(value, value).sqrt()
 }
@@ -1243,6 +1264,23 @@ fn determinant(u: [f64; 3], v: [f64; 3], w: [f64; 3]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oblique_cylinder_axis_produces_an_orthonormal_right_handed_basis() {
+        let half_sqrt_two = 0.5_f64.sqrt();
+        let axis = [half_sqrt_two, half_sqrt_two, 0.0];
+        let [basis_u, basis_v] = perpendicular_basis(axis).unwrap();
+
+        assert!(dot_3d(axis, basis_u).abs() <= 1.0e-12);
+        assert!(dot_3d(axis, basis_v).abs() <= 1.0e-12);
+        assert!((length_3d(basis_u) - 1.0).abs() <= 1.0e-12);
+        assert!((length_3d(basis_v) - 1.0).abs() <= 1.0e-12);
+        assert!((determinant(basis_u, basis_v, axis) - 1.0).abs() <= 1.0e-12);
+        assert_eq!(
+            perpendicular_basis([0.0, 0.0, 0.0]),
+            Err(MeshConversionError::InvalidCandidate)
+        );
+    }
 
     #[test]
     fn timed_out_wait_reaps_an_unresponsive_worker_asynchronously() {

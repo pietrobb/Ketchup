@@ -22,6 +22,39 @@ fn assert_bounds(actual: [[f64; 3]; 2], expected: [[f64; 3]; 2]) {
 }
 
 #[test]
+fn worker_cuts_circle_mixed_curve_and_compound_sketch_regions() {
+    let mut worker =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let cases = [
+        (
+            circle(PLANE, [60.0, 60.0], 20.0),
+            1_600_000.0 - std::f64::consts::PI * 20.0 * 20.0 * 20.0,
+        ),
+        (
+            semicircle(PLANE, [60.0, 60.0], 20.0),
+            1_600_000.0 - std::f64::consts::PI * 20.0 * 20.0 * 10.0,
+        ),
+        (
+            rectangle_with_circular_hole(PLANE, [40.0, 40.0], [80.0, 80.0], [60.0, 60.0], 10.0),
+            1_600_000.0 - (40.0 * 40.0 - std::f64::consts::PI * 10.0 * 10.0) * 20.0,
+        ),
+    ];
+    for (sketch, expected_volume) in cases {
+        let document = document_with_cut_sketch(PrincipalPlane::Xy, 0.0, sketch);
+        let snapshot = document.current();
+        let graph = ExactBRepGraph::from_snapshot(&snapshot, DEFINITION, POCKET).unwrap();
+        let package = worker.evaluate_exact_brep_graph(&graph).unwrap();
+        assert!(
+            (package.volume_mm3 - expected_volume).abs() < 1.0e-6,
+            "{} != {expected_volume}",
+            package.volume_mm3
+        );
+        assert_bounds(package.bounds_mm, [[0.0, 0.0, 0.0], [400.0, 200.0, 20.0]]);
+        ExactResultRegistry::accept(&snapshot, [Arc::new(package.into())]).unwrap();
+    }
+}
+
+#[test]
 fn worker_cuts_real_generic_sketch_through_hole_in_principal_and_offset_frames() {
     let mut worker =
         ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();

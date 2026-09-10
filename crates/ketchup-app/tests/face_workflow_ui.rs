@@ -4,7 +4,11 @@ mod harness;
 
 use eframe::egui::{Key, Vec2, accesskit::Role};
 use harness::{Shell, alt};
-use ketchup_app::{AppCommand, HeadlessFaceWorkflowFailure, dialogs::ScriptedFileDialogs};
+use ketchup_app::{
+    AppCommand, HeadlessFaceWorkflowFailure,
+    dialogs::ScriptedFileDialogs,
+    renderer::{DerivedRenderCache, InstancedRenderPlan},
+};
 use ketchup_core::document::{FeatureId, FeatureKind, InstancePath, OccurrenceId, ProfileSegment};
 use ketchup_core::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry,
@@ -13,6 +17,7 @@ use ketchup_core::exact_brep_graph::{
 use ketchup_core::exact_product::{
     EXACT_ARC_PROFILE_EVALUATOR_V1, EXACT_BREP_GRAPH_EVALUATOR_V1, EXACT_CIRCLE_EVALUATOR_V1,
     EXACT_LINEAR_PROFILE_EVALUATOR_V1, EXACT_POCKET_EVALUATOR_V1, ExactFeatureChainRequest,
+    ExactResultRegistry,
 };
 use ketchup_core::sketch::{PrincipalPlane, WorkplaneSupport};
 use ketchup_interaction::{SnapKind, Vec3};
@@ -22,6 +27,16 @@ fn open_face_workflow(shell: &mut Shell) {
     shell.click_command(AppCommand::Rectangle);
     let title = shell.catalog().text("face-workflow-title");
     shell.click_role_and_label(Role::Button, &title);
+}
+
+fn canonical_render_triangle_count(shell: &Shell) -> usize {
+    let snapshot = shell.app().document_snapshot();
+    let mut cache = DerivedRenderCache::default();
+    InstancedRenderPlan::from_snapshot(&snapshot, &ExactResultRegistry::default(), &mut cache)
+        .batches()
+        .iter()
+        .map(|batch| batch.geometry.index_count() / 3 * batch.instances.len())
+        .sum()
 }
 
 fn cut_tool_profile_geometry(graph: &ExactBRepGraph) -> Option<&ExactBRepPlanarGeometry> {
@@ -171,7 +186,7 @@ fn localized_serial_rectangle_to_hover_bound_push_pull_uses_the_viewport_value_b
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), persisted_digest);
     assert_eq!(shell.app().document_height_mm(), 25.0);
-    assert!(!shell.app().can_undo());
+    assert!(shell.app().can_undo());
 }
 
 #[test]
@@ -622,7 +637,7 @@ fn line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical() {
         .evaluator(),
         EXACT_LINEAR_PROFILE_EVALUATOR_V1
     );
-    assert!(!shell.app().can_undo());
+    assert!(shell.app().can_undo());
 }
 
 #[test]
@@ -1510,6 +1525,12 @@ fn circular_profile_positive_push_pull_creates_exact_extrusion_atomically() {
             .viewport_position(center + Vec3::new(10.0, 0.0, 0.0))
             .unwrap(),
     );
+    shell.settle();
+    assert_eq!(
+        canonical_render_triangle_count(&shell),
+        74,
+        "the default box plus circular profile must use the 64-edge profile mesh"
+    );
     let profile_digest = shell.app().canonical_digest();
     let before = (
         shell.app().document_revision(),
@@ -1594,6 +1615,11 @@ fn semicircular_arc_profile_positive_push_pull_creates_exact_extrusion_atomicall
     shell.click_at(shell.app().viewport_position(end).unwrap());
     shell.click_at(shell.app().viewport_position(bulge).unwrap());
     assert_eq!(shell.app().arc_profile_count(), 1);
+    shell.settle();
+    assert!(
+        canonical_render_triangle_count(&shell) >= 40,
+        "the default box plus arc profile must use the curved profile mesh"
+    );
     let profile_digest = shell.app().canonical_digest();
     let before = (
         shell.app().document_revision(),

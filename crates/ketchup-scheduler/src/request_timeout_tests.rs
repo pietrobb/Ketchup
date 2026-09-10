@@ -29,6 +29,7 @@ fn controlled_worker() -> (
             child,
             write_sender,
             response_receiver,
+            _temp_directory: tempfile::tempdir().unwrap(),
         },
         write_receiver,
         response_sender,

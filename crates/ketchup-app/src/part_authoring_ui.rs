@@ -398,11 +398,10 @@ impl KetchupApp {
             .exact_reference_by_lineage(&top.lineage_digest)?
             .clone();
         let face_frame = snapshot.resolved_planar_face_workplane_frame(&top)?;
-        let sketch = fixed_rectangle(
+        let sketch = fixed_circle(
             ids.face_workplane,
             [plate_length * 0.5, plate_width * 0.5],
-            width,
-            width,
+            width * 0.5,
         );
         Some(CommandBatch::new(vec![
             CanonicalCommand::CreateFeature {
@@ -610,7 +609,7 @@ impl KetchupApp {
         if *health != WorkplaneSupportHealth::Resolved {
             return false;
         }
-        let sketch = fixed_circle(ids.face_workplane, 10.0);
+        let sketch = fixed_circle(ids.face_workplane, [0.0, 0.0], 10.0);
         let Some(region) = sketch
             .solved_regions()
             .ok()
@@ -688,7 +687,12 @@ impl KetchupApp {
         let snapshot = self.document.current();
         let Some(package) = self
             .exact_results
-            .get_render(&snapshot, contract.plate_definition_id)
+            .values()
+            .find(|package| {
+                package.definition_id() == contract.plate_definition_id
+                    && package.producer_feature_id() == contract.plate_feature_ids.pad
+                    && package.is_current(&snapshot)
+            })
             .map(|package| package.as_ref().clone())
         else {
             return false;
@@ -705,6 +709,41 @@ impl KetchupApp {
                 for reference in &mut incompatible.references {
                     reference.backend = incompatible.identity.backend.clone();
                 }
+                let Some(planar_face_attachments) = incompatible
+                    .planar_face_attachments
+                    .iter()
+                    .map(|attachment| {
+                        let mut reference = attachment.reference().clone();
+                        reference.backend = incompatible.identity.backend.clone();
+                        ketchup_core::assembly::PlanarFaceAttachment::new(
+                            reference,
+                            attachment.local_origin_mm(),
+                            attachment.local_unit_normal(),
+                        )
+                    })
+                    .collect::<Option<Vec<_>>>()
+                else {
+                    return false;
+                };
+                incompatible.planar_face_attachments = planar_face_attachments;
+                let Some(axial_attachments) = incompatible
+                    .axial_attachments
+                    .iter()
+                    .map(|attachment| {
+                        let mut reference = attachment.reference().clone();
+                        reference.backend = incompatible.identity.backend.clone();
+                        ketchup_core::assembly::AxialAttachment::new(
+                            reference,
+                            attachment.kind(),
+                            attachment.local_origin_mm(),
+                            attachment.local_unit_direction(),
+                        )
+                    })
+                    .collect::<Option<Vec<_>>>()
+                else {
+                    return false;
+                };
+                incompatible.axial_attachments = axial_attachments;
                 let Ok(registry) = ExactResultRegistry::accept(
                     &snapshot,
                     [
@@ -810,12 +849,12 @@ fn fixed_rectangle(
     }
 }
 
-fn fixed_circle(workplane: FeatureId, radius: f64) -> SketchSpec {
+fn fixed_circle(workplane: FeatureId, center_mm: [f64; 2], radius: f64) -> SketchSpec {
     SketchSpec {
         workplane,
         entities: vec![SketchEntity::Circle {
             id: SketchEntityId(1),
-            center_mm: [0.0, 0.0],
+            center_mm,
             radius_mm: radius,
         }],
         constraints: vec![
@@ -830,7 +869,7 @@ fn fixed_circle(workplane: FeatureId, radius: f64) -> SketchSpec {
                 id: SketchConstraintId(2),
                 kind: SketchConstraintKind::FixedPoint {
                     point: point(1, SketchPointKind::Center),
-                    position_mm: [0.0, 0.0],
+                    position_mm: center_mm,
                 },
             },
         ],
@@ -850,7 +889,7 @@ fn add_fastener(
 ) -> Option<()> {
     let (definition, body, ids) = identity;
     let [diameter, height] = dimensions;
-    let sketch = fixed_circle(ids.principal_workplane, diameter * 0.5);
+    let sketch = fixed_circle(ids.principal_workplane, [0.0, 0.0], diameter * 0.5);
     let region = sketch.solved_regions().ok()?.first()?.id;
     let name = catalog.text(name_key);
     commands.extend([

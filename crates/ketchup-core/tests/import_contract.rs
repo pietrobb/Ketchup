@@ -181,6 +181,8 @@ fn exact_step_import_is_one_deterministic_persistent_undoable_transaction() {
 fn exact_iges_import_is_deterministic_persistent_and_explicit_about_losses() {
     let source = b"IGES exact source";
     let evidence = IgesImportEvidence {
+        source_sha256: ketchup_core::graph::sha256_bytes(source),
+        source_byte_len: source.len() as u64,
         source_unit: ImportLengthUnit::Millimetre,
         result_fingerprint: "fnv1a64:0123456789abcdef".to_owned(),
         solid_count: 1,
@@ -199,6 +201,20 @@ fn exact_iges_import_is_deterministic_persistent_and_explicit_about_losses() {
             .unwrap()
             .digest()
     );
+    let mut stale_hash = evidence.clone();
+    stale_hash.source_sha256[0] ^= 1;
+    assert_eq!(
+        plan_iges_import(&document.current(), source, "part.iges", &stale_hash),
+        Err(ketchup_core::import::IgesImportPlanError::InvalidWorkerEvidence)
+    );
+    let mut stale_length = evidence.clone();
+    stale_length.source_byte_len += 1;
+    assert_eq!(
+        plan_iges_import(&document.current(), source, "part.iges", &stale_length),
+        Err(ketchup_core::import::IgesImportPlanError::InvalidWorkerEvidence)
+    );
+    assert_eq!(document.current().canonical_digest(), before);
+    assert_eq!(document.visible_undo_steps(), 0);
     document.apply_batch(&batch).unwrap();
     let committed = document.current();
     let receipt = committed.import_receipt(ImportId(1)).unwrap();

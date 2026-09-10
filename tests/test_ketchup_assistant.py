@@ -516,6 +516,53 @@ def test_public_sidecar_parses_strict_bounded_cad_edit_program():
     assert assistant._validate_cad_edit_program(chained_program) == chained_program
     assert "zero-based earlier operation index" in assistant.SYSTEM_PROMPT
 
+    typed_pocket_program = {
+        "operations": [
+            revolve_program["operations"][0],
+            {
+                "operation": "create_program_sketch",
+                "definition": {"operation_index": 0, "output": "definition"},
+                "name": "Opening profile",
+                "workplane": {"type": "principal", "plane": "xy"},
+                "entities": [
+                    {"type": "circle", "id": 1, "center_mm": [10, 0], "radius_mm": 1}
+                ],
+                "constraints": [],
+            },
+            {
+                "operation": "append_program_pocket",
+                "definition": {"operation_index": 0, "output": "definition"},
+                "name": "Opening",
+                "target_feature": {"operation_index": 0, "output": "body_feature"},
+                "profile_feature": {"operation_index": 1, "output": "sketch_feature"},
+                "depth_mm": 1,
+            },
+        ]
+    }
+    assert assistant._validate_cad_edit_program(typed_pocket_program) == typed_pocket_program
+    assert "append_program_pocket" in assistant.SYSTEM_PROMPT
+    for operation_index, field, output in [
+        (1, "definition", "body_feature"),
+        (2, "profile_feature", "body_feature"),
+        (2, "target_feature", "sketch_feature"),
+        (2, "target_feature", "body_feature"),
+    ]:
+        invalid_typed_program = json.loads(json.dumps(typed_pocket_program))
+        invalid_typed_program["operations"][operation_index][field] = {
+            "operation_index": operation_index if field == "target_feature" else 0,
+            "output": output,
+        }
+        with pytest.raises(assistant.ProtocolError):
+            assistant._validate_cad_edit_program(invalid_typed_program)
+    guessed_workplane = json.loads(json.dumps(typed_pocket_program))
+    guessed_workplane["operations"][1]["workplane"] = {
+        "type": "offset",
+        "base_feature_id": 1,
+        "distance_mm": 1,
+    }
+    with pytest.raises(assistant.ProtocolError):
+        assistant._validate_cad_edit_program(guessed_workplane)
+
     for invalid_reference in [
         {"operation_index": 1, "output": "body_feature"},
         {"operation_index": 2, "output": "body_feature"},
@@ -1815,7 +1862,17 @@ def test_provider_http_response_is_bounded_before_json_parsing(monkeypatch):
         assistant._post_json("https://provider.invalid", {}, {})
 
 
-@pytest.mark.parametrize("body", (b"\xff", b"not-json", b"[]"))
+@pytest.mark.parametrize(
+    "body",
+    (
+        b"\xff",
+        b"not-json",
+        b"[]",
+        b'{"value":1,"value":2}',
+        b'{"value":NaN}',
+        b'{"value":Infinity}',
+    ),
+)
 def test_provider_http_response_requires_a_utf8_json_object(monkeypatch, body):
     class Response:
         headers = {}
@@ -1841,6 +1898,196 @@ def test_provider_http_response_requires_a_utf8_json_object(monkeypatch, body):
     )
     with pytest.raises(assistant.ProtocolError, match="UTF-8 JSON|JSON object"):
         assistant._post_json("https://provider.invalid", {}, {})
+
+
+def test_tool_query_identity_distinguishes_full_arguments_and_canonicalizes_key_order():
+    first = {
+        "moving_occurrence_id": 8,
+        "reference_occurrence_id": 7,
+        "axis": "z",
+        "side": "positive",
+        "gap_mm": 1,
+        "alignment": "center",
+    }
+    reordered = dict(reversed(tuple(first.items())))
+    second = {**first, "gap_mm": 2}
+    assert assistant._tool_query_identity("plan_placement", first) == assistant._tool_query_identity(
+        "plan_placement", reordered
+    )
+    assert assistant._tool_query_identity("plan_placement", first) != assistant._tool_query_identity(
+        "plan_placement", second
+    )
+
+
+@pytest.mark.parametrize(
+    ("provider", "key_name", "response", "error"),
+    (
+        (
+            "anthropic-api",
+            "ANTHROPIC_API_KEY",
+            {"usage": [], "content": []},
+            "invalid usage object",
+        ),
+        (
+            "anthropic-api",
+            "ANTHROPIC_API_KEY",
+            {"content": [{"type": "text", "text": 7}]},
+            "invalid output text",
+        ),
+        (
+            "anthropic-api",
+            "ANTHROPIC_API_KEY",
+            {
+                "model": [],
+                "content": [
+                    {
+                        "type": "text",
+                        "text": '{"message":"ok","model_intent":null,"cad_edit_program":null}',
+                    }
+                ],
+            },
+            "invalid model string",
+        ),
+        (
+            "openai-api",
+            "OPENAI_API_KEY",
+            {"usage": {"input_tokens_details": []}, "output": []},
+            "invalid input_tokens_details object",
+        ),
+        (
+            "openai-api",
+            "OPENAI_API_KEY",
+            {"output": [{"type": "message", "content": "not-a-list"}]},
+            "invalid message content envelope",
+        ),
+        (
+            "openai-api",
+            "OPENAI_API_KEY",
+            {
+                "status": [],
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": '{"message":"ok","model_intent":null,"cad_edit_program":null}',
+                            }
+                        ],
+                    }
+                ],
+            },
+            "invalid status string",
+        ),
+    ),
+)
+def test_provider_json_type_errors_are_controlled_protocol_failures(
+    monkeypatch, provider, key_name, response, error
+):
+    monkeypatch.setenv(key_name, "test-key")
+    monkeypatch.setattr(assistant, "_post_json", lambda *_args, **_kwargs: response)
+    with pytest.raises(assistant.ProtocolError, match=error):
+        assistant.send_public_request(provider, "test-model", "hello", ())
+
+
+def test_provider_protocol_failure_is_returned_as_a_wire_error_without_sidecar_crash():
+    def reject_provider(*_args):
+        raise assistant.ProtocolError("OpenAI returned an invalid usage object")
+
+    sidecar = assistant.PublicAssistantSidecar(reject_provider)
+    lines = iter(
+        (
+            (json.dumps(hello("openai-api")) + "\n").encode(),
+            (
+                json.dumps(
+                    {
+                        "type": "chat",
+                        "request_id": "controlled-error-1",
+                        "message": "hello",
+                        "context": project_context(),
+                    }
+                )
+                + "\n"
+            ).encode(),
+        )
+    )
+    responses = []
+    assert sidecar.serve(lambda: next(lines, b""), responses.append) == 0
+    assert json.loads(responses[1]) == {
+        "type": "error",
+        "error": "OpenAI returned an invalid usage object",
+    }
+
+
+@pytest.mark.parametrize(
+    ("provider", "model", "key_name"),
+    (
+        ("anthropic-api", "claude-sonnet-4-6", "ANTHROPIC_API_KEY"),
+        ("openai-api", "gpt-5.2", "OPENAI_API_KEY"),
+    ),
+)
+def test_provider_allows_distinct_queries_with_the_same_occurrence_ids(
+    monkeypatch, provider, model, key_name
+):
+    queries = [
+        {
+            "moving_occurrence_id": 8,
+            "reference_occurrence_id": 7,
+            "axis": "z",
+            "side": "positive",
+            "gap_mm": gap,
+            "alignment": alignment,
+        }
+        for gap, alignment in ((1, "center"), (2, "min"))
+    ]
+    final_text = '{"message":"Measured both placements.","model_intent":null,"cad_edit_program":null}'
+    attempts = []
+
+    def post(url, payload, headers):
+        index = len(attempts)
+        attempts.append(json.loads(json.dumps(payload)))
+        if index >= len(queries):
+            if provider == "anthropic-api":
+                return {"content": [{"type": "text", "text": final_text}]}
+            return {
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": final_text}],
+                    }
+                ]
+            }
+        if provider == "anthropic-api":
+            return {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": f"tool-{index}",
+                        "name": "plan_placement",
+                        "input": queries[index],
+                    }
+                ]
+            }
+        return {
+            "output": [
+                {
+                    "type": "function_call",
+                    "call_id": f"call-{index}",
+                    "name": "plan_placement",
+                    "arguments": json.dumps(queries[index]),
+                }
+            ]
+        }
+
+    monkeypatch.setenv(key_name, "test-key")
+    monkeypatch.setattr(assistant, "_post_json", post)
+    context = tool_context()
+    message = (
+        f'<document-context>{json.dumps(context, ensure_ascii=False, sort_keys=True)}</document-context>\n\n'
+        "Compare two placements."
+    )
+    assert assistant.send_public_request(provider, model, message, ()) == final_text
+    assert len(attempts) == 3
 
 
 def test_provider_payloads_expose_only_the_read_only_inspection_tools(monkeypatch):
@@ -1979,7 +2226,7 @@ def test_anthropic_inspection_rounds_enforce_fail_closed_limits(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic")
     failure_cases = (
         (
-            (queries[0], {"scope": "occurrences", "occurrence_ids": [7]}),
+            (queries[0], queries[0]),
             ("tool-1", "tool-2"),
             "repeated.*query",
         ),
@@ -2100,7 +2347,7 @@ def test_openai_runs_two_distinct_inspection_rounds_and_enforces_limits(monkeypa
 
     failure_cases = (
         (
-            (queries[0], {"scope": "occurrences", "occurrence_ids": [7]}),
+            (queries[0], queries[0]),
             ("call-1", "call-2"),
             "repeated.*query",
         ),
@@ -2553,3 +2800,74 @@ def test_validator_tools_are_fail_closed_on_unknown_names_and_missing_reports():
         assistant._read_only_tool_result(
             validator_tool_message(without_validation), "list_validators", {}
         )
+
+
+@pytest.mark.parametrize(
+    ("provider", "model", "key_name"),
+    (
+        ("anthropic-api", "claude-sonnet-4-6", "ANTHROPIC_API_KEY"),
+        ("openai-api", "gpt-5.2", "OPENAI_API_KEY"),
+    ),
+)
+@pytest.mark.parametrize(
+    ("tool_name", "arguments", "result_key"),
+    (
+        ("list_validators", {}, "validators"),
+        ("run_validators", {"validators": ["gravity_support"]}, "results"),
+    ),
+)
+def test_public_providers_dispatch_validator_tools(
+    monkeypatch, provider, model, key_name, tool_name, arguments, result_key
+):
+    requests = []
+
+    def post(url, payload, headers):
+        requests.append(json.loads(json.dumps(payload)))
+        if len(requests) == 1:
+            if provider == "anthropic-api":
+                return {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "validator-tool-1",
+                            "name": tool_name,
+                            "input": arguments,
+                        }
+                    ]
+                }
+            return {
+                "output": [
+                    {
+                        "type": "function_call",
+                        "call_id": "validator-tool-1",
+                        "name": tool_name,
+                        "arguments": json.dumps(arguments),
+                    }
+                ]
+            }
+        if provider == "anthropic-api":
+            return {"content": [{"type": "text", "text": "Validator answer"}]}
+        return {
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "Validator answer"}],
+                }
+            ]
+        }
+
+    monkeypatch.setattr(assistant, "_post_json", post)
+    monkeypatch.setenv(key_name, "test-key")
+    assert (
+        assistant.send_public_request(provider, model, validator_tool_message(), ())
+        == "Validator answer"
+    )
+    assert len(requests) == 2
+    if provider == "anthropic-api":
+        receipt = requests[1]["messages"][-1]["content"][0]
+        result = json.loads(receipt["content"])
+    else:
+        receipt = requests[1]["input"][-1]
+        result = json.loads(receipt["output"])
+    assert result["tool"] == tool_name
+    assert result[result_key]

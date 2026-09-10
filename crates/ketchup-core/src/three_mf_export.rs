@@ -4,7 +4,30 @@ use crate::document::{
 };
 use crate::exact_product::{ExactBodyPackage, ExactBodyView, ExactProductError};
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
+use std::fmt::{self, Write as _};
+
+pub const MAX_THREE_MF_EXPORT_INSTANCES: usize = 8_000;
+const MAX_THREE_MF_EXPORT_VERTICES: usize = 2_000_000;
+const MAX_THREE_MF_EXPORT_TRIANGLES: usize = 4_000_000;
+const MAX_THREE_MF_EXPORT_XML_BYTES: usize = 256 * 1024 * 1024;
+const MAX_THREE_MF_EXPORT_ARCHIVE_BYTES: usize = 257 * 1024 * 1024;
+
+#[derive(Clone, Copy)]
+struct ThreeMfExportLimits {
+    instances: usize,
+    vertices: usize,
+    triangles: usize,
+    xml_bytes: usize,
+    archive_bytes: usize,
+}
+
+const THREE_MF_EXPORT_LIMITS: ThreeMfExportLimits = ThreeMfExportLimits {
+    instances: MAX_THREE_MF_EXPORT_INSTANCES,
+    vertices: MAX_THREE_MF_EXPORT_VERTICES,
+    triangles: MAX_THREE_MF_EXPORT_TRIANGLES,
+    xml_bytes: MAX_THREE_MF_EXPORT_XML_BYTES,
+    archive_bytes: MAX_THREE_MF_EXPORT_ARCHIVE_BYTES,
+};
 
 const CONTENT_TYPES: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/></Types>"#;
@@ -43,8 +66,19 @@ pub fn exact_model_three_mf_export(
     snapshot: &Snapshot,
     instances: &[ExactThreeMfInstance<'_>],
 ) -> Result<ExactThreeMfExport, ExactProductError> {
+    exact_model_three_mf_export_with_limits(snapshot, instances, THREE_MF_EXPORT_LIMITS)
+}
+
+fn exact_model_three_mf_export_with_limits(
+    snapshot: &Snapshot,
+    instances: &[ExactThreeMfInstance<'_>],
+    limits: ThreeMfExportLimits,
+) -> Result<ExactThreeMfExport, ExactProductError> {
     if instances.is_empty() {
         return Err(ExactProductError::EmptyModelExport);
+    }
+    if instances.len() > limits.instances {
+        return Err(ExactProductError::ExportResourceLimit);
     }
     if instances
         .iter()
@@ -52,13 +86,33 @@ pub fn exact_model_three_mf_export(
     {
         return Err(ExactProductError::StaleResult);
     }
+    if instances
+        .iter()
+        .any(|instance| instance.package.definition_id() != instance.occurrence.definition_id)
+    {
+        return Err(ExactProductError::InvalidMeshExport);
+    }
 
     let mut packages = BTreeMap::<MeshKey, &ExactBodyPackage>::new();
+    let mut vertex_count = 0_usize;
+    let mut triangle_count = 0_usize;
     for instance in instances {
+        let key = mesh_key(instance);
+        if packages.contains_key(&key) {
+            continue;
+        }
+        vertex_count = add_with_limit(
+            vertex_count,
+            instance.package.vertices().len(),
+            limits.vertices,
+        )?;
+        triangle_count = add_with_limit(
+            triangle_count,
+            instance.package.triangles().len(),
+            limits.triangles,
+        )?;
         validate_mesh(instance.package)?;
-        packages
-            .entry(mesh_key(instance))
-            .or_insert(instance.package);
+        packages.insert(key, instance.package);
     }
     let (nodes, roots) = build_assembly(snapshot, instances)?;
 
@@ -99,12 +153,16 @@ pub fn exact_model_three_mf_export(
         &node_ids,
         &node_order,
         &roots,
+        limits.xml_bytes,
     )?;
-    let three_mf = encode_package(&[
-        ("[Content_Types].xml", CONTENT_TYPES.as_bytes()),
-        ("_rels/.rels", ROOT_RELATIONSHIPS.as_bytes()),
-        ("3D/3dmodel.model", model.as_bytes()),
-    ])?;
+    let three_mf = encode_package(
+        &[
+            ("[Content_Types].xml", CONTENT_TYPES.as_bytes()),
+            ("_rels/.rels", ROOT_RELATIONSHIPS.as_bytes()),
+            ("3D/3dmodel.model", model.as_bytes()),
+        ],
+        limits.archive_bytes,
+    )?;
     let loss_report = format!(
         "authority=accepted exact OCCT B-Rep\nformat=3MF Core 1.3 package\nconversion=current-visible-exact-model-to-instanced-print-mesh\nunit=millimeter\naxis=Ketchup Z-up preserved\nhierarchy=canonical global groups, component occurrences, local groups, and nested occurrences\nmaterials=resolved occurrence sRGB colors\neditability_loss=canonical features, rules, dimensions, constraints, and Undo history are not preserved\ntopology_loss=exact topology, analytic surfaces, and durable face identity are not preserved\ntolerance_loss=geometry is approximated by each accepted tessellation under its source tolerance profile\nsource_digest={}\noccurrence_body_count={}\nunique_mesh_resource_count={}\nassembly_object_count={}\n",
         snapshot.canonical_digest(),
@@ -125,6 +183,17 @@ fn mesh_key(instance: &ExactThreeMfInstance<'_>) -> MeshKey {
         result_fingerprint: instance.package.result_fingerprint().to_owned(),
         color: instance.occurrence.color(),
     }
+}
+
+fn add_with_limit(
+    current: usize,
+    additional: usize,
+    limit: usize,
+) -> Result<usize, ExactProductError> {
+    current
+        .checked_add(additional)
+        .filter(|total| *total <= limit)
+        .ok_or(ExactProductError::ExportResourceLimit)
 }
 
 fn validate_mesh(package: &ExactBodyPackage) -> Result<(), ExactProductError> {
@@ -323,6 +392,39 @@ fn allocate_node_ids(
     Ok(())
 }
 
+struct BoundedString {
+    value: String,
+    limit: usize,
+}
+
+impl BoundedString {
+    fn new(limit: usize) -> Self {
+        Self {
+            value: String::with_capacity(limit.min(1024 * 1024)),
+            limit,
+        }
+    }
+
+    fn into_inner(self) -> String {
+        self.value
+    }
+}
+
+impl fmt::Write for BoundedString {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        if self
+            .value
+            .len()
+            .checked_add(value.len())
+            .is_none_or(|length| length > self.limit)
+        {
+            return Err(fmt::Error);
+        }
+        self.value.push_str(value);
+        Ok(())
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn encode_model(
     snapshot: &Snapshot,
@@ -333,50 +435,54 @@ fn encode_model(
     node_ids: &BTreeMap<usize, u32>,
     node_order: &[usize],
     roots: &[usize],
+    xml_limit: usize,
 ) -> Result<String, ExactProductError> {
-    let mut xml = String::new();
+    let mut xml = BoundedString::new(xml_limit);
     write!(
         xml,
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<model unit=\"millimeter\" xml:lang=\"en-US\" xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\">\n  <metadata name=\"Title\">Ketchup model</metadata>\n  <metadata name=\"KetchupSourceDigest\">{}</metadata>\n  <resources>\n",
-        xml_escape(&snapshot.canonical_digest())
+        snapshot.canonical_digest()
     )
-    .expect("writing to a String cannot fail");
+    .map_err(|_| ExactProductError::ExportResourceLimit)?;
     if !material_indices.is_empty() {
-        xml.push_str("    <basematerials id=\"1\">\n");
+        xml.write_str("    <basematerials id=\"1\">\n")
+            .map_err(|_| ExactProductError::ExportResourceLimit)?;
         for color in material_indices.keys() {
             writeln!(
                 xml,
                 "      <base name=\"Ketchup #{:02X}{:02X}{:02X}\" displaycolor=\"#{:02X}{:02X}{:02X}FF\"/>",
                 color[0], color[1], color[2], color[0], color[1], color[2]
             )
-            .expect("writing to a String cannot fail");
+            .map_err(|_| ExactProductError::ExportResourceLimit)?;
         }
-        xml.push_str("    </basematerials>\n");
+        xml.write_str("    </basematerials>\n")
+            .map_err(|_| ExactProductError::ExportResourceLimit)?;
     }
     for (key, package) in packages {
         let id = mesh_ids[key];
-        writeln!(
-            xml,
-            "    <object id=\"{id}\" type=\"model\" name=\"{} body {}\">",
-            xml_escape(
-                snapshot
-                    .definition(key.definition_id)
-                    .ok_or(ExactProductError::InvalidMeshExport)?
-                    .name()
-            ),
-            key.producer_feature_id.0
-        )
-        .expect("writing to a String cannot fail");
-        xml.push_str("      <mesh>\n        <vertices>\n");
+        write!(xml, "    <object id=\"{id}\" type=\"model\" name=\"")
+            .map_err(|_| ExactProductError::ExportResourceLimit)?;
+        write_xml_escaped(
+            &mut xml,
+            snapshot
+                .definition(key.definition_id)
+                .ok_or(ExactProductError::InvalidMeshExport)?
+                .name(),
+        )?;
+        writeln!(xml, " body {}\">", key.producer_feature_id.0)
+            .map_err(|_| ExactProductError::ExportResourceLimit)?;
+        xml.write_str("      <mesh>\n        <vertices>\n")
+            .map_err(|_| ExactProductError::ExportResourceLimit)?;
         for vertex in package.vertices() {
             writeln!(
                 xml,
                 "          <vertex x=\"{:.17}\" y=\"{:.17}\" z=\"{:.17}\"/>",
                 vertex.position_mm[0], vertex.position_mm[1], vertex.position_mm[2]
             )
-            .expect("writing to a String cannot fail");
+            .map_err(|_| ExactProductError::ExportResourceLimit)?;
         }
-        xml.push_str("        </vertices>\n        <triangles>\n");
+        xml.write_str("        </vertices>\n        <triangles>\n")
+            .map_err(|_| ExactProductError::ExportResourceLimit)?;
         for triangle in package.triangles() {
             let [v1, v2, v3] = triangle.vertex_indices;
             if let Some(color) = key.color {
@@ -385,29 +491,32 @@ fn encode_model(
                     xml,
                     "          <triangle v1=\"{v1}\" v2=\"{v2}\" v3=\"{v3}\" pid=\"1\" p1=\"{material}\" p2=\"{material}\" p3=\"{material}\"/>"
                 )
-                .expect("writing to a String cannot fail");
+                .map_err(|_| ExactProductError::ExportResourceLimit)?;
             } else {
                 writeln!(
                     xml,
                     "          <triangle v1=\"{v1}\" v2=\"{v2}\" v3=\"{v3}\"/>"
                 )
-                .expect("writing to a String cannot fail");
+                .map_err(|_| ExactProductError::ExportResourceLimit)?;
             }
         }
-        xml.push_str("        </triangles>\n      </mesh>\n    </object>\n");
+        xml.write_str("        </triangles>\n      </mesh>\n    </object>\n")
+            .map_err(|_| ExactProductError::ExportResourceLimit)?;
     }
     for node_index in node_order {
         let node = &nodes[*node_index];
-        writeln!(
+        write!(
             xml,
-            "    <object id=\"{}\" type=\"model\" name=\"{}\">\n      <components>",
-            node_ids[node_index],
-            xml_escape(&node.name)
+            "    <object id=\"{}\" type=\"model\" name=\"",
+            node_ids[node_index]
         )
-        .expect("writing to a String cannot fail");
+        .map_err(|_| ExactProductError::ExportResourceLimit)?;
+        write_xml_escaped(&mut xml, &node.name)?;
+        xml.write_str("\">\n      <components>\n")
+            .map_err(|_| ExactProductError::ExportResourceLimit)?;
         for mesh in &node.meshes {
             writeln!(xml, "        <component objectid=\"{}\"/>", mesh_ids[mesh])
-                .expect("writing to a String cannot fail");
+                .map_err(|_| ExactProductError::ExportResourceLimit)?;
         }
         for child in &node.children {
             writeln!(
@@ -416,11 +525,13 @@ fn encode_model(
                 node_ids[child],
                 transform_3mf(nodes[*child].transform)?
             )
-            .expect("writing to a String cannot fail");
+            .map_err(|_| ExactProductError::ExportResourceLimit)?;
         }
-        xml.push_str("      </components>\n    </object>\n");
+        xml.write_str("      </components>\n    </object>\n")
+            .map_err(|_| ExactProductError::ExportResourceLimit)?;
     }
-    xml.push_str("  </resources>\n  <build>\n");
+    xml.write_str("  </resources>\n  <build>\n")
+        .map_err(|_| ExactProductError::ExportResourceLimit)?;
     for root in roots {
         writeln!(
             xml,
@@ -428,10 +539,11 @@ fn encode_model(
             node_ids[root],
             transform_3mf(nodes[*root].transform)?
         )
-        .expect("writing to a String cannot fail");
+        .map_err(|_| ExactProductError::ExportResourceLimit)?;
     }
-    xml.push_str("  </build>\n</model>\n");
-    Ok(xml)
+    xml.write_str("  </build>\n</model>\n")
+        .map_err(|_| ExactProductError::ExportResourceLimit)?;
+    Ok(xml.into_inner())
 }
 
 fn transform_3mf(transform: Transform) -> Result<String, ExactProductError> {
@@ -459,24 +571,51 @@ fn transform_3mf(transform: Transform) -> Result<String, ExactProductError> {
     ))
 }
 
-fn xml_escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
+fn write_xml_escaped(xml: &mut BoundedString, value: &str) -> Result<(), ExactProductError> {
+    for character in value.chars() {
+        let mut encoded = [0_u8; 4];
+        let escaped = match character {
+            '&' => "&amp;",
+            '<' => "&lt;",
+            '>' => "&gt;",
+            '"' => "&quot;",
+            '\'' => "&apos;",
+            '\u{9}'
+            | '\u{A}'
+            | '\u{D}'
+            | '\u{20}'..='\u{D7FF}'
+            | '\u{E000}'..='\u{FFFD}'
+            | '\u{10000}'..='\u{10FFFF}' => character.encode_utf8(&mut encoded),
+            _ => return Err(ExactProductError::InvalidMeshExport),
+        };
+        xml.write_str(escaped)
+            .map_err(|_| ExactProductError::ExportResourceLimit)?;
+    }
+    Ok(())
 }
 
-fn encode_package(entries: &[(&str, &[u8])]) -> Result<Vec<u8>, ExactProductError> {
+fn encode_package(
+    entries: &[(&str, &[u8])],
+    archive_limit: usize,
+) -> Result<Vec<u8>, ExactProductError> {
     struct CentralEntry<'a> {
         name: &'a str,
         crc: u32,
         size: u32,
         offset: u32,
     }
-    let mut archive = Vec::new();
-    let mut central = Vec::new();
+    u16::try_from(entries.len()).map_err(|_| ExactProductError::ExportResourceLimit)?;
+    let archive_size = entries.iter().try_fold(22_usize, |total, (name, bytes)| {
+        u16::try_from(name.len()).map_err(|_| ExactProductError::InvalidMeshExport)?;
+        u32::try_from(bytes.len()).map_err(|_| ExactProductError::ExportResourceLimit)?;
+        let entry_size = 76_usize
+            .checked_add(name.len().saturating_mul(2))
+            .and_then(|size| size.checked_add(bytes.len()))
+            .ok_or(ExactProductError::ExportResourceLimit)?;
+        add_with_limit(total, entry_size, archive_limit)
+    })?;
+    let mut archive = Vec::with_capacity(archive_size);
+    let mut central = Vec::with_capacity(entries.len());
     for (name, bytes) in entries {
         let name_bytes = name.as_bytes();
         let name_len =
@@ -543,6 +682,7 @@ fn encode_package(entries: &[(&str, &[u8])]) -> Result<Vec<u8>, ExactProductErro
     archive.extend_from_slice(&central_size.to_le_bytes());
     archive.extend_from_slice(&central_offset.to_le_bytes());
     archive.extend_from_slice(&0_u16.to_le_bytes());
+    debug_assert_eq!(archive.len(), archive_size);
     Ok(archive)
 }
 
@@ -555,4 +695,47 @@ fn crc32(bytes: &[u8]) -> u32 {
         }
     }
     !crc
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aggregate_resource_counts_are_checked_without_overflow() {
+        assert_eq!(add_with_limit(2, 3, 5), Ok(5));
+        assert_eq!(
+            add_with_limit(2, 4, 5),
+            Err(ExactProductError::ExportResourceLimit)
+        );
+        assert_eq!(
+            add_with_limit(usize::MAX, 1, usize::MAX),
+            Err(ExactProductError::ExportResourceLimit)
+        );
+    }
+
+    #[test]
+    fn bounded_xml_refuses_expansion_and_forbidden_characters() {
+        let mut xml = BoundedString::new(4);
+        assert_eq!(
+            write_xml_escaped(&mut xml, "&"),
+            Err(ExactProductError::ExportResourceLimit)
+        );
+
+        let mut xml = BoundedString::new(32);
+        assert_eq!(
+            write_xml_escaped(&mut xml, "bad\u{1}name"),
+            Err(ExactProductError::InvalidMeshExport)
+        );
+    }
+
+    #[test]
+    fn archive_size_is_checked_before_allocation() {
+        let entries = [("a", b"x".as_slice())];
+        assert_eq!(
+            encode_package(&entries, 100),
+            Err(ExactProductError::ExportResourceLimit)
+        );
+        assert_eq!(encode_package(&entries, 101).unwrap().len(), 101);
+    }
 }

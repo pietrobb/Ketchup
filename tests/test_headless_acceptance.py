@@ -235,7 +235,8 @@ def test_from_empty_hole_support_and_fresh_process_roundtrip(native_paths, tmp_p
         reopened = fresh.open_document(saved_path)
         loaded = reopened.state
         assert canonical(loaded) == saved_canonical
-        assert loaded["undo_steps"] == loaded["redo_steps"] == 0
+        assert loaded["undo_steps"] == before_save["undo_steps"]
+        assert loaded["redo_steps"] == before_save["redo_steps"]
         assert_translation(loaded, foundation_id, [0, 0, 0])
         assert_translation(loaded, second_id, [0, 0, 20])
         _, loaded_geometry = evaluate_current(reopened, expected)

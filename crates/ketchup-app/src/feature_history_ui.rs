@@ -762,10 +762,13 @@ impl KetchupApp {
         let proposal = execution
             .proposal()
             .ok_or_else(|| "feature history preview has no reviewed proposal".to_owned())?;
-        let candidate = self
-            .document
-            .preview_batch(proposal.batch())
-            .map_err(|error| error.to_string())?;
+        let candidate = if matches!(execution, FeatureHistoryExecutionPlan::Shared(_)) {
+            self.document
+                .preview_dependency_staging_batch(proposal.batch())
+        } else {
+            self.document.preview_batch(proposal.batch())
+        }
+        .map_err(|error| error.to_string())?;
         let sketch_diagnostic = affected_feature_ids
             .iter()
             .filter_map(|feature_id| candidate.feature(*feature_id))

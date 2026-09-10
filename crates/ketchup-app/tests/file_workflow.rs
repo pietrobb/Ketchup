@@ -470,6 +470,8 @@ fn save_open_preserves_the_complete_undo_redo_history_through_accesskit() {
     let script = ScriptedFileDialogs::new()
         .queue_save(&path)
         .queue_open(&path)
+        .queue_open(&path)
+        .queue_open(&path)
         .always_discard();
     let mut shell = Shell::with_dialogs(script);
 
@@ -477,21 +479,30 @@ fn save_open_preserves_the_complete_undo_redo_history_through_accesskit() {
     let expected = canonical_state(&shell);
     let expected_history = reachable_history_digests(&mut shell);
     shell.click_menu_command("menu-file", AppCommand::SaveAs);
-    shell.click_menu_command("menu-file", AppCommand::New);
-    shell.click_menu_command("menu-file", AppCommand::Open);
+    for cycle in 0..3 {
+        shell.click_menu_command("menu-file", AppCommand::New);
+        shell.click_menu_command("menu-file", AppCommand::Open);
 
-    let reopened = canonical_state(&shell);
-    assert_eq!(reopened.revision, expected.revision);
-    assert_eq!(reopened.digest, expected.digest);
-    assert_eq!(reopened.undo_steps, expected.undo_steps);
-    assert_eq!(reopened.redo_steps, expected.redo_steps);
-    assert!(!reopened.dirty);
-    assert_eq!(reachable_history_digests(&mut shell), expected_history);
+        let reopened = canonical_state(&shell);
+        assert_eq!(reopened.revision, expected.revision, "cycle {cycle}");
+        assert_eq!(reopened.digest, expected.digest, "cycle {cycle}");
+        assert_eq!(reopened.undo_steps, expected.undo_steps, "cycle {cycle}");
+        assert_eq!(reopened.redo_steps, expected.redo_steps, "cycle {cycle}");
+        assert!(!reopened.dirty, "cycle {cycle}");
+        assert_eq!(
+            reachable_history_digests(&mut shell),
+            expected_history,
+            "cycle {cycle}"
+        );
 
-    shell.click_menu_command("menu-edit", AppCommand::Redo);
-    assert_eq!(shell.app().canonical_digest(), expected_history.1[0]);
-    shell.click_menu_command("menu-edit", AppCommand::Undo);
-    assert_eq!(shell.app().canonical_digest(), expected.digest);
+        shell.click_menu_command("menu-edit", AppCommand::Redo);
+        assert_eq!(shell.app().canonical_digest(), expected_history.1[0]);
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().canonical_digest(), expected.digest);
+        if cycle < 2 {
+            shell.click_menu_command("menu-file", AppCommand::Save);
+        }
+    }
 }
 
 #[test]
@@ -1754,7 +1765,11 @@ fn imported_blender_mesh_blocks_exact_and_btlx_exports_before_side_effects() {
 
     shell.click_menu_command("menu-file", AppCommand::ExportExactStep);
     assert!(digest_starts_like(&shell, "error-export-step"));
-    assert!(shell.app().action_digest().contains("mesh body"));
+    assert!(
+        shell.app().action_digest().contains("mesh body"),
+        "{}",
+        shell.app().action_digest()
+    );
     assert!(!step.exists());
     assert_state_and_history_unchanged(&mut shell, &imported, &imported_history);
 

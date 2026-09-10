@@ -1655,6 +1655,7 @@ fn graph_package_for(
             bounds_mm,
             backend: "m17-graph-backend".to_owned(),
             tolerance: "m17-graph-tolerance".to_owned(),
+            faces: Vec::new(),
         },
         &mesh,
     )

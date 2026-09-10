@@ -33,6 +33,57 @@ pub fn rectangle(workplane: FeatureId, min: [f64; 2], max: [f64; 2]) -> SketchSp
     }
 }
 
+pub fn circle(workplane: FeatureId, center_mm: [f64; 2], radius_mm: f64) -> SketchSpec {
+    SketchSpec {
+        workplane,
+        entities: vec![SketchEntity::Circle {
+            id: SketchEntityId(1),
+            center_mm,
+            radius_mm,
+        }],
+        constraints: vec![],
+    }
+}
+
+pub fn semicircle(workplane: FeatureId, center_mm: [f64; 2], radius_mm: f64) -> SketchSpec {
+    let left = [center_mm[0] - radius_mm, center_mm[1]];
+    let right = [center_mm[0] + radius_mm, center_mm[1]];
+    SketchSpec {
+        workplane,
+        entities: vec![
+            SketchEntity::Line {
+                id: SketchEntityId(1),
+                start_mm: left,
+                end_mm: right,
+            },
+            SketchEntity::Arc {
+                id: SketchEntityId(2),
+                start_mm: right,
+                end_mm: left,
+                center_mm,
+                clockwise: false,
+            },
+        ],
+        constraints: vec![],
+    }
+}
+
+pub fn rectangle_with_circular_hole(
+    workplane: FeatureId,
+    min: [f64; 2],
+    max: [f64; 2],
+    center_mm: [f64; 2],
+    radius_mm: f64,
+) -> SketchSpec {
+    let mut sketch = rectangle(workplane, min, max);
+    sketch.entities.push(SketchEntity::Circle {
+        id: SketchEntityId(5),
+        center_mm,
+        radius_mm,
+    });
+    sketch
+}
+
 pub fn feature(id: FeatureId, kind: FeatureKind) -> CanonicalCommand {
     CanonicalCommand::CreateFeature {
         id,
@@ -92,16 +143,21 @@ pub fn base_document(plane: PrincipalPlane, offset: f64) -> DocumentStore {
     document
 }
 
-pub fn document(plane: PrincipalPlane, offset: f64) -> DocumentStore {
+pub fn document_with_cut_sketch(
+    plane: PrincipalPlane,
+    offset: f64,
+    sketch: SketchSpec,
+) -> DocumentStore {
     let mut document = base_document(plane, offset);
     document
         .apply_batch(&CommandBatch::new(vec![
-            feature(
-                CUT_SKETCH,
-                FeatureKind::Sketch(rectangle(PLANE, [40.0, 40.0], [80.0, 80.0])),
-            ),
+            feature(CUT_SKETCH, FeatureKind::Sketch(sketch)),
             pocket(CUT_SKETCH, 20.0),
         ]))
         .unwrap();
     document
+}
+
+pub fn document(plane: PrincipalPlane, offset: f64) -> DocumentStore {
+    document_with_cut_sketch(plane, offset, rectangle(PLANE, [40.0, 40.0], [80.0, 80.0]))
 }

@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const ASSISTANT_TIMEOUT: Duration = Duration::from_secs(300);
+const PINNED_PUBLIC_PYTHON_SHA256: &str =
+    "5f7b89a612c9b8af1d6456cdfcd1dbe5ca630849e79aebced9bee9a6694952ec";
 const PUBLIC_ASSISTANT: &[u8] = include_bytes!("../../../sdk/python/ketchup_assistant.py");
 const PUBLIC_ASSISTANT_PROTOCOL: &[u8] =
     include_bytes!("../../../sdk/python/ketchup_assistant_protocol.py");
@@ -187,15 +189,11 @@ pub fn verify_public_assistant_runtime() -> Result<(), String> {
 
 fn public_assistant_launch(provider: &str) -> Result<AssistantProcessLaunch, String> {
     let install_root = public_install_root()?;
-    let interpreter = std::env::var_os("KETCHUP_PYTHON")
-        .map(PathBuf::from)
-        .ok_or_else(|| "KETCHUP_PYTHON must name an absolute Python interpreter".to_owned())?;
-    let interpreter_sha256 = std::env::var("KETCHUP_PYTHON_SHA256")
-        .map_err(|_| "KETCHUP_PYTHON_SHA256 must pin the Python interpreter".to_owned())?;
+    let interpreter = installed_public_python(&install_root)?;
     public_assistant_launch_for_install_root(
         &install_root,
         &interpreter,
-        &interpreter_sha256,
+        PINNED_PUBLIC_PYTHON_SHA256,
         provider,
     )
 }
@@ -206,6 +204,67 @@ fn public_install_root() -> Result<PathBuf, String> {
         .parent()
         .map(Path::to_path_buf)
         .ok_or_else(|| "application install root is unavailable".to_owned())
+}
+
+#[cfg(windows)]
+fn installed_public_python(install_root: &Path) -> Result<PathBuf, String> {
+    use winreg::RegKey;
+    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_64KEY};
+
+    let mut candidates = vec![install_root.join("python.exe")];
+    if let Ok(key) = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags(
+        r"Software\Python\PythonCore\3.11\InstallPath",
+        KEY_READ | KEY_WOW64_64KEY,
+    ) {
+        if let Ok(path) = key.get_value::<OsString, _>("ExecutablePath") {
+            candidates.push(PathBuf::from(path));
+        } else if let Ok(path) = key.get_value::<OsString, _>("") {
+            candidates.push(PathBuf::from(path).join("python.exe"));
+        }
+    }
+    for candidate in candidates {
+        let Ok(path) = candidate.canonicalize() else {
+            continue;
+        };
+        let Ok(file) = fs::File::open(&path) else {
+            continue;
+        };
+        let Ok(metadata) = file.metadata() else {
+            continue;
+        };
+        if !metadata.is_file()
+            || metadata.len() > ketchup_scheduler::assistant::MAX_ASSISTANT_EXECUTABLE_BYTES
+        {
+            continue;
+        }
+        let mut bytes = Vec::new();
+        if file
+            .take(ketchup_scheduler::assistant::MAX_ASSISTANT_EXECUTABLE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .is_ok()
+            && bytes.len() as u64 <= ketchup_scheduler::assistant::MAX_ASSISTANT_EXECUTABLE_BYTES
+            && sha256_hex(&bytes) == PINNED_PUBLIC_PYTHON_SHA256
+        {
+            return Ok(path);
+        }
+    }
+    Err("the pinned installer-managed Python 3.11 runtime is unavailable".to_owned())
+}
+
+#[cfg(not(windows))]
+fn installed_public_python(install_root: &Path) -> Result<PathBuf, String> {
+    let candidate = install_root.join("python3");
+    let path = candidate
+        .canonicalize()
+        .map_err(|_| "the co-located pinned Python runtime is unavailable".to_owned())?;
+    let bytes = fs::read(&path)
+        .map_err(|_| "the co-located pinned Python runtime is unavailable".to_owned())?;
+    if sha256_hex(&bytes) != PINNED_PUBLIC_PYTHON_SHA256 {
+        return Err(
+            "the co-located Python runtime identity does not match the release pin".to_owned(),
+        );
+    }
+    Ok(path)
 }
 
 #[doc(hidden)]
@@ -246,19 +305,7 @@ pub fn public_assistant_launch_for_install_root(
         .expect("verified public Assistant script has a parent")
         .to_path_buf();
 
-    let mut environment = Vec::new();
-    let api_key = match provider {
-        "anthropic-api" => "ANTHROPIC_API_KEY",
-        "openai-api" => "OPENAI_API_KEY",
-        _ => return Err("unsupported public Assistant provider".to_owned()),
-    };
-    if let Some(value) = std::env::var_os(api_key).filter(|value| !value.is_empty()) {
-        environment.push((OsString::from(api_key), value));
-    }
-    #[cfg(windows)]
-    if let Some(value) = std::env::var_os("SYSTEMROOT").filter(|value| !value.is_empty()) {
-        environment.push((OsString::from("SYSTEMROOT"), value));
-    }
+    let environment = public_assistant_environment(provider, |name| std::env::var_os(name))?;
 
     Ok(AssistantProcessLaunch {
         executable,
@@ -276,6 +323,68 @@ pub fn public_assistant_launch_for_install_root(
         working_directory,
         environment,
     })
+}
+
+fn public_assistant_environment(
+    provider: &str,
+    source: impl Fn(&str) -> Option<OsString>,
+) -> Result<Vec<(OsString, OsString)>, String> {
+    let api_key = match provider {
+        "anthropic-api" => "ANTHROPIC_API_KEY",
+        "openai-api" => "OPENAI_API_KEY",
+        _ => return Err("unsupported public Assistant provider".to_owned()),
+    };
+    let mut environment = Vec::new();
+    if let Some(value) = source(api_key).filter(|value| !value.is_empty()) {
+        environment.push((OsString::from(api_key), value));
+    }
+    if let Some(value) = source("KETCHUP_ASSISTANT_HTTPS_PROXY").filter(|value| !value.is_empty()) {
+        let text = value
+            .to_str()
+            .ok_or_else(|| "Assistant HTTPS proxy must be UTF-8".to_owned())?;
+        let endpoint = text
+            .strip_prefix("https://")
+            .or_else(|| text.strip_prefix("http://"))
+            .ok_or_else(|| "Assistant HTTPS proxy must use http:// or https://".to_owned())?;
+        if endpoint.is_empty()
+            || text.len() > 2_048
+            || text.contains('@')
+            || text.chars().any(char::is_whitespace)
+        {
+            return Err("Assistant HTTPS proxy is invalid or contains credentials".to_owned());
+        }
+        environment.push((OsString::from("HTTPS_PROXY"), value));
+    }
+    if let Some(value) = source("KETCHUP_ASSISTANT_NO_PROXY").filter(|value| !value.is_empty()) {
+        let text = value
+            .to_str()
+            .ok_or_else(|| "Assistant NO_PROXY must be UTF-8".to_owned())?;
+        if text.len() > 2_048 || text.chars().any(|character| character.is_control()) {
+            return Err("Assistant NO_PROXY is invalid".to_owned());
+        }
+        environment.push((OsString::from("NO_PROXY"), value));
+    }
+    if let Some(value) = source("KETCHUP_ASSISTANT_CA_BUNDLE").filter(|value| !value.is_empty()) {
+        let configured = PathBuf::from(value);
+        if !configured.is_absolute() {
+            return Err("Assistant CA bundle must be an absolute file".to_owned());
+        }
+        let canonical = configured
+            .canonicalize()
+            .map_err(|error| format!("Assistant CA bundle is unavailable: {error}"))?;
+        let metadata = canonical
+            .metadata()
+            .map_err(|error| format!("Assistant CA bundle identity is unavailable: {error}"))?;
+        if !metadata.is_file() || metadata.len() > 4 * 1024 * 1024 {
+            return Err("Assistant CA bundle must be a bounded file".to_owned());
+        }
+        environment.push((OsString::from("SSL_CERT_FILE"), canonical.into_os_string()));
+    }
+    #[cfg(windows)]
+    if let Some(value) = source("SYSTEMROOT").filter(|value| !value.is_empty()) {
+        environment.push((OsString::from("SYSTEMROOT"), value));
+    }
+    Ok(environment)
 }
 
 fn verified_runtime_file(root: &Path, relative: &Path, expected: &[u8]) -> Result<PathBuf, String> {
@@ -301,4 +410,76 @@ fn verified_runtime_file(root: &Path, relative: &Path, expected: &[u8]) -> Resul
         return Err(format!("{} identity mismatch", relative.display()));
     }
     Ok(canonical)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::public_assistant_environment;
+    use std::collections::BTreeMap;
+    use std::ffi::OsString;
+
+    #[test]
+    fn public_environment_maps_only_explicit_bounded_network_configuration() {
+        let directory = tempfile::tempdir().unwrap();
+        let ca_bundle = directory.path().join("company-ca.pem");
+        std::fs::write(&ca_bundle, "test certificate bundle").unwrap();
+        let values = BTreeMap::from([
+            ("ANTHROPIC_API_KEY", OsString::from("secret")),
+            (
+                "KETCHUP_ASSISTANT_HTTPS_PROXY",
+                OsString::from("http://proxy.example:8080"),
+            ),
+            (
+                "KETCHUP_ASSISTANT_NO_PROXY",
+                OsString::from("localhost,.example.test"),
+            ),
+            (
+                "KETCHUP_ASSISTANT_CA_BUNDLE",
+                ca_bundle.as_os_str().to_owned(),
+            ),
+            ("HTTPS_PROXY", OsString::from("http://ambient.invalid")),
+            ("SSL_CERT_FILE", OsString::from("ambient-invalid.pem")),
+            ("PATH", OsString::from("attacker-path")),
+        ]);
+        let environment =
+            public_assistant_environment("anthropic-api", |name| values.get(name).cloned())
+                .unwrap();
+
+        assert!(environment.contains(&(
+            OsString::from("HTTPS_PROXY"),
+            OsString::from("http://proxy.example:8080")
+        )));
+        assert!(environment.contains(&(
+            OsString::from("NO_PROXY"),
+            OsString::from("localhost,.example.test")
+        )));
+        assert!(environment.iter().any(|(name, value)| {
+            name == "SSL_CERT_FILE" && std::path::PathBuf::from(value).is_absolute()
+        }));
+        assert!(environment.iter().all(|(name, value)| {
+            name != "PATH" && value != "http://ambient.invalid" && value != "ambient-invalid.pem"
+        }));
+    }
+
+    #[test]
+    fn public_environment_rejects_unsafe_proxy_and_ca_configuration() {
+        for proxy in [
+            "socks5://proxy.example:1080",
+            "http://user:secret@proxy.example",
+            "https://",
+            "https://proxy.example/ bad",
+        ] {
+            let error = public_assistant_environment("openai-api", |name| {
+                (name == "KETCHUP_ASSISTANT_HTTPS_PROXY").then(|| OsString::from(proxy))
+            })
+            .unwrap_err();
+            assert!(error.contains("proxy"));
+        }
+        let error = public_assistant_environment("openai-api", |name| {
+            (name == "KETCHUP_ASSISTANT_CA_BUNDLE")
+                .then(|| OsString::from("relative-company-ca.pem"))
+        })
+        .unwrap_err();
+        assert!(error.contains("absolute"));
+    }
 }

@@ -11,6 +11,7 @@ use crate::transforms::{
 use ketchup_core::assistant_sidecar::{
     AssistantCadBodyFeature, AssistantCadDeletePolicy, AssistantCadEditOperation,
     AssistantCadEditProgram, AssistantCadEntitySelector, AssistantCadFeatureReference,
+    AssistantCadProgramFeatureOutput, AssistantCadProgramFeatureReference,
     AssistantRejectionDiagnostic, AssistantRejectionPhase,
 };
 use ketchup_core::document::{
@@ -64,7 +65,7 @@ fn resolve_assistant_cad_selector(
 fn resolve_program_feature_reference(
     reference: AssistantCadFeatureReference,
     original_snapshot: &Snapshot,
-    operation_outputs: &BTreeMap<usize, FeatureId>,
+    operation_outputs: &BTreeMap<(usize, AssistantCadProgramFeatureOutput), u64>,
     operation: &str,
 ) -> AssistantPlanningResult<u64> {
     match reference {
@@ -79,8 +80,11 @@ fn resolve_program_feature_reference(
             &format!("feature:{id}"),
         )),
         AssistantCadFeatureReference::ProgramOutput(reference) => operation_outputs
-            .get(&(reference.operation_index as usize))
-            .map(|id| id.0)
+            .get(&(
+                reference.operation_index as usize,
+                AssistantCadProgramFeatureOutput::BodyFeature,
+            ))
+            .copied()
             .ok_or_else(|| {
                 assistant_planning_rejection(
                     "planning.cad_program_feature_reference_unavailable",
@@ -93,10 +97,31 @@ fn resolve_program_feature_reference(
     }
 }
 
+fn resolve_program_output_reference(
+    reference: AssistantCadProgramFeatureReference,
+    operation_outputs: &BTreeMap<(usize, AssistantCadProgramFeatureOutput), u64>,
+    expected_output: AssistantCadProgramFeatureOutput,
+    operation: &str,
+) -> AssistantPlanningResult<u64> {
+    operation_outputs
+        .get(&(reference.operation_index as usize, expected_output))
+        .copied()
+        .filter(|_| reference.output == expected_output)
+        .ok_or_else(|| {
+            assistant_planning_rejection(
+                "planning.cad_program_feature_reference_unavailable",
+                operation,
+                &format!("operation:{}", reference.operation_index),
+                "The referenced earlier operation did not produce the required typed output.",
+                "Reference a compatible typed output from an earlier operation in this CAD program.",
+            )
+        })
+}
+
 fn resolve_program_feature_references(
     feature: &AssistantCadBodyFeature,
     original_snapshot: &Snapshot,
-    operation_outputs: &BTreeMap<usize, FeatureId>,
+    operation_outputs: &BTreeMap<(usize, AssistantCadProgramFeatureOutput), u64>,
     operation: &str,
 ) -> AssistantPlanningResult<AssistantCadBodyFeature> {
     let mut feature = feature.clone();
@@ -215,8 +240,10 @@ pub fn plan_assistant_cad_edit_program(
     for (operation_index, operation) in program.operations.iter().enumerate() {
         let operation_name = match operation {
             AssistantCadEditOperation::CreateSketch { .. } => "create_sketch",
+            AssistantCadEditOperation::CreateProgramSketch { .. } => "create_program_sketch",
             AssistantCadEditOperation::CreatePart { .. } => "create_part",
             AssistantCadEditOperation::AppendFeature { .. } => "append_feature",
+            AssistantCadEditOperation::AppendProgramPocket { .. } => "append_program_pocket",
             AssistantCadEditOperation::SetDimension { .. } => "set_dimension",
             AssistantCadEditOperation::Delete { .. } => "delete_occurrence",
             AssistantCadEditOperation::Transform { .. } => "transform_occurrence",
@@ -234,8 +261,10 @@ pub fn plan_assistant_cad_edit_program(
         };
         let selector = match operation {
             AssistantCadEditOperation::CreateSketch { .. }
+            | AssistantCadEditOperation::CreateProgramSketch { .. }
             | AssistantCadEditOperation::CreatePart { .. }
             | AssistantCadEditOperation::AppendFeature { .. }
+            | AssistantCadEditOperation::AppendProgramPocket { .. }
             | AssistantCadEditOperation::SetDimension { .. }
             | AssistantCadEditOperation::UpsertClassificationDimension { .. }
             | AssistantCadEditOperation::CreateEvaluatorInput { .. } => None,
@@ -282,16 +311,102 @@ pub fn plan_assistant_cad_edit_program(
                     &mut next_occurrence,
                     &document_target,
                 )?;
-                if matches!(operation, AssistantCadEditOperation::CreatePart { .. })
-                    && let Some(id) = creation_commands.iter().rev().find_map(|command| {
-                        if let CanonicalCommand::CreateFeature { id, .. } = command {
-                            Some(*id)
-                        } else {
-                            None
+                for command in &creation_commands {
+                    match command {
+                        CanonicalCommand::CreateDefinition { id, .. } => {
+                            operation_outputs.insert(
+                                (
+                                    operation_index,
+                                    AssistantCadProgramFeatureOutput::Definition,
+                                ),
+                                id.0,
+                            );
                         }
-                    })
-                {
-                    operation_outputs.insert(operation_index, id);
+                        CanonicalCommand::CreateFeature {
+                            id,
+                            kind: ketchup_core::document::FeatureKind::Sketch(_),
+                            ..
+                        } => {
+                            operation_outputs.insert(
+                                (
+                                    operation_index,
+                                    AssistantCadProgramFeatureOutput::SketchFeature,
+                                ),
+                                id.0,
+                            );
+                        }
+                        CanonicalCommand::CreateFeature { id, kind, .. }
+                            if matches!(
+                                operation,
+                                AssistantCadEditOperation::CreatePart { .. }
+                            ) && !matches!(
+                                kind,
+                                ketchup_core::document::FeatureKind::Workplane(_)
+                                    | ketchup_core::document::FeatureKind::Sketch(_)
+                            ) =>
+                        {
+                            operation_outputs.insert(
+                                (
+                                    operation_index,
+                                    AssistantCadProgramFeatureOutput::BodyFeature,
+                                ),
+                                id.0,
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+                commands.extend(creation_commands);
+            }
+            AssistantCadEditOperation::CreateProgramSketch {
+                definition,
+                name,
+                workplane,
+                entities,
+                constraints,
+            } => {
+                let definition_id = resolve_program_output_reference(
+                    *definition,
+                    &operation_outputs,
+                    AssistantCadProgramFeatureOutput::Definition,
+                    operation_name,
+                )?;
+                let planning_snapshot = document
+                    .preview_batch(&CommandBatch::new(commands.clone()))
+                    .map_err(|error| {
+                        assistant_canonical_rejection(error, operation_name, &document_target)
+                    })?;
+                let resolved = AssistantCadEditOperation::CreateSketch {
+                    definition_id,
+                    name: name.clone(),
+                    workplane: workplane.clone(),
+                    entities: entities.clone(),
+                    constraints: constraints.clone(),
+                };
+                let creation_commands = plan_creation(
+                    &planning_snapshot,
+                    &resolved,
+                    &mut next_definition,
+                    &mut next_feature,
+                    &mut next_occurrence,
+                    &document_target,
+                )?;
+                let sketch_id = creation_commands.iter().find_map(|command| match command {
+                    CanonicalCommand::CreateFeature {
+                        id,
+                        kind: ketchup_core::document::FeatureKind::Sketch(_),
+                        ..
+                    } => Some(*id),
+                    _ => None,
+                });
+                if let Some(sketch_id) = sketch_id {
+                    operation_outputs.insert(
+                        (
+                            operation_index,
+                            AssistantCadProgramFeatureOutput::SketchFeature,
+                        ),
+                        sketch_id.0,
+                    );
                 }
                 commands.extend(creation_commands);
             }
@@ -362,13 +477,84 @@ pub fn plan_assistant_cad_edit_program(
                     kind,
                 });
                 if feature.produces_body_feature_output() {
-                    operation_outputs.insert(operation_index, id);
+                    operation_outputs.insert(
+                        (
+                            operation_index,
+                            AssistantCadProgramFeatureOutput::BodyFeature,
+                        ),
+                        id.0,
+                    );
                 }
                 if matches!(feature, AssistantCadBodyFeature::PlanarOffset { .. }) {
                     appended_planar_offsets.push((definition_id, id));
                 } else {
                     appended_exact_features.push((definition_id, id));
                 }
+            }
+            AssistantCadEditOperation::AppendProgramPocket {
+                definition,
+                name,
+                target_feature,
+                profile_feature,
+                depth_mm,
+            } => {
+                let definition_id = DefinitionId(resolve_program_output_reference(
+                    *definition,
+                    &operation_outputs,
+                    AssistantCadProgramFeatureOutput::Definition,
+                    operation_name,
+                )?);
+                let target_feature_id = resolve_program_output_reference(
+                    *target_feature,
+                    &operation_outputs,
+                    AssistantCadProgramFeatureOutput::BodyFeature,
+                    operation_name,
+                )?;
+                let profile_feature_id = resolve_program_output_reference(
+                    *profile_feature,
+                    &operation_outputs,
+                    AssistantCadProgramFeatureOutput::SketchFeature,
+                    operation_name,
+                )?;
+                let planning_snapshot = document
+                    .preview_batch(&CommandBatch::new(commands.clone()))
+                    .map_err(|error| {
+                        assistant_canonical_rejection(error, operation_name, &document_target)
+                    })?;
+                let feature = AssistantCadBodyFeature::Pocket {
+                    target_feature_id,
+                    profile_feature_id,
+                    depth_mm: *depth_mm,
+                };
+                let kind = plan_feature_kind(
+                    &planning_snapshot,
+                    topology_results,
+                    definition_id,
+                    &feature,
+                    operation_name,
+                )?;
+                let id = next_feature.map(FeatureId).ok_or_else(|| {
+                    assistant_canonical_rejection(
+                        CanonicalError::IdExhausted,
+                        operation_name,
+                        &document_target,
+                    )
+                })?;
+                next_feature = id.0.checked_add(1);
+                commands.push(CanonicalCommand::CreateFeature {
+                    id,
+                    definition_id,
+                    name: name.clone(),
+                    kind,
+                });
+                operation_outputs.insert(
+                    (
+                        operation_index,
+                        AssistantCadProgramFeatureOutput::BodyFeature,
+                    ),
+                    id.0,
+                );
+                appended_exact_features.push((definition_id, id));
             }
             AssistantCadEditOperation::SetDimension {
                 feature_id,

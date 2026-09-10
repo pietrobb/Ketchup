@@ -73,6 +73,7 @@ try {
     Write-Utf8NoBom (Join-Path $tempRoot "crates\ketchup-core\src\document.rs") $documentSource
     Write-Utf8NoBom (Join-Path $tempRoot "crates\ketchup-core\src\state_view.rs") $stateViewSource
     Write-Utf8NoBom (Join-Path $tempRoot "crates\ketchup-core\tests\product_document.rs") "// D-08 lifecycle evidence fixture`n"
+    Write-Utf8NoBom (Join-Path $tempRoot "crates\ketchup-core\tests\persistence_m2.rs") "// D-08 revision-history evidence fixture`n"
     Write-Utf8NoBom (Join-Path $tempRoot "crates\ketchup-app\tests\file_workflow.rs") "// D-08 Open/New evidence fixture`n"
     Write-Utf8NoBom (Join-Path $tempRoot "crates\ketchup-core\tests\fixtures\state-view\complete-v1.txt") "complete`n"
     Write-Utf8NoBom (Join-Path $tempRoot "crates\ketchup-core\tests\fixtures\state-view\agent-v1.txt") "agent`n"

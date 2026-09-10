@@ -527,11 +527,22 @@ pub fn start_exact_evaluation(
                         &source_sha256,
                         &worker_cancelled,
                     ),
-                    ImportFormat::Iges => worker.inspect_iges_import_with_cancellation(
-                        temporary.path(),
-                        &source_sha256,
-                        &worker_cancelled,
-                    ),
+                    ImportFormat::Iges => worker
+                        .inspect_iges_import_with_cancellation(
+                            temporary.path(),
+                            &source_sha256,
+                            &worker_cancelled,
+                        )
+                        .map(|evidence| StepImportEvidence {
+                            source_unit: evidence.source_unit,
+                            result_fingerprint: evidence.result_fingerprint,
+                            solid_count: evidence.solid_count,
+                            topology_counts: evidence.topology_counts,
+                            volume_mm3: evidence.volume_mm3,
+                            bounds_mm: evidence.bounds_mm,
+                            backend: evidence.backend,
+                            tolerance: evidence.tolerance,
+                        }),
                     _ => unreachable!("receipt format was validated above"),
                 }
                 .map_err(|error| error.to_string())?;

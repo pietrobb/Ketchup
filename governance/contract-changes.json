@@ -26,8 +26,8 @@
     {
       "path": "governance/contract-changes.json",
       "direction": "tighten",
-      "old_freeze_id": "m4b-a0-separation-v1",
-      "new_freeze_id": "m21-candidate-certification-v1",
+      "old_freeze_id": "m21-candidate-certification-v1",
+      "new_freeze_id": "post-interoperability-regression-v1",
       "evidence": "scripts/windows/test-ci-guard-red-paths.ps1"
     },
     {
@@ -41,18 +41,18 @@
     {
       "path": "scripts/windows/test-architecture-guards.ps1",
       "direction": "tighten",
-      "old_freeze_id": "m21-candidate-certification-v1",
-      "new_freeze_id": "pr-complete-ci-v1",
+      "old_freeze_id": "pr-complete-ci-v1",
+      "new_freeze_id": "post-interoperability-regression-v1",
       "evidence": "scripts/windows/test-ci-guard-red-paths.ps1",
-      "new_sha256": "db1af245788bffee4cda1c1a8f385ca120a0be9c36a87942fa0e87381bac0f08"
+      "new_sha256": "e5b5b16c0143a7e5e26bbc403fa265967ec0cb2d915149ae8f87d2d0326796d6"
     },
     {
       "path": "scripts/windows/test-ci-guard-red-paths.ps1",
       "direction": "tighten",
-      "old_freeze_id": "m4b-a0-separation-v1",
-      "new_freeze_id": "m21-candidate-certification-v1",
+      "old_freeze_id": "m21-candidate-certification-v1",
+      "new_freeze_id": "post-interoperability-regression-v1",
       "evidence": "scripts/windows/test-architecture-guards.ps1",
-      "new_sha256": "dcfcd04f9bfd6b7e0864b3f1d5745659478933adb534ef7d17432a3cc3366ce4"
+      "new_sha256": "b4a3a89d1e074f9319ed56d6637431693a770d13e04e94125b29f1f067fd8615"
     },
     {
       "path": "scripts/windows/validate-r0-v13-historical-evidence.ps1",
@@ -65,18 +65,18 @@
     {
       "path": "governance/d08-lifecycle-exceptions.json",
       "direction": "tighten",
-      "old_freeze_id": "m0-lifecycle-r0-envelope-v1",
-      "new_freeze_id": "m0-p07-authority-v1",
-      "evidence": "docs/adr/0006-canonical-and-derived-result-write-paths.md",
-      "new_sha256": "32ff6e38ff8e89517eb184afb5f19807102bddd90a83a3a779177997ceaae77d"
+      "old_freeze_id": "m0-p07-authority-v1",
+      "new_freeze_id": "post-interoperability-regression-v1",
+      "evidence": "crates/ketchup-core/tests/persistence_m2.rs",
+      "new_sha256": "e57e0cd50c76d1e34623357054baa701386537ef54845c7d3028c936180ffe46"
     },
     {
       "path": "governance/r0-transitions-v1-v13.json",
       "direction": "tighten",
-      "old_freeze_id": "m0-upper-envelope-v2",
-      "new_freeze_id": "pr-complete-ci-v1",
+      "old_freeze_id": "pr-complete-ci-v1",
+      "new_freeze_id": "post-interoperability-regression-v1",
       "evidence": "scripts/windows/validate-r0-transition-classifications.ps1",
-      "new_sha256": "652b1e35acdf0b56ed94b4c680a503c02651d60240e9fcb3c6311b73d4562f0e"
+      "new_sha256": "b8b1ee3b6883597a047db90c137c16e1be3605825486bab4ab98f41d5c69b431"
     },
     {
       "path": "scripts/windows/validate-r0-transition-classifications.ps1",
@@ -92,7 +92,7 @@
       "old_freeze_id": "m0-upper-envelope-v2",
       "new_freeze_id": "pr-complete-ci-v1",
       "evidence": "governance/r0-transitions-v1-v13.json",
-      "new_sha256": "ff7723896161a3d92f95e6e37b7d874918725d449d2868b9f231d0a531a302d5"
+      "new_sha256": "9851638ec1764b2ec8d35694f69d6d4632ebbaacc1c64bd1931d58a9da67e1fb"
     },
     {
       "path": "governance/deny-ci.toml",

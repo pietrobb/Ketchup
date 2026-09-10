@@ -9,19 +9,19 @@
 //! later change which lifts them fails loudly instead of silently.
 mod harness;
 
-use eframe::egui;
+use eframe::egui::{self, accesskit::Role};
 use harness::{ScriptedAssistantTransport, Shell};
-use ketchup_app::AssistantMessageRole;
+use ketchup_app::dialogs::ScriptedFileDialogs;
+use ketchup_app::{AppCommand, AssistantMessageRole};
 use ketchup_application::validation::{
-    AssistantValidationSelection, assistant_validation_context_with_worker,
+    ASSISTANT_VALIDATOR_IDS, AssistantValidationSelection, assistant_validation_context_with_worker,
 };
 use ketchup_core::assistant_sidecar::{
-    AssistantCadBodyFeature, AssistantCadBooleanOperation, AssistantCadClassificationCategory,
-    AssistantCadDeletePolicy, AssistantCadEditOperation, AssistantCadEditProgram,
-    AssistantCadEntitySelector, AssistantCadFeatureReference, AssistantCadPartFeature,
-    AssistantCadProgramFeatureOutput, AssistantCadProgramFeatureReference, AssistantCadRotation,
-    AssistantChatResult, AssistantDistribution, AssistantPrincipalPlane, AssistantSketchConstraint,
-    AssistantSketchEntity, AssistantWorkplaneSpec,
+    AssistantCadBodyFeature, AssistantCadClassificationCategory, AssistantCadDeletePolicy,
+    AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
+    AssistantCadPartFeature, AssistantCadProgramFeatureOutput, AssistantCadProgramFeatureReference,
+    AssistantCadRotation, AssistantChatResult, AssistantDistribution, AssistantPrincipalPlane,
+    AssistantSketchConstraint, AssistantSketchEntity, AssistantWorkplaneSpec,
 };
 use ketchup_core::document::{
     DefinitionId, EdgeFinishKind, FeatureId, FeatureKind, InstancePath, Snapshot,
@@ -1823,59 +1823,76 @@ fn the_timber_frame_house_must_stand_up_under_gravity() {
     );
 }
 
-/// The window opening this scenario needs was blocked by two generality limits.
-/// The first one is gone: a Pocket now consumes a Sketch profile authored by the
-/// same generic program, so the Assistant can cut an opening into a part it just
-/// created. The second still fails closed with a specific machine code and no
-/// mutation, and this test pins that split.
+/// A wall and its rectangular opening are authored as one reviewed Assistant
+/// program. Every later operation addresses an earlier result by typed local
+/// identity; no guessed host ID or named-shape branch is involved.
 #[test]
-fn assistant_cuts_an_opening_but_cannot_yet_boolean_two_parts_it_created() {
-    let requests = [
-        "Sheath the front wall",
-        "Cut a window opening into that sheathing",
+fn assistant_opening_survives_accesskit_undo_redo_validation_and_reopen() {
+    let request = "Create a wall with a rectangular window opening";
+    let transport = Arc::new(ScriptedAssistantTransport::new([(
+        request.to_owned(),
+        AssistantChatResult {
+            message: "Review the wall and its opening.".to_owned(),
+            model_intent: None,
+        },
+    )]));
+    let directory = tempfile::tempdir().unwrap();
+    let saved = directory.path().join("assistant-wall-opening.ketchup");
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_save(&saved)
+        .queue_open(&saved)
+        .always_discard();
+    let mut shell = Shell::with_dialogs_and_assistant_transport(dialogs, transport.clone());
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+
+    let (wall_entities, wall_constraints) = rectangle(HOUSE_LENGTH_MM, WALL_HEIGHT_MM);
+    let corners = [
+        [2_400.0, 600.0],
+        [3_600.0, 600.0],
+        [3_600.0, 2_000.0],
+        [2_400.0, 2_000.0],
     ];
-    let transport = Arc::new(ScriptedAssistantTransport::new(requests.map(|request| {
-        (
-            request.to_owned(),
-            AssistantChatResult {
-                message: "Review the sheathing.".to_owned(),
-                model_intent: None,
-            },
-        )
-    })));
-    let (entities, constraints) = rectangle(HOUSE_LENGTH_MM, WALL_HEIGHT_MM);
-    let mut shell = Shell::with_assistant_transport(transport.clone());
-    build_step(
-        &mut shell,
-        &transport,
-        requests[0],
-        AssistantCadEditProgram {
-            operations: vec![AssistantCadEditOperation::CreatePart {
+    let window_entities = (0..4)
+        .map(|index| AssistantSketchEntity::Line {
+            id: index as u64 + 1,
+            start_mm: corners[index],
+            end_mm: corners[(index + 1) % corners.len()],
+        })
+        .collect::<Vec<_>>();
+    let window_constraints = (0..4)
+        .map(|index| {
+            let id = index as u64 + 1;
+            if index % 2 == 0 {
+                AssistantSketchConstraint::Horizontal { id, entity_id: id }
+            } else {
+                AssistantSketchConstraint::Vertical { id, entity_id: id }
+            }
+        })
+        .collect::<Vec<_>>();
+    let output = |operation_index, output| AssistantCadProgramFeatureReference {
+        operation_index,
+        output,
+    };
+    let program = AssistantCadEditProgram {
+        operations: vec![
+            AssistantCadEditOperation::CreatePart {
                 name: "Front sheathing".to_owned(),
                 workplane: AssistantWorkplaneSpec::Principal {
                     plane: AssistantPrincipalPlane::Xz,
                 },
-                entities,
-                constraints,
+                entities: wall_entities,
+                constraints: wall_constraints,
                 feature: AssistantCadPartFeature::Extrusion {
                     distance_mm: SHEATHING_THICKNESS_MM,
                 },
-                translation_mm: [0.0, 0.0, 0.0],
+                translation_mm: [1_000.0, 1_000.0, 1_000.0],
                 rotation: None,
-            }],
-        },
-    );
-
-    let sheathing = definition_id_of(&shell, "Front sheathing");
-    let sheathing_pad = body_feature_id_of(&shell, "Front sheathing");
-
-    // Lifted limit: a Pocket now accepts the Sketch profile the same program
-    // authored, so the opening goes all the way through review to commit.
-    let (window_entities, window_constraints) = rectangle(1_200.0, 1_400.0);
-    let sketch_then_pocket = AssistantCadEditProgram {
-        operations: vec![
-            AssistantCadEditOperation::CreateSketch {
-                definition_id: sheathing.0,
+            },
+            AssistantCadEditOperation::CreateProgramSketch {
+                definition: output(0, AssistantCadProgramFeatureOutput::Definition),
                 name: "Window opening".to_owned(),
                 workplane: AssistantWorkplaneSpec::Principal {
                     plane: AssistantPrincipalPlane::Xz,
@@ -1883,27 +1900,26 @@ fn assistant_cuts_an_opening_but_cannot_yet_boolean_two_parts_it_created() {
                 entities: window_entities,
                 constraints: window_constraints,
             },
-            AssistantCadEditOperation::AppendFeature {
-                definition_id: sheathing.0,
+            AssistantCadEditOperation::AppendProgramPocket {
+                definition: output(0, AssistantCadProgramFeatureOutput::Definition),
                 name: "Window pocket".to_owned(),
-                feature: AssistantCadBodyFeature::Pocket {
-                    target_feature_id: sheathing_pad.0,
-                    // The sketch this same program just authored.
-                    profile_feature_id: sheathing_pad.0 + 2,
-                    depth_mm: SHEATHING_THICKNESS_MM,
-                },
+                target_feature: output(0, AssistantCadProgramFeatureOutput::BodyFeature),
+                profile_feature: output(1, AssistantCadProgramFeatureOutput::SketchFeature),
+                depth_mm: SHEATHING_THICKNESS_MM,
             },
         ],
     };
-    build_step(&mut shell, &transport, requests[1], sketch_then_pocket);
 
-    // The committed definition really owns the pocket, driven by that sketch and
-    // targeting the pad, and the whole part stays an editable exact chain.
+    let baseline_digest = shell.app().canonical_digest();
+    build_step(&mut shell, &transport, request, program);
+    let committed_digest = shell.app().canonical_digest();
+    let committed_revision = shell.app().document_revision();
+    let sheathing = definition_id_of(&shell, "Front sheathing");
     let committed = shell.app().document_snapshot();
     let pocket_id = committed
         .definitions()
         .find(|definition| definition.id() == sheathing)
-        .expect("the sheathing definition must survive the cut")
+        .unwrap()
         .feature_ids()
         .iter()
         .copied()
@@ -1913,57 +1929,75 @@ fn assistant_cuts_an_opening_but_cannot_yet_boolean_two_parts_it_created() {
                 FeatureKind::Pocket { .. }
             )
         })
-        .expect("the sheathing must own the window pocket");
+        .expect("the wall must retain its generic Sketch-driven pocket");
     let FeatureKind::Pocket {
         target, profile, ..
     } = committed.feature(pocket_id).unwrap().kind()
     else {
         unreachable!("the pocket kind was just matched")
     };
-    assert_eq!(*target, sheathing_pad);
-    assert_eq!(profile.0, sheathing_pad.0 + 2);
-    ExactBRepGraph::from_snapshot(&committed, sheathing, pocket_id)
-        .expect("the pocketed sheathing must compile into an exact graph");
+    assert!(matches!(
+        committed.feature(*target).unwrap().kind(),
+        FeatureKind::Pad(_)
+    ));
+    assert!(matches!(
+        committed.feature(*profile).unwrap().kind(),
+        FeatureKind::Sketch(_)
+    ));
 
-    let revision = shell.app().document_revision();
-    let digest = shell.app().canonical_digest();
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), baseline_digest);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().canonical_digest(), committed_digest);
 
-    // CreatePart still opens a new definition, so its symbolically referenced
-    // body is visible to the later operation but cannot bypass canonical
-    // same-definition Boolean ownership.
-    let second_part = AssistantCadEditProgram {
-        operations: vec![
-            timber("Window block", 1_200.0, 1_400.0, 100.0, [0.0; 3], None),
-            AssistantCadEditOperation::AppendFeature {
-                definition_id: sheathing.0,
-                name: "Window cut".to_owned(),
-                feature: AssistantCadBodyFeature::Boolean {
-                    operation: AssistantCadBooleanOperation::Cut,
-                    target_feature_id: sheathing_pad.0.into(),
-                    tool_feature_id: AssistantCadFeatureReference::ProgramOutput(
-                        AssistantCadProgramFeatureReference {
-                            operation_index: 0,
-                            output: AssistantCadProgramFeatureOutput::BodyFeature,
-                        },
-                    ),
-                },
-            },
-        ],
-    };
-    let rejection = shell
+    shell.click_menu_command("menu-file", AppCommand::SaveAs);
+    assert!(saved.is_file());
+    shell.click_menu_command("menu-file", AppCommand::New);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert_eq!(shell.app().canonical_digest(), committed_digest);
+    assert_eq!(shell.app().document_revision(), committed_revision);
+
+    let reopened = shell.app().document_snapshot();
+    let reopened_pocket = reopened
+        .feature(pocket_id)
+        .expect("the pocket identity must survive Save/Open");
+    assert!(matches!(reopened_pocket.kind(), FeatureKind::Pocket { .. }));
+    let graph = ExactBRepGraph::from_snapshot(&reopened, sheathing, pocket_id)
+        .expect("the reopened wall opening must remain an exact editable chain");
+    let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
+    let package = worker.evaluate_exact_brep_graph(&graph).unwrap();
+    let expected_volume =
+        (HOUSE_LENGTH_MM * WALL_HEIGHT_MM - 1_200.0 * 1_400.0) * SHEATHING_THICKNESS_MM;
+    assert!((package.volume_mm3 - expected_volume).abs() <= 1.0e-6);
+
+    let run = shell.catalog().text("validators-run");
+    shell.click_role_and_label(Role::Button, &shell.catalog().text("validators-title"));
+    for validator in ASSISTANT_VALIDATOR_IDS {
+        if validator != "collision" {
+            let label = shell.catalog().text(&format!("validator-{validator}-name"));
+            shell.click_role_and_label(Role::CheckBox, &label);
+        }
+    }
+    shell.click_button_label(&run);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while shell.app().validator_panel_pending() {
+        assert!(
+            Instant::now() < deadline,
+            "the validator panel never finished"
+        );
+        shell.step();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let report = shell
         .app()
-        .plan_assistant_cad_edit_program(&second_part)
-        .expect_err("a cross-definition Boolean must fail closed");
-    assert_eq!(
-        rejection.code,
-        "planning.cad_feature_input_ownership_invalid"
-    );
-    assert_eq!(rejection.operation, "append_feature");
-
-    // Neither rejection may touch the document.
-    assert_eq!(shell.app().document_revision(), revision);
-    assert_eq!(shell.app().canonical_digest(), digest);
-    assert!(shell.app().assistant_proposal().is_none());
+        .validator_panel_report()
+        .expect("the reopened exact model must produce a validator report");
+    assert_eq!(report.revision, committed_revision);
+    assert_eq!(report.canonical_digest, committed_digest);
+    assert_eq!(report.executed, vec!["collision"]);
+    assert_eq!(report.state, "passed", "{report:#?}");
+    assert!(report.complete, "{report:#?}");
+    assert_eq!(report.issue_count, 0, "{report:#?}");
 }
 
 /// The generic Assistant can feed its own closed-profile and open-path Sketches

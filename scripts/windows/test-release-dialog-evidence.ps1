@@ -10,6 +10,8 @@ $lockPath = Join-Path $repoRoot "Cargo.lock"
 $platformDecisionRecordPath = Join-Path $repoRoot "docs\adr\0007-windows-x86-64-first-release.md"
 $occtManifestPath = Join-Path $repoRoot "artifacts\r0\occt-build-manifest.json"
 $occtRoot = Join-Path $repoRoot "third_party\occt-install-r0-v1"
+$pinnedPublicPythonSha256 = "5f7b89a612c9b8af1d6456cdfcd1dbe5ca630849e79aebced9bee9a6694952ec"
+$pinnedPublicPythonRegistryKey = "Software\Python\PythonCore\3.11\InstallPath"
 $runnerSource = Get-Content $runner -Raw
 if ($runnerSource -match 'Type READY only while the requested native file dialog remains open' -or
     $runnerSource -match '(?m)^\s*Observe-NativeFileDialog[^\r\n]*return here' -or
@@ -384,9 +386,12 @@ function Write-PackageManifest {
     $files = [Collections.Generic.List[object]]::new()
     foreach ($binary in @(
         [ordered]@{ name = "ketchup-app.exe"; role = "desktop-application" },
-        [ordered]@{ name = "ketchup-exact-worker.exe"; role = "exact-worker" }
+        [ordered]@{ name = "ketchup-exact-worker.exe"; role = "exact-worker" },
+        [ordered]@{ name = "ketchup_assistant.py"; role = "public-assistant-entry" },
+        [ordered]@{ name = "ketchup_assistant_protocol.py"; role = "public-assistant-protocol" }
     )) {
-        $path = Join-Path $tempRoot $binary.name
+        $sourceRoot = if ($binary.role -like "public-assistant-*") { $verificationPackageDir } else { $tempRoot }
+        $path = Join-Path $sourceRoot $binary.name
         $files.Add([ordered]@{
             name = $binary.name
             role = $binary.role
@@ -403,7 +408,7 @@ function Write-PackageManifest {
         })
     }
     $package = [ordered]@{
-        schema_version = 1
+        schema_version = 2
         kind = "technical-release-candidate"
         platform = "windows-x86_64"
         platform_decision = "windows-x86_64-first-release"
@@ -416,6 +421,13 @@ function Write-PackageManifest {
             "G19-04-current-tree-hardware-certification"
         )
         cargo_lock_sha256 = Get-Sha256 $lockPath
+        assistant_runtime = [ordered]@{
+            kind = "pep-514-system"
+            python_version = "3.11"
+            registry_hive = "HKLM"
+            registry_key = $pinnedPublicPythonRegistryKey
+            executable_sha256 = $pinnedPublicPythonSha256
+        }
         occt = [ordered]@{
             version = [string]$pinnedOcct.source.release
             source_commit = [string]$pinnedOcct.source.commit
@@ -727,8 +739,10 @@ try {
     Write-InspectorFixtureExecutable (Join-Path $tempRoot "ketchup-app.exe")
     $inspectorFixtureBytes = [IO.File]::ReadAllBytes((Join-Path $tempRoot "ketchup-app.exe"))
     Write-WorkerFixtureExecutable (Join-Path $tempRoot "ketchup-exact-worker.exe")
-    Write-PackageManifest
     [void](New-Item $verificationPackageDir -ItemType Directory)
+    Copy-Item (Join-Path $repoRoot "sdk\python\ketchup_assistant.py") (Join-Path $verificationPackageDir "ketchup_assistant.py")
+    Copy-Item (Join-Path $repoRoot "sdk\python\ketchup_assistant_protocol.py") (Join-Path $verificationPackageDir "ketchup_assistant_protocol.py")
+    Write-PackageManifest
     foreach ($name in @("ketchup-app.exe", "ketchup-exact-worker.exe", "package-manifest.json")) {
         Copy-Item (Join-Path $tempRoot $name) (Join-Path $verificationPackageDir $name)
     }

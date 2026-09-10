@@ -24,21 +24,22 @@ use ketchup_core::exact_brep_graph::{
     ExactBRepPlanarLoop, ExactBRepPlanarSegment,
 };
 use ketchup_core::exact_product::{
-    ExactAxialAttachmentInput, ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence,
-    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactLoftPackage, ExactLoftRequest,
-    ExactPlanarFaceAttachmentInput, ExactPlanarOffsetPackage, ExactPlanarOffsetRequest,
-    ExactProductError, ExactProfileSegment, ExactRenderPackage, ExactSweepPackage,
-    ExactSweepRequest, LoftWorkerEvidence, PlanarOffsetWorkerEvidence, SweepWorkerEvidence,
-    SweepWorkerFaceEvidence, build_box_render_package, build_box_render_package_with_attachments,
-    build_box_render_package_with_typed_attachments, build_loft_package,
-    build_planar_offset_package, build_sweep_package, canonical_reference_lineage_digest,
+    ExactAxialAttachmentInput, ExactBRepGraphFaceEvidence, ExactBRepGraphPackage,
+    ExactBRepGraphWorkerEvidence, ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest,
+    ExactLoftPackage, ExactLoftRequest, ExactPlanarFaceAttachmentInput, ExactPlanarOffsetPackage,
+    ExactPlanarOffsetRequest, ExactProductError, ExactProfileSegment, ExactRenderPackage,
+    ExactSweepPackage, ExactSweepRequest, LoftWorkerEvidence, PlanarOffsetWorkerEvidence,
+    SweepWorkerEvidence, SweepWorkerFaceEvidence, build_box_render_package,
+    build_box_render_package_with_attachments, build_box_render_package_with_typed_attachments,
+    build_loft_package, build_planar_offset_package, build_sweep_package,
+    canonical_reference_lineage_digest,
 };
 use ketchup_core::exact_revolve::{
     ExactRevolvePackage, ExactRevolveRequest, build_revolve_package, expected_volume_mm3,
 };
 use ketchup_core::graph::sha256_hex;
 use ketchup_core::import::{
-    ImportLengthUnit, MAX_STEP_SOURCE_BYTES, StepImportEvidence, StepImportMesh,
+    IgesImportEvidence, ImportLengthUnit, MAX_STEP_SOURCE_BYTES, StepImportEvidence, StepImportMesh,
 };
 #[cfg(feature = "named-product-fixtures")]
 use ketchup_core::prismatic::Aabb;
@@ -525,6 +526,19 @@ pub struct WorkerRevolveResult {
     pub faces: Vec<WorkerFaceEvidence>,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct WorkerExactBRepGraphFaceEvidence {
+    pub semantic_role: String,
+    pub source_element_id: String,
+    pub face_ordinal: u32,
+    pub surface_kind: String,
+    pub geometric_fingerprint: String,
+    pub centroid_mm: [f64; 3],
+    pub unit_normal: [f64; 3],
+    pub axis_origin_mm: Option<[f64; 3]>,
+    pub unit_axis_direction: Option<[f64; 3]>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkerExactBRepGraphResult {
     pub canonical_input_digest: String,
@@ -539,6 +553,7 @@ pub struct WorkerExactBRepGraphResult {
     pub wire_count: Option<u32>,
     pub backend: String,
     pub tolerance: String,
+    pub faces: Vec<WorkerExactBRepGraphFaceEvidence>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -931,6 +946,7 @@ pub struct ExactWorkerClient {
     child: Child,
     write_sender: Sender<WorkerWriteRequest>,
     response_receiver: Receiver<WorkerResponse>,
+    _temp_directory: tempfile::TempDir,
 }
 
 impl ExactWorkerClient {
@@ -939,10 +955,15 @@ impl ExactWorkerClient {
         let working_directory = executable
             .parent()
             .expect("canonical exact worker executable has a parent");
+        let temp_directory =
+            tempfile::tempdir().map_err(|error| WorkerError::Spawn(error.to_string()))?;
         let mut command = Command::new(&executable);
         command
             .current_dir(working_directory)
             .env_clear()
+            .env("TEMP", temp_directory.path())
+            .env("TMP", temp_directory.path())
+            .env("TMPDIR", temp_directory.path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
@@ -965,6 +986,7 @@ impl ExactWorkerClient {
             child,
             write_sender,
             response_receiver,
+            _temp_directory: temp_directory,
         })
     }
 
@@ -3180,23 +3202,22 @@ impl ExactWorkerSupervisor {
         path: &Path,
         source_sha256: &str,
         cancelled: &AtomicBool,
-    ) -> Result<StepImportEvidence, WorkerError> {
-        if std::fs::metadata(path)
+    ) -> Result<IgesImportEvidence, WorkerError> {
+        let source_byte_len = std::fs::metadata(path)
             .map_err(|error| WorkerError::Transport(error.to_string()))?
-            .len()
-            > MAX_STEP_SOURCE_BYTES
-        {
+            .len();
+        if source_byte_len > MAX_STEP_SOURCE_BYTES {
             return Err(WorkerError::Transport(
                 "IGES source exceeds the bounded 32 MiB envelope".to_owned(),
             ));
         }
         self.client.ensure_not_cancelled(cancelled)?;
-        match self.client.inspect_iges_part_request_with_cancellation(
+        let evidence = match self.client.inspect_iges_part_request_with_cancellation(
             path,
             source_sha256,
             cancelled,
         ) {
-            Ok(evidence) => Ok(evidence),
+            Ok(evidence) => evidence,
             Err(error) if error.permits_restart() => {
                 self.client = Self::spawn_verified_client(
                     &self.executable,
@@ -3207,10 +3228,24 @@ impl ExactWorkerSupervisor {
                     path,
                     source_sha256,
                     cancelled,
-                )
+                )?
             }
-            Err(error) => Err(error),
-        }
+            Err(error) => return Err(error),
+        };
+        let source_sha256 = decode_sha256(source_sha256)
+            .ok_or_else(|| WorkerError::Protocol("invalid IGES source SHA-256".to_owned()))?;
+        Ok(IgesImportEvidence {
+            source_sha256,
+            source_byte_len,
+            source_unit: evidence.source_unit,
+            result_fingerprint: evidence.result_fingerprint,
+            solid_count: evidence.solid_count,
+            topology_counts: evidence.topology_counts,
+            volume_mm3: evidence.volume_mm3,
+            bounds_mm: evidence.bounds_mm,
+            backend: evidence.backend,
+            tolerance: evidence.tolerance,
+        })
     }
 
     pub fn tessellate_iges_import_with_cancellation(
@@ -3763,6 +3798,21 @@ impl ExactWorkerSupervisor {
                 ],
                 backend: result.backend,
                 tolerance: result.tolerance,
+                faces: result
+                    .faces
+                    .into_iter()
+                    .map(|face| ExactBRepGraphFaceEvidence {
+                        semantic_role: face.semantic_role,
+                        source_element_id: face.source_element_id,
+                        face_ordinal: face.face_ordinal,
+                        surface_kind: face.surface_kind,
+                        corroborating_geometry_fingerprint: face.geometric_fingerprint,
+                        centroid_mm: face.centroid_mm,
+                        unit_normal: face.unit_normal,
+                        axis_origin_mm: face.axis_origin_mm,
+                        unit_axis_direction: face.unit_axis_direction,
+                    })
+                    .collect(),
             },
             &mesh,
         )
@@ -6009,7 +6059,7 @@ fn build_m3_render_package(
                 ExactFaceRole::East
             };
             if let Some(floor) = &result.pocket_floor {
-                build_box_render_package(
+                build_box_render_package_with_typed_attachments(
                     request,
                     result.exact_input_digest.clone(),
                     result.result_fingerprint.clone(),
@@ -6022,9 +6072,30 @@ fn build_m3_render_package(
                         evidence(ExactFaceRole::CutCircle, circle_wall),
                         evidence(ExactFaceRole::PocketFloor, floor),
                     ],
+                    &[ExactPlanarFaceAttachmentInput {
+                        role: ExactFaceRole::Top,
+                        local_origin_mm: result
+                            .top
+                            .centroid_mm
+                            .ok_or(ExactProductError::InvalidWorkerEvidence)?,
+                        local_unit_normal: result
+                            .top
+                            .unit_normal
+                            .ok_or(ExactProductError::InvalidWorkerEvidence)?,
+                    }],
+                    &[ExactAxialAttachmentInput {
+                        role: ExactFaceRole::CutCircle,
+                        kind: AxialAttachmentKind::CylindricalFace,
+                        local_origin_mm: circle_wall
+                            .axis_origin_mm
+                            .ok_or(ExactProductError::InvalidWorkerEvidence)?,
+                        local_unit_direction: circle_wall
+                            .unit_axis_direction
+                            .ok_or(ExactProductError::InvalidWorkerEvidence)?,
+                    }],
                 )
             } else {
-                build_box_render_package(
+                build_box_render_package_with_typed_attachments(
                     request,
                     result.exact_input_digest.clone(),
                     result.result_fingerprint.clone(),
@@ -6037,6 +6108,27 @@ fn build_m3_render_package(
                         evidence(side_role, &result.east),
                         evidence(ExactFaceRole::CutCircle, circle_wall),
                     ],
+                    &[ExactPlanarFaceAttachmentInput {
+                        role: ExactFaceRole::Top,
+                        local_origin_mm: result
+                            .top
+                            .centroid_mm
+                            .ok_or(ExactProductError::InvalidWorkerEvidence)?,
+                        local_unit_normal: result
+                            .top
+                            .unit_normal
+                            .ok_or(ExactProductError::InvalidWorkerEvidence)?,
+                    }],
+                    &[ExactAxialAttachmentInput {
+                        role: ExactFaceRole::CutCircle,
+                        kind: AxialAttachmentKind::CylindricalFace,
+                        local_origin_mm: circle_wall
+                            .axis_origin_mm
+                            .ok_or(ExactProductError::InvalidWorkerEvidence)?,
+                        local_unit_direction: circle_wall
+                            .unit_axis_direction
+                            .ok_or(ExactProductError::InvalidWorkerEvidence)?,
+                    }],
                 )
             }
         }
@@ -6488,6 +6580,17 @@ fn append_exact_brep_graph_sources(request: &mut String, sources: &[(&str, &Path
     }
 }
 
+fn decode_sha256(value: &str) -> Option<[u8; 32]> {
+    if !is_sha256_digest(value) {
+        return None;
+    }
+    let mut digest = [0_u8; 32];
+    for (slot, pair) in digest.iter_mut().zip(value.as_bytes().chunks_exact(2)) {
+        *slot = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some(digest)
+}
+
 fn hex_decode_utf8(value: &str) -> Option<String> {
     if value.is_empty() || !value.len().is_multiple_of(2) {
         return None;
@@ -6534,26 +6637,32 @@ fn parse_exact_brep_graph_result(
     if matches!(fields.first(), Some(&"ERR") | Some(&"ERR_DETAIL")) {
         return Err(parse_error_response(response, &fields));
     }
-    let (wire_count_index, topology_offset) = match (fields.first().copied(), fields.len()) {
-        (Some(protocol), 21) if protocol == expected_protocol && protocol == "OK_BREP_GRAPH_V6" => {
-            (None, 0)
-        }
-        (Some(protocol), 22)
-            if protocol == expected_protocol
-                && matches!(
-                    protocol,
-                    "OK_BREP_GRAPH_V8"
-                        | "OK_BREP_GRAPH_V9"
-                        | "OK_BREP_GRAPH_V10"
-                        | "OK_BREP_GRAPH_V11"
-                        | "OK_BREP_GRAPH_V12"
-                        | "OK_BREP_GRAPH_V13"
-                ) =>
-        {
-            (Some(16), 1)
-        }
-        _ => return Err(WorkerError::Protocol(response.to_owned())),
-    };
+    let (wire_count_index, topology_offset, faces_index) =
+        match (fields.first().copied(), fields.len()) {
+            (Some(protocol), 21)
+                if protocol == expected_protocol && protocol == "OK_BREP_GRAPH_V6" =>
+            {
+                (None, 0, None)
+            }
+            (Some(protocol), 22)
+                if protocol == expected_protocol
+                    && matches!(
+                        protocol,
+                        "OK_BREP_GRAPH_V8"
+                            | "OK_BREP_GRAPH_V9"
+                            | "OK_BREP_GRAPH_V10"
+                            | "OK_BREP_GRAPH_V11"
+                            | "OK_BREP_GRAPH_V12"
+                            | "OK_BREP_GRAPH_V13"
+                    ) =>
+            {
+                (Some(16), 1, None)
+            }
+            (Some("OK_BREP_GRAPH_V13"), 23) if expected_protocol == "OK_BREP_GRAPH_V13" => {
+                (Some(16), 1, Some(22))
+            }
+            _ => return Err(WorkerError::Protocol(response.to_owned())),
+        };
     if !is_sha256_digest(fields[1])
         || !is_sha256_digest(fields[2])
         || !is_fnv1a64_digest(fields[4])
@@ -6601,6 +6710,15 @@ fn parse_exact_brep_graph_result(
             .ok_or_else(|| WorkerError::Protocol(response.to_owned()))?,
         tolerance: hex_decode_utf8(fields[20 + topology_offset])
             .ok_or_else(|| WorkerError::Protocol(response.to_owned()))?,
+        faces: faces_index
+            .map(|index| {
+                let encoded = hex_decode_utf8(fields[index])
+                    .ok_or_else(|| WorkerError::Protocol(response.to_owned()))?;
+                serde_json::from_str(&encoded)
+                    .map_err(|_| WorkerError::Protocol(response.to_owned()))
+            })
+            .transpose()?
+            .unwrap_or_default(),
     })
 }
 
@@ -7394,7 +7512,7 @@ fn parse_p3_circular_cut_result(
     if fields.first() == Some(&"ERR") {
         return Err(parse_error_response(response, &fields));
     }
-    if fields.len() != 31 || fields[0] != "OK_P3_CIRCULAR_CUT_V1" {
+    if fields.len() != 32 || fields[0] != "OK_P3_CIRCULAR_CUT_V2" {
         return Err(WorkerError::Protocol(response.to_owned()));
     }
     let parse_u64 = |index: usize| {
@@ -7411,16 +7529,37 @@ fn parse_p3_circular_cut_result(
             .parse::<u32>()
             .map_err(|_| WorkerError::Protocol(response.to_owned()))
     };
-    let evidence = |index: usize| {
-        Ok(WorkerFaceEvidence {
+    type FaceGeometry = ([f64; 3], [f64; 3], Option<[f64; 3]>, Option<[f64; 3]>);
+
+    let encoded_geometry =
+        hex_decode_utf8(fields[31]).ok_or_else(|| WorkerError::Protocol(response.to_owned()))?;
+    let geometry: Vec<FaceGeometry> = serde_json::from_str(&encoded_geometry)
+        .map_err(|_| WorkerError::Protocol(response.to_owned()))?;
+    let geometry: [FaceGeometry; 4] = geometry
+        .try_into()
+        .map_err(|_| WorkerError::Protocol(response.to_owned()))?;
+    let evidence = |index: usize, geometry_index: usize| {
+        let (centroid_mm, unit_normal, axis_origin_mm, unit_axis_direction) =
+            geometry[geometry_index];
+        let evidence = WorkerFaceEvidence {
             ordinal: parse_u32(index)?,
             geometric_fingerprint: fields[index + 1].to_owned(),
             lineage_digest: fields[index + 2].to_owned(),
-            centroid_mm: None,
-            unit_normal: None,
-            axis_origin_mm: None,
-            unit_axis_direction: None,
-        })
+            centroid_mm: (geometry_index != 3).then_some(centroid_mm),
+            unit_normal: (geometry_index != 3).then_some(unit_normal),
+            axis_origin_mm: (geometry_index == 3).then_some(axis_origin_mm).flatten(),
+            unit_axis_direction: (geometry_index == 3)
+                .then_some(unit_axis_direction)
+                .flatten(),
+        };
+        let valid_geometry = if geometry_index == 3 {
+            evidence.has_valid_axial_geometry()
+        } else {
+            evidence.has_valid_planar_geometry()
+        };
+        valid_geometry
+            .then_some(evidence)
+            .ok_or_else(|| WorkerError::Protocol(response.to_owned()))
     };
     Ok(WorkerExactResult {
         backend_duration: Duration::from_nanos(parse_u64(1)?),
@@ -7442,14 +7581,14 @@ fn parse_p3_circular_cut_result(
         exact_input_digest: fields[16].to_owned(),
         backend: fields[17].to_owned(),
         tolerance: fields[18].to_owned(),
-        top: evidence(19)?,
-        bottom: evidence(22)?,
-        east: evidence(25)?,
-        cut_west: Some(evidence(28)?),
+        top: evidence(19, 0)?,
+        bottom: evidence(22, 1)?,
+        east: evidence(25, 2)?,
+        cut_west: Some(evidence(28, 3)?),
         cut_east: None,
         cut_south: None,
         cut_north: None,
-        pocket_floor: pocket.then(|| evidence(22)).transpose()?,
+        pocket_floor: pocket.then(|| evidence(22, 1)).transpose()?,
     })
 }
 

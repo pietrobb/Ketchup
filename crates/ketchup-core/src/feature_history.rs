@@ -203,6 +203,23 @@ pub fn prepare_body_parameter_edit(
     request: BodyParameterEditRequest,
     principal: ProposalPrincipal,
 ) -> Result<BodyParameterEditPreview, BodyParameterEditError> {
+    prepare_body_parameter_edit_with_validation(document, request, principal, true)
+}
+
+pub(crate) fn prepare_dependency_staging_body_parameter_edit(
+    document: &DocumentStore,
+    request: BodyParameterEditRequest,
+    principal: ProposalPrincipal,
+) -> Result<BodyParameterEditPreview, BodyParameterEditError> {
+    prepare_body_parameter_edit_with_validation(document, request, principal, false)
+}
+
+fn prepare_body_parameter_edit_with_validation(
+    document: &DocumentStore,
+    request: BodyParameterEditRequest,
+    principal: ProposalPrincipal,
+    validate_drawing_sources: bool,
+) -> Result<BodyParameterEditPreview, BodyParameterEditError> {
     if request.edits.is_empty() {
         return Err(BodyParameterEditError::Empty);
     }
@@ -326,9 +343,13 @@ pub fn prepare_body_parameter_edit(
         confirmation: ProposalConfirmation::ReviewRequired,
         requested_budget: crate::document::ProposalBudget::HOST_MAX,
     };
-    let proposal = document
-        .prepare_proposal_with_context(CommandBatch::new(commands), context)
-        .map_err(BodyParameterEditError::Proposal)?;
+    let proposal = if validate_drawing_sources {
+        document.prepare_proposal_with_context(CommandBatch::new(commands), context)
+    } else {
+        document
+            .prepare_dependency_staging_proposal_with_context(CommandBatch::new(commands), context)
+    }
+    .map_err(BodyParameterEditError::Proposal)?;
     Ok(BodyParameterEditPreview {
         source_revision: snapshot.revision_id(),
         source_digest: snapshot.canonical_digest(),

@@ -141,7 +141,7 @@
     "policy_change": "none",
     "direction": "tighten",
     "test_path": "crates/ketchup-exact/tests/upper_envelope.rs",
-    "test_sha256": "ff7723896161a3d92f95e6e37b7d874918725d449d2868b9f231d0a531a302d5",
+    "test_sha256": "9851638ec1764b2ec8d35694f69d6d4632ebbaacc1c64bd1931d58a9da67e1fb",
     "cases": [
       "boxes_may_touch_positive_and_negative_coordinate_limits",
       "maximum_length_may_end_exactly_at_positive_coordinate_limit",

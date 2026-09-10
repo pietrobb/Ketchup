@@ -218,7 +218,7 @@ impl Server {
                 json!({"methods":METHODS.iter().map(|name| json!({"name":name,"mutates":matches!(*name,"new"|"open"|"apply"|"batch_job_step"|"set_grounded"|"undo"|"redo"|"save")})).collect::<Vec<_>>(),
                 "cad_program_schema":serde_json::from_str::<Value>(include_str!(concat!(env!("OUT_DIR"),"/cad-program-schema.json"))).expect("build-generated schema"),
                 "bounds":{"max_line_bytes":MAX_LINE_BYTES,"max_output_bytes":MAX_LINE_BYTES,"max_selection":100,"max_operations":64,"max_batch_jobs":MAX_BATCH_JOBS,"evaluation_timeout_ms":{"default":30000,"min":1,"max":300000}},
-                "mutation_preconditions":["expected_revision","expected_digest"],"units":"mm","transform":"row-major 4x4 local occurrence transform","transactions":"one apply = one atomic CAD program; newly allocated Boolean operands use zero-based earlier operation_index plus output=body_feature, never guessed IDs","protocol":PROTOCOL}),
+                "mutation_preconditions":["expected_revision","expected_digest"],"units":"mm","transform":"row-major 4x4 local occurrence transform","transactions":"one apply = one atomic CAD program; newly allocated Definition, Sketch and body references use zero-based earlier operation_index plus a typed output, never guessed IDs","protocol":PROTOCOL}),
             ),
             "state" => Ok(self.state_result()),
             "new" => {
@@ -590,12 +590,18 @@ mod tests {
             caps["result"]["cad_program_schema"]["$defs"]["AssistantCadEditOperation"]["oneOf"]
                 .as_array()
                 .unwrap();
-        assert_eq!(variants.len(), 13);
-        assert!(
-            variants
-                .iter()
-                .any(|v| v["properties"]["operation"]["const"] == "append_feature")
-        );
+        assert_eq!(variants.len(), 15);
+        for operation in [
+            "append_feature",
+            "create_program_sketch",
+            "append_program_pocket",
+        ] {
+            assert!(
+                variants
+                    .iter()
+                    .any(|v| v["properties"]["operation"]["const"] == operation)
+            );
+        }
     }
     #[test]
     fn schema_covers_program_body_feature_references() {
@@ -618,7 +624,88 @@ mod tests {
             local_reference["required"],
             json!(["operation_index", "output"])
         );
+        let outputs = caps["result"]["cad_program_schema"]["$defs"]
+            ["AssistantCadProgramFeatureOutput"]["oneOf"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            outputs
+                .iter()
+                .map(|value| value["const"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["definition", "sketch_feature", "body_feature"]
+        );
     }
+    #[test]
+    fn typed_program_outputs_apply_one_atomic_public_pocket_edit() {
+        let mut server = Server::new(SessionSettings::default());
+        let before = request(&mut server, "state", json!({}))["result"]["state"].clone();
+        let program = json!({"operations":[
+            {
+                "operation":"create_part",
+                "name":"Wall",
+                "workplane":{"type":"principal","plane":"xy"},
+                "entities":[{"type":"circle","id":1,"center_mm":[0,0],"radius_mm":10}],
+                "constraints":[],
+                "feature":{"type":"extrusion","distance_mm":20},
+                "translation_mm":[0,0,0]
+            },
+            {
+                "operation":"create_program_sketch",
+                "definition":{"operation_index":0,"output":"definition"},
+                "name":"Opening profile",
+                "workplane":{"type":"principal","plane":"xy"},
+                "entities":[{"type":"circle","id":1,"center_mm":[0,0],"radius_mm":4}],
+                "constraints":[]
+            },
+            {
+                "operation":"append_program_pocket",
+                "definition":{"operation_index":0,"output":"definition"},
+                "name":"Opening",
+                "target_feature":{"operation_index":0,"output":"body_feature"},
+                "profile_feature":{"operation_index":1,"output":"sketch_feature"},
+                "depth_mm":5
+            }
+        ]});
+        let applied = request(
+            &mut server,
+            "apply",
+            json!({
+                "expected_revision": before["revision"],
+                "expected_digest": before["canonical_digest"],
+                "program": program,
+                "selection": []
+            }),
+        );
+        assert!(applied.get("error").is_none(), "{applied}");
+        let state = &applied["result"]["state"];
+        assert_eq!(state["revision"], before["revision"].as_u64().unwrap() + 1);
+        assert_eq!(state["undo_steps"], 1);
+        assert_eq!(applied["result"]["created"]["definition_ids"], json!([1]));
+        assert_eq!(
+            state["features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|feature| feature["kind"] == "Pocket")
+                .count(),
+            1
+        );
+
+        let undone = request(
+            &mut server,
+            "undo",
+            json!({
+                "expected_revision": state["revision"],
+                "expected_digest": state["canonical_digest"]
+            }),
+        );
+        assert_eq!(
+            undone["result"]["state"]["canonical_digest"],
+            before["canonical_digest"]
+        );
+    }
+
     #[test]
     fn bounded_lines_resynchronize() {
         let mut input = vec![b'x'; MAX_LINE_BYTES + 1];

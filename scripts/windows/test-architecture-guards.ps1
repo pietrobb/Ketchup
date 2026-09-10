@@ -106,7 +106,7 @@ if (-not (Test-Path $d08Path -PathType Leaf)) {
     Fail-Guard "sole-mutation" "Missing D-08 lifecycle exception register."
 }
 $d08Hash = (Get-FileHash $d08Path -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($d08Hash -ne "a845a5bfc99fce5cd7ebd5850b90cf8dd9316cb2b9f25e2b496a38732b0b9f7c") {
+if ($d08Hash -ne "e57e0cd50c76d1e34623357054baa701386537ef54845c7d3028c936180ffe46") {
     Fail-Guard "sole-mutation" "D-08 lifecycle exception semantics changed without a reviewed register version."
 }
 $d08 = Get-Content $d08Path -Raw | ConvertFrom-Json
@@ -118,12 +118,14 @@ $expectedLifecycle = @{
     "undo" = "DocumentStore::undo|cursor_only"
     "redo" = "DocumentStore::redo|cursor_only"
     "discard-history-before-current" = "DocumentStore::discard_history_before_current|retention_only"
+    "create-checkpoint" = "DocumentStore::create_checkpoint|revision_metadata_only"
+    "rollback-to-revision" = "DocumentStore::rollback_to_revision|validated_revision_restore"
     "new-document" = "KetchupApp::new_document|validated_fresh_store_swap"
     "open-document" = "KetchupApp::open_document_from|validated_candidate_swap"
 }
 $lifecycleExceptions = @($d08.lifecycle_exceptions)
 if ($lifecycleExceptions.Count -ne $expectedLifecycle.Count) {
-    Fail-Guard "sole-mutation" "D-08 must declare exactly the five reviewed lifecycle exceptions."
+    Fail-Guard "sole-mutation" "D-08 must declare exactly the reviewed lifecycle exceptions."
 }
 foreach ($exception in $lifecycleExceptions) {
     $id = [string]$exception.id
@@ -309,7 +311,11 @@ foreach ($delegate in $actualDerivedDelegates) {
         Fail-Guard "sole-mutation" "Derived-result delegate bypasses the P07 gateway: $delegate"
     }
 }
-$applyBlock = Get-BracedBlock $storeImpl "pub fn apply_batch" "sole-mutation"
+$publicApplyBlock = Get-BracedBlock $storeImpl "pub fn apply_batch" "sole-mutation"
+if (-not $publicApplyBlock.Contains("self.apply_batch_with_origin(")) {
+    Fail-Guard "sole-mutation" "Public apply_batch must delegate to the reviewed origin-aware gateway."
+}
+$applyBlock = Get-BracedBlock $storeImpl "fn apply_batch_with_origin" "sole-mutation"
 $verifiedProposalBlock = Get-BracedBlock $storeImpl "fn commit_verified_proposal_inner" "sole-mutation"
 $derivedResultBlock = Get-BracedBlock $storeImpl "fn register_derived_result" "sole-mutation"
 $graphValidation = $applyBlock.LastIndexOf("validate_graph(", [StringComparison]::Ordinal)
@@ -329,7 +335,7 @@ foreach ($requiredRollbackLine in @(
     "let previous_cursor = self.cursor",
     "let previous_next_revision_id = self.next_revision_id",
     "let previous_registry = self.evaluation_registry.clone()",
-    ".apply_batch(&proposal.batch)",
+    ".apply_batch_with_origin(",
     "self.revisions = previous_revisions",
     "self.cursor = previous_cursor",
     "self.next_revision_id = previous_next_revision_id",
@@ -363,6 +369,8 @@ if ($storeImpl -match '(?m)^\s*pub\s+fn\s+from_product\b' -or
 $undoBlock = Get-BracedBlock $storeImpl "pub fn undo" "sole-mutation"
 $redoBlock = Get-BracedBlock $storeImpl "pub fn redo" "sole-mutation"
 $retentionBlock = Get-BracedBlock $storeImpl "pub fn discard_history_before_current" "sole-mutation"
+$checkpointBlock = Get-BracedBlock $storeImpl "pub fn create_checkpoint" "sole-mutation"
+$rollbackRevisionBlock = Get-BracedBlock $storeImpl "pub fn rollback_to_revision" "sole-mutation"
 $forbiddenLifecycleMutation = 'next_revision_id|\bnodes\b|\bproduct\b|apply_batch|revisions\.(?:truncate|insert|remove)'
 if (-not $undoBlock.Contains("self.cursor -= 1") -or $undoBlock -match $forbiddenLifecycleMutation -or
     -not $redoBlock.Contains("self.cursor += 1") -or $redoBlock -match $forbiddenLifecycleMutation) {
@@ -384,7 +392,9 @@ foreach ($authorizedBlock in @(
     $fromProductBlock,
     $undoBlock,
     $redoBlock,
-    $retentionBlock
+    $retentionBlock,
+    $checkpointBlock,
+    $rollbackRevisionBlock
 )) {
     $unguardedStoreImpl = $unguardedStoreImpl.Replace($authorizedBlock, "")
 }
@@ -411,18 +421,21 @@ $appPath = Join-Path $RepoRoot "crates\ketchup-app\src\lib.rs"
 $appSource = if (Test-Path $appPath -PathType Leaf) { Get-Content $appPath -Raw } else { "" }
 $newDocumentBlock = Get-BracedBlock $appSource "fn new_document" "sole-mutation"
 $openDocumentBlock = Get-BracedBlock $appSource "fn open_document_from" "sole-mutation"
-$loadCandidate = $openDocumentBlock.IndexOf("ketchup_core::persistence::load_file(path)", [StringComparison]::Ordinal)
-$successBranch = $openDocumentBlock.IndexOf("Ok(outcome)", [StringComparison]::Ordinal)
+$loadCandidate = $openDocumentBlock.IndexOf("ketchup_core::persistence::load_file_with_source(path)", [StringComparison]::Ordinal)
+$successBranch = $openDocumentBlock.IndexOf("Ok(loaded_file)", [StringComparison]::Ordinal)
+$sourceParts = $openDocumentBlock.IndexOf("loaded_file.into_parts()", [StringComparison]::Ordinal)
+$editableCheck = $openDocumentBlock.IndexOf("if !outcome.is_editable()", [StringComparison]::Ordinal)
 $editableCandidate = $openDocumentBlock.IndexOf("outcome.into_editable_with_container()", [StringComparison]::Ordinal)
-$historyBaseline = $openDocumentBlock.IndexOf("document.discard_history_before_current()", [StringComparison]::Ordinal)
+$confirmationPolicy = $openDocumentBlock.IndexOf(".configure_human_confirmation_policy(", [StringComparison]::Ordinal)
 $storeSwap = $openDocumentBlock.IndexOf("self.document = document", [StringComparison]::Ordinal)
 $failureBranch = $openDocumentBlock.IndexOf("Err(error)", [StringComparison]::Ordinal)
 if (-not $newDocumentBlock.Contains("*self = Self::with_catalog(catalog)") -or
     -not $newDocumentBlock.Contains(".with_dialogs(dialogs)") -or
     -not $newDocumentBlock.Contains(".with_assistant_transport(assistant_transport)") -or
     $loadCandidate -lt 0 -or $successBranch -lt $loadCandidate -or
-    $editableCandidate -lt $successBranch -or $historyBaseline -lt $editableCandidate -or
-    $storeSwap -lt $historyBaseline -or $failureBranch -lt $storeSwap -or
+    $sourceParts -lt $successBranch -or $editableCheck -lt $sourceParts -or
+    $editableCandidate -lt $editableCheck -or $confirmationPolicy -lt $editableCandidate -or
+    $storeSwap -lt $confirmationPolicy -or $failureBranch -lt $storeSwap -or
     ([regex]::Matches($openDocumentBlock, 'self\.document\s*=')).Count -ne 1) {
     Fail-Guard "sole-mutation" "New/Open must replace the active store only with a fresh or fully validated candidate; failed Open must not mutate it."
 }

@@ -40,8 +40,9 @@ use ketchup_exact::{
 use ketchup_scheduler::{
     MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES, MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES,
     StepAssemblyManifest, StepFeatureExportSpec, StepProfileSegment, StepRevolveExportSpec,
+    WorkerExactBRepGraphFaceEvidence,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::io::{self, BufRead, Read, Write};
 use std::time::{Duration, Instant};
@@ -1724,6 +1725,51 @@ fn exact_brep_graph_step_response(
     }
 }
 
+fn exact_brep_graph_face_evidence(output: &ExactOpOutput) -> Vec<WorkerExactBRepGraphFaceEvidence> {
+    let mut mappings = BTreeMap::<(String, String), BTreeSet<u32>>::new();
+    for history in &output.topology_history {
+        let (Some(semantic_role), Some(face_ordinal)) =
+            (history.semantic_role.as_ref(), history.output_face_ordinal)
+        else {
+            continue;
+        };
+        mappings
+            .entry((semantic_role.clone(), history.source_element_id.clone()))
+            .or_default()
+            .insert(face_ordinal);
+    }
+    mappings
+        .into_iter()
+        .filter_map(|((semantic_role, source_element_id), ordinals)| {
+            if ordinals.len() != 1 {
+                return None;
+            }
+            let face_ordinal = *ordinals.first()?;
+            let face = output
+                .body
+                .topology
+                .faces
+                .iter()
+                .find(|face| face.ordinal == face_ordinal)?;
+            Some(WorkerExactBRepGraphFaceEvidence {
+                semantic_role,
+                source_element_id,
+                face_ordinal,
+                surface_kind: face.surface_kind.clone(),
+                geometric_fingerprint: face.geometric_fingerprint.clone(),
+                centroid_mm: [face.centroid_mm.x, face.centroid_mm.y, face.centroid_mm.z],
+                unit_normal: [face.normal.x, face.normal.y, face.normal.z],
+                axis_origin_mm: face
+                    .axis_origin_mm
+                    .map(|origin| [origin.x, origin.y, origin.z]),
+                unit_axis_direction: face
+                    .axis_direction
+                    .map(|direction| [direction.x, direction.y, direction.z]),
+            })
+        })
+        .collect()
+}
+
 fn exact_brep_graph_response(
     backend: &ExactBackend,
     graph: &ExactBRepGraph,
@@ -1787,8 +1833,15 @@ fn exact_brep_graph_response(
             ),
         )
     };
+    let face_evidence = if graph.schema == EXACT_BREP_GRAPH_SCHEMA_V13 {
+        let encoded = serde_json::to_vec(&exact_brep_graph_face_evidence(&output))
+            .expect("graph face evidence is serializable");
+        format!(" {}", encode_hex(&encoded))
+    } else {
+        String::new()
+    };
     format!(
-        "{protocol} {} {} {} {} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {topology_evidence} {} {}",
+        "{protocol} {} {} {} {} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {topology_evidence} {} {}{face_evidence}",
         graph.canonical_input_digest,
         graph.graph_digest,
         graph.producer_feature_id,
@@ -3298,9 +3351,35 @@ fn p3_circular_cut_response(
                 };
                 evidence.push((face_ordinal, reference));
             }
+            let face_geometry = evidence
+                .iter()
+                .map(|(face_ordinal, _)| {
+                    let face = output
+                        .body
+                        .topology
+                        .faces
+                        .iter()
+                        .find(|face| face.ordinal == *face_ordinal)
+                        .ok_or(())?;
+                    Ok((
+                        [face.centroid_mm.x, face.centroid_mm.y, face.centroid_mm.z],
+                        [face.normal.x, face.normal.y, face.normal.z],
+                        face.axis_origin_mm
+                            .map(|origin| [origin.x, origin.y, origin.z]),
+                        face.axis_direction
+                            .map(|direction| [direction.x, direction.y, direction.z]),
+                    ))
+                })
+                .collect::<Result<Vec<_>, ()>>();
+            let Ok(face_geometry) = face_geometry else {
+                return "ERR incomplete_history".to_owned();
+            };
+            let encoded_face_geometry = encode_hex(
+                &serde_json::to_vec(&face_geometry).expect("face geometry is serializable"),
+            );
             let topology = &output.body.topology;
             format!(
-                "OK_P3_CIRCULAR_CUT_V1 {elapsed} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {request_digest} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+                "OK_P3_CIRCULAR_CUT_V2 {elapsed} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {request_digest} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
                 output.body.result_fingerprint,
                 topology.volume_mm3.to_bits(),
                 topology.bounds_mm.min.x.to_bits(),
@@ -3329,6 +3408,7 @@ fn p3_circular_cut_response(
                 evidence[3].0,
                 evidence[3].1.corroborating_geometry_fingerprint,
                 evidence[3].1.lineage_digest,
+                encoded_face_geometry,
             )
         }
         Err(error) => format!("ERR {}", error.code.as_str()),
@@ -5781,11 +5861,7 @@ fn verified_step_copy(
     let mut copy = tempfile::Builder::new()
         .prefix("ketchup-verified-step-")
         .suffix(".step")
-        .tempfile_in(
-            source_path
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new(".")),
-        )
+        .tempfile()
         .map_err(|error| transport_error_response(operation, &error.to_string()))?;
     copy.write_all(&source_bytes)
         .and_then(|()| copy.flush())
@@ -5821,11 +5897,7 @@ fn verified_iges_copy(
     let mut copy = tempfile::Builder::new()
         .prefix("ketchup-verified-iges-")
         .suffix(".iges")
-        .tempfile_in(
-            source_path
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new(".")),
-        )
+        .tempfile()
         .map_err(|error| transport_error_response(operation, &error.to_string()))?;
     copy.write_all(&source_bytes)
         .and_then(|()| copy.flush())
@@ -6455,6 +6527,38 @@ mod tests {
         let input = vec![b'x'; MAX_WORKER_REQUEST_LINE_BYTES + 1];
         let error = read_bounded_request_line(&mut io::Cursor::new(input)).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn verified_step_and_iges_staging_never_writes_beside_the_source() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source_directory = workspace.path().join("read-only-media");
+        std::fs::create_dir(&source_directory).unwrap();
+
+        for (name, payload, verify) in [
+            (
+                "part.step",
+                b"STEP source".as_slice(),
+                verified_step_copy
+                    as fn(&str, &str, &'static str) -> Result<tempfile::NamedTempFile, String>,
+            ),
+            (
+                "part.iges",
+                b"IGES source".as_slice(),
+                verified_iges_copy as fn(&str, &str, &'static str) -> Result<_, _>,
+            ),
+        ] {
+            let source = source_directory.join(name);
+            std::fs::write(&source, payload).unwrap();
+            let staged = verify(
+                source.to_str().unwrap(),
+                &sha256_hex(payload),
+                "test_import",
+            )
+            .unwrap();
+            assert_ne!(staged.path().parent(), source.parent());
+            assert_eq!(std::fs::read(staged.path()).unwrap(), payload);
+        }
     }
 
     #[test]

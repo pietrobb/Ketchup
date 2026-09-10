@@ -467,6 +467,7 @@ fn pending_native_capture_rejects_exact_registry_replacement_without_document_mu
                     bounds_mm: [[0.0, 0.0, 0.0], [100.0, 60.0, 20.0]],
                     backend: "image-registry-guard-test-fixture.v1".into(),
                     tolerance: "1e-7-mm".into(),
+                    faces: Vec::new(),
                 },
                 &mesh,
             )

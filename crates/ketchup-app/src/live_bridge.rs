@@ -489,8 +489,10 @@ impl LiveBridge {
                 | AssistantCadEditOperation::LinearPattern { selector, .. }
                 | AssistantCadEditOperation::Mirror { selector, .. } => Some(selector),
                 AssistantCadEditOperation::CreateSketch { .. }
+                | AssistantCadEditOperation::CreateProgramSketch { .. }
                 | AssistantCadEditOperation::CreatePart { .. }
                 | AssistantCadEditOperation::AppendFeature { .. }
+                | AssistantCadEditOperation::AppendProgramPocket { .. }
                 | AssistantCadEditOperation::SetDimension { .. }
                 | AssistantCadEditOperation::UpsertClassificationDimension { .. }
                 | AssistantCadEditOperation::CreateEvaluatorInput { .. } => None,

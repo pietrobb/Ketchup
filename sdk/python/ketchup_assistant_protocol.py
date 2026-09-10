@@ -70,13 +70,14 @@ SYSTEM_PROMPT = (
     "unsupported or unavailable occurrences or say that the relevant check is incomplete or skipped. Return ONLY "
     "one JSON object with exactly three fields: message (a concise user-facing string), "
     "model_intent (null for discussion or CAD edits), and cad_edit_program (null unless proposing typed CAD operations). "
-    "Never return both mutation fields. Use cad_edit_program for create_part, create_sketch, append_feature, set_dimension, delete, rigid transform, copy, linear pattern, mirror, classification metadata, or evaluator inputs. "
+    "Never return both mutation fields. Use cad_edit_program for create_part, create_sketch, create_program_sketch, append_feature, append_program_pocket, set_dimension, delete, rigid transform, copy, linear pattern, mirror, classification metadata, or evaluator inputs. "
     "cad_edit_program is {operations: [...]} and every operation names its kind in the field operation, never in a field called type: {operation: create_part, ...}. Inside an operation the field type stays reserved for nested records such as feature, workplane, entities and constraints. "
     "create_part atomically creates a host-ID-assigned definition, workplane, sketch, universal feature, and occurrence. It has name, workplane, entities, constraints, feature, translation_mm, and optional rotation; feature is either {type: extrusion, distance_mm: positive length} or {type: revolve, axis_start_mm: [x,y], axis_end_mm: [x,y], angle_degrees: >0 and <=360}. "
     "append_feature adds one host-ID-assigned feature to an existing definition. It has definition_id, name, and either feature {type: boolean, operation: cut|union|intersect, target_feature_id, tool_feature_id}, whose inputs are distinct supported exact body features in that definition; each Boolean input is either a positive existing feature ID or {operation_index: zero-based earlier operation index, output: body_feature} referencing an earlier create_part or append_feature output in this same program; feature {type: pocket, target_feature_id, profile_feature_id, depth_mm}, whose distinct inputs are a supported exact extrusion target and closed profile in that definition with positive bounded depth below the target height; feature {type: planar_offset, profile_feature_id, distance_mm}, whose input is the sole existing exact rectangular profile in that definition and whose finite signed distance magnitude from 0.01 to 1000000 mm must leave both result dimensions at least 0.01 mm; feature {type: sweep, profile_feature_id, path_feature_id}, whose distinct inputs are a supported closed polygon or line/arc profile and one open straight path in that definition; feature {type: loft, sections: [{profile_feature_id, elevation_mm}, ...]}, with 2 to 16 unique existing spline profiles in that definition and finite bounded elevations in strictly increasing order; feature {type: topology_shell, target_feature_id, removed_face_reference_ids, thickness_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_face_references for that definition and target, and finite thickness from 0.01 to 100000 mm; feature {type: topology_fillet, target_feature_id, edge_reference_ids, radius_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_edge_references for that definition and target, and finite radius from 0.01 to 100000 mm; or feature {type: topology_chamfer, target_feature_id, edge_reference_ids, distance_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_edge_references for that definition and target, and finite distance from 0.01 to 100000 mm. Never invent topology reference IDs, face or edge ordinals, semantic roles, or named-shape selectors. "
-    "create_sketch has definition_id, name, workplane, entities, and constraints; workplane is principal with plane xy/yz/xz or offset with an existing base_feature_id and distance_mm. "
+    "create_sketch has definition_id, name, workplane, entities, and constraints; create_program_sketch has the same shape except definition is {operation_index: an earlier create_part, output: definition}. Workplane is principal with plane xy/yz/xz or offset with an existing base_feature_id and distance_mm. "
+    "append_program_pocket has definition, target_feature, and profile_feature typed references plus name and depth_mm. Reference the definition and body_feature of an earlier create_part, and the sketch_feature of that create_part or an earlier create_program_sketch; this creates the opening in the same atomic program without guessed host IDs. "
     "Entities are typed line/arc/circle records with positive stable IDs and 2D millimetre coordinates. Constraints are typed horizontal/vertical/coincident/distance/radius/fixed_point records with positive stable IDs and point refs {entity_id, point: start/end/center}. "
-    "The host assigns create_part definition, feature, and occurrence IDs and create_sketch workplane and sketch feature IDs. set_dimension targets an existing feature_id, optional constraint_id, and positive value_mm. "
+    "The host assigns create_part definition, feature, and occurrence IDs and both sketch operations' workplane and sketch feature IDs. set_dimension targets an existing feature_id, optional constraint_id, and positive value_mm. "
     "upsert_classification_dimension has positive dimension_id, non-empty name, and 1 to 64 categories [{id: positive unique ID, name: non-empty string}]. set_occurrence_classification has an occurrence selector, positive dimension_id, and category_id as a positive ID or null. create_evaluator_input has positive node_id, non-empty name, and finite value from -1000000 to 1000000. Use only IDs proven free or present by the current document context. "
     "Occurrence operations have a selector: either {type: current_selection} or {type: occurrences, occurrence_ids: [positive unique IDs]}. "
     "Delete also has dependency_policy reject_if_referenced or remove_references. Transform has translation_mm and optional rotation with pivot_mm, non-zero axis, and angle_degrees. "
@@ -682,34 +683,49 @@ def _validate_cad_rotation(rotation: object) -> None:
         raise ProtocolError("provider CAD rotation angle is invalid")
 
 
+def _valid_cad_program_output_reference(
+    value: object, operation_index: int, operations: list[dict], output: str
+) -> bool:
+    if not isinstance(value, dict) or set(value) != {"operation_index", "output"}:
+        return False
+    producer_index = value["operation_index"]
+    if (
+        not isinstance(producer_index, int)
+        or isinstance(producer_index, bool)
+        or not 0 <= producer_index < operation_index
+        or value["output"] != output
+    ):
+        return False
+    producer = operations[producer_index]
+    producer_type = producer.get("operation")
+    if output == "definition":
+        return producer_type == "create_part"
+    if output == "sketch_feature":
+        return producer_type in {"create_part", "create_program_sketch"}
+    return output == "body_feature" and (
+        producer_type in {"create_part", "append_program_pocket"}
+        or producer_type == "append_feature"
+        and isinstance(producer.get("feature"), dict)
+        and producer["feature"].get("type")
+        in {
+            "boolean",
+            "pocket",
+            "sweep",
+            "loft",
+            "topology_shell",
+            "topology_fillet",
+            "topology_chamfer",
+        }
+    )
+
+
 def _valid_cad_body_feature_reference(
     value: object, operation_index: int, operations: list[dict]
 ) -> bool:
     if isinstance(value, int) and not isinstance(value, bool):
         return 0 < value <= MAX_U64
-    if not isinstance(value, dict) or set(value) != {"operation_index", "output"}:
-        return False
-    producer_index = value["operation_index"]
-    return (
-        isinstance(producer_index, int)
-        and not isinstance(producer_index, bool)
-        and 0 <= producer_index < operation_index
-        and value["output"] == "body_feature"
-        and (
-            operations[producer_index].get("operation") == "create_part"
-            or operations[producer_index].get("operation") == "append_feature"
-            and isinstance(operations[producer_index].get("feature"), dict)
-            and operations[producer_index]["feature"].get("type")
-            in {
-                "boolean",
-                "pocket",
-                "sweep",
-                "loft",
-                "topology_shell",
-                "topology_fillet",
-                "topology_chamfer",
-            }
-        )
+    return _valid_cad_program_output_reference(
+        value, operation_index, operations, "body_feature"
     )
 
 
@@ -730,17 +746,26 @@ def _validate_cad_edit_program(program: object) -> dict:
         operation_type = operation["operation"]
         target_count = 0
         generated_per_target = 0
-        if operation_type in {"create_sketch", "create_part"}:
-            if operation_type == "create_sketch":
+        if operation_type in {"create_sketch", "create_program_sketch", "create_part"}:
+            if operation_type in {"create_sketch", "create_program_sketch"}:
+                definition_field = (
+                    "definition_id" if operation_type == "create_sketch" else "definition"
+                )
                 if set(operation) != {
-                    "operation", "definition_id", "name", "workplane", "entities", "constraints"
+                    "operation", definition_field, "name", "workplane", "entities", "constraints"
                 }:
                     raise ProtocolError("provider CAD sketch creation contains missing or unknown fields")
-                if (
-                    not isinstance(operation["definition_id"], int)
-                    or isinstance(operation["definition_id"], bool)
-                    or operation["definition_id"] <= 0
-                ):
+                if operation_type == "create_sketch":
+                    definition_valid = (
+                        isinstance(operation[definition_field], int)
+                        and not isinstance(operation[definition_field], bool)
+                        and 0 < operation[definition_field] <= MAX_U64
+                    )
+                else:
+                    definition_valid = _valid_cad_program_output_reference(
+                        operation[definition_field], operation_index, operations, "definition"
+                    )
+                if not definition_valid:
                     raise ProtocolError("provider CAD sketch creation target is invalid")
             else:
                 if not {"operation", "name", "workplane", "entities", "constraints", "feature", "translation_mm"} <= set(operation) <= {
@@ -804,6 +829,12 @@ def _validate_cad_edit_program(program: object) -> dict:
             ):
                 raise ProtocolError("provider CAD sketch creation target is invalid")
             workplane = operation["workplane"]
+            if (
+                operation_type == "create_program_sketch"
+                and isinstance(workplane, dict)
+                and workplane.get("type") == "offset"
+            ):
+                raise ProtocolError("provider CAD program sketch workplane reference is invalid")
             if not isinstance(workplane, dict) or workplane.get("type") not in {"principal", "offset"}:
                 raise ProtocolError("provider CAD workplane is invalid")
             if workplane["type"] == "principal":
@@ -830,6 +861,39 @@ def _validate_cad_edit_program(program: object) -> dict:
                 raise ProtocolError("provider CAD sketch entity count is invalid")
             if not isinstance(constraints, list) or len(constraints) > 8_192:
                 raise ProtocolError("provider CAD sketch constraint count is invalid")
+        elif operation_type == "append_program_pocket":
+            if set(operation) != {
+                "operation",
+                "definition",
+                "name",
+                "target_feature",
+                "profile_feature",
+                "depth_mm",
+            }:
+                raise ProtocolError("provider CAD program Pocket contains missing or unknown fields")
+            name = operation["name"]
+            depth_mm = operation["depth_mm"]
+            if (
+                not isinstance(name, str)
+                or not name.strip()
+                or len(name.encode("utf-8")) > 128
+                or any(ord(character) < 32 or 127 <= ord(character) <= 159 for character in name)
+                or not _valid_cad_program_output_reference(
+                    operation["definition"], operation_index, operations, "definition"
+                )
+                or not _valid_cad_program_output_reference(
+                    operation["target_feature"], operation_index, operations, "body_feature"
+                )
+                or not _valid_cad_program_output_reference(
+                    operation["profile_feature"], operation_index, operations, "sketch_feature"
+                )
+                or operation["target_feature"] == operation["profile_feature"]
+                or not isinstance(depth_mm, (int, float))
+                or isinstance(depth_mm, bool)
+                or not math.isfinite(depth_mm)
+                or not 0 < depth_mm <= 1_000_000
+            ):
+                raise ProtocolError("provider CAD program Pocket is invalid")
         elif operation_type == "append_feature":
             if set(operation) != {"operation", "definition_id", "name", "feature"}:
                 raise ProtocolError("provider CAD feature append contains missing or unknown fields")
@@ -1101,8 +1165,10 @@ def _validate_cad_edit_program(program: object) -> dict:
             target_count = _validate_cad_selector(operation["selector"])
         if operation_type in {
             "create_sketch",
+            "create_program_sketch",
             "create_part",
             "append_feature",
+            "append_program_pocket",
             "set_dimension",
             "upsert_classification_dimension",
             "create_evaluator_input",
@@ -2141,11 +2207,15 @@ def _anthropic_output_text(data: dict) -> str:
     content = data.get("content")
     if not isinstance(content, list):
         raise ProtocolError("Anthropic returned an invalid content envelope")
-    return "".join(
-        item.get("text", "")
-        for item in content
-        if isinstance(item, dict) and item.get("type") == "text"
-    ).strip()
+    parts = []
+    for item in content:
+        if not isinstance(item, dict) or item.get("type") != "text":
+            continue
+        text = item.get("text")
+        if not isinstance(text, str):
+            raise ProtocolError("Anthropic returned invalid output text")
+        parts.append(text)
+    return "".join(parts).strip()
 
 
 def _anthropic_tool_calls(data: dict) -> list[dict]:

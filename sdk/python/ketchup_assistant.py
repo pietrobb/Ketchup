@@ -11,7 +11,7 @@ from pathlib import Path
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from ketchup_assistant_protocol import (  # noqa: E402
+from ketchup_assistant_protocol import (  # noqa: E402, F401
     AssistantSidecarBase,
     INSPECT_DOCUMENT_PARAMETERS,
     LIST_VALIDATORS_PARAMETERS,
@@ -46,6 +46,57 @@ from ketchup_assistant_protocol import (  # noqa: E402
 PUBLIC_PROVIDERS = frozenset({"anthropic-api", "openai-api"})
 MAX_PROVIDER_RESPONSE_BYTES = 8 * 1024 * 1024
 PROVIDER_RESPONSE_READ_CHUNK_BYTES = 64 * 1024
+MAX_PROVIDER_COUNTER = (1 << 64) - 1
+
+
+def _provider_object(data: dict, field: str, provider: str) -> dict:
+    value = data.get(field, {})
+    if not isinstance(value, dict):
+        raise ProtocolError(f"{provider} returned an invalid {field} object")
+    return value
+
+
+def _provider_counter(data: dict, field: str, provider: str) -> int:
+    value = data.get(field, 0)
+    if value is None:
+        return 0
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or value < 0
+        or value > MAX_PROVIDER_COUNTER
+    ):
+        raise ProtocolError(f"{provider} returned an invalid {field} counter")
+    return value
+
+
+def _provider_text(data: dict, field: str, default: str, provider: str) -> str:
+    value = data.get(field)
+    if value in (None, ""):
+        return default
+    if not isinstance(value, str):
+        raise ProtocolError(f"{provider} returned an invalid {field} string")
+    return value
+
+
+def _tool_query_identity(name: str, arguments: object) -> tuple[str, str]:
+    return (
+        name,
+        json.dumps(arguments, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+    )
+
+
+def _reject_duplicate_json_object(pairs: list[tuple[str, object]]) -> dict:
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate object key: {key}")
+        value[key] = item
+    return value
+
+
+def _reject_nonfinite_json(value: str) -> None:
+    raise ValueError(f"non-finite JSON number: {value}")
 
 
 class PublicAssistantSidecar(AssistantSidecarBase):
@@ -117,11 +168,15 @@ def send_public_exchange(
         started = time.monotonic()
         while True:
             data = _post_json(url, payload, headers)
-            usage = data.get("usage", {})
-            total_input_tokens += int(usage.get("input_tokens", 0) or 0)
-            total_output_tokens += int(usage.get("output_tokens", 0) or 0)
-            total_cache_read_tokens += int(usage.get("cache_read_input_tokens", 0) or 0)
-            total_cache_write_tokens += int(usage.get("cache_creation_input_tokens", 0) or 0)
+            usage = _provider_object(data, "usage", "Anthropic")
+            total_input_tokens += _provider_counter(usage, "input_tokens", "Anthropic")
+            total_output_tokens += _provider_counter(usage, "output_tokens", "Anthropic")
+            total_cache_read_tokens += _provider_counter(
+                usage, "cache_read_input_tokens", "Anthropic"
+            )
+            total_cache_write_tokens += _provider_counter(
+                usage, "cache_creation_input_tokens", "Anthropic"
+            )
             calls = _anthropic_tool_calls(data)
             if not calls:
                 answer = _anthropic_output_text(data)
@@ -131,14 +186,14 @@ def send_public_exchange(
                 _validate_selected_parameter_edit_answer(answer, message)
                 return ProviderExchange(
                     text=answer,
-                    model=data.get("model") or model,
+                    model=_provider_text(data, "model", model, "Anthropic"),
                     system_prompt=SYSTEM_PROMPT,
                     request_payload=payload,
                     input_tokens=total_input_tokens,
                     output_tokens=total_output_tokens,
                     cache_read_tokens=total_cache_read_tokens,
                     cache_write_tokens=total_cache_write_tokens,
-                    stop_reason=str(data.get("stop_reason") or ""),
+                    stop_reason=_provider_text(data, "stop_reason", "", "Anthropic"),
                     duration_ms=int((time.monotonic() - started) * 1000),
                 )
             if len(calls) != 1:
@@ -147,13 +202,20 @@ def send_public_exchange(
                 raise ProtocolError("provider exceeded the document inspection limit")
             call = calls[0]
             if (
-                call.get("name") not in {"inspect_document", "measure_bounds", "plan_placement", "plan_linear_array"}
+                call.get("name") not in {
+                    "inspect_document",
+                    "measure_bounds",
+                    "plan_placement",
+                    "plan_linear_array",
+                    "list_validators",
+                    "run_validators",
+                }
                 or not isinstance(call.get("id"), str)
                 or not call["id"]
             ):
                 raise ProtocolError("provider requested an unknown or invalid tool")
             result = _read_only_tool_result(message, call.get("name"), call.get("input"))
-            fingerprint = (call["name"], tuple(sorted(result["occurrence_ids"])))
+            fingerprint = _tool_query_identity(call["name"], call.get("input"))
             if call["id"] in seen_call_ids:
                 raise ProtocolError("provider repeated a document inspection call ID")
             if fingerprint in seen_queries:
@@ -253,11 +315,13 @@ def send_public_exchange(
         started = time.monotonic()
         while True:
             data = _post_json(url, payload, headers)
-            usage = data.get("usage", {})
-            total_input_tokens += int(usage.get("input_tokens", 0) or 0)
-            total_output_tokens += int(usage.get("output_tokens", 0) or 0)
-            input_details = usage.get("input_tokens_details", {})
-            total_cache_read_tokens += int(input_details.get("cached_tokens", 0) or 0)
+            usage = _provider_object(data, "usage", "OpenAI")
+            total_input_tokens += _provider_counter(usage, "input_tokens", "OpenAI")
+            total_output_tokens += _provider_counter(usage, "output_tokens", "OpenAI")
+            input_details = _provider_object(usage, "input_tokens_details", "OpenAI")
+            total_cache_read_tokens += _provider_counter(
+                input_details, "cached_tokens", "OpenAI"
+            )
             calls = _openai_tool_calls(data)
             if not calls:
                 answer = _openai_output_text(data)
@@ -267,13 +331,13 @@ def send_public_exchange(
                 _validate_selected_parameter_edit_answer(answer, message)
                 return ProviderExchange(
                     text=answer,
-                    model=data.get("model") or model,
+                    model=_provider_text(data, "model", model, "OpenAI"),
                     system_prompt=SYSTEM_PROMPT,
                     request_payload=payload,
                     input_tokens=total_input_tokens,
                     output_tokens=total_output_tokens,
                     cache_read_tokens=total_cache_read_tokens,
-                    stop_reason=str(data.get("status") or ""),
+                    stop_reason=_provider_text(data, "status", "", "OpenAI"),
                     duration_ms=int((time.monotonic() - started) * 1000),
                 )
             if len(calls) != 1:
@@ -282,7 +346,14 @@ def send_public_exchange(
                 raise ProtocolError("provider exceeded the document inspection limit")
             call = calls[0]
             if (
-                call.get("name") not in {"inspect_document", "measure_bounds", "plan_placement", "plan_linear_array"}
+                call.get("name") not in {
+                    "inspect_document",
+                    "measure_bounds",
+                    "plan_placement",
+                    "plan_linear_array",
+                    "list_validators",
+                    "run_validators",
+                }
                 or not isinstance(call.get("call_id"), str)
                 or not call["call_id"]
                 or not isinstance(call.get("arguments"), str)
@@ -293,7 +364,7 @@ def send_public_exchange(
             except json.JSONDecodeError as error:
                 raise ProtocolError("provider tool arguments are invalid JSON") from error
             result = _read_only_tool_result(message, call.get("name"), arguments)
-            fingerprint = (call["name"], tuple(sorted(result["occurrence_ids"])))
+            fingerprint = _tool_query_identity(call["name"], arguments)
             if call["call_id"] in seen_call_ids:
                 raise ProtocolError("provider repeated a document inspection call ID")
             if fingerprint in seen_queries:
@@ -360,22 +431,36 @@ def _post_json(url: str, payload: dict, headers: dict[str, str]) -> dict:
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as error:
         raise ProtocolError(f"provider request failed: {type(error).__name__}") from error
     try:
-        decoded = json.loads(encoded.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:
-        raise ProtocolError("provider response is not valid UTF-8 JSON") from error
+        decoded = json.loads(
+            encoded.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_json_object,
+            parse_constant=_reject_nonfinite_json,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as error:
+        raise ProtocolError("provider response is not valid strict UTF-8 JSON") from error
     if not isinstance(decoded, dict):
         raise ProtocolError("provider response must be a JSON object")
     return decoded
 
 
 def _openai_output_text(data: dict) -> str:
+    output = data.get("output")
+    if not isinstance(output, list):
+        raise ProtocolError("OpenAI returned an invalid output envelope")
     parts = []
-    for item in data.get("output", []):
-        if item.get("type") != "message":
+    for item in output:
+        if not isinstance(item, dict) or item.get("type") != "message":
             continue
-        for content in item.get("content", []):
-            if content.get("type") == "output_text":
-                parts.append(content.get("text", ""))
+        content_items = item.get("content")
+        if not isinstance(content_items, list):
+            raise ProtocolError("OpenAI returned an invalid message content envelope")
+        for content in content_items:
+            if not isinstance(content, dict) or content.get("type") != "output_text":
+                continue
+            text = content.get("text")
+            if not isinstance(text, str):
+                raise ProtocolError("OpenAI returned invalid output text")
+            parts.append(text)
     return "".join(parts).strip()
 
 

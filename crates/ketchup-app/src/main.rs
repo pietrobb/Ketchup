@@ -31,6 +31,21 @@ fn main() -> eframe::Result {
         println!("public Assistant runtime verified");
         return Ok(());
     }
+    if first_argument.as_deref() == Some(std::ffi::OsStr::new("--verify-manual-alpha")) {
+        if arguments.next().is_some() {
+            eprintln!("--verify-manual-alpha accepts no arguments");
+            std::process::exit(2);
+        }
+        if !KetchupApp::is_manual_alpha_build() {
+            eprintln!("this is not a Manual Alpha build");
+            std::process::exit(2);
+        }
+        println!(
+            "Ketchup Manual Alpha {} verified",
+            KetchupApp::build_version()
+        );
+        return Ok(());
+    }
     if first_argument.as_deref() == Some(std::ffi::OsStr::new("--inspect-native-document")) {
         let Some(path) = arguments.next() else {
             eprintln!("--inspect-native-document requires one path");

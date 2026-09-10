@@ -14,7 +14,7 @@ use eframe::egui::{Key, Pos2, Rect, Vec2, accesskit::Role};
 use harness::{Shell, ctrl, shift};
 use ketchup_app::dialogs::ScriptedFileDialogs;
 use ketchup_app::{
-    AlignMode, AppCommand, AssistantWorkspaceMode, DistributionMode, GeneralFinishKind,
+    AlignMode, AppCommand, AssistantWorkspaceMode, DistributionMode, GeneralFinishKind, KetchupApp,
     RectangularPatternSpec,
 };
 use ketchup_core::document::{
@@ -208,15 +208,19 @@ fn exact_worker_path() -> PathBuf {
     }
 }
 
-fn wait_for_one_exact_body(shell: &mut Shell) {
+fn wait_for_exact_bodies(shell: &mut Shell, expected: usize) {
     for _ in 0..100 {
         shell.settle();
-        if shell.app().exact_render_body_count() == 1 {
+        if shell.app().exact_render_body_count() == expected {
             return;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert_eq!(shell.app().exact_render_body_count(), 1);
+    assert_eq!(shell.app().exact_render_body_count(), expected);
+}
+
+fn wait_for_one_exact_body(shell: &mut Shell) {
+    wait_for_exact_bodies(shell, 1);
 }
 
 fn replace_parameter_expression(shell: &mut Shell, expression: &str) {
@@ -440,6 +444,27 @@ fn previous_view_is_localized_swappable_gesture_aware_and_document_preserving() 
         assert_ne!(shell.app().camera_orientation(), home_orientation);
         shell.click_menu_command("menu-view", AppCommand::PreviousView);
         assert_eq!(shell.app().camera_orientation(), home_orientation);
+
+        shell.click_command(AppCommand::Pan);
+        shell.drag(rect.center(), rect.center() + Vec2::new(80.0, 40.0));
+        assert!(
+            shell
+                .app()
+                .project_to_screen(probe, rect)
+                .distance(home_probe)
+                > 50.0
+        );
+        assert_eq!(shell.app().camera_orientation(), home_orientation);
+        assert_eq!(shell.app().projection_mode(), home_projection);
+        assert!((shell.app().camera_zoom() - home_zoom).abs() < 1.0e-5);
+        shell.click_menu_command("menu-view", AppCommand::PreviousView);
+        assert!(
+            shell
+                .app()
+                .project_to_screen(probe, rect)
+                .distance(home_probe)
+                < 0.01
+        );
 
         shell.scroll_at(rect.center(), 120.0);
         assert_ne!(shell.app().camera_zoom(), home_zoom);
@@ -1981,6 +2006,13 @@ fn zoom_steps_are_localized_keyboard_accessible_bounded_and_document_preserving(
 }
 
 #[test]
+fn status_bar_shows_the_exact_build_version() {
+    let shell = Shell::new();
+
+    assert!(shell.has_visible_label(&format!("v{}", KetchupApp::build_version())));
+}
+
+#[test]
 fn help_about_is_localized_informative_and_presentation_only() {
     for catalog in [
         LocaleCatalog::english(),
@@ -1993,7 +2025,7 @@ fn help_about_is_localized_informative_and_presentation_only() {
         let undo_steps = shell.app().undo_step_count();
         let version = shell.catalog().format(
             "about-version",
-            &BTreeMap::from([("version", env!("CARGO_PKG_VERSION").to_owned())]),
+            &BTreeMap::from([("version", KetchupApp::build_version().to_owned())]),
         );
         let license = shell.catalog().format(
             "about-license",
@@ -8882,7 +8914,7 @@ fn parameter_expression_recomputes_dependents_atomically_and_round_trips_through
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), changed_digest);
     assert_eq!(shell.app().document_revision(), changed_revision);
-    assert!(!shell.app().can_undo());
+    assert!(shell.app().can_undo());
     let reopened = shell.app().document_snapshot();
     assert!(matches!(
         reopened.evaluator_node(PARAMETRIC_RULE).unwrap().kind(),
@@ -9163,6 +9195,36 @@ fn arc_endpoint_bulge_is_exact_snapped_undoable_and_persistent() {
 }
 
 #[test]
+fn empty_document_refuses_push_pull_without_mutation_and_remains_undoable() {
+    let mut shell = Shell::new();
+    let initial_digest = shell.app().canonical_digest();
+    shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+    shell.click_menu_command("menu-edit", AppCommand::Delete);
+    assert_eq!(shell.app().occurrence_count(), 0);
+    let empty_revision = shell.app().document_revision();
+    let empty_digest = shell.app().canonical_digest();
+    let empty_undo_steps = shell.app().undo_step_count();
+
+    shell.click_command(AppCommand::PushPull);
+    shell.type_text("15");
+    shell.press_key(Key::Enter);
+
+    assert_eq!(shell.app().occurrence_count(), 0);
+    assert_eq!(shell.app().document_revision(), empty_revision);
+    assert_eq!(shell.app().canonical_digest(), empty_digest);
+    assert_eq!(shell.app().undo_step_count(), empty_undo_steps);
+    assert_eq!(
+        shell.app().action_digest(),
+        shell.catalog().text("error-push-pull-selection-required")
+    );
+
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), initial_digest);
+    shell.key(Key::Y, ctrl());
+    assert_eq!(shell.app().canonical_digest(), empty_digest);
+}
+
+#[test]
 fn push_pull_without_a_selected_face_never_targets_the_initial_box() {
     let mut shell = Shell::new();
     let revision = shell.app().document_revision();
@@ -9234,6 +9296,48 @@ fn localized_smart_push_pull_chooser_cancels_without_mutation_through_accesskit(
     assert!(!shell.app().has_smart_push_pull_chooser());
     assert_eq!(shell.app().document_revision(), revision);
     assert_eq!(shell.app().canonical_digest(), digest);
+}
+
+#[test]
+fn circle_push_pull_drag_renders_a_curved_solid_preview_and_commits_once() {
+    let mut shell = Shell::new();
+    let center = Vec3::new(75.0, 25.0, 20.0);
+    shell.click_command(AppCommand::Circle);
+    shell.click_at(shell.app().viewport_position(center).unwrap());
+    shell.click_at(
+        shell
+            .app()
+            .viewport_position(center + Vec3::new(10.0, 0.0, 0.0))
+            .unwrap(),
+    );
+    let before_revision = shell.app().document_revision();
+    let before_digest = shell.app().canonical_digest();
+    let drag_start = shell.app().viewport_position(center).unwrap();
+    let projected_up = shell
+        .app()
+        .viewport_position(center + Vec3::new(0.0, 0.0, 1.0))
+        .unwrap();
+    let drag_direction = (projected_up - drag_start).normalized();
+    shell.click_command(AppCommand::PushPull);
+
+    let mut maximum_render_depth = 0.0_f64;
+    shell.drag_observing(drag_start, drag_start + drag_direction * 120.0, |app| {
+        maximum_render_depth =
+            maximum_render_depth.max(app.push_pull_preview_render_depth_mm().unwrap_or(0.0));
+    });
+
+    assert!(
+        maximum_render_depth > 1.0,
+        "the held Circle drag must render a genuinely extruded profile preview; max depth={maximum_render_depth}, value={}, selection={:?}, revision={}, circle={:?}, host={:?}",
+        shell.app().value_input(),
+        shell.app().selected_reference(),
+        shell.app().document_revision(),
+        shell.app().occurrence_box_geometry(2),
+        shell.app().occurrence_box_geometry(1),
+    );
+    assert_eq!(shell.app().document_revision(), before_revision + 1);
+    assert_ne!(shell.app().canonical_digest(), before_digest);
+    assert!(shell.app().occurrence_box_geometry(2).unwrap().1.z > 1.0);
 }
 
 #[test]
@@ -9468,6 +9572,158 @@ fn circle_push_pull_creates_an_exact_cylinder_and_circular_hole_with_one_step_hi
     assert_eq!(shell.app().canonical_digest(), hole_digest);
     assert_eq!(shell.app().active_box_count(), 2);
     assert_eq!(shell.app().circle_profile_count(), 2);
+}
+
+#[test]
+fn circular_profile_cuts_a_cylindrical_host_as_pocket_and_through_cut() {
+    let mut shell = Shell::new();
+    let host_center = Vec3::new(75.0, 25.0, 20.0);
+    shell.click_command(AppCommand::Circle);
+    shell.click_at(shell.app().viewport_position(host_center).unwrap());
+    shell.click_at(
+        shell
+            .app()
+            .viewport_position(host_center + Vec3::new(20.0, 0.0, 0.0))
+            .unwrap(),
+    );
+    shell.click_command(AppCommand::PushPull);
+    shell.type_text("30");
+    shell.press_key(Key::Enter);
+    wait_for_exact_bodies(&mut shell, 2);
+    let host_triangle_count = shell.app().exact_render_triangle_count();
+    let host_bounds = shell.app().occurrence_box_geometry(2).unwrap();
+    assert!((host_bounds.0.x - 55.0).abs() < 1.0e-3);
+    assert!((host_bounds.0.y - 5.0).abs() < 1.0e-3);
+    assert!((host_bounds.0.z - 20.0).abs() < 1.0e-8);
+    assert!((host_bounds.1.x - 40.0).abs() < 1.0e-3);
+    assert!((host_bounds.1.y - 40.0).abs() < 1.0e-3);
+    assert!((host_bounds.1.z - 30.0).abs() < 1.0e-8);
+
+    let hole_center = host_center + Vec3::new(0.0, 0.0, 30.0);
+    shell.click_command(AppCommand::Circle);
+    shell.click_at(shell.app().viewport_position(hole_center).unwrap());
+    shell.click_at(
+        shell
+            .app()
+            .viewport_position(hole_center + Vec3::new(5.0, 0.0, 0.0))
+            .unwrap(),
+    );
+    let profile_revision = shell.app().document_revision();
+    let profile_digest = shell.app().canonical_digest();
+    let profile_undo_steps = shell.app().undo_step_count();
+
+    let snapshot = shell.app().document_snapshot();
+    let host_definition_id = shell
+        .app()
+        .occurrence_definition_id(OccurrenceId(2))
+        .unwrap();
+    let host_feature_id = *snapshot
+        .definition(host_definition_id)
+        .unwrap()
+        .feature_ids()
+        .last()
+        .unwrap();
+    let host_feature_name = snapshot.feature(host_feature_id).unwrap().name().to_owned();
+    let host_occurrence_label = shell.app().occurrence_name(OccurrenceId(2)).unwrap();
+    let target_label = shell.catalog().format(
+        "choice-smart-push-pull-cut-target",
+        &BTreeMap::from([
+            ("feature", host_feature_name),
+            ("feature_id", host_feature_id.0.to_string()),
+            ("occurrence", host_occurrence_label),
+            ("occurrence_id", "2".to_owned()),
+        ]),
+    );
+    let continue_label = shell.catalog().text("choice-smart-push-pull-continue");
+
+    shell.click_command(AppCommand::PushPull);
+    shell.type_text("-20");
+    shell.press_key(Key::Enter);
+    assert!(shell.app().has_smart_push_pull_chooser());
+    assert!(
+        shell.has_role_and_label(Role::RadioButton, &target_label),
+        "missing target {target_label:?}; visible controls: {:?}",
+        shell.visible_accesskit_rects()
+    );
+    shell.click_role_and_label(Role::RadioButton, &target_label);
+    shell.click_role_and_label(Role::Button, &continue_label);
+    assert!(
+        shell.app().has_occurrence_operation_preview(),
+        "cylinder cut preview failed: {}",
+        shell.app().action_digest()
+    );
+    assert_eq!(
+        shell.app().push_pull_preview_exact_evaluator(),
+        Some(EXACT_BREP_GRAPH_EVALUATOR_V1)
+    );
+    assert_eq!(shell.app().document_revision(), profile_revision);
+    assert_eq!(shell.app().canonical_digest(), profile_digest);
+    shell.press_key(Key::Enter);
+    wait_for_exact_bodies(&mut shell, 2);
+    assert_eq!(shell.app().document_revision(), profile_revision + 1);
+    assert_eq!(shell.app().undo_step_count(), profile_undo_steps + 1);
+    assert_eq!(shell.app().occurrence_box_geometry(2).unwrap(), host_bounds);
+    assert!(shell.app().exact_render_triangle_count() > host_triangle_count);
+
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), profile_digest);
+    assert_eq!(shell.app().document_revision(), profile_revision);
+    assert_eq!(shell.app().undo_step_count(), profile_undo_steps);
+
+    shell.click_command(AppCommand::Select);
+    let hole_edge = shell
+        .app()
+        .viewport_position(hole_center + Vec3::new(5.0, 0.0, 0.0))
+        .unwrap();
+    shell.move_pointer(hole_edge);
+    for _ in 0..3 {
+        if shell
+            .app()
+            .hovered_selection()
+            .is_some_and(|selection| selection.instance_path.root_occurrence() == OccurrenceId(3))
+        {
+            break;
+        }
+        shell.press_key(Key::Tab);
+    }
+    shell.click_at(hole_edge);
+    assert!(shell.app().occurrence_is_selected(OccurrenceId(3)));
+    shell.click_command(AppCommand::PushPull);
+    shell.type_text("-30");
+    shell.press_key(Key::Enter);
+    assert!(shell.app().has_smart_push_pull_chooser());
+    shell.click_role_and_label(Role::RadioButton, &target_label);
+    shell.click_role_and_label(Role::Button, &continue_label);
+    assert!(
+        shell.app().has_occurrence_operation_preview(),
+        "cylinder cut preview failed: {}",
+        shell.app().action_digest()
+    );
+    assert_eq!(
+        shell.app().push_pull_preview_exact_evaluator(),
+        Some(EXACT_BREP_GRAPH_EVALUATOR_V1)
+    );
+    let through_cut_preview_revision = shell.app().document_revision();
+    let through_cut_preview_undo_steps = shell.app().undo_step_count();
+    assert_eq!(through_cut_preview_revision, profile_revision);
+    assert_eq!(through_cut_preview_undo_steps, profile_undo_steps);
+    shell.press_key(Key::Enter);
+    assert_eq!(
+        shell.app().undo_step_count(),
+        through_cut_preview_undo_steps + 1
+    );
+    wait_for_exact_bodies(&mut shell, 2);
+    assert_eq!(shell.app().occurrence_box_geometry(2).unwrap(), host_bounds);
+    assert!(shell.app().exact_render_triangle_count() > host_triangle_count);
+    let through_cut_digest = shell.app().canonical_digest();
+    assert_ne!(through_cut_digest, profile_digest);
+
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), profile_digest);
+    assert_eq!(shell.app().undo_step_count(), profile_undo_steps);
+    shell.key(Key::Y, ctrl());
+    assert_eq!(shell.app().canonical_digest(), through_cut_digest);
+    assert_eq!(shell.app().occurrence_box_geometry(2).unwrap(), host_bounds);
 }
 
 #[test]
@@ -9810,6 +10066,7 @@ fn install_general_finish_graph_result(shell: &mut Shell, producer_feature_id: F
             bounds_mm: [[0.0, 0.0, 0.0], [100.0, 60.0, 20.0]],
             backend: "headless-finish-backend.v1".into(),
             tolerance: "1e-7-mm".into(),
+            faces: Vec::new(),
         },
         &StepImportMesh {
             vertices_mm,
@@ -10712,6 +10969,45 @@ fn exact_linear_pattern_rejects_invalid_input_and_stale_confirmation() {
 }
 
 #[test]
+fn typed_move_handles_small_and_large_finite_distances_with_repeatable_history() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.viewport_rect().center());
+    let initial_digest = shell.app().canonical_digest();
+    let initial_origin = shell.app().occurrence_box_geometry(1).unwrap().0;
+    let initial_undo_steps = shell.app().undo_step_count();
+
+    shell.click_command(AppCommand::Move);
+    shell.type_text("0.001,0,0");
+    shell.press_key(Key::Enter);
+    let small_digest = shell.app().canonical_digest();
+    let small_origin = shell.app().occurrence_box_geometry(1).unwrap().0;
+    assert!((small_origin.x - initial_origin.x - 0.001).abs() < 1.0e-9);
+    assert_eq!(shell.app().undo_step_count(), initial_undo_steps + 1);
+
+    shell.click_command(AppCommand::Select);
+    shell.click_command(AppCommand::Move);
+    shell.type_text("1000000,0,0");
+    shell.press_key(Key::Enter);
+    let large_digest = shell.app().canonical_digest();
+    let large_origin = shell.app().occurrence_box_geometry(1).unwrap().0;
+    assert!((large_origin.x - small_origin.x - 1_000_000.0).abs() < 1.0e-9);
+    assert_eq!(shell.app().undo_step_count(), initial_undo_steps + 2);
+
+    for expected in [&small_digest, &initial_digest] {
+        shell.key(Key::Z, ctrl());
+        assert_eq!(&shell.app().canonical_digest(), expected);
+    }
+    for expected in [&small_digest, &large_digest] {
+        shell.key(Key::Y, ctrl());
+        assert_eq!(&shell.app().canonical_digest(), expected);
+    }
+    assert_eq!(
+        shell.app().occurrence_box_geometry(1).unwrap().0,
+        large_origin
+    );
+}
+
+#[test]
 fn undo_and_redo_return_the_document_to_identical_canonical_states() {
     let mut shell = Shell::new();
     shell.click_at(shell.viewport_rect().center());
@@ -11254,6 +11550,51 @@ fn solid_intersect_previews_exact_overlap_and_commits_in_one_undo_step() {
 }
 
 #[test]
+fn solid_intersect_rejects_one_same_or_disjoint_bodies_without_mutation() {
+    let mut shell = Shell::new();
+    assert!(!shell.app().command_is_enabled(AppCommand::SolidIntersect));
+
+    assert!(shell.app_mut().create_box());
+    assert!(shell.app_mut().move_selected(Vec3::new(400.0, 0.0, 0.0)));
+    shell.settle();
+    shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+    assert!(shell.app().command_is_enabled(AppCommand::SolidIntersect));
+    let before = (
+        shell.app().document_revision(),
+        shell.app().canonical_digest(),
+        shell.app().undo_step_count(),
+    );
+
+    shell.click_menu_command("menu-model", AppCommand::SolidIntersect);
+    let target = shell.top_face_centre(1);
+    shell.click_at(target);
+    shell.click_at(target);
+    assert!(!shell.app().has_occurrence_operation_preview());
+    assert_eq!(
+        (
+            shell.app().document_revision(),
+            shell.app().canonical_digest(),
+            shell.app().undo_step_count(),
+        ),
+        before
+    );
+
+    shell.press_key(Key::Escape);
+    shell.click_menu_command("menu-model", AppCommand::SolidIntersect);
+    shell.click_at(shell.top_face_centre(1));
+    shell.click_at(shell.top_face_centre(2));
+    assert!(!shell.app().has_occurrence_operation_preview());
+    assert_eq!(
+        (
+            shell.app().document_revision(),
+            shell.app().canonical_digest(),
+            shell.app().undo_step_count(),
+        ),
+        before
+    );
+}
+
+#[test]
 fn d_profile_solid_intersect_preserves_review_lifecycle_exact_mesh_and_arc_lineage() {
     let directory = tempfile::tempdir().unwrap();
     let saved = directory.path().join("d-profile-intersect.ketchup");
@@ -11383,7 +11724,7 @@ fn d_profile_solid_intersect_preserves_review_lifecycle_exact_mesh_and_arc_linea
         .unwrap();
 
     let wait_for_intersect = |shell: &mut Shell| {
-        for _ in 0..100 {
+        for _ in 0..300 {
             shell.settle();
             if shell.app().exact_render_body_count() == 1 {
                 return;
@@ -11579,7 +11920,7 @@ fn d_profile_solid_union_preserves_review_lifecycle_exact_mesh_and_arc_lineage()
         .unwrap();
 
     let wait_for_union = |shell: &mut Shell| {
-        for _ in 0..100 {
+        for _ in 0..300 {
             shell.settle();
             if shell.app().exact_render_body_count() == 1 {
                 return;
@@ -11742,7 +12083,7 @@ fn d_profile_solid_split_preserves_review_lifecycle_partition_mesh_and_arc_linea
         .connect_exact_worker(exact_worker_path())
         .unwrap();
     let wait_for_result = |shell: &mut Shell, expected_producer: FeatureId| {
-        for _ in 0..100 {
+        for _ in 0..300 {
             shell.settle();
             if shell
                 .app()
@@ -11915,6 +12256,73 @@ fn solid_subtract_previews_consumes_the_tool_and_undo_restores_both_solids() {
 }
 
 #[test]
+fn solid_trim_subtracts_the_overlap_and_keeps_the_cutter() {
+    let mut shell = Shell::new();
+    let rectangle_start = shell
+        .app()
+        .viewport_position(Vec3::new(115.0, 20.0, 0.0))
+        .unwrap();
+    shell.click_command(AppCommand::Rectangle);
+    shell.click_at(rectangle_start);
+    shell.type_text("30,20");
+    shell.press_key(Key::Enter);
+    shell.click_command(AppCommand::PushPull);
+    shell.type_text("20");
+    shell.press_key(Key::Enter);
+    assert!(shell.app_mut().move_selected(Vec3::new(-95.0, -5.0, 0.0)));
+    shell.settle();
+    let before_revision = shell.app().document_revision();
+    let before_digest = shell.app().canonical_digest();
+
+    shell.click_menu_command("menu-model", AppCommand::SolidTrim);
+    let target = shell
+        .app()
+        .viewport_position(Vec3::new(80.0, 45.0, 20.0))
+        .unwrap();
+    let cutter = shell
+        .app()
+        .viewport_position(Vec3::new(35.0, 25.0, 20.0))
+        .unwrap();
+    shell.click_at(target);
+    shell.move_pointer(cutter);
+    if shell
+        .app()
+        .hovered_selection()
+        .is_none_or(|selection| selection.instance_path != InstancePath::root(OccurrenceId(2)))
+    {
+        shell.press_key(Key::Tab);
+    }
+    shell.click_at(cutter);
+
+    assert!(
+        shell.app().has_occurrence_operation_preview(),
+        "Trim preview failed: {}",
+        shell.app().action_digest()
+    );
+    assert_eq!(shell.app().document_revision(), before_revision);
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    shell.press_key(Key::Enter);
+
+    let trim_digest = shell.app().canonical_digest();
+    assert_eq!(shell.app().document_revision(), before_revision + 1);
+    assert_eq!(
+        shell.app().active_box_count(),
+        2,
+        "Trim must keep the cutter"
+    );
+    assert_eq!(
+        shell.app().action_digest(),
+        shell.catalog().text("digest-solid-trim-committed")
+    );
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    assert_eq!(shell.app().active_box_count(), 2);
+    shell.key(Key::Y, ctrl());
+    assert_eq!(shell.app().canonical_digest(), trim_digest);
+    assert_eq!(shell.app().active_box_count(), 2);
+}
+
+#[test]
 fn the_model_menu_offers_make_unique() {
     let mut shell = Shell::new();
     shell.click_at(shell.viewport_rect().center());
@@ -11925,6 +12333,18 @@ fn the_model_menu_offers_make_unique() {
         shell.offers(AppCommand::MakeUnique),
         "the Model menu must expose Make Unique"
     );
+    for command in [
+        AppCommand::SolidSubtract,
+        AppCommand::SolidTrim,
+        AppCommand::SolidUnion,
+        AppCommand::SolidIntersect,
+        AppCommand::SolidSplit,
+    ] {
+        assert!(
+            shell.offers(command),
+            "the Model menu must expose {command:?}"
+        );
+    }
 }
 
 #[test]

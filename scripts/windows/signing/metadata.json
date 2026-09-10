@@ -1,0 +1,5 @@
+{
+  "Endpoint": "https://plc.codesigning.azure.net/",
+  "CodeSigningAccountName": "AEON",
+  "CertificateProfileName": "voicejar-signing-cert"
+}
