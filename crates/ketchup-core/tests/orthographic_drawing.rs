@@ -1644,7 +1644,7 @@ fn production_exports_are_stable_across_recompute_undo_redo_and_save_open() {
         "Export",
         DrawingSource::Definition(DEFINITION),
         DrawingPageTemplate::default(),
-        DrawingTitleBlock::parametric("{source_name}", "EXP-{sheet_name}", "A", "Kečup").unwrap(),
+        DrawingTitleBlock::parametric("Výkres súčiastky", "ČV-⌀10", "Ž", "Kečup").unwrap(),
         vec![OrthographicViewKind::Front],
         DrawingAnnotations::new(
             vec![
@@ -1658,8 +1658,12 @@ fn production_exports_are_stable_across_recompute_undo_redo_and_save_open() {
                 .unwrap(),
             ],
             vec![
-                DrawingNote::new(DrawingNoteId(1), [30.0, 60.0], "Manufacture {source_name}")
-                    .unwrap(),
+                DrawingNote::new(
+                    DrawingNoteId(1),
+                    [30.0, 60.0],
+                    "Priemer ⌀10 mm; hĺbka 5 mm; tolerancia ±0.2 mm",
+                )
+                .unwrap(),
             ],
         ),
     )
@@ -1678,8 +1682,8 @@ fn production_exports_are_stable_across_recompute_undo_redo_and_save_open() {
     assert!(svg.contains("class=\"HIDDEN\""));
     assert!(svg.contains("class=\"DIMENSION\""));
     assert!(svg.contains("30 ±0.2 mm"));
-    assert!(svg.contains("Manufacture Drawing part"));
-    assert!(svg.contains(">Drawing part</text>"));
+    assert!(svg.contains("Priemer ⌀10 mm; hĺbka 5 mm; tolerancia ±0.2 mm"));
+    assert!(svg.contains(">Výkres súčiastky</text>"));
     let dxf = std::str::from_utf8(initial.dxf()).unwrap();
     assert!(dxf.contains("$INSUNITS\n70\n4"));
     assert!(dxf.contains("8\nVISIBLE"));
@@ -1697,7 +1701,13 @@ fn production_exports_are_stable_across_recompute_undo_redo_and_save_open() {
     assert!(dxf.contains("30 ±0.2 mm"));
     let pdf = std::str::from_utf8(initial.pdf()).unwrap();
     assert!(pdf.starts_with("%PDF-1.7"));
-    assert!(pdf.contains("30 +/-0.2 mm"));
+    assert!(pdf.contains("/Encoding 6 0 R /ToUnicode 7 0 R"));
+    assert!(pdf.contains("<93> <010D>"));
+    assert!(pdf.contains("<A2> <00B1>"));
+    assert!(pdf.contains("<A3> <2300>"));
+    assert!(pdf.contains("<333020A2302E32206D6D> Tj"));
+    assert!(pdf.contains("<4B65937570> Tj"));
+    assert!(!pdf.contains('?'));
     assert!(pdf.ends_with("%%EOF\n"));
 
     let edit = document
@@ -1786,6 +1796,34 @@ fn production_exports_are_stable_across_recompute_undo_redo_and_save_open() {
         export_drawing(&reopened.current(), &reopened_drawing).unwrap(),
         edited
     );
+}
+
+#[test]
+fn pdf_export_rejects_text_outside_its_declared_font_repertoire() {
+    let mut document = seeded_document();
+    let exact = registry(
+        &document.current(),
+        "unsupported-pdf-text",
+        [[0.0, 0.0, 0.0], [20.0, 10.0, 30.0]],
+    );
+    let sheet = DrawingSheet::with_contract_and_views(
+        SHEET,
+        "Unsupported PDF text",
+        DrawingSource::Definition(DEFINITION),
+        DrawingPageTemplate::default(),
+        DrawingTitleBlock::new("Drawing 🚫", "", "", "").unwrap(),
+        vec![OrthographicViewKind::Front],
+    )
+    .unwrap();
+    let (create, drawing) = prepare_create_drawing_sheet(&document, &exact, sheet).unwrap();
+    document.commit_proposal(&create).unwrap();
+    let before = stamp(&document);
+
+    assert_eq!(
+        export_drawing(&document.current(), &drawing),
+        Err(DrawingExportError::UnsupportedPdfText)
+    );
+    assert_eq!(stamp(&document), before);
 }
 
 #[test]

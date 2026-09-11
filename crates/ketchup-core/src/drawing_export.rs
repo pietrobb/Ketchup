@@ -14,6 +14,60 @@ const MAX_EXPORT_TEXTS: usize = 1_024;
 const MAX_EXPORT_BYTES: usize = 64 * 1024 * 1024;
 const COORDINATE_EPSILON_MM: f64 = 1.0e-7;
 const POINTS_PER_MM: f64 = 72.0 / 25.4;
+const PDF_UNICODE_GLYPHS: &[(char, u8, &str)] = &[
+    ('Á', 128, "Aacute"),
+    ('Ä', 129, "Adieresis"),
+    ('Č', 130, "Ccaron"),
+    ('Ď', 131, "Dcaron"),
+    ('É', 132, "Eacute"),
+    ('Í', 133, "Iacute"),
+    ('Ĺ', 134, "Lacute"),
+    ('Ľ', 135, "Lcaron"),
+    ('Ň', 136, "Ncaron"),
+    ('Ó', 137, "Oacute"),
+    ('Ô', 138, "Ocircumflex"),
+    ('Ŕ', 139, "Racute"),
+    ('Š', 140, "Scaron"),
+    ('Ť', 141, "Tcaron"),
+    ('Ú', 142, "Uacute"),
+    ('Ý', 143, "Yacute"),
+    ('Ž', 144, "Zcaron"),
+    ('á', 145, "aacute"),
+    ('ä', 146, "adieresis"),
+    ('č', 147, "ccaron"),
+    ('ď', 148, "dcaron"),
+    ('é', 149, "eacute"),
+    ('í', 150, "iacute"),
+    ('ĺ', 151, "lacute"),
+    ('ľ', 152, "lcaron"),
+    ('ň', 153, "ncaron"),
+    ('ó', 154, "oacute"),
+    ('ô', 155, "ocircumflex"),
+    ('ŕ', 156, "racute"),
+    ('š', 157, "scaron"),
+    ('ť', 158, "tcaron"),
+    ('ú', 159, "uacute"),
+    ('ý', 160, "yacute"),
+    ('ž', 161, "zcaron"),
+    ('±', 162, "plusminus"),
+    ('⌀', 163, "Oslash"),
+    ('°', 164, "degree"),
+    ('×', 165, "multiply"),
+    ('µ', 166, "mu"),
+    ('≤', 167, "lessequal"),
+    ('≥', 168, "greaterequal"),
+    ('≠', 169, "notequal"),
+    ('–', 170, "endash"),
+    ('—', 171, "emdash"),
+    ('„', 172, "quotedblbase"),
+    ('“', 173, "quotedblleft"),
+    ('”', 174, "quotedblright"),
+    ('’', 175, "quoteright"),
+    ('\u{a0}', 176, "space"),
+    ('€', 177, "Euro"),
+    ('Ø', 178, "Oslash"),
+    ('ø', 179, "oslash"),
+];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DrawingExportBundle {
@@ -43,6 +97,7 @@ impl DrawingExportBundle {
 pub enum DrawingExportError {
     StaleDrawing,
     InvalidDrawing,
+    UnsupportedPdfText,
     ResourceLimit,
 }
 
@@ -51,6 +106,7 @@ impl fmt::Display for DrawingExportError {
         formatter.write_str(match self {
             Self::StaleDrawing => "drawing export source is stale",
             Self::InvalidDrawing => "drawing export contract is inconsistent",
+            Self::UnsupportedPdfText => "drawing contains text unsupported by the PDF font",
             Self::ResourceLimit => "drawing export exceeded its resource limit",
         })
     }
@@ -106,7 +162,7 @@ pub fn export_drawing(
     let (lines, texts) = collect_page_content(drawing)?;
     let svg = export_svg(drawing, &lines, &texts);
     let dxf = export_dxf(drawing, &lines, &texts);
-    let pdf = export_pdf(drawing, &lines, &texts);
+    let pdf = export_pdf(drawing, &lines, &texts)?;
     if [svg.len(), dxf.len(), pdf.len()]
         .into_iter()
         .any(|length| length > MAX_EXPORT_BYTES)
@@ -481,7 +537,11 @@ fn export_dxf(drawing: &OrthographicDrawing, lines: &[PageLine], texts: &[PageTe
     dxf.into_bytes()
 }
 
-fn export_pdf(drawing: &OrthographicDrawing, lines: &[PageLine], texts: &[PageText]) -> Vec<u8> {
+fn export_pdf(
+    drawing: &OrthographicDrawing,
+    lines: &[PageLine],
+    texts: &[PageText],
+) -> Result<Vec<u8>, DrawingExportError> {
     let mut stream = format!(
         "% {DRAWING_EXPORT_SCHEMA_V1} result={} layout={}\nq\n{} 0 0 {} 0 0 cm\n",
         drawing.result_digest,
@@ -509,17 +569,22 @@ fn export_pdf(drawing: &OrthographicDrawing, lines: &[PageLine], texts: &[PageTe
     }
     for text in texts {
         stream.push_str(&format!(
-            "% text {}: {}\nBT /F1 {} Tf {} {} Td ({}) Tj ET\n",
+            "% text {}\nBT /F1 {} Tf {} {} Td <{}> Tj ET\n",
             pdf_comment(&text.id),
-            pdf_comment(&text.value),
             number(text.height_mm),
             number(text.position[0]),
             number(text.position[1]),
-            pdf_literal(&ascii_pdf_text(&text.value)),
+            pdf_text_hex(&text.value)?,
         ));
     }
     stream.push_str("Q\n");
     let [width, height] = drawing.layout.page_size_mm;
+    let encoding_differences = PDF_UNICODE_GLYPHS
+        .iter()
+        .map(|(_, code, glyph)| format!("{code} /{glyph}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let to_unicode = pdf_to_unicode_cmap();
     let objects = [
         "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
         "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
@@ -529,7 +594,15 @@ fn export_pdf(drawing: &OrthographicDrawing, lines: &[PageLine], texts: &[PageTe
             number(height * POINTS_PER_MM),
         ),
         format!("<< /Length {} >>\nstream\n{stream}endstream", stream.len()),
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned(),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding 6 0 R /ToUnicode 7 0 R >>"
+            .to_owned(),
+        format!(
+            "<< /Type /Encoding /BaseEncoding /WinAnsiEncoding /Differences [{encoding_differences}] >>"
+        ),
+        format!(
+            "<< /Length {} >>\nstream\n{to_unicode}endstream",
+            to_unicode.len()
+        ),
     ];
     let mut pdf = b"%PDF-1.7\n% Ketchup deterministic vector drawing\n".to_vec();
     let mut offsets = Vec::with_capacity(objects.len());
@@ -551,7 +624,7 @@ fn export_pdf(drawing: &OrthographicDrawing, lines: &[PageLine], texts: &[PageTe
         )
         .as_bytes(),
     );
-    pdf
+    Ok(pdf)
 }
 
 fn page_point(point: [f64; 2], origin: [f64; 2], scale: f64) -> [f64; 2] {
@@ -622,21 +695,50 @@ fn dxf_text(value: &str) -> String {
     value.replace(['\r', '\n'], " ")
 }
 
-fn ascii_pdf_text(value: &str) -> String {
-    value
-        .replace('±', "+/-")
-        .chars()
-        .map(|character| if character.is_ascii() { character } else { '?' })
-        .collect()
+fn pdf_text_hex(value: &str) -> Result<String, DrawingExportError> {
+    let mut encoded = String::with_capacity(value.len() * 2);
+    for character in value.chars() {
+        let code = if character.is_ascii() && !character.is_ascii_control() {
+            character as u8
+        } else {
+            PDF_UNICODE_GLYPHS
+                .iter()
+                .find_map(|(candidate, code, _)| (*candidate == character).then_some(*code))
+                .ok_or(DrawingExportError::UnsupportedPdfText)?
+        };
+        encoded.push_str(&format!("{code:02X}"));
+    }
+    Ok(encoded)
+}
+
+fn pdf_to_unicode_cmap() -> String {
+    let mappings = (32_u8..=126)
+        .map(|code| (code, char::from(code)))
+        .chain(
+            PDF_UNICODE_GLYPHS
+                .iter()
+                .map(|(character, code, _)| (*code, *character)),
+        )
+        .collect::<Vec<_>>();
+    let mut cmap = "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n/CMapName /KetchupUnicode def\n/CMapType 2 def\n1 begincodespacerange\n<00> <FF>\nendcodespacerange\n".to_owned();
+    for chunk in mappings.chunks(100) {
+        cmap.push_str(&format!("{} beginbfchar\n", chunk.len()));
+        for (code, character) in chunk {
+            cmap.push_str(&format!("<{code:02X}> <{:04X}>\n", *character as u32));
+        }
+        cmap.push_str("endbfchar\n");
+    }
+    cmap.push_str("endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n");
+    cmap
 }
 
 fn pdf_comment(value: &str) -> String {
-    ascii_pdf_text(value).replace(['\r', '\n'], " ")
-}
-
-fn pdf_literal(value: &str) -> String {
     value
-        .replace('\\', "\\\\")
-        .replace('(', "\\(")
-        .replace(')', "\\)")
+        .chars()
+        .map(|character| match character {
+            '\r' | '\n' => " ".to_owned(),
+            character if character.is_ascii() => character.to_string(),
+            character => format!("U+{:04X}", character as u32),
+        })
+        .collect()
 }

@@ -1421,7 +1421,7 @@ enum CurrentVisibleMeshSource {
     Canonical {
         definition_id: DefinitionId,
         producer_feature_id: FeatureId,
-        mesh: MeshBodySpec,
+        mesh: Box<MeshBodySpec>,
     },
 }
 
@@ -8106,7 +8106,7 @@ impl KetchupApp {
                     CurrentVisibleMeshSource::Canonical {
                         definition_id: occurrence.definition_id,
                         producer_feature_id: *producer_feature_id,
-                        mesh: mesh.clone(),
+                        mesh: Box::new(mesh.clone()),
                     }
                 } else {
                     let package = self

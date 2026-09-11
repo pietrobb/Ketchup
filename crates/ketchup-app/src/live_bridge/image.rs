@@ -212,7 +212,7 @@ fn resolve_detail(
         .detail_with_topology(
             &snapshot,
             &app.topology_results,
-            target.kind.clone(),
+            target.kind,
             target.entity_id,
         )
         .map_err(|_| "invalid_image_framing")?;

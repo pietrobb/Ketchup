@@ -508,7 +508,7 @@ fn verify_mesh_conversion_with_cancellation(
     if cancelled.load(Ordering::Acquire) {
         return Err(MeshConversionError::Cancelled);
     }
-    if package.graph != plan.graph
+    if package.graph.as_ref() != &plan.graph
         || package.identity.document_id != plan.preview.document_id()
         || package.identity.source_revision != plan.preview.revision_id()
         || package.identity.source_digest != plan.preview.canonical_digest()
@@ -603,7 +603,7 @@ pub fn commit_mesh_conversion(
         || plan.preview.revision_id() != plan.target_revision
         || current.canonical_digest() != plan.source_digest
         || verification.graph_digest != plan.graph.graph_digest
-        || verification.package.graph != plan.graph
+        || verification.package.graph.as_ref() != &plan.graph
         || verification.package.identity.document_id != plan.preview.document_id()
         || verification.package.identity.source_revision != plan.preview.revision_id()
         || verification.package.identity.source_digest != plan.preview.canonical_digest()

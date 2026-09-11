@@ -475,9 +475,9 @@ fn plan_assistant_construction_creation(
     next_definition: &mut Option<u64>,
     next_feature: &mut Option<u64>,
     next_occurrence: &mut Option<u64>,
-    operation: &str,
-    document_target: &str,
+    rejection_context: (&str, &str),
 ) -> AssistantPlanningResult<(Vec<CanonicalCommand>, DefinitionId, FeatureId)> {
+    let (operation, document_target) = rejection_context;
     let mut exhausted =
         || assistant_canonical_rejection(CanonicalError::IdExhausted, operation, document_target);
     let definition_id = next_definition
@@ -524,9 +524,9 @@ fn plan_assistant_helix_thread_creation(
     next_definition: &mut Option<u64>,
     next_feature: &mut Option<u64>,
     next_occurrence: &mut Option<u64>,
-    operation: &str,
-    document_target: &str,
+    rejection_context: (&str, &str),
 ) -> AssistantPlanningResult<(Vec<CanonicalCommand>, DefinitionId, FeatureId)> {
+    let (operation, document_target) = rejection_context;
     let mut exhausted =
         || assistant_canonical_rejection(CanonicalError::IdExhausted, operation, document_target);
     let definition_id = next_definition
@@ -913,8 +913,7 @@ pub fn plan_assistant_cad_edit_program(
                         &mut next_definition,
                         &mut next_feature,
                         &mut next_occurrence,
-                        operation_name,
-                        &document_target,
+                        (operation_name, &document_target),
                     )?;
                 operation_outputs.insert(
                     (
@@ -963,8 +962,7 @@ pub fn plan_assistant_cad_edit_program(
                         &mut next_definition,
                         &mut next_feature,
                         &mut next_occurrence,
-                        operation_name,
-                        &document_target,
+                        (operation_name, &document_target),
                     )?;
                 operation_outputs.insert(
                     (
@@ -993,8 +991,7 @@ pub fn plan_assistant_cad_edit_program(
                         &mut next_definition,
                         &mut next_feature,
                         &mut next_occurrence,
-                        operation_name,
-                        &document_target,
+                        (operation_name, &document_target),
                     )?;
                 operation_outputs.insert(
                     (
@@ -1028,8 +1025,7 @@ pub fn plan_assistant_cad_edit_program(
                         &mut next_definition,
                         &mut next_feature,
                         &mut next_occurrence,
-                        operation_name,
-                        &document_target,
+                        (operation_name, &document_target),
                     )?;
                 operation_outputs.insert(
                     (
@@ -1065,8 +1061,7 @@ pub fn plan_assistant_cad_edit_program(
                         &mut next_definition,
                         &mut next_feature,
                         &mut next_occurrence,
-                        operation_name,
-                        &document_target,
+                        (operation_name, &document_target),
                     )?;
                 operation_outputs.insert(
                     (
@@ -1130,8 +1125,7 @@ pub fn plan_assistant_cad_edit_program(
                         &mut next_definition,
                         &mut next_feature,
                         &mut next_occurrence,
-                        operation_name,
-                        &document_target,
+                        (operation_name, &document_target),
                     )?;
                 operation_outputs.insert(
                     (
@@ -1188,8 +1182,7 @@ pub fn plan_assistant_cad_edit_program(
                         &mut next_definition,
                         &mut next_feature,
                         &mut next_occurrence,
-                        operation_name,
-                        &document_target,
+                        (operation_name, &document_target),
                     )?;
                 operation_outputs.insert(
                     (

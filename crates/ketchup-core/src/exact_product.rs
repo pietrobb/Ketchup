@@ -738,7 +738,7 @@ pub struct ImportedExactPackage {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExactBRepGraphPackage {
     pub identity: BodyResultIdentity,
-    pub graph: ExactBRepGraph,
+    pub graph: Box<ExactBRepGraph>,
     pub volume_mm3: f64,
     pub area_mm2: f64,
     pub topology_counts: [u32; 5],
@@ -1014,7 +1014,7 @@ impl ExactBRepGraphPackage {
         }
         Ok(Self {
             identity,
-            graph: graph.clone(),
+            graph: Box::new(graph.clone()),
             volume_mm3: evidence.volume_mm3,
             area_mm2: evidence.area_mm2,
             topology_counts: evidence.topology_counts,
@@ -1053,7 +1053,7 @@ impl ExactBRepGraphPackage {
             && self.identity.producer_feature_id == FeatureId(graph.producer_feature_id)
             && self.identity.canonical_input_digest == graph.canonical_input_digest
             && self.identity.evaluator == EXACT_BREP_GRAPH_EVALUATOR_V1
-            && self.graph == *graph
+            && self.graph.as_ref() == graph
     }
 
     #[must_use]
@@ -1117,7 +1117,7 @@ impl ExactBRepGraphPackage {
                 )
             })
             .collect::<Option<Vec<_>>>()?;
-        rebound.graph = graph;
+        rebound.graph = Box::new(graph);
         Some(rebound)
     }
 }
@@ -16077,6 +16077,17 @@ fn digest(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_body_package_keeps_large_graph_storage_indirect() {
+        let package_size = std::mem::size_of::<ExactBodyPackage>();
+        let graph_size = std::mem::size_of::<ExactBRepGraphPackage>();
+        assert!(
+            package_size <= 576,
+            "package={package_size}, graph={graph_size}"
+        );
+        assert!(graph_size <= 576);
+    }
 
     fn line(start: [f64; 2], end: [f64; 2]) -> ExactBRepPlanarSegment {
         ExactBRepPlanarSegment::Line {

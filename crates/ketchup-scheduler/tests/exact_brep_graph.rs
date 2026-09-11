@@ -443,7 +443,7 @@ fn worker_evaluates_v9_curved_sweep_with_deterministic_topology_and_mesh() {
         supervisor.evaluate_exact_brep_graph(&graph).unwrap(),
         package
     );
-    assert_eq!(package.graph, graph);
+    assert_eq!(package.graph.as_ref(), &graph);
     assert!(package.volume_mm3.is_finite() && package.volume_mm3 > 0.0);
     assert_eq!(package.topology_counts[4], 1);
     assert!(!package.vertices.is_empty());
@@ -544,7 +544,7 @@ fn worker_evaluates_v10_multisegment_sweep_with_step_round_trip() {
         supervisor.evaluate_exact_brep_graph(&graph).unwrap(),
         package
     );
-    assert_eq!(package.graph, graph);
+    assert_eq!(package.graph.as_ref(), &graph);
     assert_eq!(package.topology_counts[4], 1);
     assert!(!package.vertices.is_empty());
     assert!(!package.triangles.is_empty());
@@ -767,7 +767,7 @@ fn worker_binds_multiple_imported_sources_by_digest_for_boolean_and_mesh() {
             .unwrap(),
         package
     );
-    assert_eq!(package.graph, graph);
+    assert_eq!(package.graph.as_ref(), &graph);
     assert!(!package.vertices.is_empty());
     assert!(!package.triangles.is_empty());
     assert!(package.volume_mm3 >= source_volumes[0].max(source_volumes[1]));
@@ -1006,7 +1006,7 @@ fn generated_boolean_graph_properties_cover_all_operations_and_rigid_variants() 
                     package,
                     "sample {sample_index}, rigid variant {rigid_variant}, {operation:?} is not deterministic"
                 );
-                assert_eq!(package.graph, graph);
+                assert_eq!(package.graph.as_ref(), &graph);
                 assert_eq!(
                     package.identity.canonical_input_digest,
                     graph.canonical_input_digest
@@ -1058,9 +1058,9 @@ fn generated_boolean_graph_properties_cover_all_operations_and_rigid_variants() 
             assert_eq!(reopened_snapshot.canonical_digest(), before_digest);
             for ((producer, _), package) in operations.into_iter().zip(packages) {
                 assert_eq!(
-                    ExactBRepGraph::from_snapshot(&reopened_snapshot, definition, producer)
+                    &ExactBRepGraph::from_snapshot(&reopened_snapshot, definition, producer)
                         .unwrap(),
-                    package.graph
+                    package.graph.as_ref()
                 );
                 assert!(package.is_current(&reopened_snapshot));
             }
@@ -1214,8 +1214,8 @@ fn generated_boolean_graph_preserves_legacy_export_and_stale_contracts() {
     let reopened_snapshot = reopened.snapshot();
     assert!(split_package.is_current(&reopened_snapshot));
     assert_eq!(
-        ExactBRepGraph::from_snapshot(&reopened_snapshot, definition, split).unwrap(),
-        split_package.graph
+        &ExactBRepGraph::from_snapshot(&reopened_snapshot, definition, split).unwrap(),
+        split_package.graph.as_ref()
     );
     ExactResultRegistry::accept(
         &reopened_snapshot,
@@ -4332,7 +4332,7 @@ fn worker_evaluates_v11_cubic_sweep_with_mesh_and_step_round_trip() {
         supervisor.evaluate_exact_brep_graph(&graph).unwrap(),
         package
     );
-    assert_eq!(package.graph, graph);
+    assert_eq!(package.graph.as_ref(), &graph);
     assert_eq!(package.topology_counts[4], 1);
     assert!(package.topology_counts.iter().all(|count| *count > 0));
     assert!(!package.vertices.is_empty());
@@ -4443,7 +4443,7 @@ fn worker_evaluates_closed_non_planar_v12_sweep_with_mesh_and_step_round_trip() 
         supervisor.evaluate_exact_brep_graph(&graph).unwrap(),
         package
     );
-    assert_eq!(package.graph, graph);
+    assert_eq!(package.graph.as_ref(), &graph);
     assert_eq!(package.topology_counts[4], 1);
     assert!(package.bounds_mm[1][2] > package.bounds_mm[0][2]);
     assert!(!package.vertices.is_empty());

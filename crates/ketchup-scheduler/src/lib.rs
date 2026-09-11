@@ -4019,7 +4019,7 @@ impl ExactWorkerSupervisor {
             expected.identity.producer_feature_id,
         )
         .map_err(|_| ExactProductError::InvalidWorkerEvidence)?;
-        if graph != expected.graph {
+        if graph != *expected.graph {
             return Err(ExactProductError::InvalidWorkerEvidence.into());
         }
         let prepared = prepare_exact_brep_graph_sources(&graph, sources)?;
