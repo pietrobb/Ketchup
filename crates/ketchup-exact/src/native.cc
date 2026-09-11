@@ -2158,6 +2158,241 @@ std::unique_ptr<NativeOperationResult> sweep_spatial_profile_native_impl(
   });
 }
 
+std::unique_ptr<NativeOperationResult> loft_framed_profiles_native(
+    rust::Slice<const double> values) noexcept {
+  return guarded([&] {
+    if (values.empty() || !std::isfinite(values[0])) {
+      return error_result(STATUS_INVALID_PARAMETER, "OCCT framed Loft payload is malformed");
+    }
+    const std::size_t section_count = static_cast<std::size_t>(values[0]);
+    if (section_count < 2 || section_count > 16
+        || values[0] != static_cast<double>(section_count)) {
+      return error_result(STATUS_INVALID_PARAMETER, "OCCT framed Loft section count is invalid");
+    }
+    std::size_t cursor = 1;
+    double previous_elevation = -std::numeric_limits<double>::infinity();
+    std::vector<TopoDS_Wire> wires;
+    std::vector<TopoDS_Edge> section_edges;
+    wires.reserve(section_count);
+    section_edges.reserve(section_count);
+    for (std::size_t section = 0; section < section_count; ++section) {
+      if (cursor + 15 > values.size()) {
+        return error_result(STATUS_INVALID_PARAMETER, "OCCT framed Loft section payload is truncated");
+      }
+      const double kind = values[cursor++];
+      const double elevation = values[cursor++];
+      const std::size_t count = static_cast<std::size_t>(values[cursor++]);
+      const double* frame = values.data() + cursor;
+      cursor += 12;
+      if (!std::isfinite(kind) || !std::isfinite(elevation)
+          || elevation <= previous_elevation || count == 0 || count > 64) {
+        return error_result(STATUS_INVALID_PARAMETER, "OCCT framed Loft section header is invalid");
+      }
+      previous_elevation = elevation;
+      for (std::size_t index = 0; index < 12; ++index) {
+        if (!std::isfinite(frame[index]) || std::abs(frame[index]) > 1000000.0) {
+          return error_result(STATUS_INVALID_PARAMETER, "OCCT framed Loft frame is invalid");
+        }
+      }
+      const gp_Vec x_axis(frame[3], frame[4], frame[5]);
+      const gp_Vec y_axis(frame[6], frame[7], frame[8]);
+      const gp_Vec normal(frame[9], frame[10], frame[11]);
+      if (std::abs(x_axis.Magnitude() - 1.0) > 1.0e-8
+          || std::abs(y_axis.Magnitude() - 1.0) > 1.0e-8
+          || std::abs(normal.Magnitude() - 1.0) > 1.0e-8
+          || std::abs(x_axis.Dot(y_axis)) > 1.0e-8
+          || std::abs(x_axis.Dot(normal)) > 1.0e-8
+          || std::abs(y_axis.Dot(normal)) > 1.0e-8
+          || x_axis.Crossed(y_axis).Dot(normal) < 1.0 - 1.0e-8) {
+        return error_result(STATUS_INVALID_PARAMETER, "OCCT framed Loft frame is not right-handed orthonormal");
+      }
+      const auto world_point = [&](double x, double y) {
+        return gp_Pnt(
+            frame[0] + frame[3] * x + frame[6] * y + frame[9] * elevation,
+            frame[1] + frame[4] * x + frame[7] * y + frame[10] * elevation,
+            frame[2] + frame[5] * x + frame[8] * y + frame[11] * elevation);
+      };
+      BRepBuilderAPI_MakeWire wire_builder;
+      TopoDS_Edge first_edge;
+      if (kind == 0.0) {
+        if (cursor + count * 10 > values.size() || count < 2) {
+          return error_result(STATUS_INVALID_PARAMETER, "OCCT framed Loft boundary payload is invalid");
+        }
+        bool line_only = true;
+        for (std::size_t index = 0; index < count; ++index) {
+          const std::size_t offset = cursor + index * 10;
+          for (std::size_t value = 0; value < 10; ++value) {
+            if (!std::isfinite(values[offset + value])
+                || std::abs(values[offset + value]) > 1000000.0) {
+              return error_result(STATUS_INVALID_PARAMETER, "OCCT framed Loft boundary value is invalid");
+            }
+          }
+          const double segment_kind = values[offset];
+          const gp_Pnt start = world_point(values[offset + 1], values[offset + 2]);
+          const gp_Pnt end = world_point(values[offset + 3], values[offset + 4]);
+          TopoDS_Edge edge;
+          if (segment_kind == 0.0) {
+            if (values[offset + 5] != 0.0 || values[offset + 6] != 0.0
+                || values[offset + 7] != 0.0 || values[offset + 8] != 0.0
+                || values[offset + 9] != 0.0 || start.Distance(end) < 0.01
+                || start.Distance(end) > 100000.0) {
+              return error_result(STATUS_INVALID_PARAMETER, "OCCT framed Loft line is invalid");
+            }
+            BRepBuilderAPI_MakeEdge edge_builder(start, end);
+            if (edge_builder.IsDone()) edge = edge_builder.Edge();
+          } else if (segment_kind == 1.0) {
+            line_only = false;
+            const double center_x = values[offset + 5];
+            const double center_y = values[offset + 6];
+            const double radius = std::hypot(values[offset + 1] - center_x,
+                                             values[offset + 2] - center_y);
+            const double end_radius = std::hypot(values[offset + 3] - center_x,
+                                                 values[offset + 4] - center_y);
+            if (values[offset + 7] != 0.0 || values[offset + 8] != 0.0
+                || (values[offset + 9] != 0.0 && values[offset + 9] != 1.0)
+                || radius < 0.01 || radius > 100000.0
+                || std::abs(radius - end_radius) > 1.0e-9 * std::max({radius, end_radius, 1.0})) {
+              return error_result(STATUS_INVALID_PARAMETER, "OCCT framed Loft arc is invalid");
+            }
+            const double tau = 2.0 * std::acos(-1.0);
+            const double start_angle = std::atan2(values[offset + 2] - center_y,
+                                                  values[offset + 1] - center_x);
+            const double end_angle = std::atan2(values[offset + 4] - center_y,
+                                                values[offset + 3] - center_x);
+            double sweep = end_angle - start_angle;
+            if (values[offset + 9] != 0.0) {
+              while (sweep >= 0.0) sweep -= tau;
+            } else {
+              while (sweep <= 0.0) sweep += tau;
+            }
+            const double middle_angle = start_angle + sweep / 2.0;
+            const gp_Pnt middle = world_point(
+                center_x + radius * std::cos(middle_angle),
+                center_y + radius * std::sin(middle_angle));
+            GC_MakeArcOfCircle arc_builder(start, middle, end);
+            if (arc_builder.IsDone()) {
+              BRepBuilderAPI_MakeEdge edge_builder(arc_builder.Value());
+              if (edge_builder.IsDone()) edge = edge_builder.Edge();
+            }
+          } else if (segment_kind == 2.0) {
+            line_only = false;
+            if (values[offset + 9] != 0.0) {
+              return error_result(STATUS_INVALID_PARAMETER, "OCCT framed Loft cubic is invalid");
+            }
+            const gp_Pnt control_1 = world_point(values[offset + 5], values[offset + 6]);
+            const gp_Pnt control_2 = world_point(values[offset + 7], values[offset + 8]);
+            const double length = start.Distance(control_1) + control_1.Distance(control_2)
+                                  + control_2.Distance(end);
+            if (!std::isfinite(length) || length < 0.01 || length > 100000.0) {
+              return error_result(STATUS_INVALID_PARAMETER, "OCCT framed Loft cubic length is invalid");
+            }
+            TColgp_Array1OfPnt poles(1, 4);
+            poles.SetValue(1, start);
+            poles.SetValue(2, control_1);
+            poles.SetValue(3, control_2);
+            poles.SetValue(4, end);
+            occ::handle<Geom_BezierCurve> curve = new Geom_BezierCurve(poles);
+            BRepBuilderAPI_MakeEdge edge_builder(curve);
+            if (edge_builder.IsDone()) edge = edge_builder.Edge();
+          } else {
+            return error_result(STATUS_INVALID_PARAMETER, "OCCT framed Loft boundary kind is invalid");
+          }
+          const std::size_t next = cursor + ((index + 1) % count) * 10;
+          if (values[offset + 3] != values[next + 1]
+              || values[offset + 4] != values[next + 2]) {
+            return error_result(STATUS_INVALID_PARAMETER, "OCCT framed Loft boundary is open");
+          }
+          if (edge.IsNull()) {
+            return error_result(STATUS_INVALID_SHAPE, "OCCT framed Loft boundary edge is null");
+          }
+          if (first_edge.IsNull()) first_edge = edge;
+          wire_builder.Add(edge);
+        }
+        if (line_only && count < 3) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT framed Loft polygon is degenerate");
+        }
+        cursor += count * 10;
+      } else if (kind == 1.0) {
+        if (count != 1 || cursor + 3 > values.size()) {
+          return error_result(STATUS_INVALID_PARAMETER, "OCCT framed Loft circle payload is invalid");
+        }
+        const double center_x = values[cursor++];
+        const double center_y = values[cursor++];
+        const double radius = values[cursor++];
+        if (!std::isfinite(center_x) || !std::isfinite(center_y) || !std::isfinite(radius)
+            || radius < 0.01 || radius > 100000.0) {
+          return error_result(STATUS_INVALID_PARAMETER, "OCCT framed Loft circle is invalid");
+        }
+        BRepBuilderAPI_MakeEdge edge_builder(gp_Circ(
+            gp_Ax2(world_point(center_x, center_y), gp_Dir(normal), gp_Dir(x_axis)), radius));
+        if (!edge_builder.IsDone()) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT framed Loft circle edge is null");
+        }
+        first_edge = edge_builder.Edge();
+        wire_builder.Add(first_edge);
+      } else if (kind == 2.0) {
+        if (count < 4 || cursor + count * 2 > values.size()) {
+          return error_result(STATUS_INVALID_PARAMETER, "OCCT framed Loft spline payload is invalid");
+        }
+        occ::handle<TColgp_HArray1OfPnt> points =
+            new TColgp_HArray1OfPnt(1, static_cast<Standard_Integer>(count));
+        for (std::size_t point = 0; point < count; ++point) {
+          const double x = values[cursor++];
+          const double y = values[cursor++];
+          if (!std::isfinite(x) || !std::isfinite(y)
+              || std::abs(x) > 1000000.0 || std::abs(y) > 1000000.0) {
+            return error_result(STATUS_INVALID_PARAMETER, "OCCT framed Loft spline point is invalid");
+          }
+          points->SetValue(static_cast<Standard_Integer>(point + 1), world_point(x, y));
+        }
+        GeomAPI_Interpolate interpolation(points, true, 1.0e-9);
+        interpolation.Perform();
+        if (!interpolation.IsDone()) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT framed Loft spline interpolation failed");
+        }
+        BRepBuilderAPI_MakeEdge edge_builder(interpolation.Curve());
+        if (!edge_builder.IsDone()) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT framed Loft spline edge is null");
+        }
+        first_edge = edge_builder.Edge();
+        wire_builder.Add(first_edge);
+      } else {
+        return error_result(STATUS_INVALID_PARAMETER, "OCCT framed Loft profile kind is invalid");
+      }
+      if (!wire_builder.IsDone() || !BRepCheck_Analyzer(wire_builder.Wire()).IsValid()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT framed Loft wire is invalid");
+      }
+      wires.push_back(wire_builder.Wire());
+      section_edges.push_back(first_edge);
+    }
+    if (cursor != values.size()) {
+      return error_result(STATUS_INVALID_PARAMETER, "OCCT framed Loft payload has trailing values");
+    }
+    BRepOffsetAPI_ThruSections operation(true, false, 1.0e-6);
+    operation.CheckCompatibility(true);
+    operation.SetMutableInput(false);
+    for (const TopoDS_Wire& wire : wires) operation.AddWire(wire);
+    operation.Build();
+    if (!operation.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT framed Loft builder did not complete");
+    }
+    const TopoDS_Shape result = operation.Shape();
+    if (result.IsNull() || !BRepCheck_Analyzer(result).IsValid()
+        || count_subshapes(result, TopAbs_SOLID) != 1) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT framed Loft did not produce one valid solid");
+    }
+    std::vector<HistoryRecord> history;
+    history.push_back(history_record(
+        "loft.start", "first_shape", "profile.wire", result, operation.FirstShape()));
+    history.push_back(history_record(
+        "loft.end", "last_shape", "profile.wire", result, operation.LastShape()));
+    history.push_back(history_record(
+        "loft.side", "generated_face", "profile.edge", result,
+        operation.GeneratedFace(section_edges.front())));
+    return success_result(result, std::move(history));
+  });
+}
+
 std::unique_ptr<NativeOperationResult> loft_spline_native(
     rust::Slice<const double> values) noexcept {
   return guarded([&] {
@@ -4732,6 +4967,9 @@ std::unique_ptr<NativeOperationResult> transform_body_native(
         && std::abs(dot_column(0, 1)) <= 1.0e-10
         && std::abs(dot_column(0, 2)) <= 1.0e-10
         && std::abs(dot_column(1, 2)) <= 1.0e-10;
+    const std::uint32_t source_solids = count_subshapes(body.impl().shape, TopAbs_SOLID);
+    const bool source_is_planar_face = source_solids == 0
+        && count_subshapes(body.impl().shape, TopAbs_FACE) == 1;
     TopoDS_Shape result;
     if (rigid) {
       gp_Trsf transform;
@@ -4739,12 +4977,16 @@ std::unique_ptr<NativeOperationResult> transform_body_native(
           matrix[0], matrix[1], matrix[2], matrix[3],
           matrix[4], matrix[5], matrix[6], matrix[7],
           matrix[8], matrix[9], matrix[10], matrix[11]);
-      BRepBuilderAPI_Transform operation(body.impl().shape, transform, true);
-      operation.Build();
-      if (!operation.IsDone()) {
-        return error_result(STATUS_INVALID_SHAPE, "OCCT rigid body transform did not complete");
+      if (source_is_planar_face) {
+        result = body.impl().shape.Moved(TopLoc_Location(transform));
+      } else {
+        BRepBuilderAPI_Transform operation(body.impl().shape, transform, true);
+        operation.Build();
+        if (!operation.IsDone()) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT rigid body transform did not complete");
+        }
+        result = operation.Shape();
       }
-      result = operation.Shape();
     } else {
       gp_GTrsf transform;
       for (Standard_Integer row = 1; row <= 3; ++row) {
@@ -4759,7 +5001,7 @@ std::unique_ptr<NativeOperationResult> transform_body_native(
       }
       result = operation.Shape();
     }
-    return success_result(result, {}, count_subshapes(body.impl().shape, TopAbs_SOLID) >= 2);
+    return success_result(result, {}, source_solids >= 2, source_is_planar_face);
   });
 }
 

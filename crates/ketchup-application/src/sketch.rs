@@ -129,6 +129,7 @@ pub(crate) fn assistant_sketch_entities(entity: &AssistantSketchEntity) -> Vec<S
         radius_x_mm,
         radius_y_mm,
         rotation_degrees,
+        maximum_deviation_mm: _,
     } = entity
     {
         let angle = rotation_degrees.to_radians();

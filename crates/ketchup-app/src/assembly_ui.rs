@@ -1046,18 +1046,21 @@ impl KetchupApp {
         self.prepare_assembly_preview(AssemblyPreviewSource::GroundOccurrence { id, grounded })
     }
 
-    pub(super) fn assembly_kinematic_selection(&self) -> Option<[OccurrenceId; 2]> {
-        self.selected_occurrence_ids()
+    fn assembly_kinematic_selection_result(&self) -> Result<[OccurrenceId; 2], String> {
+        self.selected_root_occurrence_ids()
+            .map_err(|error| self.root_occurrence_selection_error(&error))?
             .into_iter()
             .collect::<Vec<_>>()
             .try_into()
-            .ok()
+            .map_err(|_| self.catalog.text("assembly-error-joint-selection"))
+    }
+
+    pub(super) fn assembly_kinematic_selection(&self) -> Option<[OccurrenceId; 2]> {
+        self.assembly_kinematic_selection_result().ok()
     }
 
     fn assembly_joint_preview_source(&self) -> Result<AssemblyPreviewSource, String> {
-        let selected_occurrences = self
-            .assembly_kinematic_selection()
-            .ok_or_else(|| self.catalog.text("assembly-error-joint-selection"))?;
+        let selected_occurrences = self.assembly_kinematic_selection_result()?;
         let snapshot = self.document.current();
         let existing = snapshot.assembly_joints().find(|joint| {
             joint.parent_occurrence_id() == selected_occurrences[0]
@@ -1262,9 +1265,7 @@ impl KetchupApp {
     }
 
     fn assembly_motion_study_preview_source(&self) -> Result<AssemblyPreviewSource, String> {
-        let selected_occurrences = self
-            .assembly_kinematic_selection()
-            .ok_or_else(|| self.catalog.text("assembly-error-joint-selection"))?;
+        let selected_occurrences = self.assembly_kinematic_selection_result()?;
         let snapshot = self.document.current();
         let joint = snapshot
             .assembly_joints()
@@ -1498,7 +1499,9 @@ impl KetchupApp {
         name: &str,
     ) -> Result<Proposal, String> {
         let snapshot = self.document.current();
-        let selected = self.selected_occurrence_ids();
+        let selected = self
+            .selected_root_occurrence_ids()
+            .map_err(|error| self.root_occurrence_selection_error(&error))?;
         if occurrence_ids.is_empty()
             || occurrence_ids.iter().copied().collect::<BTreeSet<_>>() != selected
             || snapshot.drawing_sheet(sheet_id).is_some()
@@ -1537,12 +1540,16 @@ impl KetchupApp {
         Ok(proposal)
     }
 
-    fn preview_selection_drawing(&mut self) -> bool {
+    pub(super) fn preview_selection_drawing(&mut self) -> bool {
         let snapshot = self.document.current();
-        let occurrence_ids = self
-            .selected_occurrence_ids()
-            .into_iter()
-            .collect::<Vec<_>>();
+        let occurrence_ids = match self.selected_root_occurrence_ids() {
+            Ok(selected) => selected.into_iter().collect::<Vec<_>>(),
+            Err(error) => {
+                let reason = self.root_occurrence_selection_error(&error);
+                self.assembly_error(reason);
+                return false;
+            }
+        };
         if occurrence_ids.is_empty() {
             self.assembly_error(self.catalog.text("assembly-error-drawing-selection"));
             return false;
@@ -2089,7 +2096,7 @@ impl KetchupApp {
             .then_some(AssemblyUiAction::Insert);
         if ui
             .add_enabled(
-                !self.selected_occurrence_ids().is_empty(),
+                !self.selected_instance_paths().is_empty(),
                 egui::Button::new(self.catalog.text("assembly-preview-selection-drawing")),
             )
             .clicked()

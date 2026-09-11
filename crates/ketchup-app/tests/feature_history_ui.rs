@@ -1561,3 +1561,83 @@ fn feature_history_controls_are_complete_localized_accesskit_nodes() {
         );
     }
 }
+
+fn write_general_revolve_history_fixture(path: &Path) {
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(501),
+                name: "Editable revolve".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(502),
+                definition_id: DefinitionId(501),
+                name: "Revolve profile".into(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [4.0, 0.0], [4.0, 10.0], [0.0, 10.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(503),
+                definition_id: DefinitionId(501),
+                name: "General revolve".into(),
+                kind: FeatureKind::Revolve {
+                    profile: FeatureId(502),
+                    axis_start_mm: [0.0, 0.0],
+                    axis_end_mm: [0.0, 1.0],
+                    angle_degrees: 360.0,
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(504),
+                definition_id: DefinitionId(501),
+                name: "Revolved part".into(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    document.discard_history_before_current();
+    persistence::save_atomic(path, &document.current()).unwrap();
+}
+
+#[test]
+fn general_revolve_parameter_previews_confirms_and_undoes_through_headless_history() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = directory.path().join("general-revolve-history.ketchup");
+    write_general_revolve_history_fixture(&fixture);
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_open(&fixture)
+        .always_discard();
+    let mut shell =
+        Shell::with_catalog_and_dialogs(ketchup_interaction::LocaleCatalog::english(), dialogs);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    open_history(&mut shell);
+    shell.click_role_and_label(Role::Button, &feature_label(&shell, FeatureId(503)));
+
+    let context = shell.app().assistant_context();
+    assert_eq!(
+        context["selected_parameter_edit_target"]["parameter_path"],
+        serde_json::json!("axis_start.x")
+    );
+    let before = stamp(&shell);
+    replace_exact_value(&mut shell, "-1");
+    shell.click_button_label(&shell.catalog().text("feature-history-preview-edit"));
+    assert!(shell.app().feature_history_preview_pending());
+    assert_eq!(stamp(&shell), before);
+    confirm(&mut shell);
+    assert_eq!(shell.app().undo_step_count(), before.2 + 1);
+    assert!(matches!(
+        shell.app().document_snapshot().feature(FeatureId(503)).unwrap().kind(),
+        FeatureKind::Revolve { axis_start_mm, .. } if *axis_start_mm == [-1.0, 0.0]
+    ));
+    let edited_digest = shell.app().canonical_digest();
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), before.1);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().canonical_digest(), edited_digest);
+}

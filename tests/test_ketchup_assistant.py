@@ -335,6 +335,72 @@ def test_public_sidecar_has_no_shell_filesystem_browser_or_agent_authority():
         assert forbidden not in source
 
 
+def test_cross_language_cad_contract_corpus_passes_public_parser_fail_closed():
+    corpus_path = Path(__file__).parent / "fixtures" / "assistant_cad_contract_corpus.json"
+    corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
+    assert corpus["schema"] == "ketchup.assistant-cad-contract-corpus.v1"
+
+    for case in corpus["cases"]:
+        for field in ("setup_program", "program"):
+            if field not in case:
+                continue
+            parsed = assistant._parse_assistant_result(
+                json.dumps(
+                    {
+                        "message": f"Prepared {case['name']}.",
+                        "model_intent": None,
+                        "cad_edit_program": case[field],
+                    }
+                )
+            )
+            assert parsed["cad_edit_program"] == case[field]
+
+    general = corpus["cases"][0]["program"]
+
+    def invalid(operation_name, mutate):
+        candidate = json.loads(json.dumps(general))
+        operation = next(
+            operation
+            for operation in candidate["operations"]
+            if operation["operation"] == operation_name
+        )
+        mutate(operation)
+        with pytest.raises(assistant.ProtocolError):
+            assistant._validate_cad_edit_program(candidate)
+
+    invalid("create_part", lambda operation: operation["workplane"].update(y_axis=[1, 0, 0]))
+    invalid(
+        "append_feature",
+        lambda operation: operation["feature"]["sections"][0]["profile_feature_id"].update(
+            output="body_feature"
+        ),
+    )
+    invalid("create_helix", lambda operation: operation["parameters"].update(turns=17))
+    invalid(
+        "create_thread",
+        lambda operation: operation["parameters"].update(profile_radius_mm=2.5),
+    )
+    invalid(
+        "create_construction_plane",
+        lambda operation: operation.update(x_direction=[0, 0, 1]),
+    )
+    invalid_color = json.loads(json.dumps(corpus["cases"][1]["program"]))
+    invalid_color["operations"][0]["color"] = [12, 128, 256]
+    with pytest.raises(assistant.ProtocolError):
+        assistant._validate_cad_edit_program(invalid_color)
+
+    for contract_term in (
+        "exact right-handed unit frame",
+        "typed sketch_feature output",
+        "create_construction_plane",
+        "create_helix_path",
+        "create_thread",
+        "set_color",
+        "maximum_deviation_mm",
+    ):
+        assert contract_term in assistant.SYSTEM_PROMPT
+
+
 def test_public_sidecar_parses_strict_bounded_cad_edit_program():
     selector = {"type": "occurrences", "occurrence_ids": [7, 9]}
     program = {
@@ -513,6 +579,20 @@ def test_public_sidecar_parses_strict_bounded_cad_edit_program():
         "edge_reference_id": "a" * 64,
     }
     assert assistant._validate_cad_edit_program(edge_axis_program) == edge_axis_program
+    edge_axis_program["operations"][0]["feature"]["axis"]["instance_path"] = {
+        "root_occurrence_id": 7,
+        "steps": [
+            {"owner_definition_id": 3, "kind": "group", "local_id": 4},
+            {"owner_definition_id": 3, "kind": "occurrence", "local_id": 9},
+        ],
+    }
+    assert assistant._validate_cad_edit_program(edge_axis_program) == edge_axis_program
+    invalid_path_program = json.loads(json.dumps(edge_axis_program))
+    invalid_path_program["operations"][0]["feature"]["axis"]["instance_path"]["steps"][0][
+        "owner_definition_id"
+    ] = 0
+    with pytest.raises(assistant.ProtocolError):
+        assistant._validate_cad_edit_program(invalid_path_program)
     edge_axis_program["operations"][0]["feature"]["axis"]["edge_reference_id"] = "not-host-issued"
     with pytest.raises(assistant.ProtocolError):
         assistant._validate_cad_edit_program(edge_axis_program)
@@ -932,7 +1012,7 @@ def test_cad_append_loft_matches_rust_boundaries_and_strict_fields():
     assert assistant._validate_cad_edit_program({"operations": [operation]}) == {
         "operations": [operation]
     }
-    assert "2 to 16 unique existing spline profiles" in assistant.SYSTEM_PROMPT
+    assert "2 to 16 unique existing or typed earlier sketch profiles" in assistant.SYSTEM_PROMPT
 
     sixteen = [
         {"profile_feature_id": index + 1, "elevation_mm": index}

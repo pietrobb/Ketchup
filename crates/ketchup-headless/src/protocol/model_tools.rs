@@ -104,10 +104,15 @@ impl Server {
         let snapshot = self.session.snapshot();
         let mut state = model_query::identity(&snapshot);
         state["undo_steps"] = json!(self.session.visible_undo_steps());
-        state["redo_steps"] = json!(self.redo_steps);
+        state["redo_steps"] = json!(self.session.visible_redo_steps());
         json!({"state":state,"summary":self.model_queries.summary(&snapshot),
             "path":self.session.path().map(|p| model_query::bounded_text(&p.to_string_lossy())),
-            "modified":!self.pristine && self.session.is_modified(),"response":"compact"})
+            "recovery":self.session.recovery_state().map(|recovery| json!({
+                "requested_path":model_query::bounded_text(&recovery.requested_path().to_string_lossy()),
+                "source_path":model_query::bounded_text(&recovery.source_path().to_string_lossy()),
+                "save_as_required":true
+            })),
+            "modified":self.session.is_modified(),"response":"compact"})
     }
 
     pub(super) fn dispatch(&mut self, method: &str, mut params: Value) -> Result<Value> {
@@ -292,8 +297,7 @@ impl Server {
                         .commit_next(&mut self.session)
                         .map_err(batch_error)?;
                     if receipt.is_some() {
-                        self.redo_steps = 0;
-                        self.pristine = false;
+                        self.initial_placeholder = false;
                         self.model_queries.invalidate();
                     }
                     let status = self.batch_jobs[index].task.status(&self.session);

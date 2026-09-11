@@ -1,8 +1,8 @@
 use crate::document::{
     AuthoritativeDependency, BodyId, BooleanOperation, CanonicalCommand, CommandBatch,
     DefinitionId, Dimension, DocumentStore, FeatureDependencyGraph, FeatureId, FeatureKind,
-    Proposal, ProposalAssumption, ProposalConfirmation, ProposalContext, ProposalGoal,
-    ProposalPrepareError, ProposalPrincipal, ProposalRisk, Snapshot,
+    FeatureParameterTarget, Proposal, ProposalAssumption, ProposalConfirmation, ProposalContext,
+    ProposalGoal, ProposalPrepareError, ProposalPrincipal, ProposalRisk, Snapshot,
 };
 use crate::exact_product::{
     BodySubshapeRef, ExactFeatureChainRequest, ExactReferenceQuarantineReason,
@@ -92,9 +92,10 @@ pub struct FeatureHistoryProjection {
     pub rollback_preview: Option<RollbackPreview>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum ExactParameterEditTarget {
     FeatureDimension(FeatureId),
+    FeatureParameter(FeatureParameterTarget),
     SketchConstraintDimension {
         sketch_id: FeatureId,
         constraint_id: SketchConstraintId,
@@ -102,10 +103,11 @@ pub enum ExactParameterEditTarget {
 }
 
 impl ExactParameterEditTarget {
-    const fn feature_id(self) -> FeatureId {
+    const fn feature_id(&self) -> FeatureId {
         match self {
-            Self::FeatureDimension(id) => id,
-            Self::SketchConstraintDimension { sketch_id, .. } => sketch_id,
+            Self::FeatureDimension(id) => *id,
+            Self::FeatureParameter(target) => target.feature_id,
+            Self::SketchConstraintDimension { sketch_id, .. } => *sketch_id,
         }
     }
 }
@@ -250,7 +252,7 @@ fn prepare_body_parameter_edit_with_validation(
     let mut commands = Vec::with_capacity(request.edits.len());
     let mut assumptions = Vec::with_capacity(request.edits.len());
     for edit in request.edits {
-        if !targets.insert(edit.target) {
+        if !targets.insert(edit.target.clone()) {
             return Err(BodyParameterEditError::Duplicate(edit.target));
         }
         let feature_id = edit.target.feature_id();
@@ -285,6 +287,21 @@ fn prepare_body_parameter_edit_with_validation(
             {
                 CanonicalCommand::SetFeatureDimension {
                     id,
+                    dimension: edit.dimension,
+                }
+            }
+            ExactParameterEditTarget::FeatureParameter(target)
+                if feature
+                    .kind()
+                    .parameter_descriptors()
+                    .iter()
+                    .any(|descriptor| {
+                        descriptor.path() == &target.path
+                            && descriptor.value_type() == target.value_type
+                    }) =>
+            {
+                CanonicalCommand::SetFeatureParameter {
+                    target,
                     dimension: edit.dimension,
                 }
             }

@@ -42,7 +42,7 @@ MAX_DISCOVERY_INSTANCES = 64
 MAX_CONSENT_TIMEOUT = 65.0
 DISCOVERY_DIRECTORY = Path("Ketchup/live-instances")
 _U64_MAX = (1 << 64) - 1
-_KINDS = ("occurrences", "instances", "definitions", "features", "relations")
+_KINDS = ("occurrences", "instances", "definitions", "features", "relations", "faces", "edges")
 _VIEWS = ("iso", "top", "front", "zoom_fit")
 _CAPTURE_MODES = ("offscreen", "visible_viewport")
 _IMAGE_FRAMINGS = ("viewport", "selection", "detail_selection")
@@ -67,7 +67,7 @@ _ERROR_CODES = frozenset({
     "save_path_required", "save_rejected", "open_rejected", "invalid_path",
 })
 _FATAL_CODES = frozenset({"invalid_request", "unauthorized", "unsupported_version", "queue_unavailable"})
-Kind = Literal["occurrences", "instances", "definitions", "features", "relations"]
+Kind = Literal["occurrences", "instances", "definitions", "features", "relations", "faces", "edges"]
 View = Literal["iso", "top", "front", "zoom_fit"]
 CaptureMode = Literal["offscreen", "visible_viewport"]
 ImageFraming = Literal["viewport", "selection", "detail_selection"]

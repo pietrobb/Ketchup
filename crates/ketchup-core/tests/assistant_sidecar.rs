@@ -139,7 +139,10 @@ fn shared_axis_edge_reference_is_strict_and_requires_document_resolution() {
         operations: vec![AssistantCadEditOperation::CreateHelixPath {
             name: "Referenced edge axis".into(),
             parameters: AssistantHelixParameters {
-                axis: AssistantAxisSpec::Edge { edge_reference_id },
+                axis: AssistantAxisSpec::Edge {
+                    edge_reference_id,
+                    instance_path: None,
+                },
                 ..AssistantHelixParameters::default()
             },
         }],
@@ -257,6 +260,7 @@ fn cad_edit_sketch_contract_is_typed_strict_and_round_trips() {
                         radius_x_mm: 8.0,
                         radius_y_mm: 4.0,
                         rotation_degrees: 30.0,
+                        maximum_deviation_mm: 0.003,
                     },
                     AssistantSketchEntity::CubicBezier {
                         id: 4,
@@ -368,6 +372,7 @@ fn cad_edit_sketch_contract_is_typed_strict_and_round_trips() {
                 radius_x_mm: 8.0,
                 radius_y_mm: 4.0,
                 rotation_degrees: 0.0,
+                maximum_deviation_mm: 0.003,
             }],
             constraints: Vec::new(),
         }],

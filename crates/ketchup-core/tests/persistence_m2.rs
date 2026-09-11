@@ -59,6 +59,44 @@ fn rehash_container_entry(
     bytes[checksum_offset..checksum_offset + 32].copy_from_slice(&checksum);
 }
 
+fn history_snapshot_offsets(bytes: &[u8]) -> Vec<(usize, usize)> {
+    let (_, history_offset, history_len) = container_entry_offsets(bytes, "history.bin");
+    let history_end = history_offset + history_len;
+    let mut search_offset = history_offset;
+    let mut snapshots = Vec::new();
+    while let Some(relative_offset) = bytes[search_offset..history_end]
+        .windows(b"KETCHUPDOC".len())
+        .position(|window| window == b"KETCHUPDOC")
+    {
+        let snapshot_offset = search_offset + relative_offset;
+        let length_offset = snapshot_offset.checked_sub(40).unwrap();
+        let snapshot_len = usize::try_from(u64::from_le_bytes(
+            bytes[length_offset..length_offset + 8].try_into().unwrap(),
+        ))
+        .unwrap();
+        assert!(snapshot_offset + snapshot_len <= history_end);
+        snapshots.push((snapshot_offset, snapshot_len));
+        search_offset = snapshot_offset + snapshot_len;
+    }
+    snapshots
+}
+
+fn rewrite_history_snapshot_schemas(bytes: &mut [u8], schemas: &[u16]) -> Vec<(usize, usize)> {
+    let (history_checksum_offset, history_offset, history_len) =
+        container_entry_offsets(bytes, "history.bin");
+    let snapshots = history_snapshot_offsets(bytes);
+    assert_eq!(snapshots.len(), schemas.len());
+    for ((snapshot_offset, snapshot_len), schema) in snapshots.iter().zip(schemas) {
+        bytes[snapshot_offset + 10..snapshot_offset + 12].copy_from_slice(&schema.to_le_bytes());
+        let checksum = ketchup_core::graph::sha256_bytes(
+            &bytes[*snapshot_offset..snapshot_offset + snapshot_len],
+        );
+        bytes[snapshot_offset - 32..*snapshot_offset].copy_from_slice(&checksum);
+    }
+    rehash_container_entry(bytes, history_checksum_offset, history_offset, history_len);
+    snapshots
+}
+
 fn graph_document() -> DocumentStore {
     let segment = SlotSegment::new(NodeId(2), "items", "a").unwrap();
     let path = SlotPath::new(vec![segment.clone()]).unwrap();
@@ -771,6 +809,252 @@ fn revision_history_round_trips_with_cursor_and_monotonic_branching() {
         ]))
         .unwrap();
     assert_eq!(reopened.current().revision_id(), expected_next_revision_id);
+    assert_eq!(reopened.visible_redo_steps(), 0);
+}
+
+#[test]
+fn multi_version_history_golden_migrates_losslessly_and_rejects_corruption() {
+    let mut store = graph_document();
+    for value in ["5", "8"] {
+        store
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetEvaluatorDimension {
+                    id: NodeId(1),
+                    dimension: Dimension::new(value, value.parse().unwrap()).unwrap(),
+                },
+            ]))
+            .unwrap();
+    }
+    store.undo().unwrap();
+    let expected_revision_ids = store
+        .revision_history()
+        .map(ketchup_core::document::Revision::id)
+        .collect::<Vec<_>>();
+    let expected_digests = store
+        .revision_history()
+        .map(|revision| revision.snapshot().canonical_digest())
+        .collect::<Vec<_>>();
+    let expected_cursor = store.history_cursor();
+    let expected_next_revision_id = store.next_revision_id();
+
+    let mut golden =
+        persistence::save_document_store(&store, &persistence::ContainerData::default()).unwrap();
+    let schemas = [46, 68, persistence::CURRENT_SCHEMA, 46];
+    let snapshot_offsets = rewrite_history_snapshot_schemas(&mut golden, &schemas);
+    assert_eq!(snapshot_offsets.len(), expected_revision_ids.len());
+    for ((snapshot_offset, _), schema) in snapshot_offsets.iter().zip(schemas) {
+        assert_eq!(
+            u16::from_le_bytes(
+                golden[snapshot_offset + 10..snapshot_offset + 12]
+                    .try_into()
+                    .unwrap()
+            ),
+            schema
+        );
+    }
+
+    let loaded = persistence::load(&golden).unwrap();
+    assert_eq!(loaded.disposition(), LoadDisposition::EditableLossless);
+    let container_data = loaded.container_data().clone();
+    let reopened = loaded.into_editable().ok().unwrap();
+    assert_eq!(reopened.history_cursor(), expected_cursor);
+    assert_eq!(reopened.next_revision_id(), expected_next_revision_id);
+    assert_eq!(
+        reopened
+            .revision_history()
+            .map(ketchup_core::document::Revision::id)
+            .collect::<Vec<_>>(),
+        expected_revision_ids
+    );
+    assert_eq!(
+        reopened
+            .revision_history()
+            .map(|revision| revision.snapshot().canonical_digest())
+            .collect::<Vec<_>>(),
+        expected_digests
+    );
+
+    let upgraded = persistence::save_document_store(&reopened, &container_data).unwrap();
+    for (snapshot_offset, _) in history_snapshot_offsets(&upgraded) {
+        assert_eq!(
+            u16::from_le_bytes(
+                upgraded[snapshot_offset + 10..snapshot_offset + 12]
+                    .try_into()
+                    .unwrap()
+            ),
+            persistence::CURRENT_SCHEMA
+        );
+    }
+    let round_trip = persistence::load(&upgraded)
+        .unwrap()
+        .into_editable()
+        .ok()
+        .unwrap();
+    assert_eq!(round_trip.history_cursor(), expected_cursor);
+    assert_eq!(round_trip.next_revision_id(), expected_next_revision_id);
+    assert_eq!(
+        persistence::save_document_store(&round_trip, &container_data).unwrap(),
+        upgraded
+    );
+
+    let (snapshot_offset, snapshot_len) = snapshot_offsets[0];
+    let mut history_checksum_corrupt = golden.clone();
+    history_checksum_corrupt[snapshot_offset + snapshot_len - 1] ^= 0xff;
+    let (history_checksum_offset, history_offset, history_len) =
+        container_entry_offsets(&history_checksum_corrupt, "history.bin");
+    rehash_container_entry(
+        &mut history_checksum_corrupt,
+        history_checksum_offset,
+        history_offset,
+        history_len,
+    );
+    assert_eq!(
+        load_error(&history_checksum_corrupt),
+        PersistenceError::HistoryChecksumMismatch
+    );
+
+    let mut envelope_checksum_corrupt = golden;
+    envelope_checksum_corrupt[snapshot_offset + snapshot_len - 1] ^= 0xff;
+    let snapshot_checksum = ketchup_core::graph::sha256_bytes(
+        &envelope_checksum_corrupt[snapshot_offset..snapshot_offset + snapshot_len],
+    );
+    envelope_checksum_corrupt[snapshot_offset - 32..snapshot_offset]
+        .copy_from_slice(&snapshot_checksum);
+    let (history_checksum_offset, history_offset, history_len) =
+        container_entry_offsets(&envelope_checksum_corrupt, "history.bin");
+    rehash_container_entry(
+        &mut envelope_checksum_corrupt,
+        history_checksum_offset,
+        history_offset,
+        history_len,
+    );
+    assert_eq!(
+        load_error(&envelope_checksum_corrupt),
+        PersistenceError::ChecksumMismatch
+    );
+}
+
+#[test]
+fn explicit_current_snapshot_save_preserves_work_beyond_history_limit() {
+    let mut store = graph_document();
+    for index in 0..4_096_u64 {
+        let value = 10_000 + index;
+        store
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetEvaluatorDimension {
+                    id: NodeId(1),
+                    dimension: Dimension::new(value.to_string(), value as f64).unwrap(),
+                },
+            ]))
+            .unwrap();
+    }
+    let current = store.current();
+    let expected_next_revision_id = store.next_revision_id();
+    let original_revision_count = store.revision_count();
+    assert!(original_revision_count > 4_096);
+    assert_eq!(
+        persistence::save_document_store(&store, &persistence::ContainerData::default()),
+        Err(PersistenceError::ResourceLimit)
+    );
+
+    let first = persistence::save_document_store_current_snapshot(
+        &store,
+        &persistence::ContainerData::default(),
+    )
+    .unwrap();
+    let second = persistence::save_document_store_current_snapshot(
+        &store,
+        &persistence::ContainerData::default(),
+    )
+    .unwrap();
+    assert_eq!(second, first);
+    assert_eq!(store.revision_count(), original_revision_count);
+
+    let mut reopened = persistence::load(&first)
+        .unwrap()
+        .into_editable()
+        .ok()
+        .unwrap();
+    assert_eq!(reopened.current().revision_id(), current.revision_id());
+    assert_eq!(
+        reopened.current().canonical_digest(),
+        current.canonical_digest()
+    );
+    assert_eq!(reopened.next_revision_id(), expected_next_revision_id);
+    assert_eq!(reopened.revision_count(), 1);
+    assert_eq!(reopened.visible_undo_steps(), 0);
+    assert_eq!(reopened.visible_redo_steps(), 0);
+
+    reopened
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetEvaluatorDimension {
+                id: NodeId(1),
+                dimension: Dimension::new("20000", 20_000.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+    assert_eq!(reopened.current().revision_id(), expected_next_revision_id);
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("compacted.ketchup");
+    persistence::save_atomic_document_store_current_snapshot_with_container(
+        &path,
+        &store,
+        &persistence::ContainerData::default(),
+    )
+    .unwrap();
+    assert_eq!(std::fs::read(path).unwrap(), first);
+}
+
+#[test]
+fn explicit_current_snapshot_save_preserves_work_beyond_history_byte_limit() {
+    let mut commands = Vec::new();
+    for id in 1..=128_u64 {
+        commands.push(CanonicalCommand::CreateEvaluatorNode {
+            id: NodeId(id),
+            name: format!("parameter-{id:03}-{}", "x".repeat(128)),
+            dimension: Dimension::new(id.to_string(), id as f64).unwrap(),
+            dependencies: vec![],
+        });
+    }
+    let mut store = DocumentStore::new();
+    store.apply_batch(&CommandBatch::new(commands)).unwrap();
+    for index in 0..2_000_u64 {
+        let value = 10_000 + index;
+        store
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetEvaluatorDimension {
+                    id: NodeId(1),
+                    dimension: Dimension::new(value.to_string(), value as f64).unwrap(),
+                },
+            ]))
+            .unwrap();
+    }
+    assert!(store.revision_count() < 4_096);
+    let current = store.current();
+    let expected_next_revision_id = store.next_revision_id();
+    assert_eq!(
+        persistence::save_document_store(&store, &persistence::ContainerData::default()),
+        Err(PersistenceError::ResourceLimit)
+    );
+
+    let bytes = persistence::save_document_store_current_snapshot(
+        &store,
+        &persistence::ContainerData::default(),
+    )
+    .unwrap();
+    let reopened = persistence::load(&bytes)
+        .unwrap()
+        .into_editable()
+        .ok()
+        .unwrap();
+    assert_eq!(reopened.current().revision_id(), current.revision_id());
+    assert_eq!(
+        reopened.current().canonical_digest(),
+        current.canonical_digest()
+    );
+    assert_eq!(reopened.next_revision_id(), expected_next_revision_id);
+    assert_eq!(reopened.visible_undo_steps(), 0);
     assert_eq!(reopened.visible_redo_steps(), 0);
 }
 

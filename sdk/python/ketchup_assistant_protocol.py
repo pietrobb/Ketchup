@@ -70,16 +70,17 @@ SYSTEM_PROMPT = (
     "unsupported or unavailable occurrences or say that the relevant check is incomplete or skipped. Return ONLY "
     "one JSON object with exactly three fields: message (a concise user-facing string), "
     "model_intent (null for discussion or CAD edits), and cad_edit_program (null unless proposing typed CAD operations). "
-    "Never return both mutation fields. Use cad_edit_program for create_part, create_sketch, create_program_sketch, append_feature, append_program_pocket, set_dimension, delete, rigid transform, copy, linear pattern, circular pattern, mirror, classification metadata, or evaluator inputs. "
+    "Never return both mutation fields. Use cad_edit_program for create_part, create_sketch, create_program_sketch, typed construction geometry, helix paths, solid helixes, threads, append_feature, append_program_pocket, set_dimension, delete, rigid transform, color, copy, linear pattern, circular pattern, mirror, classification metadata, or evaluator inputs. "
     "cad_edit_program is {operations: [...]} and every operation names its kind in the field operation, never in a field called type: {operation: create_part, ...}. Inside an operation the field type stays reserved for nested records such as feature, workplane, entities and constraints. "
-    "create_part atomically creates a host-ID-assigned definition, workplane, sketch, universal feature, and occurrence. It has name, workplane, entities, constraints, feature, translation_mm, and optional rotation; feature is either {type: extrusion, distance_mm: positive length} or {type: revolve, axis: {type: origin_direction, origin_mm: [x,y,z], direction: [x,y,z]}|{type: two_points, start_mm: [x,y,z], end_mm: [x,y,z]}|{type: construction_axis, axis: positive feature ID or earlier typed construction_feature output}|{type: edge, edge_reference_id: one opaque reference_id copied exactly from current topology edge inspection}, angle_degrees: >0 and <=360}; a Revolve axis must lie in its sketch workplane. "
-    "append_feature adds one host-ID-assigned feature to an existing definition. It has definition_id, name, and either feature {type: boolean, operation: cut|union|intersect, target_feature_id, tool_feature_id}, whose inputs are distinct supported exact body features in that definition; each Boolean input is either a positive existing feature ID or {operation_index: zero-based earlier operation index, output: body_feature} referencing an earlier create_part or append_feature output in this same program; feature {type: pocket, target_feature_id, profile_feature_id, depth_mm}, whose distinct inputs are a supported exact extrusion target and closed profile in that definition with positive bounded depth below the target height; feature {type: planar_offset, profile_feature_id, distance_mm}, whose input is the sole existing exact rectangular profile in that definition and whose finite signed distance magnitude from 0.01 to 1000000 mm must leave both result dimensions at least 0.01 mm; feature {type: sweep, profile_feature_id, path_feature_id}, whose distinct inputs are a supported closed polygon or line/arc profile and one open straight path in that definition; feature {type: loft, sections: [{profile_feature_id, elevation_mm}, ...]}, with 2 to 16 unique existing spline profiles in that definition and finite bounded elevations in strictly increasing order; feature {type: topology_shell, target_feature_id, removed_face_reference_ids, thickness_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_face_references for that definition and target, and finite thickness from 0.01 to 100000 mm; feature {type: topology_fillet, target_feature_id, edge_reference_ids, radius_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_edge_references for that definition and target, and finite radius from 0.01 to 100000 mm; or feature {type: topology_chamfer, target_feature_id, edge_reference_ids, distance_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_edge_references for that definition and target, and finite distance from 0.01 to 100000 mm. Never invent topology reference IDs, face or edge ordinals, semantic roles, or named-shape selectors. "
-    "create_sketch has definition_id, name, workplane, entities, and constraints; create_program_sketch has the same shape except definition is {operation_index: an earlier create_part, output: definition}. Workplane is principal with plane xy/yz/xz or offset with an existing base_feature_id and distance_mm. "
-    "append_program_pocket has definition, target_feature, and profile_feature typed references plus name and depth_mm. Reference the definition and body_feature of an earlier create_part, and the sketch_feature of that create_part or an earlier create_program_sketch; this creates the opening in the same atomic program without guessed host IDs. "
-    "Entities are typed line/arc/circle records with positive stable IDs and 2D millimetre coordinates. Constraints are typed horizontal/vertical/coincident/distance/radius/fixed_point records with positive stable IDs and point refs {entity_id, point: start/end/center}. "
+    "create_part atomically creates a host-ID-assigned definition, workplane, sketch, universal feature, and occurrence. It has name, workplane, entities, constraints, feature, translation_mm, and optional rotation; feature is either {type: extrusion, distance_mm: positive length} or {type: revolve, axis: {type: origin_direction, origin_mm: [x,y,z], direction: [x,y,z]}|{type: two_points, start_mm: [x,y,z], end_mm: [x,y,z]}|{type: construction_axis, axis: positive feature ID or earlier typed construction_feature output}|{type: edge, edge_reference_id: one opaque reference_id copied exactly from current topology edge inspection, optional instance_path: the exact {root_occurrence_id, steps: [{owner_definition_id, kind: group|occurrence, local_id}]} copied from current instance inspection; instance_path is required when that definition has multiple visible instances}, angle_degrees: >0 and <=360}; a Revolve axis must lie in its sketch workplane. "
+    "append_feature adds one host-ID-assigned feature to an existing definition. It has definition_id, name, and either feature {type: boolean, operation: cut|union|intersect, target_feature_id, tool_feature_id}, whose inputs are distinct supported exact body features in that definition; each Boolean input is either a positive existing feature ID or {operation_index: zero-based earlier operation index, output: body_feature} referencing an earlier create_part or append_feature output in this same program; feature {type: pocket, target_feature_id, profile_feature_id, depth_mm}, whose distinct inputs are a supported exact extrusion target and closed profile in that definition with positive bounded depth below the target height; feature {type: planar_offset, profile_feature_id, distance_mm}, whose input is the sole existing exact rectangular profile in that definition and whose finite signed distance magnitude from 0.01 to 1000000 mm must leave both result dimensions at least 0.01 mm; feature {type: sweep, profile_feature_id, path_feature_id}, whose distinct inputs are a supported closed polygon or line/arc profile and one open straight path in that definition; feature {type: loft, sections: [{profile_feature_id, elevation_mm}, ...]}, with 2 to 16 unique existing or typed earlier sketch profiles in that definition and finite bounded elevations in strictly increasing order; feature {type: topology_shell, target_feature_id, removed_face_reference_ids, thickness_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_face_references for that definition and target, and finite thickness from 0.01 to 100000 mm; feature {type: topology_fillet, target_feature_id, edge_reference_ids, radius_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_edge_references for that definition and target, and finite radius from 0.01 to 100000 mm; or feature {type: topology_chamfer, target_feature_id, edge_reference_ids, distance_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_edge_references for that definition and target, and finite distance from 0.01 to 100000 mm. Never invent topology reference IDs, face or edge ordinals, semantic roles, or named-shape selectors. "
+    "create_sketch has definition_id, name, workplane, entities, and constraints; create_program_sketch has the same shape except definition is a typed earlier definition output. Workplane is principal with plane xy/yz/xz, an exact right-handed unit frame with origin_mm/x_axis/y_axis, offset with an existing base_feature_id and distance_mm for create_part/create_sketch, or construction_plane with plane as an existing feature ID or earlier create_construction_plane construction_feature output for create_program_sketch. "
+    "append_program_pocket has definition, target_feature, and profile_feature typed references plus name and depth_mm. Reference the definition and body_feature of an earlier create_part, and the sketch_feature of that create_part or an earlier create_program_sketch; this creates the opening in the same atomic program without guessed host IDs. Loft profile_feature_id also accepts a typed sketch_feature output from an earlier create_part or create_program_sketch. "
+    "Entities are typed line/arc/circle/cubic_bezier records with positive stable IDs and 2D millimetre coordinates; ellipse uses four positive unique segment_ids, center_mm, positive radius_x_mm/radius_y_mm, rotation_degrees, and a required positive maximum_deviation_mm that must cover its bounded cubic approximation error. Constraints are typed horizontal/vertical/coincident/distance/radius/fixed_point records with positive stable IDs and point refs {entity_id, point: start/end/center/control1/control2}. "
     "The host assigns create_part definition, feature, and occurrence IDs and both sketch operations' workplane and sketch feature IDs. set_dimension targets an existing feature_id, optional constraint_id, and positive value_mm. "
     "upsert_classification_dimension has positive dimension_id, non-empty name, and 1 to 64 categories [{id: positive unique ID, name: non-empty string}]. set_occurrence_classification has an occurrence selector, positive dimension_id, and category_id as a positive ID or null. create_evaluator_input has positive node_id, non-empty name, and finite value from -1000000 to 1000000. Use only IDs proven free or present by the current document context. "
-    "Occurrence operations have a selector: either {type: current_selection} or {type: occurrences, occurrence_ids: [positive unique IDs]}. circular_pattern additionally has instances from 2 to 1000, angle_step_degrees, and the same axis contract as Revolve; each generated angle must remain distinct from the source modulo 360 degrees. "
+    "create_construction_point uses name and position_mm; create_construction_axis uses name, origin_mm and non-zero direction; create_construction_plane uses name, origin_mm, non-zero perpendicular normal and x_direction. create_helix_path and create_helix use name plus parameters {axis, radius_mm, pitch_mm, turns, start_angle_degrees, handedness: right|left}; create_thread wraps those helix parameters plus profile_radius_mm and profile round|v|trapezoid. A same-program helix axis may be the typed construction_feature output of an earlier create_construction_axis. "
+    "Occurrence operations have a selector: either {type: current_selection} or {type: occurrences, occurrence_ids: [positive unique IDs]}. set_color has color as null or exactly three integer RGB channels from 0 to 255. circular_pattern additionally has instances from 2 to 1000, angle_step_degrees, and the same axis contract as Revolve; each generated angle must remain distinct from the source modulo 360 degrees. "
     "Delete also has dependency_policy reject_if_referenced or remove_references. Transform has translation_mm and optional rotation with pivot_mm, non-zero axis, and angle_degrees. "
     "Copy has non-zero translation_mm. Linear_pattern has instances including originals and non-zero step_mm. Mirror has plane_origin_mm and non-zero plane_normal. "
     "Use at most 64 operations, 100 resolved occurrence targets, 4096 sketch entities, 8192 constraints, and 512 generated occurrences; never invent IDs for host-generated features or occurrences. "
@@ -699,7 +700,16 @@ def _valid_cad_program_output_reference(
     producer = operations[producer_index]
     producer_type = producer.get("operation")
     if output == "definition":
-        return producer_type == "create_part"
+        return producer_type in {
+            "create_part",
+            "create_spatial_path",
+            "create_helix_path",
+            "create_construction_point",
+            "create_construction_axis",
+            "create_construction_plane",
+            "create_helix",
+            "create_thread",
+        }
     if output == "sketch_feature":
         return producer_type in {"create_part", "create_program_sketch"}
     if output == "construction_feature":
@@ -711,7 +721,15 @@ def _valid_cad_program_output_reference(
             "create_construction_plane",
         }
     return output == "body_feature" and (
-        producer_type in {"create_part", "append_program_pocket"}
+        producer_type
+        in {
+            "create_part",
+            "create_helix",
+            "create_thread",
+            "fillet_edges",
+            "chamfer_edges",
+            "append_program_pocket",
+        }
         or producer_type == "append_feature"
         and isinstance(producer.get("feature"), dict)
         and producer["feature"].get("type")
@@ -734,6 +752,33 @@ def _valid_cad_body_feature_reference(
         return 0 < value <= MAX_U64
     return _valid_cad_program_output_reference(
         value, operation_index, operations, "body_feature"
+    )
+
+
+def _valid_instance_path(value: object) -> bool:
+    if not isinstance(value, dict) or set(value) != {"root_occurrence_id", "steps"}:
+        return False
+    root = value["root_occurrence_id"]
+    steps = value["steps"]
+    if (
+        not isinstance(root, int)
+        or isinstance(root, bool)
+        or not 0 < root <= MAX_U64
+        or not isinstance(steps, list)
+        or len(steps) > 256
+    ):
+        return False
+    return all(
+        isinstance(step, dict)
+        and set(step) == {"owner_definition_id", "kind", "local_id"}
+        and step["kind"] in {"group", "occurrence"}
+        and isinstance(step["owner_definition_id"], int)
+        and not isinstance(step["owner_definition_id"], bool)
+        and 0 < step["owner_definition_id"] <= MAX_U64
+        and isinstance(step["local_id"], int)
+        and not isinstance(step["local_id"], bool)
+        and 0 < step["local_id"] <= MAX_U64
+        for step in steps
     )
 
 
@@ -763,10 +808,11 @@ def _valid_cad_axis_spec(
     elif axis_type == "edge":
         reference_id = value.get("edge_reference_id")
         return (
-            set(value) == {"type", "edge_reference_id"}
+            set(value) in ({"type", "edge_reference_id"}, {"type", "edge_reference_id", "instance_path"})
             and isinstance(reference_id, str)
             and len(reference_id) == 64
             and all(character in "0123456789abcdefABCDEF" for character in reference_id)
+            and ("instance_path" not in value or _valid_instance_path(value["instance_path"]))
         )
     else:
         return False
@@ -782,6 +828,112 @@ def _valid_cad_axis_spec(
     else:
         delta = [value["end_mm"][i] - value["start_mm"][i] for i in range(3)]
     return math.sqrt(sum(component * component for component in delta)) > 1.0e-9
+
+
+def _valid_cad_name(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value.strip())
+        and len(value.encode("utf-8")) <= 128
+        and not any(ord(character) < 32 or 127 <= ord(character) <= 159 for character in value)
+    )
+
+
+def _valid_cad_feature_reference(
+    value: object, operation_index: int, operations: list[dict], output: str
+) -> bool:
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and 0 < value <= MAX_U64
+    ) or _valid_cad_program_output_reference(value, operation_index, operations, output)
+
+
+def _valid_cad_workplane(
+    value: object, operation_index: int, operations: list[dict], operation_type: str
+) -> bool:
+    if not isinstance(value, dict):
+        return False
+    workplane_type = value.get("type")
+    if workplane_type == "principal":
+        return set(value) == {"type", "plane"} and value["plane"] in {"xy", "yz", "xz"}
+    if workplane_type == "frame":
+        if set(value) != {"type", "origin_mm", "x_axis", "y_axis"}:
+            return False
+        try:
+            for field in ("origin_mm", "x_axis", "y_axis"):
+                _validate_vector(value[field], f"provider CAD frame {field}", positive=False)
+        except ProtocolError:
+            return False
+        x_axis = value["x_axis"]
+        y_axis = value["y_axis"]
+        dot = sum(left * right for left, right in zip(x_axis, y_axis))
+        return (
+            abs(sum(component * component for component in x_axis) - 1.0) <= 1.0e-9
+            and abs(sum(component * component for component in y_axis) - 1.0) <= 1.0e-9
+            and abs(dot) <= 1.0e-9
+        )
+    if workplane_type == "offset":
+        distance = value.get("distance_mm")
+        return (
+            operation_type in {"create_sketch", "create_part"}
+            and set(value) == {"type", "base_feature_id", "distance_mm"}
+            and isinstance(value.get("base_feature_id"), int)
+            and not isinstance(value.get("base_feature_id"), bool)
+            and 0 < value["base_feature_id"] <= MAX_U64
+            and isinstance(distance, (int, float))
+            and not isinstance(distance, bool)
+            and math.isfinite(distance)
+            and abs(distance) <= 1_000_000
+        )
+    if workplane_type == "construction_plane":
+        reference = value.get("plane")
+        if operation_type != "create_program_sketch" or set(value) != {"type", "plane"}:
+            return False
+        if isinstance(reference, int) and not isinstance(reference, bool):
+            return 0 < reference <= MAX_U64
+        return (
+            _valid_cad_program_output_reference(
+                reference, operation_index, operations, "construction_feature"
+            )
+            and operations[reference["operation_index"]].get("operation")
+            == "create_construction_plane"
+        )
+    return False
+
+
+def _valid_helix_parameters(
+    value: object, operation_index: int, operations: list[dict]
+) -> bool:
+    if not isinstance(value, dict) or set(value) != {
+        "axis",
+        "radius_mm",
+        "pitch_mm",
+        "turns",
+        "start_angle_degrees",
+        "handedness",
+    }:
+        return False
+    radius = value["radius_mm"]
+    pitch = value["pitch_mm"]
+    turns = value["turns"]
+    start_angle = value["start_angle_degrees"]
+    numbers = (radius, pitch, turns, start_angle)
+    return (
+        _valid_cad_axis_spec(value["axis"], operation_index, operations)
+        and all(
+            isinstance(number, (int, float))
+            and not isinstance(number, bool)
+            and math.isfinite(number)
+            for number in numbers
+        )
+        and 0.01 <= radius <= 1_000_000
+        and 0.01 <= pitch <= 1_000_000
+        and 0.01 <= turns <= 16
+        and pitch * turns <= 1_000_000
+        and math.ceil(4 * turns) <= 64
+        and value["handedness"] in {"right", "left"}
+    )
 
 
 def _validate_cad_edit_program(program: object) -> dict:
@@ -868,38 +1020,97 @@ def _validate_cad_edit_program(program: object) -> dict:
             ):
                 raise ProtocolError("provider CAD sketch creation target is invalid")
             workplane = operation["workplane"]
-            if (
-                operation_type == "create_program_sketch"
-                and isinstance(workplane, dict)
-                and workplane.get("type") == "offset"
+            if not _valid_cad_workplane(
+                workplane, operation_index, operations, operation_type
             ):
-                raise ProtocolError("provider CAD program sketch workplane reference is invalid")
-            if not isinstance(workplane, dict) or workplane.get("type") not in {"principal", "offset"}:
                 raise ProtocolError("provider CAD workplane is invalid")
-            if workplane["type"] == "principal":
-                if set(workplane) != {"type", "plane"} or workplane["plane"] not in {"xy", "yz", "xz"}:
-                    raise ProtocolError("provider CAD principal workplane is invalid")
-            elif set(workplane) != {"type", "base_feature_id", "distance_mm"}:
-                raise ProtocolError("provider CAD offset workplane is invalid")
-            else:
-                base = workplane["base_feature_id"]
-                distance = workplane["distance_mm"]
-                if (
-                    not isinstance(base, int)
-                    or isinstance(base, bool)
-                    or base <= 0
-                    or not isinstance(distance, (int, float))
-                    or isinstance(distance, bool)
-                    or not math.isfinite(distance)
-                    or abs(distance) > 1_000_000
-                ):
-                    raise ProtocolError("provider CAD offset workplane is invalid")
             entities = operation["entities"]
             constraints = operation["constraints"]
             if not isinstance(entities, list) or not 1 <= len(entities) <= 4_096:
                 raise ProtocolError("provider CAD sketch entity count is invalid")
             if not isinstance(constraints, list) or len(constraints) > 8_192:
                 raise ProtocolError("provider CAD sketch constraint count is invalid")
+        elif operation_type == "create_construction_point":
+            if set(operation) != {"operation", "name", "position_mm"} or not _valid_cad_name(
+                operation.get("name")
+            ):
+                raise ProtocolError("provider CAD construction point is invalid")
+            _validate_vector(
+                operation["position_mm"], "provider CAD construction point position_mm", positive=False
+            )
+            target_count = generated_per_target = 1
+        elif operation_type == "create_construction_axis":
+            if set(operation) != {"operation", "name", "origin_mm", "direction"} or not _valid_cad_name(
+                operation.get("name")
+            ):
+                raise ProtocolError("provider CAD construction axis is invalid")
+            _validate_vector(
+                operation["origin_mm"], "provider CAD construction axis origin_mm", positive=False
+            )
+            _validate_vector(
+                operation["direction"], "provider CAD construction axis direction", positive=False
+            )
+            if all(component == 0 for component in operation["direction"]):
+                raise ProtocolError("provider CAD construction axis is invalid")
+            target_count = generated_per_target = 1
+        elif operation_type == "create_construction_plane":
+            if set(operation) != {
+                "operation",
+                "name",
+                "origin_mm",
+                "normal",
+                "x_direction",
+            } or not _valid_cad_name(operation.get("name")):
+                raise ProtocolError("provider CAD construction plane is invalid")
+            for field in ("origin_mm", "normal", "x_direction"):
+                _validate_vector(
+                    operation[field], f"provider CAD construction plane {field}", positive=False
+                )
+            normal = operation["normal"]
+            x_direction = operation["x_direction"]
+            if (
+                all(component == 0 for component in normal)
+                or all(component == 0 for component in x_direction)
+                or abs(sum(left * right for left, right in zip(normal, x_direction)))
+                > 1.0e-9
+                * math.sqrt(
+                    sum(component * component for component in normal)
+                    * sum(component * component for component in x_direction)
+                )
+            ):
+                raise ProtocolError("provider CAD construction plane is invalid")
+            target_count = generated_per_target = 1
+        elif operation_type in {"create_helix_path", "create_helix"}:
+            if set(operation) != {"operation", "name", "parameters"} or not _valid_cad_name(
+                operation.get("name")
+            ) or not _valid_helix_parameters(
+                operation.get("parameters"), operation_index, operations
+            ):
+                raise ProtocolError("provider CAD Helix is invalid")
+            target_count = generated_per_target = 1
+        elif operation_type == "create_thread":
+            parameters = operation.get("parameters")
+            if (
+                set(operation) != {"operation", "name", "parameters"}
+                or not _valid_cad_name(operation.get("name"))
+                or not isinstance(parameters, dict)
+                or set(parameters) != {"helix", "profile_radius_mm", "profile"}
+                or not _valid_helix_parameters(
+                    parameters.get("helix"), operation_index, operations
+                )
+            ):
+                raise ProtocolError("provider CAD Thread is invalid")
+            profile_radius = parameters["profile_radius_mm"]
+            if (
+                not isinstance(profile_radius, (int, float))
+                or isinstance(profile_radius, bool)
+                or not math.isfinite(profile_radius)
+                or profile_radius < 0.01
+                or profile_radius * 2 >= parameters["helix"]["pitch_mm"]
+                or parameters["profile"] not in {"round", "v", "trapezoid"}
+            ):
+                raise ProtocolError("provider CAD Thread is invalid")
+            target_count = generated_per_target = 1
         elif operation_type == "append_program_pocket":
             if set(operation) != {
                 "operation",
@@ -1021,9 +1232,12 @@ def _validate_cad_edit_program(program: object) -> dict:
                         profile_feature_id = section["profile_feature_id"]
                         elevation_mm = section["elevation_mm"]
                         if (
-                            not isinstance(profile_feature_id, int)
-                            or isinstance(profile_feature_id, bool)
-                            or not 0 < profile_feature_id <= MAX_U64
+                            not _valid_cad_feature_reference(
+                                profile_feature_id,
+                                operation_index,
+                                operations,
+                                "sketch_feature",
+                            )
                             or not isinstance(elevation_mm, (int, float))
                             or isinstance(elevation_mm, bool)
                             or abs(elevation_mm) > 1_000_000
@@ -1033,7 +1247,9 @@ def _validate_cad_edit_program(program: object) -> dict:
                         ):
                             valid_feature = False
                             break
-                        profile_ids.append(profile_feature_id)
+                        profile_ids.append(
+                            json.dumps(profile_feature_id, sort_keys=True, separators=(",", ":"))
+                        )
                         previous_elevation = elevation_mm
                     valid_feature = valid_feature and len(set(profile_ids)) == len(profile_ids)
             elif feature.get("type") == "topology_shell":
@@ -1206,6 +1422,12 @@ def _validate_cad_edit_program(program: object) -> dict:
             "create_sketch",
             "create_program_sketch",
             "create_part",
+            "create_construction_point",
+            "create_construction_axis",
+            "create_construction_plane",
+            "create_helix_path",
+            "create_helix",
+            "create_thread",
             "append_feature",
             "append_program_pocket",
             "set_dimension",
@@ -1234,6 +1456,20 @@ def _validate_cad_edit_program(program: object) -> dict:
                 )
             ):
                 raise ProtocolError("provider CAD classification assignment is invalid")
+        elif operation_type == "set_color":
+            color = operation.get("color")
+            if set(operation) != {"operation", "selector", "color"} or not (
+                color is None
+                or isinstance(color, list)
+                and len(color) == 3
+                and all(
+                    isinstance(channel, int)
+                    and not isinstance(channel, bool)
+                    and 0 <= channel <= 255
+                    for channel in color
+                )
+            ):
+                raise ProtocolError("provider CAD color is invalid")
         elif operation_type == "delete":
             if set(operation) != {"operation", "selector", "dependency_policy"} or operation[
                 "dependency_policy"

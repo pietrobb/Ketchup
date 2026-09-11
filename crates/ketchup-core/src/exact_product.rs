@@ -816,6 +816,7 @@ impl ExactBRepGraphPackage {
                 && evidence.volume_mm3 == 0.0
                 && graph.accepts_terminal_planar_offset_geometry(
                     evidence.bounds_mm,
+                    graph.terminal_planar_offset_local_bounds_mm(&mesh.vertices_mm),
                     evidence.area_mm2,
                     evidence.topology_counts,
                     evidence.wire_count,
@@ -1139,6 +1140,109 @@ pub struct ExactMeshExport {
 pub struct ExactStlExport {
     pub mesh_stl: String,
     pub loss_report: String,
+}
+
+#[derive(Clone, Copy)]
+pub enum MeshExportSource<'a> {
+    Exact(&'a ExactBodyPackage),
+    Canonical {
+        definition_id: DefinitionId,
+        producer_feature_id: FeatureId,
+        mesh: &'a MeshBodySpec,
+    },
+}
+
+impl MeshExportSource<'_> {
+    #[must_use]
+    pub fn definition_id(self) -> DefinitionId {
+        match self {
+            Self::Exact(package) => package.definition_id(),
+            Self::Canonical { definition_id, .. } => definition_id,
+        }
+    }
+
+    #[must_use]
+    pub fn producer_feature_id(self) -> FeatureId {
+        match self {
+            Self::Exact(package) => package.producer_feature_id(),
+            Self::Canonical {
+                producer_feature_id,
+                ..
+            } => producer_feature_id,
+        }
+    }
+
+    #[must_use]
+    pub fn is_current(self, snapshot: &Snapshot) -> bool {
+        match self {
+            Self::Exact(package) => package.is_current(snapshot),
+            Self::Canonical {
+                definition_id,
+                producer_feature_id,
+                mesh,
+            } => snapshot.feature(producer_feature_id).is_some_and(|feature| {
+                feature.definition_id() == definition_id
+                    && matches!(feature.kind(), FeatureKind::MeshBody(current) if current == mesh)
+            }),
+        }
+    }
+
+    #[must_use]
+    pub fn vertex_count(self) -> usize {
+        match self {
+            Self::Exact(package) => package.vertices().len(),
+            Self::Canonical { mesh, .. } => mesh.vertices_mm.len(),
+        }
+    }
+
+    #[must_use]
+    pub fn vertex_position_mm(self, index: usize) -> Option<[f64; 3]> {
+        match self {
+            Self::Exact(package) => package
+                .vertices()
+                .get(index)
+                .map(|vertex| vertex.position_mm),
+            Self::Canonical { mesh, .. } => mesh.vertices_mm.get(index).copied(),
+        }
+    }
+
+    #[must_use]
+    pub fn triangle_count(self) -> usize {
+        match self {
+            Self::Exact(package) => package.triangles().len(),
+            Self::Canonical { mesh, .. } => mesh.triangles.len(),
+        }
+    }
+
+    #[must_use]
+    pub fn triangle_indices(self, index: usize) -> Option<[u32; 3]> {
+        match self {
+            Self::Exact(package) => package
+                .triangles()
+                .get(index)
+                .map(|triangle| triangle.vertex_indices),
+            Self::Canonical { mesh, .. } => mesh.triangles.get(index).copied(),
+        }
+    }
+
+    #[must_use]
+    pub fn identity(self) -> String {
+        match self {
+            Self::Exact(package) => format!("exact:{}", package.result_fingerprint()),
+            Self::Canonical { .. } => "canonical-mesh".to_owned(),
+        }
+    }
+
+    #[must_use]
+    pub const fn is_canonical(self) -> bool {
+        matches!(self, Self::Canonical { .. })
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct MeshExportBody<'a> {
+    pub source: MeshExportSource<'a>,
+    pub transform: Transform,
 }
 
 pub trait ExactBodyView {
@@ -1794,40 +1898,69 @@ fn mesh_export_from_view(
     }
 }
 
+pub const MAX_STL_EXPORT_INSTANCES: usize = 8_000;
+pub const MAX_STL_EXPORT_TRIANGLES: usize = 4_000_000;
+const MAX_STL_EXPORT_BYTES: usize = 256 * 1024 * 1024;
+
 pub fn exact_model_stl_export(
     snapshot: &Snapshot,
     bodies: &[(&ExactBodyPackage, Transform)],
 ) -> Result<ExactStlExport, ExactProductError> {
+    let bodies = bodies
+        .iter()
+        .map(|(package, transform)| MeshExportBody {
+            source: MeshExportSource::Exact(package),
+            transform: *transform,
+        })
+        .collect::<Vec<_>>();
+    model_stl_export(snapshot, &bodies)
+}
+
+pub fn model_stl_export(
+    snapshot: &Snapshot,
+    bodies: &[MeshExportBody<'_>],
+) -> Result<ExactStlExport, ExactProductError> {
     if bodies.is_empty() {
         return Err(ExactProductError::EmptyModelExport);
     }
-    if bodies
-        .iter()
-        .any(|(package, _)| !package.is_current(snapshot))
-    {
+    if bodies.len() > MAX_STL_EXPORT_INSTANCES {
+        return Err(ExactProductError::ExportResourceLimit);
+    }
+    if bodies.iter().any(|body| !body.source.is_current(snapshot)) {
         return Err(ExactProductError::StaleResult);
     }
+    let total_triangles = bodies.iter().try_fold(0_usize, |count, body| {
+        count
+            .checked_add(body.source.triangle_count())
+            .filter(|total| *total <= MAX_STL_EXPORT_TRIANGLES)
+            .ok_or(ExactProductError::ExportResourceLimit)
+    })?;
 
     let mut mesh_stl = String::from("solid ketchup_current_model\n");
     let mut facet_count = 0_usize;
-    for (package, transform) in bodies {
-        let matrix = transform.matrix();
+    for body in bodies {
+        let source = body.source;
+        let matrix = body.transform.matrix();
         let determinant = matrix[0] * (matrix[5] * matrix[10] - matrix[6] * matrix[9])
             - matrix[1] * (matrix[4] * matrix[10] - matrix[6] * matrix[8])
             + matrix[2] * (matrix[4] * matrix[9] - matrix[5] * matrix[8]);
-        if !determinant.is_finite() || determinant.abs() <= f64::EPSILON {
+        if matrix.iter().any(|value| !value.is_finite())
+            || !determinant.is_finite()
+            || determinant.abs() <= f64::EPSILON
+        {
             return Err(ExactProductError::InvalidMeshExport);
         }
-        for triangle in package.triangles() {
-            let mut indices = triangle.vertex_indices;
+        for triangle_index in 0..source.triangle_count() {
+            let mut indices = source
+                .triangle_indices(triangle_index)
+                .ok_or(ExactProductError::InvalidMeshExport)?;
             if determinant < 0.0 {
                 indices.swap(1, 2);
             }
             let points = indices.map(|index| {
-                package
-                    .vertices()
-                    .get(index as usize)
-                    .map(|vertex| transform_exact_point(matrix, vertex.position_mm))
+                source
+                    .vertex_position_mm(index as usize)
+                    .map(|point| transform_exact_point(matrix, point))
             });
             let [Some(a), Some(b), Some(c)] = points else {
                 return Err(ExactProductError::InvalidMeshExport);
@@ -1861,20 +1994,28 @@ pub fn exact_model_stl_export(
             }
             mesh_stl.push_str("    endloop\n  endfacet\n");
             facet_count += 1;
+            if mesh_stl.len() > MAX_STL_EXPORT_BYTES {
+                return Err(ExactProductError::ExportResourceLimit);
+            }
         }
     }
     mesh_stl.push_str("endsolid ketchup_current_model\n");
 
-    let fingerprints = bodies
+    let source_identities = bodies
         .iter()
-        .map(|(package, _)| package.result_fingerprint())
+        .map(|body| body.source.identity())
         .collect::<Vec<_>>()
         .join(",");
+    let canonical_mesh_count = bodies
+        .iter()
+        .filter(|body| body.source.is_canonical())
+        .count();
     let loss_report = format!(
-        "authority=accepted exact OCCT B-Rep\nformat=ASCII STL\nconversion=current-visible-exact-model-to-world-space-mesh\neditability_loss=canonical features, rules, dimensions, hierarchy, and Undo history are not preserved\ntopology_loss=exact topology, analytic surfaces, assembly identity, and durable face identity are not preserved\ntolerance_loss=geometry is approximated by each accepted tessellation under its source tolerance profile\nsource_digest={}\noccurrence_count={}\nfacet_count={facet_count}\nresult_fingerprints={fingerprints}\n",
+        "authority=validated exact tessellations and canonical mesh bodies\nformat=ASCII STL\nconversion=current-visible-model-to-world-space-mesh\ncolor_loss=STL does not preserve occurrence colors\neditability_loss=canonical features, rules, dimensions, hierarchy, and Undo history are not preserved\ntopology_loss=exact topology, analytic surfaces, assembly identity, and durable face identity are not preserved\ntolerance_loss=exact geometry uses its accepted tessellation; canonical mesh vertices are preserved\nsource_digest={}\noccurrence_count={}\ncanonical_mesh_occurrence_count={canonical_mesh_count}\nfacet_count={facet_count}\nsource_identities={source_identities}\nresource_triangle_limit={MAX_STL_EXPORT_TRIANGLES}\n",
         snapshot.canonical_digest(),
         bodies.len(),
     );
+    debug_assert_eq!(facet_count, total_triangles);
     Ok(ExactStlExport {
         mesh_stl,
         loss_report,
@@ -6538,10 +6679,7 @@ fn planar_offset_loop_is_valid(planar_loop: &ExactBRepPlanarLoop, distance_mm: f
     }
 }
 
-pub(crate) fn accepts_planar_offset_solved_region(
-    region: &SolvedSketchRegion,
-    distance_mm: f64,
-) -> bool {
+pub fn accepts_planar_offset_solved_region(region: &SolvedSketchRegion, distance_mm: f64) -> bool {
     if !distance_mm.is_finite()
         || distance_mm.abs() < EXACT_MIN_LENGTH_MM
         || distance_mm.abs() > MAX_EXACT_PLANAR_OFFSET_LENGTH_MM

@@ -40,6 +40,9 @@ const MAX_ASSISTANT_HELIX_TURNS: f64 = 16.0;
 const MAX_ASSISTANT_HELIX_SEGMENTS: usize = 64;
 const MAX_ASSISTANT_SPATIAL_PATH_SEGMENTS: usize = 64;
 const MAX_ASSISTANT_PROFILE_COPIES: usize = 16;
+const MAX_ASSISTANT_INSTANCE_PATH_STEPS: usize = 256;
+// Four quarter-ellipse cubics using kappa have peak normalized radial error < 0.000273.
+const ELLIPSE_CUBIC_MAX_NORMALIZED_RADIAL_DEVIATION: f64 = 0.000_273;
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -149,6 +152,26 @@ pub struct AssistantCadRotation {
     pub angle_degrees: f64,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantInstancePath {
+    pub root_occurrence_id: u64,
+    pub steps: Vec<AssistantInstancePathStep>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AssistantInstancePathStep {
+    Group {
+        owner_definition_id: u64,
+        local_id: u64,
+    },
+    Occurrence {
+        owner_definition_id: u64,
+        local_id: u64,
+    },
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AssistantAxisSpec {
@@ -165,6 +188,8 @@ pub enum AssistantAxisSpec {
     },
     Edge {
         edge_reference_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        instance_path: Option<AssistantInstancePath>,
     },
 }
 
@@ -342,11 +367,27 @@ impl AssistantAxisSpec {
     fn validate(&self) -> Result<(), String> {
         match self {
             Self::ConstructionAxis { axis } => (*axis).validate(),
-            Self::Edge { edge_reference_id }
-                if edge_reference_id.len() == 64
-                    && edge_reference_id
-                        .bytes()
-                        .all(|byte| byte.is_ascii_hexdigit()) =>
+            Self::Edge {
+                edge_reference_id,
+                instance_path,
+            } if edge_reference_id.len() == 64
+                && edge_reference_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())
+                && instance_path.as_ref().is_none_or(|path| {
+                    path.root_occurrence_id > 0
+                        && path.steps.len() <= MAX_ASSISTANT_INSTANCE_PATH_STEPS
+                        && path.steps.iter().all(|step| match step {
+                            AssistantInstancePathStep::Group {
+                                owner_definition_id,
+                                local_id,
+                            }
+                            | AssistantInstancePathStep::Occurrence {
+                                owner_definition_id,
+                                local_id,
+                            } => *owner_definition_id > 0 && *local_id > 0,
+                        })
+                }) =>
             {
                 Ok(())
             }
@@ -1032,6 +1073,7 @@ pub enum AssistantSketchEntity {
         radius_x_mm: f64,
         radius_y_mm: f64,
         rotation_degrees: f64,
+        maximum_deviation_mm: f64,
     },
     RoundedRectangle {
         segment_ids: [u64; 8],
@@ -1435,6 +1477,23 @@ impl AssistantSketchEntity {
         matches!(self, Self::Arc { .. } | Self::Circle { .. })
     }
 
+    fn ellipse_approximation_is_within_tolerance(&self, uniform_scale: f64) -> bool {
+        match self {
+            Self::Ellipse {
+                radius_x_mm,
+                radius_y_mm,
+                maximum_deviation_mm,
+                ..
+            } => {
+                uniform_scale
+                    * radius_x_mm.max(*radius_y_mm)
+                    * ELLIPSE_CUBIC_MAX_NORMALIZED_RADIAL_DEVIATION
+                    <= *maximum_deviation_mm
+            }
+            _ => true,
+        }
+    }
+
     fn radial_bound(&self) -> f64 {
         let radius = |point: [f64; 2]| point[0].hypot(point[1]);
         match self {
@@ -1515,6 +1574,7 @@ impl AssistantSketchEntity {
                 radius_x_mm,
                 radius_y_mm,
                 rotation_degrees,
+                maximum_deviation_mm,
             } => {
                 segment_ids.iter().all(|id| *id != 0)
                     && segment_ids.iter().collect::<BTreeSet<_>>().len() == segment_ids.len()
@@ -1526,6 +1586,10 @@ impl AssistantSketchEntity {
                     && *radius_y_mm > 0.0
                     && *radius_y_mm <= MAX_ASSISTANT_ABS_MM
                     && rotation_degrees.is_finite()
+                    && maximum_deviation_mm.is_finite()
+                    && *maximum_deviation_mm > 0.0
+                    && *maximum_deviation_mm <= MAX_ASSISTANT_ABS_MM
+                    && self.ellipse_approximation_is_within_tolerance(1.0)
             }
             Self::RoundedRectangle {
                 segment_ids,
@@ -1583,6 +1647,9 @@ impl AssistantSketchEntity {
                             && copy.uniform_scale.is_finite()
                             && copy.uniform_scale > 0.0
                             && copy.uniform_scale <= 1_000.0
+                            && source_entities.iter().all(|entity| {
+                                entity.ellipse_approximation_is_within_tolerance(copy.uniform_scale)
+                            })
                             && copy.translation_mm[0].hypot(copy.translation_mm[1])
                                 + copy.uniform_scale * source_bound
                                 <= MAX_ASSISTANT_ABS_MM

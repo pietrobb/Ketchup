@@ -49,6 +49,166 @@ fn worker_settings() -> SessionSettings {
         evaluation_timeout: Duration::from_secs(30),
     }
 }
+
+#[test]
+fn shared_python_contract_corpus_plans_and_evaluates_with_real_worker() {
+    let corpus: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/assistant_cad_contract_corpus.json"
+    ))
+    .unwrap();
+    assert_eq!(corpus["schema"], "ketchup.assistant-cad-contract-corpus.v1");
+    let cases = corpus["cases"].as_array().unwrap();
+    assert_eq!(cases.len(), 2);
+
+    for case in cases {
+        let mut session = DocumentSession::new(worker_settings());
+        for field in ["setup_program", "program"] {
+            let Some(value) = case.get(field) else {
+                continue;
+            };
+            let program: AssistantCadEditProgram = serde_json::from_value(value.clone()).unwrap();
+            program.validate().unwrap();
+            session
+                .apply_cad_program(&program, &BTreeSet::new())
+                .unwrap();
+        }
+        let report = session.evaluate().unwrap();
+        assert!(
+            report.complete && report.topology_complete,
+            "{case}: {report:?}"
+        );
+        if let Some(expected_color) = case.get("expected_color") {
+            let expected_color: [u8; 3] = serde_json::from_value(expected_color.clone()).unwrap();
+            assert_eq!(
+                session
+                    .snapshot()
+                    .occurrence(OccurrenceId(1))
+                    .unwrap()
+                    .color(),
+                Some(expected_color)
+            );
+        }
+    }
+}
+
+#[test]
+fn explicit_current_snapshot_save_is_atomic_and_resets_the_persistent_history_boundary() {
+    let mut session = DocumentSession::default();
+    let proposal = session
+        .plan_commands(CommandBatch::new(vec![
+            CanonicalCommand::CreateEvaluatorNode {
+                id: NodeId(1),
+                name: "parameter".into(),
+                dimension: Dimension::new("10", 10.0).unwrap(),
+                dependencies: vec![],
+            },
+        ]))
+        .unwrap();
+    session.apply_proposal(&proposal).unwrap();
+    let proposal = session
+        .plan_commands(CommandBatch::new(vec![
+            CanonicalCommand::SetEvaluatorDimension {
+                id: NodeId(1),
+                dimension: Dimension::new("20", 20.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+    session.apply_proposal(&proposal).unwrap();
+    let expected = session.snapshot();
+    assert_eq!(session.visible_undo_steps(), 2);
+
+    let directory = tempfile::tempdir().unwrap();
+    let occupied = directory.path().join("occupied.ketchup");
+    std::fs::write(&occupied, b"existing").unwrap();
+    assert!(
+        session
+            .save_current_snapshot(&occupied, SaveOptions::default())
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&occupied).unwrap(), b"existing");
+    assert_eq!(session.visible_undo_steps(), 2);
+    assert!(session.is_modified());
+
+    let path = directory.path().join("current.ketchup");
+    session
+        .save_current_snapshot(&path, SaveOptions::default())
+        .unwrap();
+    assert_eq!(
+        session.snapshot().canonical_digest(),
+        expected.canonical_digest()
+    );
+    assert_eq!(session.snapshot().revision_id(), expected.revision_id());
+    assert_eq!(session.visible_undo_steps(), 0);
+    assert_eq!(session.visible_redo_steps(), 0);
+    assert!(!session.is_modified());
+
+    let mut reopened = DocumentSession::open(&path, SessionSettings::default()).unwrap();
+    assert_eq!(
+        reopened.snapshot().canonical_digest(),
+        expected.canonical_digest()
+    );
+    assert_eq!(reopened.snapshot().revision_id(), expected.revision_id());
+    assert_eq!(reopened.visible_undo_steps(), 0);
+    assert_eq!(reopened.visible_redo_steps(), 0);
+    let proposal = reopened
+        .plan_commands(CommandBatch::new(vec![
+            CanonicalCommand::SetEvaluatorDimension {
+                id: NodeId(1),
+                dimension: Dimension::new("30", 30.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+    let next = reopened.apply_proposal(&proposal).unwrap();
+    assert!(next.revision_id() > expected.revision_id());
+}
+
+#[test]
+fn recovered_session_requires_explicit_save_as_and_exposes_the_actual_source() {
+    let directory = tempfile::tempdir().unwrap();
+    let requested = directory.path().join("damaged.ketchup");
+    let recovery = requested.with_extension("ketchup.recovery");
+    let destination = directory.path().join("recovered-copy.ketchup");
+    let occupied = directory.path().join("occupied.ketchup");
+
+    let mut author = DocumentSession::default();
+    author
+        .apply_cad_program(&program(), &BTreeSet::new())
+        .unwrap();
+    let expected = author.snapshot().canonical_digest();
+    author.save(&requested, SaveOptions::default()).unwrap();
+    std::fs::copy(&requested, &recovery).unwrap();
+    std::fs::write(&requested, b"corrupt primary").unwrap();
+
+    let mut recovered = DocumentSession::open(&requested, SessionSettings::default()).unwrap();
+    assert_eq!(recovered.snapshot().canonical_digest(), expected);
+    assert_eq!(recovered.path(), None);
+    assert!(recovered.is_modified());
+    let state = recovered.recovery_state().unwrap();
+    assert_eq!(state.requested_path(), requested);
+    assert_eq!(state.source_path(), recovery);
+
+    std::fs::write(&occupied, b"preserve me").unwrap();
+    assert!(recovered.save(&occupied, SaveOptions::default()).is_err());
+    assert_eq!(std::fs::read(&occupied).unwrap(), b"preserve me");
+    assert!(recovered.recovery_state().is_some());
+    assert!(recovered.is_modified());
+
+    recovered
+        .save(&destination, SaveOptions::default())
+        .unwrap();
+    assert_eq!(recovered.path(), Some(destination.as_path()));
+    assert!(recovered.recovery_state().is_none());
+    assert!(!recovered.is_modified());
+    assert_eq!(std::fs::read(&requested).unwrap(), b"corrupt primary");
+    assert_eq!(
+        DocumentSession::open(&destination, SessionSettings::default())
+            .unwrap()
+            .snapshot()
+            .canonical_digest(),
+        expected
+    );
+}
+
 #[test]
 fn real_worker_session_save_open_and_read_only_reports() {
     let settings = worker_settings();
@@ -238,6 +398,7 @@ fn real_worker_line_edge_resolves_the_same_shared_axis_as_direct_geometry() {
         .apply_cad_program(
             &helix_program(AssistantAxisSpec::Edge {
                 edge_reference_id: reference_id.clone(),
+                instance_path: None,
             }),
             &BTreeSet::new(),
         )
@@ -271,11 +432,184 @@ fn real_worker_line_edge_resolves_the_same_shared_axis_as_direct_geometry() {
         edge_session
             .plan_cad_program(
                 &helix_program(AssistantAxisSpec::Edge {
-                    edge_reference_id: reference_id
+                    edge_reference_id: reference_id,
+                    instance_path: None,
                 }),
                 &BTreeSet::new(),
             )
             .is_ok()
+    );
+}
+
+#[test]
+fn circular_pattern_binds_exact_edge_axis_to_the_selected_world_instance() {
+    let mut session = DocumentSession::new(worker_settings());
+    session
+        .apply_cad_program(&program(), &BTreeSet::new())
+        .unwrap();
+    let setup = session
+        .plan_commands(CommandBatch::new(vec![
+            CanonicalCommand::CreateGroup {
+                id: GroupId(1),
+                name: "Rotated axis carrier".into(),
+                transform: Transform::from_matrix([
+                    0.0, 0.0, 1.0, 100.0, 0.0, 1.0, 0.0, 20.0, -1.0, 0.0, 0.0, 30.0, 0.0, 0.0, 0.0,
+                    1.0,
+                ])
+                .unwrap(),
+                parent: None,
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(2),
+                definition_id: DefinitionId(1),
+                name: "Repeated transformed axis source".into(),
+                transform: Transform::from_translation(4.0, 5.0, 6.0).unwrap(),
+                parent: Some(GroupId(1)),
+                tag: None,
+                visible: true,
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(3),
+                definition_id: DefinitionId(1),
+                name: "Nonuniform axis source".into(),
+                transform: Transform::from_matrix([
+                    2.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+                ])
+                .unwrap(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    session.apply_proposal(&setup).unwrap();
+    let evaluated = session.snapshot();
+    assert!(session.evaluate().unwrap().topology_complete);
+
+    let page = ModelQuery::default()
+        .page_with_topology(
+            &evaluated,
+            session.topology_results(),
+            &PageRequest {
+                kind: EntityKind::Edges,
+                limit: 100,
+                search: "circle".into(),
+                definition_id: Some(1),
+                tag_id: None,
+                classification_dimension_id: None,
+                classification_category_id: None,
+                world_bounds_mm: None,
+                cursor: None,
+            },
+        )
+        .unwrap();
+    let edge = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|edge| {
+            edge["geometry"]["axis_origin_mm"].is_array()
+                && edge["geometry"]["unit_axis_direction"].is_array()
+        })
+        .expect("a circular exact edge must publish its axis");
+    let reference_id = edge["reference_id"].as_str().unwrap().to_owned();
+    let vector = |field: &serde_json::Value| {
+        [
+            field[0].as_f64().unwrap(),
+            field[1].as_f64().unwrap(),
+            field[2].as_f64().unwrap(),
+        ]
+    };
+    let local_origin = vector(&edge["geometry"]["axis_origin_mm"]);
+    let local_direction = vector(&edge["geometry"]["unit_axis_direction"]);
+    let world = evaluated
+        .resolve_instance_path(&InstancePath::root(OccurrenceId(2)))
+        .unwrap()
+        .world_transform;
+    let matrix = world.matrix();
+    let world_origin = [0, 1, 2].map(|row| {
+        matrix[row * 4] * local_origin[0]
+            + matrix[row * 4 + 1] * local_origin[1]
+            + matrix[row * 4 + 2] * local_origin[2]
+            + matrix[row * 4 + 3]
+    });
+    let world_direction = [0, 1, 2].map(|row| {
+        matrix[row * 4] * local_direction[0]
+            + matrix[row * 4 + 1] * local_direction[1]
+            + matrix[row * 4 + 2] * local_direction[2]
+    });
+    let pattern = |axis| AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::CircularPattern {
+            selector: AssistantCadEntitySelector::Occurrences {
+                occurrence_ids: vec![1],
+            },
+            instances: 2,
+            axis,
+            angle_step_degrees: 90.0,
+        }],
+    };
+    let edge_plan = session
+        .plan_cad_program(
+            &pattern(AssistantAxisSpec::Edge {
+                edge_reference_id: reference_id.clone(),
+                instance_path: Some(AssistantInstancePath {
+                    root_occurrence_id: 2,
+                    steps: Vec::new(),
+                }),
+            }),
+            &BTreeSet::new(),
+        )
+        .unwrap();
+    let direct_plan = session
+        .plan_cad_program(
+            &pattern(AssistantAxisSpec::OriginDirection {
+                origin_mm: world_origin,
+                direction: world_direction,
+            }),
+            &BTreeSet::new(),
+        )
+        .unwrap();
+    assert_eq!(edge_plan.batch().commands(), direct_plan.batch().commands());
+
+    let nonuniform = session
+        .plan_cad_program(
+            &pattern(AssistantAxisSpec::Edge {
+                edge_reference_id: reference_id.clone(),
+                instance_path: Some(AssistantInstancePath {
+                    root_occurrence_id: 3,
+                    steps: Vec::new(),
+                }),
+            }),
+            &BTreeSet::new(),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        nonuniform,
+        SessionError::Planning(error)
+            if error.code == "planning.cad_axis_instance_transform_invalid"
+    ));
+
+    let ambiguous = session
+        .plan_cad_program(
+            &pattern(AssistantAxisSpec::Edge {
+                edge_reference_id: reference_id,
+                instance_path: None,
+            }),
+            &BTreeSet::new(),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        ambiguous,
+        SessionError::Planning(error)
+            if error.code == "planning.cad_axis_instance_path_unavailable"
+    ));
+    let before = session.snapshot();
+    session.apply_proposal(&edge_plan).unwrap();
+    assert_eq!(session.snapshot().occurrences().count(), 4);
+    session.undo().unwrap();
+    assert_eq!(
+        session.snapshot().canonical_digest(),
+        before.canonical_digest()
     );
 }
 

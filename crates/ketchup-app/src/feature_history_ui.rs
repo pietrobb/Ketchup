@@ -1,4 +1,5 @@
 use super::*;
+use ketchup_core::document::FeatureParameterTarget;
 use ketchup_core::feature_history::{
     BodyHistoryMutation, BodyHistoryMutationRequest, BodyProfileTranslationRequest,
     ExactParameterEdit, ExactParameterEditTarget, FeatureHistoryProjection, FeatureHistoryQuery,
@@ -241,6 +242,36 @@ impl KetchupApp {
         let Some(feature) = snapshot.feature(feature_id) else {
             return Vec::new();
         };
+        let generic_choices = |parameter_feature_id: FeatureId| {
+            let Some(parameter_feature) = snapshot.feature(parameter_feature_id) else {
+                return Vec::new();
+            };
+            parameter_feature
+                .kind()
+                .parameter_descriptors()
+                .into_iter()
+                .filter_map(|descriptor| {
+                    let value_mm = parameter_feature
+                        .kind()
+                        .parameter_value(descriptor.path())?;
+                    let target = FeatureParameterTarget::new(
+                        parameter_feature_id,
+                        descriptor.path().as_str(),
+                        descriptor.value_type(),
+                    )
+                    .ok()?;
+                    Some(ParameterChoice {
+                        target: ExactParameterEditTarget::FeatureParameter(target),
+                        label: format!(
+                            "{} · {}",
+                            parameter_feature.name(),
+                            descriptor.path().as_str()
+                        ),
+                        value_mm,
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
         match feature.kind() {
             FeatureKind::Workplane(spec) => match &spec.support {
                 WorkplaneSupport::Offset { distance, .. } => vec![ParameterChoice {
@@ -320,7 +351,11 @@ impl KetchupApp {
                 label: self.catalog.text("feature-history-parameter-depth"),
                 value_mm: depth.millimetres(),
             }],
-            _ => Vec::new(),
+            FeatureKind::Sweep { profile, path } => [*profile, *path]
+                .into_iter()
+                .flat_map(generic_choices)
+                .collect(),
+            _ => generic_choices(feature_id),
         }
     }
 
@@ -1032,7 +1067,7 @@ impl KetchupApp {
         let (Some(definition_id), Some(body_id), Some(target)) = (
             self.feature_history.definition,
             self.feature_history.selected_body,
-            self.feature_history.selected_parameter,
+            self.feature_history.selected_parameter.clone(),
         ) else {
             self.feature_history_error(self.catalog.text("feature-history-error-no-parameter"));
             return false;
@@ -1107,13 +1142,11 @@ impl KetchupApp {
     ) -> Option<(DefinitionId, BodyId, ExactParameterEditTarget, String, f64)> {
         let definition_id = self.feature_history.definition?;
         let body_id = self.feature_history.selected_body?;
-        let target = self.feature_history.selected_parameter?;
-        let feature_id = match target {
-            ExactParameterEditTarget::FeatureDimension(feature_id)
-            | ExactParameterEditTarget::SketchConstraintDimension {
-                sketch_id: feature_id,
-                ..
-            } => feature_id,
+        let target = self.feature_history.selected_parameter.clone()?;
+        let feature_id = match &target {
+            ExactParameterEditTarget::FeatureDimension(feature_id) => *feature_id,
+            ExactParameterEditTarget::FeatureParameter(target) => target.feature_id,
+            ExactParameterEditTarget::SketchConstraintDimension { sketch_id, .. } => *sketch_id,
         };
         let choice = self
             .feature_parameter_choices(&self.document.current(), feature_id)
@@ -2723,13 +2756,14 @@ impl KetchupApp {
             if self
                 .feature_history
                 .selected_parameter
-                .is_none_or(|target| !choices.iter().any(|choice| choice.target == target))
+                .as_ref()
+                .is_none_or(|target| !choices.iter().any(|choice| &choice.target == target))
             {
                 self.feature_history.selected_parameter =
-                    choices.first().map(|choice| choice.target);
+                    choices.first().map(|choice| choice.target.clone());
                 self.feature_history.parameter_source = None;
             }
-            if let Some(mut target) = self.feature_history.selected_parameter {
+            if let Some(mut target) = self.feature_history.selected_parameter.clone() {
                 let selected = choices.iter().find(|choice| choice.target == target);
                 let label = self.catalog.text("feature-history-parameter");
                 let selected_text = selected
@@ -2740,16 +2774,16 @@ impl KetchupApp {
                     .selected_text(selected_text)
                     .show_ui(ui, |ui| {
                         for choice in &choices {
-                            ui.selectable_value(&mut target, choice.target, &choice.label);
+                            ui.selectable_value(&mut target, choice.target.clone(), &choice.label);
                         }
                     });
                 response.response.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, &label)
                 });
-                if self.feature_history.selected_parameter != Some(target) {
-                    action = Some(FeatureHistoryUiAction::SelectParameter(target));
-                } else if self.feature_history.parameter_source
-                    != Some((snapshot.revision_id(), target))
+                if self.feature_history.selected_parameter.as_ref() != Some(&target) {
+                    action = Some(FeatureHistoryUiAction::SelectParameter(target.clone()));
+                } else if self.feature_history.parameter_source.as_ref()
+                    != Some(&(snapshot.revision_id(), target.clone()))
                     && let Some(choice) = selected
                 {
                     self.feature_history.value_input = format_height(choice.value_mm);

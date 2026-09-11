@@ -9,11 +9,16 @@ use ketchup_core::document::{
 use ketchup_core::exact_brep_graph::ExactBRepOperation;
 use ketchup_core::exact_product::{ExactResultRegistry, ExactSnapshotPreparation};
 use ketchup_core::exact_validation::{
-    GeneralBodyNarrowPhaseRelation, GeneralBodyParticipant, general_body_narrow_phase,
+    GeneralBodyNarrowPhaseRelation, GeneralBodyParticipant, GeneralClearanceCase,
+    general_body_input_bytes, general_body_narrow_phase, general_body_validation_policy,
+    general_body_validator_descriptor,
 };
 use ketchup_core::persistence::ContainerData;
 use ketchup_core::prismatic::TolerancePolicy;
-use ketchup_core::validation::EvidenceClass;
+use ketchup_core::validation::{
+    DIAGNOSTIC_SCHEMA_V1, DiagnosticLocation, DiagnosticSeverity, EvidenceClass, EvidenceCounts,
+    ValidationDiagnostic, ValidationInvocation, ValidationReport, ValidationState,
+};
 use ketchup_interaction::spatial::{
     SpatialQueryError, overlapping_bounds_for_sources_with_cancellation, overlapping_bounds_pairs,
 };
@@ -120,6 +125,126 @@ pub fn scoped_collision_report_with_worker(
         Some(scope),
         Some(cancelled),
     )
+}
+
+pub struct FabricationCollisionValidation {
+    pub cases: Vec<GeneralClearanceCase>,
+    pub report: ValidationReport,
+}
+
+/// Bind the ordinary full-model native BRep collision result to the complete,
+/// deterministic set of manufacturing participants consumed by fabrication.
+pub fn fabrication_collision_validation_with_worker(
+    snapshot: &Snapshot,
+    participants: &[GeneralBodyParticipant],
+    container: &ContainerData,
+    worker_path: Option<PathBuf>,
+    timeout: Duration,
+) -> Result<FabricationCollisionValidation, String> {
+    let mut participants = participants.to_vec();
+    participants.sort_by(|left, right| {
+        left.instance_path()
+            .cmp(right.instance_path())
+            .then_with(|| left.source().cmp(right.source()))
+    });
+    if participants.windows(2).any(|pair| {
+        pair[0].instance_path() == pair[1].instance_path() && pair[0].source() == pair[1].source()
+    }) {
+        return Err("duplicate fabrication collision participant".to_owned());
+    }
+    let mut cases =
+        Vec::with_capacity(participants.len() * participants.len().saturating_sub(1) / 2);
+    for left in 0..participants.len() {
+        for right in left + 1..participants.len() {
+            cases.push(
+                GeneralClearanceCase::new(
+                    participants[left].clone(),
+                    participants[right].clone(),
+                    0.0,
+                )
+                .map_err(|error| format!("invalid fabrication clearance: {error:?}"))?,
+            );
+        }
+    }
+
+    let collision = collision_report(
+        snapshot,
+        &AssistantValidationSelection::only(&["collision"]),
+        Some((container, worker_path, timeout)),
+        None,
+        None,
+    );
+    let policy = general_body_validation_policy();
+    let mut descriptor = general_body_validator_descriptor();
+    descriptor.implementation_id =
+        "ketchup.application.general-bodies.native-brep-common-volume.v1".to_owned();
+    descriptor.implementation_version = "1.0.0".to_owned();
+    let input = general_body_input_bytes(&cases);
+    let invocation = ValidationInvocation::bind(snapshot, &descriptor, &policy, Vec::new(), &input);
+    let complete = collision["complete"].as_bool() == Some(true);
+    let state = match (complete, collision["state"].as_str()) {
+        (true, Some("passed")) => ValidationState::Passed,
+        (true, Some("failed")) => ValidationState::Failed,
+        _ => ValidationState::NotEvaluated,
+    };
+    let diagnostics = collision["issues"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|issue| ValidationDiagnostic {
+            schema: DIAGNOSTIC_SCHEMA_V1,
+            code: issue["code"]
+                .as_str()
+                .unwrap_or("collision.detected")
+                .to_owned(),
+            severity: DiagnosticSeverity::Error,
+            evidence_class: EvidenceClass::Exact,
+            location: DiagnosticLocation {
+                entity: None,
+                exact_body: None,
+                joint: None,
+            },
+            policy_id: invocation.policy_id.clone(),
+            policy_version: invocation.policy_version,
+            evidence: issue.to_string(),
+        })
+        .collect::<Vec<_>>();
+    let mut unresolved_conditions = collision["not_evaluated"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(Value::to_string)
+        .collect::<Vec<_>>();
+    unresolved_conditions.extend(
+        collision["unavailable_occurrences"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(Value::to_string),
+    );
+    if state == ValidationState::NotEvaluated && unresolved_conditions.is_empty() {
+        unresolved_conditions.push("native BRep collision validation was incomplete".to_owned());
+    }
+    Ok(FabricationCollisionValidation {
+        cases,
+        report: ValidationReport {
+            invocation,
+            state,
+            evidence_counts: EvidenceCounts {
+                exact: collision["checked_pair_count"]
+                    .as_u64()
+                    .and_then(|count| usize::try_from(count).ok())
+                    .unwrap_or(0),
+                tolerant: 0,
+            },
+            diagnostics,
+            assumptions: vec![
+                "certified world bounds reject only disjoint pairs".to_owned(),
+                "every retained pair is evaluated by native BRep common volume".to_owned(),
+            ],
+            unresolved_conditions,
+        },
+    })
 }
 
 struct Body {

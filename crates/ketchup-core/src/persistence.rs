@@ -28,7 +28,7 @@ use crate::document::{
     LocalOccurrenceId, LocalOccurrenceKey, LoftSection, MeshAuthority, MeshBodySpec, NodeId,
     Occurrence, OccurrenceId, ParameterPath, ParameterValueType, PersistentDimension,
     PersistentDimensionId, PersistentDimensionTarget, ProductModel, ProfileSegment,
-    ProposalPrincipal, RevisionOrigin, Snapshot, SpatialPathSegment, StableEdgeRole,
+    ProposalPrincipal, Revision, RevisionOrigin, Snapshot, SpatialPathSegment, StableEdgeRole,
     StableFaceRole, Tag, TagId, Transform, UnitSystem,
 };
 use crate::drawing::{
@@ -989,6 +989,29 @@ fn write_revision_origin(bytes: &mut Vec<u8>, origin: RevisionOrigin) {
     }
 }
 
+fn append_revision_history_record(
+    bytes: &mut Vec<u8>,
+    revision: &Revision,
+) -> Result<(), PersistenceError> {
+    let snapshot = save(revision.snapshot());
+    push_u64(bytes, revision.id());
+    push_string(bytes, revision.batch_digest());
+    write_revision_origin(bytes, revision.origin());
+    if let Some(checkpoint) = revision.checkpoint() {
+        push_u8(bytes, 1);
+        push_string(bytes, checkpoint);
+    } else {
+        push_u8(bytes, 0);
+    }
+    push_u64(bytes, snapshot.len() as u64);
+    bytes.extend_from_slice(&crate::graph::sha256_bytes(&snapshot));
+    bytes.extend_from_slice(&snapshot);
+    if bytes.len() > MAX_SIDECAR_BYTES {
+        return Err(PersistenceError::ResourceLimit);
+    }
+    Ok(())
+}
+
 fn encode_revision_history(document: &DocumentStore) -> Result<Vec<u8>, PersistenceError> {
     let count =
         u32::try_from(document.revision_count()).map_err(|_| PersistenceError::ResourceLimit)?;
@@ -1004,23 +1027,23 @@ fn encode_revision_history(document: &DocumentStore) -> Result<Vec<u8>, Persiste
     push_u32(&mut bytes, cursor);
     push_u64(&mut bytes, document.next_revision_id());
     for revision in document.revision_history() {
-        let snapshot = save(revision.snapshot());
-        push_u64(&mut bytes, revision.id());
-        push_string(&mut bytes, revision.batch_digest());
-        write_revision_origin(&mut bytes, revision.origin());
-        if let Some(checkpoint) = revision.checkpoint() {
-            push_u8(&mut bytes, 1);
-            push_string(&mut bytes, checkpoint);
-        } else {
-            push_u8(&mut bytes, 0);
-        }
-        push_u64(&mut bytes, snapshot.len() as u64);
-        bytes.extend_from_slice(&crate::graph::sha256_bytes(&snapshot));
-        bytes.extend_from_slice(&snapshot);
-        if bytes.len() > MAX_SIDECAR_BYTES {
-            return Err(PersistenceError::ResourceLimit);
-        }
+        append_revision_history_record(&mut bytes, revision)?;
     }
+    Ok(bytes)
+}
+
+fn encode_current_revision_history(document: &DocumentStore) -> Result<Vec<u8>, PersistenceError> {
+    let revision = document
+        .revision_history()
+        .nth(document.history_cursor())
+        .ok_or(PersistenceError::InvalidRevisionHistory)?;
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(HISTORY_MAGIC);
+    push_u16(&mut bytes, HISTORY_SCHEMA);
+    push_u32(&mut bytes, 1);
+    push_u32(&mut bytes, 0);
+    push_u64(&mut bytes, document.next_revision_id());
+    append_revision_history_record(&mut bytes, revision)?;
     Ok(bytes)
 }
 
@@ -1050,6 +1073,19 @@ pub fn save_document_store(
         container_data,
         imported_sources,
         Some(encode_revision_history(document)?),
+    )
+}
+
+pub fn save_document_store_current_snapshot(
+    document: &DocumentStore,
+    container_data: &ContainerData,
+) -> Result<Vec<u8>, PersistenceError> {
+    let snapshot = document.current();
+    save_container_entries(
+        &snapshot,
+        container_data,
+        imported_source_blob_hashes(&snapshot),
+        Some(encode_current_revision_history(document)?),
     )
 }
 
@@ -2643,6 +2679,16 @@ pub fn save_atomic_document_store_with_container(
     save_atomic_bytes(path.as_ref(), &bytes)
 }
 
+pub fn save_atomic_document_store_current_snapshot_with_container(
+    path: impl AsRef<Path>,
+    document: &DocumentStore,
+    container_data: &ContainerData,
+) -> Result<(), FilePersistenceError> {
+    let bytes = save_document_store_current_snapshot(document, container_data)
+        .map_err(FilePersistenceError::Format)?;
+    save_atomic_bytes(path.as_ref(), &bytes)
+}
+
 fn save_atomic_bytes(path: &Path, bytes: &[u8]) -> Result<(), FilePersistenceError> {
     load(bytes).map_err(FilePersistenceError::Format)?;
     match read_native_document_file(path) {
@@ -2980,14 +3026,17 @@ fn decode_revision_history(
             return Err(PersistenceError::HistoryChecksumMismatch);
         }
         let loaded = load_document(encoded_snapshot, container_data.clone())?;
-        if loaded.source_schema() != CURRENT_SCHEMA || !loaded.is_editable() {
+        if !loaded.is_editable() {
             return Err(PersistenceError::InvalidRevisionHistory);
         }
+        let source_schema = loaded.source_schema();
         let snapshot = loaded
             .into_editable()
             .map_err(|_| PersistenceError::InvalidRevisionHistory)?
             .current();
-        if snapshot.revision_id() != revision_id || save(&snapshot) != encoded_snapshot {
+        if snapshot.revision_id() != revision_id
+            || (source_schema == CURRENT_SCHEMA && save(&snapshot) != encoded_snapshot)
+        {
             return Err(PersistenceError::InvalidRevisionHistory);
         }
         if document_id.is_some_and(|id| id != snapshot.document_id()) {

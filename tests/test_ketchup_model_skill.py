@@ -137,6 +137,7 @@ class SafetyDocument:
     def __init__(self):
         self.snapshot = {"document_id": str(uuid.uuid4()), "revision": 0, "canonical_digest": "zero",
                          "undo_steps": 0, "redo_steps": 0}
+        self.modified = True
         self.calls = []
         self.batch_states = {}
         self.verify_states = {}
@@ -149,7 +150,7 @@ class SafetyDocument:
     def summary(self):
         return {"state": copy.deepcopy(self.snapshot), "summary": {
             "identity": skill._identity(self.snapshot), "counts": {"root_occurrences": 0, "definitions": 0, "features": 0},
-            "complete": True, "coverage": {"spatial": False}}}
+            "complete": True, "coverage": {"spatial": False}}, "modified": self.modified}
 
     def query(self, **params):
         self.calls.append(("query", params))
@@ -190,16 +191,19 @@ class SafetyDocument:
             raise skill._sdk().HeadlessError("batch_cancelled", "batch job cancelled")
         self.batch_states[handle] = "completed"
         self.snapshot.update(revision=1, canonical_digest="batch", undo_steps=1)
+        self.modified = True
         return {"job_handle": handle, "status": {"state": "completed"},
                 "receipt": {"applied_count": 1, "after": skill._identity(self.snapshot)}}
 
     def apply(self, program, *, selection):
         self.calls.append(("apply", program, selection))
         self.snapshot.update(revision=1, canonical_digest="one", undo_steps=1)
+        self.modified = True
         return {**self.summary(), "created": {}}
 
     def save(self, path, *, overwrite):
         self.calls.append(("save", path, overwrite))
+        self.modified = False
         return self.summary()
 
     def evaluate(self, **kwargs):
@@ -267,12 +271,17 @@ def test_tool_lifecycle_stale_save_close_and_bounds(monkeypatch, doubles, tmp_pa
         destination.write_bytes(b"original")
         assert (await call(registered, "KetchupSave", handle=handle, path=str(destination), **pre))["error"]["code"] == "file_exists"
         assert destination.read_bytes() == b"original"
-        assert (await call(registered, "KetchupSave", handle=handle, path=str(destination), overwrite=True, **pre))["ok"]
+        saved = await call(registered, "KetchupSave", handle=handle, path=str(destination), overwrite=True, **pre)
+        assert saved["ok"] and not saved["result"]["unsaved"]
         assert doubles[0].doc.calls[-1][-1] is True
         report = await call(registered, "KetchupVerify", handle=handle)
         assert report["complete"] is False and report["error"]["code"] == "output_too_large"
+        doubles[0].doc.modified = True
         current = (await call(registered, "KetchupInspect", handle=handle))["result"]
-        assert (await call(registered, "KetchupSession", action="close", handle=handle, **expected(current)))["ok"]
+        assert current["unsaved"]
+        refused = await call(registered, "KetchupSession", action="close", handle=handle, **expected(current))
+        assert refused["error"]["code"] == "unsaved_changes"
+        assert (await call(registered, "KetchupSession", action="close", handle=handle, discard=True, **expected(current)))["ok"]
         assert doubles[0].closed
     asyncio.run(scenario())
 

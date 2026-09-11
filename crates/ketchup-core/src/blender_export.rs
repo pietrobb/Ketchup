@@ -2,7 +2,7 @@ use crate::document::{
     DefinitionId, FeatureId, GroupId, InstancePathStep, LocalGroupKey, LocalOccurrenceKey,
     SceneOccurrence, Snapshot, Transform,
 };
-use crate::exact_product::{ExactBodyPackage, ExactBodyView, ExactProductError};
+use crate::exact_product::{ExactBodyPackage, ExactProductError, MeshExportSource};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -14,6 +14,10 @@ const GLTF_ELEMENT_ARRAY_BUFFER: u32 = 34_963;
 const GLTF_FLOAT: u32 = 5_126;
 const GLTF_UNSIGNED_INT: u32 = 5_125;
 const MILLIMETRES_PER_METRE: f64 = 1_000.0;
+pub const MAX_GLB_EXPORT_INSTANCES: usize = 8_000;
+const MAX_GLB_EXPORT_VERTICES: usize = 2_000_000;
+const MAX_GLB_EXPORT_TRIANGLES: usize = 4_000_000;
+const MAX_GLB_EXPORT_BYTES: usize = 256 * 1024 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExactGlbExport {
@@ -24,6 +28,12 @@ pub struct ExactGlbExport {
 #[derive(Clone, Copy)]
 pub struct ExactGlbInstance<'a> {
     pub package: &'a ExactBodyPackage,
+    pub occurrence: &'a SceneOccurrence,
+}
+
+#[derive(Clone, Copy)]
+pub struct MeshGlbInstance<'a> {
+    pub source: MeshExportSource<'a>,
     pub occurrence: &'a SceneOccurrence,
 }
 
@@ -68,31 +78,69 @@ pub fn exact_model_glb_export(
     snapshot: &Snapshot,
     instances: &[ExactGlbInstance<'_>],
 ) -> Result<ExactGlbExport, ExactProductError> {
+    let instances = instances
+        .iter()
+        .map(|instance| MeshGlbInstance {
+            source: MeshExportSource::Exact(instance.package),
+            occurrence: instance.occurrence,
+        })
+        .collect::<Vec<_>>();
+    model_glb_export(snapshot, &instances)
+}
+
+pub fn model_glb_export(
+    snapshot: &Snapshot,
+    instances: &[MeshGlbInstance<'_>],
+) -> Result<ExactGlbExport, ExactProductError> {
     if instances.is_empty() {
         return Err(ExactProductError::EmptyModelExport);
     }
+    if instances.len() > MAX_GLB_EXPORT_INSTANCES {
+        return Err(ExactProductError::ExportResourceLimit);
+    }
     if instances
         .iter()
-        .any(|instance| !instance.occurrence.visible || !instance.package.is_current(snapshot))
+        .any(|instance| !instance.occurrence.visible || !instance.source.is_current(snapshot))
     {
         return Err(ExactProductError::StaleResult);
+    }
+    if instances
+        .iter()
+        .any(|instance| instance.source.definition_id() != instance.occurrence.definition_id)
+    {
+        return Err(ExactProductError::InvalidMeshExport);
     }
 
     let mut binary = Vec::new();
     let mut buffer_views = Vec::<Value>::new();
     let mut accessors = Vec::<Value>::new();
     let mut geometries = BTreeMap::<GeometryKey, GeometryLayout>::new();
+    let mut vertex_count = 0_usize;
+    let mut triangle_count = 0_usize;
     for instance in instances {
-        let key = geometry_key(instance.package);
+        let key = geometry_key(instance.source);
         if geometries.contains_key(&key) {
             continue;
         }
+        vertex_count = add_with_limit(
+            vertex_count,
+            instance.source.vertex_count(),
+            MAX_GLB_EXPORT_VERTICES,
+        )?;
+        triangle_count = add_with_limit(
+            triangle_count,
+            instance.source.triangle_count(),
+            MAX_GLB_EXPORT_TRIANGLES,
+        )?;
         let layout = append_geometry(
-            instance.package,
+            instance.source,
             &mut binary,
             &mut buffer_views,
             &mut accessors,
         )?;
+        if binary.len() > MAX_GLB_EXPORT_BYTES {
+            return Err(ExactProductError::ExportResourceLimit);
+        }
         geometries.insert(key, layout);
     }
 
@@ -102,7 +150,7 @@ pub fn exact_model_glb_export(
     let mut meshes = Vec::<Value>::new();
     let mut instance_meshes = Vec::with_capacity(instances.len());
     for instance in instances {
-        let geometry_key = geometry_key(instance.package);
+        let geometry_key = geometry_key(instance.source);
         let mesh_key = (geometry_key.clone(), instance.occurrence.color());
         let mesh_index = if let Some(index) = mesh_indices.get(&mesh_key) {
             *index
@@ -160,8 +208,15 @@ pub fn exact_model_glb_export(
         document["materials"] = Value::Array(materials);
     }
     let glb = encode_glb(&document, &binary)?;
+    if glb.len() > MAX_GLB_EXPORT_BYTES {
+        return Err(ExactProductError::ExportResourceLimit);
+    }
+    let canonical_mesh_count = instances
+        .iter()
+        .filter(|instance| instance.source.is_canonical())
+        .count();
     let loss_report = format!(
-        "authority=accepted exact OCCT B-Rep\nformat=glTF 2.0 binary (GLB)\nconversion=current-visible-exact-model-to-instanced-mesh-scene\nunit_conversion=millimetres to metres\naxis_conversion=Ketchup Z-up to glTF Y-up\nhierarchy=canonical global groups, component occurrences, local groups, and nested occurrences\nblender_background_import_verified=false\neditability_loss=canonical features, rules, dimensions, constraints, and Undo history are not preserved\ntopology_loss=exact topology, analytic surfaces, and durable face identity are not preserved\ntolerance_loss=geometry is approximated by each accepted tessellation under its source tolerance profile\nsource_digest={}\noccurrence_body_count={}\nunique_geometry_count={}\nmesh_count={}\n",
+        "authority=validated exact tessellations and canonical mesh bodies\nformat=glTF 2.0 binary (GLB)\nconversion=current-visible-model-to-instanced-mesh-scene\nunit_conversion=millimetres to metres\naxis_conversion=Ketchup Z-up to glTF Y-up\nhierarchy=canonical global groups, component occurrences, local groups, and nested occurrences\nmaterials=resolved occurrence sRGB colors\nblender_background_import_verified=false\neditability_loss=canonical features, rules, dimensions, constraints, and Undo history are not preserved\ntopology_loss=exact topology, analytic surfaces, and durable face identity are not preserved\ntolerance_loss=exact geometry uses its accepted tessellation; canonical mesh vertices are preserved\nsource_digest={}\noccurrence_body_count={}\ncanonical_mesh_occurrence_count={canonical_mesh_count}\nunique_geometry_count={}\nmesh_count={}\nresource_vertex_limit={MAX_GLB_EXPORT_VERTICES}\nresource_triangle_limit={MAX_GLB_EXPORT_TRIANGLES}\n",
         snapshot.canonical_digest(),
         instances.len(),
         geometries.len(),
@@ -172,7 +227,7 @@ pub fn exact_model_glb_export(
 
 fn build_scene_nodes(
     snapshot: &Snapshot,
-    instances: &[ExactGlbInstance<'_>],
+    instances: &[MeshGlbInstance<'_>],
     instance_meshes: &[usize],
 ) -> Result<(Vec<SceneNode>, Vec<usize>), ExactProductError> {
     let mut nodes = Vec::new();
@@ -284,7 +339,7 @@ fn build_scene_nodes(
         if nodes[parent_index].mesh.is_none() {
             nodes[parent_index].mesh = Some(*mesh_index);
             nodes[parent_index].extras["ketchupProducerFeatureId"] =
-                json!(instance.package.producer_feature_id().0);
+                json!(instance.source.producer_feature_id().0);
         } else {
             let body_index = push_scene_node(
                 &mut nodes,
@@ -292,14 +347,14 @@ fn build_scene_nodes(
                     name: format!(
                         "{} body {}",
                         instance.occurrence.definition_name,
-                        instance.package.producer_feature_id().0
+                        instance.source.producer_feature_id().0
                     ),
                     matrix: identity,
                     mesh: Some(*mesh_index),
                     children: Vec::new(),
                     extras: json!({
                         "ketchupEntity": "body",
-                        "ketchupProducerFeatureId": instance.package.producer_feature_id().0
+                        "ketchupProducerFeatureId": instance.source.producer_feature_id().0
                     }),
                 },
             );
@@ -388,29 +443,44 @@ fn attach_scene_node(
     }
 }
 
-fn geometry_key(package: &ExactBodyPackage) -> GeometryKey {
+fn add_with_limit(
+    current: usize,
+    additional: usize,
+    limit: usize,
+) -> Result<usize, ExactProductError> {
+    current
+        .checked_add(additional)
+        .filter(|total| *total <= limit)
+        .ok_or(ExactProductError::ExportResourceLimit)
+}
+
+fn geometry_key(source: MeshExportSource<'_>) -> GeometryKey {
     GeometryKey {
-        definition_id: package.definition_id(),
-        producer_feature_id: package.producer_feature_id(),
-        result_fingerprint: package.result_fingerprint().to_owned(),
+        definition_id: source.definition_id(),
+        producer_feature_id: source.producer_feature_id(),
+        result_fingerprint: source.identity(),
     }
 }
 
 fn append_geometry(
-    package: &ExactBodyPackage,
+    source: MeshExportSource<'_>,
     binary: &mut Vec<u8>,
     buffer_views: &mut Vec<Value>,
     accessors: &mut Vec<Value>,
 ) -> Result<GeometryLayout, ExactProductError> {
-    if package.vertices().is_empty() || package.triangles().is_empty() {
+    if source.vertex_count() == 0 || source.triangle_count() == 0 {
         return Err(ExactProductError::InvalidMeshExport);
     }
     align_to_four(binary, 0);
     let position_offset = binary.len();
     let mut minimum = [f32::INFINITY; 3];
     let mut maximum = [f32::NEG_INFINITY; 3];
-    for vertex in package.vertices() {
-        let point = ketchup_point_to_gltf(vertex.position_mm)?;
+    for index in 0..source.vertex_count() {
+        let point = ketchup_point_to_gltf(
+            source
+                .vertex_position_mm(index)
+                .ok_or(ExactProductError::InvalidMeshExport)?,
+        )?;
         for axis in 0..3 {
             minimum[axis] = minimum[axis].min(point[axis]);
             maximum[axis] = maximum[axis].max(point[axis]);
@@ -430,7 +500,7 @@ fn append_geometry(
         "bufferView": position_view,
         "byteOffset": 0,
         "componentType": GLTF_FLOAT,
-        "count": package.vertices().len(),
+        "count": source.vertex_count(),
         "type": "VEC3",
         "min": minimum,
         "max": maximum
@@ -438,9 +508,12 @@ fn append_geometry(
 
     align_to_four(binary, 0);
     let index_offset = binary.len();
-    for triangle in package.triangles() {
-        for index in triangle.vertex_indices {
-            if index as usize >= package.vertices().len() {
+    for triangle_index in 0..source.triangle_count() {
+        let indices = source
+            .triangle_indices(triangle_index)
+            .ok_or(ExactProductError::InvalidMeshExport)?;
+        for index in indices {
+            if index as usize >= source.vertex_count() {
                 return Err(ExactProductError::InvalidMeshExport);
             }
             binary.extend_from_slice(&index.to_le_bytes());
@@ -459,7 +532,7 @@ fn append_geometry(
         "bufferView": index_view,
         "byteOffset": 0,
         "componentType": GLTF_UNSIGNED_INT,
-        "count": package.triangles().len() * 3,
+        "count": source.triangle_count() * 3,
         "type": "SCALAR"
     }));
     Ok(GeometryLayout {

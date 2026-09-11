@@ -1351,6 +1351,11 @@ where
             {
                 edit_count += 1;
             }
+            CanonicalCommand::SetFeatureParameter { target, .. }
+                if fork_feature_ids.contains(&target.feature_id) =>
+            {
+                edit_count += 1;
+            }
             CanonicalCommand::SetBodyFeatureSuppression {
                 definition_id,
                 body_id: command_body_id,
@@ -4091,6 +4096,13 @@ pub fn project_occurrence_fork_impact(
                     id: mapped_feature(id)?,
                     dimension,
                 }
+            }
+            CanonicalCommand::SetFeatureParameter {
+                mut target,
+                dimension,
+            } => {
+                target.feature_id = mapped_feature(target.feature_id)?;
+                CanonicalCommand::SetFeatureParameter { target, dimension }
             }
             CanonicalCommand::SetSketchConstraintDimension {
                 id,

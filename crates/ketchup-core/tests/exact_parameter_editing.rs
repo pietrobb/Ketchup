@@ -1,7 +1,9 @@
 use ketchup_core::document::{
     BodyId, BooleanOperation, CanonicalCommand, CommandBatch, DefinitionId, Dimension,
-    DocumentStore, FeatureId, FeatureKind, ProfileSegment, ProposalContext, ProposalPrincipal,
+    DocumentStore, EdgeFinishKind, FeatureId, FeatureKind, FeatureParameterTarget, LoftSection,
+    ParameterValueType, ProfileSegment, ProposalContext, ProposalPrincipal, SpatialPathSegment,
 };
+use ketchup_core::exact_brep_graph::ExactBRepGraph;
 use ketchup_core::exact_product::{
     ExactFaceRole, ExactFeatureChainRequest, build_box_render_package,
     canonical_reference_lineage_digest,
@@ -11,11 +13,15 @@ use ketchup_core::feature_history::{
     ExactParameterEdit, ExactParameterEditTarget, prepare_body_parameter_edit,
     prepare_body_profile_translation,
 };
+use ketchup_core::persistence;
 use ketchup_core::sketch::{
     FeatureDirection, FeatureExtent, PadPocketOperation, PadSpec, PocketSpec, PrincipalPlane,
     SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity, SketchEntityId,
     SketchPointKind, SketchPointRef, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
     WorkplaneSupportHealth,
+};
+use ketchup_core::topology::{
+    TopologicalElementKind, TopologicalElementRef, TopologicalReferenceStability,
 };
 use std::collections::BTreeSet;
 
@@ -894,4 +900,268 @@ fn body_edit_recomputes_its_branch_and_preserves_unrelated_body_identity() {
     );
     assert_eq!(after.feature(TOOL_PROFILE), Some(&unrelated_profile));
     assert_eq!(after.feature(TOOL_EXTRUSION), Some(&unrelated_extrusion));
+}
+
+fn topology_parameter_reference(
+    snapshot: &ketchup_core::document::Snapshot,
+    producer: FeatureId,
+    kind: TopologicalElementKind,
+) -> TopologicalElementRef {
+    TopologicalElementRef::new(
+        snapshot.document_id(),
+        DEFINITION,
+        producer,
+        producer,
+        kind,
+        format!("feature/{}/{}", producer.0, kind.token()),
+        format!("result/{}/{}", producer.0, kind.token()),
+        TopologicalReferenceStability::Guaranteed,
+        "ketchup.exact-brep-graph-evaluator.v1",
+        "occt.v1",
+        "1e-7-mm",
+        format!("result-{}", producer.0),
+        format!("geometry-{}", producer.0),
+    )
+    .unwrap()
+}
+
+fn generic_parameter(feature_id: FeatureId, path: &str, value: f64) -> ExactParameterEdit {
+    ExactParameterEdit {
+        target: ExactParameterEditTarget::FeatureParameter(
+            FeatureParameterTarget::new(feature_id, path, ParameterValueType::Length).unwrap(),
+        ),
+        dimension: Dimension::new(value.to_string(), value).unwrap(),
+    }
+}
+
+#[test]
+fn general_feature_parameters_preview_recompute_undo_and_round_trip() {
+    const REVOLVE_PROFILE: FeatureId = FeatureId(101);
+    const REVOLVE: FeatureId = FeatureId(102);
+    const SWEEP_PROFILE: FeatureId = FeatureId(103);
+    const SWEEP_PATH: FeatureId = FeatureId(104);
+    const SWEEP: FeatureId = FeatureId(105);
+    const LOFT_LOWER: FeatureId = FeatureId(106);
+    const LOFT_UPPER: FeatureId = FeatureId(107);
+    const LOFT: FeatureId = FeatureId(108);
+    const FINISH_PROFILE: FeatureId = FeatureId(109);
+    const FINISH_BASE: FeatureId = FeatureId(110);
+    const FACE_OFFSET: FeatureId = FeatureId(111);
+    const SHELL: FeatureId = FeatureId(112);
+    const EDGE_FINISH: FeatureId = FeatureId(113);
+
+    let rectangle = || FeatureKind::Profile {
+        points_mm: vec![[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]],
+    };
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "General editable features".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: REVOLVE_PROFILE,
+                definition_id: DEFINITION,
+                name: "Revolve profile".into(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [3.0, 0.0], [3.0, 8.0], [0.0, 8.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: REVOLVE,
+                definition_id: DEFINITION,
+                name: "Revolve".into(),
+                kind: FeatureKind::Revolve {
+                    profile: REVOLVE_PROFILE,
+                    axis_start_mm: [0.0, 0.0],
+                    axis_end_mm: [0.0, 1.0],
+                    angle_degrees: 360.0,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: SWEEP_PROFILE,
+                definition_id: DEFINITION,
+                name: "Sweep profile".into(),
+                kind: rectangle(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: SWEEP_PATH,
+                definition_id: DEFINITION,
+                name: "Sweep path".into(),
+                kind: FeatureKind::SpatialPath {
+                    segments: vec![SpatialPathSegment::Line {
+                        start_mm: [0.0, 0.0, 0.0],
+                        end_mm: [0.0, 0.0, 12.0],
+                    }],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: SWEEP,
+                definition_id: DEFINITION,
+                name: "Sweep".into(),
+                kind: FeatureKind::Sweep {
+                    profile: SWEEP_PROFILE,
+                    path: SWEEP_PATH,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: LOFT_LOWER,
+                definition_id: DEFINITION,
+                name: "Loft lower".into(),
+                kind: FeatureKind::SplineProfile {
+                    control_points_mm: vec![[-4.0, -2.0], [5.0, -2.0], [4.0, 3.0], [-3.0, 4.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: LOFT_UPPER,
+                definition_id: DEFINITION,
+                name: "Loft upper".into(),
+                kind: FeatureKind::SplineProfile {
+                    control_points_mm: vec![[-2.0, -1.0], [3.0, -1.0], [2.5, 2.0], [-1.5, 2.5]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: LOFT,
+                definition_id: DEFINITION,
+                name: "Loft".into(),
+                kind: FeatureKind::Loft {
+                    sections: vec![
+                        LoftSection {
+                            profile: LOFT_LOWER,
+                            elevation_mm: 0.0,
+                        },
+                        LoftSection {
+                            profile: LOFT_UPPER,
+                            elevation_mm: 10.0,
+                        },
+                    ],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FINISH_PROFILE,
+                definition_id: DEFINITION,
+                name: "Finish profile".into(),
+                kind: rectangle(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FINISH_BASE,
+                definition_id: DEFINITION,
+                name: "Finish base".into(),
+                kind: FeatureKind::Extrusion {
+                    profile: FINISH_PROFILE,
+                    height: Dimension::from_decimal("10").unwrap(),
+                },
+            },
+        ]))
+        .unwrap();
+    let face = topology_parameter_reference(
+        &document.current(),
+        FINISH_BASE,
+        TopologicalElementKind::Face,
+    );
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+            id: FACE_OFFSET,
+            definition_id: DEFINITION,
+            name: "Face offset".into(),
+            kind: FeatureKind::TopologyFaceOffset {
+                target: FINISH_BASE,
+                face,
+                distance: Dimension::from_decimal("0.5").unwrap(),
+            },
+        }]))
+        .unwrap();
+    let shell_face = topology_parameter_reference(
+        &document.current(),
+        FACE_OFFSET,
+        TopologicalElementKind::Face,
+    );
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+            id: SHELL,
+            definition_id: DEFINITION,
+            name: "Shell".into(),
+            kind: FeatureKind::TopologyShell {
+                target: FACE_OFFSET,
+                removed_faces: vec![shell_face],
+                thickness: Dimension::from_decimal("1").unwrap(),
+            },
+        }]))
+        .unwrap();
+    let edge =
+        topology_parameter_reference(&document.current(), SHELL, TopologicalElementKind::Edge);
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+            id: EDGE_FINISH,
+            definition_id: DEFINITION,
+            name: "Edge finish".into(),
+            kind: FeatureKind::TopologyEdgeFinish {
+                target: SHELL,
+                edges: vec![edge],
+                kind: EdgeFinishKind::Fillet,
+                amount: Dimension::from_decimal("0.5").unwrap(),
+            },
+        }]))
+        .unwrap();
+    document.discard_history_before_current();
+
+    let before = stamp(&document);
+    let preview = prepare_body_parameter_edit(
+        &document,
+        BodyParameterEditRequest {
+            definition_id: DEFINITION,
+            body_id: BodyId(1),
+            edits: vec![
+                ExactParameterEdit {
+                    target: ExactParameterEditTarget::FeatureParameter(
+                        FeatureParameterTarget::new(REVOLVE, "angle", ParameterValueType::Angle)
+                            .unwrap(),
+                    ),
+                    dimension: Dimension::from_decimal("270").unwrap(),
+                },
+                generic_parameter(SWEEP_PROFILE, "bounds.width", 6.0),
+                generic_parameter(LOFT, "sections.1.elevation", 20.0),
+                generic_parameter(FACE_OFFSET, "distance", 1.0),
+                generic_parameter(SHELL, "thickness", 1.5),
+                generic_parameter(EDGE_FINISH, "amount", 0.75),
+            ],
+        },
+        ProposalPrincipal::ManualClient,
+    )
+    .unwrap();
+    assert_eq!(stamp(&document), before);
+    let candidate = document.preview_batch(preview.proposal.batch()).unwrap();
+    assert_eq!(stamp(&document), before);
+    ExactBRepGraph::from_snapshot(&candidate, DEFINITION, SWEEP).unwrap();
+    ExactBRepGraph::from_snapshot(&candidate, DEFINITION, LOFT).unwrap();
+    ExactBRepGraph::from_snapshot(&candidate, DEFINITION, EDGE_FINISH).unwrap();
+
+    document.commit_proposal(&preview.proposal).unwrap();
+    assert_eq!(document.visible_undo_steps(), before.2 + 1);
+    let edited_digest = document.current().canonical_digest();
+    let bytes = persistence::save(&document.current());
+    let reopened = persistence::load(&bytes).unwrap().snapshot();
+    assert_eq!(reopened.canonical_digest(), edited_digest);
+    assert_eq!(persistence::save(&reopened), bytes);
+
+    document.undo().unwrap();
+    assert_eq!(document.current().canonical_digest(), before.1);
+    document.redo().unwrap();
+    assert_eq!(document.current().canonical_digest(), edited_digest);
+
+    let invalid_before = stamp(&document);
+    assert!(
+        prepare_body_parameter_edit(
+            &document,
+            BodyParameterEditRequest {
+                definition_id: DEFINITION,
+                body_id: BodyId(1),
+                edits: vec![generic_parameter(SHELL, "thickness", -1.0)],
+            },
+            ProposalPrincipal::ManualClient,
+        )
+        .is_err()
+    );
+    assert_eq!(stamp(&document), invalid_before);
 }

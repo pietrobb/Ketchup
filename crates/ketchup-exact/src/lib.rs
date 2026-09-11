@@ -187,6 +187,7 @@ mod ffi {
             profile_segments: &[f64],
             path_segments: &[f64],
         ) -> UniquePtr<NativeOperationResult>;
+        fn loft_framed_profiles_native(values: &[f64]) -> UniquePtr<NativeOperationResult>;
         fn loft_spline_native(values: &[f64]) -> UniquePtr<NativeOperationResult>;
         fn loft_planar_profiles_native(
             segments: &[f64],
@@ -481,6 +482,24 @@ pub struct PlanarLoftSection {
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlanarLoftSpec {
     pub sections: Vec<PlanarLoftSection>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum FramedLoftProfile {
+    Planar(PlanarProfileLoop),
+    Spline { control_points_mm: Vec<[f64; 2]> },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FramedLoftSection {
+    pub elevation_mm: f64,
+    pub frame: [f64; 12],
+    pub profile: FramedLoftProfile,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FramedLoftSpec {
+    pub sections: Vec<FramedLoftSection>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -2442,6 +2461,128 @@ impl ExactBackend {
             validate_coordinate(coordinate, name, operation, &input)?;
         }
         Ok(output)
+    }
+
+    pub fn loft_framed_profiles(
+        &self,
+        spec: &FramedLoftSpec,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let operation = "loft_framed_profiles";
+        let mut values = vec![spec.sections.len() as f64];
+        if !(2..=16).contains(&spec.sections.len()) {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidParameter,
+                operation,
+                operation,
+                "Framed Loft requires 2 to 16 sections".to_owned(),
+            ));
+        }
+        let mut previous_elevation = f64::NEG_INFINITY;
+        for (section_index, section) in spec.sections.iter().enumerate() {
+            validate_coordinate(
+                section.elevation_mm,
+                &format!("section_{section_index}_elevation"),
+                operation,
+                operation,
+            )?;
+            let x_axis = [section.frame[3], section.frame[4], section.frame[5]];
+            let y_axis = [section.frame[6], section.frame[7], section.frame[8]];
+            let normal = [section.frame[9], section.frame[10], section.frame[11]];
+            let norm = |axis: [f64; 3]| {
+                axis.into_iter()
+                    .map(|value| value * value)
+                    .sum::<f64>()
+                    .sqrt()
+            };
+            let dot = |left: [f64; 3], right: [f64; 3]| {
+                left.into_iter()
+                    .zip(right)
+                    .map(|(left, right)| left * right)
+                    .sum::<f64>()
+            };
+            let cross = [
+                x_axis[1] * y_axis[2] - x_axis[2] * y_axis[1],
+                x_axis[2] * y_axis[0] - x_axis[0] * y_axis[2],
+                x_axis[0] * y_axis[1] - x_axis[1] * y_axis[0],
+            ];
+            if section.elevation_mm <= previous_elevation
+                || section
+                    .frame
+                    .iter()
+                    .any(|value| !value.is_finite() || value.abs() > 1_000_000.0)
+                || (norm(x_axis) - 1.0).abs() > 1.0e-8
+                || (norm(y_axis) - 1.0).abs() > 1.0e-8
+                || (norm(normal) - 1.0).abs() > 1.0e-8
+                || dot(x_axis, y_axis).abs() > 1.0e-8
+                || dot(x_axis, normal).abs() > 1.0e-8
+                || dot(y_axis, normal).abs() > 1.0e-8
+                || dot(cross, normal) < 1.0 - 1.0e-8
+            {
+                return Err(parameter_error(
+                    GeometryErrorCode::InvalidParameter,
+                    operation,
+                    operation,
+                    "Framed Loft section frame or ordering is invalid".to_owned(),
+                ));
+            }
+            previous_elevation = section.elevation_mm;
+            let (kind, count, payload) = match &section.profile {
+                FramedLoftProfile::Planar(PlanarProfileLoop::Segments(segments)) => {
+                    validate_mixed_profile(segments, operation, operation)?;
+                    (
+                        0.0,
+                        segments.len(),
+                        flatten_planar_loop(&PlanarProfileLoop::Segments(segments.clone())),
+                    )
+                }
+                FramedLoftProfile::Planar(PlanarProfileLoop::Circle {
+                    center_mm,
+                    radius_mm,
+                }) => {
+                    validate_circle(*center_mm, *radius_mm, operation, operation)?;
+                    (1.0, 1, vec![center_mm[0], center_mm[1], *radius_mm])
+                }
+                FramedLoftProfile::Spline { control_points_mm } => {
+                    if !(4..=64).contains(&control_points_mm.len()) {
+                        return Err(parameter_error(
+                            GeometryErrorCode::InvalidParameter,
+                            operation,
+                            operation,
+                            "Framed Loft spline section is outside the bounded envelope".to_owned(),
+                        ));
+                    }
+                    let mut payload = Vec::with_capacity(control_points_mm.len() * 2);
+                    for (point_index, point) in control_points_mm.iter().enumerate() {
+                        for (axis, coordinate) in point.iter().copied().enumerate() {
+                            validate_coordinate(
+                                coordinate,
+                                &format!("section_{section_index}_point_{point_index}_axis_{axis}"),
+                                operation,
+                                operation,
+                            )?;
+                            payload.push(coordinate);
+                        }
+                    }
+                    (2.0, control_points_mm.len(), payload)
+                }
+            };
+            values.extend([kind, section.elevation_mm, count as f64]);
+            values.extend(section.frame);
+            values.extend(payload);
+        }
+        let input = format!(
+            "{operation}:{:?}",
+            values
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+        );
+        collect_output(
+            ffi::loft_framed_profiles_native(&values),
+            operation,
+            &input,
+            HistoryConfidence::Partial,
+        )
     }
 
     pub fn loft_planar_profiles(

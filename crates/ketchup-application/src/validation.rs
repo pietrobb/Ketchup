@@ -295,13 +295,7 @@ pub fn scoped_static_load_report(
             );
         }
         load_ids.insert(*occurrence_id);
-        if !load_cases.insert(role.group.to_owned()) {
-            return scoped_static_load_unavailable(
-                snapshot,
-                scope,
-                "shared_static_load_case_requires_aggregate_evaluation",
-            );
-        }
+        load_cases.insert(role.group.to_owned());
     }
 
     let mut boundary_support_ids = BTreeSet::new();
@@ -546,6 +540,33 @@ pub fn assistant_case_role_axis(role: &str) -> Option<usize> {
     }
 }
 
+fn assistant_scaled_orthogonal_source_frame_extents_mm(
+    geometry: &GeneralBodyGeometryEvidence,
+) -> Option<[f64; 3]> {
+    let directions: [[f64; 3]; 3] = std::array::from_fn(|axis| {
+        geometry
+            .source_axis_world_direction(axis)
+            .expect("three source-axis directions are always present")
+    });
+    for left in 0..3 {
+        for right in left + 1..3 {
+            let alignment = (0..3)
+                .map(|coordinate| directions[left][coordinate] * directions[right][coordinate])
+                .sum::<f64>()
+                .abs();
+            if alignment > 1.0e-9 {
+                return None;
+            }
+        }
+    }
+    Some(std::array::from_fn(|axis| {
+        geometry.source_frame_extents_mm()[axis]
+            * geometry
+                .source_axis_world_scale(axis)
+                .expect("three source-axis scales are always present")
+    }))
+}
+
 pub fn assistant_shelf_deflection_report(
     participants: &[GeneralBodyParticipant],
     names: &BTreeMap<OccurrenceId, String>,
@@ -609,7 +630,15 @@ pub fn assistant_shelf_deflection_report(
             }));
             continue;
         }
-        let dimensions = geometry.source_frame_extents_mm();
+        let Some(dimensions) = assistant_scaled_orthogonal_source_frame_extents_mm(geometry) else {
+            not_evaluated.push(serde_json::json!({
+                "occurrence_id": occurrence_id.0,
+                "name": name,
+                "role": role.as_str(),
+                "reason": "occurrence transform shears the declared source frame",
+            }));
+            continue;
+        };
         let span_mm = dimensions[surface_axes[0]].max(dimensions[surface_axes[1]]);
         let depth_mm = dimensions[surface_axes[0]].min(dimensions[surface_axes[1]]);
         let thickness_mm = dimensions[thickness_axis];
@@ -759,7 +788,15 @@ pub fn assistant_tipping_report(
             }));
             continue;
         }
-        let dimensions = geometry.source_frame_extents_mm();
+        let Some(dimensions) = assistant_scaled_orthogonal_source_frame_extents_mm(geometry) else {
+            not_evaluated.push(serde_json::json!({
+                "occurrence_id": occurrence_id.0,
+                "name": name,
+                "role": role.as_str(),
+                "reason": "occurrence transform shears the declared source frame",
+            }));
+            continue;
+        };
         let base_axes = (0..3)
             .filter(|axis| *axis != vertical_axis)
             .collect::<Vec<_>>();
@@ -897,7 +934,15 @@ pub fn assistant_anchoring_report(
             }));
             continue;
         }
-        let dimensions = geometry.source_frame_extents_mm();
+        let Some(dimensions) = assistant_scaled_orthogonal_source_frame_extents_mm(geometry) else {
+            not_evaluated.push(serde_json::json!({
+                "occurrence_id": occurrence_id.0,
+                "name": name,
+                "role": role.as_str(),
+                "reason": "occurrence transform shears the declared source frame",
+            }));
+            continue;
+        };
         let base_axes = (0..3)
             .filter(|axis| *axis != vertical_axis)
             .collect::<Vec<_>>();
@@ -2088,11 +2133,33 @@ fn assistant_static_load_report_filtered(
         }
     };
 
+    struct PreparedStaticLoad {
+        occurrence_id: OccurrenceId,
+        mass_node_id: u64,
+        mass_kg: f64,
+        applied_load_node_id: u64,
+        applied_load_n: f64,
+    }
+
     let mut evaluations = Vec::new();
     let mut issues = Vec::new();
     let mut not_evaluated = Vec::new();
+    let mut loads_by_case = BTreeMap::<String, Vec<PreparedStaticLoad>>::new();
+    let mut incomplete_cases = BTreeSet::new();
     let loaded_ids = load_filter.map_or_else(
-        || masses.keys().copied().collect::<Vec<_>>(),
+        || {
+            let mut ids = masses
+                .keys()
+                .chain(applied_loads.keys())
+                .copied()
+                .collect::<BTreeSet<_>>();
+            ids.extend(roles.assignments().filter_map(|assignment| {
+                assistant_physics_role(assignment.role.as_str())
+                    .filter(|role| role.kind == AssistantPhysicsRoleKind::StaticLoad)
+                    .map(|_| assignment.occurrence_id)
+            }));
+            ids.into_iter().collect::<Vec<_>>()
+        },
         |ids| ids.iter().copied().collect::<Vec<_>>(),
     );
     if loaded_ids.is_empty() {
@@ -2102,7 +2169,7 @@ fn assistant_static_load_report_filtered(
             "required_input": "physics.mass_kg.occurrence.<id>",
         }));
     }
-    'loads: for loaded_id in loaded_ids {
+    for loaded_id in loaded_ids {
         if cancellation_requested() {
             not_evaluated.push(serde_json::json!({
                 "validator": "static_load",
@@ -2116,26 +2183,6 @@ fn assistant_static_load_report_filtered(
         let loaded_role = roles
             .role(loaded_id)
             .and_then(|role| assistant_physics_role(role.as_str()));
-        let mut support_ids = Vec::new();
-        if let Some(loaded_role) =
-            loaded_role.filter(|role| role.kind == AssistantPhysicsRoleKind::StaticLoad)
-        {
-            for assignment in roles.assignments() {
-                if cancellation_requested() {
-                    not_evaluated.push(serde_json::json!({
-                        "validator": "static_load",
-                        "reason": "validation_cancelled",
-                    }));
-                    break 'loads;
-                }
-                if let Some(role) = assistant_physics_role(assignment.role.as_str())
-                    && role.kind == AssistantPhysicsRoleKind::StaticSupport
-                    && role.group == loaded_role.group
-                {
-                    support_ids.push(assignment.occurrence_id);
-                }
-            }
-        }
         let missing_reason = if loaded_name.is_none() {
             Some("loaded_occurrence_not_visible")
         } else if loaded_role.is_none_or(|role| role.kind != AssistantPhysicsRoleKind::StaticLoad) {
@@ -2148,7 +2195,68 @@ fn assistant_static_load_report_filtered(
             Some("missing_or_ambiguous_applied_load")
         } else if load_declarations.unwrap()[0].1 < 0.0 {
             Some("negative_applied_load")
-        } else if support_ids.is_empty() {
+        } else {
+            None
+        };
+        if let Some(reason) = missing_reason {
+            if let Some(role) =
+                loaded_role.filter(|role| role.kind == AssistantPhysicsRoleKind::StaticLoad)
+            {
+                incomplete_cases.insert(role.group.to_owned());
+            }
+            not_evaluated.push(serde_json::json!({
+                "validator": "static_load",
+                "reason": reason,
+                "occurrence_id": loaded_id.0,
+                "name": loaded_name,
+            }));
+            continue;
+        }
+
+        let (mass_node_id, mass_kg) = mass_declarations.unwrap()[0];
+        let (applied_load_node_id, applied_load_n) = load_declarations.unwrap()[0];
+        loads_by_case
+            .entry(loaded_role.unwrap().group.to_owned())
+            .or_default()
+            .push(PreparedStaticLoad {
+                occurrence_id: loaded_id,
+                mass_node_id,
+                mass_kg,
+                applied_load_node_id,
+                applied_load_n,
+            });
+    }
+
+    'cases: for (load_case, loads) in loads_by_case {
+        if incomplete_cases.contains(&load_case) {
+            for load in loads {
+                not_evaluated.push(serde_json::json!({
+                    "validator": "static_load",
+                    "reason": "incomplete_static_load_case",
+                    "occurrence_id": load.occurrence_id.0,
+                    "name": names.get(&load.occurrence_id),
+                    "role_case": load_case,
+                }));
+            }
+            continue;
+        }
+        let mut support_ids = BTreeSet::new();
+        for assignment in roles.assignments() {
+            if cancellation_requested() {
+                not_evaluated.push(serde_json::json!({
+                    "validator": "static_load",
+                    "reason": "validation_cancelled",
+                }));
+                break 'cases;
+            }
+            if let Some(role) = assistant_physics_role(assignment.role.as_str())
+                && role.kind == AssistantPhysicsRoleKind::StaticSupport
+                && role.group == load_case
+            {
+                support_ids.insert(assignment.occurrence_id);
+            }
+        }
+        let missing_reason = if support_ids.is_empty() {
             Some("static_support_role_not_found")
         } else if support_ids.iter().any(|support_id| {
             !names.contains_key(support_id)
@@ -2164,14 +2272,12 @@ fn assistant_static_load_report_filtered(
             not_evaluated.push(serde_json::json!({
                 "validator": "static_load",
                 "reason": reason,
-                "occurrence_id": loaded_id.0,
-                "name": loaded_name,
+                "role_case": load_case,
+                "load_occurrence_ids": loads.iter().map(|load| load.occurrence_id.0).collect::<Vec<_>>(),
             }));
             continue;
         }
 
-        let (mass_node_id, mass_kg) = mass_declarations.unwrap()[0];
-        let (applied_load_node_id, applied_load_n) = load_declarations.unwrap()[0];
         let support_inputs = support_ids
             .iter()
             .map(|support_id| {
@@ -2179,7 +2285,7 @@ fn assistant_static_load_report_filtered(
                 serde_json::json!({
                     "occurrence_id": support_id.0,
                     "name": names.get(support_id),
-                    "role_case": loaded_role.unwrap().group,
+                    "role_case": load_case,
                     "capacity_node_id": capacity_node_id,
                     "capacity_n": capacity_n,
                 })
@@ -2189,44 +2295,59 @@ fn assistant_static_load_report_filtered(
             .iter()
             .filter_map(|support| support["capacity_n"].as_f64())
             .sum::<f64>();
-        let weight_force_n = mass_kg * gravity.magnitude_m_s2;
-        let resultant_force_n = weight_force_n + applied_load_n;
-        let capacity_margin_n = total_support_capacity_n - resultant_force_n;
+        let case_load_occurrence_ids = loads
+            .iter()
+            .map(|load| load.occurrence_id.0)
+            .collect::<Vec<_>>();
+        let case_resultant_force_n = loads
+            .iter()
+            .map(|load| load.mass_kg * gravity.magnitude_m_s2 + load.applied_load_n)
+            .sum::<f64>();
+        let capacity_margin_n = total_support_capacity_n - case_resultant_force_n;
         let failed = capacity_margin_n < 0.0;
-        let evaluation = serde_json::json!({
-            "occurrence_id": loaded_id.0,
-            "name": loaded_name,
-            "input_source": "canonical_evaluator_parameters",
-            "mass": { "node_id": mass_node_id, "value_kg": mass_kg },
-            "applied_load": { "node_id": applied_load_node_id, "value_n": applied_load_n },
-            "gravity": {
-                "node_ids": gravity.node_ids,
-                "vector_m_s2": gravity.vector_m_s2,
-                "direction": gravity.direction,
-                "magnitude_m_s2": gravity.magnitude_m_s2,
-            },
-            "supports": support_inputs,
-            "weight_force_n": weight_force_n,
-            "resultant_force_n": resultant_force_n,
-            "total_support_capacity_n": total_support_capacity_n,
-            "capacity_margin_n": capacity_margin_n,
-            "calculation": "resultant_force_n = mass_kg * |gravity_m_s2| + applied_load_n",
-            "result": if failed { "failed" } else { "passed" },
-        });
+        for load in &loads {
+            let weight_force_n = load.mass_kg * gravity.magnitude_m_s2;
+            let resultant_force_n = weight_force_n + load.applied_load_n;
+            evaluations.push(serde_json::json!({
+                "occurrence_id": load.occurrence_id.0,
+                "name": names.get(&load.occurrence_id),
+                "role_case": load_case,
+                "case_load_occurrence_ids": case_load_occurrence_ids,
+                "input_source": "canonical_evaluator_parameters",
+                "mass": { "node_id": load.mass_node_id, "value_kg": load.mass_kg },
+                "applied_load": { "node_id": load.applied_load_node_id, "value_n": load.applied_load_n },
+                "gravity": {
+                    "node_ids": gravity.node_ids,
+                    "vector_m_s2": gravity.vector_m_s2,
+                    "direction": gravity.direction,
+                    "magnitude_m_s2": gravity.magnitude_m_s2,
+                },
+                "supports": support_inputs,
+                "weight_force_n": weight_force_n,
+                "resultant_force_n": resultant_force_n,
+                "case_resultant_force_n": case_resultant_force_n,
+                "total_support_capacity_n": total_support_capacity_n,
+                "capacity_margin_n": capacity_margin_n,
+                "calculation": "case_resultant_force_n = sum(mass_kg * |gravity_m_s2| + applied_load_n) for the load case",
+                "result": if failed { "failed" } else { "passed" },
+            }));
+        }
         if failed {
+            let first_load = &loads[0];
             issues.push(serde_json::json!({
                 "code": "physics.support_capacity_exceeded",
                 "severity": "error",
-                "occurrence_id": loaded_id.0,
-                "name": loaded_name,
-                "resultant_force_n": resultant_force_n,
+                "occurrence_id": first_load.occurrence_id.0,
+                "name": names.get(&first_load.occurrence_id),
+                "role_case": load_case,
+                "load_occurrence_ids": case_load_occurrence_ids,
+                "resultant_force_n": case_resultant_force_n,
                 "total_support_capacity_n": total_support_capacity_n,
                 "capacity_shortfall_n": -capacity_margin_n,
                 "support_occurrence_ids": support_ids.iter().map(|support_id| support_id.0).collect::<Vec<_>>(),
-                "rule": "the sum of explicitly declared support capacities must cover the explicitly calculated static load",
+                "rule": "the sum of explicitly declared support capacities must cover the aggregate static demand of the load case",
             }));
         }
-        evaluations.push(evaluation);
     }
 
     if !coverage_complete {
@@ -2270,7 +2391,8 @@ fn assistant_static_load_report_filtered(
 }
 
 pub use crate::collision::{
-    CollisionScope, assistant_validation_context, assistant_validation_context_with_worker,
+    CollisionScope, FabricationCollisionValidation, assistant_validation_context,
+    assistant_validation_context_with_worker, fabrication_collision_validation_with_worker,
     scoped_collision_report_with_worker,
 };
 
@@ -2573,20 +2695,34 @@ pub(crate) fn assistant_validation_context_base(
     let collision_state = collision["state"].as_str().unwrap_or("not_evaluated");
     let issue_count = collision["issue_count"].as_u64().unwrap_or(0) as usize;
     let issues = collision["issues"].as_array().cloned().unwrap_or_default();
-    let (gravity_state, gravity_issue_count, gravity_issues, gravity_assumptions) = if let Some(
-        report,
-    ) =
-        &gravity_report
-    {
-        let issue_count = report
+    let (
+        gravity_state,
+        gravity_issue_count,
+        gravity_unsupported_count,
+        gravity_unproven_count,
+        gravity_issues,
+        gravity_assumptions,
+    ) = if let Some(report) = &gravity_report {
+        let unsupported_count = report
             .diagnostics
             .iter()
             .filter(|diagnostic| diagnostic.code == "gravity.unsupported")
             .count();
+        let unproven_count = report
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "gravity.contact-unproven")
+            .count();
+        let issue_count = unsupported_count + unproven_count;
         let issues = gravity_participants
             .iter()
             .zip(&report.diagnostics)
-            .filter(|(_, diagnostic)| diagnostic.code == "gravity.unsupported")
+            .filter(|(_, diagnostic)| {
+                matches!(
+                    diagnostic.code.as_str(),
+                    "gravity.unsupported" | "gravity.contact-unproven"
+                )
+            })
             .take(MAX_ASSISTANT_VALIDATION_ISSUES)
             .map(|(participant, diagnostic)| {
                 let occurrence_id = participant.body.instance_path().root_occurrence();
@@ -2620,19 +2756,28 @@ pub(crate) fn assistant_validation_context_base(
         };
         let mut assumptions = gravity_derivations.clone();
         assumptions.extend(report.assumptions.iter().cloned());
-        (state, issue_count, issues, assumptions)
+        (
+            state,
+            issue_count,
+            unsupported_count,
+            unproven_count,
+            issues,
+            assumptions,
+        )
     } else if selection.requested.contains("gravity_support") {
         (
-                "not_evaluated",
-                0,
-                Vec::new(),
-                vec![
+            "not_evaluated",
+            0,
+            0,
+            0,
+            Vec::new(),
+            vec![
                     "no occurrence is grounded, so nothing can carry load: ground the parts that stand on the ground, or declare physics.gravity.* roles"
                         .to_owned(),
                 ],
             )
     } else {
-        ("skipped", 0, Vec::new(), Vec::new())
+        ("skipped", 0, 0, 0, Vec::new(), Vec::new())
     };
     let shelf_state = shelf_deflection["state"]
         .as_str()
@@ -2670,12 +2815,15 @@ pub(crate) fn assistant_validation_context_base(
     ] {
         if selection.requested.contains(validator)
             && ((validator == "collision" && collision["complete"].as_bool() != Some(true))
+                || (validator == "gravity_support" && gravity_unproven_count > 0)
                 || (validator != "collision" && !coverage_complete)
                 || matches!(validator_state, "not_evaluated" | "unavailable"))
         {
             not_evaluated.push(serde_json::json!({
                 "validator": validator,
-                "reason": if validator == "collision" || coverage_complete {
+                "reason": if validator == "gravity_support" && gravity_unproven_count > 0 {
+                    "exact_gravity_contact_unavailable"
+                } else if validator == "collision" || coverage_complete {
                     "validator_specific_context_unavailable"
                 } else if scene_query_error.is_some() {
                     "validation_context_resource_limit"
@@ -2799,6 +2947,8 @@ pub(crate) fn assistant_validation_context_base(
             "state": gravity_state,
             "complete": selection.requested.contains("gravity_support")
                 && coverage_complete
+                && !matches!(gravity_state, "not_evaluated" | "unavailable")
+                && gravity_unproven_count == 0
                 && gravity_issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
             "gravity_axis": "-Z",
             "floor_z_mm": 0.0,
@@ -2807,7 +2957,8 @@ pub(crate) fn assistant_validation_context_base(
             } else {
                 0
             },
-            "unsupported_count": gravity_issue_count,
+            "unsupported_count": gravity_unsupported_count,
+            "unproven_contact_count": gravity_unproven_count,
             "issues_complete": gravity_issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
             "issues": gravity_issues,
             "assumptions": gravity_assumptions,

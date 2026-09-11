@@ -7,10 +7,13 @@ use crate::topology::{
 use ketchup_core::assistant_sidecar::{AssistantCadBodyFeature, AssistantCadBooleanOperation};
 use ketchup_core::document::{
     BooleanOperation, CanonicalError, DefinitionId, Dimension, FeatureId, FeatureKind, LoftSection,
-    Snapshot, is_valid_spatial_sweep_path, is_valid_sweep_path, valid_sketch_sweep_inputs,
+    Snapshot, is_valid_spatial_sweep_path, is_valid_sweep_path, solved_sketch_sweep_path,
+    valid_sketch_spatial_sweep_inputs, valid_sketch_sweep_inputs, valid_sketch_sweep_profile,
 };
 use ketchup_core::exact_brep_graph::ExactBRepGraph;
-use ketchup_core::exact_product::{ExactResultRegistry, line_arc_profile_bounds};
+use ketchup_core::exact_product::{
+    ExactResultRegistry, accepts_planar_offset_solved_region, line_arc_profile_bounds,
+};
 use ketchup_core::topology::TopologicalElementKind;
 
 pub(crate) fn plan_feature_kind(
@@ -136,19 +139,22 @@ pub(crate) fn plan_feature_kind(
                     "Target the sole supported exact rectangular profile in the requested definition.",
                 ));
             }
-            let definition = snapshot
-                .definition(definition_id)
-                .expect("Assistant AppendFeature definition was resolved");
-            if snapshot.feature_is_suppressed(profile)
-                || definition.feature_ids() != [profile]
-                || !matches!(source.kind(), FeatureKind::Profile { .. })
-            {
+            let supported = match source.kind() {
+                FeatureKind::Profile { .. } => snapshot
+                    .definition(definition_id)
+                    .is_some_and(|definition| definition.feature_ids() == [profile]),
+                FeatureKind::Sketch(sketch) => sketch.solved_regions().is_ok_and(|regions| {
+                    matches!(regions.as_slice(), [region] if accepts_planar_offset_solved_region(region, *distance_mm))
+                }),
+                _ => false,
+            };
+            if snapshot.feature_is_suppressed(profile) || !supported {
                 return Err(assistant_planning_rejection(
                     "planning.cad_feature_input_unsupported",
                     operation_name,
                     &format!("feature:{}", profile.0),
-                    "The requested Planar Offset profile is not supported by exact evaluation.",
-                    "Use the sole unsuppressed rectangular profile in the requested definition.",
+                    "The requested Planar Offset profile is not one supported closed region.",
+                    "Use an unsuppressed legacy rectangle or a sketch with exactly one compatible closed region.",
                 ));
             }
             FeatureKind::PlanarOffset {
@@ -200,6 +206,9 @@ pub(crate) fn plan_feature_kind(
                     segments,
                     closed: true,
                 } if line_arc_profile_bounds(segments, true).is_some()
+            ) || matches!(
+                profile_source.kind(),
+                FeatureKind::Sketch(profile) if valid_sketch_sweep_profile(profile)
             );
             let valid_path = match path_source.kind() {
                 FeatureKind::SegmentProfile {
@@ -207,15 +216,20 @@ pub(crate) fn plan_feature_kind(
                     closed: false,
                 } => is_valid_sweep_path(segments),
                 FeatureKind::SpatialPath { segments } => is_valid_spatial_sweep_path(segments),
+                FeatureKind::Sketch(path) => solved_sketch_sweep_path(path).is_some(),
                 _ => false,
             };
-            let valid_sketch_inputs = match (profile_source.kind(), path_source.kind()) {
+            let compatible_frames = match (profile_source.kind(), path_source.kind()) {
                 (FeatureKind::Sketch(profile), FeatureKind::Sketch(path)) => {
                     valid_sketch_sweep_inputs(snapshot, profile, path)
                 }
-                _ => false,
+                (FeatureKind::Sketch(profile), FeatureKind::SpatialPath { segments }) => {
+                    valid_sketch_spatial_sweep_inputs(snapshot, profile, segments)
+                }
+                (FeatureKind::Sketch(_), _) | (_, FeatureKind::Sketch(_)) => false,
+                _ => true,
             };
-            if !(valid_profile && valid_path || valid_sketch_inputs) {
+            if !(valid_profile && valid_path && compatible_frames) {
                 return Err(assistant_planning_rejection(
                     "planning.cad_feature_input_unsupported",
                     operation_name,
@@ -255,9 +269,9 @@ pub(crate) fn plan_feature_kind(
                     FeatureKind::SplineProfile { control_points_mm } => {
                         (4..=64).contains(&control_points_mm.len())
                     }
-                    FeatureKind::Sketch(sketch) => sketch
-                        .solved_regions()
-                        .is_ok_and(|regions| regions.len() == 1),
+                    FeatureKind::Sketch(sketch) => sketch.solved_regions().is_ok_and(
+                        |regions| matches!(regions.as_slice(), [region] if region.holes.is_empty()),
+                    ),
                     _ => false,
                 };
                 if snapshot.feature_is_suppressed(profile) || !supported {

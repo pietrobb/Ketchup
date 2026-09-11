@@ -379,7 +379,7 @@ fn general_fabrication_regenerates_deterministically_and_exports_fail_closed() {
     assert!(
         String::from_utf8(projection.drawing_svg(&snapshot).unwrap())
             .unwrap()
-            .contains("ketchup.general-drawing-svg.v1")
+            .contains("ketchup.general-drawing-svg.v2")
     );
     assert!(
         String::from_utf8(projection.manufacturing_export(&snapshot).unwrap())
@@ -755,6 +755,11 @@ fn exact_brep_graph_boolean_cut_emits_host_neutral_manufacturing_evidence() {
         .find("producer=45;kind=boolean-cut;frame=definition-local;inputs=42,44")
         .unwrap();
     assert!(stock_position < cut_position);
+
+    let drawing = String::from_utf8(projection.drawing_svg(&snapshot).unwrap()).unwrap();
+    assert!(drawing.contains("data-kind=\"boolean-cut\""));
+    assert!(drawing.contains("<path"));
+    assert!(drawing.contains("boolean-cut: width=2 mm, height=10 mm, depth=10 mm"));
 }
 
 #[test]
@@ -812,6 +817,33 @@ fn exact_profile_cut_projects_btl_ready_timber_stock_and_circular_drilling() {
         "kind=circular-drill;frame=definition-local;inputs=42,43;length_mm=100;width_mm=50;height_mm=1000;machining=circular-drill:frame(0,0,0/1,0,0/0,1,0/0,0,1):center(50,25):diameter(10):interval(0,50)"
     ));
 
+    assert_eq!(
+        projection.drawings.drawings[0].machining_operations,
+        projection.manufacturing.operations
+    );
+    let drawing = String::from_utf8(projection.drawing_svg(&snapshot).unwrap()).unwrap();
+    assert!(drawing.contains("ketchup.general-drawing-svg.v2"));
+    assert!(drawing.contains(&format!(
+        "manufacturing={}",
+        projection.manufacturing.envelope.result_digest
+    )));
+    assert!(drawing.contains("data-kind=\"circular-drill\""));
+    assert!(drawing.contains("<circle"));
+    assert!(drawing.contains("circular-drill: center=(50, 25) mm, diameter=10 mm, depth=50 mm"));
+    assert!(drawing.contains("overall: x=100 mm, y=50 mm, z=1000 mm"));
+
+    let mut tampered_drawing = projection.clone();
+    let GeneralMachiningGeometry::CircularDrill { diameter_mm, .. } =
+        &mut tampered_drawing.drawings.drawings[0].machining_operations[1].machining
+    else {
+        unreachable!()
+    };
+    *diameter_mm = 12.0;
+    assert_eq!(
+        tampered_drawing.drawing_svg(&snapshot),
+        Err(GeneralFabricationError::ExportBlocked)
+    );
+
     let mut tampered = projection.clone();
     let GeneralMachiningGeometry::CircularDrill { diameter_mm, .. } =
         &mut tampered.manufacturing.operations[1].machining
@@ -821,6 +853,10 @@ fn exact_profile_cut_projects_btl_ready_timber_stock_and_circular_drilling() {
     *diameter_mm = 12.0;
     assert_eq!(
         tampered.manufacturing_export(&snapshot),
+        Err(GeneralFabricationError::ExportBlocked)
+    );
+    assert_eq!(
+        tampered.drawing_svg(&snapshot),
         Err(GeneralFabricationError::ExportBlocked)
     );
 

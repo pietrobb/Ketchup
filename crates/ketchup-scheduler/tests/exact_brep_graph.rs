@@ -5,9 +5,9 @@ use ketchup_core::document::{
 };
 use ketchup_core::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V8, EXACT_BREP_GRAPH_SCHEMA_V9, EXACT_BREP_GRAPH_SCHEMA_V10,
-    EXACT_BREP_GRAPH_SCHEMA_V11, EXACT_BREP_GRAPH_SCHEMA_V12, ExactBRepGraph, ExactBRepGraphError,
-    ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
-    MAX_EXACT_BREP_GRAPH_PROFILES,
+    EXACT_BREP_GRAPH_SCHEMA_V11, EXACT_BREP_GRAPH_SCHEMA_V12, EXACT_BREP_GRAPH_SCHEMA_V14,
+    ExactBRepGraph, ExactBRepGraphError, ExactBRepOperation, ExactBRepPlanarGeometry,
+    ExactBRepPlanarLoop, ExactBRepPlanarSegment, MAX_EXACT_BREP_GRAPH_PROFILES,
 };
 use ketchup_core::exact_product::{
     ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence, ExactBodyPackage, ExactFaceRole,
@@ -2324,6 +2324,143 @@ fn worker_evaluates_mixed_planar_profile_loft_as_one_exact_solid() {
 }
 
 #[test]
+fn worker_evaluates_mixed_spline_and_sketch_loft_in_shifted_rotated_frames() {
+    let definition = DefinitionId(1975);
+    let lower = FeatureId(19_750);
+    let middle_plane = FeatureId(19_751);
+    let middle = FeatureId(19_752);
+    let upper_plane = FeatureId(19_753);
+    let upper = FeatureId(19_754);
+    let loft = FeatureId(19_755);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Framed mixed Loft".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: lower,
+                definition_id: definition,
+                name: "Legacy spline section".into(),
+                kind: FeatureKind::SplineProfile {
+                    control_points_mm: vec![[-10.0, -6.0], [10.0, -6.0], [9.0, 7.0], [-8.0, 8.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: middle_plane,
+                definition_id: definition,
+                name: "Shifted rotated middle plane".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec {
+                    support: WorkplaneSupport::Free,
+                    frame: WorkplaneFrame::from_axes(
+                        [2.0, -1.0, -10.0],
+                        [0.866_025_403_784, 0.5, 0.0],
+                        [-0.5, 0.866_025_403_784, 0.0],
+                    )
+                    .unwrap(),
+                }),
+            },
+            CanonicalCommand::CreateFeature {
+                id: middle,
+                definition_id: definition,
+                name: "Middle sketch circle".into(),
+                kind: FeatureKind::Sketch(SketchSpec {
+                    workplane: middle_plane,
+                    entities: vec![SketchEntity::Circle {
+                        id: SketchEntityId(1),
+                        center_mm: [1.0, -1.0],
+                        radius_mm: 8.0,
+                    }],
+                    constraints: Vec::new(),
+                }),
+            },
+            CanonicalCommand::CreateFeature {
+                id: upper_plane,
+                definition_id: definition,
+                name: "Shifted tilted upper plane".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec {
+                    support: WorkplaneSupport::Free,
+                    frame: WorkplaneFrame::from_axes(
+                        [4.0, 2.0, -18.0],
+                        [1.0, 0.0, 0.0],
+                        [0.0, 0.939_692_620_786, 0.342_020_143_326],
+                    )
+                    .unwrap(),
+                }),
+            },
+            CanonicalCommand::CreateFeature {
+                id: upper,
+                definition_id: definition,
+                name: "Upper sketch circle".into(),
+                kind: FeatureKind::Sketch(SketchSpec {
+                    workplane: upper_plane,
+                    entities: vec![SketchEntity::Circle {
+                        id: SketchEntityId(1),
+                        center_mm: [-1.0, 1.0],
+                        radius_mm: 6.0,
+                    }],
+                    constraints: Vec::new(),
+                }),
+            },
+            CanonicalCommand::CreateFeature {
+                id: loft,
+                definition_id: definition,
+                name: "Mixed framed Loft solid".into(),
+                kind: FeatureKind::Loft {
+                    sections: vec![
+                        LoftSection {
+                            profile: lower,
+                            elevation_mm: 0.0,
+                        },
+                        LoftSection {
+                            profile: middle,
+                            elevation_mm: 20.0,
+                        },
+                        LoftSection {
+                            profile: upper,
+                            elevation_mm: 40.0,
+                        },
+                    ],
+                },
+            },
+        ]))
+        .unwrap();
+
+    let graph = ExactBRepGraph::from_snapshot(&document.current(), definition, loft).unwrap();
+    assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V14);
+    let ExactBRepOperation::Loft { sections } = &graph.nodes[0].operation else {
+        panic!("expected terminal Loft operation");
+    };
+    assert_eq!(
+        sections
+            .iter()
+            .map(|section| graph.profiles[section.profile.0 as usize].source_feature_id)
+            .collect::<Vec<_>>(),
+        vec![lower.0, middle.0, upper.0]
+    );
+    assert!(matches!(
+        graph.profiles[sections[0].profile.0 as usize].geometry,
+        ExactBRepPlanarGeometry::Spline { .. }
+    ));
+    assert_ne!(
+        graph.profiles[sections[1].profile.0 as usize].frame_bits,
+        graph.profiles[sections[2].profile.0 as usize].frame_bits
+    );
+
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let package = supervisor.evaluate_exact_brep_graph(&graph).unwrap();
+    assert_eq!(package.topology_counts[4], 1);
+    assert!(package.volume_mm3.is_finite() && package.volume_mm3 > 0.0);
+    assert!(package.bounds_mm[1][2] > package.bounds_mm[0][2]);
+    assert_eq!(
+        supervisor.evaluate_exact_brep_graph(&graph).unwrap(),
+        package
+    );
+}
+
+#[test]
 fn worker_evaluates_planar_offset_face_through_exact_brep_graph() {
     let definition = DefinitionId(96);
     let profile = FeatureId(960);
@@ -2442,6 +2579,93 @@ fn worker_evaluates_planar_offset_face_through_exact_brep_graph() {
         dedicated.identity.result_fingerprint
     );
     assert_eq!(package.bounds_mm, dedicated.bounds_mm);
+}
+
+#[test]
+fn worker_evaluates_framed_cubic_sketch_planar_offset() {
+    const DEFINITION: DefinitionId = DefinitionId(97);
+    const WORKPLANE: FeatureId = FeatureId(970);
+    const SKETCH: FeatureId = FeatureId(971);
+    const OFFSET: FeatureId = FeatureId(972);
+
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Framed cubic planar offset".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: WORKPLANE,
+                definition_id: DEFINITION,
+                name: "Rotated YZ workplane".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec {
+                    support: WorkplaneSupport::Free,
+                    frame: WorkplaneFrame::from_axes(
+                        [30.0, -20.0, 15.0],
+                        [0.0, 1.0, 0.0],
+                        [0.0, 0.0, 1.0],
+                    )
+                    .unwrap(),
+                }),
+            },
+            CanonicalCommand::CreateFeature {
+                id: SKETCH,
+                definition_id: DEFINITION,
+                name: "Cubic enclosure".into(),
+                kind: FeatureKind::Sketch(SketchSpec {
+                    workplane: WORKPLANE,
+                    entities: vec![
+                        SketchEntity::CubicBezier {
+                            id: SketchEntityId(1),
+                            start_mm: [-20.0, 0.0],
+                            control_1_mm: [-20.0, 15.0],
+                            control_2_mm: [20.0, 15.0],
+                            end_mm: [20.0, 0.0],
+                        },
+                        SketchEntity::CubicBezier {
+                            id: SketchEntityId(2),
+                            start_mm: [20.0, 0.0],
+                            control_1_mm: [20.0, -15.0],
+                            control_2_mm: [-20.0, -15.0],
+                            end_mm: [-20.0, 0.0],
+                        },
+                    ],
+                    constraints: Vec::new(),
+                }),
+            },
+            CanonicalCommand::CreateFeature {
+                id: OFFSET,
+                definition_id: DEFINITION,
+                name: "Offset face".into(),
+                kind: FeatureKind::PlanarOffset {
+                    profile: SKETCH,
+                    distance: dimension(3.0),
+                },
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    let graph = ExactBRepGraph::from_snapshot(&snapshot, DEFINITION, OFFSET).unwrap();
+    assert!(graph.terminal_is_planar_offset());
+    assert_ne!(graph.profiles[0].frame_bits, [0_u64; 12]);
+    let expected_bounds = graph.producer_bounds_mm().unwrap().unwrap();
+    assert_eq!(expected_bounds[0][0], 30.0);
+    assert_eq!(expected_bounds[1][0], 30.0);
+
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let package = supervisor.evaluate_exact_brep_graph(&graph).unwrap();
+    assert_eq!(
+        supervisor.evaluate_exact_brep_graph(&graph).unwrap(),
+        package
+    );
+    assert!(package.is_current(&snapshot));
+    assert_eq!(package.volume_mm3, 0.0);
+    assert!(package.area_mm2.is_finite() && package.area_mm2 > 0.0);
+    assert_eq!(package.topology_counts[2..], [1, 0, 0]);
+    assert!((package.bounds_mm[0][0] - 30.0).abs() <= 1.0e-6);
+    assert!((package.bounds_mm[1][0] - 30.0).abs() <= 1.0e-6);
 }
 
 #[test]
@@ -2845,6 +3069,497 @@ fn worker_evaluates_signed_linear_intervals_through_one_graph_protocol() {
         assert!(step.len() > 256);
         assert!(step.windows(9).any(|window| window == b"ISO-10303"));
     }
+}
+
+#[test]
+fn positive_face_offset_bounds_drive_a_complete_through_cut_and_round_trip() {
+    let definition = DefinitionId(88);
+    let base_profile = FeatureId(880);
+    let base = FeatureId(881);
+    let offset = FeatureId(882);
+    let cut_profile = FeatureId(883);
+    let cut = FeatureId(884);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Offset then through cut".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: base_profile,
+                definition_id: definition,
+                name: "Base profile".into(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [37.0, 0.0], [37.0, 23.0], [0.0, 23.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: base,
+                definition_id: definition,
+                name: "Base extrusion".into(),
+                kind: FeatureKind::Extrusion {
+                    profile: base_profile,
+                    height: dimension(19.0),
+                },
+            },
+        ]))
+        .unwrap();
+
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let base_graph = ExactBRepGraph::from_snapshot(&document.current(), definition, base).unwrap();
+    let base_package = supervisor.evaluate_exact_brep_graph(&base_graph).unwrap();
+    let top_z = base_package.bounds_mm[1][2];
+    let top_face_ordinal = base_package
+        .triangles
+        .iter()
+        .zip(&base_package.triangle_face_ordinals)
+        .find_map(|(triangle, face_ordinal)| {
+            triangle
+                .vertex_indices
+                .iter()
+                .all(|index| {
+                    (base_package.vertices[*index as usize].position_mm[2] - top_z).abs() <= 1.0e-6
+                })
+                .then_some(*face_ordinal)
+        })
+        .unwrap();
+    let top_face = base_package
+        .topological_references
+        .iter()
+        .find(|reference| {
+            reference.kind == TopologicalElementKind::Face
+                && reference.producer_element_id
+                    == format!("generated-result/face/{top_face_ordinal}")
+        })
+        .unwrap()
+        .clone();
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateFeature {
+                id: offset,
+                definition_id: definition,
+                name: "Positive top face offset".into(),
+                kind: FeatureKind::TopologyFaceOffset {
+                    target: base,
+                    face: top_face,
+                    distance: dimension(5.0),
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: cut_profile,
+                definition_id: definition,
+                name: "Interior cut profile".into(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[9.0, 7.0], [16.0, 7.0], [16.0, 12.0], [9.0, 12.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: cut,
+                definition_id: definition,
+                name: "Through all offset body".into(),
+                kind: FeatureKind::ThroughCut {
+                    target: offset,
+                    profile: cut_profile,
+                },
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    let offset_graph = ExactBRepGraph::from_snapshot(&snapshot, definition, offset).unwrap();
+    let cut_graph = ExactBRepGraph::from_snapshot(&snapshot, definition, cut).unwrap();
+    assert_eq!(
+        offset_graph.producer_bounds_mm().unwrap(),
+        Some([[-5.0, -5.0, -5.0], [42.0, 28.0, 24.0]])
+    );
+    let interval = cut_graph
+        .nodes
+        .iter()
+        .find_map(|node| match &node.operation {
+            ExactBRepOperation::ProfileCut { interval, .. } => Some(*interval),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(interval.start_mm(), -6.0);
+    assert_eq!(interval.end_mm(), 25.0);
+
+    let offset_package = supervisor.evaluate_exact_brep_graph(&offset_graph).unwrap();
+    let cut_package = supervisor.evaluate_exact_brep_graph(&cut_graph).unwrap();
+    assert_bounds_close(offset_package.bounds_mm, [0.0, 0.0, 0.0, 37.0, 23.0, 24.0]);
+    assert_bounds_close(cut_package.bounds_mm, [0.0, 0.0, 0.0, 37.0, 23.0, 24.0]);
+    assert!((offset_package.volume_mm3 - 20_424.0).abs() <= 1.0e-7);
+    assert!(
+        (cut_package.volume_mm3 - 19_584.0).abs() <= 19_584.0 * 1.0e-9,
+        "unexpected through-cut volume {}",
+        cut_package.volume_mm3
+    );
+    assert!(cut_package.topology_counts[2] >= 10);
+    assert_eq!(cut_package.topology_counts[4], 1);
+
+    let reopened = persistence::load(&persistence::save(&snapshot)).unwrap();
+    let reopened_snapshot = reopened.snapshot();
+    let reopened_graph =
+        ExactBRepGraph::from_snapshot(&reopened_snapshot, definition, cut).unwrap();
+    assert_eq!(reopened_graph, cut_graph);
+    assert_eq!(
+        supervisor
+            .evaluate_exact_brep_graph(&reopened_graph)
+            .unwrap(),
+        cut_package
+    );
+}
+
+#[test]
+fn through_cut_uses_safe_bounds_for_revolve_loft_and_imported_exact_bodies() {
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+
+    let revolve_definition = DefinitionId(188);
+    let revolve_profile = FeatureId(1880);
+    let revolve = FeatureId(1881);
+    let revolve_cut_profile = FeatureId(1882);
+    let revolve_cut = FeatureId(1883);
+    let mut revolve_document = DocumentStore::new();
+    revolve_document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: revolve_definition,
+                name: "Revolve through cut".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: revolve_profile,
+                definition_id: revolve_definition,
+                name: "Revolve profile".into(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, -10.0], [10.0, -10.0], [10.0, 10.0], [0.0, 10.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: revolve,
+                definition_id: revolve_definition,
+                name: "Revolved cylinder".into(),
+                kind: FeatureKind::Revolve {
+                    profile: revolve_profile,
+                    axis_start_mm: [0.0, -20.0],
+                    axis_end_mm: [0.0, 20.0],
+                    angle_degrees: 360.0,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: revolve_cut_profile,
+                definition_id: revolve_definition,
+                name: "Revolve cut profile".into(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[-2.0, -5.0], [2.0, -5.0], [2.0, 5.0], [-2.0, 5.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: revolve_cut,
+                definition_id: revolve_definition,
+                name: "Revolve through all".into(),
+                kind: FeatureKind::ThroughCut {
+                    target: revolve,
+                    profile: revolve_cut_profile,
+                },
+            },
+        ]))
+        .unwrap();
+    let revolve_snapshot = revolve_document.current();
+    let revolve_graph =
+        ExactBRepGraph::from_snapshot(&revolve_snapshot, revolve_definition, revolve).unwrap();
+    let revolve_cut_graph =
+        ExactBRepGraph::from_snapshot(&revolve_snapshot, revolve_definition, revolve_cut).unwrap();
+    let revolve_package = supervisor
+        .evaluate_exact_brep_graph(&revolve_graph)
+        .unwrap();
+    let revolve_cut_package = supervisor
+        .evaluate_exact_brep_graph(&revolve_cut_graph)
+        .unwrap();
+    let revolve_interval = revolve_cut_graph
+        .nodes
+        .last()
+        .and_then(|node| match node.operation {
+            ExactBRepOperation::ProfileCut { interval, .. } => Some(interval),
+            _ => None,
+        })
+        .unwrap();
+    assert!(revolve_interval.start_mm() < revolve_package.bounds_mm[0][2]);
+    assert!(revolve_interval.end_mm() > revolve_package.bounds_mm[1][2]);
+    assert!(revolve_cut_package.volume_mm3 > 0.0);
+    assert!(revolve_cut_package.volume_mm3 < revolve_package.volume_mm3);
+    assert_eq!(revolve_cut_package.topology_counts[4], 1);
+
+    let loft_definition = DefinitionId(189);
+    let lower = FeatureId(1890);
+    let upper = FeatureId(1891);
+    let loft = FeatureId(1892);
+    let loft_cut_profile = FeatureId(1893);
+    let loft_cut = FeatureId(1894);
+    let mut loft_document = DocumentStore::new();
+    loft_document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: loft_definition,
+                name: "Loft through cut".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: lower,
+                definition_id: loft_definition,
+                name: "Lower loft profile".into(),
+                kind: FeatureKind::SplineProfile {
+                    control_points_mm: vec![
+                        [-10.0, -10.0],
+                        [10.0, -10.0],
+                        [10.0, 10.0],
+                        [-10.0, 10.0],
+                    ],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: upper,
+                definition_id: loft_definition,
+                name: "Upper loft profile".into(),
+                kind: FeatureKind::SplineProfile {
+                    control_points_mm: vec![[-8.0, -8.0], [8.0, -8.0], [8.0, 8.0], [-8.0, 8.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: loft,
+                definition_id: loft_definition,
+                name: "Lofted solid".into(),
+                kind: FeatureKind::Loft {
+                    sections: vec![
+                        LoftSection {
+                            profile: lower,
+                            elevation_mm: 0.0,
+                        },
+                        LoftSection {
+                            profile: upper,
+                            elevation_mm: 20.0,
+                        },
+                    ],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: loft_cut_profile,
+                definition_id: loft_definition,
+                name: "Loft cut profile".into(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[-2.0, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: loft_cut,
+                definition_id: loft_definition,
+                name: "Loft through all".into(),
+                kind: FeatureKind::ThroughCut {
+                    target: loft,
+                    profile: loft_cut_profile,
+                },
+            },
+        ]))
+        .unwrap();
+    let loft_snapshot = loft_document.current();
+    let loft_graph = ExactBRepGraph::from_snapshot(&loft_snapshot, loft_definition, loft).unwrap();
+    let loft_cut_graph =
+        ExactBRepGraph::from_snapshot(&loft_snapshot, loft_definition, loft_cut).unwrap();
+    let loft_package = supervisor.evaluate_exact_brep_graph(&loft_graph).unwrap();
+    let loft_cut_package = supervisor
+        .evaluate_exact_brep_graph(&loft_cut_graph)
+        .unwrap();
+    let loft_interval = loft_cut_graph
+        .nodes
+        .last()
+        .and_then(|node| match node.operation {
+            ExactBRepOperation::ProfileCut { interval, .. } => Some(interval),
+            _ => None,
+        })
+        .unwrap();
+    assert!(loft_interval.start_mm() < loft_package.bounds_mm[0][2]);
+    assert!(loft_interval.end_mm() > loft_package.bounds_mm[1][2]);
+    assert!(loft_cut_package.volume_mm3 > 0.0);
+    assert!(loft_cut_package.volume_mm3 < loft_package.volume_mm3);
+    assert_eq!(loft_cut_package.topology_counts[4], 1);
+
+    let source_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../corpora/r0/step/self-authored-box.step");
+    let source = std::fs::read(&source_path).unwrap();
+    let evidence = supervisor
+        .inspect_step_import_with_cancellation(
+            &source_path,
+            &sha256_hex(&source),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    let mut imported_document = DocumentStore::new();
+    imported_document
+        .apply_batch(
+            &plan_step_import(
+                &imported_document.current(),
+                &source,
+                "through-cut-source.step",
+                &evidence,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let imported_definition = imported_document
+        .current()
+        .definitions()
+        .next()
+        .unwrap()
+        .id();
+    let imported = imported_document.current().features().next().unwrap().id();
+    let imported_cut_profile = FeatureId(imported.0 + 1);
+    let imported_cut = FeatureId(imported.0 + 2);
+    let min = evidence.bounds_mm[0];
+    let max = evidence.bounds_mm[1];
+    let x0 = min[0] + (max[0] - min[0]) * 0.25;
+    let x1 = min[0] + (max[0] - min[0]) * 0.5;
+    let y0 = min[1] + (max[1] - min[1]) * 0.25;
+    let y1 = min[1] + (max[1] - min[1]) * 0.5;
+    let imported_before_cut = imported_document.current();
+    let FeatureKind::ImportedExactBody(mut narrowed_spec) = imported_before_cut
+        .feature(imported)
+        .unwrap()
+        .kind()
+        .clone()
+    else {
+        panic!("STEP import must produce an exact body");
+    };
+    narrowed_spec.bounds_mm[0][2] = min[2] + (max[2] - min[2]) * 0.4;
+    narrowed_spec.bounds_mm[1][2] = min[2] + (max[2] - min[2]) * 0.6;
+    imported_document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::DeleteFeature { id: imported },
+            CanonicalCommand::CreateFeature {
+                id: imported,
+                definition_id: imported_definition,
+                name: "Imported body with stale advisory bounds".into(),
+                kind: FeatureKind::ImportedExactBody(narrowed_spec),
+            },
+        ]))
+        .unwrap();
+    imported_document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateFeature {
+                id: imported_cut_profile,
+                definition_id: imported_definition,
+                name: "Imported cut profile".into(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: imported_cut,
+                definition_id: imported_definition,
+                name: "Imported through all".into(),
+                kind: FeatureKind::ThroughCut {
+                    target: imported,
+                    profile: imported_cut_profile,
+                },
+            },
+        ]))
+        .unwrap();
+    let imported_snapshot = imported_document.current();
+    let imported_graph =
+        ExactBRepGraph::from_snapshot(&imported_snapshot, imported_definition, imported).unwrap();
+    let imported_cut_graph =
+        ExactBRepGraph::from_snapshot(&imported_snapshot, imported_definition, imported_cut)
+            .unwrap();
+    assert!(
+        supervisor
+            .evaluate_exact_brep_graph(&imported_cut_graph)
+            .is_err()
+    );
+    assert_eq!(
+        imported_graph.producer_bounds_mm().unwrap(),
+        None,
+        "serialized import operations remain source-bound rather than claiming derived bounds"
+    );
+    let imported_cut_package = supervisor
+        .evaluate_exact_brep_graph_with_imported_sources(&imported_cut_graph, &[source.as_slice()])
+        .unwrap();
+    let imported_interval = imported_cut_graph
+        .nodes
+        .last()
+        .and_then(|node| match node.operation {
+            ExactBRepOperation::ProfileCut { interval, .. } => Some(interval),
+            _ => None,
+        })
+        .unwrap();
+    assert!(imported_interval.start_mm() > evidence.bounds_mm[0][2]);
+    assert!(imported_interval.end_mm() < evidence.bounds_mm[1][2]);
+    let expected_imported_cut_volume = evidence.volume_mm3
+        - (x1 - x0) * (y1 - y0) * (evidence.bounds_mm[1][2] - evidence.bounds_mm[0][2]);
+    assert!(
+        (imported_cut_package.volume_mm3 - expected_imported_cut_volume).abs()
+            <= expected_imported_cut_volume * 1.0e-9
+    );
+    assert_eq!(imported_cut_package.topology_counts[4], 1);
+
+    let mut stale_document = DocumentStore::new();
+    stale_document
+        .apply_batch(
+            &plan_step_import(
+                &stale_document.current(),
+                &source,
+                "stale-through-cut-source.step",
+                &evidence,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let stale_snapshot = stale_document.current();
+    let stale_definition = stale_snapshot.definitions().next().unwrap().id();
+    let stale_import = stale_snapshot.features().next().unwrap();
+    let stale_import_id = stale_import.id();
+    let FeatureKind::ImportedExactBody(mut stale_spec) = stale_import.kind().clone() else {
+        panic!("STEP import must produce an exact body");
+    };
+    stale_spec.result_fingerprint = "stale-result-fingerprint".into();
+    let stale_profile = FeatureId(stale_import_id.0 + 1);
+    let stale_cut = FeatureId(stale_import_id.0 + 2);
+    stale_document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::DeleteFeature {
+                id: stale_import_id,
+            },
+            CanonicalCommand::CreateFeature {
+                id: stale_import_id,
+                definition_id: stale_definition,
+                name: "Stale imported body".into(),
+                kind: FeatureKind::ImportedExactBody(stale_spec),
+            },
+            CanonicalCommand::CreateFeature {
+                id: stale_profile,
+                definition_id: stale_definition,
+                name: "Stale imported cut profile".into(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: stale_cut,
+                definition_id: stale_definition,
+                name: "Stale imported through all".into(),
+                kind: FeatureKind::ThroughCut {
+                    target: stale_import_id,
+                    profile: stale_profile,
+                },
+            },
+        ]))
+        .unwrap();
+    let stale_graph =
+        ExactBRepGraph::from_snapshot(&stale_document.current(), stale_definition, stale_cut)
+            .unwrap();
+    assert!(
+        supervisor
+            .evaluate_exact_brep_graph_with_imported_sources(&stale_graph, &[source.as_slice()])
+            .is_err()
+    );
 }
 
 #[test]
@@ -3749,4 +4464,224 @@ fn worker_evaluates_closed_non_planar_v12_sweep_with_mesh_and_step_round_trip() 
         .unwrap();
     assert_eq!(evidence.solid_count, 1);
     assert!((evidence.volume_mm3 - package.volume_mm3).abs() <= package.volume_mm3 * 1.0e-9);
+}
+
+#[test]
+fn worker_evaluates_general_sketch_profiles_on_a_mixed_spatial_path() {
+    let spatial_segments = vec![
+        SpatialPathSegment::Line {
+            start_mm: [0.0, 0.0, 0.0],
+            end_mm: [0.0, 0.0, 20.0],
+        },
+        SpatialPathSegment::CircularArc {
+            start_mm: [0.0, 0.0, 20.0],
+            end_mm: [10.0, 0.0, 30.0],
+            center_mm: [10.0, 0.0, 20.0],
+            normal: [0.0, 1.0, 0.0],
+            clockwise: false,
+        },
+        SpatialPathSegment::CubicBezier {
+            start_mm: [10.0, 0.0, 30.0],
+            control_1_mm: [15.0, 0.0, 30.0],
+            control_2_mm: [20.0, 5.0, 35.0],
+            end_mm: [25.0, 10.0, 40.0],
+        },
+    ];
+    let profiles = [
+        vec![
+            SketchEntity::Line {
+                id: SketchEntityId(1),
+                start_mm: [-2.0, -2.0],
+                end_mm: [2.0, -2.0],
+            },
+            SketchEntity::Arc {
+                id: SketchEntityId(2),
+                start_mm: [2.0, -2.0],
+                end_mm: [2.0, 2.0],
+                center_mm: [2.0, 0.0],
+                clockwise: false,
+            },
+            SketchEntity::CubicBezier {
+                id: SketchEntityId(3),
+                start_mm: [2.0, 2.0],
+                control_1_mm: [0.5, 3.0],
+                control_2_mm: [-0.5, 3.0],
+                end_mm: [-2.0, 2.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(4),
+                start_mm: [-2.0, 2.0],
+                end_mm: [-2.0, -2.0],
+            },
+        ],
+        vec![SketchEntity::Circle {
+            id: SketchEntityId(1),
+            center_mm: [0.0, 0.0],
+            radius_mm: 2.0,
+        }],
+    ];
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    for (index, entities) in profiles.into_iter().enumerate() {
+        let definition = DefinitionId(900 + index as u64);
+        let workplane = FeatureId(9000 + index as u64 * 10);
+        let profile = FeatureId(workplane.0 + 1);
+        let path = FeatureId(workplane.0 + 2);
+        let sweep = FeatureId(workplane.0 + 3);
+        let mut document = DocumentStore::new();
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: definition,
+                    name: format!("General sketch sweep {index}"),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: workplane,
+                    definition_id: definition,
+                    name: "Profile plane".into(),
+                    kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: profile,
+                    definition_id: definition,
+                    name: "General sketch profile".into(),
+                    kind: FeatureKind::Sketch(SketchSpec {
+                        workplane,
+                        entities,
+                        constraints: Vec::new(),
+                    }),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: path,
+                    definition_id: definition,
+                    name: "Mixed spatial path".into(),
+                    kind: FeatureKind::SpatialPath {
+                        segments: spatial_segments.clone(),
+                    },
+                },
+                CanonicalCommand::CreateFeature {
+                    id: sweep,
+                    definition_id: definition,
+                    name: "General sketch sweep".into(),
+                    kind: FeatureKind::Sweep { profile, path },
+                },
+            ]))
+            .unwrap();
+        let snapshot = document.current();
+        let graph = ExactBRepGraph::from_snapshot(&snapshot, definition, sweep).unwrap();
+        assert!(matches!(
+            &graph.nodes.last().unwrap().operation,
+            ExactBRepOperation::SpatialSweep { path, .. } if path.segments.len() == 3
+        ));
+        let package = supervisor.evaluate_exact_brep_graph(&graph).unwrap();
+        assert_eq!(package.topology_counts[4], 1);
+        assert!(package.volume_mm3.is_finite() && package.volume_mm3 > 0.0);
+        assert!(!package.vertices.is_empty());
+        assert!(!package.triangles.is_empty());
+        if index == 0 {
+            let directory = tempfile::tempdir().unwrap();
+            let step_path = directory.path().join("general-sketch-spatial-sweep.step");
+            supervisor
+                .export_exact_brep_graph_step(&snapshot, &package, &step_path)
+                .unwrap();
+            let source = std::fs::read(&step_path).unwrap();
+            let evidence = supervisor
+                .inspect_step_import_with_cancellation(
+                    &step_path,
+                    &sha256_hex(&source),
+                    &AtomicBool::new(false),
+                )
+                .unwrap();
+            assert_eq!(evidence.solid_count, 1);
+            assert!(
+                (evidence.volume_mm3 - package.volume_mm3).abs() <= package.volume_mm3 * 1.0e-9
+            );
+        }
+    }
+
+    let definition = DefinitionId(950);
+    let profile_plane = FeatureId(9500);
+    let profile = FeatureId(9501);
+    let path_plane = FeatureId(9502);
+    let path = FeatureId(9503);
+    let sweep = FeatureId(9504);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Sketch path worker proof".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: profile_plane,
+                definition_id: definition,
+                name: "Profile plane".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: profile,
+                definition_id: definition,
+                name: "Circle profile".into(),
+                kind: FeatureKind::Sketch(SketchSpec {
+                    workplane: profile_plane,
+                    entities: vec![SketchEntity::Circle {
+                        id: SketchEntityId(1),
+                        center_mm: [0.0, 0.0],
+                        radius_mm: 2.0,
+                    }],
+                    constraints: Vec::new(),
+                }),
+            },
+            CanonicalCommand::CreateFeature {
+                id: path_plane,
+                definition_id: definition,
+                name: "Path plane".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xz)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: path,
+                definition_id: definition,
+                name: "Mixed Sketch path".into(),
+                kind: FeatureKind::Sketch(SketchSpec {
+                    workplane: path_plane,
+                    entities: vec![
+                        SketchEntity::Line {
+                            id: SketchEntityId(1),
+                            start_mm: [0.0, 0.0],
+                            end_mm: [0.0, 20.0],
+                        },
+                        SketchEntity::Arc {
+                            id: SketchEntityId(2),
+                            start_mm: [0.0, 20.0],
+                            end_mm: [10.0, 30.0],
+                            center_mm: [10.0, 20.0],
+                            clockwise: true,
+                        },
+                        SketchEntity::CubicBezier {
+                            id: SketchEntityId(3),
+                            start_mm: [10.0, 30.0],
+                            control_1_mm: [15.0, 30.0],
+                            control_2_mm: [20.0, 35.0],
+                            end_mm: [25.0, 40.0],
+                        },
+                    ],
+                    constraints: Vec::new(),
+                }),
+            },
+            CanonicalCommand::CreateFeature {
+                id: sweep,
+                definition_id: definition,
+                name: "Sketch path Sweep".into(),
+                kind: FeatureKind::Sweep { profile, path },
+            },
+        ]))
+        .unwrap();
+    let graph = ExactBRepGraph::from_snapshot(&document.current(), definition, sweep).unwrap();
+    assert!(matches!(
+        &graph.nodes.last().unwrap().operation,
+        ExactBRepOperation::SpatialSweep { path, .. } if path.segments.len() == 3
+    ));
+    let package = supervisor.evaluate_exact_brep_graph(&graph).unwrap();
+    assert_eq!(package.topology_counts[4], 1);
+    assert!(package.volume_mm3.is_finite() && package.volume_mm3 > 0.0);
 }

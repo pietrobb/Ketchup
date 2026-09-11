@@ -160,12 +160,15 @@ class Runtime:
         state = result["state"]
         if state["document_id"] != entry["document_id"]:
             raise Rejection("document_changed", "Owned document identity changed")
+        if type(result.get("modified")) is not bool:
+            raise Rejection("invalid_backend_state", "Headless summary omitted authoritative modified state")
+        entry["modified"] = result["modified"]
         return result
 
     def summary(self, entry, result):
         state = result["state"]
         return {**result["summary"], "identity": _identity(state), "path": entry["path"],
-                "unsaved": entry["saved_digest"] != state["canonical_digest"],
+                "unsaved": result["modified"],
                 "undo_steps": state["undo_steps"], "redo_steps": state["redo_steps"],
                 "backend_compact": True}
 
@@ -255,7 +258,7 @@ def register_tools() -> list:
                 if path or executable or worker:
                     raise Rejection("invalid_arguments", "close accepts no paths or executables")
                 entry = runtime.mutation(handle, expected_revision, expected_digest)
-                if entry["saved_digest"] != entry["observed"]["canonical_digest"] and not discard:
+                if entry["modified"] and not discard:
                     raise Rejection("unsaved_changes", "Use discard=true to close an unsaved document")
                 runtime.forget(handle)
                 return {"closed": handle}
@@ -277,8 +280,7 @@ def register_tools() -> list:
                 state = result["state"]
                 entry = runtime.sessions[owned]
                 entry.update(document=document, document_id=state["document_id"], path=document_path,
-                             saved_digest=state["canonical_digest"] if document_path else None,
-                             observed=_identity(state))
+                             modified=result["modified"], observed=_identity(state))
                 return {"handle": owned, "ownership": "owned_headless_not_live_GUI", **runtime.summary(entry, result)}
             except BaseException:
                 runtime.forget(owned)
@@ -449,7 +451,7 @@ def register_tools() -> list:
             if Path(destination).exists() and not overwrite:
                 raise Rejection("file_exists", "Destination exists; overwrite=true is required")
             result = entry["document"].save(destination, overwrite=overwrite)
-            entry.update(path=destination, saved_digest=result["state"]["canonical_digest"], observed=None)
+            entry.update(path=destination, modified=result["modified"], observed=None)
             return runtime.summary(entry, result)
         return await runtime.run(handle, job)
 

@@ -20,8 +20,8 @@ use ketchup_core::document::{
 use ketchup_core::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V6, EXACT_BREP_GRAPH_SCHEMA_V7, EXACT_BREP_GRAPH_SCHEMA_V8,
     EXACT_BREP_GRAPH_SCHEMA_V9, EXACT_BREP_GRAPH_SCHEMA_V10, EXACT_BREP_GRAPH_SCHEMA_V11,
-    EXACT_BREP_GRAPH_SCHEMA_V12, EXACT_BREP_GRAPH_SCHEMA_V13, ExactBRepGraph, ExactBRepOperation,
-    ExactBRepPlanarLoop, ExactBRepPlanarSegment,
+    EXACT_BREP_GRAPH_SCHEMA_V12, EXACT_BREP_GRAPH_SCHEMA_V13, EXACT_BREP_GRAPH_SCHEMA_V14,
+    ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
 };
 use ketchup_core::exact_product::{
     ExactAxialAttachmentInput, ExactBRepGraphEdgeEvidence, ExactBRepGraphFaceEvidence,
@@ -663,6 +663,7 @@ const EXACT_BREP_GRAPH_CAPABILITY_V10: &str = "EXACT_BREP_GRAPH_V10";
 const EXACT_BREP_GRAPH_CAPABILITY_V11: &str = "EXACT_BREP_GRAPH_V11";
 const EXACT_BREP_GRAPH_CAPABILITY_V12: &str = "EXACT_BREP_GRAPH_V12";
 const EXACT_BREP_GRAPH_CAPABILITY_V13: &str = "EXACT_BREP_GRAPH_V13";
+const EXACT_BREP_GRAPH_CAPABILITY_V14: &str = "EXACT_BREP_GRAPH_V14";
 pub const MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES: usize = 64;
 pub const MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
 const DEFAULT_WORKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1302,6 +1303,7 @@ impl ExactWorkerClient {
             EXACT_BREP_GRAPH_SCHEMA_V11 => EXACT_BREP_GRAPH_CAPABILITY_V11,
             EXACT_BREP_GRAPH_SCHEMA_V12 => EXACT_BREP_GRAPH_CAPABILITY_V12,
             EXACT_BREP_GRAPH_SCHEMA_V13 => EXACT_BREP_GRAPH_CAPABILITY_V13,
+            EXACT_BREP_GRAPH_SCHEMA_V14 => EXACT_BREP_GRAPH_CAPABILITY_V14,
             schema => {
                 return Err(WorkerError::Protocol(format!(
                     "unsupported graph schema {schema}"
@@ -1337,6 +1339,7 @@ impl ExactWorkerClient {
             EXACT_BREP_GRAPH_SCHEMA_V11 => "EVAL_BREP_GRAPH_V11",
             EXACT_BREP_GRAPH_SCHEMA_V12 => "EVAL_BREP_GRAPH_V12",
             EXACT_BREP_GRAPH_SCHEMA_V13 => "EVAL_BREP_GRAPH_V13",
+            EXACT_BREP_GRAPH_SCHEMA_V14 => "EVAL_BREP_GRAPH_V14",
             _ => unreachable!("capability validation rejects unsupported graph schemas"),
         };
         let mut request = format!("{operation} {} {}", graph.graph_digest, hex_encode(&bytes));
@@ -1351,6 +1354,7 @@ impl ExactWorkerClient {
             EXACT_BREP_GRAPH_SCHEMA_V11 => "OK_BREP_GRAPH_V11",
             EXACT_BREP_GRAPH_SCHEMA_V12 => "OK_BREP_GRAPH_V12",
             EXACT_BREP_GRAPH_SCHEMA_V13 => "OK_BREP_GRAPH_V13",
+            EXACT_BREP_GRAPH_SCHEMA_V14 => "OK_BREP_GRAPH_V14",
             _ => unreachable!("capability validation rejects unsupported graph schemas"),
         };
         match parse_exact_brep_graph_result(&response, expected_protocol) {
@@ -1380,6 +1384,7 @@ impl ExactWorkerClient {
             EXACT_BREP_GRAPH_SCHEMA_V11 => "TESSELLATE_BREP_GRAPH_V11",
             EXACT_BREP_GRAPH_SCHEMA_V12 => "TESSELLATE_BREP_GRAPH_V12",
             EXACT_BREP_GRAPH_SCHEMA_V13 => "TESSELLATE_BREP_GRAPH_V13",
+            EXACT_BREP_GRAPH_SCHEMA_V14 => "TESSELLATE_BREP_GRAPH_V14",
             _ => unreachable!("capability validation rejects unsupported graph schemas"),
         };
         let mut request = format!(
@@ -1448,7 +1453,9 @@ impl ExactWorkerClient {
             | EXACT_BREP_GRAPH_SCHEMA_V10
             | EXACT_BREP_GRAPH_SCHEMA_V11 => ("EXPORT_BREP_GRAPH_STEP_V2", "OK_BREP_GRAPH_STEP_V2"),
             EXACT_BREP_GRAPH_SCHEMA_V12 => ("EXPORT_BREP_GRAPH_STEP_V3", "OK_BREP_GRAPH_STEP_V3"),
-            EXACT_BREP_GRAPH_SCHEMA_V13 => ("EXPORT_BREP_GRAPH_STEP_V4", "OK_BREP_GRAPH_STEP_V4"),
+            EXACT_BREP_GRAPH_SCHEMA_V13 | EXACT_BREP_GRAPH_SCHEMA_V14 => {
+                ("EXPORT_BREP_GRAPH_STEP_V4", "OK_BREP_GRAPH_STEP_V4")
+            }
             _ => unreachable!("capability validation rejects unsupported graph schemas"),
         };
         let mut request = format!(
@@ -3721,25 +3728,37 @@ impl ExactWorkerSupervisor {
             Err(error) => return Err(error),
         };
         let valid_terminal = if graph.terminal_is_planar_offset() {
+            let bounds_mm = [
+                [
+                    result.bounds_mm[0],
+                    result.bounds_mm[1],
+                    result.bounds_mm[2],
+                ],
+                [
+                    result.bounds_mm[3],
+                    result.bounds_mm[4],
+                    result.bounds_mm[5],
+                ],
+            ];
             result.volume_mm3.is_finite()
                 && result.volume_mm3 == 0.0
-                && graph.accepts_terminal_planar_offset_geometry(
-                    [
-                        [
-                            result.bounds_mm[0],
-                            result.bounds_mm[1],
-                            result.bounds_mm[2],
-                        ],
-                        [
-                            result.bounds_mm[3],
-                            result.bounds_mm[4],
-                            result.bounds_mm[5],
-                        ],
-                    ],
-                    result.area_mm2,
-                    result.topology_counts,
-                    result.wire_count,
-                )
+                && if graph.terminal_planar_offset_is_framed() {
+                    result.area_mm2.is_finite()
+                        && result.area_mm2 > 0.0
+                        && result.topology_counts[0] != 0
+                        && result.topology_counts[0] == result.topology_counts[1]
+                        && result.topology_counts[2..] == [1, 0, 0]
+                        && bounds_mm.iter().flatten().all(|value| value.is_finite())
+                        && (0..3).all(|axis| bounds_mm[0][axis] <= bounds_mm[1][axis])
+                } else {
+                    graph.accepts_terminal_planar_offset_geometry(
+                        bounds_mm,
+                        None,
+                        result.area_mm2,
+                        result.topology_counts,
+                        result.wire_count,
+                    )
+                }
         } else {
             result.volume_mm3.is_finite()
                 && result.volume_mm3 > 0.0
@@ -6690,11 +6709,14 @@ fn parse_exact_brep_graph_result(
                             | "OK_BREP_GRAPH_V11"
                             | "OK_BREP_GRAPH_V12"
                             | "OK_BREP_GRAPH_V13"
+                            | "OK_BREP_GRAPH_V14"
                     ) =>
             {
                 (Some(16), 1, None, None)
             }
-            (Some("OK_BREP_GRAPH_V13"), 23) if expected_protocol == "OK_BREP_GRAPH_V13" => {
+            (Some(protocol @ ("OK_BREP_GRAPH_V13" | "OK_BREP_GRAPH_V14")), 23)
+                if expected_protocol == protocol =>
+            {
                 (Some(16), 1, Some(22), None)
             }
             (Some(protocol), 24)
@@ -6707,6 +6729,7 @@ fn parse_exact_brep_graph_result(
                             | "OK_BREP_GRAPH_V11"
                             | "OK_BREP_GRAPH_V12"
                             | "OK_BREP_GRAPH_V13"
+                            | "OK_BREP_GRAPH_V14"
                     ) =>
             {
                 (Some(16), 1, Some(22), Some(23))

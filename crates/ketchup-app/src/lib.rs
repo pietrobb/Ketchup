@@ -37,7 +37,7 @@ use ketchup_core::beam_m4ae::{
 };
 #[cfg(feature = "named-product-fixtures")]
 use ketchup_core::beam_m5::{BeamExactPiecePackage, BeamM5Products};
-use ketchup_core::blender_export::{ExactGlbExport, ExactGlbInstance, exact_model_glb_export};
+use ketchup_core::blender_export::{ExactGlbExport, MeshGlbInstance, model_glb_export};
 use ketchup_core::document::{
     AuthenticatedApprover, AuthoritativeDependency, BodyId, BooleanOperation, BottleEdgeFinishKind,
     CanonicalCommand, CanonicalError, ClassificationCategoryId, ClassificationDimensionId,
@@ -66,8 +66,8 @@ use ketchup_core::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation};
 use ketchup_core::exact_product::{
     AssemblySelectionTarget, ExactBodyPackage, ExactBodyView, ExactFaceRole,
     ExactFeatureChainRequest, ExactLoftRequest, ExactMeshExport, ExactPlanarOffsetRequest,
-    ExactResultRegistry, ExactStlExport, ExactSweepRequest, exact_body_terminal_features,
-    exact_model_stl_export, is_line_arc_capsule_profile,
+    ExactResultRegistry, ExactStlExport, ExactSweepRequest, MeshExportBody, MeshExportSource,
+    exact_body_terminal_features, is_line_arc_capsule_profile, model_stl_export,
 };
 #[cfg(test)]
 use ketchup_core::exact_product::{ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence};
@@ -75,9 +75,7 @@ use ketchup_core::exact_revolve::ExactRevolveRequest;
 #[cfg(feature = "named-product-fixtures")]
 use ketchup_core::exact_revolve::{BottleAuthorityReport, ExactRevolvePackage};
 use ketchup_core::exact_validation::{
-    BuiltinGeneralBodyValidator, GeneralBodyNarrowPhaseRelation, GeneralBodyParticipant,
-    GeneralClearanceCase, general_body_input_bytes, general_body_narrow_phase,
-    general_body_validation_policy,
+    GeneralBodyNarrowPhaseRelation, GeneralBodyParticipant, general_body_narrow_phase,
 };
 use ketchup_core::fabrication::{
     BtlxExportOptions, BtlxProfileProcessingRequest, project_general_fabrication,
@@ -110,14 +108,12 @@ use ketchup_core::space::ClearanceOwner;
 use ketchup_core::space::{ClearanceSeverity, ClearanceVolumeId, SpaceId};
 use ketchup_core::state_view::{AGENT_STATE_VIEW_V1, encode_semantic_state};
 use ketchup_core::three_mf_export::{
-    ExactThreeMfExport, ExactThreeMfInstance, exact_model_three_mf_export,
+    ExactThreeMfExport, MeshThreeMfInstance, model_three_mf_export,
 };
 use ketchup_core::topology::{TopologicalElementKind, TopologicalElementRef};
 #[cfg(feature = "named-product-fixtures")]
 use ketchup_core::validation::ValidationReport;
-use ketchup_core::validation::{
-    HostNeutralValidator, ValidationExecution, ValidationInvocation, ValidatorRoleIndex,
-};
+use ketchup_core::validation::ValidatorRoleIndex;
 use ketchup_interaction::{
     Axis, ElementId, ExactHit, LocaleCatalog, PickResult, Ray, SelectionId, Side, SnapKind,
     SnapPolicy, SnapResult, SnapTracker, Vec3,
@@ -168,7 +164,7 @@ pub mod renderer;
 
 use dialogs::{
     DialogParentWindow, DiscardRequest, ExportRequest, FileDialogs, HighRiskConfirmationRequest,
-    ImportDialogRequest, NativeFileDialogs, SaveRequest,
+    HistoryTruncationRequest, ImportDialogRequest, NativeFileDialogs, SaveRequest,
 };
 use renderer::{DerivedRenderCache, GpuInstancedRenderer, InstancedRenderPlan, ScenePaintCallback};
 
@@ -1418,6 +1414,37 @@ fn definition_mesh_body(snapshot: &Snapshot, definition_id: DefinitionId) -> Opt
             FeatureKind::MeshBody(mesh) => Some(mesh),
             _ => None,
         })
+}
+
+enum CurrentVisibleMeshSource {
+    Exact(Box<ExactBodyPackage>),
+    Canonical {
+        definition_id: DefinitionId,
+        producer_feature_id: FeatureId,
+        mesh: MeshBodySpec,
+    },
+}
+
+impl CurrentVisibleMeshSource {
+    fn as_export_source(&self) -> MeshExportSource<'_> {
+        match self {
+            Self::Exact(package) => MeshExportSource::Exact(package),
+            Self::Canonical {
+                definition_id,
+                producer_feature_id,
+                mesh,
+            } => MeshExportSource::Canonical {
+                definition_id: *definition_id,
+                producer_feature_id: *producer_feature_id,
+                mesh,
+            },
+        }
+    }
+}
+
+struct CurrentVisibleMesh {
+    source: CurrentVisibleMeshSource,
+    occurrence: SceneOccurrence,
 }
 
 #[cfg(feature = "named-product-fixtures")]
@@ -4235,6 +4262,12 @@ struct SelectionState {
     edit_context: Vec<EditContext>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum RootOccurrenceSelectionError {
+    Nested { paths: BTreeSet<InstancePath> },
+    Mixed { paths: BTreeSet<InstancePath> },
+}
+
 impl SelectionState {
     fn clear(&mut self) {
         self.occurrences.clear();
@@ -6098,6 +6131,12 @@ struct PendingSketchupSceneImport {
     invalidated: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RecoveryOpenState {
+    requested_path: PathBuf,
+    source_path: PathBuf,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct MigrationReviewSourcePlan {
     path: PathBuf,
@@ -6140,6 +6179,7 @@ pub struct KetchupApp {
     container_data: ketchup_core::persistence::ContainerData,
     review_candidate: Option<ketchup_core::persistence::LoadOutcome>,
     migration_review_plan: Option<MigrationReviewPlan>,
+    recovery_open: Option<RecoveryOpenState>,
     document_path: Option<PathBuf>,
     saved_digest: String,
     confirmation_surface: TrustedConfirmationSurface,
@@ -6403,6 +6443,7 @@ impl KetchupApp {
             container_data: ketchup_core::persistence::ContainerData::default(),
             review_candidate: None,
             migration_review_plan: None,
+            recovery_open: None,
             document_path: None,
             saved_digest,
             confirmation_surface,
@@ -6666,6 +6707,11 @@ impl KetchupApp {
         let name = self
             .document_path
             .as_deref()
+            .or_else(|| {
+                self.recovery_open
+                    .as_ref()
+                    .map(|recovery| recovery.requested_path.as_path())
+            })
             .and_then(Path::file_name)
             .map_or_else(
                 || self.catalog.text("document-untitled"),
@@ -6920,6 +6966,10 @@ impl KetchupApp {
                     );
                     return false;
                 }
+                let recovery_open = (effective_path != path).then(|| RecoveryOpenState {
+                    requested_path: path.to_owned(),
+                    source_path: effective_path,
+                });
                 let Ok((mut document, container_data)) = outcome.into_editable_with_container()
                 else {
                     unreachable!("editable load outcome must contain an editable document");
@@ -6934,15 +6984,27 @@ impl KetchupApp {
                 self.container_data = container_data;
                 self.review_candidate = None;
                 self.migration_review_plan = None;
-                self.document_path = Some(path.to_owned());
+                self.document_path = recovery_open.is_none().then(|| path.to_owned());
+                self.recovery_open = recovery_open;
                 self.saved_digest = self.document.history_digest();
                 self.reset_document_presentation();
                 self.load_assistant_conversation();
                 self.load_assistant_memory();
-                self.digest = self.catalog.format(
-                    "digest-opened-document",
-                    &BTreeMap::from([("path", path.display().to_string())]),
-                );
+                if let Some(recovery) = &self.recovery_open {
+                    self.status_key = "status-recovery";
+                    self.digest = self.catalog.format(
+                        "digest-opened-recovery",
+                        &BTreeMap::from([
+                            ("source", recovery.source_path.display().to_string()),
+                            ("requested", recovery.requested_path.display().to_string()),
+                        ]),
+                    );
+                } else {
+                    self.digest = self.catalog.format(
+                        "digest-opened-document",
+                        &BTreeMap::from([("path", path.display().to_string())]),
+                    );
+                }
                 true
             }
             Err(error) => {
@@ -7095,13 +7157,67 @@ impl KetchupApp {
         }
         self.store_assistant_conversation();
         self.store_assistant_memory();
-        let prepared =
-            ketchup_core::persistence::save_document_store(&self.document, &self.container_data);
+        let (prepared, truncate_history) = match ketchup_core::persistence::save_document_store(
+            &self.document,
+            &self.container_data,
+        ) {
+            Ok(bytes) => (bytes, false),
+            Err(ketchup_core::persistence::PersistenceError::ResourceLimit) => {
+                let bytes = match ketchup_core::persistence::save_document_store_current_snapshot(
+                    &self.document,
+                    &self.container_data,
+                ) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        self.digest = self.catalog.format(
+                            "error-save-document",
+                            &BTreeMap::from([
+                                ("path", path.display().to_string()),
+                                ("reason", error.to_string()),
+                            ]),
+                        );
+                        return false;
+                    }
+                };
+                let title = self.catalog.text("dialog-save-current-only-title");
+                let description = self.catalog.format(
+                    "dialog-save-current-only-description",
+                    &BTreeMap::from([
+                        ("undo", self.document.visible_undo_steps().to_string()),
+                        ("redo", self.document.visible_redo_steps().to_string()),
+                    ]),
+                );
+                if !self
+                    .dialogs
+                    .confirm_history_truncation(HistoryTruncationRequest {
+                        title: &title,
+                        description: &description,
+                    })
+                {
+                    self.digest = self.catalog.format(
+                        "error-save-document",
+                        &BTreeMap::from([
+                            ("path", path.display().to_string()),
+                            ("reason", self.catalog.text("save-current-only-refused")),
+                        ]),
+                    );
+                    return false;
+                }
+                (bytes, true)
+            }
+            Err(error) => {
+                self.digest = self.catalog.format(
+                    "error-save-document",
+                    &BTreeMap::from([
+                        ("path", path.display().to_string()),
+                        ("reason", error.to_string()),
+                    ]),
+                );
+                return false;
+            }
+        };
         if path.exists()
-            && let Err(error) = prepared
-                .as_ref()
-                .map_err(ToString::to_string)
-                .and_then(|bytes| self.authorize_overwrite(path, bytes))
+            && let Err(error) = self.authorize_overwrite(path, &prepared)
         {
             self.digest = self.catalog.format(
                 "error-save-document",
@@ -7109,22 +7225,37 @@ impl KetchupApp {
             );
             return false;
         }
-        let result = prepared.map_err(|error| error.to_string()).and_then(|_| {
+        let result = if truncate_history {
+            ketchup_core::persistence::save_atomic_document_store_current_snapshot_with_container(
+                path,
+                &self.document,
+                &self.container_data,
+            )
+        } else {
             ketchup_core::persistence::save_atomic_document_store_with_container(
                 path,
                 &self.document,
                 &self.container_data,
             )
-            .map_err(|error| error.to_string())
-        });
+        }
+        .map_err(|error| error.to_string());
         match result {
             Ok(()) => {
+                if truncate_history {
+                    self.document.discard_history_before_current();
+                }
                 self.document_path = Some(path.to_owned());
+                self.recovery_open = None;
                 self.saved_digest = self.document.history_digest();
                 self.saved_assistant_conversation_digest =
                     assistant_conversation_digest(&self.assistant_messages);
+                let digest_key = if truncate_history {
+                    "digest-saved-document-current-only"
+                } else {
+                    "digest-saved-document"
+                };
                 self.digest = self.catalog.format(
-                    "digest-saved-document",
+                    digest_key,
                     &BTreeMap::from([("path", path.display().to_string())]),
                 );
                 true
@@ -7930,6 +8061,78 @@ impl KetchupApp {
         })
     }
 
+    fn current_visible_mesh_scene(
+        &self,
+        snapshot: &Snapshot,
+    ) -> Result<Vec<CurrentVisibleMesh>, String> {
+        let occurrences = snapshot
+            .scene_query()
+            .into_iter()
+            .filter(|occurrence| occurrence.visible)
+            .filter(|occurrence| {
+                snapshot
+                    .definition(occurrence.definition_id)
+                    .is_some_and(|definition| {
+                        definition.feature_ids().iter().any(|feature_id| {
+                            snapshot
+                                .feature(*feature_id)
+                                .is_some_and(|feature| feature.kind().produces_body())
+                        })
+                    })
+            })
+            .collect::<Vec<_>>();
+        if occurrences.is_empty() {
+            return Err("the visible model is empty".to_owned());
+        }
+
+        let mut scene = Vec::new();
+        for occurrence in occurrences {
+            let terminals = exact_body_terminal_features(snapshot, occurrence.definition_id)
+                .map_err(|error| error.to_string())?;
+            if terminals.is_empty() {
+                return Err(format!(
+                    "visible occurrence {:?} has no unambiguous terminal body",
+                    occurrence.instance_path
+                ));
+            }
+            for producer_feature_id in terminals.values() {
+                let feature = snapshot.feature(*producer_feature_id).ok_or_else(|| {
+                    format!(
+                        "visible occurrence {:?} has a missing terminal body feature",
+                        occurrence.instance_path
+                    )
+                })?;
+                let source = if let FeatureKind::MeshBody(mesh) = feature.kind() {
+                    CurrentVisibleMeshSource::Canonical {
+                        definition_id: occurrence.definition_id,
+                        producer_feature_id: *producer_feature_id,
+                        mesh: mesh.clone(),
+                    }
+                } else {
+                    let package = self
+                        .exact_results
+                        .render_values(snapshot)
+                        .find(|package| {
+                            package.definition_id() == occurrence.definition_id
+                                && package.producer_feature_id() == *producer_feature_id
+                        })
+                        .ok_or_else(|| {
+                            format!(
+                                "visible occurrence {:?} has no current accepted exact result for terminal feature {}",
+                                occurrence.instance_path, producer_feature_id.0
+                            )
+                        })?;
+                    CurrentVisibleMeshSource::Exact(Box::new((**package).clone()))
+                };
+                scene.push(CurrentVisibleMesh {
+                    source,
+                    occurrence: occurrence.clone(),
+                });
+            }
+        }
+        Ok(scene)
+    }
+
     fn export_current_profiles_dxf_to(&mut self, path: &Path) -> bool {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
@@ -8010,19 +8213,25 @@ impl KetchupApp {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
         let result = self
-            .current_visible_exact_model(&snapshot)
-            .and_then(|model| {
-                if model
-                    .iter()
-                    .any(|(package, _)| matches!(package, ExactBodyPackage::Imported(_)))
-                {
+            .current_visible_mesh_scene(&snapshot)
+            .and_then(|scene| {
+                if scene.iter().any(|body| {
+                    matches!(
+                        body.source,
+                        CurrentVisibleMeshSource::Exact(ref package)
+                            if matches!(package.as_ref(), ExactBodyPackage::Imported(_))
+                    )
+                }) {
                     return Err("imported STEP bounds proxies cannot be exported as STL".to_owned());
                 }
-                let bodies = model
+                let bodies = scene
                     .iter()
-                    .map(|(package, transform)| (package, *transform))
+                    .map(|body| MeshExportBody {
+                        source: body.source.as_export_source(),
+                        transform: body.occurrence.transform,
+                    })
                     .collect::<Vec<_>>();
-                exact_model_stl_export(&snapshot, &bodies).map_err(|error| error.to_string())
+                model_stl_export(&snapshot, &bodies).map_err(|error| error.to_string())
             })
             .and_then(|bundle| {
                 let report_path = path.with_extension("stl.loss.txt");
@@ -8092,17 +8301,16 @@ impl KetchupApp {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
         let result = self
-            .current_visible_exact_scene(&snapshot)
+            .current_visible_mesh_scene(&snapshot)
             .and_then(|scene| {
                 let instances = scene
                     .iter()
-                    .map(|(package, occurrence)| ExactThreeMfInstance {
-                        package,
-                        occurrence,
+                    .map(|body| MeshThreeMfInstance {
+                        source: body.source.as_export_source(),
+                        occurrence: &body.occurrence,
                     })
                     .collect::<Vec<_>>();
-                exact_model_three_mf_export(&snapshot, &instances)
-                    .map_err(|error| error.to_string())
+                model_three_mf_export(&snapshot, &instances).map_err(|error| error.to_string())
             })
             .and_then(|bundle| {
                 let report_path = path.with_extension("3mf.loss.txt");
@@ -8172,16 +8380,16 @@ impl KetchupApp {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
         let result = self
-            .current_visible_exact_scene(&snapshot)
+            .current_visible_mesh_scene(&snapshot)
             .and_then(|scene| {
                 let instances = scene
                     .iter()
-                    .map(|(package, occurrence)| ExactGlbInstance {
-                        package,
-                        occurrence,
+                    .map(|body| MeshGlbInstance {
+                        source: body.source.as_export_source(),
+                        occurrence: &body.occurrence,
                     })
                     .collect::<Vec<_>>();
-                exact_model_glb_export(&snapshot, &instances).map_err(|error| error.to_string())
+                model_glb_export(&snapshot, &instances).map_err(|error| error.to_string())
             })
             .and_then(|bundle| {
                 let report_path = path.with_extension("glb.loss.txt");
@@ -8323,47 +8531,19 @@ impl KetchupApp {
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            let mut cases = participants
-                .windows(2)
-                .map(|pair| {
-                    GeneralClearanceCase::new(pair[0].clone(), pair[1].clone(), 0.0)
-                        .map_err(|error| format!("invalid fabrication clearance: {error:?}"))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            if participants.len() > 2 {
-                cases.push(
-                    GeneralClearanceCase::new(
-                        participants
-                            .last()
-                            .expect("more than two participants have a last item")
-                            .clone(),
-                        participants[0].clone(),
-                        0.0,
-                    )
-                    .map_err(|error| format!("invalid fabrication clearance: {error:?}"))?,
-                );
-            }
-            let validator = BuiltinGeneralBodyValidator::new(tolerance);
-            let policy = general_body_validation_policy();
-            let input = general_body_input_bytes(&cases);
-            let invocation = ValidationInvocation::bind(
-                &snapshot,
-                validator.descriptor(),
-                &policy,
-                Vec::new(),
-                &input,
-            );
-            let report = validator.invoke(ValidationExecution {
-                snapshot: &snapshot,
-                invocation,
-                policy: &policy,
-                input: &cases,
-            });
+            let collision_validation =
+                ketchup_application::validation::fabrication_collision_validation_with_worker(
+                    &snapshot,
+                    &participants,
+                    &self.container_data,
+                    self.validator_worker_path(),
+                    Duration::from_secs(30),
+                )?;
             let projection = project_general_fabrication(
                 &snapshot,
                 &self.exact_results,
-                &cases,
-                &report,
+                &collision_validation.cases,
+                &collision_validation.report,
                 tolerance,
             )
             .map_err(|error| error.to_string())?;
@@ -9535,6 +9715,7 @@ impl KetchupApp {
         self.container_data = container_data;
         self.review_candidate = None;
         self.migration_review_plan = None;
+        self.recovery_open = None;
         self.document_path = Some(destination.to_owned());
         self.saved_digest = saved_digest;
         self.reset_document_presentation();
@@ -9546,7 +9727,8 @@ impl KetchupApp {
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.document.history_digest() != self.saved_digest
+        self.recovery_open.is_some()
+            || self.document.history_digest() != self.saved_digest
             || assistant_conversation_digest(&self.assistant_messages)
                 != self.saved_assistant_conversation_digest
     }
@@ -9560,6 +9742,22 @@ impl KetchupApp {
     #[must_use]
     pub fn document_path(&self) -> Option<&Path> {
         self.document_path.as_deref()
+    }
+
+    /// Corrupt-primary path whose backup is active until an explicit Save As succeeds.
+    #[must_use]
+    pub fn recovery_requested_path(&self) -> Option<&Path> {
+        self.recovery_open
+            .as_ref()
+            .map(|recovery| recovery.requested_path.as_path())
+    }
+
+    /// Actual backup source supplying the active recovered document.
+    #[must_use]
+    pub fn recovery_source_path(&self) -> Option<&Path> {
+        self.recovery_open
+            .as_ref()
+            .map(|recovery| recovery.source_path.as_path())
     }
 
     /// The action digest the shell is currently reporting to the user.
@@ -10786,11 +10984,21 @@ impl KetchupApp {
                 })
             })
             .collect::<Vec<_>>();
-        let selected_occurrence_ids = self
-            .selected_occurrence_ids()
-            .into_iter()
-            .map(|id| id.0)
+        let selected_instance_paths = self
+            .selected_instance_paths()
+            .iter()
+            .map(Self::assistant_instance_path_label)
             .collect::<Vec<_>>();
+        let (selected_occurrence_ids, selection_scope) = match self.selected_root_occurrence_ids() {
+            Ok(ids) => (
+                ids.into_iter().map(|id| id.0).collect::<Vec<_>>(),
+                "root_occurrences",
+            ),
+            Err(RootOccurrenceSelectionError::Nested { .. }) => {
+                (Vec::new(), "nested_instance_paths")
+            }
+            Err(RootOccurrenceSelectionError::Mixed { .. }) => (Vec::new(), "mixed_instance_paths"),
+        };
         let selected_profile_translation_target = self.assistant_profile_translation_target().map(
             |(definition_id, body_id, profile_id, name)| {
                 serde_json::json!({
@@ -10803,20 +11011,24 @@ impl KetchupApp {
         );
         let selected_parameter_edit_target = self.assistant_parameter_edit_target().map(
             |(definition_id, body_id, target, name, current_value_mm)| {
-                let (feature_id, constraint_id) = match target {
+                let (feature_id, constraint_id, parameter_path) = match target {
                     ketchup_core::feature_history::ExactParameterEditTarget::FeatureDimension(
                         feature_id,
-                    ) => (feature_id, None),
+                    ) => (feature_id, None, None),
+                    ketchup_core::feature_history::ExactParameterEditTarget::FeatureParameter(
+                        target,
+                    ) => (target.feature_id, None, Some(target.path.as_str().to_owned())),
                     ketchup_core::feature_history::ExactParameterEditTarget::SketchConstraintDimension {
                         sketch_id,
                         constraint_id,
-                    } => (sketch_id, Some(constraint_id.0)),
+                    } => (sketch_id, Some(constraint_id.0), None),
                 };
                 serde_json::json!({
                     "definition_id": definition_id.0,
                     "body_id": body_id.0,
                     "feature_id": feature_id.0,
                     "constraint_id": constraint_id,
+                    "parameter_path": parameter_path,
                     "name": name,
                     "current_value_mm": current_value_mm,
                 })
@@ -10877,6 +11089,8 @@ impl KetchupApp {
             "project_memory": project_memory,
             "validation": validation,
             "selected_occurrence_ids": selected_occurrence_ids,
+            "selected_instance_paths": selected_instance_paths,
+            "selection_scope": selection_scope,
             "selected_group_id": self.selection.selected_group.map(|id| id.0),
             "selected_profile_translation_target": selected_profile_translation_target,
             "selected_parameter_edit_target": selected_parameter_edit_target,
@@ -12392,7 +12606,10 @@ impl KetchupApp {
     }
 
     fn assistant_selection_summary(&self) -> String {
-        let selected = self.selected_occurrence_ids();
+        let selected = match self.selected_root_occurrence_ids() {
+            Ok(selected) => selected,
+            Err(error) => return self.root_occurrence_selection_error(&error),
+        };
         match selected.len() {
             0 => self.catalog.text("assistant-selection-none"),
             1 => {
@@ -13239,6 +13456,46 @@ impl KetchupApp {
         paths
     }
 
+    fn selected_root_occurrence_ids(
+        &self,
+    ) -> Result<BTreeSet<OccurrenceId>, RootOccurrenceSelectionError> {
+        let paths = self.selected_instance_paths();
+        let root_count = paths.iter().filter(|path| path.is_root()).count();
+        if root_count == paths.len() {
+            return Ok(paths
+                .into_iter()
+                .map(|path| path.root_occurrence())
+                .collect());
+        }
+        Err(if root_count == 0 {
+            RootOccurrenceSelectionError::Nested { paths }
+        } else {
+            RootOccurrenceSelectionError::Mixed { paths }
+        })
+    }
+
+    fn root_occurrence_selection_error(&self, error: &RootOccurrenceSelectionError) -> String {
+        let (key, paths) = match error {
+            RootOccurrenceSelectionError::Nested { paths } => {
+                ("selection-error-nested-instance-paths", paths)
+            }
+            RootOccurrenceSelectionError::Mixed { paths } => {
+                ("selection-error-mixed-instance-paths", paths)
+            }
+        };
+        self.catalog.format(
+            key,
+            &BTreeMap::from([(
+                "paths",
+                paths
+                    .iter()
+                    .map(Self::assistant_instance_path_label)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )]),
+        )
+    }
+
     fn selected_occurrence_ids(&self) -> BTreeSet<OccurrenceId> {
         if matches!(
             self.selection.edit_context.last(),
@@ -13246,14 +13503,7 @@ impl KetchupApp {
         ) {
             return BTreeSet::new();
         }
-        let paths = self.selected_instance_paths();
-        if paths.iter().any(|path| !path.is_root()) {
-            return BTreeSet::new();
-        }
-        paths
-            .into_iter()
-            .map(|path| path.root_occurrence())
-            .collect()
+        self.selected_root_occurrence_ids().unwrap_or_default()
     }
 
     fn selected_alignment_pair(&self) -> Option<(OccurrenceId, OccurrenceId)> {
@@ -15662,7 +15912,12 @@ impl KetchupApp {
                 AppCommand::ReplaceComponent => self.component_replacement_source_plan().is_some(),
                 AppCommand::SelectAllInstances => self.select_all_instances_source_plan().is_some(),
                 AppCommand::AssignTag => self.tag_assignment_source_plan().is_some(),
-                AppCommand::AlignOccurrences => self.occurrence_alignment_source_plan().is_some(),
+                AppCommand::AlignOccurrences => {
+                    self.occurrence_alignment_source_plan().is_some()
+                        || (self.selection.selected_group.is_none()
+                            && self.selected_instance_paths().len() == 2
+                            && self.selected_root_occurrence_ids().is_err())
+                }
                 AppCommand::DistributeOccurrences => {
                     self.occurrence_distribution_source_plan().is_some()
                 }
@@ -20796,6 +21051,10 @@ impl KetchupApp {
     }
 
     fn begin_occurrence_align(&mut self) {
+        if let Err(error) = self.selected_root_occurrence_ids() {
+            self.digest = self.root_occurrence_selection_error(&error);
+            return;
+        }
         let Some(source) = self.occurrence_alignment_source_plan() else {
             return;
         };

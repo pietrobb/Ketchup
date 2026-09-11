@@ -146,9 +146,8 @@ impl VerifyJob {
 pub struct Server {
     session: DocumentSession,
     settings: SessionSettings,
-    // Open creates a fresh history cursor in the application persistence API.
-    redo_steps: usize,
-    pristine: bool,
+    // The process starts with an internal placeholder session so its first New/Open needs no discard.
+    initial_placeholder: bool,
     model_queries: ModelQuery,
     batch_jobs: VecDeque<BatchJob>,
     batch_job_key: RandomState,
@@ -163,8 +162,7 @@ impl Server {
         Self {
             session: DocumentSession::new(settings.clone()),
             settings,
-            redo_steps: 0,
-            pristine: true,
+            initial_placeholder: true,
             model_queries: ModelQuery::default(),
             batch_jobs: VecDeque::new(),
             batch_job_key: RandomState::new(),
@@ -360,7 +358,7 @@ impl Server {
     fn state(&self) -> Value {
         let s = self.session.snapshot();
         json!({"document_id":s.document_id().0,"revision":s.revision_id(),"canonical_digest":s.canonical_digest(),
-            "undo_steps":self.session.visible_undo_steps(),"redo_steps":self.redo_steps,
+            "undo_steps":self.session.visible_undo_steps(),"redo_steps":self.session.visible_redo_steps(),
             "definitions":s.definitions().map(|d| json!({"id":d.id().0,"name":d.name(),"feature_ids":d.feature_ids().iter().map(|id|id.0).collect::<Vec<_>>()})).collect::<Vec<_>>(),
             "occurrences":s.occurrences().map(|o| json!({"id":o.id().0,"definition_id":o.definition_id().0,"name":o.name(),"transform":o.transform().matrix(),"color":o.color()})).collect::<Vec<_>>(),
             "features":s.features().map(|f| json!({"id":f.id().0,"definition_id":f.definition_id().0,"name":f.name(),"kind":format!("{:?}",f.kind()).split([' ', '{', '(']).next().unwrap_or("unknown")})).collect::<Vec<_>>(),
@@ -370,7 +368,13 @@ impl Server {
         if self.compact_result {
             return self.compact_state_result();
         }
-        json!({"state":self.state(),"path":self.session.path().map(|p|p.to_string_lossy()),"modified":!self.pristine && self.session.is_modified()})
+        json!({"state":self.state(),"path":self.session.path().map(|p|p.to_string_lossy()),
+            "recovery":self.session.recovery_state().map(|recovery| json!({
+                "requested_path":recovery.requested_path().to_string_lossy(),
+                "source_path":recovery.source_path().to_string_lossy(),
+                "save_as_required":true
+            })),
+            "modified":self.session.is_modified()})
     }
     fn guard(&self, p: &Map<String, Value>) -> Result<()> {
         let revision = uint(p, "expected_revision")?;
@@ -388,7 +392,10 @@ impl Server {
         Ok(())
     }
     fn discard_guard(&self, p: &Map<String, Value>) -> Result<()> {
-        if !boolean(p, "discard_unsaved", false)? && !self.pristine && self.session.is_modified() {
+        if !boolean(p, "discard_unsaved", false)?
+            && !self.initial_placeholder
+            && self.session.is_modified()
+        {
             return Err(Error::new(
                 "unsaved_changes",
                 "new/open requires discard_unsaved=true for unsaved changes",
@@ -439,8 +446,7 @@ impl Server {
                 self.discard_guard(p)?;
                 self.session = DocumentSession::new(self.settings.clone());
                 self.revoke_jobs();
-                self.redo_steps = 0;
-                self.pristine = true;
+                self.initial_placeholder = false;
                 Ok(self.state_result())
             }
             "open" => {
@@ -448,8 +454,7 @@ impl Server {
                 let next = DocumentSession::open(string(p, "path")?, self.settings.clone())?;
                 self.session = next;
                 self.revoke_jobs();
-                self.redo_steps = 0;
-                self.pristine = false;
+                self.initial_placeholder = false;
                 Ok(self.state_result())
             }
             "save" => {
@@ -459,7 +464,7 @@ impl Server {
                         overwrite: boolean(p, "overwrite", false)?,
                     },
                 )?;
-                self.pristine = false;
+                self.initial_placeholder = false;
                 Ok(self.state_result())
             }
             "apply" => {
@@ -475,8 +480,7 @@ impl Server {
                     .collect();
                 let before = self.session.snapshot();
                 self.session.apply_cad_program(&program, &selection)?;
-                self.redo_steps = 0;
-                self.pristine = false;
+                self.initial_placeholder = false;
                 let mut result = self.state_result();
                 result["created"] = if self.compact_result {
                     created_receipt(&before, &self.session.snapshot())
@@ -503,20 +507,17 @@ impl Server {
                 // This is the only canonical-command adapter, not a raw command endpoint.
                 let proposal = self.session.plan_commands(batch)?;
                 self.session.apply_proposal(&proposal)?;
-                self.redo_steps = 0;
-                self.pristine = false;
+                self.initial_placeholder = false;
                 Ok(self.state_result())
             }
             "undo" => {
                 self.session.undo()?;
-                self.redo_steps += 1;
-                self.pristine = false;
+                self.initial_placeholder = false;
                 Ok(self.state_result())
             }
             "redo" => {
                 self.session.redo()?;
-                self.redo_steps = self.redo_steps.saturating_sub(1);
-                self.pristine = false;
+                self.initial_placeholder = false;
                 Ok(self.state_result())
             }
             "list_validators" => Ok(json!({"validators":assistant_validator_catalog()})),
@@ -1025,6 +1026,146 @@ mod tests {
         assert_eq!(
             undone["result"]["state"]["canonical_digest"],
             before["canonical_digest"]
+        );
+    }
+
+    #[test]
+    fn persistent_history_drives_compact_redo_modified_and_discard_guard() {
+        let mut author = Server::new(SessionSettings::default());
+        let initial = request(&mut author, "state", json!({}))["result"]["state"].clone();
+        let created = request(
+            &mut author,
+            "apply",
+            json!({
+                "expected_revision":initial["revision"],
+                "expected_digest":initial["canonical_digest"],
+                "selection":[],
+                "program":{"operations":[{
+                    "operation":"create_part",
+                    "name":"History authority",
+                    "workplane":{"type":"principal","plane":"xy"},
+                    "entities":[
+                        {"type":"line","id":1,"start_mm":[0,0],"end_mm":[10,0]},
+                        {"type":"line","id":2,"start_mm":[10,0],"end_mm":[10,10]},
+                        {"type":"line","id":3,"start_mm":[10,10],"end_mm":[0,10]},
+                        {"type":"line","id":4,"start_mm":[0,10],"end_mm":[0,0]}
+                    ],
+                    "constraints":[],
+                    "feature":{"type":"extrusion","distance_mm":5},
+                    "translation_mm":[0,0,0]
+                }]}
+            }),
+        );
+        assert!(created.get("error").is_none(), "{created}");
+        let base = created["result"]["state"].clone();
+        let grounded = request(
+            &mut author,
+            "set_grounded",
+            json!({
+                "expected_revision":base["revision"],
+                "expected_digest":base["canonical_digest"],
+                "occurrence_ids":[1],
+                "grounded":true
+            }),
+        );
+        let grounded_state = grounded["result"]["state"].clone();
+        let undone = request(
+            &mut author,
+            "undo",
+            json!({
+                "expected_revision":grounded_state["revision"],
+                "expected_digest":grounded_state["canonical_digest"]
+            }),
+        );
+        assert_eq!(
+            undone["result"]["state"]["canonical_digest"],
+            base["canonical_digest"]
+        );
+        assert_eq!(undone["result"]["state"]["redo_steps"], 1);
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("history.ketchup");
+        let undone_state = undone["result"]["state"].clone();
+        let saved = request(
+            &mut author,
+            "save",
+            json!({
+                "expected_revision":undone_state["revision"],
+                "expected_digest":undone_state["canonical_digest"],
+                "path":path,
+                "overwrite":false
+            }),
+        );
+        assert_eq!(saved["result"]["modified"], false);
+        assert_eq!(saved["result"]["state"]["redo_steps"], 1);
+
+        let mut reopened = Server::new(SessionSettings::default());
+        let placeholder = request(&mut reopened, "state", json!({}))["result"]["state"].clone();
+        let opened = request(
+            &mut reopened,
+            "open",
+            json!({
+                "expected_revision":placeholder["revision"],
+                "expected_digest":placeholder["canonical_digest"],
+                "path":path,
+                "discard_unsaved":false,
+                "response":"compact"
+            }),
+        );
+        assert_eq!(opened["result"]["response"], "compact");
+        assert_eq!(opened["result"]["state"]["redo_steps"], 1);
+        assert_eq!(opened["result"]["modified"], false);
+        let opened_state = opened["result"]["state"].clone();
+
+        let redone = request(
+            &mut reopened,
+            "redo",
+            json!({
+                "expected_revision":opened_state["revision"],
+                "expected_digest":opened_state["canonical_digest"],
+                "response":"compact"
+            }),
+        );
+        let redone_state = redone["result"]["state"].clone();
+        assert_eq!(redone["result"]["modified"], true);
+        assert_eq!(redone_state["redo_steps"], 0);
+        let reverted = request(
+            &mut reopened,
+            "set_grounded",
+            json!({
+                "expected_revision":redone_state["revision"],
+                "expected_digest":redone_state["canonical_digest"],
+                "occurrence_ids":[1],
+                "grounded":false,
+                "response":"compact"
+            }),
+        );
+        let reverted_state = reverted["result"]["state"].clone();
+        assert_eq!(
+            reverted_state["canonical_digest"],
+            opened_state["canonical_digest"]
+        );
+        assert_eq!(reverted["result"]["modified"], true);
+
+        let refused = request(
+            &mut reopened,
+            "new",
+            json!({
+                "expected_revision":reverted_state["revision"],
+                "expected_digest":reverted_state["canonical_digest"],
+                "discard_unsaved":false,
+                "response":"compact"
+            }),
+        );
+        assert_eq!(refused["error"]["code"], "unsaved_changes");
+        let after_refusal = request(&mut reopened, "state", json!({}));
+        assert_eq!(
+            after_refusal["result"]["state"]["revision"],
+            reverted_state["revision"]
+        );
+        assert_eq!(
+            after_refusal["result"]["state"]["canonical_digest"],
+            reverted_state["canonical_digest"]
         );
     }
 

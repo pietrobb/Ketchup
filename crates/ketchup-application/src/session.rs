@@ -36,6 +36,21 @@ impl Default for SessionSettings {
 pub struct SaveOptions {
     pub overwrite: bool,
 }
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoveryState {
+    requested_path: PathBuf,
+    source_path: PathBuf,
+}
+impl RecoveryState {
+    #[must_use]
+    pub fn requested_path(&self) -> &Path {
+        &self.requested_path
+    }
+    #[must_use]
+    pub fn source_path(&self) -> &Path {
+        &self.source_path
+    }
+}
 #[derive(Debug)]
 pub enum SessionError {
     Planning(Box<AssistantRejectionDiagnostic>),
@@ -60,6 +75,7 @@ pub struct DocumentSession {
     container_data: ContainerData,
     settings: SessionSettings,
     path: Option<PathBuf>,
+    recovery: Option<RecoveryState>,
     saved_digest: Option<String>,
     exact_results: ExactResultRegistry,
     topology_results: ExactResultRegistry,
@@ -76,6 +92,7 @@ impl DocumentSession {
             container_data: ContainerData::default(),
             settings,
             path: None,
+            recovery: None,
             saved_digest: None,
             exact_results: ExactResultRegistry::default(),
             topology_results: ExactResultRegistry::default(),
@@ -83,17 +100,24 @@ impl DocumentSession {
     }
     /// Review-only and invalid input never replaces a live session.
     pub fn open(path: impl AsRef<Path>, settings: SessionSettings) -> Result<Self, SessionError> {
-        let outcome = persistence::load_file(path.as_ref())
+        let requested_path = path.as_ref();
+        let loaded = persistence::load_file_with_source(requested_path)
             .map_err(|error| SessionError::Persistence(error.to_string()))?;
+        let (outcome, source_path, _) = loaded.into_parts();
         let (document, container_data) = outcome
             .into_editable_with_container()
             .map_err(|_| SessionError::ReviewOnly)?;
+        let recovery = (source_path != requested_path).then(|| RecoveryState {
+            requested_path: requested_path.to_owned(),
+            source_path,
+        });
         let saved_digest = Some(document.history_digest());
         Ok(Self {
             document,
             container_data,
             settings,
-            path: Some(path.as_ref().to_owned()),
+            path: recovery.is_none().then(|| requested_path.to_owned()),
+            recovery,
             saved_digest,
             exact_results: ExactResultRegistry::default(),
             topology_results: ExactResultRegistry::default(),
@@ -106,17 +130,48 @@ impl DocumentSession {
         path: impl AsRef<Path>,
         options: SaveOptions,
     ) -> Result<(), SessionError> {
-        let path = path.as_ref();
+        self.save_with_history(path.as_ref(), options, true)
+    }
+    /// Explicitly saves only the current revision after discarding persistent Undo/Redo history.
+    /// The live history is truncated only after the atomic or no-clobber write succeeds.
+    pub fn save_current_snapshot(
+        &mut self,
+        path: impl AsRef<Path>,
+        options: SaveOptions,
+    ) -> Result<(), SessionError> {
+        self.save_with_history(path.as_ref(), options, false)
+    }
+    fn save_with_history(
+        &mut self,
+        path: &Path,
+        options: SaveOptions,
+        preserve_history: bool,
+    ) -> Result<(), SessionError> {
         if options.overwrite {
-            persistence::save_atomic_document_store_with_container(
-                path,
-                &self.document,
-                &self.container_data,
-            )
+            if preserve_history {
+                persistence::save_atomic_document_store_with_container(
+                    path,
+                    &self.document,
+                    &self.container_data,
+                )
+            } else {
+                persistence::save_atomic_document_store_current_snapshot_with_container(
+                    path,
+                    &self.document,
+                    &self.container_data,
+                )
+            }
             .map_err(|error| SessionError::Persistence(error.to_string()))?;
         } else {
-            let bytes = persistence::save_document_store(&self.document, &self.container_data)
-                .map_err(|error| SessionError::Persistence(error.to_string()))?;
+            let bytes = if preserve_history {
+                persistence::save_document_store(&self.document, &self.container_data)
+            } else {
+                persistence::save_document_store_current_snapshot(
+                    &self.document,
+                    &self.container_data,
+                )
+            }
+            .map_err(|error| SessionError::Persistence(error.to_string()))?;
             persistence::load(&bytes)
                 .map_err(|error| SessionError::Persistence(error.to_string()))?;
             let parent = path
@@ -133,7 +188,11 @@ impl DocumentSession {
                 .persist_noclobber(path)
                 .map_err(|error| SessionError::Persistence(error.to_string()))?;
         }
+        if !preserve_history {
+            self.document.discard_history_before_current();
+        }
         self.path = Some(path.to_owned());
+        self.recovery = None;
         self.saved_digest = Some(self.document.history_digest());
         Ok(())
     }
@@ -146,8 +205,12 @@ impl DocumentSession {
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
     }
+    pub fn recovery_state(&self) -> Option<&RecoveryState> {
+        self.recovery.as_ref()
+    }
     pub fn is_modified(&self) -> bool {
-        self.saved_digest.as_ref() != Some(&self.document.history_digest())
+        self.recovery.is_some()
+            || self.saved_digest.as_ref() != Some(&self.document.history_digest())
     }
     pub fn visible_undo_steps(&self) -> usize {
         self.document.visible_undo_steps()

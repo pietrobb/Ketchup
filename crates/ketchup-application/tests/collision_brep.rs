@@ -1,12 +1,14 @@
 use ketchup_application::validation::{
     CollisionScope, assistant_validation_context, assistant_validation_context_with_worker,
-    scoped_collision_report_with_worker,
+    fabrication_collision_validation_with_worker, scoped_collision_report_with_worker,
 };
 use ketchup_application::{AssistantValidationSelection, DocumentSession, SessionSettings};
 use ketchup_core::{
     document::*,
     exact_product::ExactResultRegistry,
     persistence::{self, ContainerData},
+    prismatic::TolerancePolicy,
+    validation::ValidationState,
 };
 use std::time::Duration;
 
@@ -105,6 +107,60 @@ fn worker_contact_penetration_and_snapshot_are_exact() {
         assert_eq!(undo, document.visible_undo_steps());
     }
 }
+#[test]
+fn fabrication_collision_is_complete_order_independent_and_native() {
+    let mut document = DocumentStore::new();
+    add(&mut document, 1, rectangle(), 0.0);
+    add(&mut document, 2, rectangle(), 100.0);
+    add(&mut document, 3, rectangle(), 1.0);
+    let snapshot = document.current();
+    let registry = ExactResultRegistry::default();
+    let participants = [3, 1, 2]
+        .into_iter()
+        .map(|id| {
+            ketchup_core::exact_validation::GeneralBodyParticipant::accept(
+                &snapshot,
+                &registry,
+                InstancePath::root(OccurrenceId(id)),
+                TolerancePolicy::default(),
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+
+    let validation = fabrication_collision_validation_with_worker(
+        &snapshot,
+        &participants,
+        &ContainerData::default(),
+        None,
+        Duration::from_secs(120),
+    )
+    .unwrap();
+    assert_eq!(validation.cases.len(), 3);
+    assert_eq!(validation.report.state, ValidationState::Failed);
+    assert_eq!(validation.report.diagnostics.len(), 1);
+    assert_eq!(validation.report.diagnostics[0].code, "collision.detected");
+    assert!(
+        validation.report.diagnostics[0]
+            .evidence
+            .contains("occt_brep_common_volume")
+    );
+
+    let reversed = fabrication_collision_validation_with_worker(
+        &snapshot,
+        &participants.into_iter().rev().collect::<Vec<_>>(),
+        &ContainerData::default(),
+        None,
+        Duration::from_secs(120),
+    )
+    .unwrap();
+    assert_eq!(
+        validation.report.invocation.input_digest,
+        reversed.report.invocation.input_digest
+    );
+    assert_eq!(validation.report.state, reversed.report.state);
+}
+
 #[test]
 fn scoped_collision_checks_boundary_neighbors_but_rejects_distant_pairs() {
     let mut document = DocumentStore::new();
@@ -454,6 +510,19 @@ fn exact_hole_does_not_collide_with_insert() {
     let report = session.validators(&selection());
     assert_eq!(report["state"], "passed", "{report}");
     assert_eq!(report["complete"], true);
+
+    let snapshot = session.snapshot();
+    let fabrication = fabrication_collision_validation_with_worker(
+        &snapshot,
+        &[],
+        &ContainerData::default(),
+        None,
+        Duration::from_secs(120),
+    )
+    .unwrap();
+    assert_eq!(fabrication.report.state, ValidationState::Passed);
+    assert_eq!(fabrication.report.evidence_counts.exact, 1);
+    assert!(fabrication.report.diagnostics.is_empty());
 }
 
 #[test]

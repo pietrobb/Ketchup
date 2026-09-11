@@ -7,9 +7,14 @@ use ketchup_core::document::{
     CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, Dimension, DocumentStore,
     FeatureId, FeatureKind, OccurrenceId, SpatialPathSegment, Transform,
 };
-use ketchup_core::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry};
-use ketchup_core::exact_product::{ExactPlanarOffsetRequest, ExactResultRegistry};
+use ketchup_core::exact_brep_graph::{
+    EXACT_BREP_GRAPH_SCHEMA_V14, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry,
+};
+use ketchup_core::exact_product::ExactResultRegistry;
 use ketchup_core::persistence::{ContainerData, LoadOutcome, load, save_document_store};
+use ketchup_core::sketch::{
+    PrincipalPlane, SketchEntity, SketchEntityId, SketchSpec, WorkplaneSpec,
+};
 
 fn part() -> AssistantCadEditOperation {
     AssistantCadEditOperation::CreatePart {
@@ -164,27 +169,43 @@ fn public_cubic_bezier_profile_plans_as_an_exact_editable_part() {
 }
 
 #[test]
-fn public_rotated_ellipse_plans_as_an_exact_editable_profile_without_manual_points() {
-    let document = DocumentStore::new();
-    let input = program(vec![AssistantCadEditOperation::CreatePart {
-        name: "Rotated ellipse".into(),
-        workplane: AssistantWorkplaneSpec::Principal {
-            plane: AssistantPrincipalPlane::Xy,
-        },
-        entities: vec![AssistantSketchEntity::Ellipse {
-            segment_ids: [1, 2, 3, 4],
-            center_mm: [7.0, -3.0],
-            radius_x_mm: 24.0,
-            radius_y_mm: 11.0,
-            rotation_degrees: 32.0,
-        }],
-        constraints: Vec::new(),
-        feature: AssistantCadPartFeature::Extrusion { distance_mm: 8.0 },
-        translation_mm: [0.0; 3],
-        rotation: None,
-    }]);
-    let input: AssistantCadEditProgram =
-        serde_json::from_slice(&serde_json::to_vec(&input).unwrap()).unwrap();
+fn public_large_ellipse_has_a_visible_bounded_deviation_and_reopens_exactly() {
+    let mut document = DocumentStore::new();
+    let baseline_digest = document.current().canonical_digest();
+    let ellipse = |radius_x_mm, radius_y_mm, maximum_deviation_mm| {
+        program(vec![AssistantCadEditOperation::CreatePart {
+            name: "Bounded ellipse".into(),
+            workplane: AssistantWorkplaneSpec::Principal {
+                plane: AssistantPrincipalPlane::Xy,
+            },
+            entities: vec![AssistantSketchEntity::Ellipse {
+                segment_ids: [1, 2, 3, 4],
+                center_mm: [0.0, 0.0],
+                radius_x_mm,
+                radius_y_mm,
+                rotation_degrees: 32.0,
+                maximum_deviation_mm,
+            }],
+            constraints: Vec::new(),
+            feature: AssistantCadPartFeature::Extrusion { distance_mm: 8.0 },
+            translation_mm: [0.0; 3],
+            rotation: None,
+        }])
+    };
+    let large = ellipse(200_000.0, 80_000.0, 55.0);
+    let serialized = serde_json::to_value(&large).unwrap();
+    assert_eq!(
+        serialized["operations"][0]["entities"][0]["maximum_deviation_mm"],
+        55.0
+    );
+    assert_eq!(large.validate(), Ok(()));
+    let mut too_strict = serialized;
+    too_strict["operations"][0]["entities"][0]["maximum_deviation_mm"] = serde_json::json!(54.0);
+    let too_strict: AssistantCadEditProgram = serde_json::from_value(too_strict).unwrap();
+    assert!(too_strict.validate().is_err());
+    assert_eq!(document.current().canonical_digest(), baseline_digest);
+
+    let input = ellipse(24.0, 9.6, 0.007);
     let batch = plan(
         &document,
         &BTreeSet::new(),
@@ -197,14 +218,61 @@ fn public_rotated_ellipse_plans_as_an_exact_editable_profile_without_manual_poin
         panic!("planned ellipse must remain an editable sketch");
     };
     assert_eq!(sketch.entities.len(), 4);
-    assert!(sketch.entities.iter().all(|entity| matches!(
-        entity,
-        ketchup_core::sketch::SketchEntity::CubicBezier { .. }
-    )));
+    let (sin, cos) = 32.0_f64.to_radians().sin_cos();
+    let mut maximum_sampled_deviation = 0.0_f64;
+    for entity in &sketch.entities {
+        let ketchup_core::sketch::SketchEntity::CubicBezier {
+            start_mm,
+            control_1_mm,
+            control_2_mm,
+            end_mm,
+            ..
+        } = entity
+        else {
+            panic!("ellipse approximation must remain editable cubic geometry");
+        };
+        for step in 0..=4_096 {
+            let parameter = f64::from(step) / 4_096.0;
+            let inverse = 1.0 - parameter;
+            let point = [0, 1].map(|axis| {
+                inverse.powi(3) * start_mm[axis]
+                    + 3.0 * inverse.powi(2) * parameter * control_1_mm[axis]
+                    + 3.0 * inverse * parameter.powi(2) * control_2_mm[axis]
+                    + parameter.powi(3) * end_mm[axis]
+            });
+            let local = [
+                cos * point[0] + sin * point[1],
+                -sin * point[0] + cos * point[1],
+            ];
+            let normalized_radius = (local[0] / 24.0).hypot(local[1] / 9.6);
+            let projected = [local[0] / normalized_radius, local[1] / normalized_radius];
+            maximum_sampled_deviation = maximum_sampled_deviation.max(
+                (point[0] - (cos * projected[0] - sin * projected[1]))
+                    .hypot(point[1] - (sin * projected[0] + cos * projected[1])),
+            );
+        }
+    }
+    assert!(maximum_sampled_deviation <= 0.007);
+    let large_radius_deviation = maximum_sampled_deviation * (200_000.0 / 24.0);
+    assert!(large_radius_deviation > 50.0);
+    assert!(large_radius_deviation <= 55.0);
     let regions = sketch.solved_regions().unwrap();
     assert_eq!(regions.len(), 1);
     assert_eq!(regions[0].entity_ids.len(), 4);
     assert!(ExactBRepGraph::from_snapshot(&preview, DefinitionId(1), FeatureId(3)).is_ok());
+
+    document.apply_batch(&batch).unwrap();
+    let committed_digest = document.current().canonical_digest();
+    assert_ne!(committed_digest, baseline_digest);
+    document.undo().unwrap();
+    assert_eq!(document.current().canonical_digest(), baseline_digest);
+    document.redo().unwrap();
+    assert_eq!(document.current().canonical_digest(), committed_digest);
+    let bytes = save_document_store(&document, &ContainerData::default()).unwrap();
+    let LoadOutcome::Editable { document, .. } = load(&bytes).unwrap() else {
+        panic!("bounded ellipse must reopen as an editable document");
+    };
+    assert_eq!(document.current().canonical_digest(), committed_digest);
 }
 
 #[test]
@@ -358,7 +426,8 @@ fn public_profile_copies_expand_to_transformed_editable_closed_profiles() {
 
 #[test]
 fn parametric_sketch_outputs_build_a_complex_loft_graph_without_manual_points() {
-    let document = DocumentStore::new();
+    let mut document = DocumentStore::new();
+    let baseline_digest = document.current().canonical_digest();
     let output = |operation_index, output| AssistantCadProgramFeatureReference {
         operation_index,
         output,
@@ -375,8 +444,10 @@ fn parametric_sketch_outputs_build_a_complex_loft_graph_without_manual_points() 
         AssistantCadEditOperation::CreateProgramSketch {
             definition,
             name: "Dimensioned circular section".into(),
-            workplane: AssistantWorkplaneSpec::Principal {
-                plane: AssistantPrincipalPlane::Xy,
+            workplane: AssistantWorkplaneSpec::Frame {
+                origin_mm: [0.0, 0.0, 0.0],
+                x_axis: [1.0, 0.0, 0.0],
+                y_axis: [0.0, 1.0, 0.0],
             },
             entities: vec![AssistantSketchEntity::Circle {
                 id: 1,
@@ -392,8 +463,10 @@ fn parametric_sketch_outputs_build_a_complex_loft_graph_without_manual_points() 
         AssistantCadEditOperation::CreateProgramSketch {
             definition,
             name: "Rounded middle section".into(),
-            workplane: AssistantWorkplaneSpec::Principal {
-                plane: AssistantPrincipalPlane::Xy,
+            workplane: AssistantWorkplaneSpec::Frame {
+                origin_mm: [2.0, -1.0, -8.0],
+                x_axis: [0.866_025_403_784, 0.5, 0.0],
+                y_axis: [-0.5, 0.866_025_403_784, 0.0],
             },
             entities: vec![AssistantSketchEntity::RoundedRectangle {
                 segment_ids: [1, 2, 3, 4, 5, 6, 7, 8],
@@ -408,8 +481,10 @@ fn parametric_sketch_outputs_build_a_complex_loft_graph_without_manual_points() 
         AssistantCadEditOperation::CreateProgramSketch {
             definition,
             name: "Transformed elliptic section".into(),
-            workplane: AssistantWorkplaneSpec::Principal {
-                plane: AssistantPrincipalPlane::Xy,
+            workplane: AssistantWorkplaneSpec::Frame {
+                origin_mm: [4.0, 2.0, -15.0],
+                x_axis: [1.0, 0.0, 0.0],
+                y_axis: [0.0, 0.939_692_620_786, 0.342_020_143_326],
             },
             entities: vec![AssistantSketchEntity::ProfileCopies {
                 source_entities: vec![AssistantSketchEntity::Ellipse {
@@ -418,6 +493,7 @@ fn parametric_sketch_outputs_build_a_complex_loft_graph_without_manual_points() 
                     radius_x_mm: 9.0,
                     radius_y_mm: 6.0,
                     rotation_degrees: 0.0,
+                    maximum_deviation_mm: 0.003,
                 }],
                 copies: vec![AssistantSketchProfileCopy {
                     entity_ids: vec![11, 12, 13, 14],
@@ -451,6 +527,38 @@ fn parametric_sketch_outputs_build_a_complex_loft_graph_without_manual_points() 
     ]);
     let input: AssistantCadEditProgram =
         serde_json::from_slice(&serde_json::to_vec(&input).unwrap()).unwrap();
+    let mut holed = input.clone();
+    let AssistantCadEditOperation::CreateProgramSketch {
+        entities,
+        constraints,
+        ..
+    } = &mut holed.operations[1]
+    else {
+        unreachable!("the first Loft section is a program sketch")
+    };
+    *entities = vec![
+        AssistantSketchEntity::Circle {
+            id: 1,
+            center_mm: [0.0, 0.0],
+            radius_mm: 13.0,
+        },
+        AssistantSketchEntity::Circle {
+            id: 2,
+            center_mm: [0.0, 0.0],
+            radius_mm: 4.0,
+        },
+    ];
+    constraints.clear();
+    assert!(
+        plan(
+            &DocumentStore::new(),
+            &BTreeSet::new(),
+            &ExactResultRegistry::default(),
+            &holed,
+        )
+        .is_err(),
+        "Loft sections with holes must fail closed during public planning"
+    );
     let batch = plan(
         &document,
         &BTreeSet::new(),
@@ -465,6 +573,16 @@ fn parametric_sketch_outputs_build_a_complex_loft_graph_without_manual_points() 
         .unwrap();
     let graph =
         ExactBRepGraph::from_snapshot(&preview, DefinitionId(1), loft_feature.id()).unwrap();
+    assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V14);
+    assert!(
+        graph
+            .profiles
+            .iter()
+            .map(|profile| profile.frame_bits)
+            .collect::<BTreeSet<_>>()
+            .len()
+            == 3
+    );
     assert!(matches!(
         graph.nodes[0].operation,
         ExactBRepOperation::Loft { ref sections } if sections.len() == 3
@@ -482,6 +600,30 @@ fn parametric_sketch_outputs_build_a_complex_loft_graph_without_manual_points() 
         &graph.profiles[2].geometry,
         ExactBRepPlanarGeometry::Boundary { closed: true, segments } if segments.len() == 4
     ));
+
+    document.apply_batch(&batch).unwrap();
+    let committed_digest = document.current().canonical_digest();
+    assert_ne!(committed_digest, baseline_digest);
+    document.undo().unwrap();
+    assert_eq!(document.current().canonical_digest(), baseline_digest);
+    document.redo().unwrap();
+    assert_eq!(document.current().canonical_digest(), committed_digest);
+    let bytes = save_document_store(&document, &ContainerData::default()).unwrap();
+    let LoadOutcome::Editable { document, .. } = load(&bytes).unwrap() else {
+        panic!("framed Loft must reopen as an editable document");
+    };
+    assert_eq!(document.current().canonical_digest(), committed_digest);
+    let reopened = document.current();
+    let reopened_loft = reopened
+        .features()
+        .find(|feature| matches!(feature.kind(), FeatureKind::Loft { .. }))
+        .unwrap();
+    assert_eq!(
+        ExactBRepGraph::from_snapshot(&reopened, DefinitionId(1), reopened_loft.id())
+            .unwrap()
+            .schema,
+        EXACT_BREP_GRAPH_SCHEMA_V14
+    );
 }
 
 #[test]
@@ -1895,49 +2037,94 @@ fn canonical_batch_validation_remains_atomic_for_deferred_dimension_errors() {
 }
 
 #[test]
-fn exact_planar_offset_preview_gate_is_preserved() {
+fn public_framed_sketch_output_builds_an_exact_editable_planar_offset() {
     let mut document = DocumentStore::new();
-    document
-        .apply_batch(&CommandBatch::new(vec![
-            CanonicalCommand::CreateDefinition {
-                id: DefinitionId(1),
-                name: "Profile".into(),
+    let part_program = program(vec![AssistantCadEditOperation::CreatePart {
+        name: "Framed cubic profile".into(),
+        workplane: AssistantWorkplaneSpec::Frame {
+            origin_mm: [30.0, -20.0, 15.0],
+            x_axis: [0.0, 1.0, 0.0],
+            y_axis: [0.0, 0.0, 1.0],
+        },
+        entities: vec![
+            AssistantSketchEntity::CubicBezier {
+                id: 1,
+                start_mm: [-20.0, 0.0],
+                control_1_mm: [-20.0, 15.0],
+                control_2_mm: [20.0, 15.0],
+                end_mm: [20.0, 0.0],
             },
-            CanonicalCommand::CreateFeature {
-                id: FeatureId(1),
-                definition_id: DefinitionId(1),
-                name: "Boundary".into(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [80.0, 0.0], [80.0, 40.0], [0.0, 40.0]],
-                },
+            AssistantSketchEntity::CubicBezier {
+                id: 2,
+                start_mm: [20.0, 0.0],
+                control_1_mm: [20.0, -15.0],
+                control_2_mm: [-20.0, -15.0],
+                end_mm: [-20.0, 0.0],
             },
-        ]))
-        .unwrap();
-    let baseline = document.current();
-    let offset = |distance_mm| {
+        ],
+        constraints: Vec::new(),
+        feature: AssistantCadPartFeature::Extrusion { distance_mm: 8.0 },
+        translation_mm: [0.0; 3],
+        rotation: None,
+    }]);
+    let registry = ExactResultRegistry::default();
+    let part_batch = plan(&document, &BTreeSet::new(), &registry, &part_program).unwrap();
+    document.apply_batch(&part_batch).unwrap();
+    let baseline_digest = document.current().canonical_digest();
+    let offset_program = |distance_mm| {
         program(vec![AssistantCadEditOperation::AppendFeature {
             definition_id: 1,
-            name: "Offset".into(),
+            name: "Framed planar offset".into(),
             feature: AssistantCadBodyFeature::PlanarOffset {
-                profile_feature_id: 1,
+                profile_feature_id: 2,
                 distance_mm,
             },
         }])
     };
-    let registry = ExactResultRegistry::default();
-    let batch = plan(&document, &BTreeSet::new(), &registry, &offset(-5.0)).unwrap();
+    let input = offset_program(3.0);
+    let encoded = serde_json::to_vec(&input).unwrap();
+    let decoded: AssistantCadEditProgram = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(decoded, input);
+
+    let batch = plan(&document, &BTreeSet::new(), &registry, &decoded).unwrap();
     let candidate = document.preview_batch(&batch).unwrap();
-    let request = ExactPlanarOffsetRequest::from_snapshot(&candidate, DefinitionId(1)).unwrap();
-    assert_eq!(request.offset_feature_id, FeatureId(2));
-    assert_eq!(
-        request.expected_bounds_mm(),
-        [[5.0, 5.0, 0.0], [75.0, 35.0, 0.0]]
-    );
-    let error = plan(&document, &BTreeSet::new(), &registry, &offset(-25.0)).unwrap_err();
-    assert_eq!(error.code, "canonical.invalid_planar_offset");
-    assert_eq!(
-        document.current().canonical_digest(),
-        baseline.canonical_digest()
+    let graph = ExactBRepGraph::from_snapshot(&candidate, DefinitionId(1), FeatureId(4)).unwrap();
+    assert!(graph.terminal_is_planar_offset());
+    assert_eq!(graph.profiles[0].source_feature_id, 2);
+    assert_eq!(graph.profiles[0].frame_bits[0], 30.0_f64.to_bits());
+    assert_eq!(graph.profiles[0].frame_bits[1], (-20.0_f64).to_bits());
+    assert_eq!(graph.profiles[0].frame_bits[2], 15.0_f64.to_bits());
+    let bounds = graph.producer_bounds_mm().unwrap().unwrap();
+    assert_eq!(bounds[0][0], 30.0);
+    assert_eq!(bounds[1][0], 30.0);
+    assert!(bounds[0][1] < -40.0 && bounds[1][1] > 0.0);
+    assert!(bounds[0][2] < 15.0 && bounds[1][2] > 15.0);
+
+    let error = plan(
+        &document,
+        &BTreeSet::new(),
+        &registry,
+        &offset_program(-21.0),
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "planning.cad_feature_input_unsupported");
+    assert_eq!(document.current().canonical_digest(), baseline_digest);
+
+    document.apply_batch(&batch).unwrap();
+    let committed_digest = document.current().canonical_digest();
+    assert_eq!(document.visible_undo_steps(), 2);
+    document.undo().unwrap();
+    assert_eq!(document.current().canonical_digest(), baseline_digest);
+    document.redo().unwrap();
+    assert_eq!(document.current().canonical_digest(), committed_digest);
+
+    let bytes = save_document_store(&document, &ContainerData::default()).unwrap();
+    let LoadOutcome::Editable { document, .. } = load(&bytes).unwrap() else {
+        panic!("framed Planar Offset must reopen as an editable document");
+    };
+    assert_eq!(document.current().canonical_digest(), committed_digest);
+    assert!(
+        ExactBRepGraph::from_snapshot(&document.current(), DefinitionId(1), FeatureId(4),).is_ok()
     );
 }
 
@@ -2096,4 +2283,275 @@ fn color_wire_rejects_non_rgb_bytes() {
             "{json}"
         );
     }
+}
+
+#[test]
+fn public_program_sweeps_a_general_sketch_profile_along_a_spatial_path_atomically() {
+    let definition = DefinitionId(1);
+    let workplane = FeatureId(1);
+    let profile = FeatureId(2);
+    let path = FeatureId(3);
+    let profile_sketch = SketchSpec {
+        workplane,
+        entities: vec![
+            SketchEntity::Line {
+                id: SketchEntityId(1),
+                start_mm: [-2.0, -2.0],
+                end_mm: [2.0, -2.0],
+            },
+            SketchEntity::Arc {
+                id: SketchEntityId(2),
+                start_mm: [2.0, -2.0],
+                end_mm: [2.0, 2.0],
+                center_mm: [2.0, 0.0],
+                clockwise: false,
+            },
+            SketchEntity::CubicBezier {
+                id: SketchEntityId(3),
+                start_mm: [2.0, 2.0],
+                control_1_mm: [0.5, 3.0],
+                control_2_mm: [-0.5, 3.0],
+                end_mm: [-2.0, 2.0],
+            },
+            SketchEntity::Line {
+                id: SketchEntityId(4),
+                start_mm: [-2.0, 2.0],
+                end_mm: [-2.0, -2.0],
+            },
+        ],
+        constraints: Vec::new(),
+    };
+    let spatial_segments = vec![
+        SpatialPathSegment::Line {
+            start_mm: [0.0, 0.0, 0.0],
+            end_mm: [0.0, 0.0, 20.0],
+        },
+        SpatialPathSegment::CircularArc {
+            start_mm: [0.0, 0.0, 20.0],
+            end_mm: [10.0, 0.0, 30.0],
+            center_mm: [10.0, 0.0, 20.0],
+            normal: [0.0, 1.0, 0.0],
+            clockwise: false,
+        },
+        SpatialPathSegment::CubicBezier {
+            start_mm: [10.0, 0.0, 30.0],
+            control_1_mm: [15.0, 0.0, 30.0],
+            control_2_mm: [20.0, 5.0, 35.0],
+            end_mm: [25.0, 10.0, 40.0],
+        },
+    ];
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "General sweep".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: workplane,
+                definition_id: definition,
+                name: "Profile plane".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: profile,
+                definition_id: definition,
+                name: "Line arc cubic profile".into(),
+                kind: FeatureKind::Sketch(profile_sketch.clone()),
+            },
+            CanonicalCommand::CreateFeature {
+                id: path,
+                definition_id: definition,
+                name: "3D path".into(),
+                kind: FeatureKind::SpatialPath {
+                    segments: spatial_segments.clone(),
+                },
+            },
+        ]))
+        .unwrap();
+    let baseline = document.current();
+    let input = program(vec![AssistantCadEditOperation::AppendFeature {
+        definition_id: definition.0,
+        name: "Public general sweep".into(),
+        feature: AssistantCadBodyFeature::Sweep {
+            profile_feature_id: profile.0,
+            path_feature_id: path.0,
+        },
+    }]);
+    let input: AssistantCadEditProgram =
+        serde_json::from_slice(&serde_json::to_vec(&input).unwrap()).unwrap();
+    let batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &input,
+    )
+    .unwrap();
+    let preview = document.preview_batch(&batch).unwrap();
+    let sweep = FeatureId(4);
+    let graph = ExactBRepGraph::from_snapshot(&preview, definition, sweep).unwrap();
+    assert!(matches!(
+        &graph.nodes.last().unwrap().operation,
+        ExactBRepOperation::SpatialSweep { path, .. } if path.segments.len() == 3
+    ));
+    assert!(matches!(
+        &graph.profiles[0].geometry,
+        ExactBRepPlanarGeometry::Boundary { closed: true, segments } if segments.len() == 4
+    ));
+
+    document.apply_batch(&batch).unwrap();
+    let committed = document.current();
+    assert_eq!(document.visible_undo_steps(), 2);
+    document.undo().unwrap();
+    assert_eq!(
+        document.current().canonical_digest(),
+        baseline.canonical_digest()
+    );
+    document.redo().unwrap();
+    assert_eq!(
+        document.current().canonical_digest(),
+        committed.canonical_digest()
+    );
+    let bytes = save_document_store(&document, &ContainerData::default()).unwrap();
+    let LoadOutcome::Editable { document, .. } = load(&bytes).unwrap() else {
+        panic!("general Sketch/SpatialPath Sweep must reopen losslessly");
+    };
+    assert_eq!(
+        document.current().canonical_digest(),
+        committed.canonical_digest()
+    );
+
+    let mut sketch_path_document = DocumentStore::new();
+    sketch_path_document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Sketch path sweep".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: workplane,
+                definition_id: definition,
+                name: "Profile plane".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: profile,
+                definition_id: definition,
+                name: "Line arc cubic profile".into(),
+                kind: FeatureKind::Sketch(profile_sketch),
+            },
+            CanonicalCommand::CreateFeature {
+                id: path,
+                definition_id: definition,
+                name: "Path plane".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xz)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(4),
+                definition_id: definition,
+                name: "2D curved path".into(),
+                kind: FeatureKind::Sketch(SketchSpec {
+                    workplane: path,
+                    entities: vec![
+                        SketchEntity::Line {
+                            id: SketchEntityId(1),
+                            start_mm: [0.0, 0.0],
+                            end_mm: [0.0, 20.0],
+                        },
+                        SketchEntity::Arc {
+                            id: SketchEntityId(2),
+                            start_mm: [0.0, 20.0],
+                            end_mm: [10.0, 30.0],
+                            center_mm: [10.0, 20.0],
+                            clockwise: true,
+                        },
+                        SketchEntity::CubicBezier {
+                            id: SketchEntityId(3),
+                            start_mm: [10.0, 30.0],
+                            control_1_mm: [15.0, 30.0],
+                            control_2_mm: [20.0, 35.0],
+                            end_mm: [25.0, 40.0],
+                        },
+                    ],
+                    constraints: Vec::new(),
+                }),
+            },
+        ]))
+        .unwrap();
+    let sketch_path_program = program(vec![AssistantCadEditOperation::AppendFeature {
+        definition_id: definition.0,
+        name: "Public Sketch path sweep".into(),
+        feature: AssistantCadBodyFeature::Sweep {
+            profile_feature_id: profile.0,
+            path_feature_id: 4,
+        },
+    }]);
+    let sketch_path_batch = plan(
+        &sketch_path_document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &sketch_path_program,
+    )
+    .unwrap();
+    let sketch_path_preview = sketch_path_document
+        .preview_batch(&sketch_path_batch)
+        .unwrap();
+    let sketch_path_graph =
+        ExactBRepGraph::from_snapshot(&sketch_path_preview, definition, FeatureId(5)).unwrap();
+    assert!(matches!(
+        &sketch_path_graph.nodes.last().unwrap().operation,
+        ExactBRepOperation::SpatialSweep { path, .. } if path.segments.len() == 3
+    ));
+
+    let mut invalid = DocumentStore::new();
+    invalid
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Invalid sweep".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: workplane,
+                definition_id: definition,
+                name: "Profile plane".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: profile,
+                definition_id: definition,
+                name: "Open profile".into(),
+                kind: FeatureKind::Sketch(SketchSpec {
+                    workplane,
+                    entities: vec![SketchEntity::Line {
+                        id: SketchEntityId(1),
+                        start_mm: [-2.0, 0.0],
+                        end_mm: [2.0, 0.0],
+                    }],
+                    constraints: Vec::new(),
+                }),
+            },
+            CanonicalCommand::CreateFeature {
+                id: path,
+                definition_id: definition,
+                name: "3D path".into(),
+                kind: FeatureKind::SpatialPath {
+                    segments: spatial_segments,
+                },
+            },
+        ]))
+        .unwrap();
+    let invalid_baseline = invalid.current();
+    assert!(
+        plan(
+            &invalid,
+            &BTreeSet::new(),
+            &ExactResultRegistry::default(),
+            &input,
+        )
+        .is_err()
+    );
+    assert_eq!(
+        invalid.current().canonical_digest(),
+        invalid_baseline.canonical_digest()
+    );
 }

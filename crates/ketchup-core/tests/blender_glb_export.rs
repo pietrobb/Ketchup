@@ -1,11 +1,14 @@
-use ketchup_core::blender_export::{ExactGlbInstance, exact_model_glb_export};
+use ketchup_core::blender_export::{
+    ExactGlbInstance, MAX_GLB_EXPORT_INSTANCES, exact_model_glb_export,
+};
 use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
     GroupId, MeshAuthority, OccurrenceId, Transform,
 };
 use ketchup_core::exact_product::{
     ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactProductError,
-    build_box_render_package, canonical_reference_lineage_digest,
+    MAX_STL_EXPORT_INSTANCES, build_box_render_package, canonical_reference_lineage_digest,
+    exact_model_stl_export,
 };
 use ketchup_core::import::{
     GlbImportError, ImportFormat, ImportLengthUnit, inspect_glb, plan_glb_import,
@@ -491,5 +494,30 @@ fn glb_rejects_exact_results_from_an_older_snapshot() {
     assert_eq!(
         exact_model_glb_export(&current, &instances),
         Err(ExactProductError::StaleResult)
+    );
+}
+
+#[test]
+fn mesh_exports_reject_instance_expansion_beyond_bounded_limits() {
+    let document = seeded_document(None, None);
+    let snapshot = document.current();
+    let package = current_package(&snapshot);
+    let occurrence = snapshot.scene_query().remove(0);
+    let glb_instances = vec![
+        ExactGlbInstance {
+            package: &package,
+            occurrence: &occurrence,
+        };
+        MAX_GLB_EXPORT_INSTANCES + 1
+    ];
+    assert_eq!(
+        exact_model_glb_export(&snapshot, &glb_instances),
+        Err(ExactProductError::ExportResourceLimit)
+    );
+
+    let stl_bodies = vec![(&package, Transform::identity()); MAX_STL_EXPORT_INSTANCES + 1];
+    assert_eq!(
+        exact_model_stl_export(&snapshot, &stl_bodies),
+        Err(ExactProductError::ExportResourceLimit)
     );
 }

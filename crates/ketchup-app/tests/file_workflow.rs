@@ -14,7 +14,10 @@ use eframe::egui::{Key, Pos2, accesskit::Role};
 use harness::Shell;
 use ketchup_app::AppCommand;
 use ketchup_app::dialogs::ScriptedFileDialogs;
-use ketchup_core::document::{FeatureId, FeatureKind, ProfileSegment};
+use ketchup_core::document::{
+    CanonicalCommand, CommandBatch, Dimension, DocumentStore, FeatureId, FeatureKind, NodeId,
+    ProfileSegment,
+};
 use ketchup_core::graph::sha256_bytes;
 use ketchup_core::import::{
     DxfImportOptions, ImportFormat, ImportLengthUnit, ImportUnitAuthority, MAX_DXF_SOURCE_BYTES,
@@ -529,6 +532,67 @@ fn corrupt_persisted_history_fails_open_without_replacing_the_active_document() 
 }
 
 #[test]
+fn recovered_open_warns_with_the_actual_source_and_requires_save_as() {
+    let directory = tempfile::tempdir().unwrap();
+    let requested = directory.path().join("damaged.ketchup");
+    let recovery = requested.with_extension("ketchup.recovery");
+    let destination = directory.path().join("recovered-copy.ketchup");
+
+    let mut author = Shell::with_dialogs(ScriptedFileDialogs::new().queue_save(&requested));
+    compose_two_shared_occurrences(&mut author);
+    let expected = author.app().canonical_digest();
+    author.click_menu_command("menu-file", AppCommand::SaveAs);
+    std::fs::copy(&requested, &recovery).unwrap();
+    std::fs::write(&requested, b"corrupt primary").unwrap();
+
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_open(&requested)
+        .queue_save(&destination)
+        .always_discard();
+    let mut recovered = Shell::with_dialogs(dialogs);
+    recovered.click_menu_command("menu-file", AppCommand::Open);
+
+    assert_eq!(recovered.app().canonical_digest(), expected);
+    assert_eq!(recovered.app().document_path(), None);
+    assert_eq!(
+        recovered.app().recovery_requested_path(),
+        Some(requested.as_path())
+    );
+    assert_eq!(
+        recovered.app().recovery_source_path(),
+        Some(recovery.as_path())
+    );
+    assert!(recovered.app().is_dirty());
+    assert!(digest_starts_like(&recovered, "digest-opened-recovery"));
+    assert!(
+        recovered
+            .app()
+            .action_digest()
+            .contains(&recovery.display().to_string())
+    );
+    assert!(
+        recovered
+            .app()
+            .action_digest()
+            .contains(&requested.display().to_string())
+    );
+
+    recovered.click_menu_command("menu-file", AppCommand::Save);
+    assert_eq!(recovered.app().document_path(), Some(destination.as_path()));
+    assert_eq!(recovered.app().recovery_requested_path(), None);
+    assert_eq!(recovered.app().recovery_source_path(), None);
+    assert!(!recovered.app().is_dirty());
+    assert_eq!(std::fs::read(&requested).unwrap(), b"corrupt primary");
+    assert_eq!(
+        ketchup_core::persistence::load_file(&destination)
+            .unwrap()
+            .snapshot()
+            .canonical_digest(),
+        expected
+    );
+}
+
+#[test]
 fn native_document_inspection_counts_only_visible_modeled_root_occurrences() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("hidden-modeled-root.ketchup");
@@ -823,6 +887,88 @@ fn save_writes_to_the_known_path_without_asking_again() {
         "Save must persist the current state of the document"
     );
     assert!(!shell.app().is_dirty());
+}
+
+#[test]
+fn save_as_requires_explicit_consent_before_preserving_current_revision_without_full_history() {
+    let directory = tempfile::tempdir().unwrap();
+    let boundary = directory.path().join("history-boundary.ketchup");
+    let saved = directory.path().join("current-only.ketchup");
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateEvaluatorNode {
+                id: NodeId(1),
+                name: "history counter".to_owned(),
+                dimension: Dimension::new("0", 0.0).unwrap(),
+                dependencies: Vec::new(),
+            },
+        ]))
+        .unwrap();
+    for value in 1..4_095_u64 {
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetEvaluatorDimension {
+                    id: NodeId(1),
+                    dimension: Dimension::new(value.to_string(), value as f64).unwrap(),
+                },
+            ]))
+            .unwrap();
+    }
+    assert_eq!(document.revision_count(), 4_096);
+    ketchup_core::persistence::save_atomic_document_store_with_container(
+        &boundary,
+        &document,
+        &ketchup_core::persistence::ContainerData::default(),
+    )
+    .unwrap();
+
+    let script = ScriptedFileDialogs::new()
+        .queue_open(&boundary)
+        .queue_open(&saved)
+        .queue_save(&saved)
+        .queue_save(&saved)
+        .queue_history_truncation_approval(false)
+        .queue_history_truncation_approval(true);
+    let mut shell = Shell::with_dialogs(script.clone());
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert_eq!(shell.app().undo_step_count(), 4_095);
+    assert!(shell.app_mut().create_box());
+    shell.settle();
+    let expected_digest = shell.app().canonical_digest();
+    let expected_revision = shell.app().document_revision();
+    let expected_undo_steps = shell.app().undo_step_count();
+
+    shell.click_menu_command("menu-file", AppCommand::SaveAs);
+    assert!(!saved.exists());
+    assert!(shell.app().is_dirty());
+    assert_eq!(shell.app().canonical_digest(), expected_digest);
+    assert_eq!(shell.app().undo_step_count(), expected_undo_steps);
+    assert_eq!(script.history_truncation_prompts().len(), 1);
+    assert!(script.history_truncation_prompts()[0].contains("4096"));
+
+    shell.click_menu_command("menu-file", AppCommand::SaveAs);
+    assert!(saved.is_file());
+    assert!(!shell.app().is_dirty());
+    assert_eq!(shell.app().canonical_digest(), expected_digest);
+    assert_eq!(shell.app().document_revision(), expected_revision);
+    assert_eq!(shell.app().undo_step_count(), 0);
+    assert_eq!(shell.app().redo_step_count(), 0);
+    assert_eq!(script.history_truncation_prompts().len(), 2);
+    assert!(digest_starts_like(
+        &shell,
+        "digest-saved-document-current-only"
+    ));
+
+    shell.click_menu_command("menu-file", AppCommand::New);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert_eq!(shell.app().canonical_digest(), expected_digest);
+    assert_eq!(shell.app().document_revision(), expected_revision);
+    assert_eq!(shell.app().undo_step_count(), 0);
+    assert_eq!(shell.app().redo_step_count(), 0);
+    assert!(!shell.app().is_dirty());
+    assert!(shell.app_mut().create_box());
+    assert!(shell.app().document_revision() > expected_revision);
 }
 
 #[test]
@@ -1199,28 +1345,82 @@ fn file_menu_three_mf_export_is_localized_atomic_and_non_mutating() {
 }
 
 #[test]
-fn file_menu_three_mf_export_refuses_mesh_only_scene_before_authorization() {
+fn file_menu_round_trips_mixed_exact_and_imported_mesh_scene_to_stl_glb_and_three_mf() {
+    let _serial = EXACT_FILE_EXPORT_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../artifacts/blender/garden-studio-colored.glb");
     let directory = tempfile::tempdir().unwrap();
-    let target = directory.path().join("blocked.3mf");
+    let stl = directory.path().join("mixed.stl");
+    let glb = directory.path().join("mixed.glb");
+    let three_mf = directory.path().join("mixed.3mf");
     let script = ScriptedFileDialogs::new()
         .queue_import(ImportFormat::Glb, &fixture)
-        .queue_export(&target)
+        .queue_export(&stl)
+        .queue_export(&glb)
+        .queue_export(&three_mf)
         .always_confirm_high_risk_as(131);
     let mut shell = Shell::with_dialogs(script.clone());
+    compose_two_shared_occurrences(&mut shell);
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    wait_for_current_exact_body(&mut shell);
 
     shell.click_menu_command("menu-file", AppCommand::ImportBlenderGlb);
     shell.click_button_label(&shell.catalog().text("dialog-import-glb-confirm"));
     let before = canonical_state(&shell);
     let history = reachable_history_digests(&mut shell);
 
+    shell.click_menu_command("menu-file", AppCommand::ExportMeshStl);
+    shell.click_menu_command("menu-file", AppCommand::ExportBlenderGlb);
     shell.click_menu_command("menu-file", AppCommand::ExportPrintThreeMf);
-    assert!(!target.exists());
-    assert!(!target.with_extension("3mf.loss.txt").exists());
-    assert!(script.high_risk_prompts().is_empty());
-    assert!(shell.app().last_side_effect_receipt().is_none());
-    assert!(digest_starts_like(&shell, "error-export-3mf"));
+
+    let stl_bytes = std::fs::read(&stl).unwrap();
+    assert!(ascii_stl_facet_count(&stl_bytes) > 1_000);
+    let stl_report = std::fs::read_to_string(stl.with_extension("stl.loss.txt")).unwrap();
+    assert!(stl_report.contains("canonical_mesh_occurrence_count=140"));
+    assert!(stl_report.contains("color_loss=STL does not preserve occurrence colors"));
+
+    let glb_bytes = std::fs::read(&glb).unwrap();
+    let glb_scene = ketchup_core::import::inspect_glb(&glb_bytes).unwrap();
+    assert_eq!(glb_scene.instance_count(), 142);
+    let mut round_trip = DocumentStore::new();
+    let batch = ketchup_core::import::plan_glb_import(
+        &round_trip.current(),
+        &glb_bytes,
+        "mixed-round-trip.glb",
+    )
+    .unwrap();
+    round_trip.apply_batch(&batch).unwrap();
+    let round_trip_digest = round_trip.current().canonical_digest();
+    let persisted = ketchup_core::persistence::save(&round_trip.current());
+    assert_eq!(
+        ketchup_core::persistence::load(&persisted)
+            .unwrap()
+            .snapshot()
+            .canonical_digest(),
+        round_trip_digest
+    );
+    let glb_report = std::fs::read_to_string(glb.with_extension("glb.loss.txt")).unwrap();
+    assert!(glb_report.contains("canonical_mesh_occurrence_count=140"));
+    assert!(glb_report.contains("materials=resolved occurrence sRGB colors"));
+
+    let three_mf_bytes = std::fs::read(&three_mf).unwrap();
+    assert_eq!(&three_mf_bytes[..4], b"PK\x03\x04");
+    assert!(
+        three_mf_bytes
+            .windows(b"displaycolor=\"#".len())
+            .any(|bytes| bytes == b"displaycolor=\"#")
+    );
+    let three_mf_report = std::fs::read_to_string(three_mf.with_extension("3mf.loss.txt")).unwrap();
+    assert!(three_mf_report.contains("canonical_mesh_occurrence_count=140"));
+    assert!(three_mf_report.contains("materials=resolved occurrence sRGB colors"));
+
+    assert_eq!(script.high_risk_prompts().len(), 3);
+    assert!(shell.app().last_side_effect_receipt().is_some());
     assert_state_and_history_unchanged(&mut shell, &before, &history);
 }
 

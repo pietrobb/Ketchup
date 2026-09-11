@@ -21,7 +21,8 @@ use crate::exact_brep_graph::{
 use crate::exact_product::{
     BodySubshapeRef, EXACT_MIN_LENGTH_MM, ExactFaceRole, ExactFeatureChainRequest,
     ExactReferenceResolution, ExactResultRegistry, MAX_EXACT_PLANAR_OFFSET_LENGTH_MM,
-    accepts_planar_offset_solved_region, exact_planar_offset_profile,
+    accepts_planar_offset_solved_region, canonical_reference_lineage_digest,
+    exact_planar_offset_profile,
 };
 use crate::exact_revolve::{ExactRevolveRequest, reference_matches_revolve_request};
 pub use crate::graph::{
@@ -917,6 +918,11 @@ impl FeatureKind {
             | Self::Workplane(_) => {}
         }
         descriptors
+    }
+
+    #[must_use]
+    pub fn parameter_value(&self, path: &ParameterPath) -> Option<f64> {
+        feature_kind_parameter_value(self, path.as_str())
     }
 
     #[must_use]
@@ -2186,6 +2192,10 @@ pub enum CanonicalCommand {
     },
     SetFeatureDimension {
         id: FeatureId,
+        dimension: Dimension,
+    },
+    SetFeatureParameter {
+        target: FeatureParameterTarget,
         dimension: Dimension,
     },
     CreateSketchConstraint {
@@ -5807,6 +5817,9 @@ impl DocumentStore {
                         }),
                     );
                 }
+                CanonicalCommand::SetFeatureParameter { target, dimension } => {
+                    set_feature_parameter(&mut product, target, dimension.clone())?;
+                }
                 CanonicalCommand::CreateSketchConstraint { id, constraint } => {
                     let feature = product
                         .features
@@ -9047,7 +9060,7 @@ impl fmt::Display for CanonicalError {
                 formatter.write_str("planar offset distance or bounded profile is invalid")
             }
             Self::InvalidSweep => {
-                formatter.write_str("sweep requires a bounded profile and straight open path")
+                formatter.write_str("sweep requires one bounded closed profile and a compatible non-degenerate open path")
             }
             Self::InvalidSplineProfile => {
                 formatter.write_str("spline profile requires bounded canonical control points")
@@ -11589,19 +11602,63 @@ fn sweep_path_self_intersects(
 
 pub fn solved_sketch_sweep_path(sketch: &SketchSpec) -> Option<Vec<ProfileSegment>> {
     let solution = sketch.solve_geometry().ok()?;
-    let [
-        SketchEntity::Line {
-            start_mm, end_mm, ..
-        },
-    ] = solution.entities.as_slice()
-    else {
-        return None;
-    };
-    let segments = vec![ProfileSegment::Line {
-        start_mm: *start_mm,
-        end_mm: *end_mm,
-    }];
+    let segments = solution
+        .entities
+        .iter()
+        .map(|entity| match entity {
+            SketchEntity::Line {
+                start_mm, end_mm, ..
+            } => Some(ProfileSegment::Line {
+                start_mm: *start_mm,
+                end_mm: *end_mm,
+            }),
+            SketchEntity::Arc {
+                start_mm,
+                end_mm,
+                center_mm,
+                clockwise,
+                ..
+            } => Some(ProfileSegment::CircularArc {
+                start_mm: *start_mm,
+                end_mm: *end_mm,
+                center_mm: *center_mm,
+                clockwise: *clockwise,
+            }),
+            SketchEntity::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+                ..
+            } => Some(ProfileSegment::CubicBezier {
+                start_mm: *start_mm,
+                control_1_mm: *control_1_mm,
+                control_2_mm: *control_2_mm,
+                end_mm: *end_mm,
+            }),
+            SketchEntity::Circle { .. } => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
     is_valid_sweep_path(&segments).then_some(segments)
+}
+
+pub fn valid_sketch_sweep_profile(profile: &SketchSpec) -> bool {
+    let Ok(regions) = profile.solved_regions() else {
+        return false;
+    };
+    let [region] = regions.as_slice() else {
+        return false;
+    };
+    region.holes.is_empty()
+        && match &region.outer {
+            SolvedSketchRegionProfile::Polyline(points) => {
+                (3..=MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS).contains(&points.len())
+            }
+            SolvedSketchRegionProfile::Boundary(edges) => {
+                (2..=MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS).contains(&edges.len())
+            }
+            SolvedSketchRegionProfile::Circle { .. } => true,
+        }
 }
 
 pub fn valid_sketch_sweep_inputs(
@@ -11620,50 +11677,97 @@ pub fn valid_sketch_sweep_inputs(
     })
 }
 
+pub fn valid_sketch_spatial_sweep_inputs(
+    snapshot: &Snapshot,
+    profile: &SketchSpec,
+    path: &[SpatialPathSegment],
+) -> bool {
+    valid_sketch_spatial_sweep_inputs_with_frame(profile, path, |workplane| {
+        snapshot.feature(workplane).and_then(|feature| {
+            if let FeatureKind::Workplane(spec) = feature.kind() {
+                Some(spec.frame)
+            } else {
+                None
+            }
+        })
+    })
+}
+
+fn valid_sketch_spatial_sweep_inputs_with_frame(
+    profile: &SketchSpec,
+    path: &[SpatialPathSegment],
+    mut frame: impl FnMut(FeatureId) -> Option<WorkplaneFrame>,
+) -> bool {
+    if !valid_sketch_sweep_profile(profile) || !is_valid_spatial_sweep_path(path) {
+        return false;
+    }
+    let Some(profile_frame) = frame(profile.workplane) else {
+        return false;
+    };
+    let start = path[0].start_mm();
+    let tangent = match &path[0] {
+        SpatialPathSegment::Line { start_mm, end_mm } => {
+            [0, 1, 2].map(|axis| end_mm[axis] - start_mm[axis])
+        }
+        SpatialPathSegment::CircularArc {
+            start_mm,
+            center_mm,
+            normal,
+            clockwise,
+            ..
+        } => {
+            let radius = [0, 1, 2].map(|axis| start_mm[axis] - center_mm[axis]);
+            let cross = [
+                normal[1] * radius[2] - normal[2] * radius[1],
+                normal[2] * radius[0] - normal[0] * radius[2],
+                normal[0] * radius[1] - normal[1] * radius[0],
+            ];
+            cross.map(|value| if *clockwise { -value } else { value })
+        }
+        SpatialPathSegment::CubicBezier {
+            start_mm,
+            control_1_mm,
+            ..
+        } => [0, 1, 2].map(|axis| control_1_mm[axis] - start_mm[axis]),
+    };
+    let length = tangent[0].hypot(tangent[1]).hypot(tangent[2]);
+    let direction = tangent.map(|component| component / length);
+    [0, 1, 2].into_iter().all(|axis| {
+        (start[axis] - profile_frame.origin_mm[axis]).abs() <= SKETCH_SWEEP_FRAME_EPSILON_MM
+    }) && [0, 1, 2]
+        .into_iter()
+        .map(|axis| direction[axis] * profile_frame.normal[axis])
+        .sum::<f64>()
+        >= 1.0 - SKETCH_SWEEP_FRAME_EPSILON_MM
+}
+
 fn valid_sketch_sweep_inputs_with_frames(
     profile: &SketchSpec,
     path: &SketchSpec,
     mut frame: impl FnMut(FeatureId) -> Option<WorkplaneFrame>,
 ) -> bool {
-    let Ok(regions) = profile.solved_regions() else {
-        return false;
-    };
-    let [region] = regions.as_slice() else {
-        return false;
-    };
-    let SolvedSketchRegionProfile::Polyline(points) = &region.outer else {
-        return false;
-    };
-    if !region.holes.is_empty()
-        || !(3..=MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS).contains(&points.len())
-    {
+    if !valid_sketch_sweep_profile(profile) {
         return false;
     }
     let Some(path_segments) = solved_sketch_sweep_path(path) else {
         return false;
     };
-    let ProfileSegment::Line {
-        start_mm, end_mm, ..
-    } = path_segments[0]
-    else {
+    let Some((_, start_tangent, _)) = sweep_path_segment_metrics(&path_segments[0]) else {
         return false;
     };
+    let start_mm = path_segments[0].start_mm();
     let (Some(profile_frame), Some(path_frame)) = (frame(profile.workplane), frame(path.workplane))
     else {
         return false;
     };
-    let to_world = |point: [f64; 2]| {
-        [0, 1, 2].map(|axis| {
-            path_frame.origin_mm[axis]
-                + path_frame.x_axis[axis] * point[0]
-                + path_frame.y_axis[axis] * point[1]
-        })
-    };
-    let start = to_world(start_mm);
-    let end = to_world(end_mm);
-    let delta = [0, 1, 2].map(|axis| end[axis] - start[axis]);
-    let length = delta[0].hypot(delta[1]).hypot(delta[2]);
-    let direction = delta.map(|component| component / length);
+    let start = [0, 1, 2].map(|axis| {
+        path_frame.origin_mm[axis]
+            + path_frame.x_axis[axis] * start_mm[0]
+            + path_frame.y_axis[axis] * start_mm[1]
+    });
+    let direction = [0, 1, 2].map(|axis| {
+        path_frame.x_axis[axis] * start_tangent[0] + path_frame.y_axis[axis] * start_tangent[1]
+    });
     let starts_at_profile = [0, 1, 2].into_iter().all(|axis| {
         (start[axis] - profile_frame.origin_mm[axis]).abs() <= SKETCH_SWEEP_FRAME_EPSILON_MM
     });
@@ -12183,6 +12287,78 @@ fn resolved_bottle_profile(product: &ProductModel, id: FeatureId) -> Option<Vec<
     }
 }
 
+fn remap_body_subshape_reference(
+    reference: &BodySubshapeRef,
+    new_definition_id: DefinitionId,
+    mapping: &BTreeMap<FeatureId, FeatureId>,
+) -> Result<BodySubshapeRef, CanonicalError> {
+    let mut remapped = reference.clone();
+    remapped.definition_id = new_definition_id;
+    remapped.profile_feature_id = *mapping
+        .get(&reference.profile_feature_id)
+        .ok_or(CanonicalError::InvalidFeatureMap)?;
+    remapped.producer_feature_id = *mapping
+        .get(&reference.producer_feature_id)
+        .ok_or(CanonicalError::InvalidFeatureMap)?;
+    remapped.lineage_digest = canonical_reference_lineage_digest(
+        remapped.document_id,
+        remapped.producer_feature_id,
+        &remapped.semantic_role,
+        &remapped.source_element_id,
+        &remapped.expected_type,
+    );
+    Ok(remapped)
+}
+
+fn remap_feature_extent(
+    extent: &mut FeatureExtent,
+    new_definition_id: DefinitionId,
+    mapping: &BTreeMap<FeatureId, FeatureId>,
+) -> Result<(), CanonicalError> {
+    match extent {
+        FeatureExtent::UpToFace(reference) => {
+            **reference = remap_body_subshape_reference(reference, new_definition_id, mapping)?;
+        }
+        FeatureExtent::Bidirectional { along, opposite } => {
+            for end in [along, opposite] {
+                if let FeatureExtentEnd::UpToFace(reference) = end {
+                    **reference =
+                        remap_body_subshape_reference(reference, new_definition_id, mapping)?;
+                }
+            }
+        }
+        FeatureExtent::Blind(_) | FeatureExtent::ThroughAll | FeatureExtent::Symmetric(_) => {}
+    }
+    Ok(())
+}
+
+fn remap_topological_reference(
+    reference: &TopologicalElementRef,
+    new_definition_id: DefinitionId,
+    mapping: &BTreeMap<FeatureId, FeatureId>,
+) -> Result<TopologicalElementRef, CanonicalError> {
+    TopologicalElementRef::new(
+        reference.document_id,
+        new_definition_id,
+        *mapping
+            .get(&reference.source_feature_id)
+            .ok_or(CanonicalError::InvalidFeatureMap)?,
+        *mapping
+            .get(&reference.producer_feature_id)
+            .ok_or(CanonicalError::InvalidFeatureMap)?,
+        reference.kind,
+        reference.source_element_id.clone(),
+        reference.producer_element_id.clone(),
+        reference.stability,
+        reference.evaluator.clone(),
+        reference.backend.clone(),
+        reference.tolerance.clone(),
+        reference.result_fingerprint.clone(),
+        reference.corroborating_geometry_fingerprint.clone(),
+    )
+    .map_err(|_| CanonicalError::InvalidFeatureMap)
+}
+
 fn clone_definition_and_repoint(
     product: &mut ProductModel,
     plan: &CloneDefinitionPlan,
@@ -12245,8 +12421,9 @@ fn clone_definition_and_repoint(
                     | WorkplaneSupport::ConstructionPlane { feature: base } => {
                         *base = *mapping.get(base).ok_or(CanonicalError::InvalidFeatureMap)?;
                     }
-                    WorkplaneSupport::PlanarFace { .. } => {
-                        return Err(CanonicalError::InvalidFeatureMap);
+                    WorkplaneSupport::PlanarFace { reference, .. } => {
+                        **reference =
+                            remap_body_subshape_reference(reference, new_definition_id, &mapping)?;
                     }
                 }
                 FeatureKind::Workplane(cloned)
@@ -12301,9 +12478,25 @@ fn clone_definition_and_repoint(
                 cloned.sketch = *mapping
                     .get(&spec.sketch)
                     .ok_or(CanonicalError::InvalidFeatureMap)?;
+                remap_feature_extent(&mut cloned.extent, new_definition_id, &mapping)?;
                 FeatureKind::Pad(cloned)
             }
-            FeatureKind::SketchPocket(_) => return Err(CanonicalError::InvalidFeatureMap),
+            FeatureKind::SketchPocket(spec) => {
+                let mut cloned = spec.clone();
+                cloned.target = *mapping
+                    .get(&spec.target)
+                    .ok_or(CanonicalError::InvalidFeatureMap)?;
+                cloned.sketch = *mapping
+                    .get(&spec.sketch)
+                    .ok_or(CanonicalError::InvalidFeatureMap)?;
+                cloned.support = Box::new(remap_body_subshape_reference(
+                    &spec.support,
+                    new_definition_id,
+                    &mapping,
+                )?);
+                remap_feature_extent(&mut cloned.extent, new_definition_id, &mapping)?;
+                FeatureKind::SketchPocket(cloned)
+            }
             FeatureKind::BottleProfileControl {
                 profile,
                 body_radius,
@@ -12354,11 +12547,51 @@ fn clone_definition_and_repoint(
                 kind: *kind,
                 amount: amount.clone(),
             },
-            FeatureKind::TopologyShell { .. }
-            | FeatureKind::TopologyEdgeFinish { .. }
-            | FeatureKind::TopologyFaceOffset { .. } => {
-                return Err(CanonicalError::InvalidFeatureMap);
-            }
+            FeatureKind::TopologyShell {
+                target,
+                removed_faces,
+                thickness,
+            } => FeatureKind::TopologyShell {
+                target: *mapping
+                    .get(target)
+                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                removed_faces: removed_faces
+                    .iter()
+                    .map(|reference| {
+                        remap_topological_reference(reference, new_definition_id, &mapping)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+                thickness: thickness.clone(),
+            },
+            FeatureKind::TopologyEdgeFinish {
+                target,
+                edges,
+                kind,
+                amount,
+            } => FeatureKind::TopologyEdgeFinish {
+                target: *mapping
+                    .get(target)
+                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                edges: edges
+                    .iter()
+                    .map(|reference| {
+                        remap_topological_reference(reference, new_definition_id, &mapping)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+                kind: *kind,
+                amount: amount.clone(),
+            },
+            FeatureKind::TopologyFaceOffset {
+                target,
+                face,
+                distance,
+            } => FeatureKind::TopologyFaceOffset {
+                target: *mapping
+                    .get(target)
+                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                face: remap_topological_reference(face, new_definition_id, &mapping)?,
+                distance: distance.clone(),
+            },
             FeatureKind::ThroughCut { target, profile } => FeatureKind::ThroughCut {
                 target: *mapping
                     .get(target)
@@ -15005,7 +15238,14 @@ fn validate_product_with_drawing_sources(
                     .ok_or(CanonicalError::FeatureNotFound(profile))?;
                 if target.definition_id != feature.definition_id
                     || profile.definition_id != feature.definition_id
-                    || !matches!(target.kind, FeatureKind::Extrusion { .. })
+                    || !matches!(
+                        target.kind,
+                        FeatureKind::Extrusion { .. }
+                            | FeatureKind::TopologyFaceOffset { .. }
+                            | FeatureKind::Revolve { .. }
+                            | FeatureKind::Loft { .. }
+                            | FeatureKind::ImportedExactBody(_)
+                    )
                     || !matches!(
                         profile.kind,
                         FeatureKind::Profile { .. }
@@ -15147,6 +15387,9 @@ fn validate_product_with_drawing_sources(
                         segments,
                         closed: true,
                     } if segments.len() >= 2
+                ) || matches!(
+                    &profile_source.kind,
+                    FeatureKind::Sketch(profile) if valid_sketch_sweep_profile(profile)
                 );
                 let valid_path = matches!(
                     &path_source.kind,
@@ -15156,11 +15399,12 @@ fn validate_product_with_drawing_sources(
                     } if is_valid_sweep_path(segments)
                 ) || matches!(
                     &path_source.kind,
-                    FeatureKind::SpatialPath { segments }
-                        if is_valid_spatial_sweep_path(segments)
-                            && spatial_sweep_bounds_are_valid(&profile_source.kind, segments)
+                    FeatureKind::SpatialPath { segments } if is_valid_spatial_sweep_path(segments)
+                ) || matches!(
+                    &path_source.kind,
+                    FeatureKind::Sketch(path) if solved_sketch_sweep_path(path).is_some()
                 );
-                let valid_sketch_inputs = match (&profile_source.kind, &path_source.kind) {
+                let compatible_frames = match (&profile_source.kind, &path_source.kind) {
                     (FeatureKind::Sketch(profile), FeatureKind::Sketch(path)) => {
                         valid_sketch_sweep_inputs_with_frames(profile, path, |workplane| {
                             product.features.get(&workplane).and_then(|feature| {
@@ -15172,7 +15416,26 @@ fn validate_product_with_drawing_sources(
                             })
                         })
                     }
-                    _ => false,
+                    (FeatureKind::Sketch(profile), FeatureKind::SpatialPath { segments }) => {
+                        valid_sketch_spatial_sweep_inputs_with_frame(
+                            profile,
+                            segments,
+                            |workplane| {
+                                product.features.get(&workplane).and_then(|feature| {
+                                    if let FeatureKind::Workplane(spec) = &feature.kind {
+                                        Some(spec.frame)
+                                    } else {
+                                        None
+                                    }
+                                })
+                            },
+                        )
+                    }
+                    (FeatureKind::Sketch(_), _) | (_, FeatureKind::Sketch(_)) => false,
+                    (_, FeatureKind::SpatialPath { segments }) => {
+                        spatial_sweep_bounds_are_valid(&profile_source.kind, segments)
+                    }
+                    _ => true,
                 };
                 let feature_position = definition
                     .feature_ids
@@ -15188,7 +15451,7 @@ fn validate_product_with_drawing_sources(
                 });
                 if profile_source.definition_id != feature.definition_id
                     || path_source.definition_id != feature.definition_id
-                    || !(valid_profile && valid_path || valid_sketch_inputs)
+                    || !(valid_profile && valid_path && compatible_frames)
                     || !sources_precede_sweep
                 {
                     return Err(CanonicalError::InvalidSweep);
@@ -16366,6 +16629,9 @@ fn authoritative_writes(
                     writes.insert(AuthoritativeDependency::Definition(feature.definition_id()));
                 }
             }
+            CanonicalCommand::SetFeatureParameter { target, .. } => {
+                writes.insert(AuthoritativeDependency::Feature(target.feature_id));
+            }
             CanonicalCommand::SetFeatureDimension { id, .. }
             | CanonicalCommand::CreateSketchConstraint { id, .. }
             | CanonicalCommand::ReplaceSketchConstraint { id, .. }
@@ -16685,6 +16951,9 @@ fn authoritative_dependencies(
             } => {
                 add_feature_dependency_closure(snapshot, *id, &mut dependencies);
                 add_feature_dependency_closure(snapshot, *source_feature_id, &mut dependencies);
+            }
+            CanonicalCommand::SetFeatureParameter { target, .. } => {
+                add_feature_dependency_closure(snapshot, target.feature_id, &mut dependencies);
             }
             CanonicalCommand::SetFeatureDimension { id, .. }
             | CanonicalCommand::CreateSketchConstraint { id, .. }

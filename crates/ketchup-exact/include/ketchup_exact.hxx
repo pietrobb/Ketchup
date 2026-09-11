@@ -70,6 +70,8 @@ std::unique_ptr<NativeOperationResult> sweep_rectangle_native(
 std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
     rust::Slice<const double> profile_segments,
     rust::Slice<const double> path_segments) noexcept;
+std::unique_ptr<NativeOperationResult> loft_framed_profiles_native(
+    rust::Slice<const double> values) noexcept;
 std::unique_ptr<NativeOperationResult> loft_spline_native(
     rust::Slice<const double> values) noexcept;
 std::unique_ptr<NativeOperationResult> loft_planar_profiles_native(

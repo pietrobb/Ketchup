@@ -1,7 +1,7 @@
 use ketchup_core::document::{
     CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, Dimension, DocumentStore,
-    FeatureEvaluationState, FeatureId, FeatureKind, ProposalCommitError, ProposalContext,
-    StableFaceRole,
+    EdgeFinishKind, FeatureEvaluationState, FeatureId, FeatureKind, OccurrenceId,
+    ProposalCommitError, ProposalContext, StableFaceRole, Transform,
 };
 use ketchup_core::exact_brep_graph::ExactBRepGraph;
 use ketchup_core::exact_product::{
@@ -17,6 +17,9 @@ use ketchup_core::sketch::{
     WorkplaneSupport, WorkplaneSupportHealth,
 };
 use ketchup_core::state_view::encode_semantic_state;
+use ketchup_core::topology::{
+    TopologicalElementKind, TopologicalElementRef, TopologicalReferenceStability,
+};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -490,7 +493,7 @@ fn explicit_workplane_pad_has_shared_proposal_preview_persistence_and_stale_refu
 }
 
 #[test]
-fn face_supported_pocket_keeps_exact_target_support_and_is_lossless() {
+fn face_supported_pocket_and_topology_history_make_unique_losslessly() {
     const BASE_PLANE: FeatureId = FeatureId(20);
     const BASE_SKETCH: FeatureId = FeatureId(21);
     const BASE_PAD: FeatureId = FeatureId(22);
@@ -689,6 +692,242 @@ fn face_supported_pocket_keeps_exact_target_support_and_is_lossless() {
     assert_eq!(
         document.redo().unwrap().canonical_digest(),
         committed_digest
+    );
+
+    const SHELL: FeatureId = FeatureId(26);
+    const FINISH: FeatureId = FeatureId(27);
+    const OFFSET: FeatureId = FeatureId(28);
+    const FIRST: OccurrenceId = OccurrenceId(40);
+    const SECOND: OccurrenceId = OccurrenceId(41);
+    let topology_reference = |producer: FeatureId, kind: TopologicalElementKind, ordinal: u32| {
+        TopologicalElementRef::new(
+            document.current().document_id(),
+            DEFINITION,
+            producer,
+            producer,
+            kind,
+            format!("source/{}/{ordinal}", kind.token()),
+            format!("result/{}/{ordinal}", kind.token()),
+            TopologicalReferenceStability::Guaranteed,
+            "ketchup.exact-brep-graph-evaluator.v1",
+            "occt.v1",
+            "1e-7-mm",
+            format!("result-{}", producer.0),
+            format!("geometry-{}-{ordinal}", kind.token()),
+        )
+        .unwrap()
+    };
+    let shell_face = topology_reference(POCKET, TopologicalElementKind::Face, 1);
+    let finish_edge = topology_reference(SHELL, TopologicalElementKind::Edge, 2);
+    let offset_face = topology_reference(FINISH, TopologicalElementKind::Face, 3);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateFeature {
+                id: SHELL,
+                definition_id: DEFINITION,
+                name: "Topology shell".into(),
+                kind: FeatureKind::TopologyShell {
+                    target: POCKET,
+                    removed_faces: vec![shell_face.clone()],
+                    thickness: Dimension::from_decimal("2").unwrap(),
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FINISH,
+                definition_id: DEFINITION,
+                name: "Topology fillet".into(),
+                kind: FeatureKind::TopologyEdgeFinish {
+                    target: SHELL,
+                    edges: vec![finish_edge.clone()],
+                    kind: EdgeFinishKind::Fillet,
+                    amount: Dimension::from_decimal("1").unwrap(),
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: OFFSET,
+                definition_id: DEFINITION,
+                name: "Topology face offset".into(),
+                kind: FeatureKind::TopologyFaceOffset {
+                    target: FINISH,
+                    face: offset_face.clone(),
+                    distance: Dimension::from_decimal("0.5").unwrap(),
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: FIRST,
+                definition_id: DEFINITION,
+                name: "Shared part A".into(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: SECOND,
+                definition_id: DEFINITION,
+                name: "Shared part B".into(),
+                transform: Transform::from_translation(150.0, 0.0, 0.0).unwrap(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    let before_unique = document.current();
+    let before_unique_digest = before_unique.canonical_digest();
+    let before_unique_undo_steps = document.visible_undo_steps();
+
+    document
+        .make_unique(SECOND, "Unique finished part")
+        .unwrap();
+    assert_eq!(document.visible_undo_steps(), before_unique_undo_steps + 1);
+    assert_eq!(document.visible_redo_steps(), 0);
+    let unique = document.current();
+    let unique_digest = unique.canonical_digest();
+    let unique_definition = unique.occurrence(SECOND).unwrap().definition_id();
+    assert_eq!(
+        unique.occurrence(FIRST).unwrap().definition_id(),
+        DEFINITION
+    );
+    assert_ne!(unique_definition, DEFINITION);
+    let unique_features = unique.definition(unique_definition).unwrap().feature_ids();
+    assert_eq!(unique_features.len(), 9);
+    let unique_base_sketch = unique_features[1];
+    let unique_pad = unique_features[2];
+    let unique_face_plane = unique_features[3];
+    let unique_pocket_sketch = unique_features[4];
+    let unique_pocket = unique_features[5];
+    let unique_shell = unique_features[6];
+    let unique_finish = unique_features[7];
+    let unique_offset = unique_features[8];
+
+    for source_id in [
+        BASE_PLANE,
+        BASE_SKETCH,
+        BASE_PAD,
+        FACE_PLANE,
+        POCKET_SKETCH,
+        POCKET,
+        SHELL,
+        FINISH,
+        OFFSET,
+    ] {
+        assert_eq!(
+            unique.feature(source_id).unwrap().kind(),
+            before_unique.feature(source_id).unwrap().kind(),
+            "the shared sibling history changed at feature {}",
+            source_id.0
+        );
+    }
+
+    let FeatureKind::Workplane(WorkplaneSpec {
+        support:
+            WorkplaneSupport::PlanarFace {
+                reference: unique_support,
+                ..
+            },
+        frame: unique_frame,
+    }) = unique.feature(unique_face_plane).unwrap().kind()
+    else {
+        panic!("expected remapped face-supported workplane");
+    };
+    assert_eq!(unique_frame, &frame);
+    assert_eq!(unique_support.definition_id, unique_definition);
+    assert_eq!(unique_support.profile_feature_id, unique_base_sketch);
+    assert_eq!(unique_support.producer_feature_id, unique_pad);
+    assert!(unique_support.has_valid_lineage());
+    assert_ne!(unique_support.lineage_digest, top.lineage_digest);
+
+    let FeatureKind::SketchPocket(unique_pocket_spec) =
+        unique.feature(unique_pocket).unwrap().kind()
+    else {
+        panic!("expected remapped sketch pocket");
+    };
+    assert_eq!(unique_pocket_spec.target, unique_pad);
+    assert_eq!(unique_pocket_spec.sketch, unique_pocket_sketch);
+    assert_eq!(unique_pocket_spec.support.as_ref(), unique_support.as_ref());
+    assert!(unique_pocket_spec.support.has_valid_lineage());
+
+    let FeatureKind::TopologyShell {
+        target,
+        removed_faces,
+        ..
+    } = unique.feature(unique_shell).unwrap().kind()
+    else {
+        panic!("expected remapped topology shell");
+    };
+    assert_eq!(*target, unique_pocket);
+    assert_eq!(removed_faces[0].definition_id, unique_definition);
+    assert_eq!(removed_faces[0].source_feature_id, unique_pocket);
+    assert_eq!(removed_faces[0].producer_feature_id, unique_pocket);
+    assert!(removed_faces[0].has_valid_lineage());
+
+    let FeatureKind::TopologyEdgeFinish { target, edges, .. } =
+        unique.feature(unique_finish).unwrap().kind()
+    else {
+        panic!("expected remapped topology edge finish");
+    };
+    assert_eq!(*target, unique_shell);
+    assert_eq!(edges[0].definition_id, unique_definition);
+    assert_eq!(edges[0].source_feature_id, unique_shell);
+    assert_eq!(edges[0].producer_feature_id, unique_shell);
+    assert!(edges[0].has_valid_lineage());
+
+    let FeatureKind::TopologyFaceOffset { target, face, .. } =
+        unique.feature(unique_offset).unwrap().kind()
+    else {
+        panic!("expected remapped topology face offset");
+    };
+    assert_eq!(*target, unique_finish);
+    assert_eq!(face.definition_id, unique_definition);
+    assert_eq!(face.source_feature_id, unique_finish);
+    assert_eq!(face.producer_feature_id, unique_finish);
+    assert!(face.has_valid_lineage());
+
+    let source_definition = unique.definition(DEFINITION).unwrap();
+    let cloned_definition = unique.definition(unique_definition).unwrap();
+    for (source_id, cloned_id) in [
+        (BASE_PAD, unique_pad),
+        (POCKET, unique_pocket),
+        (SHELL, unique_shell),
+        (FINISH, unique_finish),
+        (OFFSET, unique_offset),
+    ] {
+        assert_eq!(
+            cloned_definition.feature_body_ownership(cloned_id),
+            source_definition.feature_body_ownership(source_id)
+        );
+    }
+    assert_eq!(
+        unique.exact_reference_by_lineage(&top.lineage_digest),
+        Some(&top)
+    );
+    assert_eq!(
+        unique.exact_reference_by_lineage(&unique_support.lineage_digest),
+        None,
+        "Make Unique must not fabricate exact-worker evidence"
+    );
+
+    let unique_graph =
+        ExactBRepGraph::from_snapshot(&unique, unique_definition, unique_offset).unwrap();
+    assert_eq!(
+        unique_graph.nodes.last().unwrap().source_feature_id,
+        unique_offset.0
+    );
+    assert_eq!(
+        document.undo().unwrap().canonical_digest(),
+        before_unique_digest
+    );
+    assert_eq!(document.redo().unwrap().canonical_digest(), unique_digest);
+
+    let unique_bytes = persistence::save(&document.current());
+    let reopened = persistence::load(&unique_bytes).unwrap();
+    assert_eq!(reopened.snapshot().canonical_digest(), unique_digest);
+    assert_eq!(persistence::save(&reopened.snapshot()), unique_bytes);
+    assert_eq!(
+        ExactBRepGraph::from_snapshot(&reopened.snapshot(), unique_definition, unique_offset,)
+            .unwrap(),
+        unique_graph
     );
 }
 

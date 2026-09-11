@@ -7,10 +7,10 @@ mod harness;
 
 use harness::Shell;
 use ketchup_app::{AppCommand, live_bridge::Stamp};
-use ketchup_core::assistant_sidecar::*;
+use ketchup_core::{assistant_sidecar::*, document::FeatureKind};
 use std::{
     io::{BufRead, BufReader, Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::mpsc,
     time::{Duration, Instant},
@@ -64,6 +64,39 @@ fn program() -> AssistantCadEditProgram {
     }
 }
 
+fn exact_worker_path() -> PathBuf {
+    let name = if cfg!(windows) {
+        "ketchup-exact-worker.exe"
+    } else {
+        "ketchup-exact-worker"
+    };
+    let colocated = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .and_then(Path::parent)
+        .unwrap()
+        .join(name);
+    if colocated.is_file() {
+        colocated
+    } else {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/debug")
+            .join(name)
+    }
+}
+
+fn wait_for_exact_body(shell: &mut Shell) {
+    for _ in 0..2000 {
+        shell.step();
+        shell.settle();
+        if shell.app().exact_render_body_count() == 1 {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(shell.app().exact_render_body_count(), 1);
+}
+
 #[test]
 fn registered_python_skill_uses_same_gui_store_and_human_history() {
     let Some(python) = std::env::var_os("KETCHUP_LIVE_PYTHON") else {
@@ -76,6 +109,11 @@ fn registered_python_skill_uses_same_gui_store_and_human_history() {
         .parent()
         .unwrap();
     let mut shell = Shell::new();
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .expect("the real exact worker is required");
+    wait_for_exact_body(&mut shell);
     assert!(shell.app().live_bridge_credentials().is_none());
     let address = shell
         .app_mut()
@@ -198,6 +236,19 @@ fn registered_python_skill_uses_same_gui_store_and_human_history() {
                 assert!(actual.mutation_epoch > initial.mutation_epoch);
                 assert_eq!(actual.document_id, initial.document_id);
                 assert_eq!(shell.app().undo_step_count(), history + 1);
+                assert_eq!(
+                    shell
+                        .app()
+                        .document_snapshot()
+                        .features()
+                        .filter(|feature| matches!(
+                            feature.kind(),
+                            FeatureKind::TopologyEdgeFinish { edges, .. } if edges.len() == 1
+                        ))
+                        .count(),
+                    1,
+                    "the host-issued live edge reference must reach canonical history"
+                );
                 committed = Some(actual);
             }
             "aba_ready" => {

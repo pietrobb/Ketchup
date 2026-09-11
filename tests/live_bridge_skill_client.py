@@ -48,7 +48,7 @@ async def scenario():
     skill._launch = attach
     tools = {tool.name: tool for tool in skill.register_tools()}
     assert set(tools) == {
-        "KetchupLiveSession", "KetchupLiveInspect", "KetchupLiveEdit",
+        "KetchupLiveSession", "KetchupLiveInspect", "KetchupLiveEdit", "KetchupLiveFile",
         "KetchupLiveBatch", "KetchupLiveView"}
 
     def safe(text):
@@ -103,6 +103,32 @@ async def scenario():
     assert isinstance(selection, list)
     summary = await inspect("summary")
     assert summary["stamp"] == initial == launched["stamp"]
+    topology_program = json.loads(json.dumps(program))
+    topology_items = {}
+    for kind in ("faces", "edges"):
+        page = await inspect("query", expected=initial, kind=kind, limit=1)
+        assert page["stamp"] == initial
+        assert page["result"]["coverage"]["topology"] is True
+        assert page["result"]["coverage"]["geometry_evaluated"] is True
+        assert page["result"]["items"]
+        item = page["result"]["items"][0]
+        detail = await inspect("detail", expected=initial, kind=kind, entity_id=item["id"])
+        assert detail["stamp"] == initial
+        assert detail["result"]["item"] == item
+        assert detail["result"]["identity"] == page["result"]["identity"]
+        topology_items[kind] = item
+    edge = topology_items["edges"]
+    topology_program["operations"].append({
+        "operation": "append_feature",
+        "definition_id": edge["definition_id"],
+        "name": "Live topology fillet",
+        "feature": {
+            "type": "topology_fillet",
+            "target_feature_id": edge["producer_feature_id"],
+            "edge_reference_ids": [edge["reference_id"]],
+            "radius_mm": 1.0,
+        },
+    })
     checkpoint("initial", initial)
 
     plan.active = True
@@ -126,7 +152,7 @@ async def scenario():
     checkpoint("plan_guarded", guarded["stamp"])
     plan.active = False
 
-    proposed = success(await edit("propose", initial, selection, program=program))
+    proposed = success(await edit("propose", initial, selection, program=topology_program))
     assert proposed["stamp"] == initial
     proposal_id = proposed["result"]["proposal_id"]
     checkpoint("proposed", proposed["stamp"])

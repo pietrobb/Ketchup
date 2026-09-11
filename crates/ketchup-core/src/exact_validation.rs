@@ -40,9 +40,11 @@ pub const GENERAL_BODY_OBB_NARROW_PHASE_METHOD_V1: &str =
     "ketchup.method.general-body-obb-sat.cpu-f64.v1";
 pub const GRAVITY_SUPPORT_VALIDATOR_CONTRACT_V1: &str = "ketchup.validator.gravity-support.v1";
 pub const GRAVITY_SUPPORT_VALIDATOR_IMPLEMENTATION_V1: &str =
-    "ketchup.builtin.gravity-support.obb-sat-cpu-f64.v1";
+    "ketchup.builtin.gravity-support.exact-box-contact-cpu-f64.v2";
 pub const GRAVITY_SUPPORT_VALIDATOR_INPUT_V1: &str = "ketchup.gravity-support-input.v1";
 pub const GRAVITY_SUPPORT_VALIDATION_POLICY_V1: &str = "ketchup.policy.gravity-support.v1";
+pub const GRAVITY_SUPPORT_EXACT_BOX_CONTACT_METHOD_V1: &str =
+    "ketchup.method.gravity-support-exact-box-face-contact.cpu-f64.v1";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExactValidationError {
@@ -1341,7 +1343,7 @@ pub fn gravity_support_validator_descriptor() -> ValidatorDescriptor {
         contract_id: GRAVITY_SUPPORT_VALIDATOR_CONTRACT_V1.to_owned(),
         contract_version: 1,
         implementation_id: GRAVITY_SUPPORT_VALIDATOR_IMPLEMENTATION_V1.to_owned(),
-        implementation_version: "1.0.0".to_owned(),
+        implementation_version: "2.0.0".to_owned(),
         input_schema: GRAVITY_SUPPORT_VALIDATOR_INPUT_V1.to_owned(),
         validation_class: ValidationClass::StructuralBestEffort,
         read_scopes: vec![ReadScope::CanonicalGraph, ReadScope::DerivedGeometry],
@@ -1603,7 +1605,15 @@ pub fn gravity_support_input_bytes(input: &GravitySupportInput) -> Vec<u8> {
 #[derive(Clone, Debug)]
 enum GravitySupportSource {
     ExplicitGrounding,
-    Contact(usize),
+    ProvenContact(usize),
+    UnprovenContact(usize),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GravityContactEvidence {
+    None,
+    UnprovenEnvelope,
+    ProvenExact,
 }
 
 fn evaluate_gravity_support(
@@ -1624,23 +1634,56 @@ fn evaluate_gravity_support(
     loop {
         let mut changed = false;
         for candidate_index in 0..participants.len() {
-            if support[candidate_index].is_some() {
+            if matches!(
+                support[candidate_index],
+                Some(
+                    GravitySupportSource::ExplicitGrounding
+                        | GravitySupportSource::ProvenContact(_)
+                )
+            ) {
                 continue;
             }
             let candidate = &participants[candidate_index].body;
-            if let Some(supporter_index) = (0..participants.len()).find(|&supporter_index| {
+            let proven_supporter = (0..participants.len()).find(|&supporter_index| {
                 supporter_index != candidate_index
-                    && support[supporter_index].is_some()
+                    && matches!(
+                        support[supporter_index],
+                        Some(
+                            GravitySupportSource::ExplicitGrounding
+                                | GravitySupportSource::ProvenContact(_)
+                        )
+                    )
                     && participants[candidate_index].support_group
                         == participants[supporter_index].support_group
-                    && body_rests_on(
+                    && body_support_contact(
                         candidate,
                         &participants[supporter_index].body,
                         support_direction,
                         tolerance,
-                    )
-            }) {
-                support[candidate_index] = Some(GravitySupportSource::Contact(supporter_index));
+                    ) == GravityContactEvidence::ProvenExact
+            });
+            if let Some(supporter_index) = proven_supporter {
+                support[candidate_index] =
+                    Some(GravitySupportSource::ProvenContact(supporter_index));
+                changed = true;
+                continue;
+            }
+            if support[candidate_index].is_none()
+                && let Some(supporter_index) = (0..participants.len()).find(|&supporter_index| {
+                    supporter_index != candidate_index
+                        && support[supporter_index].is_some()
+                        && participants[candidate_index].support_group
+                            == participants[supporter_index].support_group
+                        && body_support_contact(
+                            candidate,
+                            &participants[supporter_index].body,
+                            support_direction,
+                            tolerance,
+                        ) != GravityContactEvidence::None
+                })
+            {
+                support[candidate_index] =
+                    Some(GravitySupportSource::UnprovenContact(supporter_index));
                 changed = true;
             }
         }
@@ -1651,10 +1694,15 @@ fn evaluate_gravity_support(
 
     let mut evidence_counts = EvidenceCounts::default();
     let mut diagnostics = Vec::with_capacity(participants.len());
+    let mut unresolved_conditions = Vec::new();
     let mut failed = false;
+    let mut unproven = false;
     for (participant, source) in participants.iter().zip(support) {
         let evidence_class = match &source {
-            Some(GravitySupportSource::Contact(supporter_index)) => EvidenceClass::weakest(
+            Some(
+                GravitySupportSource::ProvenContact(supporter_index)
+                | GravitySupportSource::UnprovenContact(supporter_index),
+            ) => EvidenceClass::weakest(
                 [
                     &participant.body.evidence_class,
                     &participants[*supporter_index].body.evidence_class,
@@ -1675,7 +1723,7 @@ fn evaluate_gravity_support(
                     participant.support_group
                 ),
             ),
-            Some(GravitySupportSource::Contact(supporter_index)) => (
+            Some(GravitySupportSource::ProvenContact(supporter_index)) => (
                 "gravity.supported-contact",
                 DiagnosticSeverity::Information,
                 format!(
@@ -1684,9 +1732,26 @@ fn evaluate_gravity_support(
                     input.gravity_direction(),
                     participant.support_group,
                     instance_path_label(&participants[supporter_index].body.instance_path),
-                    GENERAL_BODY_OBB_NARROW_PHASE_METHOD_V1
+                    GRAVITY_SUPPORT_EXACT_BOX_CONTACT_METHOD_V1
                 ),
             ),
+            Some(GravitySupportSource::UnprovenContact(supporter_index)) => {
+                unproven = true;
+                let evidence = format!(
+                    "body={}; gravity_direction={:?}; support_group={}; potentially_supported_by={}; envelope_contact_method={}; exact_positive_area_contact_required=true",
+                    instance_path_label(&participant.body.instance_path),
+                    input.gravity_direction(),
+                    participant.support_group,
+                    instance_path_label(&participants[supporter_index].body.instance_path),
+                    GENERAL_BODY_OBB_NARROW_PHASE_METHOD_V1
+                );
+                unresolved_conditions.push(evidence.clone());
+                (
+                    "gravity.contact-unproven",
+                    DiagnosticSeverity::Warning,
+                    evidence,
+                )
+            }
             None => {
                 failed = true;
                 (
@@ -1720,6 +1785,8 @@ fn evaluate_gravity_support(
         invocation,
         state: if failed {
             ValidationState::Failed
+        } else if unproven {
+            ValidationState::NotEvaluated
         } else {
             ValidationState::Passed
         },
@@ -1729,32 +1796,91 @@ fn evaluate_gravity_support(
             "gravity uses the explicit typed non-zero vector supplied in the validator input"
                 .to_owned(),
             "only explicitly grounded participants seed support propagation".to_owned(),
-            "load-bearing contact requires same-group oriented OBB-SAT touching on the support plane"
+            "support propagation requires same-group exact full-box face contact with positive bearing area; OBB-only contact remains unresolved"
                 .to_owned(),
         ],
-        unresolved_conditions: vec![],
+        unresolved_conditions,
     }
 }
 
-fn body_rests_on(
+fn body_support_contact(
     candidate: &GeneralBodyParticipant,
     supporter: &GeneralBodyParticipant,
     support_direction: [f64; 3],
     tolerance: TolerancePolicy,
-) -> bool {
+) -> GravityContactEvidence {
     let Ok(candidate_obb) = general_body_obb(candidate) else {
-        return false;
+        return GravityContactEvidence::None;
     };
     let Ok(supporter_obb) = general_body_obb(supporter) else {
-        return false;
+        return GravityContactEvidence::None;
     };
     let candidate_lower_mm = vector_dot(candidate_obb.center, support_direction)
         - obb_projection_radius(candidate_obb, support_direction);
     let supporter_upper_mm = vector_dot(supporter_obb.center, support_direction)
         + obb_projection_radius(supporter_obb, support_direction);
-    (candidate_lower_mm - supporter_upper_mm).abs() <= tolerance.epsilon_mm()
-        && general_body_narrow_phase(candidate, supporter, tolerance)
-            .is_ok_and(|evidence| evidence.relation == GeneralBodyNarrowPhaseRelation::Touching)
+    if (candidate_lower_mm - supporter_upper_mm).abs() > tolerance.epsilon_mm() {
+        return GravityContactEvidence::None;
+    }
+    let Ok(narrow_phase) = general_body_narrow_phase(candidate, supporter, tolerance) else {
+        return GravityContactEvidence::None;
+    };
+    if narrow_phase.relation != GeneralBodyNarrowPhaseRelation::Touching {
+        return GravityContactEvidence::None;
+    }
+    match narrow_phase.evidence_class {
+        EvidenceClass::Exact
+            if exact_box_face_contact_has_positive_area(
+                candidate_obb,
+                supporter_obb,
+                support_direction,
+                tolerance.epsilon_mm(),
+            ) =>
+        {
+            GravityContactEvidence::ProvenExact
+        }
+        EvidenceClass::Exact => GravityContactEvidence::None,
+        EvidenceClass::Tolerant(_) => GravityContactEvidence::UnprovenEnvelope,
+    }
+}
+
+fn exact_box_face_contact_has_positive_area(
+    candidate: GeneralBodyObb,
+    supporter: GeneralBodyObb,
+    support_direction: [f64; 3],
+    epsilon_mm: f64,
+) -> bool {
+    let support_axis = |body: GeneralBodyObb| {
+        body.axes
+            .iter()
+            .position(|axis| (vector_dot(*axis, support_direction).abs() - 1.0).abs() <= 1.0e-9)
+    };
+    let (Some(candidate_support_axis), Some(supporter_support_axis)) =
+        (support_axis(candidate), support_axis(supporter))
+    else {
+        return false;
+    };
+    candidate
+        .axes
+        .iter()
+        .enumerate()
+        .filter(|(axis, _)| *axis != candidate_support_axis)
+        .chain(
+            supporter
+                .axes
+                .iter()
+                .enumerate()
+                .filter(|(axis, _)| *axis != supporter_support_axis),
+        )
+        .all(|(_, axis)| {
+            let candidate_center = vector_dot(candidate.center, *axis);
+            let supporter_center = vector_dot(supporter.center, *axis);
+            let candidate_radius = obb_projection_radius(candidate, *axis);
+            let supporter_radius = obb_projection_radius(supporter, *axis);
+            (candidate_center + candidate_radius).min(supporter_center + supporter_radius)
+                - (candidate_center - candidate_radius).max(supporter_center - supporter_radius)
+                > epsilon_mm
+        })
 }
 
 fn gravity_input_evidence(
@@ -2167,7 +2293,7 @@ mod tests {
         let validator = BuiltinGravitySupportValidator::default();
         assert_eq!(
             validator.descriptor().implementation_id,
-            "ketchup.builtin.gravity-support.obb-sat-cpu-f64.v1"
+            "ketchup.builtin.gravity-support.exact-box-contact-cpu-f64.v2"
         );
         let policy = gravity_support_validation_policy();
         let input = gravity_support_input_bytes(&validator_input);
@@ -2192,6 +2318,40 @@ mod tests {
         assert_eq!(report.diagnostics[2].code, "gravity.supported-contact");
         assert_eq!(report.diagnostics[3].code, "gravity.unsupported");
         assert_eq!(report.diagnostics[4].code, "gravity.supported-explicit");
+    }
+
+    #[test]
+    fn gravity_support_requires_positive_exact_bearing_area() {
+        let snapshot = crate::document::DocumentStore::new().current();
+        let validator_input = GravitySupportInput::new(
+            vec![
+                gravity_participant(1, [0.0, 0.0, 0.0], [100.0, 100.0, 10.0], true),
+                gravity_participant(2, [100.0, 20.0, 10.0], [120.0, 40.0, 20.0], false),
+            ],
+            [0.0, 0.0, -9.81],
+        )
+        .unwrap();
+        let validator = BuiltinGravitySupportValidator::default();
+        let policy = gravity_support_validation_policy();
+        let input = gravity_support_input_bytes(&validator_input);
+        let invocation = ValidationInvocation::bind(
+            &snapshot,
+            validator.descriptor(),
+            &policy,
+            Vec::new(),
+            &input,
+        );
+
+        let report = validator.invoke(ValidationExecution {
+            snapshot: &snapshot,
+            invocation,
+            policy: &policy,
+            input: &validator_input,
+        });
+
+        assert_eq!(report.state, ValidationState::Failed);
+        assert_eq!(report.diagnostics[1].code, "gravity.unsupported");
+        assert!(report.unresolved_conditions.is_empty());
     }
 
     #[test]

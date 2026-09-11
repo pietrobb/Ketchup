@@ -2329,6 +2329,18 @@ impl StableDigest {
                 self.bytes(dimension.source_token.as_bytes());
                 self.u64(dimension.millimetres.to_bits());
             }
+            CanonicalCommand::SetFeatureParameter { target, dimension } => {
+                self.byte(101);
+                self.u64(target.feature_id.0);
+                self.bytes(target.path.as_str().as_bytes());
+                self.byte(match target.value_type {
+                    ParameterValueType::Length => 1,
+                    ParameterValueType::Angle => 2,
+                    ParameterValueType::Scalar => 3,
+                });
+                self.bytes(dimension.source_token.as_bytes());
+                self.u64(dimension.millimetres.to_bits());
+            }
             CanonicalCommand::CreateSketchConstraint { id, constraint } => {
                 self.byte(98);
                 self.u64(id.0);

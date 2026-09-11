@@ -12,13 +12,14 @@ use ketchup_core::assistant_sidecar::{
     AssistantAxisSpec, AssistantCadBodyFeature, AssistantCadDeletePolicy,
     AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
     AssistantCadFeatureReference, AssistantCadPartFeature, AssistantCadProgramFeatureOutput,
-    AssistantCadProgramFeatureReference, AssistantRejectionDiagnostic, AssistantRejectionPhase,
-    validated_spatial_path_segments,
+    AssistantCadProgramFeatureReference, AssistantInstancePath, AssistantInstancePathStep,
+    AssistantRejectionDiagnostic, AssistantRejectionPhase, validated_spatial_path_segments,
 };
 use ketchup_core::document::{
     CanonicalCommand, CanonicalError, ClassificationCategoryId, ClassificationDimensionId,
-    CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind, NodeId,
-    OccurrenceId, ProfileSegment, Snapshot, SpatialPathSegment, Transform,
+    CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind, InstancePath,
+    InstancePathStep, LocalGroupId, LocalOccurrenceId, NodeId, OccurrenceId, ProfileSegment,
+    Snapshot, SpatialPathSegment, Transform,
 };
 use ketchup_core::exact_brep_graph::ExactBRepGraph;
 use ketchup_core::exact_product::{
@@ -28,6 +29,10 @@ use ketchup_core::sketch::SketchConstraintId;
 use ketchup_core::topology::TopologicalElementKind;
 use ketchup_interaction::Vec3;
 use std::collections::{BTreeMap, BTreeSet};
+
+const MAX_AXIS_INSTANCE_OCCURRENCES: usize = 10_000;
+const MAX_AXIS_INSTANCE_PATH_STEPS: usize = 256;
+const MAX_AXIS_INSTANCE_TEXT_BYTES: usize = 4 * 1024 * 1024;
 
 fn resolve_assistant_cad_selector(
     current_selection: &BTreeSet<OccurrenceId>,
@@ -120,6 +125,95 @@ fn resolve_program_output_reference(
         })
 }
 
+fn resolve_assistant_instance_path(
+    path: &AssistantInstancePath,
+    snapshot: &Snapshot,
+) -> Option<InstancePath> {
+    let mut resolved = InstancePath::root(OccurrenceId(path.root_occurrence_id));
+    let mut owner_definition_id = snapshot
+        .occurrence(resolved.root_occurrence())?
+        .definition_id();
+    for step in &path.steps {
+        let (declared_owner, path_step) = match *step {
+            AssistantInstancePathStep::Group {
+                owner_definition_id,
+                local_id,
+            } => (
+                DefinitionId(owner_definition_id),
+                InstancePathStep::Group(LocalGroupId(local_id)),
+            ),
+            AssistantInstancePathStep::Occurrence {
+                owner_definition_id,
+                local_id,
+            } => (
+                DefinitionId(owner_definition_id),
+                InstancePathStep::Occurrence(LocalOccurrenceId(local_id)),
+            ),
+        };
+        if declared_owner != owner_definition_id {
+            return None;
+        }
+        resolved = resolved.with_step(path_step);
+        owner_definition_id = snapshot
+            .resolve_instance_path(&resolved)
+            .ok()?
+            .definition_id;
+    }
+    snapshot.resolve_instance_path(&resolved).ok()?;
+    Some(resolved)
+}
+
+fn transform_axis_to_world(
+    transform: Transform,
+    origin_mm: [f64; 3],
+    direction: [f64; 3],
+    requires_similarity: bool,
+) -> Option<([f64; 3], [f64; 3])> {
+    let matrix = transform.matrix();
+    if requires_similarity {
+        let columns = [
+            [matrix[0], matrix[4], matrix[8]],
+            [matrix[1], matrix[5], matrix[9]],
+            [matrix[2], matrix[6], matrix[10]],
+        ];
+        let squared_lengths =
+            columns.map(|column| column.iter().map(|value| value * value).sum::<f64>());
+        let maximum = squared_lengths.into_iter().fold(0.0_f64, f64::max);
+        if !maximum.is_finite()
+            || maximum <= f64::EPSILON
+            || squared_lengths
+                .into_iter()
+                .any(|length| (length - maximum).abs() > maximum * 1.0e-9)
+            || [(0, 1), (0, 2), (1, 2)].into_iter().any(|(left, right)| {
+                let dot = columns[left]
+                    .iter()
+                    .zip(columns[right])
+                    .map(|(left, right)| left * right)
+                    .sum::<f64>();
+                dot.abs() > maximum * 1.0e-9
+            })
+        {
+            return None;
+        }
+    }
+    let point = |row: usize| {
+        matrix[row * 4] * origin_mm[0]
+            + matrix[row * 4 + 1] * origin_mm[1]
+            + matrix[row * 4 + 2] * origin_mm[2]
+            + matrix[row * 4 + 3]
+    };
+    let vector = |row: usize| {
+        matrix[row * 4] * direction[0]
+            + matrix[row * 4 + 1] * direction[1]
+            + matrix[row * 4 + 2] * direction[2]
+    };
+    let axis = AssistantAxisSpec::OriginDirection {
+        origin_mm: [point(0), point(1), point(2)],
+        direction: [vector(0), vector(1), vector(2)],
+    };
+    axis.origin_and_direction().ok()
+}
+
 fn resolve_assistant_axis_spec(
     axis: &AssistantAxisSpec,
     original_snapshot: &Snapshot,
@@ -128,7 +222,11 @@ fn resolve_assistant_axis_spec(
     operations: &[AssistantCadEditOperation],
     operation: &str,
 ) -> AssistantPlanningResult<([f64; 3], [f64; 3])> {
-    if let AssistantAxisSpec::Edge { edge_reference_id } = axis {
+    if let AssistantAxisSpec::Edge {
+        edge_reference_id,
+        instance_path,
+    } = axis
+    {
         let packages = topology_results
             .body_values(original_snapshot)
             .map_err(|_| {
@@ -160,11 +258,17 @@ fn resolve_assistant_axis_spec(
                     && let (Some(origin_mm), Some(direction)) =
                         (evidence.axis_origin_mm, evidence.unit_axis_direction)
                 {
-                    matches.push((origin_mm, direction));
+                    matches.push((
+                        DefinitionId(package.graph.definition_id),
+                        origin_mm,
+                        direction,
+                        evidence.curve_kind == "circle",
+                    ));
                 }
             }
         }
-        let [(origin_mm, direction)] = matches.as_slice() else {
+        let [(definition_id, origin_mm, direction, requires_similarity)] = matches.as_slice()
+        else {
             return Err(assistant_planning_rejection(
                 "planning.cad_axis_reference_unavailable",
                 operation,
@@ -173,7 +277,79 @@ fn resolve_assistant_axis_spec(
                 "Refresh exact edge inspection and copy one current line or circle reference_id.",
             ));
         };
-        return Ok((*origin_mm, *direction));
+        let occurrences = original_snapshot
+            .scene_query_bounded(
+                MAX_AXIS_INSTANCE_OCCURRENCES,
+                MAX_AXIS_INSTANCE_PATH_STEPS,
+                MAX_AXIS_INSTANCE_TEXT_BYTES,
+            )
+            .map_err(|_| {
+                assistant_planning_rejection(
+                    "planning.cad_axis_instance_path_unavailable",
+                    operation,
+                    "axis.instance_path",
+                    "The bounded visible instance index is unavailable.",
+                    "Reduce instance nesting or model size, then retry with one current instance_path.",
+                )
+            })?;
+        let resolved_path = if let Some(path) = instance_path {
+            resolve_assistant_instance_path(path, original_snapshot)
+        } else {
+            let mut candidates = occurrences
+                .iter()
+                .filter(|occurrence| occurrence.visible && occurrence.definition_id == *definition_id)
+                .map(|occurrence| occurrence.instance_path.clone());
+            let candidate = candidates.next();
+            candidate.filter(|_| candidates.next().is_none())
+        }
+        .ok_or_else(|| {
+            assistant_planning_rejection(
+                "planning.cad_axis_instance_path_unavailable",
+                operation,
+                "axis.instance_path",
+                "The edge axis does not identify one current visible instance.",
+                "Copy the exact instance_path from current instance inspection; repeated definitions require it.",
+            )
+        })?;
+        let resolved = original_snapshot
+            .resolve_instance_path(&resolved_path)
+            .map_err(|_| {
+                assistant_planning_rejection(
+                    "planning.cad_axis_instance_path_unavailable",
+                    operation,
+                    "axis.instance_path",
+                    "The edge axis instance path is not current.",
+                    "Refresh instance inspection and copy one current instance_path.",
+                )
+            })?;
+        if resolved.definition_id != *definition_id
+            || !occurrences
+                .iter()
+                .any(|occurrence| occurrence.visible && occurrence.instance_path == resolved_path)
+        {
+            return Err(assistant_planning_rejection(
+                "planning.cad_axis_instance_path_unavailable",
+                operation,
+                "axis.instance_path",
+                "The edge reference and visible instance path resolve to different definitions.",
+                "Use an instance_path whose definition_id matches the inspected edge.",
+            ));
+        }
+        return transform_axis_to_world(
+            resolved.world_transform,
+            *origin_mm,
+            *direction,
+            *requires_similarity,
+        )
+        .ok_or_else(|| {
+            assistant_planning_rejection(
+                "planning.cad_axis_instance_transform_invalid",
+                operation,
+                "axis.instance_path",
+                "The visible edge axis could not be transformed into a finite world axis.",
+                "Use a current instance with a finite non-degenerate transform.",
+            )
+        });
     }
     let AssistantAxisSpec::ConstructionAxis { axis } = axis else {
         return axis.origin_and_direction().map_err(|error| {

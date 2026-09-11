@@ -280,12 +280,12 @@ fn push_projection_bytes(output: &mut Vec<u8>, value: &[u8]) {
     output.extend_from_slice(value);
 }
 
-pub const GENERAL_FABRICATION_EVALUATOR_V3: &str = "ketchup.general-fabrication-evaluator.v3";
+pub const GENERAL_FABRICATION_EVALUATOR_V4: &str = "ketchup.general-fabrication-evaluator.v4";
 pub const FABRICATION_ROLE_DIMENSION_V1: &str = "ketchup.fabrication-role.v1";
 pub const TIMBER_MEMBER_ROLE_V1: &str = "fabrication.timber-member.v1";
 pub const TIMBER_MATERIAL_V1: &str = "ketchup.material.timber.unspecified.v1";
 pub const GENERAL_BOM_EXPORT_V1: &str = "ketchup.general-bom-export.v1";
-pub const GENERAL_DRAWING_SVG_V1: &str = "ketchup.general-drawing-svg.v1";
+pub const GENERAL_DRAWING_SVG_V2: &str = "ketchup.general-drawing-svg.v2";
 pub const GENERAL_MANUFACTURING_EXPORT_V2: &str = "ketchup.general-manufacturing-export.v2";
 pub const BTLX_2_3_1_VERSION: &str = "2.3.1";
 pub const BTLX_2_3_1_SCHEMA_URL: &str = "https://www.design2machine.com/btlx/BTLx_2_3_1.xsd";
@@ -417,6 +417,7 @@ pub struct GeneralPieceDrawing {
     pub projection_method: &'static str,
     pub views: Vec<GeneralDrawingView>,
     pub dimensions: Vec<GeneralDimensionCallout>,
+    pub machining_operations: Vec<GeneralManufacturingOperation>,
     pub evidence_class: EvidenceClass,
 }
 
@@ -564,39 +565,59 @@ impl GeneralFabricationProjection {
     pub fn drawing_svg(&self, snapshot: &Snapshot) -> Result<Vec<u8>, GeneralFabricationError> {
         let result_bytes =
             general_drawing_bytes(&self.drawings.drawings, self.drawings.validation_state);
+        let manufacturing_bytes = general_manufacturing_bytes(
+            &self.manufacturing.operations,
+            &self.manufacturing.unresolved_sources,
+            self.manufacturing.validation_state,
+        );
+        let drawing_operations = self
+            .drawings
+            .drawings
+            .iter()
+            .flat_map(|drawing| drawing.machining_operations.iter())
+            .collect::<Vec<_>>();
+        let manufacturing_operations = self.manufacturing.operations.iter().collect::<Vec<_>>();
         if self.drawings.envelope.status != ProjectionStatus::Complete
             || !general_envelope_is_current(&self.drawings.envelope, snapshot)
             || self.drawings.envelope.result_digest != sha256_hex(&result_bytes)
+            || !general_envelope_is_current(&self.manufacturing.envelope, snapshot)
+            || self.manufacturing.envelope.result_digest != sha256_hex(&manufacturing_bytes)
+            || drawing_operations != manufacturing_operations
             || self.drawings.validation_state != ValidationState::Passed
             || self.drawings.drawings.is_empty()
         {
             return Err(GeneralFabricationError::ExportBlocked);
         }
-        let sheet_width = self
-            .drawings
-            .drawings
-            .iter()
-            .flat_map(|drawing| drawing.views.iter().map(|view| view.width_mm))
-            .fold(0.0_f64, f64::max)
-            .max(100.0)
-            + 80.0;
-        let sheet_height = self
-            .drawings
-            .drawings
-            .iter()
-            .map(|drawing| {
-                drawing
-                    .views
-                    .iter()
-                    .map(|view| view.height_mm + 55.0)
-                    .sum::<f64>()
-                    + 35.0
-            })
-            .sum::<f64>()
-            + 40.0;
+        let mut sheet_width = 100.0_f64;
+        let mut sheet_height = 40.0;
+        for drawing in &self.drawings.drawings {
+            sheet_width = drawing
+                .views
+                .iter()
+                .map(|view| view.width_mm)
+                .fold(sheet_width, f64::max);
+            sheet_height += drawing
+                .views
+                .iter()
+                .map(|view| view.height_mm + 55.0)
+                .sum::<f64>()
+                + 60.0;
+            for operation in drawing
+                .machining_operations
+                .iter()
+                .filter(|operation| operation.kind != GeneralManufacturingKind::Stock)
+            {
+                let (minimum, maximum) = machining_detail_bounds(&operation.machining)
+                    .ok_or(GeneralFabricationError::ExportBlocked)?;
+                sheet_width = sheet_width.max(maximum[0] - minimum[0]);
+                sheet_height += maximum[1] - minimum[1] + 55.0;
+            }
+        }
+        sheet_width += 80.0;
         let mut svg = format!(
-            "<!-- {GENERAL_DRAWING_SVG_V1} {} -->\n<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {} {}\">\n",
+            "<!-- {GENERAL_DRAWING_SVG_V2} drawing={} manufacturing={} -->\n<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {} {}\">\n",
             self.drawings.envelope.result_digest,
+            self.manufacturing.envelope.result_digest,
             format_number(sheet_width),
             format_number(sheet_height)
         );
@@ -620,8 +641,34 @@ impl GeneralFabricationProjection {
                 ));
                 y += view.height_mm + 55.0;
             }
-            svg.push_str("</g>\n");
+            svg.push_str(&format!(
+                "<text id=\"{}/overall-dimensions\" x=\"25\" y=\"{}\" fill=\"black\" stroke=\"none\">overall: {}</text>\n",
+                drawing.stable_drawing_id,
+                format_number(y),
+                drawing
+                    .dimensions
+                    .iter()
+                    .map(|dimension| format!(
+                        "{}={} mm",
+                        dimension.axis,
+                        format_number(dimension.value_mm)
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
             y += 35.0;
+            for operation in drawing
+                .machining_operations
+                .iter()
+                .filter(|operation| operation.kind != GeneralManufacturingKind::Stock)
+            {
+                let (minimum, maximum) = machining_detail_bounds(&operation.machining)
+                    .expect("machining detail bounds were validated during sheet sizing");
+                append_machining_detail(&mut svg, operation, minimum, maximum, 25.0, y);
+                y += maximum[1] - minimum[1] + 55.0;
+            }
+            svg.push_str("</g>\n");
+            y += 25.0;
         }
         svg.push_str("</svg>\n");
         Ok(svg.into_bytes())
@@ -1618,7 +1665,7 @@ pub fn project_general_fabrication(
                 .map(|participant| participant.evidence_class()),
             TolerantEvidence::new(
                 tolerance.epsilon_mm(),
-                GENERAL_FABRICATION_EVALUATOR_V3,
+                GENERAL_FABRICATION_EVALUATOR_V4,
                 PermittedErrorDirection::BidirectionalBounded,
             )
             .expect("the fabrication tolerance and method identity are valid"),
@@ -1645,27 +1692,10 @@ pub fn project_general_fabrication(
             snapshot,
             &bom_bytes,
             general_status,
-            GENERAL_FABRICATION_EVALUATOR_V3,
+            GENERAL_FABRICATION_EVALUATOR_V4,
         ),
         evidence_counts,
         rows,
-    };
-
-    let drawings = bom
-        .rows
-        .iter()
-        .map(general_piece_drawing)
-        .collect::<Vec<_>>();
-    let drawing_bytes = general_drawing_bytes(&drawings, validation_state);
-    let drawings = GeneralDrawingProjection {
-        envelope: FabricationProjectionEnvelope::new_with_evaluator(
-            snapshot,
-            &drawing_bytes,
-            general_status,
-            GENERAL_FABRICATION_EVALUATOR_V3,
-        ),
-        validation_state,
-        drawings,
     };
 
     let mut operations = Vec::new();
@@ -1718,11 +1748,27 @@ pub fn project_general_fabrication(
             snapshot,
             &manufacturing_bytes,
             manufacturing_status,
-            GENERAL_FABRICATION_EVALUATOR_V3,
+            GENERAL_FABRICATION_EVALUATOR_V4,
         ),
         validation_state,
         operations,
         unresolved_sources,
+    };
+    let drawings = bom
+        .rows
+        .iter()
+        .map(|row| general_piece_drawing(row, &manufacturing.operations))
+        .collect::<Vec<_>>();
+    let drawing_bytes = general_drawing_bytes(&drawings, validation_state);
+    let drawings = GeneralDrawingProjection {
+        envelope: FabricationProjectionEnvelope::new_with_evaluator(
+            snapshot,
+            &drawing_bytes,
+            general_status,
+            GENERAL_FABRICATION_EVALUATOR_V4,
+        ),
+        validation_state,
+        drawings,
     };
     Ok(GeneralFabricationProjection {
         bom,
@@ -2296,6 +2342,185 @@ fn circular_profile(geometry: &ExactBRepPlanarGeometry) -> Option<([f64; 2], f64
         .then_some((center, radius_squared.sqrt()))
 }
 
+fn machining_detail_bounds(geometry: &GeneralMachiningGeometry) -> Option<([f64; 2], [f64; 2])> {
+    let mut minimum = [f64::INFINITY; 2];
+    let mut maximum = [f64::NEG_INFINITY; 2];
+    let mut include = |point: [f64; 2]| {
+        for axis in 0..2 {
+            minimum[axis] = minimum[axis].min(point[axis]);
+            maximum[axis] = maximum[axis].max(point[axis]);
+        }
+    };
+    match geometry {
+        GeneralMachiningGeometry::TimberStock { .. } => return None,
+        GeneralMachiningGeometry::ProfileCut { segments, .. } => {
+            for segment in segments {
+                match segment {
+                    GeneralMachiningSegment::Line { start_mm, end_mm } => {
+                        include(*start_mm);
+                        include(*end_mm);
+                    }
+                    GeneralMachiningSegment::CircularArc {
+                        start_mm,
+                        end_mm,
+                        center_mm,
+                        ..
+                    } => {
+                        let radius = ((start_mm[0] - center_mm[0]).powi(2)
+                            + (start_mm[1] - center_mm[1]).powi(2))
+                        .sqrt();
+                        include(*start_mm);
+                        include(*end_mm);
+                        include([center_mm[0] - radius, center_mm[1] - radius]);
+                        include([center_mm[0] + radius, center_mm[1] + radius]);
+                    }
+                }
+            }
+        }
+        GeneralMachiningGeometry::CircularDrill {
+            center_mm,
+            diameter_mm,
+            ..
+        } => {
+            let radius = diameter_mm / 2.0;
+            include([center_mm[0] - radius, center_mm[1] - radius]);
+            include([center_mm[0] + radius, center_mm[1] + radius]);
+        }
+    }
+    let size = [maximum[0] - minimum[0], maximum[1] - minimum[1]];
+    (minimum
+        .into_iter()
+        .chain(maximum)
+        .chain(size)
+        .all(f64::is_finite)
+        && size.into_iter().all(|value| value > 0.0))
+    .then_some((minimum, maximum))
+}
+
+fn append_machining_detail(
+    svg: &mut String,
+    operation: &GeneralManufacturingOperation,
+    minimum: [f64; 2],
+    maximum: [f64; 2],
+    x: f64,
+    y: f64,
+) {
+    let point = |value: [f64; 2]| [x + value[0] - minimum[0], y + value[1] - minimum[1]];
+    let width = maximum[0] - minimum[0];
+    let height = maximum[1] - minimum[1];
+    svg.push_str(&format!(
+        "<g id=\"{}/machining-detail\" data-kind=\"{}\">\n",
+        operation.stable_operation_id,
+        operation.kind.token()
+    ));
+    match &operation.machining {
+        GeneralMachiningGeometry::ProfileCut {
+            segments,
+            start_mm,
+            end_mm,
+            ..
+        } => {
+            let mut path = String::new();
+            for (index, segment) in segments.iter().enumerate() {
+                match segment {
+                    GeneralMachiningSegment::Line { start_mm, end_mm } => {
+                        let start = point(*start_mm);
+                        let end = point(*end_mm);
+                        if index == 0 {
+                            path.push_str(&format!(
+                                "M {} {} ",
+                                format_number(start[0]),
+                                format_number(start[1])
+                            ));
+                        }
+                        path.push_str(&format!(
+                            "L {} {} ",
+                            format_number(end[0]),
+                            format_number(end[1])
+                        ));
+                    }
+                    GeneralMachiningSegment::CircularArc {
+                        start_mm,
+                        end_mm,
+                        center_mm,
+                        clockwise,
+                    } => {
+                        let start = point(*start_mm);
+                        let end = point(*end_mm);
+                        let radius = ((start_mm[0] - center_mm[0]).powi(2)
+                            + (start_mm[1] - center_mm[1]).powi(2))
+                        .sqrt();
+                        if index == 0 {
+                            path.push_str(&format!(
+                                "M {} {} ",
+                                format_number(start[0]),
+                                format_number(start[1])
+                            ));
+                        }
+                        let start_angle =
+                            (start_mm[1] - center_mm[1]).atan2(start_mm[0] - center_mm[0]);
+                        let end_angle = (end_mm[1] - center_mm[1]).atan2(end_mm[0] - center_mm[0]);
+                        let mut sweep = end_angle - start_angle;
+                        if *clockwise {
+                            while sweep < 0.0 {
+                                sweep += std::f64::consts::TAU;
+                            }
+                        } else {
+                            while sweep > 0.0 {
+                                sweep -= std::f64::consts::TAU;
+                            }
+                        }
+                        path.push_str(&format!(
+                            "A {0} {0} 0 {1} {2} {3} {4} ",
+                            format_number(radius),
+                            u8::from(sweep.abs() > std::f64::consts::PI),
+                            u8::from(*clockwise),
+                            format_number(end[0]),
+                            format_number(end[1])
+                        ));
+                    }
+                }
+            }
+            path.push('Z');
+            svg.push_str(&format!(
+                "<path id=\"{}/geometry\" d=\"{}\" fill=\"white\" />\n<text x=\"{}\" y=\"{}\" fill=\"black\" stroke=\"none\">{}: width={} mm, height={} mm, depth={} mm</text>\n",
+                operation.stable_operation_id,
+                path,
+                format_number(x),
+                format_number(y + height + 20.0),
+                operation.kind.token(),
+                format_number(width),
+                format_number(height),
+                format_number((end_mm - start_mm).abs())
+            ));
+        }
+        GeneralMachiningGeometry::CircularDrill {
+            center_mm,
+            diameter_mm,
+            start_mm,
+            end_mm,
+            ..
+        } => {
+            let center = point(*center_mm);
+            svg.push_str(&format!(
+                "<circle id=\"{}/geometry\" cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"white\" />\n<text x=\"{}\" y=\"{}\" fill=\"black\" stroke=\"none\">circular-drill: center=({}, {}) mm, diameter={} mm, depth={} mm</text>\n",
+                operation.stable_operation_id,
+                format_number(center[0]),
+                format_number(center[1]),
+                format_number(diameter_mm / 2.0),
+                format_number(x),
+                format_number(y + height + 20.0),
+                format_number(center_mm[0]),
+                format_number(center_mm[1]),
+                format_number(*diameter_mm),
+                format_number((end_mm - start_mm).abs())
+            ));
+        }
+        GeneralMachiningGeometry::TimberStock { .. } => unreachable!(),
+    }
+    svg.push_str("</g>\n");
+}
+
 fn machining_token(geometry: &GeneralMachiningGeometry) -> String {
     match geometry {
         GeneralMachiningGeometry::TimberStock {
@@ -2515,7 +2740,7 @@ fn general_envelope_is_current(
     snapshot: &Snapshot,
 ) -> bool {
     envelope.projection_schema == FABRICATION_PROJECTION_V1
-        && envelope.evaluator_id == GENERAL_FABRICATION_EVALUATOR_V3
+        && envelope.evaluator_id == GENERAL_FABRICATION_EVALUATOR_V4
         && envelope.is_current(snapshot)
 }
 
@@ -2659,7 +2884,10 @@ fn local_dimensions(
     Ok(dimensions)
 }
 
-fn general_piece_drawing(row: &GeneralBomRow) -> GeneralPieceDrawing {
+fn general_piece_drawing(
+    row: &GeneralBomRow,
+    operations: &[GeneralManufacturingOperation],
+) -> GeneralPieceDrawing {
     let drawing_id = format!("{}/drawing", row.stable_row_id);
     let view = |name, horizontal_axis, vertical_axis, width_mm, height_mm| GeneralDrawingView {
         stable_view_id: format!("{drawing_id}/{name}"),
@@ -2707,6 +2935,14 @@ fn general_piece_drawing(row: &GeneralBomRow) -> GeneralPieceDrawing {
             dimension("y", row.dimensions.width_mm),
             dimension("z", row.dimensions.height_mm),
         ],
+        machining_operations: operations
+            .iter()
+            .filter(|operation| {
+                operation.definition_id == row.definition_id
+                    && GeneralBodySource::Exact(operation.source.clone()) == row.source
+            })
+            .cloned()
+            .collect(),
         evidence_class: row.evidence_class.clone(),
     }
 }
@@ -2752,7 +2988,7 @@ fn general_drawing_bytes(
     drawings: &[GeneralPieceDrawing],
     validation_state: ValidationState,
 ) -> Vec<u8> {
-    let mut bytes = GENERAL_DRAWING_SVG_V1.as_bytes().to_vec();
+    let mut bytes = GENERAL_DRAWING_SVG_V2.as_bytes().to_vec();
     push_validation_state(&mut bytes, validation_state);
     bytes.extend_from_slice(&(drawings.len() as u64).to_le_bytes());
     for drawing in drawings {
@@ -2775,6 +3011,10 @@ fn general_drawing_bytes(
             push_projection_bytes(&mut bytes, dimension.axis.as_bytes());
             bytes.extend_from_slice(&dimension.value_mm.to_bits().to_le_bytes());
         }
+        push_projection_bytes(
+            &mut bytes,
+            &general_manufacturing_bytes(&drawing.machining_operations, &[], validation_state),
+        );
         push_projection_evidence(&mut bytes, &drawing.evidence_class);
     }
     bytes

@@ -85,6 +85,43 @@ fn native_volume(result: &Value, feature: u64) -> f64 {
 }
 
 #[test]
+fn headless_open_exposes_recovery_and_requires_an_explicit_save_target() {
+    let base =
+        std::env::temp_dir().join(format!("ketchup-headless-recovery-{}", std::process::id()));
+    let requested = base.with_extension("ketchup");
+    let recovery = requested.with_extension("ketchup.recovery");
+    let destination = base.with_extension("recovered.ketchup");
+    let document = ketchup_core::document::DocumentStore::new();
+    ketchup_core::persistence::save_atomic(&requested, &document.current()).unwrap();
+    std::fs::copy(&requested, &recovery).unwrap();
+    std::fs::write(&requested, b"corrupt primary").unwrap();
+
+    let mut client = Client::new();
+    let opened = client.call("open", json!({"path":requested}), true);
+    assert!(opened["path"].is_null(), "{opened}");
+    assert_eq!(opened["modified"], true);
+    assert_eq!(
+        opened["recovery"]["requested_path"],
+        requested.to_string_lossy().as_ref()
+    );
+    assert_eq!(
+        opened["recovery"]["source_path"],
+        recovery.to_string_lossy().as_ref()
+    );
+    assert_eq!(opened["recovery"]["save_as_required"], true);
+
+    let saved = client.call("save", json!({"path":destination,"overwrite":false}), true);
+    assert_eq!(saved["path"], destination.to_string_lossy().as_ref());
+    assert!(saved["recovery"].is_null(), "{saved}");
+    assert_eq!(saved["modified"], false);
+    assert_eq!(std::fs::read(&requested).unwrap(), b"corrupt primary");
+
+    std::fs::remove_file(requested).unwrap();
+    std::fs::remove_file(recovery).unwrap();
+    std::fs::remove_file(destination).unwrap();
+}
+
+#[test]
 fn native_headless_translated_rotated_frame_wedge_pocket_roundtrips() {
     let mut client = Client::new();
     let capabilities = client.call("capabilities", json!({}), false);

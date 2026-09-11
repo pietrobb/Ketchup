@@ -2,7 +2,7 @@ use crate::document::{
     DefinitionId, FeatureId, GroupId, InstancePathStep, LocalGroupKey, LocalOccurrenceKey,
     SceneOccurrence, Snapshot, Transform,
 };
-use crate::exact_product::{ExactBodyPackage, ExactBodyView, ExactProductError};
+use crate::exact_product::{ExactBodyPackage, ExactProductError, MeshExportSource};
 use std::collections::BTreeMap;
 use std::fmt::{self, Write as _};
 
@@ -46,6 +46,12 @@ pub struct ExactThreeMfInstance<'a> {
     pub occurrence: &'a SceneOccurrence,
 }
 
+#[derive(Clone, Copy)]
+pub struct MeshThreeMfInstance<'a> {
+    pub source: MeshExportSource<'a>,
+    pub occurrence: &'a SceneOccurrence,
+}
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct MeshKey {
     definition_id: DefinitionId,
@@ -66,12 +72,26 @@ pub fn exact_model_three_mf_export(
     snapshot: &Snapshot,
     instances: &[ExactThreeMfInstance<'_>],
 ) -> Result<ExactThreeMfExport, ExactProductError> {
-    exact_model_three_mf_export_with_limits(snapshot, instances, THREE_MF_EXPORT_LIMITS)
+    let instances = instances
+        .iter()
+        .map(|instance| MeshThreeMfInstance {
+            source: MeshExportSource::Exact(instance.package),
+            occurrence: instance.occurrence,
+        })
+        .collect::<Vec<_>>();
+    model_three_mf_export(snapshot, &instances)
 }
 
-fn exact_model_three_mf_export_with_limits(
+pub fn model_three_mf_export(
     snapshot: &Snapshot,
-    instances: &[ExactThreeMfInstance<'_>],
+    instances: &[MeshThreeMfInstance<'_>],
+) -> Result<ExactThreeMfExport, ExactProductError> {
+    model_three_mf_export_with_limits(snapshot, instances, THREE_MF_EXPORT_LIMITS)
+}
+
+fn model_three_mf_export_with_limits(
+    snapshot: &Snapshot,
+    instances: &[MeshThreeMfInstance<'_>],
     limits: ThreeMfExportLimits,
 ) -> Result<ExactThreeMfExport, ExactProductError> {
     if instances.is_empty() {
@@ -82,18 +102,18 @@ fn exact_model_three_mf_export_with_limits(
     }
     if instances
         .iter()
-        .any(|instance| !instance.occurrence.visible || !instance.package.is_current(snapshot))
+        .any(|instance| !instance.occurrence.visible || !instance.source.is_current(snapshot))
     {
         return Err(ExactProductError::StaleResult);
     }
     if instances
         .iter()
-        .any(|instance| instance.package.definition_id() != instance.occurrence.definition_id)
+        .any(|instance| instance.source.definition_id() != instance.occurrence.definition_id)
     {
         return Err(ExactProductError::InvalidMeshExport);
     }
 
-    let mut packages = BTreeMap::<MeshKey, &ExactBodyPackage>::new();
+    let mut packages = BTreeMap::<MeshKey, MeshExportSource<'_>>::new();
     let mut vertex_count = 0_usize;
     let mut triangle_count = 0_usize;
     for instance in instances {
@@ -103,16 +123,16 @@ fn exact_model_three_mf_export_with_limits(
         }
         vertex_count = add_with_limit(
             vertex_count,
-            instance.package.vertices().len(),
+            instance.source.vertex_count(),
             limits.vertices,
         )?;
         triangle_count = add_with_limit(
             triangle_count,
-            instance.package.triangles().len(),
+            instance.source.triangle_count(),
             limits.triangles,
         )?;
-        validate_mesh(instance.package)?;
-        packages.insert(key, instance.package);
+        validate_mesh(instance.source)?;
+        packages.insert(key, instance.source);
     }
     let (nodes, roots) = build_assembly(snapshot, instances)?;
 
@@ -163,12 +183,18 @@ fn exact_model_three_mf_export_with_limits(
         ],
         limits.archive_bytes,
     )?;
+    let canonical_mesh_count = instances
+        .iter()
+        .filter(|instance| instance.source.is_canonical())
+        .count();
     let loss_report = format!(
-        "authority=accepted exact OCCT B-Rep\nformat=3MF Core 1.3 package\nconversion=current-visible-exact-model-to-instanced-print-mesh\nunit=millimeter\naxis=Ketchup Z-up preserved\nhierarchy=canonical global groups, component occurrences, local groups, and nested occurrences\nmaterials=resolved occurrence sRGB colors\neditability_loss=canonical features, rules, dimensions, constraints, and Undo history are not preserved\ntopology_loss=exact topology, analytic surfaces, and durable face identity are not preserved\ntolerance_loss=geometry is approximated by each accepted tessellation under its source tolerance profile\nsource_digest={}\noccurrence_body_count={}\nunique_mesh_resource_count={}\nassembly_object_count={}\n",
+        "authority=validated exact tessellations and canonical mesh bodies\nformat=3MF Core 1.3 package\nconversion=current-visible-model-to-instanced-print-mesh\nunit=millimeter\naxis=Ketchup Z-up preserved\nhierarchy=canonical global groups, component occurrences, local groups, and nested occurrences\nmaterials=resolved occurrence sRGB colors\neditability_loss=canonical features, rules, dimensions, constraints, and Undo history are not preserved\ntopology_loss=exact topology, analytic surfaces, and durable face identity are not preserved\ntolerance_loss=exact geometry uses its accepted tessellation; canonical mesh vertices are preserved\nsource_digest={}\noccurrence_body_count={}\ncanonical_mesh_occurrence_count={canonical_mesh_count}\nunique_mesh_resource_count={}\nassembly_object_count={}\nresource_vertex_limit={}\nresource_triangle_limit={}\n",
         snapshot.canonical_digest(),
         instances.len(),
         packages.len(),
         nodes.len(),
+        limits.vertices,
+        limits.triangles,
     );
     Ok(ExactThreeMfExport {
         three_mf,
@@ -176,11 +202,11 @@ fn exact_model_three_mf_export_with_limits(
     })
 }
 
-fn mesh_key(instance: &ExactThreeMfInstance<'_>) -> MeshKey {
+fn mesh_key(instance: &MeshThreeMfInstance<'_>) -> MeshKey {
     MeshKey {
-        definition_id: instance.package.definition_id(),
-        producer_feature_id: instance.package.producer_feature_id(),
-        result_fingerprint: instance.package.result_fingerprint().to_owned(),
+        definition_id: instance.source.definition_id(),
+        producer_feature_id: instance.source.producer_feature_id(),
+        result_fingerprint: instance.source.identity(),
         color: instance.occurrence.color(),
     }
 }
@@ -196,22 +222,21 @@ fn add_with_limit(
         .ok_or(ExactProductError::ExportResourceLimit)
 }
 
-fn validate_mesh(package: &ExactBodyPackage) -> Result<(), ExactProductError> {
-    if package.vertices().is_empty() || package.triangles().is_empty() {
+fn validate_mesh(source: MeshExportSource<'_>) -> Result<(), ExactProductError> {
+    if source.vertex_count() == 0 || source.triangle_count() == 0 {
         return Err(ExactProductError::InvalidMeshExport);
     }
-    if package
-        .vertices()
-        .iter()
-        .flat_map(|vertex| vertex.position_mm)
-        .any(|value| !value.is_finite())
-        || package.triangles().iter().any(|triangle| {
+    if (0..source.vertex_count()).any(|index| {
+        source
+            .vertex_position_mm(index)
+            .is_none_or(|point| point.into_iter().any(|value| !value.is_finite()))
+    }) || (0..source.triangle_count()).any(|index| {
+        source.triangle_indices(index).is_none_or(|triangle| {
             triangle
-                .vertex_indices
-                .iter()
-                .any(|index| *index as usize >= package.vertices().len())
+                .into_iter()
+                .any(|vertex| vertex as usize >= source.vertex_count())
         })
-    {
+    }) {
         return Err(ExactProductError::InvalidMeshExport);
     }
     Ok(())
@@ -219,7 +244,7 @@ fn validate_mesh(package: &ExactBodyPackage) -> Result<(), ExactProductError> {
 
 fn build_assembly(
     snapshot: &Snapshot,
-    instances: &[ExactThreeMfInstance<'_>],
+    instances: &[MeshThreeMfInstance<'_>],
 ) -> Result<(Vec<AssemblyNode>, Vec<usize>), ExactProductError> {
     let mut nodes = Vec::new();
     let mut roots = Vec::new();
@@ -428,7 +453,7 @@ impl fmt::Write for BoundedString {
 #[allow(clippy::too_many_arguments)]
 fn encode_model(
     snapshot: &Snapshot,
-    packages: &BTreeMap<MeshKey, &ExactBodyPackage>,
+    packages: &BTreeMap<MeshKey, MeshExportSource<'_>>,
     mesh_ids: &BTreeMap<MeshKey, u32>,
     material_indices: &BTreeMap<[u8; 3], usize>,
     nodes: &[AssemblyNode],
@@ -473,18 +498,23 @@ fn encode_model(
             .map_err(|_| ExactProductError::ExportResourceLimit)?;
         xml.write_str("      <mesh>\n        <vertices>\n")
             .map_err(|_| ExactProductError::ExportResourceLimit)?;
-        for vertex in package.vertices() {
+        for index in 0..package.vertex_count() {
+            let vertex = package
+                .vertex_position_mm(index)
+                .ok_or(ExactProductError::InvalidMeshExport)?;
             writeln!(
                 xml,
                 "          <vertex x=\"{:.17}\" y=\"{:.17}\" z=\"{:.17}\"/>",
-                vertex.position_mm[0], vertex.position_mm[1], vertex.position_mm[2]
+                vertex[0], vertex[1], vertex[2]
             )
             .map_err(|_| ExactProductError::ExportResourceLimit)?;
         }
         xml.write_str("        </vertices>\n        <triangles>\n")
             .map_err(|_| ExactProductError::ExportResourceLimit)?;
-        for triangle in package.triangles() {
-            let [v1, v2, v3] = triangle.vertex_indices;
+        for index in 0..package.triangle_count() {
+            let [v1, v2, v3] = package
+                .triangle_indices(index)
+                .ok_or(ExactProductError::InvalidMeshExport)?;
             if let Some(color) = key.color {
                 let material = material_indices[&color];
                 writeln!(

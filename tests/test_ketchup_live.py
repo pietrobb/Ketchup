@@ -280,6 +280,22 @@ def test_relation_query_is_forwarded_and_numeric_detail_is_rejected():
         live.disconnect()
 
 
+def test_topology_queries_and_details_are_forwarded_with_the_same_stamp():
+    with Peer() as peer, LiveSession(peer.address, TOKEN) as live:
+        for kind in ("faces", "edges"):
+            live.query(STAMP, kind=kind, limit=1, definition_id=3)
+            live.detail(STAMP, kind, 7)
+        live.disconnect()
+    assert [request["request"] for request in peer.requests[:-1]] == [
+        {"method": "query", "expected": asdict(STAMP), "query": {
+            "kind": "faces", "limit": 1, "search": "", "definition_id": 3}},
+        {"method": "detail", "expected": asdict(STAMP), "kind": "faces", "entity_id": 7},
+        {"method": "query", "expected": asdict(STAMP), "query": {
+            "kind": "edges", "limit": 1, "search": "", "definition_id": 3}},
+        {"method": "detail", "expected": asdict(STAMP), "kind": "edges", "entity_id": 7},
+    ]
+
+
 def test_all_methods_match_wire_and_do_not_refresh_expected_or_modify_inputs():
     def answer(req, stream):
         method = req["request"]["method"]
