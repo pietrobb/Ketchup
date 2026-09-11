@@ -3,7 +3,13 @@ use super::*;
 use egui_kittest::Harness;
 use std::sync::atomic::AtomicUsize;
 
-fn queue(h: &mut Harness<'_, KetchupApp>, session: u64) -> mpsc::Receiver<Response> {
+fn queue_with_options(
+    h: &mut Harness<'_, KetchupApp>,
+    session: u64,
+    framing: ImageFraming,
+    detail_target: Option<ImageDetailTarget>,
+    max_side_px: u32,
+) -> mpsc::Receiver<Response> {
     let ctx = h.ctx.clone();
     let app = h.state_mut();
     let mut bridge = app.live_bridge.take().unwrap();
@@ -19,6 +25,9 @@ fn queue(h: &mut Harness<'_, KetchupApp>, session: u64) -> mpsc::Receiver<Respon
                 expected: app.live_bridge_stamp(),
                 image_protocol_version: IMAGE_PROTOCOL_VERSION,
                 capture_mode: CaptureMode::Offscreen,
+                max_side_px,
+                framing,
+                detail_target,
             },
             cancelled: Arc::new(AtomicBool::new(false)),
             reply,
@@ -26,6 +35,18 @@ fn queue(h: &mut Harness<'_, KetchupApp>, session: u64) -> mpsc::Receiver<Respon
     );
     app.live_bridge = Some(bridge);
     rx
+}
+
+fn queue_with_framing(
+    h: &mut Harness<'_, KetchupApp>,
+    session: u64,
+    framing: ImageFraming,
+) -> mpsc::Receiver<Response> {
+    queue_with_options(h, session, framing, None, MIN_IMAGE_SIDE_PX)
+}
+
+fn queue(h: &mut Harness<'_, KetchupApp>, session: u64) -> mpsc::Receiver<Response> {
+    queue_with_framing(h, session, ImageFraming::Viewport)
 }
 fn response(h: &mut Harness<'_, KetchupApp>, rx: &mpsc::Receiver<Response>) -> Response {
     for _ in 0..250 {
@@ -36,6 +57,18 @@ fn response(h: &mut Harness<'_, KetchupApp>, rx: &mpsc::Receiver<Response>) -> R
         std::thread::sleep(Duration::from_millis(10));
     }
     panic!("no bounded image response");
+}
+
+fn render_private_capture(h: &mut Harness<'_, KetchupApp>, description: &str) {
+    for _ in 0..10 {
+        if h.render().is_ok() {
+            return;
+        }
+        h.ctx.request_repaint();
+        h.step();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("no bounded GPU frame for {description}");
 }
 #[test]
 fn isolated_pixels_exclude_late_transformed_and_same_layer_sentinels() {
@@ -187,7 +220,7 @@ fn discarded_capture_and_session_replacement_never_reuse_authority() {
     ));
 }
 
-fn native_harness(ppp: f32) -> Harness<'static, KetchupApp> {
+fn native_harness_with_size(ppp: f32, size: egui::Vec2) -> Harness<'static, KetchupApp> {
     let mut app = KetchupApp::new();
     app.set_assistant_workspace_mode(crate::AssistantWorkspaceMode::Dock);
     // Select the same ScenePaintCallback branch as the native app. No scene
@@ -199,7 +232,7 @@ fn native_harness(ppp: f32) -> Harness<'static, KetchupApp> {
     app.shadows_visible = false;
     app.fog_visible = false;
     let mut h = Harness::builder()
-        .with_size(egui::vec2(1200.0, 800.0))
+        .with_size(size)
         .with_pixels_per_point(ppp)
         .build_state(|ctx, app: &mut KetchupApp| app.ui(ctx), app);
     h.ctx.style_mut(|style| style.animation_time = 0.0);
@@ -211,6 +244,10 @@ fn native_harness(ppp: f32) -> Harness<'static, KetchupApp> {
     let ctx = h.ctx.clone();
     h.state_mut().enable_live_bridge(&ctx).unwrap();
     h
+}
+
+fn native_harness(ppp: f32) -> Harness<'static, KetchupApp> {
+    native_harness_with_size(ppp, egui::vec2(1200.0, 800.0))
 }
 
 fn capture<'a>(h: &'a Harness<'_, KetchupApp>) -> &'a (Painted, target::Readback, bool) {
@@ -303,8 +340,8 @@ fn native_pixel_proof(ppp: f32) -> Value {
     let y0 = (rect.min.y * ppp).ceil() as usize;
     let sw = (rect.max.x * ppp).floor() as usize - x0;
     let sh = (rect.max.y * ppp).floor() as usize - y0;
-    let w = (64.0 * sw as f64 / sw.max(sh) as f64).floor() as usize;
-    let height = (64.0 * sh as f64 / sw.max(sh) as f64).floor() as usize;
+    let w = (f64::from(MIN_IMAGE_SIDE_PX) * sw as f64 / sw.max(sh) as f64).floor() as usize;
+    let height = (f64::from(MIN_IMAGE_SIDE_PX) * sh as f64 / sw.max(sh) as f64).floor() as usize;
     let mut rgb = Vec::new();
     for y in 0..height {
         for x in 0..w {
@@ -343,7 +380,7 @@ fn native_pixel_proof(ppp: f32) -> Value {
     let reply = response(&mut h, &rx);
     assert!(reply.ok, "{reply:?}");
     assert_eq!(reply.stamp, Some(stamp.clone()));
-    assert!(serde_json::to_vec(&reply).unwrap().len() <= MAX_FRAME_BYTES);
+    assert!(serde_json::to_vec(&reply).unwrap().len() <= MAX_IMAGE_FRAME_BYTES);
     let image = reply.result.unwrap();
     assert_eq!(
         image["data"], expected_png,
@@ -358,6 +395,7 @@ fn native_pixel_proof(ppp: f32) -> Value {
     assert_eq!(image["width"], w);
     assert_eq!(image["height"], height);
     assert_eq!(image["sampling"], "nearest_center");
+    assert_eq!(image["requested_max_side_px"], MIN_IMAGE_SIDE_PX);
     assert_eq!(image["render"]["scene_callbacks"], 1);
     assert_eq!(image["render"]["callback_correlated"], true);
     assert_eq!(image["render"]["source"], "isolated_cad_target");
@@ -379,6 +417,140 @@ fn native_pixel_proof(ppp: f32) -> Value {
 #[test]
 fn native_scene_callback_draws_default_box_pixels() {
     native_pixel_proof(1.0);
+}
+
+#[test]
+fn selection_framing_crops_real_cad_pixels_without_mutating_view_or_selection() {
+    let mut h = native_harness(1.0);
+    h.state_mut().selection.clear();
+    h.state_mut()
+        .selection
+        .select_occurrence(OccurrenceId(1), false);
+    let stamp = h.state().live_bridge_stamp();
+    let camera = h.state().camera_view_state();
+    let selection = h.state().selection.occurrences.clone();
+    let primary = h.state().selection.primary.clone();
+
+    let selection_rx = queue_with_framing(&mut h, 1, ImageFraming::Selection);
+    if h.state()
+        .live_bridge
+        .as_ref()
+        .unwrap()
+        .image
+        .pending
+        .is_none()
+    {
+        panic!(
+            "selection framing request was rejected: {:?}",
+            selection_rx.try_recv().unwrap()
+        );
+    }
+    h.step();
+    assert!(capture(&h).0.crop.width() < capture(&h).0.rect.width());
+    h.render()
+        .expect("render selection-framed private CAD viewport");
+    let framed = response(&mut h, &selection_rx).result.unwrap();
+
+    assert_eq!(framed["framing"]["mode"], "selection");
+    assert_eq!(framed["framing"]["occurrence_ids"], json!([1]));
+    assert_eq!(framed["thumbnail"], false);
+    let source = framed["source_size_px"].as_array().unwrap();
+    let crop = framed["crop_px"].as_array().unwrap();
+    assert!(
+        crop[2].as_u64().unwrap() < source[0].as_u64().unwrap()
+            || crop[3].as_u64().unwrap() < source[1].as_u64().unwrap(),
+        "selection framing must crop the real CAD target"
+    );
+    assert_eq!(h.state().live_bridge_stamp(), stamp);
+    assert_eq!(h.state().camera_view_state(), camera);
+    assert_eq!(h.state().selection.occurrences, selection);
+    assert_eq!(h.state().selection.primary, primary);
+}
+
+#[test]
+fn host_topology_detail_framing_crops_real_pixels_without_gui_selection() {
+    let mut h = native_harness_with_size(1.0, egui::vec2(2200.0, 1200.0));
+    let viewport_rx =
+        queue_with_options(&mut h, 40, ImageFraming::Viewport, None, MAX_IMAGE_SIDE_PX);
+    h.step();
+    render_private_capture(&mut h, "1600 px private CAD target");
+    let viewport = response(&mut h, &viewport_rx).result.unwrap();
+    assert_eq!(viewport["requested_max_side_px"], MAX_IMAGE_SIDE_PX);
+    assert_eq!(
+        viewport["width"]
+            .as_u64()
+            .unwrap()
+            .max(viewport["height"].as_u64().unwrap()),
+        u64::from(MAX_IMAGE_SIDE_PX)
+    );
+    assert_eq!(viewport["source_size_px"], json!([2200, 1200]));
+    assert_eq!(viewport["render"]["source"], "isolated_cad_target");
+    assert_eq!(viewport["render"]["gui_overlays_included"], false);
+
+    crate::tests::install_initial_graph_result(h.state_mut());
+    h.state_mut().selection.clear();
+    for _ in 0..3 {
+        h.step();
+    }
+    let (entity_id, reference_id) = {
+        let app = h.state();
+        let page = app
+            .live_bridge
+            .as_ref()
+            .unwrap()
+            .query
+            .page_with_topology(
+                &app.document.current(),
+                &app.topology_results,
+                &PageRequest {
+                    kind: EntityKind::Edges,
+                    limit: 10,
+                    search: String::new(),
+                    definition_id: Some(1),
+                    tag_id: None,
+                    classification_dimension_id: None,
+                    classification_category_id: None,
+                    world_bounds_mm: None,
+                    cursor: None,
+                },
+            )
+            .unwrap();
+        let edge = page["items"].as_array().unwrap().first().unwrap();
+        (
+            edge["id"].as_u64().unwrap(),
+            edge["reference_id"].as_str().unwrap().to_owned(),
+        )
+    };
+    let stamp = h.state().live_bridge_stamp();
+    let camera = h.state().camera_view_state();
+    let rx = queue_with_options(
+        &mut h,
+        41,
+        ImageFraming::DetailSelection,
+        Some(ImageDetailTarget {
+            occurrence_id: 1,
+            kind: EntityKind::Edges,
+            entity_id,
+        }),
+        MAX_IMAGE_SIDE_PX,
+    );
+    h.step();
+    assert!(capture(&h).0.crop.width() < capture(&h).0.rect.width());
+    render_private_capture(&mut h, "host-resolved edge detail");
+    let framed = response(&mut h, &rx).result.unwrap();
+
+    assert_eq!(framed["framing"]["mode"], "detail_selection");
+    assert_eq!(framed["framing"]["occurrence_ids"], json!([1]));
+    assert_eq!(framed["framing"]["detail"]["kind"], "edge");
+    assert_eq!(framed["framing"]["detail"]["entity_id"], entity_id);
+    assert_eq!(framed["framing"]["detail"]["reference_id"], reference_id);
+    assert_eq!(framed["requested_max_side_px"], MAX_IMAGE_SIDE_PX);
+    assert_eq!(framed["render"]["source"], "isolated_cad_target");
+    assert_eq!(framed["render"]["gui_overlays_included"], false);
+    assert_eq!(h.state().live_bridge_stamp(), stamp);
+    assert_eq!(h.state().camera_view_state(), camera);
+    assert!(h.state().selection.occurrences.is_empty());
+    assert!(h.state().selection.primary.is_none());
 }
 
 #[test]
@@ -468,6 +640,7 @@ fn pending_native_capture_rejects_exact_registry_replacement_without_document_mu
                     backend: "image-registry-guard-test-fixture.v1".into(),
                     tolerance: "1e-7-mm".into(),
                     faces: Vec::new(),
+                    edges: Vec::new(),
                 },
                 &mesh,
             )

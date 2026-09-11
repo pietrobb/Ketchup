@@ -10067,6 +10067,7 @@ fn install_general_finish_graph_result(shell: &mut Shell, producer_feature_id: F
             backend: "headless-finish-backend.v1".into(),
             tolerance: "1e-7-mm".into(),
             faces: Vec::new(),
+            edges: Vec::new(),
         },
         &StepImportMesh {
             vertices_mm,

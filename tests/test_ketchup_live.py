@@ -21,8 +21,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sdk" / "python"))
 from ketchup import LiveSession, Session, SessionClosedError
 from ketchup.live import (
-    MAX_FRAME_BYTES, LiveBridgeError, LiveProtocolError, LiveTimeout,
-    LiveTransportError, Stamp, save_image, MAX_PNG_BYTES,
+    MAX_FRAME_BYTES, LiveBridgeError, LiveConsentError, LiveProtocolError, LiveTimeout,
+    LiveTransportError, Stamp, save_image, MAX_PNG_BYTES, _attach_live_instance,
+    _list_live_instances,
 )
 
 TOKEN = secrets.token_hex(32)
@@ -39,10 +40,12 @@ def response(request, *, result=None, error=None, stamp=STAMP):
 
 
 def image_capability():
-    return {"image_protocol": {"version": 2,
-            "capabilities": ["capture_mode", "capture_metadata", "render_metadata"],
+    return {"image_protocol": {"version": 4,
+            "capabilities": ["capture_mode", "capture_metadata", "render_metadata", "variable_size", "selection_framing", "detail_selection_framing"],
             "capture_modes": ["offscreen", "visible_viewport"],
-            "default_capture_mode": "offscreen"}}
+            "default_capture_mode": "offscreen", "framing_modes": ["viewport", "selection", "detail_selection"],
+            "default_framing": "viewport", "min_side_px": 512,
+            "max_side_px": 1600, "default_side_px": 512}}
 
 
 def frame(value):
@@ -123,7 +126,145 @@ def test_offline_exports_preserved():
     import ketchup
     assert ketchup.Session is Session
     assert {"Session", "Document", "HeadlessError", "ProtocolError", "SessionClosedError",
-            "TransportError", "TransportTimeout", "rectangle", "LiveSession"} <= set(ketchup.__all__)
+            "TransportError", "TransportTimeout", "rectangle", "LiveConsentError",
+            "LiveSession", "attach_live_instance", "list_live_instances"} <= set(ketchup.__all__)
+
+
+def test_discovery_lists_only_nonce_verified_live_registry_entries(tmp_path):
+    instance_id = "1" * 32
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    errors = []
+
+    def broker():
+        try:
+            stream, _ = listener.accept()
+            with stream:
+                request = bytearray()
+                while not request.endswith(b"\n"):
+                    request.extend(stream.recv(1))
+                value = json.loads(request)
+                assert value["version"] == 1
+                assert value["action"] == "list"
+                assert value["requester"] == "Supervisor"
+                assert len(value["nonce"]) == 64
+                response = {"version": 1, "nonce": value["nonce"], "status": "available",
+                            "instance_id": instance_id, "document": "part.ketchup"}
+                stream.sendall(json.dumps(response, separators=(",", ":")).encode() + b"\n")
+        except BaseException as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=broker, daemon=True)
+    worker.start()
+    good = {"version": 1, "instance_id": instance_id,
+            "consent_address": f"127.0.0.1:{listener.getsockname()[1]}"}
+    (tmp_path / f"{instance_id}.json").write_text(json.dumps(good), encoding="utf-8")
+    (tmp_path / f"{'2' * 32}.json").write_text(
+        json.dumps({"version": 1, "instance_id": "2" * 32,
+                    "consent_address": "localhost:9"}), encoding="utf-8")
+    (tmp_path / "not-an-instance.json").write_text("DO_NOT_EXPOSE", encoding="utf-8")
+    try:
+        result = _list_live_instances(tmp_path, timeout=1)
+    finally:
+        listener.close()
+        worker.join(3)
+    assert not worker.is_alive() and not errors
+    assert result == [{"instance_id": instance_id, "document": "part.ketchup",
+                       "status": "available"}]
+    assert "127.0.0.1" not in json.dumps(result)
+
+
+def test_attach_revalidates_instance_and_uses_credential_only_internally(tmp_path):
+    instance_id = "3" * 32
+    broker_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    broker_listener.bind(("127.0.0.1", 0))
+    broker_listener.listen(2)
+    broker_listener.settimeout(2)
+    requests, errors = [], []
+
+    def broker():
+        try:
+            for action in ("list", "attach"):
+                stream, _ = broker_listener.accept()
+                with stream:
+                    request = bytearray()
+                    while not request.endswith(b"\n"):
+                        request.extend(stream.recv(1))
+                    value = json.loads(request)
+                    requests.append(value)
+                    assert value == {"version": 1, "action": action,
+                                     "requester": "Supervisor", "nonce": value["nonce"]}
+                    assert len(value["nonce"]) == 64
+                    if action == "list":
+                        response_value = {"version": 1, "nonce": value["nonce"],
+                                          "status": "available", "instance_id": instance_id,
+                                          "document": "selected.ketchup"}
+                    else:
+                        response_value = {"version": 1, "nonce": value["nonce"],
+                                          "status": "allowed", "instance_id": instance_id,
+                                          "live_bridge_address": f"127.0.0.1:{peer.address[1]}",
+                                          "token": TOKEN}
+                    stream.sendall(json.dumps(response_value, separators=(",", ":")).encode() + b"\n")
+        except BaseException as error:
+            errors.append(error)
+
+    entry = {"version": 1, "instance_id": instance_id,
+             "consent_address": f"127.0.0.1:{broker_listener.getsockname()[1]}"}
+    (tmp_path / f"{instance_id}.json").write_text(json.dumps(entry), encoding="utf-8")
+    with Peer() as peer:
+        worker = threading.Thread(target=broker, daemon=True)
+        worker.start()
+        try:
+            with _attach_live_instance(instance_id, tmp_path, 1, 1) as live:
+                assert live.status()["ok"]
+                assert TOKEN not in repr(live)
+        finally:
+            broker_listener.close()
+            worker.join(3)
+    assert not worker.is_alive() and not errors
+    assert [request["action"] for request in requests] == ["list", "attach"]
+    assert all("token" not in request and "address" not in request for request in requests)
+
+
+def test_attach_rejection_never_constructs_session_or_exposes_credential(tmp_path):
+    instance_id = "4" * 32
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(2)
+
+    def broker():
+        for action in ("list", "attach"):
+            stream, _ = listener.accept()
+            with stream:
+                request = bytearray()
+                while not request.endswith(b"\n"):
+                    request.extend(stream.recv(1))
+                value = json.loads(request)
+                response_value = {"version": 1, "nonce": value["nonce"],
+                                  "status": "available" if action == "list" else "rejected",
+                                  "instance_id": instance_id}
+                if action == "list":
+                    response_value["document"] = "part.ketchup"
+                stream.sendall(json.dumps(response_value, separators=(",", ":")).encode() + b"\n")
+
+    entry = {"version": 1, "instance_id": instance_id,
+             "consent_address": f"127.0.0.1:{listener.getsockname()[1]}"}
+    (tmp_path / f"{instance_id}.json").write_text(json.dumps(entry), encoding="utf-8")
+    worker = threading.Thread(target=broker, daemon=True)
+    worker.start()
+    try:
+        with pytest.raises(LiveConsentError) as caught:
+            _attach_live_instance(
+                instance_id, tmp_path, 1, 1,
+                session_factory=lambda *args, **kwargs: pytest.fail("rejected attach constructed a session"),
+            )
+        assert caught.value.code == "consent_rejected"
+        assert "token" not in repr(caught.value)
+    finally:
+        listener.close()
+        worker.join(3)
+    assert not worker.is_alive()
 
 
 def test_relation_query_is_forwarded_and_numeric_detail_is_rejected():
@@ -170,6 +311,9 @@ def test_all_methods_match_wire_and_do_not_refresh_expected_or_modify_inputs():
         live.commit(expected, 9)
         live.undo(expected)
         live.redo(expected)
+        live.save(expected)
+        live.save_as(expected, str(Path(__file__).resolve().parents[1] / "save-as.ketchup"))
+        live.open(expected, str(Path(__file__).resolve()))
         live.selection(expected, selection)
         live.view(expected, "zoom_fit")
         with pytest.raises(LiveBridgeError, match="unsupported_image"):
@@ -182,9 +326,9 @@ def test_all_methods_match_wire_and_do_not_refresh_expected_or_modify_inputs():
     assert [req["method"] for req in requests] == [
         "status", "summary", "query", "workset_create", "workset_status",
         "batch_job_start", "batch_job_status", "batch_job_step", "batch_job_cancel",
-        "detail", "propose", "commit", "undo", "redo", "selection", "view", "image",
+        "detail", "propose", "commit", "undo", "redo", "save", "save_as", "open", "selection", "view", "image",
         "disconnect"]
-    assert [req["id"] for req in peer.requests] == list(range(1, 19))
+    assert [req["id"] for req in peer.requests] == list(range(1, 22))
     assert requests[2] == {"method": "query", "expected": expected, "query": {
         "kind": "instances", "limit": 2, "search": "Č", "definition_id": 3,
         "tag_id": 7, "classification_dimension_id": 9, "classification_category_id": 10,
@@ -206,10 +350,16 @@ def test_all_methods_match_wire_and_do_not_refresh_expected_or_modify_inputs():
     assert requests[9] == {"method": "detail", "expected": expected, "kind": "features", "entity_id": 5}
     assert requests[10] == {"method": "propose", "expected": expected, "selection": [1], "program": program}
     assert requests[11] == {"method": "commit", "expected": expected, "proposal_id": 9}
-    assert requests[14]["occurrence_ids"] == [1] and requests[15]["view"] == "zoom_fit"
-    assert requests[16]["image_protocol_version"] == 2
-    assert requests[16]["capture_mode"] == "offscreen"
-    assert all(req["expected"] == expected for req in requests[2:17])
+    assert requests[14] == {"method": "save", "expected": expected}
+    assert requests[15] == {"method": "save_as", "expected": expected,
+                            "path": str(Path(__file__).resolve().parents[1] / "save-as.ketchup")}
+    assert requests[16] == {"method": "open", "expected": expected,
+                            "path": str(Path(__file__).resolve())}
+    assert requests[17]["occurrence_ids"] == [1] and requests[18]["view"] == "zoom_fit"
+    assert requests[19]["image_protocol_version"] == 4
+    assert requests[19]["capture_mode"] == "offscreen"
+    assert requests[19]["max_side_px"] == 512
+    assert all(req["expected"] == expected for req in requests[2:20])
     assert (expected, program, selection, operation) == original
     with pytest.raises(FrozenInstanceError):
         STAMP.mutation_epoch = 25
@@ -417,10 +567,18 @@ def test_unrecognized_error_text_is_not_exposed():
         assert live.closed
 
 
-def test_response_limit_after_mutation_is_unknown():
+@pytest.mark.parametrize("method", ["commit", "save", "save_as", "open"])
+def test_response_limit_after_mutation_is_unknown(method):
     with Peer(lambda req, stream: response(req, error="response_limit", stamp=None)) as peer, LiveSession(peer.address, TOKEN) as live:
         with pytest.raises(LiveProtocolError) as caught:
-            live.commit(STAMP, 1)
+            if method == "commit":
+                live.commit(STAMP, 1)
+            elif method == "save_as":
+                live.save_as(STAMP, str(Path(__file__).resolve()))
+            elif method == "open":
+                live.open(STAMP, str(Path(__file__).resolve()))
+            else:
+                live.save(STAMP)
         assert caught.value.mutation_outcome_unknown and live.closed
         assert len(peer.requests) == 1
 
@@ -579,15 +737,21 @@ def png_fixture(width=2, height=2, pixels=None):
             + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
 
 
-def image_response(data=None, width=2, height=2, capture_mode="offscreen"):
+def image_response(data=None, width=2, height=2, capture_mode="offscreen", max_side_px=512,
+                   framing="viewport", detail=None):
     data = png_fixture(width, height) if data is None else data
     visible = capture_mode == "visible_viewport"
     return response({"id": 1}, result={"data": base64.b64encode(data).decode("ascii"),
         "width": width, "height": height, "stamp": asdict(STAMP),
         "mime_type": "image/png", "encoding": "base64", "scope": "cad_viewport",
-        "image_protocol_version": 2, "capture_mode": capture_mode, "capture_pass": 34,
+        "image_protocol_version": 4, "capture_mode": capture_mode, "capture_pass": 34,
         "source_size_px": [width, height], "crop_px": [0, 0, width, height],
-        "pixels_per_point": 1.0, "sampling": "nearest_center", "thumbnail": True,
+        "pixels_per_point": 1.0, "sampling": "nearest_center",
+        "thumbnail": framing == "viewport", "requested_max_side_px": max_side_px,
+        "framing": {"mode": framing,
+                    "occurrence_ids": [detail["occurrence_id"]] if detail else ([1] if framing == "selection" else []),
+                    "detail": ({"kind": detail["kind"][:-1], "entity_id": detail["entity_id"],
+                                "reference_id": "a" * 64} if detail else None)},
         "view": {"projection": "Perspective", "yaw": 0.2, "pitch": 0.3,
                  "target_z_mm": 0.0, "zoom": 1.0, "pan": [0.0, 0.0], "distance_mm": 10.0},
         "selection": [],
@@ -671,15 +835,22 @@ def image_answer(value):
 
 
 def test_image_artifact_preserves_metadata_and_original_hash(tmp_path):
-    value = image_response()
+    value = image_response(max_side_px=1600, framing="selection")
     original = copy.deepcopy(value)
     destination = tmp_path / "new" / "capture.png"
     with Peer(image_answer(value)) as peer, LiveSession(peer.address, TOKEN) as live:
-        receipt = save_image(live.image(STAMP), STAMP, str(destination))
+        receipt = save_image(
+            live.image(STAMP, max_side_px=1600, framing="selection"),
+            STAMP,
+            str(destination),
+            max_side_px=1600,
+            framing="selection",
+        )
         assert [r["request"]["method"] for r in peer.requests] == ["status", "image"]
         assert peer.requests[1]["request"] == {
-            "method": "image", "expected": asdict(STAMP), "image_protocol_version": 2,
-            "capture_mode": "offscreen"}
+            "method": "image", "expected": asdict(STAMP), "image_protocol_version": 4,
+            "capture_mode": "offscreen", "max_side_px": 1600, "framing": "selection",
+            "detail_target": None}
     assert value == original
     assert destination.read_bytes() == png_fixture()
     assert receipt["stamp"] == original["stamp"]
@@ -691,6 +862,29 @@ def test_image_artifact_preserves_metadata_and_original_hash(tmp_path):
         "visual_delivery": "unverified", "geometry_evaluated": False}
     assert "data" not in receipt["result"]
     assert len(json.dumps(receipt).encode()) < MAX_FRAME_BYTES
+
+
+def test_detail_selection_image_binds_host_topology_target_on_wire_and_response():
+    detail = {"occurrence_id": 7, "kind": "edges", "entity_id": 73}
+    value = image_response(framing="detail_selection", detail=detail)
+    with Peer(image_answer(value)) as peer, LiveSession(peer.address, TOKEN) as live:
+        result = live.image(
+            STAMP,
+            framing="detail_selection",
+            detail_occurrence_id=7,
+            detail_kind="edges",
+            detail_entity_id=73,
+        )
+        assert result["result"]["framing"]["detail"]["reference_id"] == "a" * 64
+        assert peer.requests[1]["request"] == {
+            "method": "image",
+            "expected": asdict(STAMP),
+            "image_protocol_version": 4,
+            "capture_mode": "offscreen",
+            "max_side_px": 512,
+            "framing": "detail_selection",
+            "detail_target": detail,
+        }
 
 
 def test_live_image_rejects_malformed_success_and_closes_session():
@@ -710,7 +904,8 @@ def test_visible_image_mode_is_bound_to_request_and_visibility_proof(tmp_path):
         receipt = save_image(
             live.image(STAMP, "visible_viewport"), STAMP, str(destination), "visible_viewport")
         assert [request["request"]["method"] for request in peer.requests] == ["status", "image"]
-        assert peer.requests[1]["request"]["image_protocol_version"] == 2
+        assert peer.requests[1]["request"]["image_protocol_version"] == 4
+        assert peer.requests[1]["request"]["max_side_px"] == 512
         assert peer.requests[1]["request"]["capture_mode"] == "visible_viewport"
     assert receipt["result"]["capture_mode"] == "visible_viewport"
     assert receipt["result"]["render"]["viewport_unoccluded"] is True

@@ -8,18 +8,18 @@ use ketchup_app::{
     AssistantRepairOperation, AssistantRepairProgram, AssistantWorkspaceMode,
 };
 use ketchup_core::assistant_sidecar::{
-    ASSISTANT_PROTOCOL_VERSION, AssistantApiDiagnostics, AssistantBalloonTextIntent,
-    AssistantBeamNotchIntent, AssistantBottleFinishKind, AssistantBottleIntent, AssistantBoxIntent,
-    AssistantCadBodyFeature, AssistantCadBooleanOperation, AssistantCadDeletePolicy,
-    AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
-    AssistantCadLoftSection, AssistantCadPartFeature, AssistantCadRotation, AssistantChatResult,
-    AssistantDistribution, AssistantGableRoofIntent, AssistantKetchupBottleIntent,
-    AssistantLinearArrayIntent, AssistantModelIntent, AssistantOrientedBeamIntent,
-    AssistantParameterEditIntent, AssistantPrincipalPlane, AssistantProfileTranslationIntent,
-    AssistantRotationIntent, AssistantSketchConstraint, AssistantSketchEntity,
-    AssistantSketchPointKind, AssistantSketchPointRef, AssistantStaircaseIntent,
-    AssistantSubtractionIntent, AssistantTeapotIntent, AssistantTranslationIntent,
-    AssistantWorkplaneSpec,
+    ASSISTANT_PROTOCOL_VERSION, AssistantApiDiagnostics, AssistantAxisSpec,
+    AssistantBalloonTextIntent, AssistantBeamNotchIntent, AssistantBottleFinishKind,
+    AssistantBottleIntent, AssistantBoxIntent, AssistantCadBodyFeature,
+    AssistantCadBooleanOperation, AssistantCadDeletePolicy, AssistantCadEditOperation,
+    AssistantCadEditProgram, AssistantCadEntitySelector, AssistantCadLoftSection,
+    AssistantCadPartFeature, AssistantCadRotation, AssistantChatResult, AssistantDistribution,
+    AssistantGableRoofIntent, AssistantKetchupBottleIntent, AssistantLinearArrayIntent,
+    AssistantModelIntent, AssistantOrientedBeamIntent, AssistantParameterEditIntent,
+    AssistantPrincipalPlane, AssistantProfileTranslationIntent, AssistantRotationIntent,
+    AssistantSketchConstraint, AssistantSketchEntity, AssistantSketchPointKind,
+    AssistantSketchPointRef, AssistantStaircaseIntent, AssistantSubtractionIntent,
+    AssistantTeapotIntent, AssistantTranslationIntent, AssistantWorkplaneSpec,
 };
 use ketchup_core::document::{
     BodyId, BooleanOperation, CanonicalCommand, ClassificationCategoryId,
@@ -1867,8 +1867,10 @@ fn scripted_create_revolved_part_round_trips_state_view_and_one_step_undo_redo()
                 value_mm: 2.0,
             }],
             feature: AssistantCadPartFeature::Revolve {
-                axis_start_mm: [0.0, 0.0],
-                axis_end_mm: [0.0, 1.0],
+                axis: AssistantAxisSpec::TwoPoints {
+                    start_mm: [0.0, 0.0, 0.0],
+                    end_mm: [0.0, 1.0, 0.0],
+                },
                 angle_degrees: 275.0,
             },
             translation_mm: [10.0, 20.0, 30.0],
@@ -2500,11 +2502,11 @@ fn scripted_append_loft_is_exact_persistent_and_one_step() {
                 feature: AssistantCadBodyFeature::Loft {
                     sections: vec![
                         AssistantCadLoftSection {
-                            profile_feature_id: 1,
+                            profile_feature_id: 1.into(),
                             elevation_mm: 0.0,
                         },
                         AssistantCadLoftSection {
-                            profile_feature_id: 2,
+                            profile_feature_id: 2.into(),
                             elevation_mm: 35.0,
                         },
                     ],

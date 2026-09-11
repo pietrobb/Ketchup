@@ -163,6 +163,9 @@ impl ExactRevolveRequest {
                 | FeatureKind::Sketch(_)
                 | FeatureKind::SegmentProfile { .. }
                 | FeatureKind::SpatialPath { .. }
+                | FeatureKind::ConstructionPoint { .. }
+                | FeatureKind::ConstructionAxis { .. }
+                | FeatureKind::ConstructionPlane { .. }
                 | FeatureKind::SplineProfile { .. }
                 | FeatureKind::Extrusion { .. }
                 | FeatureKind::Pad(_)

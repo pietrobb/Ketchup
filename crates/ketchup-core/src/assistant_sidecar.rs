@@ -1,3 +1,4 @@
+use crate::document::{ProfileSegment, SpatialPathSegment, is_valid_spatial_sweep_path};
 use crate::exact_product::EXACT_MIN_LENGTH_MM;
 use crate::exact_revolve::{
     controlled_bottle_profile, finish_amount_is_conservative, inner_shell_profile,
@@ -35,6 +36,10 @@ const MAX_ASSISTANT_REJECTION_TARGET_BYTES: usize = 256;
 const MAX_ASSISTANT_REJECTION_TEXT_BYTES: usize = 2_048;
 const MAX_ASSISTANT_REJECTION_BYTES: usize = 8 * 1_024;
 const MAX_ASSISTANT_ABS_MM: f64 = 1_000_000.0;
+const MAX_ASSISTANT_HELIX_TURNS: f64 = 16.0;
+const MAX_ASSISTANT_HELIX_SEGMENTS: usize = 64;
+const MAX_ASSISTANT_SPATIAL_PATH_SEGMENTS: usize = 64;
+const MAX_ASSISTANT_PROFILE_COPIES: usize = 16;
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -144,6 +149,434 @@ pub struct AssistantCadRotation {
     pub angle_degrees: f64,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AssistantAxisSpec {
+    OriginDirection {
+        origin_mm: [f64; 3],
+        direction: [f64; 3],
+    },
+    TwoPoints {
+        start_mm: [f64; 3],
+        end_mm: [f64; 3],
+    },
+    ConstructionAxis {
+        axis: AssistantCadFeatureReference,
+    },
+    Edge {
+        edge_reference_id: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantHelixHandedness {
+    Right,
+    Left,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantThreadProfile {
+    Round,
+    V,
+    Trapezoid,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantHelixParameters {
+    pub axis: AssistantAxisSpec,
+    pub radius_mm: f64,
+    pub pitch_mm: f64,
+    pub turns: f64,
+    pub start_angle_degrees: f64,
+    pub handedness: AssistantHelixHandedness,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantThreadParameters {
+    pub helix: AssistantHelixParameters,
+    pub profile_radius_mm: f64,
+    pub profile: AssistantThreadProfile,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AssistantSpatialPathSegment {
+    Line {
+        start_mm: [f64; 3],
+        end_mm: [f64; 3],
+    },
+    CircularArc {
+        start_mm: [f64; 3],
+        end_mm: [f64; 3],
+        center_mm: [f64; 3],
+        normal: [f64; 3],
+        clockwise: bool,
+    },
+    CubicBezier {
+        start_mm: [f64; 3],
+        control_1_mm: [f64; 3],
+        control_2_mm: [f64; 3],
+        end_mm: [f64; 3],
+    },
+}
+
+impl AssistantSpatialPathSegment {
+    fn canonical(&self) -> SpatialPathSegment {
+        match self {
+            Self::Line { start_mm, end_mm } => SpatialPathSegment::Line {
+                start_mm: *start_mm,
+                end_mm: *end_mm,
+            },
+            Self::CircularArc {
+                start_mm,
+                end_mm,
+                center_mm,
+                normal,
+                clockwise,
+            } => SpatialPathSegment::CircularArc {
+                start_mm: *start_mm,
+                end_mm: *end_mm,
+                center_mm: *center_mm,
+                normal: *normal,
+                clockwise: *clockwise,
+            },
+            Self::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+            } => SpatialPathSegment::CubicBezier {
+                start_mm: *start_mm,
+                control_1_mm: *control_1_mm,
+                control_2_mm: *control_2_mm,
+                end_mm: *end_mm,
+            },
+        }
+    }
+}
+
+pub fn validated_spatial_path_segments(
+    segments: &[AssistantSpatialPathSegment],
+) -> Result<Vec<SpatialPathSegment>, String> {
+    if !(1..=MAX_ASSISTANT_SPATIAL_PATH_SEGMENTS).contains(&segments.len()) {
+        return Err("assistant spatial path segment count is invalid".to_owned());
+    }
+    let segments = segments
+        .iter()
+        .map(AssistantSpatialPathSegment::canonical)
+        .collect::<Vec<_>>();
+    if !is_valid_spatial_sweep_path(&segments) {
+        return Err("assistant spatial path is invalid".to_owned());
+    }
+    Ok(segments)
+}
+
+impl Default for AssistantHelixParameters {
+    fn default() -> Self {
+        Self {
+            axis: AssistantAxisSpec::OriginDirection {
+                origin_mm: [0.0, 0.0, 0.0],
+                direction: [0.0, 0.0, 1.0],
+            },
+            radius_mm: 10.0,
+            pitch_mm: 5.0,
+            turns: 3.0,
+            start_angle_degrees: 0.0,
+            handedness: AssistantHelixHandedness::Right,
+        }
+    }
+}
+
+impl Default for AssistantThreadParameters {
+    fn default() -> Self {
+        Self {
+            helix: AssistantHelixParameters::default(),
+            profile_radius_mm: 0.8,
+            profile: AssistantThreadProfile::Round,
+        }
+    }
+}
+
+impl AssistantHelixHandedness {
+    const fn sign(self) -> f64 {
+        match self {
+            Self::Right => 1.0,
+            Self::Left => -1.0,
+        }
+    }
+}
+
+impl AssistantAxisSpec {
+    pub fn origin_and_direction(&self) -> Result<([f64; 3], [f64; 3]), String> {
+        let (origin_mm, direction) = match self {
+            Self::OriginDirection {
+                origin_mm,
+                direction,
+            } => (*origin_mm, *direction),
+            Self::TwoPoints { start_mm, end_mm }
+                if assistant_cad_vector_is_bounded(*start_mm)
+                    && assistant_cad_vector_is_bounded(*end_mm) =>
+            {
+                (*start_mm, assistant_sub(*end_mm, *start_mm))
+            }
+            Self::TwoPoints { .. } => return Err("assistant axis is invalid".to_owned()),
+            Self::ConstructionAxis { .. } | Self::Edge { .. } => {
+                return Err("assistant referenced axis requires document resolution".to_owned());
+            }
+        };
+        let direction_length_squared = direction.iter().map(|value| value * value).sum::<f64>();
+        if !assistant_cad_vector_is_bounded(origin_mm)
+            || !assistant_cad_vector_is_bounded(direction)
+            || !direction_length_squared.is_finite()
+            || direction_length_squared <= f64::EPSILON
+        {
+            return Err("assistant axis is invalid".to_owned());
+        }
+        Ok((origin_mm, direction))
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::ConstructionAxis { axis } => (*axis).validate(),
+            Self::Edge { edge_reference_id }
+                if edge_reference_id.len() == 64
+                    && edge_reference_id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit()) =>
+            {
+                Ok(())
+            }
+            Self::Edge { .. } => Err("assistant edge axis reference is invalid".to_owned()),
+            direct => direct.origin_and_direction().map(|_| ()),
+        }
+    }
+
+    fn validate_reference_for_operation(
+        &self,
+        operation_index: usize,
+        operations: &[AssistantCadEditOperation],
+    ) -> Result<(), String> {
+        let Self::ConstructionAxis {
+            axis: AssistantCadFeatureReference::ProgramOutput(reference),
+        } = self
+        else {
+            return Ok(());
+        };
+        reference.validate_for(
+            operation_index,
+            operations,
+            AssistantCadProgramFeatureOutput::ConstructionFeature,
+        )?;
+        if matches!(
+            operations.get(reference.operation_index as usize),
+            Some(AssistantCadEditOperation::CreateConstructionAxis { .. })
+        ) {
+            Ok(())
+        } else {
+            Err("assistant construction-axis reference is invalid".to_owned())
+        }
+    }
+}
+
+impl AssistantHelixParameters {
+    fn validate(&self) -> Result<(), String> {
+        self.axis.validate()?;
+        let axial_length = self.pitch_mm * self.turns;
+        if !self.radius_mm.is_finite()
+            || !(EXACT_MIN_LENGTH_MM..=MAX_ASSISTANT_ABS_MM).contains(&self.radius_mm)
+            || !self.pitch_mm.is_finite()
+            || !(EXACT_MIN_LENGTH_MM..=MAX_ASSISTANT_ABS_MM).contains(&self.pitch_mm)
+            || !self.turns.is_finite()
+            || !(0.01..=MAX_ASSISTANT_HELIX_TURNS).contains(&self.turns)
+            || !self.start_angle_degrees.is_finite()
+            || !axial_length.is_finite()
+            || axial_length > MAX_ASSISTANT_ABS_MM
+        {
+            return Err("assistant helix parameters are invalid".to_owned());
+        }
+        let segment_count =
+            (std::f64::consts::TAU * self.turns / std::f64::consts::FRAC_PI_2).ceil() as usize;
+        if !(1..=MAX_ASSISTANT_HELIX_SEGMENTS).contains(&segment_count) {
+            return Err("assistant helix segment count is invalid".to_owned());
+        }
+        Ok(())
+    }
+
+    pub fn spatial_path_segments(&self) -> Result<Vec<SpatialPathSegment>, String> {
+        let axis = self.axis.origin_and_direction()?;
+        self.spatial_path_segments_for_axis(axis)
+    }
+
+    pub fn spatial_path_segments_for_axis(
+        &self,
+        (origin_mm, direction): ([f64; 3], [f64; 3]),
+    ) -> Result<Vec<SpatialPathSegment>, String> {
+        self.validate()?;
+        AssistantAxisSpec::OriginDirection {
+            origin_mm,
+            direction,
+        }
+        .origin_and_direction()?;
+        let axis = assistant_unit(direction)
+            .ok_or_else(|| "assistant helix axis is invalid".to_owned())?;
+        let reference = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+            .into_iter()
+            .min_by(|left, right| {
+                assistant_dot(*left, axis)
+                    .abs()
+                    .total_cmp(&assistant_dot(*right, axis).abs())
+            })
+            .expect("three reference axes exist");
+        let frame_u = assistant_unit(assistant_sub(
+            reference,
+            assistant_scale(axis, assistant_dot(reference, axis)),
+        ))
+        .ok_or_else(|| "assistant helix reference frame is invalid".to_owned())?;
+        let frame_v = assistant_cross(axis, frame_u);
+        let start_angle = self.start_angle_degrees.to_radians();
+        let total_angle = std::f64::consts::TAU * self.turns;
+        let segment_count = (total_angle / std::f64::consts::FRAC_PI_2).ceil() as usize;
+        let handedness = self.handedness.sign();
+        let rise_per_radian = self.pitch_mm / std::f64::consts::TAU;
+        let point = |angle: f64| {
+            let phase = start_angle + handedness * angle;
+            assistant_add(
+                origin_mm,
+                assistant_add(
+                    assistant_scale(
+                        assistant_add(
+                            assistant_scale(frame_u, phase.cos()),
+                            assistant_scale(frame_v, phase.sin()),
+                        ),
+                        self.radius_mm,
+                    ),
+                    assistant_scale(axis, rise_per_radian * angle),
+                ),
+            )
+        };
+        let derivative = |angle: f64| {
+            let phase = start_angle + handedness * angle;
+            assistant_add(
+                assistant_scale(
+                    assistant_add(
+                        assistant_scale(frame_u, -phase.sin()),
+                        assistant_scale(frame_v, phase.cos()),
+                    ),
+                    handedness * self.radius_mm,
+                ),
+                assistant_scale(axis, rise_per_radian),
+            )
+        };
+        let mut segments = Vec::with_capacity(segment_count);
+        for index in 0..segment_count {
+            let start = total_angle * index as f64 / segment_count as f64;
+            let end = total_angle * (index + 1) as f64 / segment_count as f64;
+            let delta = end - start;
+            let start_mm = point(start);
+            let end_mm = point(end);
+            segments.push(SpatialPathSegment::CubicBezier {
+                start_mm,
+                control_1_mm: assistant_add(
+                    start_mm,
+                    assistant_scale(derivative(start), delta / 3.0),
+                ),
+                control_2_mm: assistant_sub(end_mm, assistant_scale(derivative(end), delta / 3.0)),
+                end_mm,
+            });
+        }
+        Ok(segments)
+    }
+}
+
+impl AssistantThreadParameters {
+    fn validate(&self) -> Result<(), String> {
+        self.helix.validate()?;
+        if !self.profile_radius_mm.is_finite()
+            || self.profile_radius_mm < EXACT_MIN_LENGTH_MM
+            || self.profile_radius_mm * 2.0 >= self.helix.pitch_mm
+        {
+            return Err("assistant thread profile is invalid".to_owned());
+        }
+        Ok(())
+    }
+
+    pub fn profile_segments(&self) -> Result<Vec<ProfileSegment>, String> {
+        self.validate()?;
+        let radius = self.profile_radius_mm;
+        let line_loop = |points: &[[f64; 2]]| {
+            (0..points.len())
+                .map(|index| ProfileSegment::Line {
+                    start_mm: points[index],
+                    end_mm: points[(index + 1) % points.len()],
+                })
+                .collect()
+        };
+        Ok(match self.profile {
+            AssistantThreadProfile::Round => vec![
+                ProfileSegment::CircularArc {
+                    start_mm: [-radius, 0.0],
+                    end_mm: [radius, 0.0],
+                    center_mm: [0.0, 0.0],
+                    clockwise: false,
+                },
+                ProfileSegment::CircularArc {
+                    start_mm: [radius, 0.0],
+                    end_mm: [-radius, 0.0],
+                    center_mm: [0.0, 0.0],
+                    clockwise: false,
+                },
+            ],
+            AssistantThreadProfile::V => line_loop(&[
+                [-radius, -radius * 0.72],
+                [radius, 0.0],
+                [-radius, radius * 0.72],
+            ]),
+            AssistantThreadProfile::Trapezoid => line_loop(&[
+                [-radius, -radius * 0.72],
+                [radius * 0.65, -radius * 0.42],
+                [radius * 0.65, radius * 0.42],
+                [-radius, radius * 0.72],
+            ]),
+        })
+    }
+}
+
+fn assistant_dot(left: [f64; 3], right: [f64; 3]) -> f64 {
+    left.into_iter().zip(right).map(|(a, b)| a * b).sum()
+}
+
+fn assistant_cross(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
+    [
+        left[1] * right[2] - left[2] * right[1],
+        left[2] * right[0] - left[0] * right[2],
+        left[0] * right[1] - left[1] * right[0],
+    ]
+}
+
+fn assistant_unit(vector: [f64; 3]) -> Option<[f64; 3]> {
+    if vector.iter().any(|value| !value.is_finite()) {
+        return None;
+    }
+    let length = assistant_dot(vector, vector).sqrt();
+    (length > 1.0e-9).then(|| assistant_scale(vector, length.recip()))
+}
+
+fn assistant_add(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
+    std::array::from_fn(|axis| left[axis] + right[axis])
+}
+
+fn assistant_sub(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
+    std::array::from_fn(|axis| left[axis] - right[axis])
+}
+
+fn assistant_scale(vector: [f64; 3], factor: f64) -> [f64; 3] {
+    vector.map(|value| value * factor)
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AssistantPrincipalPlane {
@@ -167,6 +600,9 @@ pub enum AssistantWorkplaneSpec {
         base_feature_id: u64,
         distance_mm: f64,
     },
+    ConstructionPlane {
+        plane: AssistantCadFeatureReference,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -176,8 +612,7 @@ pub enum AssistantCadPartFeature {
         distance_mm: f64,
     },
     Revolve {
-        axis_start_mm: [f64; 2],
-        axis_end_mm: [f64; 2],
+        axis: AssistantAxisSpec,
         angle_degrees: f64,
     },
 }
@@ -194,15 +629,9 @@ impl AssistantCadPartFeature {
             }
             Self::Extrusion { .. } => Err("assistant CAD part feature is invalid".to_owned()),
             Self::Revolve {
-                axis_start_mm,
-                axis_end_mm,
+                axis,
                 angle_degrees,
-            } if axis_start_mm
-                .iter()
-                .chain(axis_end_mm)
-                .all(|value| value.is_finite() && value.abs() <= MAX_ASSISTANT_ABS_MM)
-                && (axis_end_mm[0] - axis_start_mm[0]).hypot(axis_end_mm[1] - axis_start_mm[1])
-                    > 1.0e-9
+            } if axis.validate().is_ok()
                 && angle_degrees.is_finite()
                 && *angle_degrees > 0.0
                 && *angle_degrees <= 360.0 =>
@@ -219,10 +648,11 @@ impl AssistantCadPartFeature {
 pub enum AssistantCadProgramFeatureOutput {
     Definition,
     SketchFeature,
+    ConstructionFeature,
     BodyFeature,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Ord, PartialOrd, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AssistantCadProgramFeatureReference {
     pub operation_index: u32,
@@ -244,15 +674,37 @@ impl AssistantCadProgramFeatureReference {
         };
         let available = match expected_output {
             AssistantCadProgramFeatureOutput::Definition => {
-                matches!(producer, AssistantCadEditOperation::CreatePart { .. })
+                matches!(
+                    producer,
+                    AssistantCadEditOperation::CreatePart { .. }
+                        | AssistantCadEditOperation::CreateSpatialPath { .. }
+                        | AssistantCadEditOperation::CreateHelixPath { .. }
+                        | AssistantCadEditOperation::CreateConstructionPoint { .. }
+                        | AssistantCadEditOperation::CreateConstructionAxis { .. }
+                        | AssistantCadEditOperation::CreateConstructionPlane { .. }
+                        | AssistantCadEditOperation::CreateHelix { .. }
+                        | AssistantCadEditOperation::CreateThread { .. }
+                )
             }
             AssistantCadProgramFeatureOutput::SketchFeature => matches!(
                 producer,
                 AssistantCadEditOperation::CreatePart { .. }
                     | AssistantCadEditOperation::CreateProgramSketch { .. }
             ),
+            AssistantCadProgramFeatureOutput::ConstructionFeature => matches!(
+                producer,
+                AssistantCadEditOperation::CreateSpatialPath { .. }
+                    | AssistantCadEditOperation::CreateHelixPath { .. }
+                    | AssistantCadEditOperation::CreateConstructionPoint { .. }
+                    | AssistantCadEditOperation::CreateConstructionAxis { .. }
+                    | AssistantCadEditOperation::CreateConstructionPlane { .. }
+            ),
             AssistantCadProgramFeatureOutput::BodyFeature => match producer {
                 AssistantCadEditOperation::CreatePart { .. }
+                | AssistantCadEditOperation::CreateHelix { .. }
+                | AssistantCadEditOperation::CreateThread { .. }
+                | AssistantCadEditOperation::FilletEdges { .. }
+                | AssistantCadEditOperation::ChamferEdges { .. }
                 | AssistantCadEditOperation::AppendProgramPocket { .. } => true,
                 AssistantCadEditOperation::AppendFeature { feature, .. } => {
                     feature.produces_body_feature_output()
@@ -268,7 +720,7 @@ impl AssistantCadProgramFeatureReference {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Ord, PartialOrd, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum AssistantCadFeatureReference {
     Existing(u64),
@@ -309,7 +761,7 @@ pub enum AssistantCadBooleanOperation {
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AssistantCadLoftSection {
-    pub profile_feature_id: u64,
+    pub profile_feature_id: AssistantCadFeatureReference,
     pub elevation_mm: f64,
 }
 
@@ -406,7 +858,7 @@ impl AssistantCadBodyFeature {
             Self::Loft { sections }
                 if (2..=16).contains(&sections.len())
                     && sections.iter().all(|section| {
-                        section.profile_feature_id != 0
+                        section.profile_feature_id.validate().is_ok()
                             && section.elevation_mm.is_finite()
                             && section.elevation_mm.abs() <= MAX_ASSISTANT_ABS_MM
                     })
@@ -500,14 +952,29 @@ impl AssistantCadBodyFeature {
                 AssistantCadProgramFeatureOutput::BodyFeature,
             ),
         };
-        if let Self::Boolean {
-            target_feature_id,
-            tool_feature_id,
-            ..
-        } = self
-        {
-            validate_reference(*target_feature_id)?;
-            validate_reference(*tool_feature_id)?;
+        match self {
+            Self::Boolean {
+                target_feature_id,
+                tool_feature_id,
+                ..
+            } => {
+                validate_reference(*target_feature_id)?;
+                validate_reference(*tool_feature_id)?;
+            }
+            Self::Loft { sections } => {
+                for section in sections {
+                    if let AssistantCadFeatureReference::ProgramOutput(reference) =
+                        section.profile_feature_id
+                    {
+                        reference.validate_for(
+                            operation_index,
+                            operations,
+                            AssistantCadProgramFeatureOutput::SketchFeature,
+                        )?;
+                    }
+                }
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -519,6 +986,8 @@ pub enum AssistantSketchPointKind {
     Start,
     End,
     Center,
+    Control1,
+    Control2,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -526,6 +995,15 @@ pub enum AssistantSketchPointKind {
 pub struct AssistantSketchPointRef {
     pub entity_id: u64,
     pub point: AssistantSketchPointKind,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantSketchProfileCopy {
+    pub entity_ids: Vec<u64>,
+    pub translation_mm: [f64; 2],
+    pub rotation_degrees: f64,
+    pub uniform_scale: f64,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -547,6 +1025,32 @@ pub enum AssistantSketchEntity {
         id: u64,
         center_mm: [f64; 2],
         radius_mm: f64,
+    },
+    Ellipse {
+        segment_ids: [u64; 4],
+        center_mm: [f64; 2],
+        radius_x_mm: f64,
+        radius_y_mm: f64,
+        rotation_degrees: f64,
+    },
+    RoundedRectangle {
+        segment_ids: [u64; 8],
+        center_mm: [f64; 2],
+        width_mm: f64,
+        height_mm: f64,
+        corner_radius_mm: f64,
+        rotation_degrees: f64,
+    },
+    ProfileCopies {
+        source_entities: Vec<AssistantSketchEntity>,
+        copies: Vec<AssistantSketchProfileCopy>,
+    },
+    CubicBezier {
+        id: u64,
+        start_mm: [f64; 2],
+        control_1_mm: [f64; 2],
+        control_2_mm: [f64; 2],
+        end_mm: [f64; 2],
     },
 }
 
@@ -670,6 +1174,51 @@ pub enum AssistantCadEditOperation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rotation: Option<AssistantCadRotation>,
     },
+    CreateSpatialPath {
+        name: String,
+        segments: Vec<AssistantSpatialPathSegment>,
+    },
+    CreateHelixPath {
+        name: String,
+        parameters: AssistantHelixParameters,
+    },
+    CreateConstructionPoint {
+        name: String,
+        position_mm: [f64; 3],
+    },
+    CreateConstructionAxis {
+        name: String,
+        origin_mm: [f64; 3],
+        direction: [f64; 3],
+    },
+    CreateConstructionPlane {
+        name: String,
+        origin_mm: [f64; 3],
+        normal: [f64; 3],
+        x_direction: [f64; 3],
+    },
+    CreateHelix {
+        name: String,
+        parameters: AssistantHelixParameters,
+    },
+    CreateThread {
+        name: String,
+        parameters: AssistantThreadParameters,
+    },
+    FilletEdges {
+        definition_id: u64,
+        name: String,
+        target_feature_id: u64,
+        edge_reference_ids: Vec<String>,
+        radius_mm: f64,
+    },
+    ChamferEdges {
+        definition_id: u64,
+        name: String,
+        target_feature_id: u64,
+        edge_reference_ids: Vec<String>,
+        distance_mm: f64,
+    },
     AppendFeature {
         definition_id: u64,
         name: String,
@@ -725,6 +1274,12 @@ pub enum AssistantCadEditOperation {
         instances: u32,
         step_mm: [f64; 3],
     },
+    CircularPattern {
+        selector: AssistantCadEntitySelector,
+        instances: u32,
+        axis: AssistantAxisSpec,
+        angle_step_degrees: f64,
+    },
     Mirror {
         selector: AssistantCadEntitySelector,
         plane_origin_mm: [f64; 3],
@@ -740,6 +1295,17 @@ fn assistant_cad_vector_is_bounded(vector: [f64; 3]) -> bool {
 
 fn assistant_cad_vector_is_nonzero(vector: [f64; 3]) -> bool {
     vector.iter().any(|value| value.abs() > f64::EPSILON)
+}
+
+fn assistant_cad_vectors_are_perpendicular(left: [f64; 3], right: [f64; 3]) -> bool {
+    let left_length_squared = left.iter().map(|value| value * value).sum::<f64>();
+    let right_length_squared = right.iter().map(|value| value * value).sum::<f64>();
+    let dot = left
+        .iter()
+        .zip(right)
+        .map(|(left, right)| left * right)
+        .sum::<f64>();
+    dot.is_finite() && dot.abs() <= 1.0e-9 * (left_length_squared * right_length_squared).sqrt()
 }
 
 impl AssistantCadEntitySelector {
@@ -809,6 +1375,9 @@ impl AssistantWorkplaneSpec {
                 Ok(())
             }
             Self::Offset { .. } => Err("assistant workplane is invalid".to_owned()),
+            Self::ConstructionPlane { plane } => plane
+                .validate()
+                .map_err(|_| "assistant construction-plane workplane is invalid".to_owned()),
         }
     }
 }
@@ -816,7 +1385,29 @@ impl AssistantWorkplaneSpec {
 impl AssistantSketchEntity {
     fn id(&self) -> u64 {
         match self {
-            Self::Line { id, .. } | Self::Arc { id, .. } | Self::Circle { id, .. } => *id,
+            Self::Line { id, .. }
+            | Self::Arc { id, .. }
+            | Self::Circle { id, .. }
+            | Self::CubicBezier { id, .. } => *id,
+            Self::Ellipse { segment_ids, .. } => segment_ids[0],
+            Self::RoundedRectangle { segment_ids, .. } => segment_ids[0],
+            Self::ProfileCopies { copies, .. } => copies
+                .first()
+                .and_then(|copy| copy.entity_ids.first())
+                .copied()
+                .unwrap_or(0),
+        }
+    }
+
+    fn ids(&self) -> Vec<u64> {
+        match self {
+            Self::Ellipse { segment_ids, .. } => segment_ids.to_vec(),
+            Self::RoundedRectangle { segment_ids, .. } => segment_ids.to_vec(),
+            Self::ProfileCopies { copies, .. } => copies
+                .iter()
+                .flat_map(|copy| copy.entity_ids.iter().copied())
+                .collect(),
+            _ => vec![self.id()],
         }
     }
 
@@ -824,11 +1415,14 @@ impl AssistantSketchEntity {
         matches!(
             (self, point),
             (
-                Self::Line { .. } | Self::Arc { .. },
+                Self::Line { .. } | Self::Arc { .. } | Self::CubicBezier { .. },
                 AssistantSketchPointKind::Start | AssistantSketchPointKind::End
             ) | (
                 Self::Arc { .. } | Self::Circle { .. },
                 AssistantSketchPointKind::Center
+            ) | (
+                Self::CubicBezier { .. },
+                AssistantSketchPointKind::Control1 | AssistantSketchPointKind::Control2
             )
         )
     }
@@ -839,6 +1433,54 @@ impl AssistantSketchEntity {
 
     fn is_circular(&self) -> bool {
         matches!(self, Self::Arc { .. } | Self::Circle { .. })
+    }
+
+    fn radial_bound(&self) -> f64 {
+        let radius = |point: [f64; 2]| point[0].hypot(point[1]);
+        match self {
+            Self::Line {
+                start_mm, end_mm, ..
+            } => radius(*start_mm).max(radius(*end_mm)),
+            Self::Arc {
+                start_mm,
+                end_mm,
+                center_mm,
+                ..
+            } => {
+                let arc_radius = (start_mm[0] - center_mm[0])
+                    .hypot(start_mm[1] - center_mm[1])
+                    .max((end_mm[0] - center_mm[0]).hypot(end_mm[1] - center_mm[1]));
+                radius(*center_mm) + arc_radius
+            }
+            Self::Circle {
+                center_mm,
+                radius_mm,
+                ..
+            } => radius(*center_mm) + radius_mm,
+            Self::Ellipse {
+                center_mm,
+                radius_x_mm,
+                radius_y_mm,
+                ..
+            } => radius(*center_mm) + radius_x_mm.max(*radius_y_mm),
+            Self::RoundedRectangle {
+                center_mm,
+                width_mm,
+                height_mm,
+                ..
+            } => radius(*center_mm) + (0.5 * width_mm).hypot(0.5 * height_mm),
+            Self::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+                ..
+            } => [*start_mm, *control_1_mm, *control_2_mm, *end_mm]
+                .into_iter()
+                .map(radius)
+                .fold(0.0, f64::max),
+            Self::ProfileCopies { .. } => f64::INFINITY,
+        }
     }
 
     fn validate(&self) -> Result<(), String> {
@@ -867,6 +1509,92 @@ impl AssistantSketchEntity {
                     && *radius_mm > 0.0
                     && *radius_mm <= MAX_ASSISTANT_ABS_MM
             }
+            Self::Ellipse {
+                segment_ids,
+                center_mm,
+                radius_x_mm,
+                radius_y_mm,
+                rotation_degrees,
+            } => {
+                segment_ids.iter().all(|id| *id != 0)
+                    && segment_ids.iter().collect::<BTreeSet<_>>().len() == segment_ids.len()
+                    && point(center_mm)
+                    && radius_x_mm.is_finite()
+                    && *radius_x_mm > 0.0
+                    && *radius_x_mm <= MAX_ASSISTANT_ABS_MM
+                    && radius_y_mm.is_finite()
+                    && *radius_y_mm > 0.0
+                    && *radius_y_mm <= MAX_ASSISTANT_ABS_MM
+                    && rotation_degrees.is_finite()
+            }
+            Self::RoundedRectangle {
+                segment_ids,
+                center_mm,
+                width_mm,
+                height_mm,
+                corner_radius_mm,
+                rotation_degrees,
+            } => {
+                segment_ids.iter().all(|id| *id != 0)
+                    && segment_ids.iter().collect::<BTreeSet<_>>().len() == segment_ids.len()
+                    && point(center_mm)
+                    && width_mm.is_finite()
+                    && *width_mm > 0.0
+                    && *width_mm <= MAX_ASSISTANT_ABS_MM
+                    && height_mm.is_finite()
+                    && *height_mm > 0.0
+                    && *height_mm <= MAX_ASSISTANT_ABS_MM
+                    && corner_radius_mm.is_finite()
+                    && *corner_radius_mm > 0.0
+                    && *corner_radius_mm < 0.5 * width_mm.min(*height_mm)
+                    && rotation_degrees.is_finite()
+                    && center_mm[0].abs() + 0.5 * width_mm + 0.5 * height_mm <= MAX_ASSISTANT_ABS_MM
+                    && center_mm[1].abs() + 0.5 * width_mm + 0.5 * height_mm <= MAX_ASSISTANT_ABS_MM
+            }
+            Self::ProfileCopies {
+                source_entities,
+                copies,
+            } => {
+                let source_ids = source_entities
+                    .iter()
+                    .flat_map(Self::ids)
+                    .collect::<Vec<_>>();
+                let source_bound = source_entities
+                    .iter()
+                    .map(Self::radial_bound)
+                    .fold(0.0, f64::max);
+                !source_entities.is_empty()
+                    && !source_entities
+                        .iter()
+                        .any(|entity| matches!(entity, Self::ProfileCopies { .. }))
+                    && source_entities
+                        .iter()
+                        .all(|entity| entity.validate().is_ok())
+                    && source_ids.len() <= crate::sketch::MAX_SKETCH_ENTITIES
+                    && source_ids.iter().collect::<BTreeSet<_>>().len() == source_ids.len()
+                    && (1..=MAX_ASSISTANT_PROFILE_COPIES).contains(&copies.len())
+                    && copies.iter().all(|copy| {
+                        copy.entity_ids.len() == source_ids.len()
+                            && copy.entity_ids.iter().all(|id| *id != 0)
+                            && copy.entity_ids.iter().collect::<BTreeSet<_>>().len()
+                                == copy.entity_ids.len()
+                            && point(&copy.translation_mm)
+                            && copy.rotation_degrees.is_finite()
+                            && copy.uniform_scale.is_finite()
+                            && copy.uniform_scale > 0.0
+                            && copy.uniform_scale <= 1_000.0
+                            && copy.translation_mm[0].hypot(copy.translation_mm[1])
+                                + copy.uniform_scale * source_bound
+                                <= MAX_ASSISTANT_ABS_MM
+                    })
+            }
+            Self::CubicBezier {
+                start_mm,
+                control_1_mm,
+                control_2_mm,
+                end_mm,
+                ..
+            } => point(start_mm) && point(control_1_mm) && point(control_2_mm) && point(end_mm),
         };
         if self.id() == 0 || !valid {
             return Err("assistant sketch entity is invalid".to_owned());
@@ -1107,11 +1835,15 @@ fn validate_assistant_sketch_payload(
     entities: &[AssistantSketchEntity],
     constraints: &[AssistantSketchConstraint],
 ) -> Result<(), String> {
+    let expanded_entity_count = entities
+        .iter()
+        .map(|entity| entity.ids().len())
+        .sum::<usize>();
     if name.trim().is_empty()
         || name.len() > MAX_ASSISTANT_NAME_BYTES
         || name.chars().any(char::is_control)
         || entities.is_empty()
-        || entities.len() > crate::sketch::MAX_SKETCH_ENTITIES
+        || expanded_entity_count > crate::sketch::MAX_SKETCH_ENTITIES
         || constraints.len() > crate::sketch::MAX_SKETCH_CONSTRAINTS
     {
         return Err("assistant sketch creation is invalid".to_owned());
@@ -1120,8 +1852,10 @@ fn validate_assistant_sketch_payload(
     let mut entities_by_id = BTreeMap::new();
     for entity in entities {
         entity.validate()?;
-        if entities_by_id.insert(entity.id(), entity).is_some() {
-            return Err("assistant sketch entity IDs are invalid".to_owned());
+        for id in entity.ids() {
+            if entities_by_id.insert(id, entity).is_some() {
+                return Err("assistant sketch entity IDs are invalid".to_owned());
+            }
         }
     }
     let mut constraint_ids = BTreeSet::new();
@@ -1146,17 +1880,27 @@ impl AssistantCadEditProgram {
                 AssistantCadEditOperation::CreateSketch { .. }
                 | AssistantCadEditOperation::CreateProgramSketch { .. }
                 | AssistantCadEditOperation::AppendFeature { .. }
+                | AssistantCadEditOperation::FilletEdges { .. }
+                | AssistantCadEditOperation::ChamferEdges { .. }
                 | AssistantCadEditOperation::AppendProgramPocket { .. }
                 | AssistantCadEditOperation::SetDimension { .. }
                 | AssistantCadEditOperation::UpsertClassificationDimension { .. }
                 | AssistantCadEditOperation::CreateEvaluatorInput { .. } => 0,
-                AssistantCadEditOperation::CreatePart { .. } => 1,
+                AssistantCadEditOperation::CreatePart { .. }
+                | AssistantCadEditOperation::CreateSpatialPath { .. }
+                | AssistantCadEditOperation::CreateHelixPath { .. }
+                | AssistantCadEditOperation::CreateConstructionPoint { .. }
+                | AssistantCadEditOperation::CreateConstructionAxis { .. }
+                | AssistantCadEditOperation::CreateConstructionPlane { .. }
+                | AssistantCadEditOperation::CreateHelix { .. }
+                | AssistantCadEditOperation::CreateThread { .. } => 1,
                 AssistantCadEditOperation::Delete { selector, .. }
                 | AssistantCadEditOperation::SetColor { selector, .. }
                 | AssistantCadEditOperation::SetOccurrenceClassification { selector, .. }
                 | AssistantCadEditOperation::Transform { selector, .. }
                 | AssistantCadEditOperation::Copy { selector, .. }
                 | AssistantCadEditOperation::LinearPattern { selector, .. }
+                | AssistantCadEditOperation::CircularPattern { selector, .. }
                 | AssistantCadEditOperation::Mirror { selector, .. } => {
                     selector.bounded_target_count()?
                 }
@@ -1173,6 +1917,14 @@ impl AssistantCadEditProgram {
                         return Err("assistant sketch creation is invalid".to_owned());
                     }
                     validate_assistant_sketch_payload(name, workplane, entities, constraints)?;
+                    if matches!(
+                        workplane,
+                        AssistantWorkplaneSpec::ConstructionPlane {
+                            plane: AssistantCadFeatureReference::ProgramOutput(_)
+                        }
+                    ) {
+                        return Err("assistant sketch workplane reference is invalid".to_owned());
+                    }
                     0
                 }
                 AssistantCadEditOperation::CreateProgramSketch {
@@ -1193,6 +1945,25 @@ impl AssistantCadEditProgram {
                                 .to_owned(),
                         );
                     }
+                    if let AssistantWorkplaneSpec::ConstructionPlane {
+                        plane: AssistantCadFeatureReference::ProgramOutput(plane),
+                    } = workplane
+                    {
+                        plane.validate_for(
+                            operation_index,
+                            &self.operations,
+                            AssistantCadProgramFeatureOutput::ConstructionFeature,
+                        )?;
+                        if !matches!(
+                            self.operations.get(plane.operation_index as usize),
+                            Some(AssistantCadEditOperation::CreateConstructionPlane { .. })
+                        ) {
+                            return Err(
+                                "assistant construction-plane workplane reference is invalid"
+                                    .to_owned(),
+                            );
+                        }
+                    }
                     validate_assistant_sketch_payload(name, workplane, entities, constraints)?;
                     0
                 }
@@ -1206,7 +1977,13 @@ impl AssistantCadEditProgram {
                     rotation,
                 } => {
                     validate_assistant_sketch_payload(name, workplane, entities, constraints)?;
+                    if matches!(workplane, AssistantWorkplaneSpec::ConstructionPlane { .. }) {
+                        return Err("assistant part workplane reference is invalid".to_owned());
+                    }
                     feature.validate()?;
+                    if let AssistantCadPartFeature::Revolve { axis, .. } = feature {
+                        axis.validate_reference_for_operation(operation_index, &self.operations)?;
+                    }
                     if !assistant_cad_vector_is_bounded(*translation_mm) {
                         return Err("assistant CAD part placement is invalid".to_owned());
                     }
@@ -1214,6 +1991,134 @@ impl AssistantCadEditProgram {
                         rotation.validate()?;
                     }
                     1
+                }
+                AssistantCadEditOperation::CreateSpatialPath { name, segments } => {
+                    if name.trim().is_empty()
+                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.chars().any(char::is_control)
+                    {
+                        return Err("assistant spatial path creation is invalid".to_owned());
+                    }
+                    validated_spatial_path_segments(segments)?;
+                    1
+                }
+                AssistantCadEditOperation::CreateConstructionPoint { name, position_mm } => {
+                    if name.trim().is_empty()
+                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.chars().any(char::is_control)
+                        || !assistant_cad_vector_is_bounded(*position_mm)
+                    {
+                        return Err("assistant construction point creation is invalid".to_owned());
+                    }
+                    1
+                }
+                AssistantCadEditOperation::CreateConstructionAxis {
+                    name,
+                    origin_mm,
+                    direction,
+                } => {
+                    if name.trim().is_empty()
+                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.chars().any(char::is_control)
+                        || !assistant_cad_vector_is_bounded(*origin_mm)
+                        || !assistant_cad_vector_is_bounded(*direction)
+                        || !assistant_cad_vector_is_nonzero(*direction)
+                    {
+                        return Err("assistant construction axis creation is invalid".to_owned());
+                    }
+                    1
+                }
+                AssistantCadEditOperation::CreateConstructionPlane {
+                    name,
+                    origin_mm,
+                    normal,
+                    x_direction,
+                } => {
+                    if name.trim().is_empty()
+                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.chars().any(char::is_control)
+                        || !assistant_cad_vector_is_bounded(*origin_mm)
+                        || !assistant_cad_vector_is_bounded(*normal)
+                        || !assistant_cad_vector_is_bounded(*x_direction)
+                        || !assistant_cad_vector_is_nonzero(*normal)
+                        || !assistant_cad_vector_is_nonzero(*x_direction)
+                        || !assistant_cad_vectors_are_perpendicular(*normal, *x_direction)
+                    {
+                        return Err("assistant construction plane creation is invalid".to_owned());
+                    }
+                    1
+                }
+                AssistantCadEditOperation::CreateHelixPath { name, parameters }
+                | AssistantCadEditOperation::CreateHelix { name, parameters } => {
+                    if name.trim().is_empty()
+                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.chars().any(char::is_control)
+                    {
+                        return Err("assistant Helix creation is invalid".to_owned());
+                    }
+                    parameters.validate()?;
+                    parameters
+                        .axis
+                        .validate_reference_for_operation(operation_index, &self.operations)?;
+                    1
+                }
+                AssistantCadEditOperation::CreateThread { name, parameters } => {
+                    if name.trim().is_empty()
+                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.chars().any(char::is_control)
+                    {
+                        return Err("assistant Thread creation is invalid".to_owned());
+                    }
+                    parameters.validate()?;
+                    parameters
+                        .helix
+                        .axis
+                        .validate_reference_for_operation(operation_index, &self.operations)?;
+                    1
+                }
+                AssistantCadEditOperation::FilletEdges {
+                    definition_id,
+                    name,
+                    target_feature_id,
+                    edge_reference_ids,
+                    radius_mm,
+                } => {
+                    if *definition_id == 0
+                        || name.trim().is_empty()
+                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.chars().any(char::is_control)
+                    {
+                        return Err("assistant CAD Fillet is invalid".to_owned());
+                    }
+                    AssistantCadBodyFeature::TopologyFillet {
+                        target_feature_id: *target_feature_id,
+                        edge_reference_ids: edge_reference_ids.clone(),
+                        radius_mm: *radius_mm,
+                    }
+                    .validate()?;
+                    0
+                }
+                AssistantCadEditOperation::ChamferEdges {
+                    definition_id,
+                    name,
+                    target_feature_id,
+                    edge_reference_ids,
+                    distance_mm,
+                } => {
+                    if *definition_id == 0
+                        || name.trim().is_empty()
+                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.chars().any(char::is_control)
+                    {
+                        return Err("assistant CAD Chamfer is invalid".to_owned());
+                    }
+                    AssistantCadBodyFeature::TopologyChamfer {
+                        target_feature_id: *target_feature_id,
+                        edge_reference_ids: edge_reference_ids.clone(),
+                        distance_mm: *distance_mm,
+                    }
+                    .validate()?;
+                    0
                 }
                 AssistantCadEditOperation::AppendFeature {
                     definition_id,
@@ -1368,6 +2273,30 @@ impl AssistantCadEditProgram {
                     {
                         return Err("assistant CAD linear pattern is invalid".to_owned());
                     }
+                    instances.saturating_sub(1) as usize
+                }
+                AssistantCadEditOperation::CircularPattern {
+                    instances,
+                    axis,
+                    angle_step_degrees,
+                    ..
+                } => {
+                    let valid_count = (2..=MAX_ASSISTANT_ARRAY_INSTANCES).contains(instances);
+                    let duplicate_angle = valid_count
+                        && (1..*instances).any(|instance| {
+                            let normalized =
+                                (angle_step_degrees * f64::from(instance)).rem_euclid(360.0);
+                            normalized.min(360.0 - normalized) < 0.01
+                        });
+                    if !valid_count
+                        || axis.validate().is_err()
+                        || !angle_step_degrees.is_finite()
+                        || angle_step_degrees.abs() > MAX_ASSISTANT_ABS_MM
+                        || duplicate_angle
+                    {
+                        return Err("assistant CAD circular pattern is invalid".to_owned());
+                    }
+                    axis.validate_reference_for_operation(operation_index, &self.operations)?;
                     instances.saturating_sub(1) as usize
                 }
                 AssistantCadEditOperation::Mirror {

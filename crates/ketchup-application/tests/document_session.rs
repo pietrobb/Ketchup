@@ -1,10 +1,14 @@
 use ketchup_application::evaluation::*;
 use ketchup_application::{
     AssistantValidationSelection, DocumentSession, SaveOptions, SessionError, SessionSettings,
-    StructuralValidationScope, scoped_static_load_report,
+    StructuralValidationScope,
+    model_query::{EntityKind, ModelQuery, PageRequest},
+    scoped_static_load_report,
 };
 use ketchup_core::{
-    assistant_sidecar::*, document::*, exact_product::ExactResultRegistry,
+    assistant_sidecar::*,
+    document::*,
+    exact_product::{ExactBodyPackage, ExactResultRegistry},
     persistence::ContainerData,
 };
 use std::{collections::BTreeSet, time::Duration};
@@ -63,6 +67,19 @@ fn real_worker_session_save_open_and_read_only_reports() {
     assert!(report.complete, "{report:?}");
     assert!(report.topology_complete, "{report:?}");
     assert_eq!(report.producers.len(), 1);
+    let cylindrical_face = session
+        .topology_results()
+        .values()
+        .find_map(|package| match package.as_ref() {
+            ExactBodyPackage::Graph(graph) => graph
+                .face_evidence
+                .iter()
+                .find(|face| face.surface_kind == "cylinder"),
+            _ => None,
+        })
+        .expect("circle extrusion publishes its cylindrical face");
+    assert_eq!(cylindrical_face.unit_normal, [0.0; 3]);
+    assert_eq!(cylindrical_face.unit_axis_direction, Some([0.0, 0.0, 1.0]));
     assert_eq!(session.visible_undo_steps(), 1);
     assert_eq!(
         session.snapshot().canonical_digest(),
@@ -121,6 +138,344 @@ fn real_worker_session_save_open_and_read_only_reports() {
     session.undo().unwrap();
     assert!(!session.snapshot().occurrence_is_grounded(OccurrenceId(1)));
 }
+
+#[test]
+fn real_worker_line_edge_resolves_the_same_shared_axis_as_direct_geometry() {
+    let base_program = || AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::CreatePart {
+            name: "Axis source".into(),
+            workplane: AssistantWorkplaneSpec::Principal {
+                plane: AssistantPrincipalPlane::Xy,
+            },
+            entities: vec![
+                AssistantSketchEntity::Line {
+                    id: 1,
+                    start_mm: [0.0, 0.0],
+                    end_mm: [12.0, 0.0],
+                },
+                AssistantSketchEntity::Line {
+                    id: 2,
+                    start_mm: [12.0, 0.0],
+                    end_mm: [12.0, 8.0],
+                },
+                AssistantSketchEntity::Line {
+                    id: 3,
+                    start_mm: [12.0, 8.0],
+                    end_mm: [0.0, 8.0],
+                },
+                AssistantSketchEntity::Line {
+                    id: 4,
+                    start_mm: [0.0, 8.0],
+                    end_mm: [0.0, 0.0],
+                },
+            ],
+            constraints: Vec::new(),
+            feature: AssistantCadPartFeature::Extrusion { distance_mm: 6.0 },
+            translation_mm: [0.0; 3],
+            rotation: None,
+        }],
+    };
+    let helix_program = |axis| AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::CreateHelixPath {
+            name: "Edge-axis helix".into(),
+            parameters: AssistantHelixParameters {
+                axis,
+                radius_mm: 2.0,
+                pitch_mm: 3.0,
+                turns: 1.5,
+                start_angle_degrees: 20.0,
+                handedness: AssistantHelixHandedness::Right,
+            },
+        }],
+    };
+
+    let settings = worker_settings();
+    let mut edge_session = DocumentSession::new(settings.clone());
+    edge_session
+        .apply_cad_program(&base_program(), &BTreeSet::new())
+        .unwrap();
+    let evaluated = edge_session.snapshot();
+    assert!(edge_session.evaluate().unwrap().topology_complete);
+    let query = ModelQuery::default();
+    let page = query
+        .page_with_topology(
+            &evaluated,
+            edge_session.topology_results(),
+            &PageRequest {
+                kind: EntityKind::Edges,
+                limit: 100,
+                search: "line".into(),
+                definition_id: Some(1),
+                tag_id: None,
+                classification_dimension_id: None,
+                classification_category_id: None,
+                world_bounds_mm: None,
+                cursor: None,
+            },
+        )
+        .unwrap();
+    let edge = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|edge| {
+            edge["geometry"]["axis_origin_mm"].is_array()
+                && edge["geometry"]["unit_axis_direction"].is_array()
+        })
+        .expect("a straight exact edge must publish its own axis");
+    let reference_id = edge["reference_id"].as_str().unwrap().to_owned();
+    let vector = |field: &serde_json::Value| {
+        [
+            field[0].as_f64().unwrap(),
+            field[1].as_f64().unwrap(),
+            field[2].as_f64().unwrap(),
+        ]
+    };
+    let origin_mm = vector(&edge["geometry"]["axis_origin_mm"]);
+    let direction = vector(&edge["geometry"]["unit_axis_direction"]);
+
+    edge_session
+        .apply_cad_program(
+            &helix_program(AssistantAxisSpec::Edge {
+                edge_reference_id: reference_id.clone(),
+            }),
+            &BTreeSet::new(),
+        )
+        .unwrap();
+    let mut direct_session = DocumentSession::new(settings);
+    direct_session
+        .apply_cad_program(&base_program(), &BTreeSet::new())
+        .unwrap();
+    direct_session
+        .apply_cad_program(
+            &helix_program(AssistantAxisSpec::OriginDirection {
+                origin_mm,
+                direction,
+            }),
+            &BTreeSet::new(),
+        )
+        .unwrap();
+    assert_eq!(
+        edge_session
+            .snapshot()
+            .feature(FeatureId(4))
+            .unwrap()
+            .kind(),
+        direct_session
+            .snapshot()
+            .feature(FeatureId(4))
+            .unwrap()
+            .kind()
+    );
+    assert!(
+        edge_session
+            .plan_cad_program(
+                &helix_program(AssistantAxisSpec::Edge {
+                    edge_reference_id: reference_id
+                }),
+                &BTreeSet::new(),
+            )
+            .is_ok()
+    );
+}
+
+#[test]
+fn real_worker_query_selects_two_upper_circular_edges_for_one_fillet_operation() {
+    let settings = worker_settings();
+    let mut session = DocumentSession::new(settings.clone());
+    session
+        .apply_cad_program(
+            &AssistantCadEditProgram {
+                operations: vec![AssistantCadEditOperation::CreatePart {
+                    name: "Annular part".into(),
+                    workplane: AssistantWorkplaneSpec::Principal {
+                        plane: AssistantPrincipalPlane::Xy,
+                    },
+                    entities: vec![
+                        AssistantSketchEntity::Circle {
+                            id: 1,
+                            center_mm: [12.0, -7.0],
+                            radius_mm: 10.0,
+                        },
+                        AssistantSketchEntity::Circle {
+                            id: 2,
+                            center_mm: [12.0, -7.0],
+                            radius_mm: 6.0,
+                        },
+                    ],
+                    constraints: vec![
+                        AssistantSketchConstraint::Radius {
+                            id: 1,
+                            entity_id: 1,
+                            value_mm: 10.0,
+                        },
+                        AssistantSketchConstraint::Radius {
+                            id: 2,
+                            entity_id: 2,
+                            value_mm: 6.0,
+                        },
+                    ],
+                    feature: AssistantCadPartFeature::Extrusion { distance_mm: 30.0 },
+                    translation_mm: [0.0, 0.0, 0.0],
+                    rotation: None,
+                }],
+            },
+            &BTreeSet::new(),
+        )
+        .unwrap();
+    let created = session.snapshot();
+    let report = session.evaluate().unwrap();
+    assert!(report.complete && report.topology_complete, "{report:?}");
+
+    let query = ModelQuery::default();
+    let page = query
+        .page_with_topology(
+            &created,
+            session.topology_results(),
+            &PageRequest {
+                kind: EntityKind::Edges,
+                limit: 100,
+                search: "circle".into(),
+                definition_id: Some(1),
+                tag_id: None,
+                classification_dimension_id: None,
+                classification_category_id: None,
+                world_bounds_mm: None,
+                cursor: None,
+            },
+        )
+        .unwrap();
+    let queried_edges = page["items"].as_array().unwrap();
+    assert!(
+        queried_edges
+            .iter()
+            .all(|edge| edge["id"].as_u64().is_some_and(|id| id > 0))
+    );
+    let queried_edge = queried_edges
+        .iter()
+        .find(|edge| edge["geometry"]["circle_radius_mm"] == 6.0)
+        .unwrap();
+    let detail = query
+        .detail_with_topology(
+            &created,
+            session.topology_results(),
+            EntityKind::Edges,
+            queried_edge["id"].as_u64().unwrap(),
+        )
+        .unwrap();
+    assert_eq!(detail["item"], *queried_edge);
+    assert_eq!(detail["identity"], page["identity"]);
+    assert_eq!(detail["completeness"]["metadata_only"], false);
+
+    let mut upper_edges = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|edge| {
+            edge["producer_feature_id"] == 3
+                && edge["geometry"]["closed"] == true
+                && edge["geometry"]["centroid_mm"][2]
+                    .as_f64()
+                    .is_some_and(|z| (z - 30.0).abs() <= 1.0e-9)
+                && edge["geometry"]["unit_axis_direction"][2]
+                    .as_f64()
+                    .is_some_and(|z| z.abs() >= 1.0 - 1.0e-12)
+        })
+        .map(|edge| {
+            (
+                edge["geometry"]["circle_radius_mm"].as_f64().unwrap(),
+                edge["reference_id"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect::<Vec<_>>();
+    upper_edges.sort_by(|left, right| left.0.total_cmp(&right.0));
+    assert_eq!(
+        upper_edges
+            .iter()
+            .map(|(radius, _)| *radius)
+            .collect::<Vec<_>>(),
+        vec![6.0, 10.0]
+    );
+
+    let undo = session.visible_undo_steps();
+    session
+        .apply_cad_program(
+            &AssistantCadEditProgram {
+                operations: vec![AssistantCadEditOperation::FilletEdges {
+                    definition_id: 1,
+                    name: "Upper rim fillet".into(),
+                    target_feature_id: 3,
+                    edge_reference_ids: upper_edges
+                        .into_iter()
+                        .map(|(_, reference_id)| reference_id)
+                        .collect(),
+                    radius_mm: 1.0,
+                }],
+            },
+            &BTreeSet::new(),
+        )
+        .unwrap();
+    let filleted = session.snapshot();
+    assert_eq!(session.visible_undo_steps(), undo + 1);
+    assert!(matches!(
+        filleted.feature(FeatureId(4)).unwrap().kind(),
+        FeatureKind::TopologyEdgeFinish {
+            target: FeatureId(3),
+            kind: EdgeFinishKind::Fillet,
+            edges,
+            amount,
+        } if edges.len() == 2 && amount.millimetres() == 1.0
+    ));
+    let report = session.evaluate().unwrap();
+    assert!(report.complete && report.topology_complete, "{report:?}");
+    assert!(session.topology_results().values().any(|package| {
+        matches!(
+            package.as_ref(),
+            ketchup_core::exact_product::ExactBodyPackage::Graph(graph)
+                if graph.identity.producer_feature_id == FeatureId(4)
+                    && graph.volume_mm3 > 0.0
+        )
+    }));
+
+    session.undo().unwrap();
+    assert_eq!(
+        session.snapshot().canonical_digest(),
+        created.canonical_digest()
+    );
+    assert!(session.snapshot().feature(FeatureId(4)).is_none());
+    let report = session.evaluate().unwrap();
+    assert!(report.complete && report.topology_complete, "{report:?}");
+
+    session.redo().unwrap();
+    assert_eq!(
+        session.snapshot().canonical_digest(),
+        filleted.canonical_digest()
+    );
+    let report = session.evaluate().unwrap();
+    assert!(report.complete && report.topology_complete, "{report:?}");
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("annular-fillet.ketchup");
+    session.save(&path, SaveOptions::default()).unwrap();
+    let mut reopened = DocumentSession::open(&path, settings).unwrap();
+    assert_eq!(
+        reopened.snapshot().canonical_digest(),
+        filleted.canonical_digest()
+    );
+    let report = reopened.evaluate().unwrap();
+    assert!(report.complete && report.topology_complete, "{report:?}");
+    reopened.undo().unwrap();
+    assert_eq!(
+        reopened.snapshot().canonical_digest(),
+        created.canonical_digest()
+    );
+    reopened.redo().unwrap();
+    assert_eq!(
+        reopened.snapshot().canonical_digest(),
+        filleted.canonical_digest()
+    );
+}
+
 #[test]
 fn missing_worker_empty_coverage_and_invalid_inputs_are_honest() {
     let mut session = DocumentSession::new(SessionSettings {
@@ -181,7 +536,10 @@ fn shared_poll_wait_cancel_and_stale_publication() {
         settings.exact_worker_path.clone(),
         || {},
     );
+    assert_eq!(task.progress().total_producers, 1);
+    assert_eq!(task.progress().reused_producers, 0);
     let products = task.wait(Duration::from_secs(30)).unwrap();
+    assert_eq!(task.progress().completed_producers, 1);
     let report =
         publish_exact_products(&mut document, &mut render, &mut topology, &task, products).unwrap();
     assert!(report.complete);
@@ -192,6 +550,16 @@ fn shared_poll_wait_cancel_and_stale_publication() {
         &topology,
         settings.exact_worker_path.clone(),
         || {},
+    );
+    assert_eq!(
+        task.progress(),
+        ketchup_application::evaluation::ExactEvaluationProgress {
+            total_producers: 1,
+            completed_producers: 1,
+            reused_producers: 1,
+            active_producer: None,
+            active_elapsed_ms: None,
+        }
     );
     let products = loop {
         match task.poll() {
@@ -215,6 +583,7 @@ fn shared_poll_wait_cancel_and_stale_publication() {
         || {},
     );
     task.cancel();
+    assert!(task.is_cancelled());
     assert!(task.wait(Duration::from_secs(1)).is_err());
 }
 

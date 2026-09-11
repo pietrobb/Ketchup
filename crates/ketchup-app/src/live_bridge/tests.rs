@@ -1,9 +1,11 @@
 use super::*;
+use crate::dialogs::ScriptedFileDialogs;
 use ketchup_core::{
     document::NodeId,
     document::Transform,
     document::{
-        CanonicalCommand, CommandBatch, DefinitionId, FeatureId, GroupId, InstancePath, TagId,
+        CanonicalCommand, CommandBatch, DefinitionId, EdgeFinishKind, FeatureId, FeatureKind,
+        GroupId, InstancePath, TagId,
     },
 };
 use std::{
@@ -28,6 +30,252 @@ fn setup() -> (KetchupApp, LiveBridge) {
     let bridge = transport::start(egui::Context::default()).unwrap();
     (app, bridge)
 }
+#[test]
+fn save_is_revision_bound_and_uses_the_live_gui_overwrite_consent() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("live-save.ketchup");
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_refused_high_risk()
+        .queue_high_risk_approval(7);
+    let probe = dialogs.clone();
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    app.selection.clear();
+    assert!(app.save_document_to(&path));
+    let original_bytes = std::fs::read(&path).unwrap();
+    let before_edit = app.live_bridge_stamp();
+    let mut bridge = transport::start(egui::Context::default()).unwrap();
+    let commit = proposal(&mut app, &mut bridge);
+    bridge.execute(&mut app, commit, false).unwrap();
+    assert!(app.is_dirty());
+
+    assert_eq!(
+        bridge.execute(
+            &mut app,
+            Request::Save {
+                expected: before_edit,
+            },
+            false,
+        ),
+        Err("stale_document")
+    );
+    assert!(probe.high_risk_prompts().is_empty());
+
+    let expected = app.live_bridge_stamp();
+    assert_eq!(
+        bridge.execute(
+            &mut app,
+            Request::Save {
+                expected: expected.clone(),
+            },
+            false,
+        ),
+        Err("save_rejected")
+    );
+    assert!(app.is_dirty());
+    assert_eq!(probe.high_risk_prompts().len(), 1);
+    assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
+
+    let saved = bridge
+        .execute(&mut app, Request::Save { expected }, false)
+        .unwrap();
+    assert_eq!(
+        saved,
+        json!({"saved":true,"same_gui_document":true,"dirty":false})
+    );
+    assert!(!app.is_dirty());
+    assert_eq!(probe.high_risk_prompts().len(), 2);
+    assert_ne!(std::fs::read(&path).unwrap(), original_bytes);
+    let mut reopened = KetchupApp::new();
+    assert!(reopened.open_document_path(&path));
+    assert_eq!(
+        reopened.document_snapshot().canonical_digest(),
+        app.document_snapshot().canonical_digest()
+    );
+
+    let (mut untitled, mut untitled_bridge) = setup();
+    let expected = untitled.live_bridge_stamp();
+    assert_eq!(
+        untitled_bridge.execute(&mut untitled, Request::Save { expected }, false),
+        Err("save_path_required")
+    );
+}
+
+#[test]
+fn save_as_requires_an_absolute_path_and_live_gui_overwrite_consent() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("live-save-as.ketchup");
+    let original_bytes = b"existing destination";
+    std::fs::write(&path, original_bytes).unwrap();
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_refused_high_risk()
+        .queue_high_risk_approval(9);
+    let probe = dialogs.clone();
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    app.selection.clear();
+    let stale = app.live_bridge_stamp();
+    assert!(app.create_box());
+    let expected = app.live_bridge_stamp();
+    let mut bridge = transport::start(egui::Context::default()).unwrap();
+
+    assert_eq!(
+        bridge.execute(
+            &mut app,
+            Request::SaveAs {
+                expected: expected.clone(),
+                path: "relative.ketchup".to_owned(),
+            },
+            false,
+        ),
+        Err("invalid_path")
+    );
+    assert_eq!(
+        bridge.execute(
+            &mut app,
+            Request::SaveAs {
+                expected: stale,
+                path: path.to_string_lossy().into_owned(),
+            },
+            false,
+        ),
+        Err("stale_document")
+    );
+    assert!(probe.high_risk_prompts().is_empty());
+
+    assert_eq!(
+        bridge.execute(
+            &mut app,
+            Request::SaveAs {
+                expected: expected.clone(),
+                path: path.to_string_lossy().into_owned(),
+            },
+            false,
+        ),
+        Err("save_rejected")
+    );
+    assert!(app.is_dirty());
+    assert!(app.document_path.is_none());
+    assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
+
+    let saved = bridge
+        .execute(
+            &mut app,
+            Request::SaveAs {
+                expected,
+                path: path.to_string_lossy().into_owned(),
+            },
+            false,
+        )
+        .unwrap();
+    assert_eq!(
+        saved,
+        json!({"saved":true,"same_gui_document":true,"dirty":false})
+    );
+    assert_eq!(probe.high_risk_prompts().len(), 2);
+    assert_eq!(app.document_path.as_deref(), Some(path.as_path()));
+    assert_ne!(std::fs::read(&path).unwrap(), original_bytes);
+    let mut reopened = KetchupApp::new();
+    assert!(reopened.open_document_path(&path));
+    assert_eq!(
+        reopened.document_snapshot().canonical_digest(),
+        app.document_snapshot().canonical_digest()
+    );
+}
+
+#[test]
+fn open_is_revision_bound_and_uses_the_live_gui_discard_consent() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("live-open.ketchup");
+    let mut source = KetchupApp::new();
+    assert!(source.create_box());
+    assert!(source.save_document_to(&path));
+    let source_digest = source.document_snapshot().canonical_digest();
+
+    let dialogs = ScriptedFileDialogs::new();
+    let probe = dialogs.clone();
+    let mut refused = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    let stale = refused.live_bridge_stamp();
+    assert!(refused.create_box());
+    let expected = refused.live_bridge_stamp();
+    let refused_digest = refused.document_snapshot().canonical_digest();
+    let mut bridge = transport::start(egui::Context::default()).unwrap();
+
+    assert_eq!(
+        bridge.execute(
+            &mut refused,
+            Request::Open {
+                expected: expected.clone(),
+                path: "relative.ketchup".to_owned(),
+            },
+            false,
+        ),
+        Err("invalid_path")
+    );
+    assert_eq!(
+        bridge.execute(
+            &mut refused,
+            Request::Open {
+                expected: stale,
+                path: path.to_string_lossy().into_owned(),
+            },
+            false,
+        ),
+        Err("stale_document")
+    );
+    assert_eq!(probe.discard_prompts(), 0);
+    assert_eq!(
+        bridge.execute(
+            &mut refused,
+            Request::Open {
+                expected,
+                path: path.to_string_lossy().into_owned(),
+            },
+            false,
+        ),
+        Err("open_rejected")
+    );
+    assert_eq!(probe.discard_prompts(), 1);
+    assert!(refused.is_dirty());
+    assert_eq!(
+        refused.document_snapshot().canonical_digest(),
+        refused_digest
+    );
+    assert!(refused.document_path().is_none());
+
+    let dialogs = ScriptedFileDialogs::new().always_discard();
+    let probe = dialogs.clone();
+    let mut approved = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    assert!(approved.create_box());
+    let mut bridge = transport::start(egui::Context::default()).unwrap();
+    let pending = proposal(&mut approved, &mut bridge);
+    assert!(matches!(pending, Request::Commit { .. }));
+    assert!(bridge.pending.is_some());
+    let expected = approved.live_bridge_stamp();
+    let opened = bridge
+        .execute(
+            &mut approved,
+            Request::Open {
+                expected,
+                path: path.to_string_lossy().into_owned(),
+            },
+            false,
+        )
+        .unwrap();
+
+    assert_eq!(
+        opened,
+        json!({"opened":true,"same_gui_window":true,"dirty":false})
+    );
+    assert_eq!(probe.discard_prompts(), 1);
+    assert_eq!(approved.document_path(), Some(path.as_path()));
+    assert_eq!(
+        approved.document_snapshot().canonical_digest(),
+        source_digest
+    );
+    assert!(!approved.is_dirty());
+    assert!(bridge.pending.is_none());
+    assert_eq!(bridge.observed, Some(approved.live_bridge_stamp()));
+}
+
 fn proposal(app: &mut KetchupApp, bridge: &mut LiveBridge) -> Request {
     let expected = app.live_bridge_stamp();
     let selection = LiveBridge::selection(app).unwrap();
@@ -81,9 +329,14 @@ fn image_protocol_is_versioned_declared_and_required() {
         status["image_protocol"],
         json!({
             "version": IMAGE_PROTOCOL_VERSION,
-            "capabilities": ["capture_mode", "capture_metadata", "render_metadata"],
+            "capabilities": ["capture_mode", "capture_metadata", "render_metadata", "variable_size", "selection_framing", "detail_selection_framing"],
             "capture_modes": ["offscreen", "visible_viewport"],
             "default_capture_mode": "offscreen",
+            "framing_modes": ["viewport", "selection", "detail_selection"],
+            "default_framing": "viewport",
+            "min_side_px": 512,
+            "max_side_px": 1600,
+            "default_side_px": 512,
         })
     );
     let expected = serde_json::to_value(app.live_bridge_stamp()).unwrap();
@@ -111,10 +364,137 @@ fn image_protocol_is_versioned_declared_and_required() {
                 expected: stamp,
                 image_protocol_version: IMAGE_PROTOCOL_VERSION - 1,
                 capture_mode: CaptureMode::Offscreen,
+                max_side_px: MIN_IMAGE_SIDE_PX,
+                framing: ImageFraming::Viewport,
+                detail_target: None,
             },
             false,
         ),
         Err("unsupported_image_protocol")
+    );
+    for max_side_px in [MIN_IMAGE_SIDE_PX - 1, MAX_IMAGE_SIDE_PX + 1] {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        bridge.request_image(
+            &app,
+            &egui::Context::default(),
+            Queued {
+                session: bridge.session,
+                id: u64::from(max_side_px),
+                request: Request::Image {
+                    expected: app.live_bridge_stamp(),
+                    image_protocol_version: IMAGE_PROTOCOL_VERSION,
+                    capture_mode: CaptureMode::Offscreen,
+                    max_side_px,
+                    framing: ImageFraming::Viewport,
+                    detail_target: None,
+                },
+                cancelled: Arc::new(AtomicBool::new(false)),
+                reply,
+            },
+        );
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(1)).unwrap().error,
+            Some("invalid_image_dimensions".into())
+        );
+    }
+}
+
+#[test]
+fn topology_query_detail_and_multi_edge_fillet_share_the_live_host_stamp() {
+    let (mut app, mut bridge) = setup();
+    crate::tests::install_initial_graph_result(&mut app);
+    let expected = app.live_bridge_stamp();
+    let page = bridge
+        .execute(
+            &mut app,
+            Request::Query {
+                expected: expected.clone(),
+                query: PageRequest {
+                    kind: EntityKind::Edges,
+                    limit: 10,
+                    search: "line".into(),
+                    definition_id: Some(1),
+                    tag_id: None,
+                    classification_dimension_id: None,
+                    classification_category_id: None,
+                    world_bounds_mm: None,
+                    cursor: None,
+                },
+            },
+            false,
+        )
+        .unwrap();
+    let edges = page["items"].as_array().unwrap();
+    assert_eq!(edges.len(), 2);
+    let edge_id = edges[0]["id"].as_u64().unwrap();
+    assert!(edge_id > 0);
+    let detail = bridge
+        .execute(
+            &mut app,
+            Request::Detail {
+                expected: expected.clone(),
+                kind: EntityKind::Edges,
+                entity_id: edge_id,
+            },
+            false,
+        )
+        .unwrap();
+    assert_eq!(detail["item"], edges[0]);
+    assert_eq!(detail["identity"], page["identity"]);
+
+    let reference_ids = edges
+        .iter()
+        .map(|edge| edge["reference_id"].as_str().unwrap().to_owned())
+        .collect();
+    let proposed = bridge
+        .execute(
+            &mut app,
+            Request::Propose {
+                expected: expected.clone(),
+                selection: vec![],
+                program: AssistantCadEditProgram {
+                    operations: vec![AssistantCadEditOperation::FilletEdges {
+                        definition_id: 1,
+                        name: "Live multi-edge fillet".into(),
+                        target_feature_id: 2,
+                        edge_reference_ids: reference_ids,
+                        radius_mm: 1.0,
+                    }],
+                },
+            },
+            false,
+        )
+        .unwrap();
+    bridge
+        .execute(
+            &mut app,
+            Request::Commit {
+                expected: expected.clone(),
+                proposal_id: proposed["proposal_id"].as_u64().unwrap(),
+            },
+            false,
+        )
+        .unwrap();
+    assert!(matches!(
+        app.document.current().feature(FeatureId(3)).unwrap().kind(),
+        FeatureKind::TopologyEdgeFinish {
+            target: FeatureId(2),
+            kind: EdgeFinishKind::Fillet,
+            edges,
+            ..
+        } if edges.len() == 2
+    ));
+    assert_eq!(
+        bridge.execute(
+            &mut app,
+            Request::Detail {
+                expected,
+                kind: EntityKind::Edges,
+                entity_id: edge_id,
+            },
+            false,
+        ),
+        Err("stale_document")
     );
 }
 

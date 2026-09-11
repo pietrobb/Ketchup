@@ -57,6 +57,9 @@ fn send_request_version_mode(
             expected: h.state().live_bridge_stamp(),
             image_protocol_version,
             capture_mode,
+            max_side_px: MIN_IMAGE_SIDE_PX,
+            framing: ketchup_app::live_bridge::ImageFraming::Viewport,
+            detail_target: None,
         },
     })
     .unwrap();
@@ -83,7 +86,7 @@ fn request_version_mode(
         let mut header = [0; 4];
         socket.read_exact(&mut header).unwrap();
         let size = u32::from_be_bytes(header) as usize;
-        assert!(size > 0 && size <= MAX_FRAME_BYTES);
+        assert!(size > 0 && size <= MAX_IMAGE_FRAME_BYTES);
         let mut body = vec![0; size];
         socket.read_exact(&mut body).unwrap();
         tx.send(serde_json::from_slice(&body).unwrap()).unwrap();
@@ -162,7 +165,7 @@ fn capture(h: &mut Harness<'_, KetchupApp>) -> serde_json::Value {
     assert!(response.ok, "{response:?}");
     assert_eq!(response.stamp, Some(stamp.clone()));
     assert_eq!(h.state().live_bridge_stamp(), stamp);
-    assert!(serde_json::to_vec(&response).unwrap().len() <= MAX_FRAME_BYTES);
+    assert!(serde_json::to_vec(&response).unwrap().len() <= MAX_IMAGE_FRAME_BYTES);
     let value = response.result.unwrap();
     assert_eq!(value["stamp"], serde_json::to_value(stamp).unwrap());
     assert_eq!(value["capture_pass"], pass);
@@ -188,13 +191,15 @@ fn decode64(s: &str) -> Vec<u8> {
     bytes
 }
 fn assert_pixels(png: &[u8], value: &serde_json::Value, rect: egui::Rect) {
-    assert!(png.len() > 57 && png.len() < MAX_FRAME_BYTES);
+    assert!(png.len() > 57 && png.len() < MAX_IMAGE_FRAME_BYTES);
     assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
     let (w, height) = (
         value["width"].as_u64().unwrap() as usize,
         value["height"].as_u64().unwrap() as usize,
     );
-    assert!(w > 0 && w <= 64 && height > 0 && height <= 64);
+    assert!(w > 0 && height > 0);
+    assert_eq!(w.max(height), MIN_IMAGE_SIDE_PX as usize);
+    assert_eq!(value["requested_max_side_px"], MIN_IMAGE_SIDE_PX);
     assert_eq!(value["source_size_px"], serde_json::json!([1600, 1000]));
     assert_eq!(value["sampling"], "nearest_center");
     assert_eq!(value["thumbnail"], true);
@@ -214,7 +219,7 @@ fn assert_pixels(png: &[u8], value: &serde_json::Value, rect: egui::Rect) {
     // Independently inspect this encoder's stored DEFLATE scanlines. These are
     // isolated pixels, NOT expected to match samples from the GUI framebuffer.
     let mut offset = 8;
-    let mut scanlines = Vec::new();
+    let mut zlib = Vec::new();
     while offset < png.len() {
         let n = u32::from_be_bytes(png[offset..offset + 4].try_into().unwrap()) as usize;
         match &png[offset + 4..offset + 8] {
@@ -229,21 +234,46 @@ fn assert_pixels(png: &[u8], value: &serde_json::Value, rect: egui::Rect) {
                 );
                 assert_eq!(&png[offset + 16..offset + 21], &[8, 2, 0, 0, 0]);
             }
-            b"IDAT" => {
-                let z = &png[offset + 8..offset + 8 + n];
-                assert_eq!(&z[..3], &[0x78, 1, 1]);
-                let len = u16::from_le_bytes(z[3..5].try_into().unwrap()) as usize;
-                assert_eq!(
-                    u16::from_le_bytes(z[5..7].try_into().unwrap()),
-                    !(len as u16)
-                );
-                scanlines.extend_from_slice(&z[7..7 + len]);
-            }
+            b"IDAT" => zlib.extend_from_slice(&png[offset + 8..offset + 8 + n]),
             _ => {}
         }
         offset += n + 12;
     }
     assert_eq!(offset, png.len());
+    assert_eq!(&zlib[..2], &[0x78, 0x01]);
+    let checksum_offset = zlib.len() - 4;
+    let mut cursor = 2;
+    let mut block_count = 0;
+    let mut scanlines = Vec::new();
+    loop {
+        let final_block = match zlib[cursor] {
+            0 => false,
+            1 => true,
+            flags => panic!("unsupported stored DEFLATE flags {flags}"),
+        };
+        cursor += 1;
+        let len = u16::from_le_bytes(zlib[cursor..cursor + 2].try_into().unwrap()) as usize;
+        let inverse = u16::from_le_bytes(zlib[cursor + 2..cursor + 4].try_into().unwrap());
+        assert_eq!(inverse, !(len as u16));
+        cursor += 4;
+        scanlines.extend_from_slice(&zlib[cursor..cursor + len]);
+        cursor += len;
+        block_count += 1;
+        if final_block {
+            break;
+        }
+    }
+    assert!(
+        block_count > 1,
+        "512 px image must exercise multiple DEFLATE blocks"
+    );
+    assert_eq!(cursor, checksum_offset);
+    let (mut a, mut b) = (1u32, 0u32);
+    for byte in &scanlines {
+        a = (a + u32::from(*byte)) % 65521;
+        b = (b + a) % 65521;
+    }
+    assert_eq!(&zlib[checksum_offset..], &((b << 16) | a).to_be_bytes());
     assert_eq!(scanlines.len(), height * (w * 3 + 1));
     let crop: Vec<usize> = value["crop_px"]
         .as_array()
@@ -613,7 +643,7 @@ fn isolated_frame_reaches_registered_python_image_tool_and_new_png() {
                 .expect("service isolated wgpu callback during Python TCP call");
             std::thread::sleep(Duration::from_millis(5));
         };
-        assert!(line.len() <= MAX_FRAME_BYTES, "oversized checkpoint");
+        assert!(line.len() <= MAX_IMAGE_FRAME_BYTES, "oversized checkpoint");
         assert!(
             !line.contains(&credentials.token),
             "credential leaked in Python stdout"

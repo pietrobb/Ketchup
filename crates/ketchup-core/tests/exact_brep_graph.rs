@@ -1,7 +1,7 @@
 use ketchup_core::document::{
     BodyId, BooleanOperation, CanonicalCommand, CanonicalError, CommandBatch, DefinitionId,
     Dimension, DocumentStore, EdgeFinishKind, FeatureId, FeatureKind, LoftSection, ProfileSegment,
-    SpatialPathSegment, StableFaceRole,
+    SpatialPathSegment, StableFaceRole, is_valid_spatial_sweep_path,
 };
 use ketchup_core::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V6, EXACT_BREP_GRAPH_SCHEMA_V7, EXACT_BREP_GRAPH_SCHEMA_V8,
@@ -1702,6 +1702,32 @@ fn cubic_sweep_selects_v11_round_trips_and_rejects_v10_downgrade() {
         downgraded.to_bytes(),
         Err(ExactBRepGraphError::InvalidGraph)
     );
+}
+
+#[test]
+fn closed_spatial_path_requires_a_c1_periodic_seam() {
+    let quarter = |start_mm, end_mm| SpatialPathSegment::CircularArc {
+        start_mm,
+        end_mm,
+        center_mm: [0.0, 0.0, 0.0],
+        normal: [0.0, 0.0, 1.0],
+        clockwise: false,
+    };
+    let mut path = vec![
+        quarter([20.0, 0.0, 0.0], [0.0, 20.0, 0.0]),
+        quarter([0.0, 20.0, 0.0], [-20.0, 0.0, 0.0]),
+        quarter([-20.0, 0.0, 0.0], [0.0, -20.0, 0.0]),
+        quarter([0.0, -20.0, 0.0], [20.0, 0.0, 0.0]),
+    ];
+    assert!(is_valid_spatial_sweep_path(&path));
+
+    path[3] = SpatialPathSegment::CubicBezier {
+        start_mm: [0.0, -20.0, 0.0],
+        control_1_mm: [5.0, -20.0, 0.0],
+        control_2_mm: [19.0, 0.0, 0.0],
+        end_mm: [20.0, 0.0, 0.0],
+    };
+    assert!(!is_valid_spatial_sweep_path(&path));
 }
 
 fn spatial_sweep_v12_graph() -> ExactBRepGraph {

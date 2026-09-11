@@ -7,6 +7,7 @@
 
 namespace ketchup::exact {
 
+struct NativeEdgeEvidence;
 struct NativeEdgeFaceEvidence;
 struct NativeEdgeHistoryEvidence;
 struct NativeFaceEdgeEvidence;
@@ -36,6 +37,7 @@ public:
   bool valid() const noexcept;
   NativeTopologySummary topology_summary() const noexcept;
   rust::Vec<NativeFaceEvidence> face_evidence() const;
+  rust::Vec<NativeEdgeEvidence> edge_evidence() const;
   rust::Vec<NativeFaceEdgeEvidence> face_edge_evidence() const;
   rust::Vec<NativeEdgeFaceEvidence> edge_face_evidence() const;
   rust::Vec<NativeHistoryEvidence> history_evidence() const;
@@ -70,6 +72,10 @@ std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
     rust::Slice<const double> path_segments) noexcept;
 std::unique_ptr<NativeOperationResult> loft_spline_native(
     rust::Slice<const double> values) noexcept;
+std::unique_ptr<NativeOperationResult> loft_planar_profiles_native(
+    rust::Slice<const double> segments,
+    rust::Slice<const std::uint32_t> section_segment_counts,
+    rust::Slice<const double> elevations) noexcept;
 std::unique_ptr<NativeOperationResult> extrude_circle_native(
     double center_x, double center_y, double radius, double height) noexcept;
 std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(

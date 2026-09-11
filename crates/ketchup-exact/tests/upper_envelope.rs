@@ -1,13 +1,13 @@
 use ketchup_exact::{
     BottleEdgeFinish, BoxSpec, CircleExtrudeSpec, CutMode, CylinderToolSpec, ExactBackend,
-    ExactOpOutput, GeometryErrorCode, MAX_PLANAR_REGION_HOLES, PlanarProfileLoop,
-    PlanarProfileSegment, Point3, RectangleExtrudeSpec, RectangleOffsetSpec, RectangleSweepSpec,
-    ReferenceResolution, Size3, SplineLoftSection, SplineLoftSpec, capture_box_shell_references,
-    capture_circle_extrusion_references, capture_circular_through_cut_references,
-    capture_general_revolve_references, capture_mixed_profile_extrusion_references,
-    capture_planar_offset_reference, capture_rectangular_split_references,
-    capture_rectangular_sweep_references, capture_spline_loft_references,
-    resolve_subshape_reference,
+    ExactOpOutput, GeometryErrorCode, MAX_PLANAR_REGION_HOLES, PlanarLoftSection, PlanarLoftSpec,
+    PlanarProfileLoop, PlanarProfileSegment, Point3, RectangleExtrudeSpec, RectangleOffsetSpec,
+    RectangleSweepSpec, ReferenceResolution, Size3, SplineLoftSection, SplineLoftSpec,
+    capture_box_shell_references, capture_circle_extrusion_references,
+    capture_circular_through_cut_references, capture_general_revolve_references,
+    capture_mixed_profile_extrusion_references, capture_planar_offset_reference,
+    capture_rectangular_split_references, capture_rectangular_sweep_references,
+    capture_spline_loft_references, resolve_subshape_reference,
 };
 
 const COORDINATE_LIMIT_MM: f64 = 1_000_000.0;
@@ -1251,6 +1251,115 @@ fn non_coplanar_mixed_spatial_sweep_is_exact_deterministic_and_fails_closed() {
 }
 
 #[test]
+fn closed_c1_spatial_sweep_produces_one_deterministic_periodic_solid() {
+    use ketchup_exact::{ExactKernel, SpatialProfileSegment};
+
+    let kernel = ExactKernel::new();
+    let profile = [
+        PlanarProfileSegment::Line {
+            start_mm: [-1.0, -1.0],
+            end_mm: [1.0, -1.0],
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [1.0, -1.0],
+            end_mm: [1.0, 1.0],
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [1.0, 1.0],
+            end_mm: [-1.0, 1.0],
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [-1.0, 1.0],
+            end_mm: [-1.0, -1.0],
+        },
+    ];
+    let quarter = |start_mm, end_mm| SpatialProfileSegment::CircularArc {
+        start_mm,
+        end_mm,
+        center_mm: [0.0, 0.0, 0.0],
+        normal: [0.0, 0.0, 1.0],
+        clockwise: false,
+    };
+    let path = [
+        quarter([20.0, 0.0, 0.0], [0.0, 20.0, 0.0]),
+        quarter([0.0, 20.0, 0.0], [-20.0, 0.0, 0.0]),
+        quarter([-20.0, 0.0, 0.0], [0.0, -20.0, 0.0]),
+        quarter([0.0, -20.0, 0.0], [20.0, 0.0, 0.0]),
+    ];
+
+    let output = kernel.sweep_spatial_profile(&profile, &path).unwrap();
+    let repeated = kernel.sweep_spatial_profile(&profile, &path).unwrap();
+    assert_valid(&output);
+    assert_eq!(output.input_digest, repeated.input_digest);
+    assert_eq!(
+        output.body.result_fingerprint,
+        repeated.body.result_fingerprint
+    );
+    assert_close(output.body.topology.bounds_mm.min.x, -21.0);
+    assert_close(output.body.topology.bounds_mm.max.x, 21.0);
+    assert_close(output.body.topology.bounds_mm.min.y, -21.0);
+    assert_close(output.body.topology.bounds_mm.max.y, 21.0);
+}
+
+#[test]
+fn closed_non_planar_spatial_sweep_has_a_periodic_deterministic_frame() {
+    use ketchup_exact::{ExactKernel, SpatialProfileSegment};
+
+    let kernel = ExactKernel::new();
+    let profile = [
+        PlanarProfileSegment::Line {
+            start_mm: [-2.0, -1.0],
+            end_mm: [3.0, -1.0],
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [3.0, -1.0],
+            end_mm: [-1.0, 2.0],
+        },
+        PlanarProfileSegment::Line {
+            start_mm: [-1.0, 2.0],
+            end_mm: [-2.0, -1.0],
+        },
+    ];
+    let path = [
+        SpatialProfileSegment::CubicBezier {
+            start_mm: [30.0, 0.0, 0.0],
+            control_1_mm: [30.0, 15.0, 10.0],
+            control_2_mm: [15.0, 30.0, 10.0],
+            end_mm: [0.0, 30.0, 0.0],
+        },
+        SpatialProfileSegment::CubicBezier {
+            start_mm: [0.0, 30.0, 0.0],
+            control_1_mm: [-15.0, 30.0, -10.0],
+            control_2_mm: [-30.0, 15.0, -10.0],
+            end_mm: [-30.0, 0.0, 0.0],
+        },
+        SpatialProfileSegment::CubicBezier {
+            start_mm: [-30.0, 0.0, 0.0],
+            control_1_mm: [-30.0, -15.0, 10.0],
+            control_2_mm: [-15.0, -30.0, 10.0],
+            end_mm: [0.0, -30.0, 0.0],
+        },
+        SpatialProfileSegment::CubicBezier {
+            start_mm: [0.0, -30.0, 0.0],
+            control_1_mm: [15.0, -30.0, -10.0],
+            control_2_mm: [30.0, -15.0, -10.0],
+            end_mm: [30.0, 0.0, 0.0],
+        },
+    ];
+
+    let output = kernel.sweep_spatial_profile(&profile, &path).unwrap();
+    let repeated = kernel.sweep_spatial_profile(&profile, &path).unwrap();
+    assert_valid(&output);
+    assert_eq!(output.input_digest, repeated.input_digest);
+    assert_eq!(
+        output.body.result_fingerprint,
+        repeated.body.result_fingerprint
+    );
+    assert!(output.body.topology.bounds_mm.min.z < -5.0);
+    assert!(output.body.topology.bounds_mm.max.z > 5.0);
+}
+
+#[test]
 fn xy_spatial_sweep_preserves_legacy_planar_profile_placement() {
     use ketchup_exact::SpatialProfileSegment;
 
@@ -1460,6 +1569,55 @@ fn rectangular_sweep_rejects_transformed_output_beyond_coordinate_limit() {
         })
         .expect_err("transformed sweep corners outside the exact envelope must fail closed");
     assert_eq!(error.code, GeometryErrorCode::InvalidParameter);
+}
+
+#[test]
+fn planar_circle_and_segment_loft_produces_one_deterministic_exact_solid() {
+    let backend = ExactBackend::new();
+    let spec = PlanarLoftSpec {
+        sections: vec![
+            PlanarLoftSection {
+                elevation_mm: 0.0,
+                profile: PlanarProfileLoop::Circle {
+                    center_mm: [0.0, 0.0],
+                    radius_mm: 12.0,
+                },
+            },
+            PlanarLoftSection {
+                elevation_mm: 30.0,
+                profile: PlanarProfileLoop::Segments(vec![
+                    PlanarProfileSegment::Line {
+                        start_mm: [-10.0, -6.0],
+                        end_mm: [10.0, -6.0],
+                    },
+                    PlanarProfileSegment::Line {
+                        start_mm: [10.0, -6.0],
+                        end_mm: [10.0, 6.0],
+                    },
+                    PlanarProfileSegment::Line {
+                        start_mm: [10.0, 6.0],
+                        end_mm: [-10.0, 6.0],
+                    },
+                    PlanarProfileSegment::Line {
+                        start_mm: [-10.0, 6.0],
+                        end_mm: [-10.0, -6.0],
+                    },
+                ]),
+            },
+        ],
+    };
+    let output = backend.loft_planar_profiles(&spec).unwrap();
+    let repeated = backend.loft_planar_profiles(&spec).unwrap();
+
+    assert_valid(&output);
+    assert_eq!(output.input_digest, repeated.input_digest);
+    assert_eq!(
+        output.body.result_fingerprint,
+        repeated.body.result_fingerprint
+    );
+    assert_eq!(output.body.topology.solid_count, 1);
+    assert_close(output.body.topology.bounds_mm.min.z, 0.0);
+    assert_close(output.body.topology.bounds_mm.max.z, 30.0);
 }
 
 #[test]
@@ -1687,6 +1845,50 @@ fn exact_circle_extrusion_has_analytic_volume_and_stable_cylindrical_side() {
             .expected_type,
         "cylindrical_face"
     );
+}
+
+#[test]
+fn exact_edge_evidence_finds_two_upper_circular_rim_edges_without_ordinals() {
+    let backend = ExactBackend::new();
+    let output = backend
+        .extrude_planar_region(
+            &PlanarProfileLoop::Circle {
+                center_mm: [12.0, -7.0],
+                radius_mm: 10.0,
+            },
+            &[PlanarProfileLoop::Circle {
+                center_mm: [12.0, -7.0],
+                radius_mm: 6.0,
+            }],
+            30.0,
+        )
+        .unwrap();
+
+    let mut upper_radii = output
+        .body
+        .topology
+        .edges
+        .iter()
+        .filter(|edge| {
+            edge.curve_kind == "circle"
+                && edge.closed
+                && (edge.centroid_mm.z - 30.0).abs() <= 1.0e-9
+                && edge
+                    .axis_direction
+                    .is_some_and(|axis| axis.z.abs() >= 1.0 - 1.0e-12)
+        })
+        .map(|edge| {
+            assert_close(edge.centroid_mm.x, 12.0);
+            assert_close(edge.centroid_mm.y, -7.0);
+            assert_eq!(edge.adjacent_face_ordinals.len(), 2);
+            let radius = edge.circle_radius_mm.expect("circle radius");
+            assert_close(edge.length_mm, 2.0 * std::f64::consts::PI * radius);
+            radius
+        })
+        .collect::<Vec<_>>();
+    upper_radii.sort_by(f64::total_cmp);
+
+    assert_eq!(upper_radii, vec![6.0, 10.0]);
 }
 
 #[test]

@@ -2,13 +2,13 @@ use crate::diagnostics::{
     AssistantPlanningResult, assistant_canonical_rejection, assistant_planning_rejection,
 };
 use crate::sketch::{
-    assistant_principal_plane, assistant_sketch_constraint, assistant_sketch_entity,
+    assistant_principal_plane, assistant_sketch_constraint, assistant_sketch_entities,
 };
 use crate::transforms::{
     rotation_in_parent_space, translated_transform, world_axis_rotation_transform,
 };
 use ketchup_core::assistant_sidecar::{
-    AssistantCadEditOperation, AssistantCadPartFeature, AssistantWorkplaneSpec,
+    AssistantAxisSpec, AssistantCadEditOperation, AssistantCadPartFeature, AssistantWorkplaneSpec,
 };
 use ketchup_core::document::{
     CanonicalCommand, CanonicalError, DefinitionId, Dimension, FeatureId, FeatureKind,
@@ -18,6 +18,96 @@ use ketchup_core::sketch::{
     FeatureDirection, FeatureExtent, PadSpec, SketchSpec, WorkplaneSpec, WorkplaneSupport,
 };
 use ketchup_interaction::Vec3;
+
+fn revolve_axis_in_workplane(
+    axis: AssistantAxisSpec,
+    workplane: &WorkplaneSpec,
+    operation_name: &str,
+    target: &str,
+) -> AssistantPlanningResult<([f64; 2], [f64; 2])> {
+    let (origin_mm, direction) = axis.origin_and_direction().map_err(|error| {
+        assistant_planning_rejection(
+            "planning.cad_axis_unresolved",
+            operation_name,
+            target,
+            error,
+            "Use a direct axis or resolve the referenced construction axis before part creation.",
+        )
+    })?;
+    let frame = workplane.frame;
+    let relative =
+        std::array::from_fn::<_, 3, _>(|index| origin_mm[index] - frame.origin_mm[index]);
+    let dot = |left: [f64; 3], right: [f64; 3]| {
+        left.into_iter().zip(right).map(|(a, b)| a * b).sum::<f64>()
+    };
+    let direction_length = dot(direction, direction).sqrt();
+    let origin_scale = relative.into_iter().map(f64::abs).fold(1.0_f64, f64::max);
+    if dot(relative, frame.normal).abs() > 1.0e-9 * origin_scale
+        || dot(direction, frame.normal).abs() > 1.0e-9 * direction_length
+    {
+        return Err(assistant_planning_rejection(
+            "planning.cad_revolve_axis_off_workplane",
+            operation_name,
+            target,
+            "The Revolve axis does not lie in the sketch workplane.",
+            "Use an axis whose origin and direction lie in the selected workplane.",
+        ));
+    }
+    let axis_start_mm = [dot(relative, frame.x_axis), dot(relative, frame.y_axis)];
+    let axis_direction = [
+        dot(direction, frame.x_axis) / direction_length,
+        dot(direction, frame.y_axis) / direction_length,
+    ];
+    let axis_end_mm = [
+        axis_start_mm[0] + axis_direction[0],
+        axis_start_mm[1] + axis_direction[1],
+    ];
+    Ok((axis_start_mm, axis_end_mm))
+}
+
+fn construction_plane_workplane(
+    snapshot: &Snapshot,
+    feature_id: FeatureId,
+    operation_name: &str,
+) -> AssistantPlanningResult<WorkplaneSpec> {
+    let (origin_mm, normal, x_direction) = snapshot
+        .feature(feature_id)
+        .and_then(|feature| match feature.kind() {
+            FeatureKind::ConstructionPlane {
+                origin_mm,
+                normal,
+                x_direction,
+            } => Some((*origin_mm, *normal, *x_direction)),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            assistant_planning_rejection(
+                "planning.construction_plane_unavailable",
+                operation_name,
+                &format!("feature:{}", feature_id.0),
+                "The requested workplane support is not a construction plane.",
+                "Reference an existing construction plane or the typed construction_feature output of an earlier create_construction_plane operation.",
+            )
+        })?;
+    let frame = ketchup_core::sketch::WorkplaneFrame::from_construction_plane(
+        origin_mm,
+        normal,
+        x_direction,
+    )
+    .map_err(|error| {
+        assistant_canonical_rejection(
+            CanonicalError::Sketch(error),
+            operation_name,
+            &format!("feature:{}", feature_id.0),
+        )
+    })?;
+    Ok(WorkplaneSpec {
+        support: WorkplaneSupport::ConstructionPlane {
+            feature: feature_id,
+        },
+        frame,
+    })
+}
 
 pub(crate) fn plan_creation(
     snapshot: &Snapshot,
@@ -122,6 +212,18 @@ pub(crate) fn plan_creation(
                         frame: base_frame.offset(*distance_mm),
                     }
                 }
+                AssistantWorkplaneSpec::ConstructionPlane { plane } => {
+                    let feature_id = FeatureId(plane.existing_id().ok_or_else(|| {
+                        assistant_planning_rejection(
+                            "planning.construction_plane_reference_unresolved",
+                            operation_name,
+                            document_target,
+                            "The construction-plane reference was not resolved before planning.",
+                            "Use an existing construction plane or an earlier typed program output.",
+                        )
+                    })?);
+                    construction_plane_workplane(snapshot, feature_id, operation_name)?
+                }
             };
             let constraints = constraints
                 .iter()
@@ -147,7 +249,10 @@ pub(crate) fn plan_creation(
                     name: name.clone(),
                     kind: FeatureKind::Sketch(SketchSpec {
                         workplane: workplane_id,
-                        entities: entities.iter().map(assistant_sketch_entity).collect(),
+                        entities: entities
+                            .iter()
+                            .flat_map(assistant_sketch_entities)
+                            .collect(),
                         constraints,
                     }),
                 },
@@ -258,6 +363,18 @@ pub(crate) fn plan_creation(
                         frame: base_frame.offset(*distance_mm),
                     }
                 }
+                AssistantWorkplaneSpec::ConstructionPlane { plane } => {
+                    let feature_id = FeatureId(plane.existing_id().ok_or_else(|| {
+                        assistant_planning_rejection(
+                            "planning.construction_plane_reference_unresolved",
+                            operation_name,
+                            document_target,
+                            "The construction-plane reference was not resolved before planning.",
+                            "Use an existing construction plane or an earlier typed program output.",
+                        )
+                    })?);
+                    construction_plane_workplane(snapshot, feature_id, operation_name)?
+                }
             };
             let constraints = constraints
                 .iter()
@@ -272,7 +389,10 @@ pub(crate) fn plan_creation(
                 })?;
             let sketch = SketchSpec {
                 workplane: workplane_id,
-                entities: entities.iter().map(assistant_sketch_entity).collect(),
+                entities: entities
+                    .iter()
+                    .flat_map(assistant_sketch_entities)
+                    .collect(),
                 constraints,
             };
             let regions = sketch.solved_regions().map_err(|error| {
@@ -309,15 +429,22 @@ pub(crate) fn plan_creation(
                     })
                 }
                 AssistantCadPartFeature::Revolve {
-                    axis_start_mm,
-                    axis_end_mm,
+                    axis,
                     angle_degrees,
-                } => FeatureKind::Revolve {
-                    profile: sketch_id,
-                    axis_start_mm: *axis_start_mm,
-                    axis_end_mm: *axis_end_mm,
-                    angle_degrees: *angle_degrees,
-                },
+                } => {
+                    let (axis_start_mm, axis_end_mm) = revolve_axis_in_workplane(
+                        axis.clone(),
+                        &workplane,
+                        operation_name,
+                        &format!("feature:{}", body_id.0),
+                    )?;
+                    FeatureKind::Revolve {
+                        profile: sketch_id,
+                        axis_start_mm,
+                        axis_end_mm,
+                        angle_degrees: *angle_degrees,
+                    }
+                }
             };
             let translated = translated_transform(
                 Transform::identity(),

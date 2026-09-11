@@ -684,11 +684,11 @@ fn cad_edit_append_loft_is_host_id_assigned_exact_and_one_step() {
             feature: AssistantCadBodyFeature::Loft {
                 sections: vec![
                     AssistantCadLoftSection {
-                        profile_feature_id: 3,
+                        profile_feature_id: 3.into(),
                         elevation_mm: 0.0,
                     },
                     AssistantCadLoftSection {
-                        profile_feature_id: 4,
+                        profile_feature_id: 4.into(),
                         elevation_mm: 35.0,
                     },
                 ],
@@ -837,7 +837,7 @@ fn cad_edit_append_topology_shell_uses_host_face_reference_and_one_step() {
 }
 
 #[test]
-fn cad_edit_append_topology_fillet_uses_host_edge_reference_and_one_step() {
+fn cad_edit_fillet_edges_uses_host_references_and_one_step() {
     let mut app = KetchupApp::new();
     install_initial_graph_result(&mut app);
     let context = app.assistant_context_for("Fillet the exact body edges");
@@ -855,14 +855,12 @@ fn cad_edit_append_topology_fillet_uses_host_edge_reference_and_one_step() {
     let baseline = app.document.current().clone();
     let baseline_undo = app.document.visible_undo_steps();
     let program = AssistantCadEditProgram {
-        operations: vec![AssistantCadEditOperation::AppendFeature {
+        operations: vec![AssistantCadEditOperation::FilletEdges {
             definition_id: INITIAL_BOX_DEFINITION.0,
             name: "Assistant fillet".to_owned(),
-            feature: AssistantCadBodyFeature::TopologyFillet {
-                target_feature_id: 2,
-                edge_reference_ids: requested_reference_ids,
-                radius_mm: 2.0,
-            },
+            target_feature_id: 2,
+            edge_reference_ids: requested_reference_ids,
+            radius_mm: 2.0,
         }],
     };
 
@@ -919,7 +917,7 @@ fn cad_edit_append_topology_fillet_uses_host_edge_reference_and_one_step() {
 }
 
 #[test]
-fn cad_edit_append_topology_chamfer_uses_host_edge_reference_and_one_step() {
+fn cad_edit_chamfer_edges_uses_host_references_and_one_step() {
     let mut app = KetchupApp::new();
     install_initial_graph_result(&mut app);
     let context = app.assistant_context_for("Chamfer an exact body edge");
@@ -937,14 +935,12 @@ fn cad_edit_append_topology_chamfer_uses_host_edge_reference_and_one_step() {
     let baseline = app.document.current().clone();
     let baseline_undo = app.document.visible_undo_steps();
     let program = AssistantCadEditProgram {
-        operations: vec![AssistantCadEditOperation::AppendFeature {
+        operations: vec![AssistantCadEditOperation::ChamferEdges {
             definition_id: INITIAL_BOX_DEFINITION.0,
             name: "Assistant chamfer".to_owned(),
-            feature: AssistantCadBodyFeature::TopologyChamfer {
-                target_feature_id: 2,
-                edge_reference_ids: requested_reference_ids,
-                distance_mm: 2.0,
-            },
+            target_feature_id: 2,
+            edge_reference_ids: requested_reference_ids,
+            distance_mm: 2.0,
         }],
     };
 
@@ -1418,18 +1414,18 @@ fn cad_edit_append_loft_rejects_unsupported_inputs_without_mutation() {
     let baseline_revision = app.document.current().revision_id();
     let baseline_digest = app.document.current().canonical_digest();
     let baseline_undo = app.document.visible_undo_steps();
-    let program = |upper_profile_feature_id| AssistantCadEditProgram {
+    let program = |upper_profile_feature_id: u64| AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
             definition_id: INITIAL_BOX_DEFINITION.0,
             name: "Rejected loft".to_owned(),
             feature: AssistantCadBodyFeature::Loft {
                 sections: vec![
                     AssistantCadLoftSection {
-                        profile_feature_id: 3,
+                        profile_feature_id: 3.into(),
                         elevation_mm: 0.0,
                     },
                     AssistantCadLoftSection {
-                        profile_feature_id: upper_profile_feature_id,
+                        profile_feature_id: upper_profile_feature_id.into(),
                         elevation_mm: 35.0,
                     },
                 ],
@@ -2288,6 +2284,38 @@ fn install_graph_result(
             backend: "headless-topology-backend.v1".into(),
             tolerance: "1e-7-mm".into(),
             faces: Vec::new(),
+            edges: vec![
+                ketchup_core::exact_product::ExactBRepGraphEdgeEvidence {
+                    edge_ordinal: 0,
+                    curve_kind: "line".into(),
+                    length_mm: size.x,
+                    centroid_mm: [minimum.x + size.x * 0.5, minimum.y, minimum.z],
+                    bounds_mm: [
+                        [minimum.x, minimum.y, minimum.z],
+                        [maximum.x, minimum.y, minimum.z],
+                    ],
+                    closed: false,
+                    circle_radius_mm: None,
+                    axis_origin_mm: Some([minimum.x, minimum.y, minimum.z]),
+                    unit_axis_direction: Some([1.0, 0.0, 0.0]),
+                    adjacent_face_ordinals: vec![0, 2],
+                },
+                ketchup_core::exact_product::ExactBRepGraphEdgeEvidence {
+                    edge_ordinal: 1,
+                    curve_kind: "line".into(),
+                    length_mm: size.y,
+                    centroid_mm: [maximum.x, minimum.y + size.y * 0.5, minimum.z],
+                    bounds_mm: [
+                        [maximum.x, minimum.y, minimum.z],
+                        [maximum.x, maximum.y, minimum.z],
+                    ],
+                    closed: false,
+                    circle_radius_mm: None,
+                    axis_origin_mm: Some([maximum.x, minimum.y, minimum.z]),
+                    unit_axis_direction: Some([0.0, 1.0, 0.0]),
+                    adjacent_face_ordinals: vec![0, 5],
+                },
+            ],
         },
         &StepImportMesh {
             vertices_mm,
@@ -2298,7 +2326,7 @@ fn install_graph_result(
     assert!(app.headless_install_exact_package(ExactBodyPackage::Graph(package)));
 }
 
-fn install_initial_graph_result(app: &mut KetchupApp) {
+pub(crate) fn install_initial_graph_result(app: &mut KetchupApp) {
     install_graph_result(app, INITIAL_BOX_DEFINITION, FeatureId(2), None);
 }
 
@@ -9871,6 +9899,7 @@ fn solid_tool_preview_survives_accepted_exact_bounds_refresh_and_commits_once() 
             backend: "solid-tool-headless-backend.v1".into(),
             tolerance: "1e-7-mm".into(),
             faces: Vec::new(),
+            edges: Vec::new(),
         },
         &StepImportMesh {
             vertices_mm,
@@ -10631,14 +10660,12 @@ fn manual_and_assistant_multi_edge_finish_share_the_canonical_plan() {
         .collect::<Vec<_>>();
     reference_ids.reverse();
     let program = AssistantCadEditProgram {
-        operations: vec![AssistantCadEditOperation::AppendFeature {
+        operations: vec![AssistantCadEditOperation::FilletEdges {
             definition_id: INITIAL_BOX_DEFINITION.0,
             name: "Assistant multi-edge fillet".to_owned(),
-            feature: AssistantCadBodyFeature::TopologyFillet {
-                target_feature_id: 2,
-                edge_reference_ids: reference_ids,
-                radius_mm: 1.0,
-            },
+            target_feature_id: 2,
+            edge_reference_ids: reference_ids,
+            radius_mm: 1.0,
         }],
     };
     let assistant_batch = app.plan_assistant_cad_edit_program(&program).unwrap();

@@ -1,15 +1,17 @@
 use ketchup_core::assistant_sidecar::{
-    ASSISTANT_PROTOCOL_VERSION, AssistantBalloonTextIntent, AssistantBeamNotchIntent,
-    AssistantBottleFinishKind, AssistantBottleIntent, AssistantCadBodyFeature,
-    AssistantCadBooleanOperation, AssistantCadDeletePolicy, AssistantCadEditOperation,
-    AssistantCadEditProgram, AssistantCadEntitySelector, AssistantCadLoftSection,
-    AssistantCadPartFeature, AssistantCadRotation, AssistantDistribution, AssistantHandshake,
-    AssistantHandshakeError, AssistantKetchupBottleIntent, AssistantLinearArrayIntent,
+    ASSISTANT_PROTOCOL_VERSION, AssistantAxisSpec, AssistantBalloonTextIntent,
+    AssistantBeamNotchIntent, AssistantBottleFinishKind, AssistantBottleIntent,
+    AssistantCadBodyFeature, AssistantCadBooleanOperation, AssistantCadDeletePolicy,
+    AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
+    AssistantCadLoftSection, AssistantCadPartFeature, AssistantCadRotation, AssistantDistribution,
+    AssistantHandshake, AssistantHandshakeError, AssistantHelixHandedness,
+    AssistantHelixParameters, AssistantKetchupBottleIntent, AssistantLinearArrayIntent,
     AssistantModelIntent, AssistantOrientedBeamIntent, AssistantParameterEditIntent,
     AssistantPrincipalPlane, AssistantProfileTranslationIntent, AssistantRejectionDiagnostic,
     AssistantRejectionPhase, AssistantRotationIntent, AssistantSketchConstraint,
     AssistantSketchEntity, AssistantSketchPointKind, AssistantSketchPointRef,
-    AssistantTeapotIntent, AssistantWorkplaneSpec, distribution_is_enabled,
+    AssistantSketchProfileCopy, AssistantTeapotIntent, AssistantWorkplaneSpec,
+    distribution_is_enabled,
 };
 
 const PUBLIC_HANDSHAKE: &str = r#"{
@@ -72,6 +74,79 @@ fn handshake_rejects_unknown_providers_models_and_protocol_versions() {
         AssistantHandshake::parse_and_validate(&version),
         Err(AssistantHandshakeError::UnsupportedProtocolVersion(4))
     ));
+}
+
+#[test]
+fn shared_axis_two_points_matches_origin_direction_and_rejects_invalid_inputs() {
+    let parameters = |axis| AssistantHelixParameters {
+        axis,
+        radius_mm: 7.0,
+        pitch_mm: 4.5,
+        turns: 2.25,
+        start_angle_degrees: 37.0,
+        handedness: AssistantHelixHandedness::Left,
+    };
+    let origin_direction = parameters(AssistantAxisSpec::OriginDirection {
+        origin_mm: [4.0, -3.0, 2.0],
+        direction: [1.0, 2.0, 3.0],
+    });
+    let two_points = parameters(AssistantAxisSpec::TwoPoints {
+        start_mm: [4.0, -3.0, 2.0],
+        end_mm: [5.0, -1.0, 5.0],
+    });
+
+    assert_eq!(
+        two_points.spatial_path_segments().unwrap(),
+        origin_direction.spatial_path_segments().unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(two_points).unwrap()["axis"]["type"],
+        "two_points"
+    );
+    assert!(
+        AssistantAxisSpec::TwoPoints {
+            start_mm: [1.0, 2.0, 3.0],
+            end_mm: [1.0, 2.0, 3.0],
+        }
+        .origin_and_direction()
+        .is_err()
+    );
+    assert!(
+        AssistantAxisSpec::TwoPoints {
+            start_mm: [0.0; 3],
+            end_mm: [1.0e12, 0.0, 0.0],
+        }
+        .origin_and_direction()
+        .is_err()
+    );
+}
+
+#[test]
+fn shared_axis_edge_reference_is_strict_and_requires_document_resolution() {
+    let edge_reference_id = "a".repeat(64);
+    let axis: AssistantAxisSpec = serde_json::from_value(serde_json::json!({
+        "type": "edge",
+        "edge_reference_id": edge_reference_id,
+    }))
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(&axis).unwrap(),
+        serde_json::json!({"type":"edge","edge_reference_id":"a".repeat(64)})
+    );
+    assert!(axis.origin_and_direction().is_err());
+
+    let program = |edge_reference_id| AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::CreateHelixPath {
+            name: "Referenced edge axis".into(),
+            parameters: AssistantHelixParameters {
+                axis: AssistantAxisSpec::Edge { edge_reference_id },
+                ..AssistantHelixParameters::default()
+            },
+        }],
+    };
+    assert!(program("b".repeat(64)).validate().is_ok());
+    assert!(program("b".repeat(63)).validate().is_err());
+    assert!(program("z".repeat(64)).validate().is_err());
 }
 
 #[test]
@@ -176,6 +251,28 @@ fn cad_edit_sketch_contract_is_typed_strict_and_round_trips() {
                         center_mm: [20.0, 0.0],
                         radius_mm: 5.0,
                     },
+                    AssistantSketchEntity::Ellipse {
+                        segment_ids: [5, 6, 7, 8],
+                        center_mm: [20.0, 20.0],
+                        radius_x_mm: 8.0,
+                        radius_y_mm: 4.0,
+                        rotation_degrees: 30.0,
+                    },
+                    AssistantSketchEntity::CubicBezier {
+                        id: 4,
+                        start_mm: [30.0, 0.0],
+                        control_1_mm: [35.0, 10.0],
+                        control_2_mm: [45.0, 10.0],
+                        end_mm: [50.0, 0.0],
+                    },
+                    AssistantSketchEntity::RoundedRectangle {
+                        segment_ids: [9, 10, 11, 12, 13, 14, 15, 16],
+                        center_mm: [-20.0, 20.0],
+                        width_mm: 18.0,
+                        height_mm: 12.0,
+                        corner_radius_mm: 3.0,
+                        rotation_degrees: 15.0,
+                    },
                 ],
                 constraints: vec![
                     AssistantSketchConstraint::Horizontal {
@@ -195,6 +292,14 @@ fn cad_edit_sketch_contract_is_typed_strict_and_round_trips() {
                         },
                         position_mm: [-10.0, 0.0],
                     },
+                    AssistantSketchConstraint::FixedPoint {
+                        id: 4,
+                        point: AssistantSketchPointRef {
+                            entity_id: 4,
+                            point: AssistantSketchPointKind::Control1,
+                        },
+                        position_mm: [35.0, 10.0],
+                    },
                 ],
             },
             AssistantCadEditOperation::SetDimension {
@@ -210,6 +315,22 @@ fn cad_edit_sketch_contract_is_typed_strict_and_round_trips() {
     assert_eq!(serialized["operations"][0]["operation"], "create_sketch");
     assert_eq!(serialized["operations"][0]["workplane"]["plane"], "xy");
     assert_eq!(serialized["operations"][0]["entities"][1]["type"], "arc");
+    assert_eq!(
+        serialized["operations"][0]["entities"][3]["type"],
+        "ellipse"
+    );
+    assert_eq!(
+        serialized["operations"][0]["entities"][4]["type"],
+        "cubic_bezier"
+    );
+    assert_eq!(
+        serialized["operations"][0]["entities"][5]["type"],
+        "rounded_rectangle"
+    );
+    assert_eq!(
+        serialized["operations"][0]["constraints"][3]["point"]["point"],
+        "control1"
+    );
     assert_eq!(serialized["operations"][1]["operation"], "set_dimension");
     assert_eq!(
         serde_json::from_value::<AssistantCadEditProgram>(serialized).unwrap(),
@@ -233,6 +354,108 @@ fn cad_edit_sketch_contract_is_typed_strict_and_round_trips() {
         }]
     });
     assert!(serde_json::from_value::<AssistantCadEditProgram>(unknown_entity_field).is_err());
+
+    let colliding_ellipse = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::CreateSketch {
+            definition_id: 1,
+            name: "Rejected ellipse".to_owned(),
+            workplane: AssistantWorkplaneSpec::Principal {
+                plane: AssistantPrincipalPlane::Xy,
+            },
+            entities: vec![AssistantSketchEntity::Ellipse {
+                segment_ids: [1, 1, 2, 3],
+                center_mm: [0.0, 0.0],
+                radius_x_mm: 8.0,
+                radius_y_mm: 4.0,
+                rotation_degrees: 0.0,
+            }],
+            constraints: Vec::new(),
+        }],
+    };
+    assert!(colliding_ellipse.validate().is_err());
+
+    let oversized_rounding = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::CreateSketch {
+            definition_id: 1,
+            name: "Rejected rounded rectangle".to_owned(),
+            workplane: AssistantWorkplaneSpec::Principal {
+                plane: AssistantPrincipalPlane::Xy,
+            },
+            entities: vec![AssistantSketchEntity::RoundedRectangle {
+                segment_ids: [1, 2, 3, 4, 5, 6, 7, 8],
+                center_mm: [0.0, 0.0],
+                width_mm: 20.0,
+                height_mm: 10.0,
+                corner_radius_mm: 5.0,
+                rotation_degrees: 0.0,
+            }],
+            constraints: Vec::new(),
+        }],
+    };
+    assert!(oversized_rounding.validate().is_err());
+}
+
+#[test]
+fn profile_copies_are_bounded_typed_and_do_not_repeat_source_points() {
+    let source = AssistantSketchEntity::RoundedRectangle {
+        segment_ids: [1, 2, 3, 4, 5, 6, 7, 8],
+        center_mm: [0.0, 0.0],
+        width_mm: 20.0,
+        height_mm: 12.0,
+        corner_radius_mm: 2.0,
+        rotation_degrees: 0.0,
+    };
+    let copy =
+        |entity_ids, translation_mm, rotation_degrees, uniform_scale| AssistantSketchProfileCopy {
+            entity_ids,
+            translation_mm,
+            rotation_degrees,
+            uniform_scale,
+        };
+    let program = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::CreateSketch {
+            definition_id: 1,
+            name: "Two transformed profiles".to_owned(),
+            workplane: AssistantWorkplaneSpec::Principal {
+                plane: AssistantPrincipalPlane::Xy,
+            },
+            entities: vec![AssistantSketchEntity::ProfileCopies {
+                source_entities: vec![source.clone()],
+                copies: vec![
+                    copy((11..=18).collect(), [-15.0, 4.0], 20.0, 1.0),
+                    copy((21..=28).collect(), [18.0, -6.0], -35.0, 0.65),
+                ],
+            }],
+            constraints: Vec::new(),
+        }],
+    };
+
+    assert_eq!(program.validate(), Ok(()));
+    let serialized = serde_json::to_value(&program).unwrap();
+    assert_eq!(
+        serialized["operations"][0]["entities"][0]["type"],
+        "profile_copies"
+    );
+    assert_eq!(
+        serde_json::from_value::<AssistantCadEditProgram>(serialized).unwrap(),
+        program
+    );
+
+    let mismatched_ids = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::CreateSketch {
+            definition_id: 1,
+            name: "Rejected profile copy".to_owned(),
+            workplane: AssistantWorkplaneSpec::Principal {
+                plane: AssistantPrincipalPlane::Xy,
+            },
+            entities: vec![AssistantSketchEntity::ProfileCopies {
+                source_entities: vec![source],
+                copies: vec![copy(vec![11, 12], [0.0, 0.0], 0.0, 1.0)],
+            }],
+            constraints: Vec::new(),
+        }],
+    };
+    assert!(mismatched_ids.validate().is_err());
 }
 
 #[test]
@@ -411,8 +634,10 @@ fn cad_edit_part_contract_is_typed_bounded_and_round_trips() {
         unreachable!()
     };
     *feature = AssistantCadPartFeature::Revolve {
-        axis_start_mm: [0.0, 0.0],
-        axis_end_mm: [0.0, 1.0],
+        axis: AssistantAxisSpec::TwoPoints {
+            start_mm: [0.0, 0.0, 0.0],
+            end_mm: [0.0, 1.0, 0.0],
+        },
         angle_degrees: 275.0,
     };
     assert_eq!(revolve.validate(), Ok(()));
@@ -440,8 +665,10 @@ fn cad_edit_part_contract_is_typed_bounded_and_round_trips() {
         unreachable!()
     };
     *feature = AssistantCadPartFeature::Revolve {
-        axis_start_mm: [1.0, 1.0],
-        axis_end_mm: [1.0, 1.0],
+        axis: AssistantAxisSpec::TwoPoints {
+            start_mm: [1.0, 1.0, 0.0],
+            end_mm: [1.0, 1.0, 0.0],
+        },
         angle_degrees: 361.0,
     };
     assert_eq!(
@@ -921,11 +1148,11 @@ fn cad_edit_append_loft_contract_is_strict_bounded_and_host_id_assigned() {
     };
     let valid = program(vec![
         AssistantCadLoftSection {
-            profile_feature_id: 11,
+            profile_feature_id: 11.into(),
             elevation_mm: -10.0,
         },
         AssistantCadLoftSection {
-            profile_feature_id: 12,
+            profile_feature_id: 12.into(),
             elevation_mm: 20.0,
         },
     ]);
@@ -946,7 +1173,7 @@ fn cad_edit_append_loft_contract_is_strict_bounded_and_host_id_assigned() {
         program(
             (0..16)
                 .map(|index| AssistantCadLoftSection {
-                    profile_feature_id: index + 1,
+                    profile_feature_id: (index + 1).into(),
                     elevation_mm: index as f64,
                 })
                 .collect()
@@ -957,82 +1184,82 @@ fn cad_edit_append_loft_contract_is_strict_bounded_and_host_id_assigned() {
 
     let invalid_sections = [
         vec![AssistantCadLoftSection {
-            profile_feature_id: 11,
+            profile_feature_id: 11.into(),
             elevation_mm: 0.0,
         }],
         (0..17)
             .map(|index| AssistantCadLoftSection {
-                profile_feature_id: index + 1,
+                profile_feature_id: (index + 1).into(),
                 elevation_mm: index as f64,
             })
             .collect(),
         vec![
             AssistantCadLoftSection {
-                profile_feature_id: 0,
+                profile_feature_id: 0.into(),
                 elevation_mm: 0.0,
             },
             AssistantCadLoftSection {
-                profile_feature_id: 12,
+                profile_feature_id: 12.into(),
                 elevation_mm: 10.0,
             },
         ],
         vec![
             AssistantCadLoftSection {
-                profile_feature_id: 11,
+                profile_feature_id: 11.into(),
                 elevation_mm: 0.0,
             },
             AssistantCadLoftSection {
-                profile_feature_id: 11,
+                profile_feature_id: 11.into(),
                 elevation_mm: 10.0,
             },
         ],
         vec![
             AssistantCadLoftSection {
-                profile_feature_id: 11,
+                profile_feature_id: 11.into(),
                 elevation_mm: 10.0,
             },
             AssistantCadLoftSection {
-                profile_feature_id: 12,
+                profile_feature_id: 12.into(),
                 elevation_mm: 10.0,
             },
         ],
         vec![
             AssistantCadLoftSection {
-                profile_feature_id: 11,
+                profile_feature_id: 11.into(),
                 elevation_mm: 10.0,
             },
             AssistantCadLoftSection {
-                profile_feature_id: 12,
+                profile_feature_id: 12.into(),
                 elevation_mm: 0.0,
             },
         ],
         vec![
             AssistantCadLoftSection {
-                profile_feature_id: 11,
+                profile_feature_id: 11.into(),
                 elevation_mm: 0.0,
             },
             AssistantCadLoftSection {
-                profile_feature_id: 12,
+                profile_feature_id: 12.into(),
                 elevation_mm: f64::NAN,
             },
         ],
         vec![
             AssistantCadLoftSection {
-                profile_feature_id: 11,
+                profile_feature_id: 11.into(),
                 elevation_mm: 0.0,
             },
             AssistantCadLoftSection {
-                profile_feature_id: 12,
+                profile_feature_id: 12.into(),
                 elevation_mm: f64::INFINITY,
             },
         ],
         vec![
             AssistantCadLoftSection {
-                profile_feature_id: 11,
+                profile_feature_id: 11.into(),
                 elevation_mm: 0.0,
             },
             AssistantCadLoftSection {
-                profile_feature_id: 12,
+                profile_feature_id: 12.into(),
                 elevation_mm: 1_000_001.0,
             },
         ],
@@ -1397,6 +1624,37 @@ fn cad_edit_append_topology_chamfer_contract_is_strict_bounded_and_host_id_assig
     ] {
         assert!(serde_json::from_value::<AssistantCadEditProgram>(invalid).is_err());
     }
+}
+
+#[test]
+fn direct_edge_finish_operations_are_strict_bounded_and_round_trip() {
+    let reference_ids = vec!["a".repeat(64), "b".repeat(64)];
+    let fillet = serde_json::json!({"operations":[{
+        "operation":"fillet_edges","definition_id":7,"name":"Rounded rim",
+        "target_feature_id":11,"edge_reference_ids":reference_ids,"radius_mm":1.5
+    }]});
+    let chamfer = serde_json::json!({"operations":[{
+        "operation":"chamfer_edges","definition_id":7,"name":"Bevelled rim",
+        "target_feature_id":11,"edge_reference_ids":["a".repeat(64),"b".repeat(64)],
+        "distance_mm":0.75
+    }]});
+
+    for value in [fillet, chamfer] {
+        let program = serde_json::from_value::<AssistantCadEditProgram>(value).unwrap();
+        assert_eq!(program.validate(), Ok(()));
+        let serialized = serde_json::to_value(&program).unwrap();
+        assert_eq!(
+            serde_json::from_value::<AssistantCadEditProgram>(serialized).unwrap(),
+            program
+        );
+    }
+
+    let polluted = serde_json::json!({"operations":[{
+        "operation":"fillet_edges","definition_id":7,"name":"Rounded rim",
+        "target_feature_id":11,"edge_reference_ids":["a".repeat(64)],"radius_mm":1.5,
+        "edge_ordinal":3
+    }]});
+    assert!(serde_json::from_value::<AssistantCadEditProgram>(polluted).is_err());
 }
 
 #[test]

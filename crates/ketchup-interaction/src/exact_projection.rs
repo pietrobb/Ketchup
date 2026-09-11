@@ -893,6 +893,7 @@ mod tests {
                     backend: "occt-generated-headless.v1".into(),
                     tolerance: "1e-7-mm".into(),
                     faces: Vec::new(),
+                    edges: Vec::new(),
                 },
                 &mesh,
             )

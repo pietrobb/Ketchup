@@ -311,6 +311,14 @@ impl Shell {
             .expect("enable the headless live bridge");
     }
 
+    pub fn enable_live_consent_broker(&mut self) {
+        let context = self.harness.ctx.clone();
+        self.harness
+            .state_mut()
+            .enable_live_consent_broker(&context)
+            .expect("enable the headless live consent broker");
+    }
+
     pub fn render_gpu(&mut self) {
         self.harness
             .render()

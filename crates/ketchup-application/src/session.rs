@@ -237,6 +237,43 @@ impl DocumentSession {
         self.rebind();
         Ok(self.snapshot())
     }
+    pub fn start_exact_evaluation_task(&mut self) -> ExactEvaluationTask {
+        self.start_scoped_exact_evaluation_task(None)
+    }
+    pub fn start_scoped_exact_evaluation_task(
+        &mut self,
+        scope: Option<&BTreeSet<ProducerKey>>,
+    ) -> ExactEvaluationTask {
+        self.rebind();
+        let path = self.settings.exact_worker_path.clone().or_else(|| {
+            exact_worker_candidates()
+                .into_iter()
+                .find(|path| path.is_file())
+        });
+        start_exact_evaluation_scoped(
+            self.snapshot(),
+            &self.container_data,
+            &self.exact_results,
+            &self.topology_results,
+            path,
+            scope,
+            || {},
+        )
+    }
+    pub fn publish_exact_evaluation(
+        &mut self,
+        task: &ExactEvaluationTask,
+        products: ExactEvaluationProducts,
+    ) -> Result<EvaluationReport, SessionError> {
+        publish_exact_products(
+            &mut self.document,
+            &mut self.exact_results,
+            &mut self.topology_results,
+            task,
+            products,
+        )
+        .map_err(SessionError::Evaluation)
+    }
     pub fn evaluate(&mut self) -> Result<EvaluationReport, SessionError> {
         self.evaluate_with_timeout(self.settings.evaluation_timeout)
     }
@@ -252,20 +289,7 @@ impl DocumentSession {
                 "exact evaluation timed out".into(),
             ));
         }
-        self.rebind();
-        let path = self.settings.exact_worker_path.clone().or_else(|| {
-            exact_worker_candidates()
-                .into_iter()
-                .find(|path| path.is_file())
-        });
-        let task = start_exact_evaluation(
-            self.snapshot(),
-            &self.container_data,
-            &self.exact_results,
-            &self.topology_results,
-            path,
-            || {},
-        );
+        let task = self.start_exact_evaluation_task();
         let products = task
             .wait(
                 timeout
@@ -279,14 +303,7 @@ impl DocumentSession {
                 "exact evaluation timed out".into(),
             ));
         }
-        publish_exact_products(
-            &mut self.document,
-            &mut self.exact_results,
-            &mut self.topology_results,
-            &task,
-            products,
-        )
-        .map_err(SessionError::Evaluation)
+        self.publish_exact_evaluation(&task, products)
     }
     pub fn validators(&self, selection: &AssistantValidationSelection) -> serde_json::Value {
         assistant_validation_context_with_worker(

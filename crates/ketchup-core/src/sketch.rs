@@ -52,6 +52,9 @@ pub enum WorkplaneSupport {
         reference: Box<BodySubshapeRef>,
         health: WorkplaneSupportHealth,
     },
+    ConstructionPlane {
+        feature: FeatureId,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -77,6 +80,20 @@ impl WorkplaneFrame {
         };
         frame.validate()?;
         Ok(frame)
+    }
+
+    pub fn from_construction_plane(
+        origin_mm: [f64; 3],
+        normal: [f64; 3],
+        x_direction: [f64; 3],
+    ) -> Result<Self, SketchError> {
+        let normalized = |vector: [f64; 3]| {
+            let length = dot(vector, vector).sqrt();
+            vector.map(|value| value / length)
+        };
+        let normal = normalized(normal);
+        let x_axis = normalized(x_direction);
+        Self::from_axes(origin_mm, x_axis, cross(normal, x_axis))
     }
 
     #[must_use]
@@ -183,6 +200,10 @@ impl WorkplaneSpec {
                     return Err(SketchError::InvalidPlanarFaceSupport);
                 }
                 Ok(())
+            }
+            WorkplaneSupport::ConstructionPlane { feature } if feature.0 != 0 => Ok(()),
+            WorkplaneSupport::ConstructionPlane { feature } => {
+                Err(SketchError::MissingWorkplaneSupport(*feature))
             }
         }
     }

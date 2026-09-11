@@ -10,6 +10,11 @@ fn bootstrap_failed() -> ! {
     std::process::exit(2);
 }
 
+fn consent_broker_failed() -> ! {
+    eprintln!("live consent broker failed");
+    std::process::exit(2);
+}
+
 fn main() -> eframe::Result {
     let all_arguments: Vec<_> = std::env::args_os().skip(1).collect();
     // Parsing the explicit flag is the only gateway to stdin. No environment,
@@ -88,8 +93,12 @@ fn main() -> eframe::Result {
                 bootstrap
                     .enable(&mut app, &creation_context.egui_ctx, std::io::stdout())
                     .unwrap_or_else(|_| bootstrap_failed());
-            } else if let Some(path) = document_path.as_deref() {
-                app.open_document_path(path);
+            } else {
+                app.enable_live_consent_broker(&creation_context.egui_ctx)
+                    .unwrap_or_else(|_| consent_broker_failed());
+                if let Some(path) = document_path.as_deref() {
+                    app.open_document_path(path);
+                }
             }
             Ok(Box::new(app))
         }),

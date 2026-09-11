@@ -814,6 +814,15 @@ pub fn encode_semantic_state_with_results(
                         )
                         .unwrap();
                     }
+                    WorkplaneSupport::ConstructionPlane { feature: support } => {
+                        writeln!(
+                            complete,
+                            "feature.{}.support=construction_plane,feature:{}",
+                            feature.id().0,
+                            support.0
+                        )
+                        .unwrap();
+                    }
                     WorkplaneSupport::PlanarFace { reference, health } => {
                         let id = feature.id().0;
                         writeln!(complete, "feature.{id}.support=planar_face").unwrap();
@@ -945,6 +954,9 @@ pub fn encode_semantic_state_with_results(
                         base.0,
                         distance.millimetres().to_bits()
                     ),
+                    WorkplaneSupport::ConstructionPlane { feature } => {
+                        format!("construction_plane:feature:{}", feature.0)
+                    }
                     WorkplaneSupport::PlanarFace { reference, health } => format!(
                         "planar_face:producer:{},role:{:?},health:{health:?}",
                         reference.producer_feature_id.0, reference.semantic_role
@@ -1098,6 +1110,103 @@ pub fn encode_semantic_state_with_results(
                     feature.definition_id().0,
                     segments.len(),
                     closed
+                )
+                .unwrap();
+            }
+            crate::document::FeatureKind::ConstructionPoint { position_mm } => {
+                writeln!(
+                    complete,
+                    "feature.{}.kind=construction_point",
+                    feature.id().0
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.position.f64_bits={:016x},{:016x},{:016x}",
+                    feature.id().0,
+                    position_mm[0].to_bits(),
+                    position_mm[1].to_bits(),
+                    position_mm[2].to_bits()
+                )
+                .unwrap();
+                writeln!(
+                    agent,
+                    "feature.{}=name:{:?},kind:construction_point,definition:{},position_mm:{:?}",
+                    feature.id().0,
+                    feature.name(),
+                    feature.definition_id().0,
+                    position_mm
+                )
+                .unwrap();
+            }
+            crate::document::FeatureKind::ConstructionAxis {
+                origin_mm,
+                direction,
+            } => {
+                writeln!(
+                    complete,
+                    "feature.{}.kind=construction_axis",
+                    feature.id().0
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.axis.f64_bits={:016x},{:016x},{:016x};{:016x},{:016x},{:016x}",
+                    feature.id().0,
+                    origin_mm[0].to_bits(),
+                    origin_mm[1].to_bits(),
+                    origin_mm[2].to_bits(),
+                    direction[0].to_bits(),
+                    direction[1].to_bits(),
+                    direction[2].to_bits()
+                )
+                .unwrap();
+                writeln!(
+                    agent,
+                    "feature.{}=name:{:?},kind:construction_axis,definition:{},origin_mm:{:?},direction:{:?}",
+                    feature.id().0,
+                    feature.name(),
+                    feature.definition_id().0,
+                    origin_mm,
+                    direction
+                )
+                .unwrap();
+            }
+            crate::document::FeatureKind::ConstructionPlane {
+                origin_mm,
+                normal,
+                x_direction,
+            } => {
+                writeln!(
+                    complete,
+                    "feature.{}.kind=construction_plane",
+                    feature.id().0
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.plane.f64_bits={:016x},{:016x},{:016x};{:016x},{:016x},{:016x};{:016x},{:016x},{:016x}",
+                    feature.id().0,
+                    origin_mm[0].to_bits(),
+                    origin_mm[1].to_bits(),
+                    origin_mm[2].to_bits(),
+                    normal[0].to_bits(),
+                    normal[1].to_bits(),
+                    normal[2].to_bits(),
+                    x_direction[0].to_bits(),
+                    x_direction[1].to_bits(),
+                    x_direction[2].to_bits()
+                )
+                .unwrap();
+                writeln!(
+                    agent,
+                    "feature.{}=name:{:?},kind:construction_plane,definition:{},origin_mm:{:?},normal:{:?},x_direction:{:?}",
+                    feature.id().0,
+                    feature.name(),
+                    feature.definition_id().0,
+                    origin_mm,
+                    normal,
+                    x_direction
                 )
                 .unwrap();
             }

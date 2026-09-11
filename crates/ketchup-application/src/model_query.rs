@@ -7,6 +7,10 @@ use ketchup_core::document::{
     InstancePath, InstancePathStep, LocalGroupKey, LocalOccurrenceKey, OccurrenceId,
     SceneQueryBudgetExceeded, SceneQueryBudgetKind, Snapshot, TagId,
 };
+use ketchup_core::exact_product::{
+    ExactBRepGraphEdgeEvidence, ExactBRepGraphFaceEvidence, ExactBodyPackage, ExactResultRegistry,
+};
+use ketchup_core::topology::{TopologicalElementKind, TopologicalElementRef};
 use ketchup_interaction::Vec3;
 use ketchup_interaction::projection::{
     CanonicalInteractionProjection, InteractionProjection, ProjectedOccurrence,
@@ -38,6 +42,8 @@ pub enum EntityKind {
     Definitions,
     Features,
     Relations,
+    Faces,
+    Edges,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -272,8 +278,199 @@ impl ModelQuery {
                 "max_instance_index_text_bytes":MAX_INSTANCE_INDEX_TEXT_BYTES}})
     }
 
-    pub fn page(&self, snapshot: &Snapshot, request: &PageRequest) -> Result<Value, QueryError> {
+    pub fn page_with_topology(
+        &self,
+        snapshot: &Snapshot,
+        topology_results: &ExactResultRegistry,
+        request: &PageRequest,
+    ) -> Result<Value, QueryError> {
+        if matches!(request.kind, EntityKind::Edges | EntityKind::Faces) {
+            return self.topology_page(snapshot, topology_results, request);
+        }
+        self.page(snapshot, request)
+    }
+
+    fn topology_page(
+        &self,
+        snapshot: &Snapshot,
+        topology_results: &ExactResultRegistry,
+        request: &PageRequest,
+    ) -> Result<Value, QueryError> {
         if !valid_page_request(request) {
+            return Err(QueryError::InvalidInput);
+        }
+        let identity = topology_identity(snapshot, topology_results);
+        let query = PageRequest {
+            kind: request.kind,
+            limit: request.limit,
+            search: request.search.clone(),
+            definition_id: request.definition_id,
+            tag_id: None,
+            classification_dimension_id: None,
+            classification_category_id: None,
+            world_bounds_mm: None,
+            cursor: None,
+        };
+        let after = if let Some(token) = &request.cursor {
+            let cursor = self.decode(token)?;
+            if cursor.identity != identity || cursor.generation != self.generation {
+                return Err(QueryError::StaleCursor);
+            }
+            if cursor.query != query {
+                return Err(QueryError::CrossQueryCursor);
+            }
+            cursor.after
+        } else {
+            0
+        };
+        let mut items = Vec::new();
+        let mut entity_ids = BTreeMap::new();
+        let mut total = 0_u64;
+        let mut bytes = 0;
+        let mut last = after;
+        let mut more = false;
+        let mut byte_limited = false;
+        let packages = topology_results
+            .body_values(snapshot)
+            .map_err(|_| QueryError::InvalidInput)?;
+        for package in packages.into_values() {
+            let ExactBodyPackage::Graph(package) = package.as_ref() else {
+                continue;
+            };
+            match request.kind {
+                EntityKind::Edges => {
+                    for evidence in &package.edge_evidence {
+                        let Some(reference) = topological_reference(
+                            &package.topological_references,
+                            TopologicalElementKind::Edge,
+                            evidence.edge_ordinal,
+                        ) else {
+                            return Err(QueryError::InvalidInput);
+                        };
+                        if request
+                            .definition_id
+                            .is_some_and(|id| id != reference.definition_id.0)
+                            || !(evidence.curve_kind.contains(&request.search)
+                                || reference.lineage_digest.contains(&request.search))
+                        {
+                            continue;
+                        }
+                        let entity_id = self.checked_topology_id(
+                            TopologicalElementKind::Edge,
+                            reference,
+                            &mut entity_ids,
+                        )?;
+                        total += 1;
+                        if total <= after {
+                            continue;
+                        }
+                        if items.len() == request.limit || more {
+                            more = true;
+                            continue;
+                        }
+                        let mut item = edge_value(reference, evidence);
+                        item["id"] = json!(entity_id);
+                        let size = instance_item_size(&item)?;
+                        if bytes + size > PAGE_ITEM_BYTES {
+                            more = true;
+                            byte_limited = true;
+                            continue;
+                        }
+                        bytes += size;
+                        last = total;
+                        items.push(item);
+                    }
+                }
+                EntityKind::Faces => {
+                    for evidence in &package.face_evidence {
+                        let Some(reference) = topological_reference(
+                            &package.topological_references,
+                            TopologicalElementKind::Face,
+                            evidence.face_ordinal,
+                        ) else {
+                            return Err(QueryError::InvalidInput);
+                        };
+                        if request
+                            .definition_id
+                            .is_some_and(|id| id != reference.definition_id.0)
+                            || !(evidence.surface_kind.contains(&request.search)
+                                || evidence.semantic_role.contains(&request.search)
+                                || reference.lineage_digest.contains(&request.search))
+                        {
+                            continue;
+                        }
+                        let entity_id = self.checked_topology_id(
+                            TopologicalElementKind::Face,
+                            reference,
+                            &mut entity_ids,
+                        )?;
+                        total += 1;
+                        if total <= after {
+                            continue;
+                        }
+                        if items.len() == request.limit || more {
+                            more = true;
+                            continue;
+                        }
+                        let mut item = face_value(reference, evidence);
+                        item["id"] = json!(entity_id);
+                        let size = instance_item_size(&item)?;
+                        if bytes + size > PAGE_ITEM_BYTES {
+                            more = true;
+                            byte_limited = true;
+                            continue;
+                        }
+                        bytes += size;
+                        last = total;
+                        items.push(item);
+                    }
+                }
+                _ => unreachable!("topology page requires edges or faces"),
+            }
+        }
+        let next = more.then(|| {
+            self.encode(&Cursor {
+                identity: identity.clone(),
+                generation: self.generation,
+                query,
+                after: last,
+            })
+        });
+        Ok(
+            json!({"identity":identity,"coverage":coverage(Some(request.kind)),
+            "items":items,"total_matches":total,"total_matches_complete":true,
+            "complete":!more,"next_cursor":next,"byte_limited":byte_limited}),
+        )
+    }
+
+    fn checked_topology_id(
+        &self,
+        kind: TopologicalElementKind,
+        reference: &TopologicalElementRef,
+        ids: &mut BTreeMap<u64, String>,
+    ) -> Result<u64, QueryError> {
+        let kind = match kind {
+            TopologicalElementKind::Face => "face",
+            TopologicalElementKind::Edge => "edge",
+            TopologicalElementKind::Vertex => "vertex",
+        };
+        let id = self
+            .key
+            .hash_one((kind, reference.lineage_digest.as_str()))
+            .max(1);
+        if ids
+            .insert(id, reference.lineage_digest.clone())
+            .is_some_and(|existing| existing != reference.lineage_digest)
+        {
+            return Err(QueryError::InvalidInput);
+        }
+        Ok(id)
+    }
+
+    pub fn page(&self, snapshot: &Snapshot, request: &PageRequest) -> Result<Value, QueryError> {
+        if !valid_page_request(request)
+            || matches!(request.kind, EntityKind::Edges | EntityKind::Faces)
+        {
             return Err(QueryError::InvalidInput);
         }
         let identity = identity(snapshot);
@@ -312,6 +509,9 @@ impl ModelQuery {
             EntityKind::Instances => unreachable!("instances use the hierarchy projection"),
             EntityKind::Relations => {
                 unreachable!("relations use the canonical relation projection")
+            }
+            EntityKind::Edges | EntityKind::Faces => {
+                unreachable!("topology entities require exact result projection")
             }
             EntityKind::Occurrences => Box::new(
                 snapshot
@@ -753,6 +953,98 @@ impl ModelQuery {
             .collect()
     }
 
+    pub fn detail_with_topology(
+        &self,
+        snapshot: &Snapshot,
+        topology_results: &ExactResultRegistry,
+        kind: EntityKind,
+        id: u64,
+    ) -> Result<Value, QueryError> {
+        if !matches!(kind, EntityKind::Edges | EntityKind::Faces) {
+            return self.detail(snapshot, kind, id);
+        }
+        if id == 0 {
+            return Err(QueryError::InvalidInput);
+        }
+        let mut entity_ids = BTreeMap::new();
+        let mut matched_lineage = None;
+        let mut item = None;
+        let packages = topology_results
+            .body_values(snapshot)
+            .map_err(|_| QueryError::InvalidInput)?;
+        for package in packages.into_values() {
+            let ExactBodyPackage::Graph(package) = package.as_ref() else {
+                continue;
+            };
+            match kind {
+                EntityKind::Edges => {
+                    for evidence in &package.edge_evidence {
+                        let reference = topological_reference(
+                            &package.topological_references,
+                            TopologicalElementKind::Edge,
+                            evidence.edge_ordinal,
+                        )
+                        .ok_or(QueryError::InvalidInput)?;
+                        let entity_id = self.checked_topology_id(
+                            TopologicalElementKind::Edge,
+                            reference,
+                            &mut entity_ids,
+                        )?;
+                        if entity_id == id {
+                            if matched_lineage
+                                .as_ref()
+                                .is_some_and(|lineage| lineage != &reference.lineage_digest)
+                            {
+                                return Err(QueryError::InvalidInput);
+                            }
+                            matched_lineage = Some(reference.lineage_digest.clone());
+                            let mut value = edge_value(reference, evidence);
+                            value["id"] = json!(entity_id);
+                            item = Some(value);
+                        }
+                    }
+                }
+                EntityKind::Faces => {
+                    for evidence in &package.face_evidence {
+                        let reference = topological_reference(
+                            &package.topological_references,
+                            TopologicalElementKind::Face,
+                            evidence.face_ordinal,
+                        )
+                        .ok_or(QueryError::InvalidInput)?;
+                        let entity_id = self.checked_topology_id(
+                            TopologicalElementKind::Face,
+                            reference,
+                            &mut entity_ids,
+                        )?;
+                        if entity_id == id {
+                            if matched_lineage
+                                .as_ref()
+                                .is_some_and(|lineage| lineage != &reference.lineage_digest)
+                            {
+                                return Err(QueryError::InvalidInput);
+                            }
+                            matched_lineage = Some(reference.lineage_digest.clone());
+                            let mut value = face_value(reference, evidence);
+                            value["id"] = json!(entity_id);
+                            item = Some(value);
+                        }
+                    }
+                }
+                _ => unreachable!("topology detail requires edges or faces"),
+            }
+        }
+        let result = json!({"identity":topology_identity(snapshot, topology_results),
+            "coverage":coverage(Some(kind)),"item":item.ok_or(QueryError::NotFound)?,
+            "completeness":{"metadata_only":false,"omitted":[]}});
+        (serde_json::to_vec(&result)
+            .expect("bounded topology projection")
+            .len()
+            <= MAX_OUTPUT_BYTES)
+            .then_some(result)
+            .ok_or(QueryError::OutputTooLarge)
+    }
+
     /// Deliberately bounded metadata detail, not raw feature geometry or a state dump.
     pub fn detail(
         &self,
@@ -760,13 +1052,24 @@ impl ModelQuery {
         kind: EntityKind,
         id: u64,
     ) -> Result<Value, QueryError> {
-        if id == 0 || matches!(kind, EntityKind::Instances | EntityKind::Relations) {
+        if id == 0
+            || matches!(
+                kind,
+                EntityKind::Instances
+                    | EntityKind::Relations
+                    | EntityKind::Edges
+                    | EntityKind::Faces
+            )
+        {
             return Err(QueryError::InvalidInput);
         }
         let mut item = row(snapshot, kind, id).ok_or(QueryError::NotFound)?;
         let omitted = match kind {
-            EntityKind::Instances | EntityKind::Relations => {
-                unreachable!("instance/relation detail requires a qualified identity")
+            EntityKind::Instances
+            | EntityKind::Relations
+            | EntityKind::Edges
+            | EntityKind::Faces => {
+                unreachable!("instance/relation/topology detail requires a qualified identity")
             }
             EntityKind::Occurrences => {
                 let o = snapshot
@@ -925,6 +1228,65 @@ pub fn identity(snapshot: &Snapshot) -> Value {
         "canonical_digest":snapshot.canonical_digest()})
 }
 
+fn topology_identity(snapshot: &Snapshot, topology_results: &ExactResultRegistry) -> Value {
+    json!({"document_id":snapshot.document_id().0,"revision":snapshot.revision_id(),
+        "canonical_digest":snapshot.canonical_digest(),
+        "topology_contents_stamp":topology_results.contents_stamp()})
+}
+
+fn topological_reference(
+    references: &[TopologicalElementRef],
+    kind: TopologicalElementKind,
+    ordinal: u32,
+) -> Option<&TopologicalElementRef> {
+    references
+        .iter()
+        .filter(|reference| reference.kind == kind)
+        .nth(ordinal as usize)
+}
+
+fn topology_reference_value(reference: &TopologicalElementRef) -> Value {
+    json!({"reference_id":reference.lineage_digest,
+        "definition_id":reference.definition_id.0,
+        "source_feature_id":reference.source_feature_id.0,
+        "producer_feature_id":reference.producer_feature_id.0,
+        "source_element_id":reference.source_element_id,
+        "producer_element_id":reference.producer_element_id,
+        "stability":match reference.stability {
+            ketchup_core::topology::TopologicalReferenceStability::Guaranteed => "guaranteed",
+            ketchup_core::topology::TopologicalReferenceStability::BestEffort => "best_effort",
+            ketchup_core::topology::TopologicalReferenceStability::Ephemeral => "ephemeral",
+        },
+        "evaluator":reference.evaluator,"backend":reference.backend,
+        "tolerance":reference.tolerance})
+}
+
+fn edge_value(reference: &TopologicalElementRef, evidence: &ExactBRepGraphEdgeEvidence) -> Value {
+    let mut value = topology_reference_value(reference);
+    value["kind"] = json!("edge");
+    value["ordinal"] = json!(evidence.edge_ordinal);
+    value["geometry"] = json!({"curve_kind":evidence.curve_kind,
+        "length_mm":evidence.length_mm,"centroid_mm":evidence.centroid_mm,
+        "bounds_mm":evidence.bounds_mm,"closed":evidence.closed,
+        "circle_radius_mm":evidence.circle_radius_mm,
+        "axis_origin_mm":evidence.axis_origin_mm,
+        "unit_axis_direction":evidence.unit_axis_direction,
+        "adjacent_face_ordinals":evidence.adjacent_face_ordinals});
+    value
+}
+
+fn face_value(reference: &TopologicalElementRef, evidence: &ExactBRepGraphFaceEvidence) -> Value {
+    let mut value = topology_reference_value(reference);
+    value["kind"] = json!("face");
+    value["ordinal"] = json!(evidence.face_ordinal);
+    value["semantic_role"] = json!(evidence.semantic_role);
+    value["geometry"] = json!({"surface_kind":evidence.surface_kind,
+        "centroid_mm":evidence.centroid_mm,"unit_normal":evidence.unit_normal,
+        "axis_origin_mm":evidence.axis_origin_mm,
+        "unit_axis_direction":evidence.unit_axis_direction});
+    value
+}
+
 fn workset_value(snapshot: &Snapshot, handle: &str, workset: &Workset) -> Value {
     json!({"identity":identity(snapshot),"workset_handle":handle,
         "scope":{"source":"model_query","query":workset.query,
@@ -948,7 +1310,9 @@ fn coverage(kind: Option<EntityKind>) -> Value {
         "relations":"canonical_hierarchy_definition_and_assembly_edges",
         "nested_hierarchy":kind == Some(EntityKind::Instances),
         "relations_streamed":kind == Some(EntityKind::Relations),
-        "spatial":false,"geometry_evaluated":false})
+        "topology":matches!(kind, Some(EntityKind::Edges | EntityKind::Faces)),
+        "spatial":false,
+        "geometry_evaluated":matches!(kind, Some(EntityKind::Edges | EntityKind::Faces))})
 }
 
 fn relation_count(snapshot: &Snapshot) -> usize {
@@ -1351,7 +1715,9 @@ fn instance_bounds(occurrence: &ProjectedOccurrence) -> Value {
 
 fn row(snapshot: &Snapshot, kind: EntityKind, id: u64) -> Option<Value> {
     Some(match kind {
-        EntityKind::Instances | EntityKind::Relations => return None,
+        EntityKind::Instances | EntityKind::Relations | EntityKind::Edges | EntityKind::Faces => {
+            return None;
+        }
         EntityKind::Occurrences => {
             let o = snapshot.occurrence(OccurrenceId(id))?;
             json!({"id":id,"definition_id":o.definition_id().0,"name":bounded_text(o.name()),
@@ -1365,10 +1731,42 @@ fn row(snapshot: &Snapshot, kind: EntityKind, id: u64) -> Option<Value> {
         EntityKind::Features => {
             let f = snapshot.feature(FeatureId(id))?;
             json!({"id":id,"definition_id":f.definition_id().0,"name":bounded_text(f.name()),
-                "kind":feature_kind(f.kind()),"suppressed":snapshot.feature_is_suppressed(f.id())})
+                "kind":feature_kind(f.kind()),"construction":construction_geometry(f.kind()),
+                "suppressed":snapshot.feature_is_suppressed(f.id())})
         }
     })
 }
+fn construction_geometry(kind: &FeatureKind) -> Value {
+    match kind {
+        FeatureKind::ConstructionPoint { position_mm } => json!({
+            "type": "point",
+            "position_mm": position_mm,
+            "coordinate_space": "definition_mm"
+        }),
+        FeatureKind::ConstructionAxis {
+            origin_mm,
+            direction,
+        } => json!({
+            "type": "axis",
+            "origin_mm": origin_mm,
+            "direction": direction,
+            "coordinate_space": "definition_mm"
+        }),
+        FeatureKind::ConstructionPlane {
+            origin_mm,
+            normal,
+            x_direction,
+        } => json!({
+            "type": "plane",
+            "origin_mm": origin_mm,
+            "normal": normal,
+            "x_direction": x_direction,
+            "coordinate_space": "definition_mm"
+        }),
+        _ => Value::Null,
+    }
+}
+
 fn feature_kind(kind: &FeatureKind) -> &'static str {
     // Exhaustive matching never allocates or formats potentially huge payloads.
     match kind {
@@ -1377,6 +1775,9 @@ fn feature_kind(kind: &FeatureKind) -> &'static str {
         FeatureKind::Profile { .. } => "Profile",
         FeatureKind::SegmentProfile { .. } => "SegmentProfile",
         FeatureKind::SpatialPath { .. } => "SpatialPath",
+        FeatureKind::ConstructionPoint { .. } => "ConstructionPoint",
+        FeatureKind::ConstructionAxis { .. } => "ConstructionAxis",
+        FeatureKind::ConstructionPlane { .. } => "ConstructionPlane",
         FeatureKind::SplineProfile { .. } => "SplineProfile",
         FeatureKind::Extrusion { .. } => "Extrusion",
         FeatureKind::Pad(_) => "Pad",

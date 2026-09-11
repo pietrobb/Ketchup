@@ -139,6 +139,7 @@ class SafetyDocument:
                          "undo_steps": 0, "redo_steps": 0}
         self.calls = []
         self.batch_states = {}
+        self.verify_states = {}
         self.validators = SimpleNamespace(list=lambda: {"validators": []}, run=lambda ids: {"ids": ids})
 
     @property
@@ -204,6 +205,22 @@ class SafetyDocument:
     def evaluate(self, **kwargs):
         return {"complete": True, "rows": ["ž" * 40000]}
 
+    def start_verify_job(self, *, scope=None, timeout_ms=30_000):
+        handle = f"verify-{len(self.verify_states) + 1}"
+        self.verify_states[handle] = "running"
+        self.calls.append(("verify_start", scope, timeout_ms))
+        return {"job_handle": handle, "state": "running",
+                "progress": {"total_bodies": 1, "completed_bodies": 0, "reused_bodies": 0}}
+
+    def verify_job_status(self, handle):
+        self.calls.append(("verify_status", handle))
+        return {"job_handle": handle, "state": self.verify_states[handle]}
+
+    def cancel_verify_job(self, handle):
+        self.calls.append(("verify_cancel", handle))
+        self.verify_states[handle] = "cancelled"
+        return {"job_handle": handle, "state": "cancelled"}
+
 
 @pytest.fixture
 def doubles(monkeypatch):
@@ -257,6 +274,64 @@ def test_tool_lifecycle_stale_save_close_and_bounds(monkeypatch, doubles, tmp_pa
         current = (await call(registered, "KetchupInspect", handle=handle))["result"]
         assert (await call(registered, "KetchupSession", action="close", handle=handle, **expected(current)))["ok"]
         assert doubles[0].closed
+    asyncio.run(scenario())
+
+
+def test_verify_start_status_cancel_use_native_job_contract(monkeypatch, doubles):
+    registered = tools(monkeypatch)
+
+    async def scenario():
+        opened = (await call(registered, "KetchupSession", action="new"))["result"]
+        handle = opened["handle"]
+        scope = [{"definition_id": 7, "feature_id": 9}]
+        started = await call(
+            registered,
+            "KetchupVerify",
+            handle=handle,
+            action="start",
+            scope=scope,
+            timeout_ms=1234,
+            **expected(opened),
+        )
+        job_handle = started["result"]["job_handle"]
+        assert started["result"]["state"] == "running"
+        assert doubles[0].doc.calls[-1] == ("verify_start", scope, 1234)
+        status = await call(
+            registered,
+            "KetchupVerify",
+            handle=handle,
+            action="status",
+            job_handle=job_handle,
+        )
+        assert status["result"]["state"] == "running"
+        cancelled = await call(
+            registered,
+            "KetchupVerify",
+            handle=handle,
+            action="cancel",
+            job_handle=job_handle,
+        )
+        assert cancelled["result"]["state"] == "cancelled"
+        assert doubles[0].doc.calls[-1] == ("verify_cancel", job_handle)
+        stale = await call(
+            registered,
+            "KetchupVerify",
+            handle=handle,
+            action="start",
+            expected_revision=opened["identity"]["revision"] + 1,
+            expected_digest=opened["identity"]["canonical_digest"],
+        )
+        assert stale["error"]["code"] == "stale_precondition"
+        invalid = await call(
+            registered,
+            "KetchupVerify",
+            handle=handle,
+            action="status",
+            job_handle=job_handle,
+            expected_revision=0,
+        )
+        assert invalid["error"]["code"] == "invalid_arguments"
+
     asyncio.run(scenario())
 
 

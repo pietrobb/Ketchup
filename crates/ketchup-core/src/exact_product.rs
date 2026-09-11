@@ -605,6 +605,25 @@ impl BodySubshapeRef {
     }
 
     #[must_use]
+    pub fn matches_exact_brep_graph(&self, graph: &ExactBRepGraph) -> bool {
+        self.has_valid_lineage()
+            && self.document_id.0 == graph.document_id
+            && self.definition_id.0 == graph.definition_id
+            && self.producer_feature_id.0 == graph.producer_feature_id
+            && graph
+                .profiles
+                .iter()
+                .any(|profile| profile.source_feature_id == self.profile_feature_id.0)
+            && self.canonical_input_digest == graph.canonical_input_digest
+            && self.evaluator == EXACT_BREP_GRAPH_EVALUATOR_V1
+            && !self.exact_input_digest.is_empty()
+            && !self.result_fingerprint.is_empty()
+            && !self.backend.is_empty()
+            && !self.tolerance.is_empty()
+            && !self.corroborating_geometry_fingerprint.is_empty()
+    }
+
+    #[must_use]
     pub fn matches_legacy_request(&self, request: &ExactFeatureChainRequest) -> bool {
         self.matches_request_digest(request, &request.legacy_canonical_input_digest)
     }
@@ -728,6 +747,8 @@ pub struct ExactBRepGraphPackage {
     pub triangles: Vec<ExactTriangle>,
     pub triangle_face_ordinals: Vec<u32>,
     pub topological_references: Vec<TopologicalElementRef>,
+    pub face_evidence: Vec<ExactBRepGraphFaceEvidence>,
+    pub edge_evidence: Vec<ExactBRepGraphEdgeEvidence>,
     pub references: Vec<BodySubshapeRef>,
     pub planar_face_attachments: Vec<PlanarFaceAttachment>,
     pub axial_attachments: Vec<AxialAttachment>,
@@ -747,6 +768,20 @@ pub struct ExactBRepGraphFaceEvidence {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct ExactBRepGraphEdgeEvidence {
+    pub edge_ordinal: u32,
+    pub curve_kind: String,
+    pub length_mm: f64,
+    pub centroid_mm: [f64; 3],
+    pub bounds_mm: [[f64; 3]; 2],
+    pub closed: bool,
+    pub circle_radius_mm: Option<f64>,
+    pub axis_origin_mm: Option<[f64; 3]>,
+    pub unit_axis_direction: Option<[f64; 3]>,
+    pub adjacent_face_ordinals: Vec<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct ExactBRepGraphWorkerEvidence {
     pub exact_input_digest: String,
     pub result_fingerprint: String,
@@ -758,6 +793,7 @@ pub struct ExactBRepGraphWorkerEvidence {
     pub backend: String,
     pub tolerance: String,
     pub faces: Vec<ExactBRepGraphFaceEvidence>,
+    pub edges: Vec<ExactBRepGraphEdgeEvidence>,
 }
 
 fn is_finite_unit_vector(vector: [f64; 3]) -> bool {
@@ -861,14 +897,56 @@ impl ExactBRepGraphPackage {
         let topological_references =
             publish_generated_topological_references(&identity, evidence.topology_counts)
                 .map_err(|_| ExactProductError::InvalidWorkerEvidence)?;
+        let mut edge_ordinals = BTreeSet::new();
+        for edge in &evidence.edges {
+            let finite_bounds = edge
+                .bounds_mm
+                .iter()
+                .flatten()
+                .all(|value| value.is_finite())
+                && (0..3).all(|axis| edge.bounds_mm[0][axis] <= edge.bounds_mm[1][axis]);
+            let circle_fields_match =
+                edge.circle_radius_mm.is_some() == (edge.curve_kind == "circle");
+            let axis_fields_match = edge.axis_origin_mm.is_some()
+                == edge.unit_axis_direction.is_some()
+                && edge.axis_origin_mm.is_some()
+                    == matches!(edge.curve_kind.as_str(), "line" | "circle");
+            if edge.edge_ordinal >= evidence.topology_counts[1]
+                || !edge_ordinals.insert(edge.edge_ordinal)
+                || edge.curve_kind.is_empty()
+                || !edge.length_mm.is_finite()
+                || edge.length_mm <= 0.0
+                || !edge.centroid_mm.into_iter().all(f64::is_finite)
+                || !finite_bounds
+                || !circle_fields_match
+                || !axis_fields_match
+                || edge
+                    .circle_radius_mm
+                    .is_some_and(|radius| !radius.is_finite() || radius <= 0.0)
+                || edge
+                    .axis_origin_mm
+                    .is_some_and(|origin| !origin.into_iter().all(f64::is_finite))
+                || edge
+                    .unit_axis_direction
+                    .is_some_and(|direction| !is_finite_unit_vector(direction))
+                || edge
+                    .adjacent_face_ordinals
+                    .iter()
+                    .any(|ordinal| *ordinal >= evidence.topology_counts[2])
+            {
+                return Err(ExactProductError::InvalidWorkerEvidence);
+            }
+        }
         let mut references = Vec::new();
         let mut planar_face_attachments = Vec::new();
         let mut axial_attachments = Vec::new();
-        for face in evidence.faces {
+        for face in &evidence.faces {
             if face.face_ordinal >= evidence.topology_counts[2]
                 || face.corroborating_geometry_fingerprint.is_empty()
                 || !face.centroid_mm.into_iter().all(f64::is_finite)
-                || !is_finite_unit_vector(face.unit_normal)
+                || (face.surface_kind == "plane" && !is_finite_unit_vector(face.unit_normal))
+                || (face.surface_kind == "cylinder"
+                    && !face.unit_normal.into_iter().all(f64::is_finite))
                 || face.axis_origin_mm.is_some() != face.unit_axis_direction.is_some()
                 || face
                     .axis_origin_mm
@@ -888,10 +966,10 @@ impl ExactBRepGraphPackage {
                 schema: BODY_SUBSHAPE_REF_SCHEMA_V1.to_owned(),
                 document_id: identity.document_id,
                 definition_id: identity.definition_id,
-                profile_feature_id: identity.producer_feature_id,
+                profile_feature_id: identity.profile_feature_id,
                 producer_feature_id: identity.producer_feature_id,
-                semantic_role: face.semantic_role,
-                source_element_id: face.source_element_id,
+                semantic_role: face.semantic_role.clone(),
+                source_element_id: face.source_element_id.clone(),
                 expected_type: expected_type.to_owned(),
                 expected_cardinality: 1,
                 stability: ReferenceStability::Guaranteed,
@@ -902,7 +980,7 @@ impl ExactBRepGraphPackage {
                 backend: identity.backend.clone(),
                 tolerance: identity.tolerance.clone(),
                 lineage_digest: String::new(),
-                corroborating_geometry_fingerprint: face.corroborating_geometry_fingerprint,
+                corroborating_geometry_fingerprint: face.corroborating_geometry_fingerprint.clone(),
             };
             let mut reference = reference;
             reference.lineage_digest = reference_lineage_digest(&reference);
@@ -960,6 +1038,8 @@ impl ExactBRepGraphPackage {
                 .map(|triangle| triangle.face_ordinal)
                 .collect(),
             topological_references,
+            face_evidence: evidence.faces,
+            edge_evidence: evidence.edges,
             references,
             planar_face_attachments,
             axial_attachments,

@@ -28,6 +28,35 @@ struct BatchJobStep {
     handle: String,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VerifyJobStart {
+    #[serde(rename = "expected_revision")]
+    _expected_revision: u64,
+    #[serde(rename = "expected_digest")]
+    _expected_digest: String,
+    scope: Option<Vec<VerifyProducerScope>>,
+    #[serde(default = "default_verify_timeout_ms")]
+    timeout_ms: u64,
+}
+
+#[derive(Clone, Copy, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
+#[serde(deny_unknown_fields)]
+struct VerifyProducerScope {
+    definition_id: u64,
+    feature_id: u64,
+}
+
+const fn default_verify_timeout_ms() -> u64 {
+    30_000
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VerifyJobHandle {
+    handle: String,
+}
+
 fn batch_error(error: OccurrenceBatchError) -> Error {
     match error {
         OccurrenceBatchError::Query(error) => {
@@ -85,6 +114,98 @@ impl Server {
         let p = params
             .as_object_mut()
             .ok_or_else(|| Error::invalid("params must be an object"))?;
+        if matches!(
+            method,
+            "verify_job_start" | "verify_job_status" | "verify_job_cancel"
+        ) {
+            let result = match method {
+                "verify_job_start" => {
+                    let request: VerifyJobStart = serde_json::from_value(Value::Object(p.clone()))
+                        .map_err(|e| Error::invalid(e.to_string()))?;
+                    self.guard(p)?;
+                    if !(1..=300_000).contains(&request.timeout_ms) {
+                        return Err(Error::invalid("timeout_ms must be in [1, 300000]"));
+                    }
+                    let scope = request
+                        .scope
+                        .map(|scope| {
+                            if scope.is_empty() || scope.len() > 100 {
+                                return Err(Error::invalid(
+                                    "scope must contain 1..100 producer keys",
+                                ));
+                            }
+                            if scope
+                                .iter()
+                                .any(|key| key.definition_id == 0 || key.feature_id == 0)
+                            {
+                                return Err(Error::invalid("scope IDs must be positive integers"));
+                            }
+                            let unique = scope.iter().copied().collect::<BTreeSet<_>>();
+                            if unique.len() != scope.len() {
+                                return Err(Error::invalid(
+                                    "scope contains duplicate producer keys",
+                                ));
+                            }
+                            Ok(unique
+                                .into_iter()
+                                .map(|key| ProducerKey {
+                                    definition_id: DefinitionId(key.definition_id),
+                                    feature_id: FeatureId(key.feature_id),
+                                })
+                                .collect::<BTreeSet<_>>())
+                        })
+                        .transpose()?;
+                    self.start_verify_job(scope, request.timeout_ms)?
+                }
+                "verify_job_status" => {
+                    let request: VerifyJobHandle = serde_json::from_value(Value::Object(p.clone()))
+                        .map_err(|e| Error::invalid(e.to_string()))?;
+                    let index = self
+                        .verify_jobs
+                        .iter()
+                        .position(|job| job.handle == request.handle)
+                        .ok_or_else(|| {
+                            Error::new("verify_job_not_found", "Verify job not found")
+                        })?;
+                    self.refresh_verify_job(index);
+                    self.verify_job_value(index)
+                }
+                "verify_job_cancel" => {
+                    let request: VerifyJobHandle = serde_json::from_value(Value::Object(p.clone()))
+                        .map_err(|e| Error::invalid(e.to_string()))?;
+                    let index = self
+                        .verify_jobs
+                        .iter()
+                        .position(|job| job.handle == request.handle)
+                        .ok_or_else(|| {
+                            Error::new("verify_job_not_found", "Verify job not found")
+                        })?;
+                    let progress = match &self.verify_jobs[index].state {
+                        VerifyJobState::Running(task) => {
+                            task.cancel();
+                            Some(task.progress())
+                        }
+                        _ => None,
+                    };
+                    if let Some(progress) = progress {
+                        self.verify_jobs[index].progress = progress;
+                        self.verify_jobs[index].elapsed_ms = self.verify_jobs[index]
+                            .started_at
+                            .elapsed()
+                            .as_millis()
+                            .min(u128::from(u64::MAX))
+                            as u64;
+                        self.verify_jobs[index].state = VerifyJobState::Cancelled;
+                        if let Some(stop) = self.verify_jobs[index].deadline_stop.take() {
+                            let _ = stop.send(());
+                        }
+                    }
+                    self.verify_job_value(index)
+                }
+                _ => unreachable!(),
+            };
+            return Ok(result);
+        }
         if matches!(
             method,
             "batch_job_start" | "batch_job_status" | "batch_job_step" | "batch_job_cancel"
@@ -197,7 +318,11 @@ impl Server {
                 "query" => {
                     let request: PageRequest = serde_json::from_value(params)
                         .map_err(|e| Error::invalid(e.to_string()))?;
-                    self.model_queries.page(&snapshot, &request)
+                    self.model_queries.page_with_topology(
+                        &snapshot,
+                        self.session.topology_results(),
+                        &request,
+                    )
                 }
                 "detail" => {
                     #[derive(Deserialize)]
@@ -208,8 +333,12 @@ impl Server {
                     }
                     let request: Detail = serde_json::from_value(params)
                         .map_err(|e| Error::invalid(e.to_string()))?;
-                    self.model_queries
-                        .detail(&snapshot, request.kind, request.id)
+                    self.model_queries.detail_with_topology(
+                        &snapshot,
+                        self.session.topology_results(),
+                        request.kind,
+                        request.id,
+                    )
                 }
                 "workset_create" => {
                     let request: PageRequest = serde_json::from_value(params)

@@ -1,4 +1,4 @@
-"""Explicit new-window live bridge tools. Never owns or terminates the GUI."""
+"""Discoverable non-owning live bridge tools. Never terminates the GUI."""
 from __future__ import annotations
 
 import asyncio
@@ -69,6 +69,15 @@ def _path(value):
     path = Path(value)
     if not path.is_absolute() or not path.is_file():
         raise Rejection("invalid_path", "Supply an explicit absolute existing file path.")
+    return str(path.resolve())
+
+
+def _destination(value):
+    if type(value) is not str or not value or len(value) > 4096 or "\0" in value:
+        raise Rejection("invalid_path", "Supply an explicit absolute destination path.")
+    path = Path(value)
+    if not path.is_absolute():
+        raise Rejection("invalid_path", "Supply an explicit absolute destination path.")
     return str(path.resolve())
 
 
@@ -219,9 +228,11 @@ def _launch(executable, document_path=None, *, session_factory=None, timeout=10.
 
 
 class Runtime:
-    def __init__(self, plan_state, launcher=None):
+    def __init__(self, plan_state, launcher=None, discoverer=None, attacher=None):
         self.plan_state = plan_state
         self.launcher, self.sdk = launcher or _launch, _live()
+        self.discoverer = discoverer or self.sdk.list_live_instances
+        self.attacher = attacher or self.sdk.attach_live_instance
         self.sessions = {}
         self.lock = asyncio.Lock()
 
@@ -286,6 +297,8 @@ class Runtime:
             except Exception as error:
                 if isinstance(error, Rejection):
                     value = _error(error.code, str(error))
+                elif isinstance(error, self.sdk.LiveConsentError):
+                    value = _error(error.code, "The target window did not grant live access.")
                 elif isinstance(error, self.sdk.LiveBridgeError):
                     code = error.code if error.code in self.sdk._ERROR_CODES else "remote_error"
                     value = _error(code, "Live bridge rejected the request.")
@@ -305,30 +318,58 @@ def register_tools() -> list:
     return _register_tools(_plan_state())
 
 
-def _register_tools(plan_state, *, launcher=None) -> list:
+def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None) -> list:
     """Python host/test injection only; not exposed in any tool schema."""
-    runtime = Runtime(plan_state, launcher)
+    runtime = Runtime(plan_state, launcher, discoverer, attacher)
 
     @beta_async_tool(name="KetchupLiveSession")
-    async def session(action: str, handle: str = "", executable: str = "", document_path: str = "") -> str:
-        """Launch and attach a NEW GUI window, never an already-running window. Disconnect never quits the GUI.
+    async def session(action: str, handle: str = "", instance_id: str = "",
+                      executable: str = "", document_path: str = "") -> str:
+        """List, attach to an approved open window, launch, or disconnect. Never terminates the GUI.
 
         Args:
-            action: launch or disconnect. Launch is forbidden in plan mode.
+            action: list, attach, launch, or disconnect. Attach/launch are forbidden in plan mode.
             handle: Live UUID, required only for disconnect (also allowed in plan mode).
+            instance_id: Listed 32-hex window ID, required only for attach; confirmation occurs in that window.
             executable: Explicit absolute existing GUI executable, required for launch. No discovery or extra arguments.
             document_path: Optional absolute existing document file for the new window; never replaces an existing window.
         """
-        owned = str(uuid.uuid4()) if action == "launch" else handle
+        owned = str(uuid.uuid4()) if action in ("attach", "launch") else handle
         def job():
-            _action(action, ("launch", "disconnect"))
+            _action(action, ("list", "attach", "launch", "disconnect"))
+            if action == "list":
+                if handle or instance_id or executable or document_path:
+                    raise Rejection("invalid_arguments", "List accepts no session, instance, executable, or document arguments.")
+                return {"ok": True, "result": {"instances": runtime.discoverer(), "complete": True}}
             if action == "disconnect":
-                if executable or document_path:
+                if instance_id or executable or document_path:
                     raise Rejection("invalid_arguments", "Disconnect accepts only a live handle.")
                 runtime.entry(handle)
                 runtime.forget(handle)
                 return {"ok": True, "result": {"disconnected": handle, "app_terminated": False}}
             runtime.guard()
+            if action == "attach":
+                if handle or executable or document_path:
+                    raise Rejection("invalid_arguments", "Attach accepts only one listed instance ID.")
+                if len(runtime.sessions) >= MAX_SESSIONS:
+                    raise Rejection("session_limit", "Disconnect a live session first; maximum is four.")
+                live_session = runtime.attacher(instance_id)
+                runtime.sessions[owned] = live_session
+                try:
+                    runtime.guard()
+                    result = live_session.status()
+                    return {**result, "result": {**result["result"], "handle": owned,
+                            "ownership": "nonowning_existing_GUI_window", "plan_guard_bound": True,
+                            "attachment": "Approved directly in the selected existing window."}}
+                except BaseException:
+                    try:
+                        live_session.disconnect()
+                    except Exception:
+                        pass
+                    runtime.forget(owned)
+                    raise
+            if instance_id:
+                raise Rejection("invalid_arguments", "Launch accepts no existing instance ID.")
             if handle:
                 raise Rejection("invalid_arguments", "Launch creates a new handle and new GUI window.")
             if len(runtime.sessions) >= MAX_SESSIONS:
@@ -363,7 +404,7 @@ def _register_tools(plan_state, *, launcher=None) -> list:
             action: status, summary, query, detail, workset_create, or workset_status. Allowed in plan mode.
             handle: Live session UUID.
             expected: Complete observed stamp required for query/detail: document_id, revision, canonical_digest, mutation_epoch.
-            kind: occurrences, instances, definitions, features, or relations. Relations stream canonical hierarchy, definition-use, and assembly edges.
+            kind: occurrences, instances, definitions, features, relations, faces, or edges. Topology rows include stable reference IDs and exact geometry.
             entity_id: Positive ID for detail; not valid for instances or relations.
             limit: Query page size 1 through 100.
             search: Name substring or relation type (uses_definition/member_of_group/assembly_mate), at most 128 UTF-8 bytes.
@@ -432,6 +473,30 @@ def _register_tools(plan_state, *, launcher=None) -> list:
             return getattr(live_session, action)(stamp)
         return await runtime.run(handle, job, mutation=True)
 
+    @beta_async_tool(name="KetchupLiveFile")
+    async def file(action: str, handle: str, expected: dict, path: str = "") -> str:
+        """Save or open the attached GUI document through its native file workflow.
+
+        Args:
+            action: save, save_as, or open. Save requires an existing document path; save_as requires overwrite confirmation; open requires discard confirmation when dirty.
+            handle: Live session UUID.
+            expected: Exact observed document_id, revision, canonical_digest, mutation_epoch.
+            path: Explicit absolute destination for save_as or existing source for open; empty for save.
+        """
+        def job():
+            _action(action, ("save", "save_as", "open"))
+            runtime.guard()
+            live_session = runtime.entry(handle)
+            stamp = runtime.expected(expected)
+            if action == "save":
+                if path:
+                    raise Rejection("invalid_path", "Path is only valid for save_as or open.")
+                return live_session.save(stamp)
+            if action == "save_as":
+                return live_session.save_as(stamp, _destination(path))
+            return live_session.open(stamp, _path(path))
+        return await runtime.run(handle, job, mutation=True)
+
     @beta_async_tool(name="KetchupLiveBatch")
     async def batch(action: str, handle: str, expected: dict,
                     workset_handle: str = "", job_handle: str = "",
@@ -472,7 +537,9 @@ def _register_tools(plan_state, *, launcher=None) -> list:
     @beta_async_tool(name="KetchupLiveView")
     async def view(action: str, handle: str, expected: dict,
                    occurrence_ids: list[int] | None = None, view: str = "", image_path: str = "",
-                   capture_mode: str = "offscreen") -> str:
+                   capture_mode: str = "offscreen", max_side_px: int = 512,
+                   framing: str = "viewport", detail_occurrence_id: int = 0,
+                   detail_kind: str = "", detail_entity_id: int = 0) -> str:
         """Guarded live view commands and CAD PNG artifacts; never desktop screenshots.
 
         Saving an artifact does not establish visual delivery or geometry correctness.
@@ -485,12 +552,23 @@ def _register_tools(plan_state, *, launcher=None) -> list:
             view: For view action, iso, top, front, or zoom_fit.
             image_path: Required only for image: explicit absolute NEW .png under workspace artifacts/live-view; never overwritten.
             capture_mode: For image, offscreen (default AI render) or visible_viewport (proof of a visible focused canvas).
+            max_side_px: For image, maximum output side from 512 through 1600 pixels (default 512).
+            framing: For image, viewport, selection, or detail_selection for an explicit host-issued topology detail.
+            detail_occurrence_id: Root occurrence containing the detail; required only for detail_selection.
+            detail_kind: edges or faces; required only for detail_selection.
+            detail_entity_id: Positive host-issued ID from the matching live topology query/detail; required only for detail_selection.
         """
         def job():
             _action(action, ("selection", "view", "image"))
             runtime.guard()
-            if action != "image" and (image_path or capture_mode != "offscreen"):
-                raise Rejection("invalid_arguments", "image_path and capture_mode apply only to image.")
+            if action != "image" and (
+                    image_path or capture_mode != "offscreen" or max_side_px != 512
+                    or framing != "viewport" or detail_occurrence_id != 0
+                    or detail_kind or detail_entity_id != 0):
+                raise Rejection(
+                    "invalid_arguments",
+                    "Image capture and detail-framing arguments apply only to image.",
+                )
             live_session = runtime.entry(handle)
             stamp = runtime.expected(expected)
             if action == "image":
@@ -503,11 +581,23 @@ def _register_tools(plan_state, *, launcher=None) -> list:
                     raise Rejection("file_exists", "Image destination exists; choose a NEW .png path.") from None
                 except (ValueError, TypeError, OSError):
                     raise Rejection("invalid_path", "Supply an absolute NEW .png under workspace artifacts/live-view, without links.") from None
-                response = live_session.image(stamp, capture_mode=capture_mode)
+                response = live_session.image(
+                    stamp, capture_mode=capture_mode, max_side_px=max_side_px, framing=framing,
+                    detail_occurrence_id=detail_occurrence_id, detail_kind=detail_kind,
+                    detail_entity_id=detail_entity_id,
+                )
                 runtime.guard()  # Plan may have changed while the bounded read ran.
                 try:
                     return runtime.sdk.save_image(
-                        response, stamp, str(destination), capture_mode=capture_mode
+                        response,
+                        stamp,
+                        str(destination),
+                        capture_mode=capture_mode,
+                        max_side_px=max_side_px,
+                        framing=framing,
+                        detail_occurrence_id=detail_occurrence_id,
+                        detail_kind=detail_kind,
+                        detail_entity_id=detail_entity_id,
                     )
                 except FileExistsError:
                     raise Rejection("file_exists", "Image destination exists; choose a NEW .png path.") from None
@@ -517,4 +607,4 @@ def _register_tools(plan_state, *, launcher=None) -> list:
             return live_session.view(stamp, view)
         return await runtime.run(handle, job, mutation=action in ("selection", "view"))
 
-    return [session, inspect, edit, batch, view]
+    return [session, inspect, edit, file, batch, view]

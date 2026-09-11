@@ -1376,6 +1376,7 @@ fn worker_transforms_a_circle_pad_from_its_arbitrary_workplane_frame() {
                     backend: result.identity.backend.clone(),
                     tolerance: result.identity.tolerance.clone(),
                     faces: Vec::new(),
+                    edges: Vec::new(),
                 },
                 &mesh,
             ),
@@ -2169,6 +2170,160 @@ fn worker_evaluates_revolve_non_rectangular_sweep_and_loft_through_one_graph_ide
 }
 
 #[test]
+fn worker_evaluates_mixed_planar_profile_loft_as_one_exact_solid() {
+    let definition = DefinitionId(97);
+    let plane = FeatureId(969);
+    let lower = FeatureId(970);
+    let middle = FeatureId(971);
+    let upper = FeatureId(972);
+    let loft = FeatureId(973);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Planar Loft definition".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: plane,
+                definition_id: definition,
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: lower,
+                definition_id: definition,
+                name: "Arc section".into(),
+                kind: FeatureKind::Sketch(SketchSpec {
+                    workplane: plane,
+                    entities: vec![
+                        SketchEntity::Arc {
+                            id: SketchEntityId(1),
+                            start_mm: [12.0, 0.0],
+                            end_mm: [-12.0, 0.0],
+                            center_mm: [0.0, 0.0],
+                            clockwise: false,
+                        },
+                        SketchEntity::Arc {
+                            id: SketchEntityId(2),
+                            start_mm: [-12.0, 0.0],
+                            end_mm: [12.0, 0.0],
+                            center_mm: [0.0, 0.0],
+                            clockwise: false,
+                        },
+                    ],
+                    constraints: Vec::new(),
+                }),
+            },
+            CanonicalCommand::CreateFeature {
+                id: middle,
+                definition_id: definition,
+                name: "Line section".into(),
+                kind: FeatureKind::Sketch(SketchSpec {
+                    workplane: plane,
+                    entities: vec![
+                        SketchEntity::Line {
+                            id: SketchEntityId(1),
+                            start_mm: [-14.0, -8.0],
+                            end_mm: [14.0, -8.0],
+                        },
+                        SketchEntity::Line {
+                            id: SketchEntityId(2),
+                            start_mm: [14.0, -8.0],
+                            end_mm: [14.0, 8.0],
+                        },
+                        SketchEntity::Line {
+                            id: SketchEntityId(3),
+                            start_mm: [14.0, 8.0],
+                            end_mm: [-14.0, 8.0],
+                        },
+                        SketchEntity::Line {
+                            id: SketchEntityId(4),
+                            start_mm: [-14.0, 8.0],
+                            end_mm: [-14.0, -8.0],
+                        },
+                    ],
+                    constraints: Vec::new(),
+                }),
+            },
+            CanonicalCommand::CreateFeature {
+                id: upper,
+                definition_id: definition,
+                name: "Cubic section".into(),
+                kind: FeatureKind::Sketch(SketchSpec {
+                    workplane: plane,
+                    entities: vec![
+                        SketchEntity::CubicBezier {
+                            id: SketchEntityId(1),
+                            start_mm: [9.0, 0.0],
+                            control_1_mm: [9.0, 3.313_708],
+                            control_2_mm: [4.970_563, 6.0],
+                            end_mm: [0.0, 6.0],
+                        },
+                        SketchEntity::CubicBezier {
+                            id: SketchEntityId(2),
+                            start_mm: [0.0, 6.0],
+                            control_1_mm: [-4.970_563, 6.0],
+                            control_2_mm: [-9.0, 3.313_708],
+                            end_mm: [-9.0, 0.0],
+                        },
+                        SketchEntity::CubicBezier {
+                            id: SketchEntityId(3),
+                            start_mm: [-9.0, 0.0],
+                            control_1_mm: [-9.0, -3.313_708],
+                            control_2_mm: [-4.970_563, -6.0],
+                            end_mm: [0.0, -6.0],
+                        },
+                        SketchEntity::CubicBezier {
+                            id: SketchEntityId(4),
+                            start_mm: [0.0, -6.0],
+                            control_1_mm: [4.970_563, -6.0],
+                            control_2_mm: [9.0, -3.313_708],
+                            end_mm: [9.0, 0.0],
+                        },
+                    ],
+                    constraints: Vec::new(),
+                }),
+            },
+            CanonicalCommand::CreateFeature {
+                id: loft,
+                definition_id: definition,
+                name: "Mixed planar profile Loft".into(),
+                kind: FeatureKind::Loft {
+                    sections: vec![
+                        LoftSection {
+                            profile: lower,
+                            elevation_mm: 0.0,
+                        },
+                        LoftSection {
+                            profile: middle,
+                            elevation_mm: 28.0,
+                        },
+                        LoftSection {
+                            profile: upper,
+                            elevation_mm: 55.0,
+                        },
+                    ],
+                },
+            },
+        ]))
+        .unwrap();
+    let graph = ExactBRepGraph::from_snapshot(&document.current(), definition, loft).unwrap();
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let package = supervisor.evaluate_exact_brep_graph(&graph).unwrap();
+
+    assert_eq!(package.topology_counts[4], 1);
+    assert!(package.volume_mm3.is_finite() && package.volume_mm3 > 0.0);
+    assert!(package.bounds_mm[0][2].abs() <= 1.0e-6);
+    assert!((package.bounds_mm[1][2] - 55.0).abs() <= 1.0e-6);
+    assert_eq!(
+        supervisor.evaluate_exact_brep_graph(&graph).unwrap(),
+        package
+    );
+}
+
+#[test]
 fn worker_evaluates_planar_offset_face_through_exact_brep_graph() {
     let definition = DefinitionId(96);
     let profile = FeatureId(960);
@@ -2251,6 +2406,7 @@ fn worker_evaluates_planar_offset_face_through_exact_brep_graph() {
         backend: package.identity.backend.clone(),
         tolerance: package.identity.tolerance.clone(),
         faces: Vec::new(),
+        edges: Vec::new(),
     };
     assert!(
         ExactBRepGraphPackage::from_worker_evidence(&graph, evidence(package.area_mm2), &mesh,)
@@ -2406,6 +2562,7 @@ fn worker_evaluates_signed_circle_offset_through_exact_brep_graph_v6() {
             backend: package.identity.backend.clone(),
             tolerance: package.identity.tolerance.clone(),
             faces: Vec::new(),
+            edges: Vec::new(),
         };
         assert!(
             ExactBRepGraphPackage::from_worker_evidence(&graph, evidence.clone(), &mesh).is_ok()
@@ -3158,6 +3315,42 @@ fn worker_preserves_cubic_sketch_region_hole_volume_and_result_identity() {
     assert!(package.is_current(&snapshot));
     assert_eq!(package.identity.producer_feature_id.0, pad.0);
     assert_eq!(package.topology_counts[4], 1);
+    assert_eq!(
+        package.edge_evidence.len(),
+        package.topology_counts[1] as usize
+    );
+    let circular_rims = package
+        .edge_evidence
+        .iter()
+        .filter(|edge| {
+            edge.curve_kind == "circle"
+                && edge.circle_radius_mm == Some(5.0)
+                && edge
+                    .axis_origin_mm
+                    .is_some_and(|origin| origin[0] == 0.0 && origin[1] == 0.0)
+                && edge.unit_axis_direction == Some([0.0, 0.0, 1.0])
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(circular_rims.len(), 2);
+    for expected_z in [0.0, 12.0] {
+        assert!(
+            circular_rims
+                .iter()
+                .any(|edge| (edge.centroid_mm[2] - expected_z).abs() <= 1.0e-9)
+        );
+    }
+    for edge in circular_rims {
+        assert!(edge.closed);
+        assert_eq!(edge.adjacent_face_ordinals.len(), 2);
+        let reference = package
+            .topological_references
+            .iter()
+            .filter(|reference| reference.kind == TopologicalElementKind::Edge)
+            .nth(edge.edge_ordinal as usize)
+            .expect("every edge evidence ordinal has a stable reference");
+        assert!(reference.has_valid_lineage());
+        assert_eq!(reference.producer_feature_id, pad);
+    }
     assert_bounds_close(package.bounds_mm, [-20.0, -15.0, 0.0, 20.0, 22.5, 12.0]);
     let expected_volume = (1_410.0 - std::f64::consts::PI * 5.0 * 5.0) * 12.0;
     assert!(package.volume_mm3 < 1_410.0 * 12.0);
@@ -3452,28 +3645,35 @@ fn worker_evaluates_v11_cubic_sweep_with_mesh_and_step_round_trip() {
 }
 
 #[test]
-fn worker_evaluates_v12_spatial_sweep_with_mesh_and_step_v3_round_trip() {
+fn worker_evaluates_closed_non_planar_v12_sweep_with_mesh_and_step_round_trip() {
     let definition = DefinitionId(810);
     let profile = FeatureId(811);
     let path = FeatureId(812);
     let sweep = FeatureId(813);
     let spatial_segments = vec![
-        SpatialPathSegment::Line {
-            start_mm: [0.0, 0.0, 0.0],
-            end_mm: [30.0, 0.0, 0.0],
-        },
-        SpatialPathSegment::CircularArc {
+        SpatialPathSegment::CubicBezier {
             start_mm: [30.0, 0.0, 0.0],
-            end_mm: [40.0, 10.0, 0.0],
-            center_mm: [30.0, 10.0, 0.0],
-            normal: [0.0, 0.0, 1.0],
-            clockwise: false,
+            control_1_mm: [30.0, 15.0, 10.0],
+            control_2_mm: [15.0, 30.0, 10.0],
+            end_mm: [0.0, 30.0, 0.0],
         },
         SpatialPathSegment::CubicBezier {
-            start_mm: [40.0, 10.0, 0.0],
-            control_1_mm: [40.0, 20.0, 0.0],
-            control_2_mm: [40.0, 30.0, 10.0],
-            end_mm: [40.0, 40.0, 20.0],
+            start_mm: [0.0, 30.0, 0.0],
+            control_1_mm: [-15.0, 30.0, -10.0],
+            control_2_mm: [-30.0, 15.0, -10.0],
+            end_mm: [-30.0, 0.0, 0.0],
+        },
+        SpatialPathSegment::CubicBezier {
+            start_mm: [-30.0, 0.0, 0.0],
+            control_1_mm: [-30.0, -15.0, 10.0],
+            control_2_mm: [-15.0, -30.0, 10.0],
+            end_mm: [0.0, -30.0, 0.0],
+        },
+        SpatialPathSegment::CubicBezier {
+            start_mm: [0.0, -30.0, 0.0],
+            control_1_mm: [15.0, -30.0, -10.0],
+            control_2_mm: [30.0, -15.0, -10.0],
+            end_mm: [30.0, 0.0, 0.0],
         },
     ];
     let mut document = DocumentStore::new();
@@ -3494,7 +3694,7 @@ fn worker_evaluates_v12_spatial_sweep_with_mesh_and_step_v3_round_trip() {
             CanonicalCommand::CreateFeature {
                 id: path,
                 definition_id: definition,
-                name: "Non-coplanar path".into(),
+                name: "Closed non-planar path".into(),
                 kind: FeatureKind::SpatialPath {
                     segments: spatial_segments.clone(),
                 },
@@ -3535,7 +3735,7 @@ fn worker_evaluates_v12_spatial_sweep_with_mesh_and_step_v3_round_trip() {
     assert!(!package.triangles.is_empty());
 
     let directory = tempfile::tempdir().unwrap();
-    let step_path = directory.path().join("v12-spatial-sweep.step");
+    let step_path = directory.path().join("v12-closed-spatial-sweep.step");
     supervisor
         .export_exact_brep_graph_step(&snapshot, &package, &step_path)
         .unwrap();

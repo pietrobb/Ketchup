@@ -10,7 +10,7 @@ pub fn exact_source(snapshot: &Snapshot) -> ExactSource {
     )
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct ProducerKey {
     pub definition_id: DefinitionId,
     pub feature_id: FeatureId,
@@ -71,10 +71,23 @@ pub struct ExactEvaluationProducts {
     pub(super) report: EvaluationReport,
 }
 pub type ExactEvaluationResult = Result<ExactEvaluationProducts, String>;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExactEvaluationProgress {
+    pub total_producers: usize,
+    pub completed_producers: usize,
+    pub reused_producers: usize,
+    pub active_producer: Option<ProducerKey>,
+    pub active_elapsed_ms: Option<u64>,
+}
 pub struct ExactEvaluationTask {
     pub source: ExactSource,
     pub cancelled: Arc<AtomicBool>,
+    pub finished: Arc<AtomicBool>,
     pub(super) receiver: Receiver<ExactEvaluationResult>,
+    pub(super) total_producers: usize,
+    pub(super) completed_producers: Arc<AtomicUsize>,
+    pub(super) reused_producers: usize,
+    pub(super) active_producer: Arc<Mutex<Option<(ProducerKey, Instant)>>>,
 }
 impl Drop for ExactEvaluationTask {
     fn drop(&mut self) {
@@ -82,6 +95,23 @@ impl Drop for ExactEvaluationTask {
     }
 }
 impl ExactEvaluationTask {
+    pub fn progress(&self) -> ExactEvaluationProgress {
+        let active = *self
+            .active_producer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        ExactEvaluationProgress {
+            total_producers: self.total_producers,
+            completed_producers: self.completed_producers.load(Ordering::Acquire),
+            reused_producers: self.reused_producers,
+            active_producer: active.map(|(key, _)| key),
+            active_elapsed_ms: active
+                .map(|(_, started)| started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64),
+        }
+    }
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release);
     }
@@ -154,9 +184,16 @@ pub fn publish_exact_products(
         .cloned()
         .collect::<Vec<_>>();
     for reference in references {
+        let identity = format!(
+            "role={}, source={}, profile={}, producer={}",
+            reference.semantic_role,
+            reference.source_element_id,
+            reference.profile_feature_id.0,
+            reference.producer_feature_id.0
+        );
         document
             .register_exact_reference_evidence(reference)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| format!("{error}: {identity}"))?;
     }
     document
         .register_exact_reference_evidence(&results)

@@ -192,6 +192,7 @@ struct NativeOperationResult::Impl {
   TopoDS_Shape shape;
   NativeTopologySummary summary{};
   std::vector<NativeFaceEvidence> faces;
+  std::vector<NativeEdgeEvidence> edges;
   std::vector<NativeFaceEdgeEvidence> face_edges;
   std::vector<NativeEdgeFaceEvidence> edge_faces;
   std::vector<HistoryRecord> history;
@@ -295,6 +296,94 @@ NativeFaceEvidence inspect_face(const TopoDS_Face& face, std::uint32_t ordinal) 
       }()};
 }
 
+NativeEdgeEvidence inspect_edge(const TopoDS_Edge& edge, std::uint32_t ordinal) {
+  GProp_GProps properties;
+  BRepGProp::LinearProperties(edge, properties);
+  const gp_Pnt centroid = properties.CentreOfMass();
+
+  Bnd_Box bounds;
+  BRepBndLib::Add(edge, bounds);
+  double min_x = 0.0;
+  double min_y = 0.0;
+  double min_z = 0.0;
+  double max_x = 0.0;
+  double max_y = 0.0;
+  double max_z = 0.0;
+  bounds.Get(min_x, min_y, min_z, max_x, max_y, max_z);
+
+  BRepAdaptor_Curve curve(edge);
+  std::string curve_kind = "other";
+  switch (curve.GetType()) {
+    case GeomAbs_Line: curve_kind = "line"; break;
+    case GeomAbs_Circle: curve_kind = "circle"; break;
+    case GeomAbs_Ellipse: curve_kind = "ellipse"; break;
+    case GeomAbs_Hyperbola: curve_kind = "hyperbola"; break;
+    case GeomAbs_Parabola: curve_kind = "parabola"; break;
+    case GeomAbs_BezierCurve: curve_kind = "bezier"; break;
+    case GeomAbs_BSplineCurve: curve_kind = "bspline"; break;
+    case GeomAbs_OffsetCurve: curve_kind = "offset"; break;
+    default: break;
+  }
+
+  bool has_circle = false;
+  bool has_axis = false;
+  double circle_radius_mm = 0.0;
+  double axis_origin_x = 0.0;
+  double axis_origin_y = 0.0;
+  double axis_origin_z = 0.0;
+  double axis_direction_x = 0.0;
+  double axis_direction_y = 0.0;
+  double axis_direction_z = 0.0;
+  if (curve.GetType() == GeomAbs_Line) {
+    const gp_Pnt start = curve.Value(curve.FirstParameter());
+    const gp_Pnt end = curve.Value(curve.LastParameter());
+    const gp_Dir direction(gp_Vec(start, end));
+    has_axis = true;
+    axis_origin_x = start.X();
+    axis_origin_y = start.Y();
+    axis_origin_z = start.Z();
+    axis_direction_x = direction.X();
+    axis_direction_y = direction.Y();
+    axis_direction_z = direction.Z();
+  } else if (curve.GetType() == GeomAbs_Circle) {
+    const gp_Circ circle = curve.Circle();
+    const gp_Ax1 axis = circle.Axis();
+    has_circle = true;
+    has_axis = true;
+    circle_radius_mm = circle.Radius();
+    axis_origin_x = axis.Location().X();
+    axis_origin_y = axis.Location().Y();
+    axis_origin_z = axis.Location().Z();
+    axis_direction_x = axis.Direction().X();
+    axis_direction_y = axis.Direction().Y();
+    axis_direction_z = axis.Direction().Z();
+  }
+
+  return NativeEdgeEvidence{
+      ordinal,
+      rust::String(curve_kind),
+      properties.Mass(),
+      centroid.X(),
+      centroid.Y(),
+      centroid.Z(),
+      min_x,
+      min_y,
+      min_z,
+      max_x,
+      max_y,
+      max_z,
+      BRep_Tool::IsClosed(edge),
+      has_circle,
+      has_axis,
+      circle_radius_mm,
+      axis_origin_x,
+      axis_origin_y,
+      axis_origin_z,
+      axis_direction_x,
+      axis_direction_y,
+      axis_direction_z};
+}
+
 std::unique_ptr<NativeOperationResult> success_result(
     TopoDS_Shape shape,
     std::vector<HistoryRecord> history,
@@ -370,6 +459,8 @@ std::unique_ptr<NativeOperationResult> success_result(
   TopExp::MapShapesAndAncestors(impl->shape, TopAbs_EDGE, TopAbs_FACE, edge_ancestors);
   for (Standard_Integer edge_index = 1; edge_index <= edges.Extent(); ++edge_index) {
     const TopoDS_Shape& edge = edges(edge_index);
+    impl->edges.push_back(inspect_edge(
+        TopoDS::Edge(edge), static_cast<std::uint32_t>(edge_index - 1)));
     if (!edge_ancestors.Contains(edge)) {
       continue;
     }
@@ -578,6 +669,17 @@ rust::Vec<NativeFaceEvidence> NativeOperationResult::face_evidence() const {
     output.reserve(impl_->faces.size());
     for (const NativeFaceEvidence& face : impl_->faces) {
       output.push_back(face);
+    }
+  }
+  return output;
+}
+
+rust::Vec<NativeEdgeEvidence> NativeOperationResult::edge_evidence() const {
+  rust::Vec<NativeEdgeEvidence> output;
+  if (impl_ != nullptr) {
+    output.reserve(impl_->edges.size());
+    for (const NativeEdgeEvidence& edge : impl_->edges) {
+      output.push_back(edge);
     }
   }
   return output;
@@ -1862,9 +1964,13 @@ std::unique_ptr<NativeOperationResult> sweep_spatial_profile_native_impl(
           STATUS_INVALID_PARAMETER,
           "OCCT spatial Sweep path length is outside its bounded contract");
     }
-    if (point_at(0, 1).Distance(point_at((path_count - 1) * spatial_stride, 4)) == 0.0) {
+    const bool closed =
+        point_at(0, 1).Distance(point_at((path_count - 1) * spatial_stride, 4)) == 0.0;
+    if (closed
+        && (end_tangents.back().Dot(start_tangents.front()) < 1.0 - epsilon
+            || end_tangents.back().Crossed(start_tangents.front()).Magnitude() > epsilon)) {
       return error_result(
-          STATUS_INVALID_SHAPE, "OCCT spatial Sweep path must remain geometrically open");
+          STATUS_INVALID_PARAMETER, "OCCT closed spatial Sweep seam violates its C1 contract");
     }
 
     const auto make_path_edge = [&](std::size_t offset) {
@@ -1926,8 +2032,12 @@ std::unique_ptr<NativeOperationResult> sweep_spatial_profile_native_impl(
         }
         if (distance.Value() > minimum_segment_length) continue;
         bool shared_endpoint_only = false;
-        if (right == left + 1 && distance.NbSolution() > 0) {
-          const gp_Pnt shared = point_at(right * spatial_stride, 1);
+        const bool adjacent = right == left + 1
+            || (closed && left == 0 && right + 1 == path_edges.size());
+        if (adjacent && distance.NbSolution() > 0) {
+          const gp_Pnt shared = right == left + 1
+              ? point_at(right * spatial_stride, 1)
+              : point_at(0, 1);
           shared_endpoint_only = true;
           for (Standard_Integer solution = 1; solution <= distance.NbSolution(); ++solution) {
             if (distance.PointOnShape1(solution).Distance(shared) > minimum_segment_length
@@ -1945,7 +2055,8 @@ std::unique_ptr<NativeOperationResult> sweep_spatial_profile_native_impl(
     if (!spine_builder.IsDone() || !BRepCheck_Analyzer(spine_builder.Wire()).IsValid()) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT spatial Sweep spine wire is invalid");
     }
-    const TopoDS_Wire spine = spine_builder.Wire();
+    TopoDS_Wire spine = spine_builder.Wire();
+    spine.Closed(closed);
 
     const gp_Pnt path_start = point_at(0, 1);
     const gp_Vec tangent = start_tangents.front();
@@ -2126,6 +2237,167 @@ std::unique_ptr<NativeOperationResult> loft_spline_native(
         "loft.end", "last_shape", "profile.face", result, operation.LastShape()));
     history.push_back(history_record(
         "loft.side", "generated_face", "profile.edge.spline", result,
+        operation.GeneratedFace(section_edges.front())));
+    return success_result(result, std::move(history));
+  });
+}
+
+std::unique_ptr<NativeOperationResult> loft_planar_profiles_native(
+    rust::Slice<const double> segments,
+    rust::Slice<const std::uint32_t> section_segment_counts,
+    rust::Slice<const double> elevations) noexcept {
+  return guarded([&] {
+    if (section_segment_counts.size() < 2 || section_segment_counts.size() > 16
+        || section_segment_counts.size() != elevations.size()
+        || segments.empty() || segments.size() % 10 != 0) {
+      return error_result(STATUS_INVALID_PARAMETER, "OCCT planar Loft payload is malformed");
+    }
+    std::size_t declared_segments = 0;
+    double previous_elevation = -std::numeric_limits<double>::infinity();
+    for (std::size_t section = 0; section < elevations.size(); ++section) {
+      const std::uint32_t count = section_segment_counts[section];
+      const double elevation = elevations[section];
+      if (count == 0 || count > 64 || !std::isfinite(elevation)
+          || std::abs(elevation) > 1000000.0 || elevation <= previous_elevation) {
+        return error_result(STATUS_INVALID_PARAMETER, "OCCT planar Loft section is invalid");
+      }
+      declared_segments += count;
+      previous_elevation = elevation;
+    }
+    if (declared_segments != segments.size() / 10) {
+      return error_result(STATUS_INVALID_PARAMETER, "OCCT planar Loft segment counts do not match");
+    }
+
+    std::vector<TopoDS_Wire> wires;
+    std::vector<TopoDS_Edge> section_edges;
+    wires.reserve(section_segment_counts.size());
+    section_edges.reserve(section_segment_counts.size());
+    std::size_t first_segment = 0;
+    const double tau = 2.0 * std::acos(-1.0);
+    for (std::size_t section = 0; section < section_segment_counts.size(); ++section) {
+      const std::size_t segment_count = section_segment_counts[section];
+      const double elevation = elevations[section];
+      BRepBuilderAPI_MakeWire wire_builder;
+      bool line_only = true;
+      TopoDS_Edge first_edge;
+      for (std::size_t index = 0; index < segment_count; ++index) {
+        const std::size_t offset = (first_segment + index) * 10;
+        for (std::size_t value = 0; value < 10; ++value) {
+          if (!std::isfinite(segments[offset + value])
+              || std::abs(segments[offset + value]) > 1000000.0) {
+            return error_result(STATUS_INVALID_PARAMETER, "OCCT planar Loft segment value is invalid");
+          }
+        }
+        const double kind = segments[offset];
+        TopoDS_Edge edge;
+        if (kind == 0.0) {
+          const gp_Pnt start(segments[offset + 1], segments[offset + 2], elevation);
+          const gp_Pnt end(segments[offset + 3], segments[offset + 4], elevation);
+          if (segments[offset + 5] != 0.0 || segments[offset + 6] != 0.0
+              || segments[offset + 7] != 0.0 || segments[offset + 8] != 0.0
+              || segments[offset + 9] != 0.0
+              || start.Distance(end) < 0.01 || start.Distance(end) > 100000.0) {
+            return error_result(STATUS_INVALID_PARAMETER, "OCCT planar Loft line is invalid");
+          }
+          BRepBuilderAPI_MakeEdge edge_builder(start, end);
+          if (edge_builder.IsDone()) edge = edge_builder.Edge();
+        } else if (kind == 1.0) {
+          line_only = false;
+          const gp_Pnt start(segments[offset + 1], segments[offset + 2], elevation);
+          const gp_Pnt end(segments[offset + 3], segments[offset + 4], elevation);
+          const double center_x = segments[offset + 5];
+          const double center_y = segments[offset + 6];
+          const gp_Pnt center(center_x, center_y, elevation);
+          const double radius = start.Distance(center);
+          const double end_radius = end.Distance(center);
+          if (segments[offset + 7] != 0.0 || segments[offset + 8] != 0.0
+              || (segments[offset + 9] != 0.0 && segments[offset + 9] != 1.0)
+              || radius < 0.01 || radius > 100000.0
+              || std::abs(radius - end_radius) > 1.0e-9 * std::max({radius, end_radius, 1.0})) {
+            return error_result(STATUS_INVALID_PARAMETER, "OCCT planar Loft arc is invalid");
+          }
+          const double start_angle = std::atan2(start.Y() - center_y, start.X() - center_x);
+          const double end_angle = std::atan2(end.Y() - center_y, end.X() - center_x);
+          double sweep = end_angle - start_angle;
+          if (segments[offset + 9] != 0.0) {
+            while (sweep >= 0.0) sweep -= tau;
+          } else {
+            while (sweep <= 0.0) sweep += tau;
+          }
+          const double middle_angle = start_angle + sweep / 2.0;
+          const gp_Pnt middle(
+              center_x + radius * std::cos(middle_angle),
+              center_y + radius * std::sin(middle_angle), elevation);
+          GC_MakeArcOfCircle arc_builder(start, middle, end);
+          if (arc_builder.IsDone()) {
+            BRepBuilderAPI_MakeEdge edge_builder(arc_builder.Value());
+            if (edge_builder.IsDone()) edge = edge_builder.Edge();
+          }
+        } else if (kind == 2.0) {
+          line_only = false;
+          if (segments[offset + 9] != 0.0) {
+            return error_result(STATUS_INVALID_PARAMETER, "OCCT planar Loft cubic is invalid");
+          }
+          edge = cubic_bezier_edge(segments, offset, elevation);
+        } else if (kind == 3.0 && segment_count == 1) {
+          line_only = false;
+          const double center_x = segments[offset + 1];
+          const double center_y = segments[offset + 2];
+          const double radius = segments[offset + 3];
+          if (radius < 0.01 || radius > 100000.0
+              || segments[offset + 4] != 0.0 || segments[offset + 5] != 0.0
+              || segments[offset + 6] != 0.0 || segments[offset + 7] != 0.0
+              || segments[offset + 8] != 0.0 || segments[offset + 9] != 0.0) {
+            return error_result(STATUS_INVALID_PARAMETER, "OCCT planar Loft circle is invalid");
+          }
+          BRepBuilderAPI_MakeEdge edge_builder(gp_Circ(
+              gp_Ax2(gp_Pnt(center_x, center_y, elevation), gp_Dir(0.0, 0.0, 1.0)), radius));
+          if (edge_builder.IsDone()) edge = edge_builder.Edge();
+        } else {
+          return error_result(STATUS_INVALID_PARAMETER, "OCCT planar Loft segment kind is invalid");
+        }
+        if (edge.IsNull()) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT planar Loft edge is null");
+        }
+        if (kind != 3.0) {
+          const std::size_t next = (first_segment + (index + 1) % segment_count) * 10;
+          if (segments[offset + 3] != segments[next + 1]
+              || segments[offset + 4] != segments[next + 2]) {
+            return error_result(STATUS_INVALID_PARAMETER, "OCCT planar Loft section is open");
+          }
+        }
+        if (first_edge.IsNull()) first_edge = edge;
+        wire_builder.Add(edge);
+      }
+      if (!wire_builder.IsDone() || (line_only && segment_count < 3)
+          || !BRepCheck_Analyzer(wire_builder.Wire()).IsValid()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT planar Loft wire is invalid");
+      }
+      wires.push_back(wire_builder.Wire());
+      section_edges.push_back(first_edge);
+      first_segment += segment_count;
+    }
+
+    BRepOffsetAPI_ThruSections operation(true, false, 1.0e-6);
+    operation.CheckCompatibility(true);
+    operation.SetMutableInput(false);
+    for (const TopoDS_Wire& wire : wires) operation.AddWire(wire);
+    operation.Build();
+    if (!operation.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT planar Loft builder did not complete");
+    }
+    const TopoDS_Shape result = operation.Shape();
+    if (result.IsNull() || !BRepCheck_Analyzer(result).IsValid()
+        || count_subshapes(result, TopAbs_SOLID) != 1) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT planar Loft did not produce one valid solid");
+    }
+    std::vector<HistoryRecord> history;
+    history.push_back(history_record(
+        "loft.start", "first_shape", "profile.wire", result, operation.FirstShape()));
+    history.push_back(history_record(
+        "loft.end", "last_shape", "profile.wire", result, operation.LastShape()));
+    history.push_back(history_record(
+        "loft.side", "generated_face", "profile.edge", result,
         operation.GeneratedFace(section_edges.front())));
     return success_result(result, std::move(history));
   });

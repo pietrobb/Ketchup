@@ -127,7 +127,11 @@ const SKETCH_PROJECTION_SCHEMA: u16 = 62;
 const SKETCH_CONSTRUCTION_SCHEMA: u16 = 63;
 const HELICAL_ASSEMBLY_JOINT_SCHEMA: u16 = 64;
 const IGES_IMPORT_SCHEMA: u16 = 65;
-pub const CURRENT_SCHEMA: u16 = IGES_IMPORT_SCHEMA;
+const CONSTRUCTION_GEOMETRY_SCHEMA: u16 = 66;
+const CONSTRUCTION_AXIS_SCHEMA: u16 = 67;
+const CONSTRUCTION_PLANE_SCHEMA: u16 = 68;
+const CONSTRUCTION_PLANE_WORKPLANE_SCHEMA: u16 = 69;
+pub const CURRENT_SCHEMA: u16 = CONSTRUCTION_PLANE_WORKPLANE_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -205,6 +209,10 @@ struct ProductSchemaCapabilities {
     occurrence_colors: bool,
     glb_import: bool,
     iges_import: bool,
+    construction_geometry: bool,
+    construction_axis: bool,
+    construction_plane: bool,
+    construction_plane_workplanes: bool,
     sketch_projection: bool,
     sketch_construction: bool,
     helical_assembly_joints: bool,
@@ -270,6 +278,10 @@ impl ProductSchemaCapabilities {
         occurrence_colors: false,
         glb_import: false,
         iges_import: false,
+        construction_geometry: false,
+        construction_axis: false,
+        construction_plane: false,
+        construction_plane_workplanes: false,
         sketch_projection: false,
         sketch_construction: false,
         helical_assembly_joints: false,
@@ -335,6 +347,10 @@ impl ProductSchemaCapabilities {
             occurrence_colors: schema >= OCCURRENCE_COLOR_SCHEMA,
             glb_import: schema >= GLB_IMPORT_SCHEMA,
             iges_import: schema >= IGES_IMPORT_SCHEMA,
+            construction_geometry: schema >= CONSTRUCTION_GEOMETRY_SCHEMA,
+            construction_axis: schema >= CONSTRUCTION_AXIS_SCHEMA,
+            construction_plane: schema >= CONSTRUCTION_PLANE_SCHEMA,
+            construction_plane_workplanes: schema >= CONSTRUCTION_PLANE_WORKPLANE_SCHEMA,
             sketch_projection: schema >= SKETCH_PROJECTION_SCHEMA,
             sketch_construction: schema >= SKETCH_CONSTRUCTION_SCHEMA,
             helical_assembly_joints: schema >= HELICAL_ASSEMBLY_JOINT_SCHEMA,
@@ -1454,6 +1470,10 @@ fn write_workplane(bytes: &mut Vec<u8>, spec: &WorkplaneSpec) {
             push_string(bytes, distance.source_token());
             push_u64(bytes, distance.millimetres().to_bits());
         }
+        WorkplaneSupport::ConstructionPlane { feature } => {
+            push_u8(bytes, 5);
+            push_u64(bytes, feature.0);
+        }
         WorkplaneSupport::PlanarFace { reference, health } => {
             push_u8(bytes, 3);
             write_exact_reference(bytes, reference);
@@ -1726,6 +1746,31 @@ fn write_features(bytes: &mut Vec<u8>, product: &ProductModel) {
                             }
                         }
                     }
+                }
+            }
+            FeatureKind::ConstructionPoint { position_mm } => {
+                push_u8(bytes, 26);
+                for coordinate in position_mm {
+                    push_u64(bytes, coordinate.to_bits());
+                }
+            }
+            FeatureKind::ConstructionAxis {
+                origin_mm,
+                direction,
+            } => {
+                push_u8(bytes, 27);
+                for coordinate in origin_mm.iter().chain(direction) {
+                    push_u64(bytes, coordinate.to_bits());
+                }
+            }
+            FeatureKind::ConstructionPlane {
+                origin_mm,
+                normal,
+                x_direction,
+            } => {
+                push_u8(bytes, 28);
+                for coordinate in origin_mm.iter().chain(normal).chain(x_direction) {
+                    push_u64(bytes, coordinate.to_bits());
                 }
             }
             FeatureKind::SpatialPath { segments } => {
@@ -3047,6 +3092,10 @@ fn load_document(
             | SKETCH_PROJECTION_SCHEMA
             | SKETCH_CONSTRUCTION_SCHEMA
             | HELICAL_ASSEMBLY_JOINT_SCHEMA
+            | IGES_IMPORT_SCHEMA
+            | CONSTRUCTION_GEOMETRY_SCHEMA
+            | CONSTRUCTION_AXIS_SCHEMA
+            | CONSTRUCTION_PLANE_SCHEMA
             | CURRENT_SCHEMA
     ) {
         return Err(PersistenceError::UnsupportedSchema(schema));
@@ -3191,7 +3240,12 @@ fn load_document(
             )
             .is_ok_and(|request| {
                 crate::exact_revolve::reference_matches_revolve_request(reference, &request)
-            });
+            }) || crate::exact_brep_graph::ExactBRepGraph::from_snapshot(
+                &loaded_snapshot,
+                reference.definition_id,
+                reference.producer_feature_id,
+            )
+            .is_ok_and(|graph| reference.matches_exact_brep_graph(&graph));
         let matches_durable_anchor =
             crate::exact_product::ExactFeatureChainRequest::from_snapshot_for_producer(
                 &loaded_snapshot,
@@ -3909,6 +3963,7 @@ fn read_import_receipt(
 fn read_workplane(
     reader: &mut Reader<'_>,
     free_workplanes: bool,
+    construction_plane_workplanes: bool,
 ) -> Result<WorkplaneSpec, PersistenceError> {
     let support = match reader.u8()? {
         4 if free_workplanes => WorkplaneSupport::Free,
@@ -3921,6 +3976,9 @@ fn read_workplane(
         2 => WorkplaneSupport::Offset {
             base: FeatureId(reader.u64()?),
             distance: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
+        },
+        5 if construction_plane_workplanes => WorkplaneSupport::ConstructionPlane {
+            feature: FeatureId(reader.u64()?),
         },
         3 => WorkplaneSupport::PlanarFace {
             reference: Box::new(read_exact_reference(reader)?),
@@ -4782,9 +4840,11 @@ fn read_product(
         let definition_id = DefinitionId(reader.u64()?);
         let name = reader.string()?;
         let kind = match reader.u8()? {
-            17 if capabilities.workplane_sketch => {
-                FeatureKind::Workplane(read_workplane(reader, capabilities.free_workplanes)?)
-            }
+            17 if capabilities.workplane_sketch => FeatureKind::Workplane(read_workplane(
+                reader,
+                capabilities.free_workplanes,
+                capabilities.construction_plane_workplanes,
+            )?),
             18 if capabilities.workplane_sketch => FeatureKind::Sketch(read_sketch(
                 reader,
                 capabilities.sketch_constraint_vocabulary,
@@ -4877,6 +4937,42 @@ fn read_product(
                 }
                 FeatureKind::SpatialPath { segments }
             }
+            26 if capabilities.construction_geometry => FeatureKind::ConstructionPoint {
+                position_mm: [
+                    f64::from_bits(reader.u64()?),
+                    f64::from_bits(reader.u64()?),
+                    f64::from_bits(reader.u64()?),
+                ],
+            },
+            27 if capabilities.construction_axis => FeatureKind::ConstructionAxis {
+                origin_mm: [
+                    f64::from_bits(reader.u64()?),
+                    f64::from_bits(reader.u64()?),
+                    f64::from_bits(reader.u64()?),
+                ],
+                direction: [
+                    f64::from_bits(reader.u64()?),
+                    f64::from_bits(reader.u64()?),
+                    f64::from_bits(reader.u64()?),
+                ],
+            },
+            28 if capabilities.construction_plane => FeatureKind::ConstructionPlane {
+                origin_mm: [
+                    f64::from_bits(reader.u64()?),
+                    f64::from_bits(reader.u64()?),
+                    f64::from_bits(reader.u64()?),
+                ],
+                normal: [
+                    f64::from_bits(reader.u64()?),
+                    f64::from_bits(reader.u64()?),
+                    f64::from_bits(reader.u64()?),
+                ],
+                x_direction: [
+                    f64::from_bits(reader.u64()?),
+                    f64::from_bits(reader.u64()?),
+                    f64::from_bits(reader.u64()?),
+                ],
+            },
             14 if capabilities.loft_spline => {
                 let mut control_points_mm = Vec::new();
                 for _ in 0..reader.count_with_limit(64)? {

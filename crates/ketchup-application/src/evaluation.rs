@@ -22,11 +22,11 @@ use std::collections::BTreeSet;
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc::{self, Receiver, RecvTimeoutError, TryRecvError},
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 enum ExactEvaluationRequest {
     Graph {
         graph: Box<ExactBRepGraph>,
@@ -51,6 +51,7 @@ fn prepare_requests(
     container_data: &ContainerData,
     exact_results: &ExactResultRegistry,
     topology_results: &ExactResultRegistry,
+    scope: Option<&BTreeSet<ProducerKey>>,
 ) -> Result<PreparedRequests, String> {
     let feature_graph = snapshot
         .feature_dependency_graph()
@@ -65,7 +66,7 @@ fn prepare_requests(
             _ => None,
         })
         .collect::<BTreeSet<_>>();
-    let producers = snapshot
+    let mut producers = snapshot
         .scene_query()
         .into_iter()
         .map(|occurrence| occurrence.definition_id)
@@ -119,9 +120,36 @@ fn prepare_requests(
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
+    let available = producers
+        .iter()
+        .map(|(definition_id, feature_id)| ProducerKey {
+            definition_id: *definition_id,
+            feature_id: *feature_id,
+        })
+        .collect::<BTreeSet<_>>();
+    if let Some(scope) = scope {
+        producers.retain(|(definition_id, feature_id)| {
+            scope.contains(&ProducerKey {
+                definition_id: *definition_id,
+                feature_id: *feature_id,
+            })
+        });
+    }
 
     let mut requests = Vec::new();
-    let mut coverage = Vec::new();
+    let mut coverage = scope
+        .into_iter()
+        .flat_map(|scope| scope.difference(&available))
+        .map(|key| ProducerCoverage {
+            key: *key,
+            render: EvidenceStatus::not_evaluated(
+                "requested producer is not a visible terminal or referenced body producer",
+            ),
+            topology: EvidenceStatus::not_evaluated(
+                "requested producer is not a visible terminal or referenced body producer",
+            ),
+        })
+        .collect::<Vec<_>>();
     for (definition_id, feature_id) in producers {
         let key = ProducerKey {
             definition_id,
@@ -355,10 +383,53 @@ pub fn start_exact_evaluation(
     executable: Option<PathBuf>,
     completed: impl FnOnce() + Send + 'static,
 ) -> ExactEvaluationTask {
+    start_exact_evaluation_scoped(
+        snapshot,
+        container_data,
+        render,
+        topology,
+        executable,
+        None,
+        completed,
+    )
+}
+
+pub fn start_exact_evaluation_scoped(
+    snapshot: Snapshot,
+    container_data: &ContainerData,
+    render: &ExactResultRegistry,
+    topology: &ExactResultRegistry,
+    executable: Option<PathBuf>,
+    scope: Option<&BTreeSet<ProducerKey>>,
+    completed: impl FnOnce() + Send + 'static,
+) -> ExactEvaluationTask {
     let source = exact_source(&snapshot);
-    let prepared = prepare_requests(&snapshot, container_data, render, topology);
+    let prepared = prepare_requests(&snapshot, container_data, render, topology, scope);
+    let initial_active_producer = prepared
+        .as_ref()
+        .ok()
+        .and_then(|(requests, _)| requests.first().map(|(key, _)| *key));
+    let (total_producers, initial_completed_producers, reused_producers) = match &prepared {
+        Ok((requests, coverage)) => (
+            coverage.len(),
+            coverage.len().saturating_sub(requests.len()),
+            coverage
+                .iter()
+                .filter(|entry| matches!(&entry.render, EvidenceStatus::Current))
+                .count(),
+        ),
+        Err(_) => (0, 0, 0),
+    };
+    let completed_producers = Arc::new(AtomicUsize::new(initial_completed_producers));
+    let worker_completed_producers = Arc::clone(&completed_producers);
+    let active_producer = Arc::new(Mutex::new(
+        initial_active_producer.map(|key| (key, Instant::now())),
+    ));
+    let worker_active_producer = Arc::clone(&active_producer);
     let cancelled = Arc::new(AtomicBool::new(false));
     let worker_cancelled = Arc::clone(&cancelled);
+    let finished = Arc::new(AtomicBool::new(false));
+    let worker_finished = Arc::clone(&finished);
     let worker_source = source.clone();
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
@@ -394,12 +465,17 @@ pub fn start_exact_evaluation(
                                 entry.topology = EvidenceStatus::not_evaluated(&reason);
                             }
                             report.not_evaluated = Some(reason);
+                            worker_completed_producers.store(total_producers, Ordering::Release);
                         }
                         Ok(mut worker) => {
                             for (key, request) in requests {
                                 if worker_cancelled.load(Ordering::Acquire) {
                                     break;
                                 }
+                                *worker_active_producer
+                                    .lock()
+                                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                                    Some((key, Instant::now()));
                                 let definition_id = key.definition_id;
                                 let entry = report
                                     .producers
@@ -600,6 +676,7 @@ pub fn start_exact_evaluation(
                                         entry.topology = EvidenceStatus::not_evaluated(
                                             "render evaluation failed",
                                         );
+                                        worker_completed_producers.fetch_add(1, Ordering::AcqRel);
                                         continue;
                                     }
                                 };
@@ -618,12 +695,16 @@ pub fn start_exact_evaluation(
                                 if let Some(package) = topology_package {
                                     topology_packages.push(Arc::new(package));
                                 }
+                                worker_completed_producers.fetch_add(1, Ordering::AcqRel);
                             }
                         }
                     }
                 }
             }
         }
+        *worker_active_producer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
         report.finish();
         let products = ExactEvaluationProducts {
             source: worker_source,
@@ -631,6 +712,7 @@ pub fn start_exact_evaluation(
             topology_packages,
             report,
         };
+        worker_finished.store(true, Ordering::Release);
         if !worker_cancelled.load(Ordering::Acquire) && sender.send(Ok(products)).is_ok() {
             completed();
         }
@@ -638,6 +720,11 @@ pub fn start_exact_evaluation(
     ExactEvaluationTask {
         source,
         cancelled,
+        finished,
         receiver,
+        total_producers,
+        completed_producers,
+        reused_producers,
+        active_producer,
     }
 }

@@ -4,11 +4,11 @@ use ketchup_core::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V6, EXACT_BREP_GRAPH_SCHEMA_V7, EXACT_BREP_GRAPH_SCHEMA_V8,
     EXACT_BREP_GRAPH_SCHEMA_V9, EXACT_BREP_GRAPH_SCHEMA_V10, EXACT_BREP_GRAPH_SCHEMA_V11,
     EXACT_BREP_GRAPH_SCHEMA_V12, EXACT_BREP_GRAPH_SCHEMA_V13, ExactBRepBooleanOperation,
-    ExactBRepEdgeFinishKind, ExactBRepGraph, ExactBRepLinearInterval, ExactBRepOperation,
-    ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment, ExactBRepProfile,
-    ExactBRepSpatialPathSegment, ExactBRepTopologyKind, ExactBRepTopologySelector,
-    MAX_EXACT_BREP_GRAPH_BYTES, MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS, MAX_EXACT_BREP_REGION_HOLES,
-    MAX_EXACT_BREP_REGION_SEGMENTS, SKETCH_SWEEP_FRAME_EPSILON_MM,
+    ExactBRepEdgeFinishKind, ExactBRepGraph, ExactBRepLinearInterval, ExactBRepLoftSection,
+    ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
+    ExactBRepProfile, ExactBRepSpatialPathSegment, ExactBRepTopologyKind,
+    ExactBRepTopologySelector, MAX_EXACT_BREP_GRAPH_BYTES, MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS,
+    MAX_EXACT_BREP_REGION_HOLES, MAX_EXACT_BREP_REGION_SEGMENTS, SKETCH_SWEEP_FRAME_EPSILON_MM,
     exact_brep_planar_rectangle_bounds,
 };
 use ketchup_core::exact_product::{EXACT_BREP_GRAPH_EVALUATOR_V1, ExactCircleProfile};
@@ -18,20 +18,21 @@ use ketchup_core::import::{
 };
 use ketchup_exact::{
     BoxSpec, CircleExtrudeSpec, CutMode, CylinderToolSpec, EdgeFinish, ExactBackend,
-    ExactBodyBooleanOperation, ExactKernel, ExactOpOutput, PlanarProfileLoop, PlanarProfileSegment,
-    Point3, RectangleExtrudeSpec, RectangleOffsetSpec, RectangleSweepSpec, ReferenceResolution,
-    Size3, SpatialProfileSegment, SplineLoftSection, SplineLoftSpec, StabilityClass,
-    capture_bounded_pocket_references, capture_bounded_through_cut_references,
-    capture_box_shell_references, capture_circle_extrusion_references,
-    capture_circular_pocket_references, capture_circular_split_references,
-    capture_circular_through_cut_references, capture_contained_polygon_intersection_references,
-    capture_contained_polygon_union_references, capture_general_revolve_references,
-    capture_guaranteed_references, capture_mixed_profile_extrusion_references,
-    capture_planar_offset_reference, capture_polygon_through_cut_references,
-    capture_profile_split_references, capture_rectangular_intersection_references,
-    capture_rectangular_split_references, capture_rectangular_sweep_references,
-    capture_rectangular_union_references, capture_revolve_references, capture_shell_references,
-    capture_spline_loft_references, resolve_subshape_reference,
+    ExactBodyBooleanOperation, ExactKernel, ExactOpOutput, PlanarLoftSection, PlanarLoftSpec,
+    PlanarProfileLoop, PlanarProfileSegment, Point3, RectangleExtrudeSpec, RectangleOffsetSpec,
+    RectangleSweepSpec, ReferenceResolution, Size3, SpatialProfileSegment, SplineLoftSection,
+    SplineLoftSpec, StabilityClass, capture_bounded_pocket_references,
+    capture_bounded_through_cut_references, capture_box_shell_references,
+    capture_circle_extrusion_references, capture_circular_pocket_references,
+    capture_circular_split_references, capture_circular_through_cut_references,
+    capture_contained_polygon_intersection_references, capture_contained_polygon_union_references,
+    capture_general_revolve_references, capture_guaranteed_references,
+    capture_mixed_profile_extrusion_references, capture_planar_offset_reference,
+    capture_polygon_through_cut_references, capture_profile_split_references,
+    capture_rectangular_intersection_references, capture_rectangular_split_references,
+    capture_rectangular_sweep_references, capture_rectangular_union_references,
+    capture_revolve_references, capture_shell_references, capture_spline_loft_references,
+    resolve_subshape_reference,
 };
 #[cfg(feature = "named-product-fixtures")]
 use ketchup_exact::{
@@ -40,7 +41,7 @@ use ketchup_exact::{
 use ketchup_scheduler::{
     MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES, MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES,
     StepAssemblyManifest, StepFeatureExportSpec, StepProfileSegment, StepRevolveExportSpec,
-    WorkerExactBRepGraphFaceEvidence,
+    WorkerExactBRepGraphEdgeEvidence, WorkerExactBRepGraphFaceEvidence,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -1770,6 +1771,42 @@ fn exact_brep_graph_face_evidence(output: &ExactOpOutput) -> Vec<WorkerExactBRep
         .collect()
 }
 
+fn exact_brep_graph_edge_evidence(output: &ExactOpOutput) -> Vec<WorkerExactBRepGraphEdgeEvidence> {
+    output
+        .body
+        .topology
+        .edges
+        .iter()
+        .map(|edge| WorkerExactBRepGraphEdgeEvidence {
+            edge_ordinal: edge.ordinal,
+            curve_kind: edge.curve_kind.clone(),
+            length_mm: edge.length_mm,
+            centroid_mm: [edge.centroid_mm.x, edge.centroid_mm.y, edge.centroid_mm.z],
+            bounds_mm: [
+                [
+                    edge.bounds_mm.min.x,
+                    edge.bounds_mm.min.y,
+                    edge.bounds_mm.min.z,
+                ],
+                [
+                    edge.bounds_mm.max.x,
+                    edge.bounds_mm.max.y,
+                    edge.bounds_mm.max.z,
+                ],
+            ],
+            closed: edge.closed,
+            circle_radius_mm: edge.circle_radius_mm,
+            axis_origin_mm: edge
+                .axis_origin_mm
+                .map(|origin| [origin.x, origin.y, origin.z]),
+            unit_axis_direction: edge
+                .axis_direction
+                .map(|direction| [direction.x, direction.y, direction.z]),
+            adjacent_face_ordinals: edge.adjacent_face_ordinals.clone(),
+        })
+        .collect()
+}
+
 fn exact_brep_graph_response(
     backend: &ExactBackend,
     graph: &ExactBRepGraph,
@@ -1833,15 +1870,13 @@ fn exact_brep_graph_response(
             ),
         )
     };
-    let face_evidence = if graph.schema == EXACT_BREP_GRAPH_SCHEMA_V13 {
-        let encoded = serde_json::to_vec(&exact_brep_graph_face_evidence(&output))
-            .expect("graph face evidence is serializable");
-        format!(" {}", encode_hex(&encoded))
-    } else {
-        String::new()
-    };
+    let faces = serde_json::to_vec(&exact_brep_graph_face_evidence(&output))
+        .expect("graph face evidence is serializable");
+    let edges = serde_json::to_vec(&exact_brep_graph_edge_evidence(&output))
+        .expect("graph edge evidence is serializable");
+    let detailed_evidence = format!(" {} {}", encode_hex(&faces), encode_hex(&edges));
     format!(
-        "{protocol} {} {} {} {} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {topology_evidence} {} {}{face_evidence}",
+        "{protocol} {} {} {} {} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {topology_evidence} {} {}{detailed_evidence}",
         graph.canonical_input_digest,
         graph.graph_digest,
         graph.producer_feature_id,
@@ -1952,30 +1987,7 @@ fn evaluate_exact_brep_graph(
                 &graph.profiles[profile.0 as usize],
                 &path.segments,
             )?,
-            ExactBRepOperation::Loft { sections } => {
-                let sections = sections
-                    .iter()
-                    .map(|section| {
-                        let profile = &graph.profiles[section.profile.0 as usize];
-                        let ExactBRepPlanarGeometry::Spline { control_point_bits } =
-                            &profile.geometry
-                        else {
-                            return Err(exact_brep_profile_error(
-                                profile,
-                                "exact loft requires bounded spline sections",
-                            ));
-                        };
-                        Ok(SplineLoftSection {
-                            elevation_mm: f64::from_bits(section.elevation_bits),
-                            control_points_mm: control_point_bits
-                                .iter()
-                                .map(|point| point.map(f64::from_bits))
-                                .collect(),
-                        })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                backend.loft_spline(&SplineLoftSpec { sections })?
-            }
+            ExactBRepOperation::Loft { sections } => exact_brep_loft(backend, graph, sections)?,
             ExactBRepOperation::Shell {
                 target,
                 removed_faces,
@@ -2165,6 +2177,61 @@ fn exact_brep_topology_ordinals(
         ));
     }
     Ok(ordinals)
+}
+
+fn exact_brep_loft(
+    backend: &ExactBackend,
+    graph: &ExactBRepGraph,
+    sections: &[ExactBRepLoftSection],
+) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
+    if sections.iter().all(|section| {
+        matches!(
+            graph.profiles[section.profile.0 as usize].geometry,
+            ExactBRepPlanarGeometry::Spline { .. }
+        )
+    }) {
+        let sections = sections
+            .iter()
+            .map(|section| {
+                let ExactBRepPlanarGeometry::Spline { control_point_bits } =
+                    &graph.profiles[section.profile.0 as usize].geometry
+                else {
+                    unreachable!("all Loft profiles were checked as splines")
+                };
+                SplineLoftSection {
+                    elevation_mm: f64::from_bits(section.elevation_bits),
+                    control_points_mm: control_point_bits
+                        .iter()
+                        .map(|point| point.map(f64::from_bits))
+                        .collect(),
+                }
+            })
+            .collect();
+        return backend.loft_spline(&SplineLoftSpec { sections });
+    }
+    let sections = sections
+        .iter()
+        .map(|section| {
+            let profile = &graph.profiles[section.profile.0 as usize];
+            let profile = match &profile.geometry {
+                ExactBRepPlanarGeometry::Circle { .. }
+                | ExactBRepPlanarGeometry::Boundary { closed: true, .. } => {
+                    exact_brep_planar_offset_loop(profile)?
+                }
+                _ => {
+                    return Err(exact_brep_profile_error(
+                        profile,
+                        "exact planar Loft requires only closed line/arc/circle/cubic sections",
+                    ));
+                }
+            };
+            Ok(PlanarLoftSection {
+                elevation_mm: f64::from_bits(section.elevation_bits),
+                profile,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    backend.loft_planar_profiles(&PlanarLoftSpec { sections })
 }
 
 fn exact_brep_revolve(

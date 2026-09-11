@@ -250,7 +250,8 @@ impl KetchupApp {
                 }],
                 WorkplaneSupport::Free
                 | WorkplaneSupport::Principal(_)
-                | WorkplaneSupport::PlanarFace { .. } => Vec::new(),
+                | WorkplaneSupport::PlanarFace { .. }
+                | WorkplaneSupport::ConstructionPlane { .. } => Vec::new(),
             },
             FeatureKind::Sketch(spec) => spec
                 .constraints

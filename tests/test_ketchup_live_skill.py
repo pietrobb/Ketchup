@@ -87,13 +87,14 @@ class SessionDouble:
         return envelope({"proposal_id": 9} if method == "propose" else {}, self.stamp)
 
     def __getattr__(self, method):
-        if method in ("query", "detail", "create_workset", "workset_status", "start_batch_job", "batch_job_status", "step_batch_job", "cancel_batch_job", "propose", "commit", "undo", "redo", "selection", "view", "image"):
+        if method in ("query", "detail", "create_workset", "workset_status", "start_batch_job", "batch_job_status", "step_batch_job", "cancel_batch_job", "propose", "commit", "undo", "redo", "save", "save_as", "open", "selection", "view", "image"):
             return lambda expected, *args, **kwargs: self.request(method, expected, *args, **kwargs)
         raise AttributeError(method)
 
 
-def tools(state, launcher):
-    return {tool.name: tool for tool in skill._register_tools(state, launcher=launcher)}
+def tools(state, launcher, discoverer=None, attacher=None):
+    return {tool.name: tool for tool in skill._register_tools(
+        state, launcher=launcher, discoverer=discoverer, attacher=attacher)}
 
 
 async def call(registered, name, **kwargs):
@@ -118,7 +119,7 @@ def test_registration_shared_helpers_no_offline_runtime_or_shadow(monkeypatch):
     engine = namespace["ClaudeEngine"]()
     engine._plan_state = SimpleNamespace(active=True)
     registered = {tool.name: tool for tool in engine.load()}
-    assert set(registered) == {"KetchupLiveSession", "KetchupLiveInspect", "KetchupLiveEdit", "KetchupLiveBatch", "KetchupLiveView"}
+    assert set(registered) == {"KetchupLiveSession", "KetchupLiveInspect", "KetchupLiveEdit", "KetchupLiveFile", "KetchupLiveBatch", "KetchupLiveView"}
     for tool in registered.values():
         schema = tool.to_dict()
         props = schema["input_schema"]["properties"]
@@ -135,11 +136,87 @@ def test_registration_shared_helpers_no_offline_runtime_or_shadow(monkeypatch):
     assert sys.path == before_path and sys.modules.get("ketchup") is public
 
 
+def test_registered_list_is_read_only_bounded_metadata_without_endpoint():
+    instances = [{"instance_id": "1" * 32, "document": "part.ketchup",
+                  "status": "available"}]
+    registered = tools(
+        SimpleNamespace(active=True),
+        lambda *args: pytest.fail("list must not launch"),
+        lambda: copy.deepcopy(instances),
+    )
+
+    async def scenario():
+        listed = await call(registered, "KetchupLiveSession", action="list")
+        assert listed == {"ok": True, "result": {"instances": instances, "complete": True}}
+        invalid = await call(
+            registered,
+            "KetchupLiveSession",
+            action="list",
+            handle="not-allowed",
+        )
+        assert invalid["error"]["code"] == "invalid_arguments"
+
+    asyncio.run(scenario())
+
+
+def test_registered_attach_uses_only_instance_id_and_returns_nonowning_handle():
+    instance_id = "2" * 32
+    attached = SessionDouble()
+    seen = []
+
+    def attacher(selected):
+        seen.append(selected)
+        return attached
+
+    registered = tools(
+        SimpleNamespace(active=False),
+        lambda *args: pytest.fail("attach must not launch"),
+        lambda: pytest.fail("attach must revalidate inside the SDK"),
+        attacher,
+    )
+
+    async def scenario():
+        result = await call(
+            registered, "KetchupLiveSession", action="attach", instance_id=instance_id
+        )
+        assert result["ok"] and result["stamp"] == STAMP
+        assert result["result"]["ownership"] == "nonowning_existing_GUI_window"
+        assert result["result"]["attachment"] == "Approved directly in the selected existing window."
+        handle = result["result"]["handle"]
+        assert str(__import__("uuid").UUID(handle)) == handle
+        assert seen == [instance_id]
+        assert "token" not in json.dumps(result) and "address" not in json.dumps(result)
+        disconnected = await call(
+            registered, "KetchupLiveSession", action="disconnect", handle=handle
+        )
+        assert disconnected["ok"] and attached.closed
+
+    asyncio.run(scenario())
+
+
+def test_registered_attach_rejects_in_plan_mode_before_consent_request():
+    registered = tools(
+        SimpleNamespace(active=True),
+        lambda *args: pytest.fail("must not launch"),
+        attacher=lambda *args: pytest.fail("must not request consent in plan mode"),
+    )
+
+    async def scenario():
+        denied = await call(
+            registered, "KetchupLiveSession", action="attach", instance_id="2" * 32
+        )
+        assert denied["error"]["code"] == "plan_mode"
+
+    asyncio.run(scenario())
+
+
 def test_registered_lifecycle_stamps_selection_and_stale_rejection(tmp_path, monkeypatch):
     monkeypatch.setattr(skill, "IMAGE_ROOT", tmp_path)
     session = SessionDouble()
     state = SimpleNamespace(active=False)
     registered = tools(state, lambda *args: session)
+    source = tmp_path / "open.ketchup"
+    source.write_bytes(b"fixture")
     async def scenario():
         opened = await launch(registered)
         handle = opened["result"]["handle"]
@@ -198,6 +275,19 @@ def test_registered_lifecycle_stamps_selection_and_stale_rejection(tmp_path, mon
                                 expected=previous, selection=[])
             assert result["stamp"]["mutation_epoch"] == previous["mutation_epoch"] + 1
         expected = result["stamp"]
+        saved = await call(registered, "KetchupLiveFile", action="save", handle=handle,
+                           expected=expected)
+        assert saved["stamp"] == expected
+        assert session.calls[-1] == ("save", expected, (), {})
+        destination = str(ROOT / "save-as.ketchup")
+        saved_as = await call(registered, "KetchupLiveFile", action="save_as", handle=handle,
+                              expected=expected, path=destination)
+        assert saved_as["stamp"] == expected
+        assert session.calls[-1] == ("save_as", expected, (destination,), {})
+        opened_file = await call(registered, "KetchupLiveFile", action="open", handle=handle,
+                                 expected=expected, path=str(source))
+        assert opened_file["stamp"] == expected
+        assert session.calls[-1] == ("open", expected, (str(source.resolve()),), {})
         assert (await call(registered, "KetchupLiveView", action="selection", handle=handle,
                            expected=expected, occurrence_ids=[1]))["stamp"] == expected
         assert (await call(registered, "KetchupLiveView", action="view", handle=handle,
@@ -260,6 +350,8 @@ def test_fail_closed_launch_and_all_mutations(binding, code):
         for action in ("selection", "view"):
             assert (await call(registered, "KetchupLiveView", action=action, handle="bad",
                                expected=STAMP))["error"]["code"] == code
+        assert (await call(registered, "KetchupLiveFile", action="save", handle="bad",
+                           expected=STAMP))["error"]["code"] == code
         assert (await call(registered, "KetchupLiveBatch", action="start", handle="bad",
                            expected=STAMP, workset_handle="opaque-workset",
                            operation={"type": "set_color", "color": None}))["error"]["code"] == code
@@ -518,7 +610,7 @@ def test_registered_sdk_socket_injection_unknown_commit_no_retry():
     assert methods == ["status", "status", "commit"]
 
 
-def image_envelope(capture_mode="offscreen"):
+def image_envelope(capture_mode="offscreen", max_side_px=512, framing="viewport", detail=None):
     """Synthetic PNG fixture, not runtime visual evidence."""
     visible = capture_mode == "visible_viewport"
     def chunk(kind, data):
@@ -527,10 +619,15 @@ def image_envelope(capture_mode="offscreen"):
             + chunk(b"IDAT", zlib.compress(b"\0\x12\x34\x56\xff")) + chunk(b"IEND", b""))
     return envelope({"data": base64.b64encode(data).decode("ascii"), "width": 1, "height": 1,
         "stamp": copy.deepcopy(STAMP), "mime_type": "image/png", "encoding": "base64",
-        "scope": "cad_viewport", "image_protocol_version": 2,
+        "scope": "cad_viewport", "image_protocol_version": 4,
         "capture_mode": capture_mode, "capture_pass": 17,
         "source_size_px": [1, 1], "crop_px": [0, 0, 1, 1], "pixels_per_point": 1.0,
-        "sampling": "nearest_center", "thumbnail": True,
+        "sampling": "nearest_center", "thumbnail": framing == "viewport",
+        "requested_max_side_px": max_side_px,
+        "framing": {"mode": framing,
+                    "occurrence_ids": [detail["occurrence_id"]] if detail else ([1] if framing == "selection" else []),
+                    "detail": ({"kind": detail["kind"][:-1], "entity_id": detail["entity_id"],
+                                "reference_id": "b" * 64} if detail else None)},
         "view": {"projection": "Perspective", "yaw": 0.2, "pitch": 0.3,
                  "target_z_mm": 0.0, "zoom": 1.0, "pan": [0.0, 0.0], "distance_mm": 10.0},
         "selection": [],
@@ -550,18 +647,21 @@ def test_registered_image_artifact_receipt_no_base64_or_overwrite(tmp_path, monk
     destination = skill.IMAGE_ROOT / "explicit.png"
     session = SessionDouble()
     image_calls = []
-    def image(expected, capture_mode="offscreen"):
-        image_calls.append((copy.deepcopy(expected), capture_mode))
-        return image_envelope()
+    def image(expected, capture_mode="offscreen", max_side_px=512, framing="viewport",
+              detail_occurrence_id=0, detail_kind="", detail_entity_id=0):
+        image_calls.append((copy.deepcopy(expected), capture_mode, max_side_px, framing))
+        return image_envelope(max_side_px=max_side_px, framing=framing)
     session.image = image
     registered = tools(SimpleNamespace(active=False), lambda *args: session)
     async def scenario():
         handle = (await launch(registered))["result"]["handle"]
         result = await call(registered, "KetchupLiveView", action="image", handle=handle,
-                            expected=STAMP, image_path=str(destination))
+                            expected=STAMP, image_path=str(destination), max_side_px=1600,
+                            framing="selection")
         assert result["ok"] and result["stamp"] == STAMP
         assert result["result"]["stamp"] == STAMP
-        assert result["result"]["image_protocol_version"] == 2
+        assert result["result"]["image_protocol_version"] == 4
+        assert result["result"]["requested_max_side_px"] == 1600
         artifact = result["result"]["artifact"]
         assert artifact["artifact_saved"] and artifact["path"] == str(destination)
         assert artifact["visual_delivery"] == "unverified" and artifact["geometry_evaluated"] is False
@@ -572,7 +672,47 @@ def test_registered_image_artifact_receipt_no_base64_or_overwrite(tmp_path, monk
         result = await call(registered, "KetchupLiveView", action="image", handle=handle,
                             expected=STAMP, image_path=str(destination))
         assert result["error"]["code"] == "file_exists"
-        assert destination.read_bytes() == original and image_calls == [(STAMP, "offscreen")]
+        assert destination.read_bytes() == original
+        assert image_calls == [(STAMP, "offscreen", 1600, "selection")]
+    asyncio.run(scenario())
+
+
+def test_registered_detail_selection_forwards_host_topology_scope(tmp_path, monkeypatch):
+    monkeypatch.setattr(skill, "IMAGE_ROOT", tmp_path / "artifacts" / "live-view")
+    destination = skill.IMAGE_ROOT / "edge-detail.png"
+    session = SessionDouble()
+    calls = []
+    detail = {"occurrence_id": 7, "kind": "edges", "entity_id": 73}
+
+    def image(expected, capture_mode="offscreen", max_side_px=512, framing="viewport",
+              detail_occurrence_id=0, detail_kind="", detail_entity_id=0):
+        calls.append((detail_occurrence_id, detail_kind, detail_entity_id, framing))
+        return image_envelope(framing=framing, detail=detail)
+
+    session.image = image
+    registered = tools(SimpleNamespace(active=False), lambda *args: session)
+
+    async def scenario():
+        handle = (await launch(registered))["result"]["handle"]
+        result = await call(
+            registered,
+            "KetchupLiveView",
+            action="image",
+            handle=handle,
+            expected=STAMP,
+            image_path=str(destination),
+            framing="detail_selection",
+            detail_occurrence_id=7,
+            detail_kind="edges",
+            detail_entity_id=73,
+        )
+        assert result["ok"]
+        assert result["result"]["framing"]["detail"] == {
+            "kind": "edge", "entity_id": 73, "reference_id": "b" * 64
+        }
+        assert calls == [(7, "edges", 73, "detail_selection")]
+        assert destination.exists()
+
     asyncio.run(scenario())
 
 
@@ -601,10 +741,11 @@ def test_image_file_write_guard_but_inspection_stays_read_only(tmp_path, monkeyp
     destination = tmp_path / "guarded.png"
     state = SimpleNamespace(active=False)
     session = SessionDouble()
-    def image(expected, capture_mode="offscreen"):
-        assert capture_mode == "offscreen" and when == "during"
+    def image(expected, capture_mode="offscreen", max_side_px=512, framing="viewport",
+              detail_occurrence_id=0, detail_kind="", detail_entity_id=0):
+        assert capture_mode == "offscreen" and max_side_px == 512 and when == "during"
         state.active = True
-        return image_envelope()
+        return image_envelope(max_side_px=max_side_px)
     session.image = image
     registered = tools(state, lambda *args: session)
     async def scenario():
@@ -633,7 +774,7 @@ def test_registered_image_invalid_response_never_saves_or_leaks(tmp_path, monkey
         value["result"]["stamp"]["mutation_epoch"] += 1
     else:
         value["result"]["data"] = "DO_NOT_EXPOSE"
-    session.image = lambda expected, capture_mode="offscreen": value
+    session.image = lambda expected, capture_mode="offscreen", max_side_px=512, framing="viewport", detail_occurrence_id=0, detail_kind="", detail_entity_id=0: value
     registered = tools(SimpleNamespace(active=False), lambda *args: session)
     async def scenario():
         handle = (await launch(registered))["result"]["handle"]

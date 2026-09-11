@@ -22777,6 +22777,7 @@ fn scheduler_evaluates_compound_planar_offset_over_v3_and_v8() {
                     backend: graph_result.identity.backend.clone(),
                     tolerance: graph_result.identity.tolerance.clone(),
                     faces: Vec::new(),
+                    edges: Vec::new(),
                 },
                 &graph_mesh,
             ),

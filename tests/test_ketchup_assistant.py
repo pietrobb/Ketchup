@@ -452,6 +452,17 @@ def test_public_sidecar_parses_strict_bounded_cad_edit_program():
                 "step_mm": [0, 20, 0],
             },
             {
+                "operation": "circular_pattern",
+                "selector": selector,
+                "instances": 4,
+                "axis": {
+                    "type": "two_points",
+                    "start_mm": [1, 2, 3],
+                    "end_mm": [2, 3, 3],
+                },
+                "angle_step_degrees": 90,
+            },
+            {
                 "operation": "mirror",
                 "selector": selector,
                 "plane_origin_mm": [0, 0, 0],
@@ -484,8 +495,11 @@ def test_public_sidecar_parses_strict_bounded_cad_edit_program():
                 "constraints": [],
                 "feature": {
                     "type": "revolve",
-                    "axis_start_mm": [0, 0],
-                    "axis_end_mm": [0, 1],
+                    "axis": {
+                        "type": "two_points",
+                        "start_mm": [0, 0, 0],
+                        "end_mm": [0, 1, 0],
+                    },
                     "angle_degrees": 275,
                 },
                 "translation_mm": [0, 0, 0],
@@ -493,6 +507,15 @@ def test_public_sidecar_parses_strict_bounded_cad_edit_program():
         ]
     }
     assert assistant._validate_cad_edit_program(revolve_program) == revolve_program
+    edge_axis_program = json.loads(json.dumps(revolve_program))
+    edge_axis_program["operations"][0]["feature"]["axis"] = {
+        "type": "edge",
+        "edge_reference_id": "a" * 64,
+    }
+    assert assistant._validate_cad_edit_program(edge_axis_program) == edge_axis_program
+    edge_axis_program["operations"][0]["feature"]["axis"]["edge_reference_id"] = "not-host-issued"
+    with pytest.raises(assistant.ProtocolError):
+        assistant._validate_cad_edit_program(edge_axis_program)
 
     chained_program = {
         "operations": [
@@ -617,6 +640,21 @@ def test_public_sidecar_parses_strict_bounded_cad_edit_program():
         {
             "operations": [
                 {
+                    "operation": "circular_pattern",
+                    "selector": selector,
+                    "instances": 3,
+                    "axis": {
+                        "type": "origin_direction",
+                        "origin_mm": [0, 0, 0],
+                        "direction": [0, 0, 1],
+                    },
+                    "angle_step_degrees": 180,
+                }
+            ]
+        },
+        {
+            "operations": [
+                {
                     "operation": "linear_pattern",
                     "selector": {"type": "current_selection"},
                     "instances": 7,
@@ -670,8 +708,11 @@ def test_public_sidecar_parses_strict_bounded_cad_edit_program():
                     "constraints": [],
                     "feature": {
                         "type": "revolve",
-                        "axis_start_mm": [0, 0],
-                        "axis_end_mm": [0, 0],
+                        "axis": {
+                            "type": "two_points",
+                            "start_mm": [0, 0, 0],
+                            "end_mm": [0, 0, 0],
+                        },
                         "angle_degrees": 361,
                     },
                     "translation_mm": [0, 0, 0],

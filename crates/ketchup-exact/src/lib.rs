@@ -82,6 +82,31 @@ mod ffi {
         edge_ordinal: u32,
     }
 
+    struct NativeEdgeEvidence {
+        ordinal: u32,
+        curve_kind: String,
+        length_mm: f64,
+        centroid_x: f64,
+        centroid_y: f64,
+        centroid_z: f64,
+        min_x: f64,
+        min_y: f64,
+        min_z: f64,
+        max_x: f64,
+        max_y: f64,
+        max_z: f64,
+        closed: bool,
+        has_circle: bool,
+        has_axis: bool,
+        circle_radius_mm: f64,
+        axis_origin_x: f64,
+        axis_origin_y: f64,
+        axis_origin_z: f64,
+        axis_direction_x: f64,
+        axis_direction_y: f64,
+        axis_direction_z: f64,
+    }
+
     struct NativeEdgeFaceEvidence {
         edge_ordinal: u32,
         face_ordinal: u32,
@@ -163,6 +188,11 @@ mod ffi {
             path_segments: &[f64],
         ) -> UniquePtr<NativeOperationResult>;
         fn loft_spline_native(values: &[f64]) -> UniquePtr<NativeOperationResult>;
+        fn loft_planar_profiles_native(
+            segments: &[f64],
+            section_segment_counts: &[u32],
+            elevations: &[f64],
+        ) -> UniquePtr<NativeOperationResult>;
         fn extrude_circle_native(
             center_x: f64,
             center_y: f64,
@@ -373,6 +403,7 @@ mod ffi {
         fn valid(self: &NativeOperationResult) -> bool;
         fn topology_summary(self: &NativeOperationResult) -> NativeTopologySummary;
         fn face_evidence(self: &NativeOperationResult) -> Vec<NativeFaceEvidence>;
+        fn edge_evidence(self: &NativeOperationResult) -> Vec<NativeEdgeEvidence>;
         fn face_edge_evidence(self: &NativeOperationResult) -> Vec<NativeFaceEdgeEvidence>;
         fn edge_face_evidence(self: &NativeOperationResult) -> Vec<NativeEdgeFaceEvidence>;
         fn history_evidence(self: &NativeOperationResult) -> Vec<NativeHistoryEvidence>;
@@ -439,6 +470,17 @@ pub struct SplineLoftSection {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SplineLoftSpec {
     pub sections: Vec<SplineLoftSection>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlanarLoftSection {
+    pub elevation_mm: f64,
+    pub profile: PlanarProfileLoop,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlanarLoftSpec {
+    pub sections: Vec<PlanarLoftSection>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -697,6 +739,27 @@ fn flatten_planar_segments(segments: &[PlanarProfileSegment]) -> Vec<f64> {
             ],
         })
         .collect()
+}
+
+fn flatten_planar_loop(profile: &PlanarProfileLoop) -> Vec<f64> {
+    match profile {
+        PlanarProfileLoop::Segments(segments) => flatten_planar_segments(segments),
+        PlanarProfileLoop::Circle {
+            center_mm,
+            radius_mm,
+        } => vec![
+            3.0,
+            center_mm[0],
+            center_mm[1],
+            *radius_mm,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        ],
+    }
 }
 
 fn spatial_segment_endpoints(segment: &SpatialProfileSegment) -> ([f64; 3], [f64; 3]) {
@@ -1005,6 +1068,17 @@ fn spatial_sweep_path_self_intersects(
     {
         return true;
     }
+    let closed = spatial_segment_endpoints(segments.first().unwrap()).0
+        == spatial_segment_endpoints(segments.last().unwrap()).1;
+    if closed
+        && !spatial_sweep_path_join_is_separated(
+            segments.last().unwrap(),
+            segments.first().unwrap(),
+            metrics.last().unwrap().2,
+        )
+    {
+        return true;
+    }
     if segments.windows(2).zip(metrics.windows(2)).any(
         |(segments, metrics)| {
             matches!(
@@ -1028,54 +1102,9 @@ fn spatial_sweep_path_self_intersects(
     ) {
         return true;
     }
-    let bounds = segments
-        .iter()
-        .map(|segment| {
-            let points = match segment {
-                SpatialProfileSegment::Line { start_mm, end_mm } => vec![*start_mm, *end_mm],
-                SpatialProfileSegment::CircularArc {
-                    start_mm,
-                    end_mm,
-                    center_mm,
-                    ..
-                } => {
-                    let radius = spatial_length(spatial_sub(*start_mm, *center_mm))
-                        .max(spatial_length(spatial_sub(*end_mm, *center_mm)));
-                    return [
-                        center_mm.map(|coordinate| coordinate - radius),
-                        center_mm.map(|coordinate| coordinate + radius),
-                    ];
-                }
-                SpatialProfileSegment::CubicBezier {
-                    start_mm,
-                    control_1_mm,
-                    control_2_mm,
-                    end_mm,
-                } => vec![*start_mm, *control_1_mm, *control_2_mm, *end_mm],
-            };
-            [0, 1].map(|bound| {
-                [0, 1, 2].map(|axis| {
-                    points.iter().map(|point| point[axis]).fold(
-                        if bound == 0 {
-                            f64::INFINITY
-                        } else {
-                            f64::NEG_INFINITY
-                        },
-                        if bound == 0 { f64::min } else { f64::max },
-                    )
-                })
-            })
-        })
-        .collect::<Vec<_>>();
-    (0..bounds.len()).any(|left| {
-        (left + 2..bounds.len()).any(|right| {
-            [0, 1, 2].into_iter().all(|axis| {
-                bounds[left][0][axis] <= bounds[right][1][axis] + SWEEP_PATH_INTERSECTION_EPSILON_MM
-                    && bounds[right][0][axis]
-                        <= bounds[left][1][axis] + SWEEP_PATH_INTERSECTION_EPSILON_MM
-            })
-        })
-    })
+    // Axis-aligned bounds are only a broad phase for spatial curves. The native
+    // OCCT operation performs the authoritative edge-distance intersection test.
+    false
 }
 
 fn validate_spatial_sweep_path(
@@ -1100,11 +1129,8 @@ fn validate_spatial_sweep_path(
         .iter()
         .map(|segment| spatial_sweep_path_metrics(segment, operation, input))
         .collect::<Result<Vec<_>, _>>()?;
-    if segments.first().map(spatial_segment_endpoints).unwrap().0
-        == segments.last().map(spatial_segment_endpoints).unwrap().1
-    {
-        return Err(invalid("Spatial Sweep path must remain geometrically open"));
-    }
+    let closed = segments.first().map(spatial_segment_endpoints).unwrap().0
+        == segments.last().map(spatial_segment_endpoints).unwrap().1;
     for (segments, metrics) in segments.windows(2).zip(metrics.windows(2)) {
         if spatial_segment_endpoints(&segments[0]).1 != spatial_segment_endpoints(&segments[1]).0 {
             return Err(invalid("Spatial Sweep path segments are disconnected"));
@@ -1114,6 +1140,17 @@ fn validate_spatial_sweep_path(
         {
             return Err(invalid(
                 "Spatial Sweep path segments must be C1 tangent-continuous",
+            ));
+        }
+    }
+    if closed {
+        let outgoing = metrics.last().unwrap().2;
+        let incoming = metrics.first().unwrap().1;
+        if spatial_dot(outgoing, incoming) < 1.0 - 1.0e-9
+            || spatial_length(spatial_cross(outgoing, incoming)) > 1.0e-9
+        {
+            return Err(invalid(
+                "Closed Spatial Sweep path seam must be C1 tangent-continuous",
             ));
         }
     }
@@ -1458,9 +1495,17 @@ pub struct FaceEvidence {
     pub geometric_fingerprint: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct EdgeEvidence {
     pub ordinal: u32,
+    pub curve_kind: String,
+    pub length_mm: f64,
+    pub centroid_mm: Point3,
+    pub bounds_mm: Bounds3,
+    pub closed: bool,
+    pub circle_radius_mm: Option<f64>,
+    pub axis_origin_mm: Option<Point3>,
+    pub axis_direction: Option<Point3>,
     pub adjacent_face_ordinals: Vec<u32>,
 }
 
@@ -2381,6 +2426,86 @@ impl ExactBackend {
         validate_spatial_sweep_path(path, operation, &input)?;
         let output = collect_output(
             ffi::sweep_planar_profile_native(&profile_values, &path_values),
+            operation,
+            &input,
+            HistoryConfidence::Partial,
+        )?;
+        let bounds = output.body.topology.bounds_mm;
+        for (name, coordinate) in [
+            ("output_min_x", bounds.min.x),
+            ("output_min_y", bounds.min.y),
+            ("output_min_z", bounds.min.z),
+            ("output_max_x", bounds.max.x),
+            ("output_max_y", bounds.max.y),
+            ("output_max_z", bounds.max.z),
+        ] {
+            validate_coordinate(coordinate, name, operation, &input)?;
+        }
+        Ok(output)
+    }
+
+    pub fn loft_planar_profiles(
+        &self,
+        spec: &PlanarLoftSpec,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let operation = "loft_planar_profiles";
+        let mut input = format!("{operation}:{}", spec.sections.len());
+        if !(2..=16).contains(&spec.sections.len()) {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidParameter,
+                operation,
+                &input,
+                "Planar Loft requires 2 to 16 sections".to_owned(),
+            ));
+        }
+        let mut segments = Vec::new();
+        let mut section_segment_counts = Vec::with_capacity(spec.sections.len());
+        let mut elevations = Vec::with_capacity(spec.sections.len());
+        let mut previous_elevation = f64::NEG_INFINITY;
+        for (section_index, section) in spec.sections.iter().enumerate() {
+            validate_coordinate(
+                section.elevation_mm,
+                &format!("section_{section_index}_elevation"),
+                operation,
+                &input,
+            )?;
+            if section.elevation_mm <= previous_elevation {
+                return Err(parameter_error(
+                    GeometryErrorCode::InvalidParameter,
+                    operation,
+                    &input,
+                    "Planar Loft section elevations must be strictly increasing".to_owned(),
+                ));
+            }
+            previous_elevation = section.elevation_mm;
+            match &section.profile {
+                PlanarProfileLoop::Segments(profile_segments) => {
+                    validate_mixed_profile(profile_segments, operation, &input)?;
+                    section_segment_counts.push(profile_segments.len() as u32);
+                }
+                PlanarProfileLoop::Circle {
+                    center_mm,
+                    radius_mm,
+                } => {
+                    validate_circle(*center_mm, *radius_mm, operation, &input)?;
+                    section_segment_counts.push(1);
+                }
+            }
+            let flattened = flatten_planar_loop(&section.profile);
+            input.push_str(&format!(
+                ":{}:{:016x}:{:?}",
+                section_segment_counts.last().unwrap(),
+                section.elevation_mm.to_bits(),
+                flattened
+                    .iter()
+                    .map(|value| value.to_bits())
+                    .collect::<Vec<_>>()
+            ));
+            segments.extend(flattened);
+            elevations.push(section.elevation_mm);
+        }
+        let output = collect_output(
+            ffi::loft_planar_profiles_native(&segments, &section_segment_counts, &elevations),
             operation,
             &input,
             HistoryConfidence::Partial,
@@ -3905,21 +4030,99 @@ fn collect_output(
             },
         },
         faces,
-        edges: (0..summary.edge_count)
-            .map(|ordinal| {
+        edges: native_ref
+            .edge_evidence()
+            .into_iter()
+            .map(|edge| {
                 let mut adjacent_face_ordinals = edge_faces
                     .iter()
-                    .filter(|entry| entry.edge_ordinal == ordinal)
+                    .filter(|entry| entry.edge_ordinal == edge.ordinal)
                     .map(|entry| entry.face_ordinal)
                     .collect::<Vec<_>>();
                 adjacent_face_ordinals.sort_unstable();
+                let axis_origin_mm = edge.has_axis.then_some(Point3 {
+                    x: edge.axis_origin_x,
+                    y: edge.axis_origin_y,
+                    z: edge.axis_origin_z,
+                });
+                let axis_direction = edge.has_axis.then_some(Point3 {
+                    x: edge.axis_direction_x,
+                    y: edge.axis_direction_y,
+                    z: edge.axis_direction_z,
+                });
                 EdgeEvidence {
-                    ordinal,
+                    ordinal: edge.ordinal,
+                    curve_kind: edge.curve_kind,
+                    length_mm: edge.length_mm,
+                    centroid_mm: Point3 {
+                        x: edge.centroid_x,
+                        y: edge.centroid_y,
+                        z: edge.centroid_z,
+                    },
+                    bounds_mm: Bounds3 {
+                        min: Point3 {
+                            x: edge.min_x,
+                            y: edge.min_y,
+                            z: edge.min_z,
+                        },
+                        max: Point3 {
+                            x: edge.max_x,
+                            y: edge.max_y,
+                            z: edge.max_z,
+                        },
+                    },
+                    closed: edge.closed,
+                    circle_radius_mm: edge.has_circle.then_some(edge.circle_radius_mm),
+                    axis_origin_mm,
+                    axis_direction,
                     adjacent_face_ordinals,
                 }
             })
             .collect(),
     };
+    let edge_geometry_is_valid = topology.edges.iter().all(|edge| {
+        let finite_point =
+            |point: Point3| [point.x, point.y, point.z].into_iter().all(f64::is_finite);
+        let circle_is_coherent = match edge.circle_radius_mm {
+            None => edge.curve_kind != "circle",
+            Some(radius) => edge.curve_kind == "circle" && radius.is_finite() && radius > 0.0,
+        };
+        let axis_is_coherent = match (edge.axis_origin_mm, edge.axis_direction) {
+            (Some(origin), Some(direction)) => {
+                matches!(edge.curve_kind.as_str(), "line" | "circle")
+                    && finite_point(origin)
+                    && finite_point(direction)
+                    && (direction.x * direction.x
+                        + direction.y * direction.y
+                        + direction.z * direction.z
+                        - 1.0)
+                        .abs()
+                        <= 1.0e-12
+            }
+            (None, None) => !matches!(edge.curve_kind.as_str(), "line" | "circle"),
+            _ => false,
+        };
+        !edge.curve_kind.is_empty()
+            && edge.length_mm.is_finite()
+            && edge.length_mm > 0.0
+            && finite_point(edge.centroid_mm)
+            && finite_point(edge.bounds_mm.min)
+            && finite_point(edge.bounds_mm.max)
+            && edge.bounds_mm.min.x <= edge.bounds_mm.max.x
+            && edge.bounds_mm.min.y <= edge.bounds_mm.max.y
+            && edge.bounds_mm.min.z <= edge.bounds_mm.max.z
+            && circle_is_coherent
+            && axis_is_coherent
+    });
+    if topology.edges.len() != topology.edge_count as usize || !edge_geometry_is_valid {
+        return Err(GeometryError {
+            code: GeometryErrorCode::InvalidShape,
+            diagnostic: "OCCT returned incomplete or invalid exact edge evidence".to_owned(),
+            operation,
+            input_digest,
+            backend_fingerprint: BACKEND_FINGERPRINT,
+        });
+    }
     let result_signature = format!(
         "{}:{}:{}:{}:{}:{:016x}:{:?}",
         BACKEND_FINGERPRINT,
@@ -8301,7 +8504,7 @@ mod tests {
     }
 
     #[test]
-    fn spatial_sweep_validation_rejects_conservative_nonadjacent_overlap() {
+    fn spatial_sweep_validation_accepts_nonintersecting_aabb_overlap() {
         let path = [
             SpatialProfileSegment::Line {
                 start_mm: [0.0, 0.0, 0.0],
@@ -8322,10 +8525,8 @@ mod tests {
                 clockwise: false,
             },
         ];
-        let error = validate_spatial_sweep_path(&path, "sweep_spatial_profile", "unit")
-            .expect_err("overlapping conservative bounds must fail closed");
-        assert_eq!(error.code, GeometryErrorCode::InvalidProfile);
-        assert!(error.diagnostic.contains("self-intersect"));
+        validate_spatial_sweep_path(&path, "sweep_spatial_profile", "unit")
+            .expect("overlapping world-axis bounds alone do not prove a spatial intersection");
     }
 
     #[test]

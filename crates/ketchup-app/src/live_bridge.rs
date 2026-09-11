@@ -29,6 +29,7 @@ use std::{
     hash::BuildHasher,
     io,
     net::SocketAddr,
+    path::Path,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -38,16 +39,20 @@ use std::{
 };
 
 pub mod bootstrap;
+pub mod consent;
 mod image;
 #[cfg(test)]
 mod tests;
 mod transport;
 pub const MAX_FRAME_BYTES: usize = 32 * 1024;
+pub const MAX_IMAGE_FRAME_BYTES: usize = 12 * 1024 * 1024;
+pub const MIN_IMAGE_SIDE_PX: u32 = 512;
+pub const MAX_IMAGE_SIDE_PX: u32 = 1600;
 pub const QUEUE_CAPACITY: usize = 8;
 pub const MAX_SELECTION: usize = 100;
 pub const MAX_RECEIPTS: usize = 32;
 pub const MAX_BATCH_JOBS: usize = 16;
-pub const IMAGE_PROTOCOL_VERSION: u32 = 2;
+pub const IMAGE_PROTOCOL_VERSION: u32 = 4;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -127,6 +132,17 @@ pub enum Request {
     Redo {
         expected: Stamp,
     },
+    Save {
+        expected: Stamp,
+    },
+    SaveAs {
+        expected: Stamp,
+        path: String,
+    },
+    Open {
+        expected: Stamp,
+        path: String,
+    },
     Selection {
         expected: Stamp,
         occurrence_ids: Vec<u64>,
@@ -139,6 +155,11 @@ pub enum Request {
         expected: Stamp,
         image_protocol_version: u32,
         capture_mode: CaptureMode,
+        max_side_px: u32,
+        #[serde(default)]
+        framing: ImageFraming,
+        #[serde(default)]
+        detail_target: Option<ImageDetailTarget>,
     },
     Disconnect {},
 }
@@ -156,6 +177,33 @@ impl CaptureMode {
         match self {
             Self::Offscreen => "offscreen",
             Self::VisibleViewport => "visible_viewport",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageFraming {
+    #[default]
+    Viewport,
+    Selection,
+    DetailSelection,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ImageDetailTarget {
+    pub occurrence_id: u64,
+    pub kind: EntityKind,
+    pub entity_id: u64,
+}
+
+impl ImageFraming {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Viewport => "viewport",
+            Self::Selection => "selection",
+            Self::DetailSelection => "detail_selection",
         }
     }
 }
@@ -282,6 +330,7 @@ impl KetchupApp {
         let Some(mut bridge) = self.live_bridge.take() else {
             return;
         };
+        let mut revoke_consent = false;
         for _ in 0..4 {
             let Ok(queued) = bridge.queue.try_recv() else {
                 break;
@@ -308,6 +357,7 @@ impl KetchupApp {
                 bridge.request_image(self, context, queued);
                 continue;
             }
+            let disconnect = matches!(queued.request, Request::Disconnect {});
             let result = bridge.execute(
                 self,
                 queued.request,
@@ -327,8 +377,16 @@ impl KetchupApp {
             response.stamp = Some(self.live_bridge_stamp());
             let _ = queued.reply.try_send(response);
             context.request_repaint();
+            if disconnect && self.live_consent_attached {
+                revoke_consent = true;
+                break;
+            }
         }
-        self.live_bridge = Some(bridge);
+        if revoke_consent {
+            self.live_consent_attached = false;
+        } else {
+            self.live_bridge = Some(bridge);
+        }
     }
 }
 
@@ -487,10 +545,20 @@ impl LiveBridge {
                 | AssistantCadEditOperation::SetOccurrenceClassification { selector, .. }
                 | AssistantCadEditOperation::Copy { selector, .. }
                 | AssistantCadEditOperation::LinearPattern { selector, .. }
+                | AssistantCadEditOperation::CircularPattern { selector, .. }
                 | AssistantCadEditOperation::Mirror { selector, .. } => Some(selector),
                 AssistantCadEditOperation::CreateSketch { .. }
                 | AssistantCadEditOperation::CreateProgramSketch { .. }
                 | AssistantCadEditOperation::CreatePart { .. }
+                | AssistantCadEditOperation::CreateSpatialPath { .. }
+                | AssistantCadEditOperation::CreateHelixPath { .. }
+                | AssistantCadEditOperation::CreateConstructionPoint { .. }
+                | AssistantCadEditOperation::CreateConstructionAxis { .. }
+                | AssistantCadEditOperation::CreateConstructionPlane { .. }
+                | AssistantCadEditOperation::CreateHelix { .. }
+                | AssistantCadEditOperation::CreateThread { .. }
+                | AssistantCadEditOperation::FilletEdges { .. }
+                | AssistantCadEditOperation::ChamferEdges { .. }
                 | AssistantCadEditOperation::AppendFeature { .. }
                 | AssistantCadEditOperation::AppendProgramPocket { .. }
                 | AssistantCadEditOperation::SetDimension { .. }
@@ -523,19 +591,19 @@ impl LiveBridge {
         match request {
             Request::Status {} => Ok(
                 json!({"connected":true,"protocol":1,"image":"cad_viewport_png_thumbnail",
-                "image_protocol":{"version":IMAGE_PROTOCOL_VERSION,"capabilities":["capture_mode","capture_metadata","render_metadata"],"capture_modes":["offscreen","visible_viewport"],"default_capture_mode":"offscreen"},
+                "image_protocol":{"version":IMAGE_PROTOCOL_VERSION,"capabilities":["capture_mode","capture_metadata","render_metadata","variable_size","selection_framing","detail_selection_framing"],"capture_modes":["offscreen","visible_viewport"],"default_capture_mode":"offscreen","framing_modes":["viewport","selection","detail_selection"],"default_framing":"viewport","min_side_px":MIN_IMAGE_SIDE_PX,"max_side_px":MAX_IMAGE_SIDE_PX,"default_side_px":512},
                 "busy":ui_busy || Self::busy(app),"read_only":app.review_candidate.is_some(),
                 "selection":Self::selection(app).ok(),"selection_scope":"root_occurrences_only",
                 "undo_steps":app.undo_step_count(),"redo_steps":app.redo_step_count(),
                 "pending_proposal_id":self.pending.as_ref().map(|p|p.id),
-                "limits":{"frame_bytes":MAX_FRAME_BYTES,"queue":QUEUE_CAPACITY,"receipts":MAX_RECEIPTS,"selection":MAX_SELECTION,"batch_jobs":MAX_BATCH_JOBS},
-                "methods":["status","summary","query","detail","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","undo","redo","selection","view","image","disconnect"]}),
+                "limits":{"frame_bytes":MAX_FRAME_BYTES,"image_frame_bytes":MAX_IMAGE_FRAME_BYTES,"queue":QUEUE_CAPACITY,"receipts":MAX_RECEIPTS,"selection":MAX_SELECTION,"batch_jobs":MAX_BATCH_JOBS},
+                "methods":["status","summary","query","detail","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","undo","redo","save","save_as","open","selection","view","image","disconnect"]}),
             ),
             Request::Summary {} => Ok(self.query.summary(&app.document.current())),
             Request::Query { expected, query } => {
                 Self::guard(app, &expected)?;
                 self.query
-                    .page(&app.document.current(), &query)
+                    .page_with_topology(&app.document.current(), &app.topology_results, &query)
                     .map_err(|e| e.code())
             }
             Request::Detail {
@@ -545,7 +613,12 @@ impl LiveBridge {
             } => {
                 Self::guard(app, &expected)?;
                 self.query
-                    .detail(&app.document.current(), kind, entity_id)
+                    .detail_with_topology(
+                        &app.document.current(),
+                        &app.topology_results,
+                        kind,
+                        entity_id,
+                    )
                     .map_err(|e| e.code())
             }
             Request::WorksetCreate { expected, query } => {
@@ -736,6 +809,54 @@ impl LiveBridge {
                     return Err("redo_unavailable");
                 }
                 Ok(json!({"changed":app.redo()}))
+            }
+            Request::Save { expected } => {
+                Self::guard(app, &expected)?;
+                Self::available(app, ui_busy)?;
+                let path = app.document_path.clone().ok_or("save_path_required")?;
+                if !app.save_document_to(&path) {
+                    return Err("save_rejected");
+                }
+                Ok(json!({"saved":true,"same_gui_document":true,"dirty":app.is_dirty()}))
+            }
+            Request::SaveAs { expected, path } => {
+                Self::guard(app, &expected)?;
+                Self::available(app, ui_busy)?;
+                if path.is_empty()
+                    || path.len() > 4096
+                    || path.contains('\0')
+                    || !Path::new(&path).is_absolute()
+                {
+                    return Err("invalid_path");
+                }
+                if !app.save_document_to(Path::new(&path)) {
+                    return Err("save_rejected");
+                }
+                Ok(json!({"saved":true,"same_gui_document":true,"dirty":app.is_dirty()}))
+            }
+            Request::Open { expected, path } => {
+                Self::guard(app, &expected)?;
+                Self::available(app, ui_busy)?;
+                if path.is_empty()
+                    || path.len() > 4096
+                    || path.contains('\0')
+                    || !Path::new(&path).is_absolute()
+                    || !Path::new(&path).is_file()
+                {
+                    return Err("invalid_path");
+                }
+                if !app.confirm_discard_if_dirty() || !app.open_document_from(Path::new(&path)) {
+                    return Err("open_rejected");
+                }
+                self.pending = None;
+                self.receipts.clear();
+                self.batch_jobs.clear();
+                self.batch_job_key = RandomState::new();
+                self.next_batch_job = 1;
+                self.query.invalidate();
+                self.image.revoke();
+                self.observed = Some(app.live_bridge_stamp());
+                Ok(json!({"opened":true,"same_gui_window":true,"dirty":app.is_dirty()}))
             }
             Request::Selection {
                 expected,

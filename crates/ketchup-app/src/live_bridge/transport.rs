@@ -164,8 +164,19 @@ fn write_frame_until(
 }
 
 fn write_response(stream: &mut TcpStream, response: Response) -> io::Result<()> {
+    let limit = if response
+        .result
+        .as_ref()
+        .and_then(|result| result.get("scope"))
+        .and_then(Value::as_str)
+        == Some("cad_viewport")
+    {
+        MAX_IMAGE_FRAME_BYTES
+    } else {
+        MAX_FRAME_BYTES
+    };
     let mut bytes = serde_json::to_vec(&response).map_err(io::Error::other)?;
-    if bytes.len() > MAX_FRAME_BYTES {
+    if bytes.len() > limit {
         bytes = serde_json::to_vec(&Response::error(response.id, "response_limit"))
             .map_err(io::Error::other)?;
     }

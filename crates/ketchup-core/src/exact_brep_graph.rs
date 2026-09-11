@@ -1108,8 +1108,28 @@ impl<'a> GraphCompiler<'a> {
         sections
             .iter()
             .map(|section| {
+                let sketch_region = self
+                    .snapshot
+                    .feature(section.profile)
+                    .and_then(|feature| match feature.kind() {
+                        FeatureKind::Sketch(sketch) => sketch.solved_regions().ok(),
+                        _ => None,
+                    })
+                    .and_then(|regions| <[_; 1]>::try_from(regions).ok())
+                    .map(|[region]| region.id);
+                let profile = match sketch_region {
+                    Some(region_id) => {
+                        self.compile_sketch_profile(
+                            section.profile,
+                            region_id,
+                            FeatureDirection::AlongNormal,
+                        )?
+                        .0
+                    }
+                    None => self.compile_profile(section.profile, None, identity_frame())?,
+                };
                 Ok(ExactBRepLoftSection {
-                    profile: self.compile_profile(section.profile, None, identity_frame())?,
+                    profile,
                     elevation_bits: finite_coordinate(section.elevation_mm)?.to_bits(),
                 })
             })
@@ -3048,14 +3068,24 @@ fn operation_requires_v13(operation: &ExactBRepOperation) -> bool {
 fn valid_operation_profiles(operation: &ExactBRepOperation, profiles: &[ExactBRepProfile]) -> bool {
     match operation {
         ExactBRepOperation::Loft { sections } => sections.iter().all(|section| {
-            matches!(
-                profiles
-                    .get(section.profile.0 as usize)
-                    .map(|profile| &profile.geometry),
-                Some(ExactBRepPlanarGeometry::Spline { control_point_bits })
-                    if (4..=MAX_EXACT_BREP_LOFT_CONTROL_POINTS)
-                        .contains(&control_point_bits.len())
-            )
+            profiles
+                .get(section.profile.0 as usize)
+                .is_some_and(|profile| {
+                    profile.frame_bits == identity_frame()
+                        && match &profile.geometry {
+                            ExactBRepPlanarGeometry::Spline { control_point_bits } => {
+                                (4..=MAX_EXACT_BREP_LOFT_CONTROL_POINTS)
+                                    .contains(&control_point_bits.len())
+                            }
+                            ExactBRepPlanarGeometry::Boundary {
+                                closed: true,
+                                segments,
+                            } => (2..=MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS)
+                                .contains(&segments.len()),
+                            ExactBRepPlanarGeometry::Circle { .. } => true,
+                            _ => false,
+                        }
+                })
         }),
         ExactBRepOperation::PlanarOffset {
             profile,

@@ -1,7 +1,7 @@
-"""Non-owning S4a host bridge client; not production application discovery/attach.
+"""Non-owning live bridge client with bounded same-user window discovery.
 
-A trusted embedding host must explicitly enable the otherwise disabled bridge
-and supply its numeric loopback address and OS-random credential out of band.
+Discovery returns only nonce-verified instance metadata. Attachment credentials
+still arrive privately from an explicitly approved target-window consent request.
 No environment discovery, subprocesses, document ownership, or geometry evaluation.
 Methods return the complete validated response envelope (including its stamp).
 Pass that stamp explicitly on guarded calls; nothing refreshes it or retries.
@@ -17,6 +17,7 @@ import binascii
 import hashlib
 import os
 from pathlib import Path
+import secrets
 import stat
 import zlib
 import json
@@ -30,13 +31,23 @@ from typing import Any, Literal
 from .client import ProtocolError, SessionClosedError, TransportError, TransportTimeout
 
 MAX_FRAME_BYTES = 32768
-IMAGE_PROTOCOL_VERSION = 2
+MAX_IMAGE_FRAME_BYTES = 12 * 1024 * 1024
+IMAGE_PROTOCOL_VERSION = 4
+MIN_IMAGE_SIDE_PX = 512
+MAX_IMAGE_SIDE_PX = 1600
+DEFAULT_IMAGE_SIDE_PX = 512
 MAX_TIMEOUT = 30.0
+MAX_DISCOVERY_BYTES = 512
+MAX_DISCOVERY_INSTANCES = 64
+MAX_CONSENT_TIMEOUT = 65.0
+DISCOVERY_DIRECTORY = Path("Ketchup/live-instances")
 _U64_MAX = (1 << 64) - 1
 _KINDS = ("occurrences", "instances", "definitions", "features", "relations")
 _VIEWS = ("iso", "top", "front", "zoom_fit")
 _CAPTURE_MODES = ("offscreen", "visible_viewport")
-_MUTATIONS = frozenset({"batch_job_step", "propose", "commit", "undo", "redo", "selection", "view"})
+_IMAGE_FRAMINGS = ("viewport", "selection", "detail_selection")
+_IMAGE_DETAIL_KINDS = ("edges", "faces")
+_MUTATIONS = frozenset({"batch_job_step", "propose", "commit", "undo", "redo", "save", "save_as", "open", "selection", "view"})
 # Never surface arbitrary remote text, even if it looks like an error code.
 _ERROR_CODES = frozenset({
     "invalid_request", "unauthorized", "unsupported_version", "queue_unavailable",
@@ -48,16 +59,19 @@ _ERROR_CODES = frozenset({
     "unsupported_image", "unsupported_image_protocol", "invalid_params", "invalid_cursor", "stale_cursor",
     "cross_query_cursor", "output_too_large", "busy", "image_unavailable", "image_timeout",
     "hidden_viewport", "stale_image", "occluded_viewport", "invalid_image_callback",
-    "invalid_image_dimensions", "incomplete_image", "unsupported_image_texture",
+    "invalid_image_dimensions", "invalid_image_framing", "incomplete_image", "unsupported_image_texture",
     "unsupported_image_renderer", "stale_workset", "workset_not_found",
     "unsupported_workset_scope", "incomplete_workset", "missing_workset_identity",
     "batch_job_limit", "batch_job_ids_exhausted", "batch_job_not_found",
     "batch_cancelled", "stale_batch_task", "batch_transaction_failed",
+    "save_path_required", "save_rejected", "open_rejected", "invalid_path",
 })
 _FATAL_CODES = frozenset({"invalid_request", "unauthorized", "unsupported_version", "queue_unavailable"})
 Kind = Literal["occurrences", "instances", "definitions", "features", "relations"]
 View = Literal["iso", "top", "front", "zoom_fit"]
 CaptureMode = Literal["offscreen", "visible_viewport"]
+ImageFraming = Literal["viewport", "selection", "detail_selection"]
+ImageDetailKind = Literal["edges", "faces"]
 
 
 class LiveBridgeError(RuntimeError):
@@ -66,6 +80,14 @@ class LiveBridgeError(RuntimeError):
     def __init__(self, code: str):
         self.code = code if code in _ERROR_CODES else "remote_error"
         super().__init__("live bridge rejected request: " + self.code)
+
+
+class LiveConsentError(RuntimeError):
+    """Definite local consent outcome without exposing broker response text."""
+
+    def __init__(self, code: str):
+        self.code = code if code in {"consent_rejected", "instance_unavailable"} else "consent_failed"
+        super().__init__("live attachment failed: " + self.code)
 
 
 class LiveTransportError(TransportError):
@@ -90,6 +112,18 @@ def _uint(value: Any, minimum: int = 0, maximum: int = _U64_MAX) -> int:
     if type(value) is not int or not minimum <= value <= maximum:
         raise ValueError("invalid unsigned integer")
     return value
+
+
+def _image_detail_target(framing: ImageFraming, occurrence_id: int,
+                         kind: ImageDetailKind | str, entity_id: int) -> dict | None:
+    if framing == "detail_selection":
+        if type(kind) is not str or kind not in _IMAGE_DETAIL_KINDS:
+            raise ValueError("invalid image detail kind")
+        return {"occurrence_id": _uint(occurrence_id, 1), "kind": kind,
+                "entity_id": _uint(entity_id, 1)}
+    if occurrence_id != 0 or kind != "" or entity_id != 0:
+        raise ValueError("image detail target requires detail_selection framing")
+    return None
 
 
 def _text(value: Any, maximum: int) -> str:
@@ -204,7 +238,8 @@ def _model_query(kind: Kind, limit: int, search: str, definition_id: int | None,
     return query
 
 
-def _json_copy(value: Any, secret: str = "", depth: int = 0, budget=None) -> Any:
+def _json_copy(value: Any, secret: str = "", depth: int = 0, budget=None,
+               text_limit: int = MAX_FRAME_BYTES) -> Any:
     """Bounded JSON-only snapshot; also rejects secret-bearing remote strings."""
     if budget is None:
         budget = [MAX_FRAME_BYTES]
@@ -214,7 +249,7 @@ def _json_copy(value: Any, secret: str = "", depth: int = 0, budget=None) -> Any
     if value is None or type(value) is bool:
         return value
     if type(value) is str:
-        _text(value, MAX_FRAME_BYTES)
+        _text(value, text_limit)
         if secret and secret in value:
             raise ValueError("invalid response text")
         return value
@@ -225,14 +260,14 @@ def _json_copy(value: Any, secret: str = "", depth: int = 0, budget=None) -> Any
     if type(value) is float and math.isfinite(value):
         return value
     if type(value) is list:
-        return [_json_copy(v, secret, depth + 1, budget) for v in value]
+        return [_json_copy(v, secret, depth + 1, budget, text_limit) for v in value]
     if type(value) is dict:
         result = {}
         for key, item in value.items():
             if type(key) is not str:
                 raise ValueError("JSON object keys must be strings")
-            key = _json_copy(key, secret, depth + 1, budget)
-            result[key] = _json_copy(item, secret, depth + 1, budget)
+            key = _json_copy(key, secret, depth + 1, budget, text_limit)
+            result[key] = _json_copy(item, secret, depth + 1, budget, text_limit)
         return result
     raise ValueError("expected finite JSON values")
 
@@ -257,11 +292,11 @@ def _remaining(deadline: float) -> float:
     return remaining
 
 
-# A single 32 KiB JSON frame also bounds the encoded payload. No image chunks,
-# remote paths, Pillow dependency, or desktop screenshot fallback.
-MAX_PNG_BYTES = MAX_FRAME_BYTES // 4 * 3
-MAX_IMAGE_DIMENSION = 2048
-MAX_IMAGE_PIXELS = 1024 * 1024
+# Image responses have a separate bounded frame. No remote paths, Pillow
+# dependency, or desktop screenshot fallback.
+MAX_PNG_BYTES = 8 * 1024 * 1024
+MAX_IMAGE_DIMENSION = MAX_IMAGE_SIDE_PX
+MAX_IMAGE_PIXELS = MAX_IMAGE_SIDE_PX * MAX_IMAGE_SIDE_PX
 
 
 def _png_dimensions(data: bytes) -> tuple[int, int]:
@@ -322,7 +357,12 @@ def _png_dimensions(data: bytes) -> tuple[int, int]:
 
 
 def _image_bytes(response: dict, expected: Stamp | dict, encoded_png: str,
-                 capture_mode: CaptureMode = "offscreen") -> bytes:
+                 capture_mode: CaptureMode = "offscreen",
+                 max_side_px: int = DEFAULT_IMAGE_SIDE_PX,
+                 framing: ImageFraming = "viewport",
+                 detail_occurrence_id: int = 0,
+                 detail_kind: ImageDetailKind | str = "",
+                 detail_entity_id: int = 0) -> bytes:
     """Validate capture binding and bytes independently of the payload wire key.
 
     Wire adapter follows live_bridge/image.rs: result.data is base64 PNG.
@@ -330,8 +370,16 @@ def _image_bytes(response: dict, expected: Stamp | dict, encoded_png: str,
     """
     if type(capture_mode) is not str or capture_mode not in _CAPTURE_MODES:
         raise ValueError("invalid capture mode")
-    response = _json_copy(response)
-    if len(json.dumps(response, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")) > MAX_FRAME_BYTES:
+    if type(framing) is not str or framing not in _IMAGE_FRAMINGS:
+        raise ValueError("invalid image framing")
+    _uint(max_side_px, MIN_IMAGE_SIDE_PX, MAX_IMAGE_SIDE_PX)
+    detail_target = _image_detail_target(
+        framing, detail_occurrence_id, detail_kind, detail_entity_id
+    )
+    response = _json_copy(
+        response, budget=[MAX_IMAGE_FRAME_BYTES], text_limit=MAX_IMAGE_FRAME_BYTES
+    )
+    if len(json.dumps(response, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")) > MAX_IMAGE_FRAME_BYTES:
         raise ValueError("image response exceeds frame budget")
     if (type(response) is not dict
             or set(response) != {"version", "id", "ok", "stamp", "result", "error"}
@@ -344,7 +392,7 @@ def _image_bytes(response: dict, expected: Stamp | dict, encoded_png: str,
     result_fields = {"data", "width", "height", "mime_type", "encoding", "scope",
                      "image_protocol_version", "capture_mode", "stamp", "capture_pass",
                      "source_size_px", "crop_px", "pixels_per_point", "sampling",
-                     "thumbnail", "view", "selection", "render"}
+                     "thumbnail", "requested_max_side_px", "framing", "view", "selection", "render"}
     if type(result) is not dict or set(result) != result_fields:
         raise ValueError("invalid image metadata")
     if (result.get("mime_type") != "image/png" or result.get("encoding") != "base64"
@@ -367,8 +415,34 @@ def _image_bytes(response: dict, expected: Stamp | dict, encoded_png: str,
             or x + crop_width > source_width or y + crop_height > source_height
             or type(result.get("pixels_per_point")) not in (int, float)
             or not math.isfinite(result["pixels_per_point"]) or result["pixels_per_point"] <= 0
-            or result.get("sampling") != "nearest_center" or result.get("thumbnail") is not True):
+            or result.get("sampling") != "nearest_center"
+            or result.get("thumbnail") is not (framing == "viewport")
+            or result.get("requested_max_side_px") != max_side_px):
         raise ValueError("invalid capture metadata")
+    frame = result.get("framing")
+    if (type(frame) is not dict or set(frame) != {"mode", "occurrence_ids", "detail"}
+            or frame.get("mode") != framing):
+        raise ValueError("invalid image framing metadata")
+    frame_ids = _ids(frame.get("occurrence_ids"))
+    frame_detail = frame.get("detail")
+    if framing == "viewport":
+        valid_frame = not frame_ids and frame_detail is None
+    elif framing == "selection":
+        valid_frame = bool(frame_ids) and frame_detail is None
+    else:
+        reference_id = frame_detail.get("reference_id") if type(frame_detail) is dict else None
+        valid_frame = (
+            frame_ids == [detail_target["occurrence_id"]]
+            and type(frame_detail) is dict
+            and set(frame_detail) == {"kind", "entity_id", "reference_id"}
+            and frame_detail.get("kind") == detail_target["kind"][:-1]
+            and frame_detail.get("entity_id") == detail_target["entity_id"]
+            and type(reference_id) is str
+            and len(reference_id) == 64
+            and all(char in "0123456789abcdef" for char in reference_id)
+        )
+    if not valid_frame:
+        raise ValueError("invalid image framing metadata")
     view = result.get("view")
     if (type(view) is not dict
             or set(view) != {"projection", "yaw", "pitch", "target_z_mm", "zoom", "pan", "distance_mm"}
@@ -407,7 +481,7 @@ def _image_bytes(response: dict, expected: Stamp | dict, encoded_png: str,
     _uint(render["paint_shape_count"], 1, 100_000)
     width = _uint(result.get("width"), 1, MAX_IMAGE_DIMENSION)
     height = _uint(result.get("height"), 1, MAX_IMAGE_DIMENSION)
-    scale = min(1.0, 64.0 / max(crop_width, crop_height))
+    scale = min(1.0, max_side_px / max(crop_width, crop_height))
     if (width != max(1, math.floor(crop_width * scale))
             or height != max(1, math.floor(crop_height * scale))):
         raise ValueError("thumbnail dimensions do not match capture crop")
@@ -442,7 +516,12 @@ def _image_path(image_path: str) -> Path:
 
 
 def save_image(response: dict, expected: Stamp | dict, image_path: str,
-               capture_mode: CaptureMode = "offscreen") -> dict:
+               capture_mode: CaptureMode = "offscreen",
+               max_side_px: int = DEFAULT_IMAGE_SIDE_PX,
+               framing: ImageFraming = "viewport",
+               detail_occurrence_id: int = 0,
+               detail_kind: ImageDetailKind | str = "",
+               detail_entity_id: int = 0) -> dict:
     """Save validated CAD pixels, exclusively. Receipt is NOT visual/geometry proof.
 
     Missing directories on the caller's explicit path may be created, but no
@@ -450,9 +529,14 @@ def save_image(response: dict, expected: Stamp | dict, image_path: str,
     """
     path = _image_path(image_path)
     try:
-        snapshot = _json_copy(response)
+        snapshot = _json_copy(
+            response, budget=[MAX_IMAGE_FRAME_BYTES], text_limit=MAX_IMAGE_FRAME_BYTES
+        )
         result = snapshot["result"]
-        data = _image_bytes(snapshot, expected, result["data"], capture_mode)
+        data = _image_bytes(
+            snapshot, expected, result["data"], capture_mode, max_side_px, framing,
+            detail_occurrence_id, detail_kind, detail_entity_id
+        )
         del result["data"]
         result["artifact"] = {"path": str(path), "byte_count": len(data),
                               "sha256": hashlib.sha256(data).hexdigest(),
@@ -470,22 +554,239 @@ def save_image(response: dict, expected: Stamp | dict, image_path: str,
     return snapshot
 
 
-def _negotiated_image_modes(result: dict) -> frozenset[str]:
+def _negotiated_image_features(result: dict) -> tuple[frozenset[str], frozenset[str]]:
     protocol = result.get("image_protocol") if type(result) is dict else None
     if (type(protocol) is not dict or type(protocol.get("version")) is not int
             or protocol["version"] != IMAGE_PROTOCOL_VERSION):
-        return frozenset()
+        return frozenset(), frozenset()
     capabilities = protocol.get("capabilities")
     modes = protocol.get("capture_modes")
-    required = {"capture_mode", "capture_metadata", "render_metadata"}
+    framings = protocol.get("framing_modes")
+    required = {"capture_mode", "capture_metadata", "render_metadata", "variable_size",
+                "selection_framing", "detail_selection_framing"}
     if (type(capabilities) is not list or any(type(item) is not str for item in capabilities)
             or not required <= set(capabilities) or type(modes) is not list
             or any(type(mode) is not str for mode in modes)
-            or len(set(modes)) != len(modes)
+            or len(set(modes)) != len(modes) or type(framings) is not list
+            or any(type(frame) is not str for frame in framings)
+            or len(set(framings)) != len(framings)
             or protocol.get("default_capture_mode") != "offscreen"
-            or "offscreen" not in modes):
-        return frozenset()
-    return frozenset(mode for mode in modes if mode in _CAPTURE_MODES)
+            or protocol.get("default_framing") != "viewport"
+            or protocol.get("min_side_px") != MIN_IMAGE_SIDE_PX
+            or protocol.get("max_side_px") != MAX_IMAGE_SIDE_PX
+            or protocol.get("default_side_px") != DEFAULT_IMAGE_SIDE_PX
+            or "offscreen" not in modes or "viewport" not in framings):
+        return frozenset(), frozenset()
+    return (frozenset(mode for mode in modes if mode in _CAPTURE_MODES),
+            frozenset(frame for frame in framings if frame in _IMAGE_FRAMINGS))
+
+
+def _discovery_root() -> Path:
+    variable = "LOCALAPPDATA" if os.name == "nt" else "XDG_RUNTIME_DIR"
+    value = os.environ.get(variable, "")
+    root = Path(value) / DISCOVERY_DIRECTORY
+    if not value or not Path(value).is_absolute() or not root.is_absolute():
+        raise LiveTransportError("per-user live discovery is unavailable")
+    try:
+        metadata = root.lstat()
+    except OSError:
+        raise LiveTransportError("per-user live discovery is unavailable") from None
+    if (not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode)
+            or getattr(metadata, "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)):
+        raise LiveTransportError("per-user live discovery is unavailable")
+    if os.name != "nt" and (metadata.st_mode & 0o077 or metadata.st_uid != os.getuid()):
+        raise LiveTransportError("per-user live discovery is unavailable")
+    return root
+
+
+def _discovery_endpoint(value: Any) -> tuple[str, int]:
+    if type(value) is not str or not value.startswith("127.0.0.1:"):
+        raise ValueError("invalid discovery endpoint")
+    port_text = value[len("127.0.0.1:"):]
+    if (not port_text or len(port_text) > 5 or not port_text.isascii()
+            or not port_text.isdecimal()):
+        raise ValueError("invalid discovery endpoint")
+    port = int(port_text)
+    if not 1 <= port <= 65535 or str(port) != port_text:
+        raise ValueError("invalid discovery endpoint")
+    return "127.0.0.1", port
+
+
+def _broker_exchange(endpoint: tuple[str, int], action: str, instance_id: str,
+                     nonce: str, timeout: float) -> dict:
+    deadline = time.monotonic() + timeout
+    stream = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        stream.settimeout(_remaining(deadline))
+        stream.connect(endpoint)
+        request = json.dumps({"version": 1, "action": action, "requester": "Supervisor",
+                              "nonce": nonce}, separators=(",", ":")).encode("ascii") + b"\n"
+        stream.sendall(request)
+        response = bytearray()
+        while len(response) < MAX_DISCOVERY_BYTES:
+            stream.settimeout(_remaining(deadline))
+            byte = stream.recv(1)
+            if not byte:
+                raise OSError("consent broker EOF")
+            if byte == b"\n":
+                break
+            response.extend(byte)
+        else:
+            raise ValueError("oversized consent broker response")
+        value = json.loads(response.decode("utf-8"), object_pairs_hook=_object,
+                           parse_constant=_no_constant)
+        value = _json_copy(value, budget=[MAX_DISCOVERY_BYTES], text_limit=256)
+        common = {"version", "nonce", "status", "instance_id"}
+        if (type(value) is not dict or value.get("version") != 1
+                or value.get("nonce") != nonce or value.get("instance_id") != instance_id):
+            raise ValueError("invalid consent broker response")
+        if action == "list":
+            if (set(value) != common | {"document"}
+                    or value.get("status") not in ("available", "busy")
+                    or type(value.get("document")) is not str or not value["document"]):
+                raise ValueError("invalid discovery response")
+        elif action == "attach":
+            if value.get("status") == "rejected":
+                if set(value) != common:
+                    raise ValueError("invalid rejected consent response")
+            elif value.get("status") == "allowed":
+                if (set(value) != common | {"live_bridge_address", "token"}
+                        or type(value.get("token")) is not str
+                        or len(value["token"]) != 64
+                        or any(char not in "0123456789abcdef" for char in value["token"])):
+                    raise ValueError("invalid allowed consent response")
+                _discovery_endpoint(value.get("live_bridge_address"))
+            else:
+                raise ValueError("invalid consent status")
+        else:
+            raise ValueError("invalid consent action")
+        return value
+    finally:
+        stream.close()
+
+
+def _instance_id(value: Any) -> str:
+    if (type(value) is not str or len(value) != 32
+            or any(char not in "0123456789abcdef" for char in value)):
+        raise ValueError("instance ID must be 32 lowercase hexadecimal characters")
+    return value
+
+
+def _registry_endpoint(root: Path, instance_id: str) -> tuple[str, int]:
+    path = root / (_instance_id(instance_id) + ".json")
+    metadata = path.lstat()
+    if (not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode)
+            or not 0 < metadata.st_size <= MAX_DISCOVERY_BYTES
+            or getattr(metadata, "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)):
+        raise ValueError("invalid live instance registry entry")
+    with path.open("rb") as stream:
+        data = stream.read(MAX_DISCOVERY_BYTES + 1)
+    entry = json.loads(data.decode("utf-8"), object_pairs_hook=_object,
+                       parse_constant=_no_constant)
+    if (type(entry) is not dict
+            or set(entry) != {"version", "instance_id", "consent_address"}
+            or entry.get("version") != 1 or entry.get("instance_id") != instance_id):
+        raise ValueError("invalid live instance registry entry")
+    return _discovery_endpoint(entry.get("consent_address"))
+
+
+def _list_live_instances(discovery_root: Path | None = None,
+                         timeout: float = 0.25) -> list[dict]:
+    """Bounded same-user registry scan; invalid and stale entries are omitted."""
+    if type(timeout) not in (int, float) or not 0 < timeout <= 2 or not math.isfinite(timeout):
+        raise ValueError("discovery timeout must be finite and in (0, 2] seconds")
+    root = _discovery_root() if discovery_root is None else Path(discovery_root)
+    if not root.is_absolute():
+        raise ValueError("discovery root must be absolute")
+    result = []
+    try:
+        iterator = root.iterdir()
+    except OSError:
+        return result
+    for index, path in enumerate(iterator):
+        if index >= MAX_DISCOVERY_INSTANCES:
+            break
+        try:
+            name = path.name
+            instance_id = name[:-5] if name.endswith(".json") else ""
+            endpoint = _registry_endpoint(root, instance_id)
+            nonce = secrets.token_hex(32)
+            listed = _broker_exchange(
+                endpoint, "list", instance_id, nonce, float(timeout)
+            )
+            if listed["instance_id"] != instance_id:
+                continue
+            result.append({"instance_id": instance_id, "document": listed["document"],
+                           "status": listed["status"]})
+        except (OSError, UnicodeError, ValueError, TypeError, RecursionError,
+                json.JSONDecodeError, LiveTransportError, TimeoutError):
+            continue
+    result.sort(key=lambda instance: instance["instance_id"])
+    return result
+
+
+def list_live_instances(timeout: float = 0.25) -> list[dict]:
+    """List nonce-verified Ketchup windows without requesting attachment authority."""
+    return _list_live_instances(timeout=timeout)
+
+
+def _attach_live_instance(instance_id: str, discovery_root: Path | None = None,
+                          discovery_timeout: float = 0.25,
+                          consent_timeout: float = MAX_CONSENT_TIMEOUT,
+                          session_factory=None):
+    """Attach only after the selected window returns an explicit correlated Allow."""
+    instance_id = _instance_id(instance_id)
+    if (type(discovery_timeout) not in (int, float)
+            or not 0 < discovery_timeout <= 2 or not math.isfinite(discovery_timeout)):
+        raise ValueError("discovery timeout must be finite and in (0, 2] seconds")
+    if (type(consent_timeout) not in (int, float)
+            or not 0 < consent_timeout <= MAX_CONSENT_TIMEOUT
+            or not math.isfinite(consent_timeout)):
+        raise ValueError("consent timeout must be finite and in (0, 65] seconds")
+    root = _discovery_root() if discovery_root is None else Path(discovery_root)
+    if not root.is_absolute():
+        raise ValueError("discovery root must be absolute")
+    try:
+        endpoint = _registry_endpoint(root, instance_id)
+    except (OSError, UnicodeError, ValueError, TypeError, RecursionError,
+            json.JSONDecodeError):
+        raise LiveConsentError("instance_unavailable") from None
+    try:
+        listed = _broker_exchange(
+            endpoint, "list", instance_id, secrets.token_hex(32), float(discovery_timeout)
+        )
+        if listed["status"] != "available":
+            raise LiveConsentError("instance_unavailable")
+        if _registry_endpoint(root, instance_id) != endpoint:
+            raise LiveConsentError("instance_unavailable")
+        response = _broker_exchange(
+            endpoint, "attach", instance_id, secrets.token_hex(32), float(consent_timeout)
+        )
+    except LiveConsentError:
+        raise
+    except TimeoutError:
+        raise LiveTimeout("live consent request timed out") from None
+    except OSError:
+        raise LiveTransportError("live consent connection failed") from None
+    except (UnicodeError, ValueError, TypeError, RecursionError, json.JSONDecodeError):
+        raise LiveProtocolError("invalid live consent response") from None
+    if response["status"] == "rejected":
+        raise LiveConsentError("consent_rejected")
+    address = response.pop("live_bridge_address")
+    token = response.pop("token")
+    try:
+        factory = session_factory or LiveSession
+        return factory(address, token, timeout=MAX_TIMEOUT)
+    finally:
+        token = ""
+        response.clear()
+
+
+def attach_live_instance(instance_id: str):
+    """Request one in-window confirmation and return a non-owning live session."""
+    return _attach_live_instance(instance_id)
 
 
 class LiveSession:
@@ -501,7 +802,7 @@ class LiveSession:
     """
 
     __slots__ = ("_socket", "_token", "_timeout", "_lock", "_id", "_closed",
-                 "_image_capture_modes")
+                 "_image_capture_modes", "_image_framings")
 
     def __init__(self, address: tuple[str, int] | str, token: str, timeout: float = 30.0):
         endpoint = None
@@ -526,6 +827,7 @@ class LiveSession:
         self._id = 0
         self._closed = False
         self._image_capture_modes = None
+        self._image_framings = None
         self._socket = None
         self._token = bytearray(token, "ascii")
         deadline = time.monotonic() + self._timeout
@@ -584,9 +886,14 @@ class LiveSession:
             data.extend(part)
         return bytes(data)
 
-    def _response(self, data: bytes, request_id: int) -> dict:
+    def _response(self, data: bytes, request_id: int, limit: int) -> dict:
         response = json.loads(data.decode("utf-8"), object_pairs_hook=_object, parse_constant=_no_constant)
-        response = _json_copy(response, self._token.decode("ascii"))
+        response = _json_copy(
+            response,
+            self._token.decode("ascii"),
+            budget=[limit],
+            text_limit=limit,
+        )
         if type(response) is not dict or set(response) != {"version", "id", "ok", "stamp", "result", "error"}:
             raise ValueError("invalid response envelope")
         if type(response["version"]) is not int or response["version"] != 1:
@@ -634,9 +941,12 @@ class LiveSession:
                         raise OSError("live bridge write failed")
                     offset += count
                 length = struct.unpack("!I", self._read_exact(4, deadline))[0]
-                if not 1 <= length <= MAX_FRAME_BYTES:
+                response_limit = MAX_IMAGE_FRAME_BYTES if method == "image" else MAX_FRAME_BYTES
+                if not 1 <= length <= response_limit:
                     raise ValueError("invalid frame length")
-                response = self._response(self._read_exact(length, deadline), request_id)
+                response = self._response(
+                    self._read_exact(length, deadline), request_id, response_limit
+                )
                 _remaining(deadline)
             except TimeoutError:
                 failure = LiveTimeout("live bridge request timed out", mutation_outcome_unknown=sent and method in _MUTATIONS)
@@ -663,7 +973,9 @@ class LiveSession:
 
     def _status(self, deadline: float | None = None) -> dict:
         response = self._request("status", _deadline=deadline)
-        self._image_capture_modes = _negotiated_image_modes(response["result"])
+        self._image_capture_modes, self._image_framings = _negotiated_image_features(
+            response["result"]
+        )
         return response
 
     def status(self) -> dict:
@@ -748,6 +1060,25 @@ class LiveSession:
     def redo(self, expected: Stamp | dict) -> dict:
         return self._request("redo", expected=_stamp(expected))
 
+    def save(self, expected: Stamp | dict) -> dict:
+        return self._request("save", expected=_stamp(expected))
+
+    def save_as(self, expected: Stamp | dict, path: str) -> dict:
+        if type(path) is not str or not path or len(path) > 4096 or "\0" in path:
+            raise ValueError("save-as path must be an explicit absolute path")
+        destination = Path(path)
+        if not destination.is_absolute():
+            raise ValueError("save-as path must be an explicit absolute path")
+        return self._request("save_as", expected=_stamp(expected), path=str(destination))
+
+    def open(self, expected: Stamp | dict, path: str) -> dict:
+        if type(path) is not str or not path or len(path) > 4096 or "\0" in path:
+            raise ValueError("open path must be an explicit absolute existing file")
+        source = Path(path)
+        if not source.is_absolute() or not source.is_file():
+            raise ValueError("open path must be an explicit absolute existing file")
+        return self._request("open", expected=_stamp(expected), path=str(source))
+
     def selection(self, expected: Stamp | dict, occurrence_ids: list[int] | tuple[int, ...]) -> dict:
         return self._request("selection", expected=_stamp(expected), occurrence_ids=_ids(occurrence_ids))
 
@@ -757,21 +1088,36 @@ class LiveSession:
         return self._request("view", expected=_stamp(expected), view=view)
 
     def image(self, expected: Stamp | dict,
-              capture_mode: CaptureMode = "offscreen") -> dict:
+              capture_mode: CaptureMode = "offscreen",
+              max_side_px: int = DEFAULT_IMAGE_SIDE_PX,
+              framing: ImageFraming = "viewport",
+              detail_occurrence_id: int = 0,
+              detail_kind: ImageDetailKind | str = "",
+              detail_entity_id: int = 0) -> dict:
         """Read a correlated CAD render; visible proof is explicit and optional."""
         if type(capture_mode) is not str or capture_mode not in _CAPTURE_MODES:
             raise ValueError("invalid capture mode")
+        if type(framing) is not str or framing not in _IMAGE_FRAMINGS:
+            raise ValueError("invalid image framing")
+        _uint(max_side_px, MIN_IMAGE_SIDE_PX, MAX_IMAGE_SIDE_PX)
+        detail_target = _image_detail_target(
+            framing, detail_occurrence_id, detail_kind, detail_entity_id
+        )
         expected = _stamp(expected)
         deadline = time.monotonic() + self._timeout
         if self._image_capture_modes is None:
             self._status(deadline)
-        if capture_mode not in self._image_capture_modes:
-            raise LiveProtocolError("live image protocol or capture mode was not negotiated")
+        if capture_mode not in self._image_capture_modes or framing not in self._image_framings:
+            raise LiveProtocolError("live image protocol, capture mode or framing was not negotiated")
         response = self._request("image", _deadline=deadline, expected=expected,
                                  image_protocol_version=IMAGE_PROTOCOL_VERSION,
-                                 capture_mode=capture_mode)
+                                 capture_mode=capture_mode, max_side_px=max_side_px,
+                                 framing=framing, detail_target=detail_target)
         try:
-            _image_bytes(response, expected, response["result"]["data"], capture_mode)
+            _image_bytes(
+                response, expected, response["result"]["data"], capture_mode, max_side_px, framing,
+                detail_occurrence_id, detail_kind, detail_entity_id
+            )
         except (ValueError, TypeError, KeyError, binascii.Error, zlib.error):
             self.close()
             raise LiveProtocolError("invalid live image response") from None

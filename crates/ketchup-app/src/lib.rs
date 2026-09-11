@@ -142,6 +142,7 @@ pub mod dialogs;
 mod face_workflow_ui;
 mod feature_history_ui;
 mod glb_import_ui;
+mod helix_thread_ui;
 pub mod live_bridge;
 mod mesh_conversion_ui;
 mod native_document_inspection;
@@ -155,6 +156,10 @@ pub use assistant_runtime::{
     public_assistant_launch_for_install_root, verify_public_assistant_runtime,
 };
 pub use face_workflow_ui::HeadlessFaceWorkflowFailure;
+pub use helix_thread_ui::{
+    AxisSpec, HelixHandedness, HelixToolParameters, ThreadProfile, ThreadToolParameters,
+    helix_segments,
+};
 pub use native_document_inspection::{NativeDocumentInspection, inspect_native_document};
 pub mod theme;
 
@@ -418,6 +423,15 @@ fn bind_assistant_cad_current_selection(
             AssistantCadEditOperation::CreateSketch { .. }
             | AssistantCadEditOperation::CreateProgramSketch { .. }
             | AssistantCadEditOperation::CreatePart { .. }
+            | AssistantCadEditOperation::CreateSpatialPath { .. }
+            | AssistantCadEditOperation::CreateHelixPath { .. }
+            | AssistantCadEditOperation::CreateConstructionPoint { .. }
+            | AssistantCadEditOperation::CreateConstructionAxis { .. }
+            | AssistantCadEditOperation::CreateConstructionPlane { .. }
+            | AssistantCadEditOperation::CreateHelix { .. }
+            | AssistantCadEditOperation::CreateThread { .. }
+            | AssistantCadEditOperation::FilletEdges { .. }
+            | AssistantCadEditOperation::ChamferEdges { .. }
             | AssistantCadEditOperation::AppendFeature { .. }
             | AssistantCadEditOperation::AppendProgramPocket { .. }
             | AssistantCadEditOperation::SetDimension { .. }
@@ -429,6 +443,7 @@ fn bind_assistant_cad_current_selection(
             | AssistantCadEditOperation::Transform { selector, .. }
             | AssistantCadEditOperation::Copy { selector, .. }
             | AssistantCadEditOperation::LinearPattern { selector, .. }
+            | AssistantCadEditOperation::CircularPattern { selector, .. }
             | AssistantCadEditOperation::Mirror { selector, .. } => Some(selector),
         }) else {
             continue;
@@ -3068,6 +3083,8 @@ enum ActiveTool {
     SolidIntersect,
     SolidSplit,
     PlanarOffset,
+    Helix,
+    Thread,
     Sweep,
     Loft,
     Revolve,
@@ -3099,6 +3116,8 @@ impl ActiveTool {
             Self::SolidIntersect => "solid-tool-intersect",
             Self::SolidSplit => "solid-tool-split",
             Self::PlanarOffset => "feature-planar-offset",
+            Self::Helix => "feature-helix",
+            Self::Thread => "feature-thread",
             Self::Sweep => "feature-sweep",
             Self::Loft => "feature-loft",
             Self::Revolve => "feature-revolve",
@@ -3130,6 +3149,8 @@ impl ActiveTool {
             Self::SolidIntersect => "hint-solid-intersect",
             Self::SolidSplit => "hint-solid-split",
             Self::PlanarOffset => "hint-planar-offset",
+            Self::Helix => "hint-helix",
+            Self::Thread => "hint-thread",
             Self::Sweep => "hint-sweep",
             Self::Loft => "hint-loft",
             Self::Revolve => "hint-revolve",
@@ -3186,6 +3207,8 @@ pub enum AppCommand {
     SolidIntersect,
     SolidSplit,
     PlanarOffset,
+    Helix,
+    Thread,
     Sweep,
     Loft,
     Revolve,
@@ -3341,7 +3364,7 @@ struct CommandSpec {
 struct CommandRegistry;
 
 impl CommandRegistry {
-    const COMMANDS: [CommandSpec; 115] = [
+    const COMMANDS: [CommandSpec; 117] = [
         CommandSpec {
             id: AppCommand::New,
             label_key: "file-new",
@@ -3557,6 +3580,20 @@ impl CommandRegistry {
             label_key: "feature-planar-offset",
             shortcut_key: "shortcut-none",
             tool: Some(ActiveTool::PlanarOffset),
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::Helix,
+            label_key: "feature-helix",
+            shortcut_key: "shortcut-none",
+            tool: Some(ActiveTool::Helix),
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::Thread,
+            label_key: "feature-thread",
+            shortcut_key: "shortcut-none",
+            tool: Some(ActiveTool::Thread),
             implemented: true,
         },
         CommandSpec {
@@ -6097,6 +6134,9 @@ enum BtlxProfileStrategy {
 pub struct KetchupApp {
     document: DocumentStore,
     live_bridge: Option<live_bridge::LiveBridge>,
+    live_consent_broker: Option<live_bridge::consent::ConsentBroker>,
+    live_pending_consent: Option<live_bridge::consent::PendingConsent>,
+    live_consent_attached: bool,
     container_data: ketchup_core::persistence::ContainerData,
     review_candidate: Option<ketchup_core::persistence::LoadOutcome>,
     migration_review_plan: Option<MigrationReviewPlan>,
@@ -6125,6 +6165,7 @@ pub struct KetchupApp {
     revolve_tool: Option<RevolveToolState>,
     revolve_preview: Option<RevolvePreview>,
     planar_offset_preview: Option<PlanarOffsetPreview>,
+    helix_thread: helix_thread_ui::HelixThreadUiState,
     sweep_preview: Option<SweepPreview>,
     loft_input_sections: Option<(DefinitionId, Vec<LoftSection>)>,
     loft_preview: Option<LoftPreview>,
@@ -6356,6 +6397,9 @@ impl KetchupApp {
         Self {
             document,
             live_bridge: None,
+            live_consent_broker: None,
+            live_pending_consent: None,
+            live_consent_attached: false,
             container_data: ketchup_core::persistence::ContainerData::default(),
             review_candidate: None,
             migration_review_plan: None,
@@ -6384,6 +6428,7 @@ impl KetchupApp {
             revolve_tool: None,
             revolve_preview: None,
             planar_offset_preview: None,
+            helix_thread: helix_thread_ui::HelixThreadUiState::default(),
             sweep_preview: None,
             loft_input_sections: None,
             loft_preview: None,
@@ -6679,6 +6724,7 @@ impl KetchupApp {
         self.revolve_tool = None;
         self.revolve_preview = None;
         self.planar_offset_preview = None;
+        self.clear_helix_thread_preview();
         self.sweep_preview = None;
         self.loft_input_sections = None;
         self.loft_preview = None;
@@ -15679,6 +15725,8 @@ impl KetchupApp {
             if tool == ActiveTool::PlanarOffset {
                 self.value_input = "5".to_owned();
                 self.refresh_planar_offset_preview();
+            } else if matches!(tool, ActiveTool::Helix | ActiveTool::Thread) {
+                self.begin_helix_thread_tool(tool);
             } else if tool == ActiveTool::Sweep {
                 self.refresh_sweep_preview();
             } else if tool == ActiveTool::Loft {
@@ -15960,6 +16008,8 @@ impl KetchupApp {
             | AppCommand::SolidIntersect
             | AppCommand::SolidSplit
             | AppCommand::PlanarOffset
+            | AppCommand::Helix
+            | AppCommand::Thread
             | AppCommand::Sweep
             | AppCommand::Loft
             | AppCommand::Revolve
@@ -24676,6 +24726,7 @@ impl KetchupApp {
         self.revolve_tool = None;
         self.revolve_preview = None;
         self.planar_offset_preview = None;
+        self.clear_helix_thread_preview();
         self.sweep_preview = None;
         self.loft_preview = None;
         self.general_finish_preview = None;
@@ -29296,6 +29347,17 @@ impl KetchupApp {
             }
         }
 
+        let helix_preview = self.helix_thread_preview_points();
+        if helix_preview.len() >= 2 {
+            painter.add(egui::Shape::line(
+                helix_preview
+                    .into_iter()
+                    .map(|point| self.project(point, response.rect))
+                    .collect(),
+                Stroke::new(2.4_f32, Color32::from_rgb(255, 199, 68)),
+            ));
+        }
+
         if let Some(preview) = self
             .pocket_preview
             .as_ref()
@@ -30260,6 +30322,11 @@ impl KetchupApp {
                 self.cancel_part_authoring_preview();
             } else if self.feature_history_preview_pending() {
                 self.cancel_feature_history_preview();
+            } else if matches!(self.active_tool, ActiveTool::Helix | ActiveTool::Thread) {
+                self.clear_ephemeral_edit_state();
+                self.active_tool = ActiveTool::Select;
+                self.status_key = "status-ready";
+                self.digest = self.catalog.text("digest-cancelled");
             } else if self.active_tool == ActiveTool::ZoomWindow {
                 self.zoom_window_start = None;
                 self.zoom_window_cursor = None;
@@ -30683,6 +30750,8 @@ impl KetchupApp {
                 self.menu_command(ui, AppCommand::CutThrough);
                 self.menu_command(ui, AppCommand::Pocket);
                 self.menu_command(ui, AppCommand::PlanarOffset);
+                self.menu_command(ui, AppCommand::Helix);
+                self.menu_command(ui, AppCommand::Thread);
                 self.menu_command(ui, AppCommand::Sweep);
                 self.menu_command(ui, AppCommand::Loft);
                 self.menu_command(ui, AppCommand::Revolve);
@@ -35807,6 +35876,7 @@ impl KetchupApp {
     /// integration and by the offscreen [`crate::testing::HeadlessShell`].
     pub fn ui(&mut self, context: &egui::Context) {
         self.begin_live_image_frame();
+        self.poll_live_consent();
         self.poll_live_bridge(context);
         self.poll_validator_panel(context);
         self.poll_mesh_conversion(context);
@@ -35877,6 +35947,7 @@ impl KetchupApp {
                         self.show_body_editor(ui);
                         self.show_assembly_editor(ui);
                         self.show_occurrence_color_editor(ui);
+                        self.show_helix_thread_tool(ui);
                         self.show_parameter_editor(ui);
                         if !Self::is_manual_alpha_build() {
                             self.show_assistant(ui);
@@ -35908,6 +35979,7 @@ impl KetchupApp {
                         self.show_body_editor(ui);
                         self.show_assembly_editor(ui);
                         self.show_occurrence_color_editor(ui);
+                        self.show_helix_thread_tool(ui);
                         self.show_parameter_editor(ui);
                         self.show_outliner_without_assistant(ui);
                         self.show_validator_panel(ui);
@@ -35958,6 +36030,7 @@ impl KetchupApp {
         self.show_mesh_conversion_window(context);
         self.show_shortcuts_window(context);
         self.show_about_window(context);
+        self.show_live_consent(context);
         self.poll_assistant_chat(context);
         self.finish_live_image_frame(context);
     }

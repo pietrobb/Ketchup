@@ -24,15 +24,15 @@ use ketchup_core::exact_brep_graph::{
     ExactBRepPlanarLoop, ExactBRepPlanarSegment,
 };
 use ketchup_core::exact_product::{
-    ExactAxialAttachmentInput, ExactBRepGraphFaceEvidence, ExactBRepGraphPackage,
-    ExactBRepGraphWorkerEvidence, ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest,
-    ExactLoftPackage, ExactLoftRequest, ExactPlanarFaceAttachmentInput, ExactPlanarOffsetPackage,
-    ExactPlanarOffsetRequest, ExactProductError, ExactProfileSegment, ExactRenderPackage,
-    ExactSweepPackage, ExactSweepRequest, LoftWorkerEvidence, PlanarOffsetWorkerEvidence,
-    SweepWorkerEvidence, SweepWorkerFaceEvidence, build_box_render_package,
-    build_box_render_package_with_attachments, build_box_render_package_with_typed_attachments,
-    build_loft_package, build_planar_offset_package, build_sweep_package,
-    canonical_reference_lineage_digest,
+    ExactAxialAttachmentInput, ExactBRepGraphEdgeEvidence, ExactBRepGraphFaceEvidence,
+    ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence, ExactBodyPackage, ExactFaceRole,
+    ExactFeatureChainRequest, ExactLoftPackage, ExactLoftRequest, ExactPlanarFaceAttachmentInput,
+    ExactPlanarOffsetPackage, ExactPlanarOffsetRequest, ExactProductError, ExactProfileSegment,
+    ExactRenderPackage, ExactSweepPackage, ExactSweepRequest, LoftWorkerEvidence,
+    PlanarOffsetWorkerEvidence, SweepWorkerEvidence, SweepWorkerFaceEvidence,
+    build_box_render_package, build_box_render_package_with_attachments,
+    build_box_render_package_with_typed_attachments, build_loft_package,
+    build_planar_offset_package, build_sweep_package, canonical_reference_lineage_digest,
 };
 use ketchup_core::exact_revolve::{
     ExactRevolvePackage, ExactRevolveRequest, build_revolve_package, expected_volume_mm3,
@@ -539,6 +539,20 @@ pub struct WorkerExactBRepGraphFaceEvidence {
     pub unit_axis_direction: Option<[f64; 3]>,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct WorkerExactBRepGraphEdgeEvidence {
+    pub edge_ordinal: u32,
+    pub curve_kind: String,
+    pub length_mm: f64,
+    pub centroid_mm: [f64; 3],
+    pub bounds_mm: [[f64; 3]; 2],
+    pub closed: bool,
+    pub circle_radius_mm: Option<f64>,
+    pub axis_origin_mm: Option<[f64; 3]>,
+    pub unit_axis_direction: Option<[f64; 3]>,
+    pub adjacent_face_ordinals: Vec<u32>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkerExactBRepGraphResult {
     pub canonical_input_digest: String,
@@ -554,6 +568,7 @@ pub struct WorkerExactBRepGraphResult {
     pub backend: String,
     pub tolerance: String,
     pub faces: Vec<WorkerExactBRepGraphFaceEvidence>,
+    pub edges: Vec<WorkerExactBRepGraphEdgeEvidence>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -3813,6 +3828,22 @@ impl ExactWorkerSupervisor {
                         unit_axis_direction: face.unit_axis_direction,
                     })
                     .collect(),
+                edges: result
+                    .edges
+                    .into_iter()
+                    .map(|edge| ExactBRepGraphEdgeEvidence {
+                        edge_ordinal: edge.edge_ordinal,
+                        curve_kind: edge.curve_kind,
+                        length_mm: edge.length_mm,
+                        centroid_mm: edge.centroid_mm,
+                        bounds_mm: edge.bounds_mm,
+                        closed: edge.closed,
+                        circle_radius_mm: edge.circle_radius_mm,
+                        axis_origin_mm: edge.axis_origin_mm,
+                        unit_axis_direction: edge.unit_axis_direction,
+                        adjacent_face_ordinals: edge.adjacent_face_ordinals,
+                    })
+                    .collect(),
             },
             &mesh,
         )
@@ -6637,12 +6668,17 @@ fn parse_exact_brep_graph_result(
     if matches!(fields.first(), Some(&"ERR") | Some(&"ERR_DETAIL")) {
         return Err(parse_error_response(response, &fields));
     }
-    let (wire_count_index, topology_offset, faces_index) =
+    let (wire_count_index, topology_offset, faces_index, edges_index) =
         match (fields.first().copied(), fields.len()) {
             (Some(protocol), 21)
                 if protocol == expected_protocol && protocol == "OK_BREP_GRAPH_V6" =>
             {
-                (None, 0, None)
+                (None, 0, None, None)
+            }
+            (Some(protocol), 23)
+                if protocol == expected_protocol && protocol == "OK_BREP_GRAPH_V6" =>
+            {
+                (None, 0, Some(21), Some(22))
             }
             (Some(protocol), 22)
                 if protocol == expected_protocol
@@ -6656,10 +6692,24 @@ fn parse_exact_brep_graph_result(
                             | "OK_BREP_GRAPH_V13"
                     ) =>
             {
-                (Some(16), 1, None)
+                (Some(16), 1, None, None)
             }
             (Some("OK_BREP_GRAPH_V13"), 23) if expected_protocol == "OK_BREP_GRAPH_V13" => {
-                (Some(16), 1, Some(22))
+                (Some(16), 1, Some(22), None)
+            }
+            (Some(protocol), 24)
+                if protocol == expected_protocol
+                    && matches!(
+                        protocol,
+                        "OK_BREP_GRAPH_V8"
+                            | "OK_BREP_GRAPH_V9"
+                            | "OK_BREP_GRAPH_V10"
+                            | "OK_BREP_GRAPH_V11"
+                            | "OK_BREP_GRAPH_V12"
+                            | "OK_BREP_GRAPH_V13"
+                    ) =>
+            {
+                (Some(16), 1, Some(22), Some(23))
             }
             _ => return Err(WorkerError::Protocol(response.to_owned())),
         };
@@ -6711,6 +6761,15 @@ fn parse_exact_brep_graph_result(
         tolerance: hex_decode_utf8(fields[20 + topology_offset])
             .ok_or_else(|| WorkerError::Protocol(response.to_owned()))?,
         faces: faces_index
+            .map(|index| {
+                let encoded = hex_decode_utf8(fields[index])
+                    .ok_or_else(|| WorkerError::Protocol(response.to_owned()))?;
+                serde_json::from_str(&encoded)
+                    .map_err(|_| WorkerError::Protocol(response.to_owned()))
+            })
+            .transpose()?
+            .unwrap_or_default(),
+        edges: edges_index
             .map(|index| {
                 let encoded = hex_decode_utf8(fields[index])
                     .ok_or_else(|| WorkerError::Protocol(response.to_owned()))?;

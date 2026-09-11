@@ -2,6 +2,12 @@
 use super::*;
 use crate::{CameraViewState, ProjectedEdge, ProjectedFace, RenderBox};
 use egui::{ColorImage, Rect, Shape};
+use ketchup_core::{
+    document::{InstancePath, OccurrenceId},
+    exact_product::ExactBodyPackage,
+    topology::TopologicalElementKind,
+};
+use ketchup_interaction::{Vec3, projection::CanonicalInteractionProjection};
 use std::time::{Duration, Instant};
 
 #[cfg(test)]
@@ -10,7 +16,6 @@ mod privacy_tests;
 #[path = "image_target.rs"]
 mod target;
 
-const THUMBNAIL_SIDE: usize = 64;
 const MAX_SOURCE_PIXELS: usize = 16_777_216;
 
 #[derive(Default)]
@@ -38,8 +43,17 @@ struct ImageRequest {
     deadline: Instant,
     initial: VisualState,
     mode: CaptureMode,
+    max_side_px: u32,
+    framing: ImageFraming,
+    detail: Option<ResolvedImageDetail>,
     nonce: CaptureNonce,
     capture: Option<(Painted, target::Readback, bool)>,
+}
+#[derive(Clone)]
+struct ResolvedImageDetail {
+    request: ImageDetailTarget,
+    reference_id: String,
+    world_points: Vec<Vec3>,
 }
 #[derive(Clone, Debug, PartialEq)]
 struct CaptureNonce([u8; 32]);
@@ -82,6 +96,7 @@ impl VisualState {
 struct Painted {
     state: VisualState,
     rect: Rect,
+    crop: Rect,
     screen: Rect,
     ppp: f32,
     pass: u64,
@@ -94,6 +109,7 @@ impl Painted {
     fn same(&self, other: &Self) -> bool {
         self.state == other.state
             && self.rect == other.rect
+            && self.crop == other.crop
             && self.screen == other.screen
             && self.ppp == other.ppp
             && self.shapes == other.shapes
@@ -117,6 +133,197 @@ fn normalize(shape: &mut Shape, callbacks: &mut usize) {
         _ => {}
     }
 }
+
+fn selection_crop(
+    app: &KetchupApp,
+    viewport: Rect,
+    selection: &[u64],
+    primary: Option<&SelectionId>,
+    faces: &[ProjectedFace],
+    edges: &[ProjectedEdge],
+) -> Result<Rect, &'static str> {
+    let mut target = primary.and_then(|primary| {
+        faces
+            .iter()
+            .filter(|face| &face.selection == primary)
+            .flat_map(|face| face.polygon.points())
+            .chain(
+                edges
+                    .iter()
+                    .filter(|edge| &edge.selection == primary)
+                    .flat_map(|edge| edge.points.iter()),
+            )
+            .map(|point| Rect::from_min_max(*point, *point))
+            .reduce(|left, right| left.union(right))
+    });
+    if target.is_none() {
+        target = selection
+            .iter()
+            .filter_map(|id| app.occurrence_box_geometry(*id))
+            .flat_map(|(origin, size)| {
+                crate::box_corners(size.x, size.y, size.z)
+                    .map(|point| app.project_to_screen(point + origin, viewport))
+            })
+            .map(|point| Rect::from_min_max(point, point))
+            .reduce(|left, right| left.union(right));
+    }
+    let target = target.ok_or("invalid_image_framing")?;
+    let padding = target.width().max(target.height()).mul_add(0.12, 8.0);
+    let crop = target.expand(padding).intersect(viewport.shrink(2.0));
+    if crop.width() < 2.0 || crop.height() < 2.0 {
+        return Err("invalid_image_framing");
+    }
+    Ok(crop)
+}
+
+fn detail_crop(
+    viewport: Rect,
+    app: &KetchupApp,
+    detail: &ResolvedImageDetail,
+) -> Result<Rect, &'static str> {
+    let target = detail
+        .world_points
+        .iter()
+        .map(|point| app.project_to_screen(*point, viewport))
+        .map(|point| Rect::from_min_max(point, point))
+        .reduce(|left, right| left.union(right))
+        .ok_or("invalid_image_framing")?;
+    let padding = target.width().max(target.height()).mul_add(0.12, 8.0);
+    let crop = target.expand(padding).intersect(viewport.shrink(2.0));
+    if crop.width() < 2.0 || crop.height() < 2.0 {
+        return Err("invalid_image_framing");
+    }
+    Ok(crop)
+}
+
+fn resolve_detail(
+    app: &KetchupApp,
+    query: &ModelQuery,
+    target: &ImageDetailTarget,
+) -> Result<ResolvedImageDetail, &'static str> {
+    if target.occurrence_id == 0
+        || target.entity_id == 0
+        || !matches!(target.kind, EntityKind::Edges | EntityKind::Faces)
+    {
+        return Err("invalid_image_framing");
+    }
+    let snapshot = app.document.current();
+    let detail = query
+        .detail_with_topology(
+            &snapshot,
+            &app.topology_results,
+            target.kind.clone(),
+            target.entity_id,
+        )
+        .map_err(|_| "invalid_image_framing")?;
+    let item = detail.get("item").ok_or("invalid_image_framing")?;
+    let definition_id = item["definition_id"]
+        .as_u64()
+        .ok_or("invalid_image_framing")?;
+    let ordinal = item["ordinal"]
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or("invalid_image_framing")?;
+    let reference_id = item["reference_id"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .ok_or("invalid_image_framing")?
+        .to_owned();
+    let occurrence_path = InstancePath::root(OccurrenceId(target.occurrence_id));
+    let projection = CanonicalInteractionProjection::from_snapshot(&snapshot);
+    let occurrence = projection
+        .occurrences()
+        .iter()
+        .find(|occurrence| occurrence.instance_path == occurrence_path)
+        .filter(|occurrence| occurrence.body.definition_id.0 == definition_id)
+        .ok_or("invalid_image_framing")?;
+    let kind = match target.kind {
+        EntityKind::Edges => TopologicalElementKind::Edge,
+        EntityKind::Faces => TopologicalElementKind::Face,
+        _ => return Err("invalid_image_framing"),
+    };
+    let mut local_bounds = None;
+    for (key, package) in app
+        .topology_results
+        .body_values(&snapshot)
+        .map_err(|_| "invalid_image_framing")?
+    {
+        let ExactBodyPackage::Graph(package) = package.as_ref() else {
+            continue;
+        };
+        if key.definition_id.0 != definition_id {
+            continue;
+        }
+        let Some(reference) = package
+            .topological_references
+            .iter()
+            .filter(|reference| reference.kind == kind)
+            .nth(ordinal as usize)
+        else {
+            continue;
+        };
+        if reference.lineage_digest != reference_id {
+            continue;
+        }
+        if local_bounds.is_some() {
+            return Err("invalid_image_framing");
+        }
+        local_bounds = Some(match target.kind {
+            EntityKind::Edges => package
+                .edge_evidence
+                .iter()
+                .find(|evidence| evidence.edge_ordinal == ordinal)
+                .map(|evidence| evidence.bounds_mm)
+                .ok_or("invalid_image_framing")?,
+            EntityKind::Faces => {
+                let mut bounds = [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]];
+                let mut found = false;
+                for triangle in package
+                    .triangles
+                    .iter()
+                    .zip(&package.triangle_face_ordinals)
+                    .filter(|(_, face_ordinal)| **face_ordinal == ordinal)
+                    .map(|(triangle, _)| triangle)
+                {
+                    for index in triangle.vertex_indices {
+                        let point = package
+                            .vertices
+                            .get(index as usize)
+                            .ok_or("invalid_image_framing")?
+                            .position_mm;
+                        found = true;
+                        for axis in 0..3 {
+                            bounds[0][axis] = bounds[0][axis].min(point[axis]);
+                            bounds[1][axis] = bounds[1][axis].max(point[axis]);
+                        }
+                    }
+                }
+                found.then_some(bounds).ok_or("invalid_image_framing")?
+            }
+            _ => return Err("invalid_image_framing"),
+        });
+    }
+    let bounds = local_bounds.ok_or("invalid_image_framing")?;
+    let matrix = occurrence.canonical_world_transform.matrix();
+    let mut world_points = Vec::with_capacity(8);
+    for x in [bounds[0][0], bounds[1][0]] {
+        for y in [bounds[0][1], bounds[1][1]] {
+            for z in [bounds[0][2], bounds[1][2]] {
+                world_points.push(Vec3::new(
+                    matrix[0] * x + matrix[1] * y + matrix[2] * z + matrix[3],
+                    matrix[4] * x + matrix[5] * y + matrix[6] * z + matrix[7],
+                    matrix[8] * x + matrix[9] * y + matrix[10] * z + matrix[11],
+                ));
+            }
+        }
+    }
+    Ok(ResolvedImageDetail {
+        request: target.clone(),
+        reference_id,
+        world_points,
+    })
+}
+
 impl KetchupApp {
     #[cfg(debug_assertions)]
     #[doc(hidden)]
@@ -146,11 +353,11 @@ impl KetchupApp {
         edges: &[ProjectedEdge],
         plan: Option<Arc<crate::InstancedRenderPlan>>,
     ) {
-        let Some(mode) = self
+        let Some((mode, framing, detail)) = self
             .live_bridge
             .as_ref()
             .and_then(|bridge| bridge.image.pending.as_ref())
-            .map(|request| request.mode)
+            .map(|request| (request.mode, request.framing, request.detail.clone()))
         else {
             return;
         };
@@ -203,9 +410,25 @@ impl KetchupApp {
             if callbacks > 1 {
                 return Err("unsupported_image_renderer");
             }
+            let state = VisualState::read(self)?;
+            let crop = match framing {
+                ImageFraming::Viewport => rect.shrink(2.0),
+                ImageFraming::Selection => selection_crop(
+                    self,
+                    rect,
+                    &state.selection,
+                    state.primary.as_ref(),
+                    faces,
+                    edges,
+                )?,
+                ImageFraming::DetailSelection => {
+                    detail_crop(rect, self, detail.as_ref().ok_or("invalid_image_framing")?)?
+                }
+            };
             Ok(Painted {
-                state: VisualState::read(self)?,
+                state,
                 rect,
+                crop,
                 screen,
                 ppp,
                 pass: ui.ctx().cumulative_pass_nr(),
@@ -235,12 +458,18 @@ impl LiveBridge {
                 expected,
                 image_protocol_version,
                 capture_mode,
+                max_side_px,
+                framing,
+                detail_target,
             } = &queued.request
             else {
                 unreachable!()
             };
             if *image_protocol_version != IMAGE_PROTOCOL_VERSION {
                 return Err("unsupported_image_protocol");
+            }
+            if !(MIN_IMAGE_SIDE_PX..=MAX_IMAGE_SIDE_PX).contains(max_side_px) {
+                return Err("invalid_image_dimensions");
             }
             Self::guard(app, expected)?;
             Self::available(app, ctx.wants_keyboard_input() || ctx.is_using_pointer())?;
@@ -249,15 +478,36 @@ impl LiveBridge {
             }
             let mut nonce = [0; 32];
             getrandom::fill(&mut nonce).map_err(|_| "image_unavailable")?;
-            Ok((VisualState::read(app)?, *capture_mode, CaptureNonce(nonce)))
+            let initial = VisualState::read(app)?;
+            let detail = match (*framing, detail_target.as_ref()) {
+                (ImageFraming::Viewport | ImageFraming::Selection, None) => None,
+                (ImageFraming::DetailSelection, Some(target)) => {
+                    Some(resolve_detail(app, &self.query, target)?)
+                }
+                _ => return Err("invalid_image_framing"),
+            };
+            if *framing == ImageFraming::Selection && initial.selection.is_empty() {
+                return Err("invalid_image_framing");
+            }
+            Ok((
+                initial,
+                *capture_mode,
+                *max_side_px,
+                *framing,
+                detail,
+                CaptureNonce(nonce),
+            ))
         })();
         match result {
-            Ok((initial, mode, nonce)) => {
+            Ok((initial, mode, max_side_px, framing, detail, nonce)) => {
                 self.image.pending = Some(ImageRequest {
                     queued,
-                    deadline: Instant::now() + Duration::from_millis(1500),
+                    deadline: Instant::now() + Duration::from_secs(5),
                     initial,
                     mode,
+                    max_side_px,
+                    framing,
+                    detail,
                     nonce,
                     capture: None,
                 })
@@ -310,7 +560,16 @@ impl LiveBridge {
                     {
                         return Err("invalid_image_callback");
                     }
-                    return thumbnail(capture, &pixels.image, request.mode, *direct).map(Some);
+                    return thumbnail(
+                        capture,
+                        &pixels.image,
+                        request.mode,
+                        request.max_side_px,
+                        request.framing,
+                        request.detail.as_ref(),
+                        *direct,
+                    )
+                    .map(Some);
                 }
                 // A discarded pass never executes its GPU callback. Do not attach
                 // an old stamp to a later pass; fail closed rather than reuse it.
@@ -367,7 +626,7 @@ impl LiveBridge {
                     || app.live_bridge_stamp(),
                     |(p, _, _)| p.state.stamp.clone(),
                 ));
-                if serde_json::to_vec(&response).map_or(true, |v| v.len() > MAX_FRAME_BYTES) {
+                if serde_json::to_vec(&response).map_or(true, |v| v.len() > MAX_IMAGE_FRAME_BYTES) {
                     response = Response::error(request.queued.id, "response_limit");
                 }
                 if !request.queued.cancelled.load(Ordering::Acquire) {
@@ -382,6 +641,9 @@ fn thumbnail(
     capture: &Painted,
     image: &ColorImage,
     mode: CaptureMode,
+    max_side_px: u32,
+    framing: ImageFraming,
+    detail: Option<&ResolvedImageDetail>,
     direct: bool,
 ) -> Result<Value, &'static str> {
     let ppp = capture.ppp;
@@ -393,7 +655,7 @@ fn thumbnail(
         return Err("invalid_image_dimensions");
     }
     // This is an isolated CAD texture, never a crop of the GUI framebuffer.
-    let rect = capture.rect.shrink(2.0);
+    let rect = capture.crop;
     let [x0, y0, x1, y1] = [
         (rect.min.x * ppp).ceil() as usize,
         (rect.min.y * ppp).ceil() as usize,
@@ -404,7 +666,7 @@ fn thumbnail(
         return Err("invalid_image_dimensions");
     }
     let (sw, sh) = (x1 - x0, y1 - y0);
-    let scale = THUMBNAIL_SIDE as f64 / sw.max(sh) as f64;
+    let scale = f64::from(max_side_px) / sw.max(sh) as f64;
     let w = ((sw as f64 * scale.min(1.0)).floor() as usize).max(1);
     let h = ((sh as f64 * scale.min(1.0)).floor() as usize).max(1);
     let mut rgb = Vec::with_capacity(w * h * 3);
@@ -421,11 +683,23 @@ fn thumbnail(
     }
     let png = png_rgb(w, h, &rgb);
     let camera = &capture.state.camera;
+    let framing_occurrence_ids = match framing {
+        ImageFraming::Viewport => Vec::new(),
+        ImageFraming::Selection => capture.state.selection.clone(),
+        ImageFraming::DetailSelection => detail
+            .map(|target| vec![target.request.occurrence_id])
+            .ok_or("invalid_image_framing")?,
+    };
+    let framing_detail = detail.map(|target| {
+        json!({"kind":match target.request.kind { EntityKind::Edges => "edge", EntityKind::Faces => "face", _ => unreachable!() },
+            "entity_id":target.request.entity_id,"reference_id":target.reference_id})
+    });
     Ok(
         json!({"mime_type":"image/png","encoding":"base64","data":base64(&png),"width":w,"height":h,
         "scope":"cad_viewport","image_protocol_version":IMAGE_PROTOCOL_VERSION,"capture_mode":mode.as_str(),"stamp":capture.state.stamp,"capture_pass":capture.pass,
         "source_size_px":image.size,"crop_px":[x0,y0,sw,sh],"pixels_per_point":ppp,
-        "sampling":"nearest_center","thumbnail":true,
+        "sampling":"nearest_center","thumbnail":framing == ImageFraming::Viewport,"requested_max_side_px":max_side_px,
+        "framing":{"mode":framing.as_str(),"occurrence_ids":framing_occurrence_ids,"detail":framing_detail},
         "view":{"projection":format!("{:?}",camera.projection_mode),"yaw":camera.yaw,"pitch":camera.pitch,
             "target_z_mm":camera.target_z,"zoom":camera.zoom,"pan":[camera.pan.x,camera.pan.y],"distance_mm":capture.state.distance},
         "selection":capture.state.selection,
@@ -439,18 +713,22 @@ fn thumbnail(
             "paint_shape_count":capture.shapes.len(),"style":format!("{:?}",camera),"theme":capture.state.theme}}),
     )
 }
-// Fixed-size RGB PNG using one stored DEFLATE block: bounded, lossless, no new dependency.
+// Bounded RGB PNG using stored DEFLATE blocks: lossless and dependency-free.
 fn png_rgb(w: usize, h: usize, rgb: &[u8]) -> Vec<u8> {
     let mut raw = Vec::with_capacity(rgb.len() + h);
     for row in rgb.chunks_exact(w * 3) {
         raw.push(0);
         raw.extend_from_slice(row);
     }
-    let mut z = vec![0x78, 0x01, 0x01];
-    let n = raw.len() as u16;
-    z.extend_from_slice(&n.to_le_bytes());
-    z.extend_from_slice(&(!n).to_le_bytes());
-    z.extend_from_slice(&raw);
+    let mut z = vec![0x78, 0x01];
+    let block_count = raw.len().div_ceil(u16::MAX as usize);
+    for (index, block) in raw.chunks(u16::MAX as usize).enumerate() {
+        z.push(u8::from(index + 1 == block_count));
+        let n = block.len() as u16;
+        z.extend_from_slice(&n.to_le_bytes());
+        z.extend_from_slice(&(!n).to_le_bytes());
+        z.extend_from_slice(block);
+    }
     let (mut a, mut b) = (1u32, 0u32);
     for byte in raw {
         a = (a + u32::from(byte)) % 65521;

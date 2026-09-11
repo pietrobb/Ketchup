@@ -298,7 +298,7 @@ def register_tools() -> list:
         Args:
             handle: Owned session UUID.
             action: summary, search, detail, workset_create, or workset_status.
-            kind: occurrences, instances, definitions, features, or relations. Relations stream canonical hierarchy, definition-use, and assembly edges.
+            kind: occurrences, instances, definitions, features, relations, faces, or edges. Topology rows include stable reference IDs and exact geometry.
             search: Case-sensitive name substring, or relation type (uses_definition/member_of_group/assembly_mate), at most 128 UTF-8 bytes.
             entity_id: Positive ID for detail.
             cursor: Opaque next_cursor from previous search; keep query unchanged. Stale tokens are rejected.
@@ -312,7 +312,7 @@ def register_tools() -> list:
         """
         def job():
             _action(action, ("summary", "search", "detail", "workset_create", "workset_status"))
-            _action(kind, ("occurrences", "instances", "definitions", "features", "relations"))
+            _action(kind, ("occurrences", "instances", "definitions", "features", "relations", "faces", "edges"))
             property_ids = (tag_id, classification_dimension_id, classification_category_id)
             if any(value is not None and (type(value) is not int or value <= 0) for value in property_ids):
                 raise Rejection("invalid_query", "Property filter IDs must be positive integers")
@@ -454,24 +454,49 @@ def register_tools() -> list:
         return await runtime.run(handle, job)
 
     @beta_async_tool(name="KetchupVerify")
-    async def verify(handle: str, action: str = "evaluate", validator_ids: list[str] | None = None) -> str:
-        """Return actual exact/validator evidence unchanged. Tool ok is NOT a geometry pass; check report completeness.
+    async def verify(handle: str, action: str = "evaluate", validator_ids: list[str] | None = None,
+                     scope: list[dict[str, int]] | None = None, job_handle: str = "",
+                     expected_revision: int = -1, expected_digest: str = "",
+                     timeout_ms: int = 30000) -> str:
+        """Start, inspect, or cancel native exact evaluation; also run validators or legacy bounded evaluate.
 
         Args:
             handle: Owned session UUID.
-            action: evaluate, validators, or list.
+            action: start, status, cancel, evaluate, validators, or list.
             validator_ids: Explicit validator IDs for validators; discover/list first.
+            scope: Optional 1..100 definition_id/feature_id producer keys for start only.
+            job_handle: Opaque Verify job handle for status/cancel only.
+            expected_revision: Caller-observed revision required for start only.
+            expected_digest: Caller-observed canonical_digest required for start only.
+            timeout_ms: Native 1..300000 ms deadline for start/evaluate; defaults to 30000.
         """
         def job():
-            _action(action, ("evaluate", "validators", "list"))
-            doc = runtime.entry(handle)["document"]
+            _action(action, ("start", "status", "cancel", "evaluate", "validators", "list"))
+            entry = runtime.entry(handle)
+            doc = entry["document"]
             if action == "validators":
-                if not validator_ids or len(validator_ids) > 100:
-                    raise Rejection("invalid_validators", "Supply 1..100 validator IDs")
+                if (not validator_ids or len(validator_ids) > 100 or scope is not None
+                        or job_handle or expected_revision != -1 or expected_digest
+                        or timeout_ms != 30000):
+                    raise Rejection("invalid_validators", "Supply only 1..100 validator IDs")
                 return doc.validators.run(validator_ids)
-            if validator_ids is not None:
-                raise Rejection("invalid_arguments", "validator_ids applies only to validators")
-            return doc.evaluate(timeout_ms=30000) if action == "evaluate" else doc.validators.list()
+            if action == "start":
+                if validator_ids is not None or job_handle:
+                    raise Rejection("invalid_arguments", "start requires only the observed revision and digest")
+                _precondition(entry, runtime.read(entry)["state"], expected_revision, expected_digest)
+                return doc.start_verify_job(scope=scope, timeout_ms=timeout_ms)
+            if action in ("status", "cancel"):
+                if (validator_ids is not None or scope is not None or not job_handle
+                        or len(job_handle) > 128 or expected_revision != -1 or expected_digest
+                        or timeout_ms != 30000):
+                    raise Rejection("invalid_arguments", "status/cancel require only one bounded job handle")
+                return (doc.verify_job_status(job_handle) if action == "status"
+                        else doc.cancel_verify_job(job_handle))
+            if (validator_ids is not None or scope is not None or job_handle
+                    or expected_revision != -1 or expected_digest
+                    or (action == "list" and timeout_ms != 30000)):
+                raise Rejection("invalid_arguments", "evaluate/list accept no job or precondition arguments")
+            return doc.evaluate(timeout_ms=timeout_ms) if action == "evaluate" else doc.validators.list()
         return await runtime.run(handle, job)
 
     return [discover, session, inspect_model, edit, batch, save, verify]

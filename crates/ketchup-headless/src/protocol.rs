@@ -1,4 +1,7 @@
-use ketchup_application::evaluation::EvidenceStatus;
+use ketchup_application::evaluation::{
+    EvaluationReport, EvidenceStatus, ExactEvaluationProgress, ExactEvaluationTask, ExactSource,
+    ProducerKey,
+};
 mod model_tools;
 use ketchup_application::batch_task::{
     OccurrenceBatchError, OccurrenceBatchOperation, OccurrenceBatchState, OccurrenceBatchTask,
@@ -9,7 +12,9 @@ use ketchup_application::{
     AssistantValidationSelection, DocumentSession, SaveOptions, SessionError, SessionSettings,
 };
 use ketchup_core::assistant_sidecar::AssistantCadEditProgram;
-use ketchup_core::document::{CanonicalCommand, CommandBatch, OccurrenceId, Snapshot};
+use ketchup_core::document::{
+    CanonicalCommand, CommandBatch, DefinitionId, FeatureId, OccurrenceId, Snapshot,
+};
 use ketchup_core::exact_product::{ExactBodyPackage, ExactResultRegistry};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -17,11 +22,13 @@ use std::{
     collections::{BTreeSet, VecDeque, hash_map::RandomState},
     hash::BuildHasher,
     io::{self, BufRead, Write},
+    time::Instant,
 };
 
 pub const PROTOCOL: &str = "ketchup.headless.v1";
 pub const MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_BATCH_JOBS: usize = 16;
+pub const MAX_VERIFY_JOBS: usize = 16;
 const METHODS: &[&str] = &[
     "capabilities",
     "new",
@@ -38,6 +45,9 @@ const METHODS: &[&str] = &[
     "batch_job_cancel",
     "apply",
     "evaluate",
+    "verify_job_start",
+    "verify_job_status",
+    "verify_job_cancel",
     "list_validators",
     "run_validators",
     "set_grounded",
@@ -107,6 +117,32 @@ struct BatchJob {
     task: OccurrenceBatchTask,
 }
 
+enum VerifyJobState {
+    Running(ExactEvaluationTask),
+    Completed(Value),
+    Failed(String),
+    TimedOut(Value),
+    Cancelled,
+}
+
+struct VerifyJob {
+    handle: String,
+    source: ExactSource,
+    scope: Option<Vec<ProducerKey>>,
+    progress: ExactEvaluationProgress,
+    started_at: Instant,
+    elapsed_ms: u64,
+    timeout_ms: u64,
+    deadline_stop: Option<std::sync::mpsc::Sender<()>>,
+    state: VerifyJobState,
+}
+
+impl VerifyJob {
+    fn terminal(&self) -> bool {
+        !matches!(self.state, VerifyJobState::Running(_))
+    }
+}
+
 pub struct Server {
     session: DocumentSession,
     settings: SessionSettings,
@@ -117,6 +153,9 @@ pub struct Server {
     batch_jobs: VecDeque<BatchJob>,
     batch_job_key: RandomState,
     next_batch_job: u64,
+    verify_jobs: VecDeque<VerifyJob>,
+    verify_job_key: RandomState,
+    next_verify_job: u64,
     compact_result: bool,
 }
 impl Server {
@@ -130,6 +169,9 @@ impl Server {
             batch_jobs: VecDeque::new(),
             batch_job_key: RandomState::new(),
             next_batch_job: 1,
+            verify_jobs: VecDeque::new(),
+            verify_job_key: RandomState::new(),
+            next_verify_job: 1,
             compact_result: false,
         }
     }
@@ -137,10 +179,182 @@ impl Server {
         format!("batch-{id:016x}-{:016x}", self.batch_job_key.hash_one(id))
     }
 
-    fn revoke_batch_jobs(&mut self) {
+    fn verify_job_handle(&self, id: u64) -> String {
+        format!("verify-{id:016x}-{:016x}", self.verify_job_key.hash_one(id))
+    }
+
+    fn revoke_jobs(&mut self) {
         self.batch_jobs.clear();
         self.batch_job_key = RandomState::new();
         self.next_batch_job = 1;
+        self.verify_jobs.clear();
+        self.verify_job_key = RandomState::new();
+        self.next_verify_job = 1;
+    }
+
+    fn start_verify_job(
+        &mut self,
+        scope: Option<BTreeSet<ProducerKey>>,
+        timeout_ms: u64,
+    ) -> Result<Value> {
+        if self.verify_jobs.len() == MAX_VERIFY_JOBS {
+            let terminal = self
+                .verify_jobs
+                .iter()
+                .position(VerifyJob::terminal)
+                .ok_or_else(|| {
+                    Error::new(
+                        "verify_job_limit",
+                        "all bounded Verify job slots are active",
+                    )
+                })?;
+            self.verify_jobs.remove(terminal);
+        }
+        let id = self.next_verify_job;
+        self.next_verify_job = id
+            .checked_add(1)
+            .ok_or_else(|| Error::new("verify_job_ids_exhausted", "Verify job IDs exhausted"))?;
+        let handle = self.verify_job_handle(id);
+        let started_at = Instant::now();
+        let task = self
+            .session
+            .start_scoped_exact_evaluation_task(scope.as_ref());
+        let source = task.source.clone();
+        let progress = task.progress();
+        let deadline_cancelled = std::sync::Arc::clone(&task.cancelled);
+        let deadline_finished = std::sync::Arc::clone(&task.finished);
+        let (deadline_stop, deadline_wait) = std::sync::mpsc::channel();
+        let remaining =
+            std::time::Duration::from_millis(timeout_ms).saturating_sub(started_at.elapsed());
+        std::thread::spawn(move || {
+            if matches!(
+                deadline_wait.recv_timeout(remaining),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ) && !deadline_finished.load(std::sync::atomic::Ordering::Acquire)
+            {
+                deadline_cancelled.store(true, std::sync::atomic::Ordering::Release);
+            }
+        });
+        self.verify_jobs.push_back(VerifyJob {
+            handle,
+            source,
+            scope: scope.map(|scope| scope.into_iter().collect()),
+            progress,
+            started_at,
+            elapsed_ms: 0,
+            timeout_ms,
+            deadline_stop: Some(deadline_stop),
+            state: VerifyJobState::Running(task),
+        });
+        Ok(self.verify_job_value(self.verify_jobs.len() - 1))
+    }
+
+    fn time_out_verify_job(&mut self, index: usize, progress: ExactEvaluationProgress) {
+        if let VerifyJobState::Running(task) = &self.verify_jobs[index].state {
+            task.cancel();
+        }
+        let active = progress.active_producer.map(|key| {
+            json!({
+                "definition_id":key.definition_id.0,
+                "feature_id":key.feature_id.0,
+                "elapsed_ms":progress.active_elapsed_ms,
+            })
+        });
+        let remaining = progress
+            .total_producers
+            .saturating_sub(progress.completed_producers);
+        self.verify_jobs[index].state = VerifyJobState::TimedOut(json!({
+            "code":"verify_timeout",
+            "message":"exact Verify exceeded its native deadline",
+            "elapsed_ms":self.verify_jobs[index].elapsed_ms,
+            "timeout_ms":self.verify_jobs[index].timeout_ms,
+            "active_body":active,
+            "completed_bodies":progress.completed_producers,
+            "remaining_bodies":remaining,
+        }));
+    }
+
+    fn refresh_verify_job(&mut self, index: usize) {
+        let (progress, result) = match &self.verify_jobs[index].state {
+            VerifyJobState::Running(task) => (task.progress(), Some(task.poll())),
+            _ => return,
+        };
+        self.verify_jobs[index].progress = progress;
+        self.verify_jobs[index].elapsed_ms = self.verify_jobs[index]
+            .started_at
+            .elapsed()
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64;
+        match result.expect("running Verify job has a poll result") {
+            Ok(Ok(products)) => {
+                let published = {
+                    let VerifyJobState::Running(task) = &self.verify_jobs[index].state else {
+                        unreachable!("Verify job state changed while polling")
+                    };
+                    self.session.publish_exact_evaluation(task, products)
+                };
+                self.verify_jobs[index].state = match published {
+                    Ok(report) => {
+                        VerifyJobState::Completed(evaluation_report(&self.session, &report))
+                    }
+                    Err(error) => VerifyJobState::Failed(error.to_string()),
+                };
+            }
+            Ok(Err(reason)) => self.verify_jobs[index].state = VerifyJobState::Failed(reason),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+                if self.verify_jobs[index].elapsed_ms >= self.verify_jobs[index].timeout_ms =>
+            {
+                self.time_out_verify_job(index, progress);
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+                if self.verify_jobs[index].elapsed_ms >= self.verify_jobs[index].timeout_ms =>
+            {
+                self.time_out_verify_job(index, progress);
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.verify_jobs[index].state =
+                    VerifyJobState::Failed("exact evaluation worker disconnected".into());
+            }
+        }
+        if self.verify_jobs[index].terminal()
+            && let Some(stop) = self.verify_jobs[index].deadline_stop.take()
+        {
+            let _ = stop.send(());
+        }
+        if matches!(
+            &self.verify_jobs[index].state,
+            VerifyJobState::Completed(_) | VerifyJobState::Failed(_)
+        ) {
+            self.verify_jobs[index].progress.active_producer = None;
+            self.verify_jobs[index].progress.active_elapsed_ms = None;
+        }
+    }
+
+    fn verify_job_value(&self, index: usize) -> Value {
+        let job = &self.verify_jobs[index];
+        let mut value = json!({
+            "job_handle":job.handle,
+            "source":{"document_id":job.source.0.0,"revision":job.source.1,"canonical_digest":job.source.2},
+            "scope":job.scope.as_ref().map(|scope| scope.iter().map(|key| json!({"definition_id":key.definition_id.0,"feature_id":key.feature_id.0})).collect::<Vec<_>>()),
+            "progress":{"total_bodies":job.progress.total_producers,"completed_bodies":job.progress.completed_producers,"reused_bodies":job.progress.reused_producers,
+                "active_body":job.progress.active_producer.map(|key| json!({"definition_id":key.definition_id.0,"feature_id":key.feature_id.0,"elapsed_ms":job.progress.active_elapsed_ms}))},
+            "timing":{"elapsed_ms":job.elapsed_ms,"timeout_ms":job.timeout_ms},
+            "state":match job.state {
+                VerifyJobState::Running(_) => "running",
+                VerifyJobState::Completed(_) => "completed",
+                VerifyJobState::Failed(_) => "failed",
+                VerifyJobState::TimedOut(_) => "timed_out",
+                VerifyJobState::Cancelled => "cancelled",
+            }
+        });
+        match &job.state {
+            VerifyJobState::Completed(report) => value["report"] = report.clone(),
+            VerifyJobState::Failed(reason) => value["diagnostic"] = json!(reason),
+            VerifyJobState::TimedOut(diagnostic) => value["diagnostic"] = diagnostic.clone(),
+            VerifyJobState::Running(_) | VerifyJobState::Cancelled => {}
+        }
+        value
     }
 
     fn state(&self) -> Value {
@@ -217,14 +431,14 @@ impl Server {
             "capabilities" => Ok(
                 json!({"methods":METHODS.iter().map(|name| json!({"name":name,"mutates":matches!(*name,"new"|"open"|"apply"|"batch_job_step"|"set_grounded"|"undo"|"redo"|"save")})).collect::<Vec<_>>(),
                 "cad_program_schema":serde_json::from_str::<Value>(include_str!(concat!(env!("OUT_DIR"),"/cad-program-schema.json"))).expect("build-generated schema"),
-                "bounds":{"max_line_bytes":MAX_LINE_BYTES,"max_output_bytes":MAX_LINE_BYTES,"max_selection":100,"max_operations":64,"max_batch_jobs":MAX_BATCH_JOBS,"evaluation_timeout_ms":{"default":30000,"min":1,"max":300000}},
+                "bounds":{"max_line_bytes":MAX_LINE_BYTES,"max_output_bytes":MAX_LINE_BYTES,"max_selection":100,"max_operations":64,"max_batch_jobs":MAX_BATCH_JOBS,"max_verify_jobs":MAX_VERIFY_JOBS,"evaluation_timeout_ms":{"default":30000,"min":1,"max":300000}},
                 "mutation_preconditions":["expected_revision","expected_digest"],"units":"mm","transform":"row-major 4x4 local occurrence transform","transactions":"one apply = one atomic CAD program; newly allocated Definition, Sketch and body references use zero-based earlier operation_index plus a typed output, never guessed IDs","protocol":PROTOCOL}),
             ),
             "state" => Ok(self.state_result()),
             "new" => {
                 self.discard_guard(p)?;
                 self.session = DocumentSession::new(self.settings.clone());
-                self.revoke_batch_jobs();
+                self.revoke_jobs();
                 self.redo_steps = 0;
                 self.pristine = true;
                 Ok(self.state_result())
@@ -233,7 +447,7 @@ impl Server {
                 self.discard_guard(p)?;
                 let next = DocumentSession::open(string(p, "path")?, self.settings.clone())?;
                 self.session = next;
-                self.revoke_batch_jobs();
+                self.revoke_jobs();
                 self.redo_steps = 0;
                 self.pristine = false;
                 Ok(self.state_result())
@@ -343,13 +557,7 @@ impl Server {
                 let report = self
                     .session
                     .evaluate_with_timeout(std::time::Duration::from_millis(timeout))?;
-                let snapshot = self.session.snapshot();
-                Ok(
-                    json!({"document_id":report.source.0.0,"revision":report.source.1,"canonical_digest":report.source.2,
-                    "complete":report.complete,"topology_complete":report.topology_complete,"not_evaluated":report.not_evaluated,
-                    "producers":report.producers.iter().map(|p|json!({"definition_id":p.key.definition_id.0,"feature_id":p.key.feature_id.0,"render":status(&p.render),"topology":status(&p.topology)})).collect::<Vec<_>>(),
-                    "geometry":geometry(self.session.exact_results(),&snapshot),"topology_geometry":geometry(self.session.topology_results(),&snapshot)}),
-                )
+                Ok(evaluation_report(&self.session, &report))
             }
             _ => unreachable!(),
         }
@@ -444,6 +652,19 @@ fn created(before: &Snapshot, after: &Snapshot) -> Value {
         "occurrence_ids":after.occurrences().filter(|o|before.occurrence(o.id()).is_none()).map(|o|o.id().0).collect::<Vec<_>>(),
         "feature_ids":after.features().filter(|f|before.feature(f.id()).is_none()).map(|f|f.id().0).collect::<Vec<_>>()})
 }
+fn evaluation_report(session: &DocumentSession, report: &EvaluationReport) -> Value {
+    let snapshot = session.snapshot();
+    let producers = report
+        .producers
+        .iter()
+        .map(|producer| (producer.key.definition_id.0, producer.key.feature_id.0))
+        .collect::<BTreeSet<_>>();
+    json!({"document_id":report.source.0.0,"revision":report.source.1,"canonical_digest":report.source.2,
+        "complete":report.complete,"topology_complete":report.topology_complete,"not_evaluated":report.not_evaluated,
+        "producers":report.producers.iter().map(|p|json!({"definition_id":p.key.definition_id.0,"feature_id":p.key.feature_id.0,"render":status(&p.render),"topology":status(&p.topology)})).collect::<Vec<_>>(),
+        "geometry":geometry(session.exact_results(),&snapshot,&producers),"topology_geometry":geometry(session.topology_results(),&snapshot,&producers)})
+}
+
 fn status(s: &EvidenceStatus) -> Value {
     match s {
         EvidenceStatus::Current => json!({"status":"current"}),
@@ -454,8 +675,13 @@ fn status(s: &EvidenceStatus) -> Value {
         }
     }
 }
-fn geometry(registry: &ExactResultRegistry, snapshot: &Snapshot) -> Vec<Value> {
-    registry.values().filter(|p|p.is_current(snapshot)).map(|p| {
+fn geometry(
+    registry: &ExactResultRegistry,
+    snapshot: &Snapshot,
+    producers: &BTreeSet<(u64, u64)>,
+) -> Vec<Value> {
+    registry.values().filter(|p| p.is_current(snapshot)
+        && producers.contains(&(p.definition_id().0, p.producer_feature_id().0))).map(|p| {
         let key=p.result_key();
         // This volume is explicitly mesh evidence, not a fabricated native BRep volume.
         let vertices=p.vertices();
@@ -583,6 +809,88 @@ mod tests {
         assert_eq!(s.handle(br#"{"protocol":"ketchup.headless.v1","id":1,"method":"state","params":{"x":1e999}}"#)["error"]["code"],"invalid_json");
     }
     #[test]
+    fn verify_jobs_start_publish_status_and_cancel_through_native_task() {
+        let mut server = Server::new(SessionSettings::default());
+        let state = request(&mut server, "state", json!({}))["result"]["state"].clone();
+        let stale = request(
+            &mut server,
+            "verify_job_start",
+            json!({"expected_revision":state["revision"],"expected_digest":"stale"}),
+        );
+        assert_eq!(stale["error"]["code"], "stale_state");
+
+        let start = || {
+            json!({"expected_revision":state["revision"],
+                "expected_digest":state["canonical_digest"]})
+        };
+        let invalid_timeout = request(
+            &mut server,
+            "verify_job_start",
+            json!({"expected_revision":state["revision"],
+                "expected_digest":state["canonical_digest"],"timeout_ms":0}),
+        );
+        assert_eq!(invalid_timeout["error"]["code"], "invalid_params");
+
+        let completed_before_late_poll = request(
+            &mut server,
+            "verify_job_start",
+            json!({"expected_revision":state["revision"],
+                "expected_digest":state["canonical_digest"],"timeout_ms":100}),
+        );
+        let completed_handle = completed_before_late_poll["result"]["job_handle"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let completed = request(
+            &mut server,
+            "verify_job_status",
+            json!({"handle":completed_handle}),
+        );
+        assert_eq!(completed["result"]["state"], "completed", "{completed}");
+        assert!(
+            completed["result"]["timing"]["elapsed_ms"]
+                .as_u64()
+                .unwrap()
+                >= 100
+        );
+
+        let cancelled = request(&mut server, "verify_job_start", start());
+        assert_eq!(cancelled["result"]["timing"]["timeout_ms"], 30_000);
+        let cancelled_handle = cancelled["result"]["job_handle"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(cancelled["result"]["state"], "running");
+        assert_eq!(cancelled["result"]["progress"]["total_bodies"], 0);
+        let cancelled = request(
+            &mut server,
+            "verify_job_cancel",
+            json!({"handle":cancelled_handle}),
+        );
+        assert_eq!(cancelled["result"]["state"], "cancelled");
+
+        let started = request(&mut server, "verify_job_start", start());
+        let handle = started["result"]["job_handle"].as_str().unwrap().to_owned();
+        let mut status = Value::Null;
+        for _ in 0..100 {
+            status = request(&mut server, "verify_job_status", json!({"handle":handle}));
+            if status["result"]["state"] == "completed" {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(status["result"]["state"], "completed", "{status}");
+        assert_eq!(status["result"]["report"]["complete"], false);
+        assert_eq!(
+            status["result"]["report"]["not_evaluated"],
+            "no exact producers selected"
+        );
+        let unknown = request(&mut server, "verify_job_status", json!({"handle":"forged"}));
+        assert_eq!(unknown["error"]["code"], "verify_job_not_found");
+    }
+
+    #[test]
     fn schema_covers_current_all_operation_variants() {
         let mut s = Server::new(SessionSettings::default());
         let caps = request(&mut s, "capabilities", json!({}));
@@ -590,11 +898,20 @@ mod tests {
             caps["result"]["cad_program_schema"]["$defs"]["AssistantCadEditOperation"]["oneOf"]
                 .as_array()
                 .unwrap();
-        assert_eq!(variants.len(), 15);
+        assert_eq!(variants.len(), 25);
         for operation in [
             "append_feature",
             "create_program_sketch",
             "append_program_pocket",
+            "create_spatial_path",
+            "create_helix_path",
+            "create_construction_point",
+            "create_construction_axis",
+            "create_construction_plane",
+            "create_helix",
+            "create_thread",
+            "fillet_edges",
+            "chamfer_edges",
         ] {
             assert!(
                 variants
@@ -633,7 +950,12 @@ mod tests {
                 .iter()
                 .map(|value| value["const"].as_str().unwrap())
                 .collect::<Vec<_>>(),
-            ["definition", "sketch_feature", "body_feature"]
+            [
+                "definition",
+                "sketch_feature",
+                "construction_feature",
+                "body_feature"
+            ]
         );
     }
     #[test]

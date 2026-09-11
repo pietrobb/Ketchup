@@ -27,25 +27,40 @@ impl Drop for Python {
 
 fn program() -> AssistantCadEditProgram {
     AssistantCadEditProgram {
-        operations: vec![AssistantCadEditOperation::CreatePart {
-            name: "Python live cylinder".into(),
-            workplane: AssistantWorkplaneSpec::Principal {
-                plane: AssistantPrincipalPlane::Xy,
+        operations: vec![
+            AssistantCadEditOperation::CreateHelix {
+                name: "Python live helix".into(),
+                parameters: AssistantHelixParameters {
+                    axis: AssistantAxisSpec::TwoPoints {
+                        start_mm: [4.0, -3.0, 2.0],
+                        end_mm: [5.0, -1.0, 5.0],
+                    },
+                    radius_mm: 7.0,
+                    pitch_mm: 4.5,
+                    turns: 2.25,
+                    start_angle_degrees: 37.0,
+                    handedness: AssistantHelixHandedness::Left,
+                },
             },
-            entities: vec![AssistantSketchEntity::Circle {
-                id: 1,
-                center_mm: [0.0, 0.0],
-                radius_mm: 12.0,
-            }],
-            constraints: vec![AssistantSketchConstraint::Radius {
-                id: 1,
-                entity_id: 1,
-                value_mm: 12.0,
-            }],
-            feature: AssistantCadPartFeature::Extrusion { distance_mm: 30.0 },
-            translation_mm: [5.0, 6.0, 7.0],
-            rotation: None,
-        }],
+            AssistantCadEditOperation::CreateThread {
+                name: "Python live thread".into(),
+                parameters: AssistantThreadParameters {
+                    helix: AssistantHelixParameters {
+                        axis: AssistantAxisSpec::OriginDirection {
+                            origin_mm: [28.0, 0.0, 0.0],
+                            direction: [0.35, 0.2, 1.0],
+                        },
+                        radius_mm: 8.0,
+                        pitch_mm: 6.0,
+                        turns: 2.0,
+                        start_angle_degrees: 15.0,
+                        handedness: AssistantHelixHandedness::Right,
+                    },
+                    profile_radius_mm: 0.65,
+                    profile: AssistantThreadProfile::V,
+                },
+            },
+        ],
     }
 }
 
@@ -178,7 +193,7 @@ fn registered_python_skill_uses_same_gui_store_and_human_history() {
                 assert_eq!(shell.app().undo_step_count(), history);
             }
             "committed" => {
-                assert_eq!(actual_count, count + 1);
+                assert_eq!(actual_count, count + 2);
                 assert!(actual.revision > initial.revision);
                 assert!(actual.mutation_epoch > initial.mutation_epoch);
                 assert_eq!(actual.document_id, initial.document_id);
@@ -187,7 +202,7 @@ fn registered_python_skill_uses_same_gui_store_and_human_history() {
             }
             "aba_ready" => {
                 assert_eq!(Some(&actual), committed.as_ref());
-                assert_eq!(actual_count, count + 1);
+                assert_eq!(actual_count, count + 2);
                 shell.click_command(AppCommand::Undo);
                 assert_eq!(shell.app().document_snapshot().occurrences().count(), count);
                 let human_undo = shell.app().live_bridge_stamp();
@@ -196,7 +211,7 @@ fn registered_python_skill_uses_same_gui_store_and_human_history() {
                 shell.click_command(AppCommand::Redo);
                 assert_eq!(
                     shell.app().document_snapshot().occurrences().count(),
-                    count + 1
+                    count + 2
                 );
                 let restored = shell.app().live_bridge_stamp();
                 assert_eq!(restored.revision, actual.revision);
@@ -206,7 +221,7 @@ fn registered_python_skill_uses_same_gui_store_and_human_history() {
             }
             "stale_rejected" => {
                 assert_eq!(Some(&actual), after_human_history.as_ref());
-                assert_eq!(actual_count, count + 1);
+                assert_eq!(actual_count, count + 2);
                 assert_eq!(shell.app().undo_step_count(), history + 1);
             }
             "undone" => {
@@ -219,7 +234,7 @@ fn registered_python_skill_uses_same_gui_store_and_human_history() {
                 undone = Some(actual);
             }
             "redone" => {
-                assert_eq!(actual_count, count + 1);
+                assert_eq!(actual_count, count + 2);
                 assert_eq!(actual.revision, committed.as_ref().unwrap().revision);
                 assert_eq!(
                     actual.canonical_digest,
@@ -230,7 +245,7 @@ fn registered_python_skill_uses_same_gui_store_and_human_history() {
             }
             "image_renderer_unavailable" | "disconnected" => {
                 assert_eq!(Some(&actual), committed.as_ref());
-                assert_eq!(actual_count, count + 1);
+                assert_eq!(actual_count, count + 2);
             }
             _ => unreachable!(),
         }
@@ -276,6 +291,6 @@ fn registered_python_skill_uses_same_gui_store_and_human_history() {
     shell.click_command(AppCommand::Redo);
     assert_eq!(
         shell.app().document_snapshot().occurrences().count(),
-        count + 1
+        count + 2
     );
 }

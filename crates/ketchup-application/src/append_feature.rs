@@ -229,7 +229,12 @@ pub(crate) fn plan_feature_kind(
         AssistantCadBodyFeature::Loft { sections } => {
             let mut loft_sections = Vec::with_capacity(sections.len());
             for section in sections {
-                let profile = FeatureId(section.profile_feature_id);
+                let profile = FeatureId(
+                    section
+                        .profile_feature_id
+                        .existing_id()
+                        .expect("Assistant Loft references are resolved before feature planning"),
+                );
                 let source = snapshot.feature(profile).ok_or_else(|| {
                     assistant_canonical_rejection(
                         CanonicalError::FeatureNotFound(profile),
@@ -243,22 +248,25 @@ pub(crate) fn plan_feature_kind(
                         operation_name,
                         &format!("feature:{}", profile.0),
                         "The requested Loft profile belongs to a different definition.",
-                        "Target supported spline profiles in the requested definition.",
+                        "Target supported closed profiles in the requested definition.",
                     ));
                 }
-                if snapshot.feature_is_suppressed(profile)
-                    || !matches!(
-                        source.kind(),
-                        FeatureKind::SplineProfile { control_points_mm }
-                            if (4..=64).contains(&control_points_mm.len())
-                    )
-                {
+                let supported = match source.kind() {
+                    FeatureKind::SplineProfile { control_points_mm } => {
+                        (4..=64).contains(&control_points_mm.len())
+                    }
+                    FeatureKind::Sketch(sketch) => sketch
+                        .solved_regions()
+                        .is_ok_and(|regions| regions.len() == 1),
+                    _ => false,
+                };
+                if snapshot.feature_is_suppressed(profile) || !supported {
                     return Err(assistant_planning_rejection(
                         "planning.cad_feature_input_unsupported",
                         operation_name,
                         &format!("feature:{}", profile.0),
-                        "The requested Loft profile is not supported by exact evaluation.",
-                        "Use an unsuppressed spline profile with 4 to 64 control points.",
+                        "The requested Loft profile is not one supported closed region.",
+                        "Use an unsuppressed spline profile or a sketch with exactly one closed region.",
                     ));
                 }
                 loft_sections.push(LoftSection {

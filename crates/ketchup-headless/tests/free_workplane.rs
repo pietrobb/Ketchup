@@ -153,3 +153,79 @@ fn native_headless_translated_rotated_frame_wedge_pocket_roundtrips() {
     assert!((native_volume(&result, pocket) - 3200.0).abs() < 1e-6);
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn native_headless_topology_query_detail_drives_one_multi_edge_fillet() {
+    let mut client = Client::new();
+    let created = client.call(
+        "apply",
+        json!({"program":{"operations":[{
+            "operation":"create_part","name":"Annular part",
+            "workplane":{"type":"principal","plane":"xy"},
+            "entities":[
+                {"type":"circle","id":1,"center_mm":[12,-7],"radius_mm":10},
+                {"type":"circle","id":2,"center_mm":[12,-7],"radius_mm":6}
+            ],
+            "constraints":[
+                {"type":"radius","id":1,"entity_id":1,"value_mm":10},
+                {"type":"radius","id":2,"entity_id":2,"value_mm":6}
+            ],
+            "feature":{"type":"extrusion","distance_mm":30},
+            "translation_mm":[0,0,0]
+        }]}}),
+        true,
+    );
+    let definition = created["created"]["definition_ids"][0].as_u64().unwrap();
+    let pad = created["created"]["feature_ids"][2].as_u64().unwrap();
+    let evaluated = client.call("evaluate", json!({"timeout_ms":30000}), false);
+    assert_eq!(evaluated["complete"], true, "{evaluated}");
+    assert_eq!(evaluated["topology_complete"], true, "{evaluated}");
+
+    let page = client.call(
+        "query",
+        json!({"kind":"edges","limit":100,"search":"circle","definition_id":definition}),
+        false,
+    );
+    let mut upper_edges = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|edge| {
+            edge["producer_feature_id"] == pad
+                && edge["geometry"]["closed"] == true
+                && edge["geometry"]["centroid_mm"][2]
+                    .as_f64()
+                    .is_some_and(|z| (z - 30.0).abs() <= 1.0e-9)
+        })
+        .collect::<Vec<_>>();
+    upper_edges.sort_by(|left, right| {
+        left["geometry"]["circle_radius_mm"]
+            .as_f64()
+            .unwrap()
+            .total_cmp(&right["geometry"]["circle_radius_mm"].as_f64().unwrap())
+    });
+    assert_eq!(upper_edges.len(), 2);
+    assert_eq!(upper_edges[0]["geometry"]["circle_radius_mm"], 6.0);
+    assert_eq!(upper_edges[1]["geometry"]["circle_radius_mm"], 10.0);
+    let edge_id = upper_edges[0]["id"].as_u64().unwrap();
+    assert!(edge_id > 0);
+    let detail = client.call("detail", json!({"kind":"edges","id":edge_id}), false);
+    assert_eq!(detail["item"], *upper_edges[0]);
+    assert_eq!(detail["identity"], page["identity"]);
+
+    let reference_ids = upper_edges
+        .iter()
+        .map(|edge| edge["reference_id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    client.call(
+        "apply",
+        json!({"program":{"operations":[{
+            "operation":"fillet_edges","definition_id":definition,"name":"Upper rim fillet",
+            "target_feature_id":pad,"edge_reference_ids":reference_ids,"radius_mm":1
+        }]},"selection":[]}),
+        true,
+    );
+    let evaluated = client.call("evaluate", json!({"timeout_ms":30000}), false);
+    assert_eq!(evaluated["complete"], true, "{evaluated}");
+    assert_eq!(evaluated["topology_complete"], true, "{evaluated}");
+}

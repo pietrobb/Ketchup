@@ -411,6 +411,36 @@ class Document:
         return self._call("evaluate", {"timeout_ms": timeout_ms},
                           timeout=max(self._session.timeout, timeout_ms / 1000 + 5))
 
+    def start_verify_job(self, *, scope=None, timeout_ms=30_000):
+        if type(timeout_ms) is not int or not 1 <= timeout_ms <= MAX_TIMEOUT_MS:
+            raise ValueError(f"timeout_ms must be in [1, {MAX_TIMEOUT_MS}]")
+        params = {"timeout_ms": timeout_ms}
+        if scope is not None:
+            if not isinstance(scope, list) or not 1 <= len(scope) <= 100:
+                raise ValueError("scope must be a list of 1..100 producer keys")
+            normalized = []
+            for key in scope:
+                if not isinstance(key, Mapping) or set(key) != {"definition_id", "feature_id"}:
+                    raise ValueError("each scope entry requires only definition_id and feature_id")
+                if any(type(key[field]) is not int or key[field] <= 0
+                       for field in ("definition_id", "feature_id")):
+                    raise ValueError("scope IDs must be positive integers")
+                normalized.append({field: key[field] for field in ("definition_id", "feature_id")})
+            if len({(key["definition_id"], key["feature_id"]) for key in normalized}) != len(normalized):
+                raise ValueError("scope contains duplicate producer keys")
+            params["scope"] = normalized
+        return self._call("verify_job_start", params, guarded=True)
+
+    def verify_job_status(self, handle):
+        if not isinstance(handle, str) or not handle or len(handle) > 128:
+            raise ValueError("Verify job handle must be a nonempty string of at most 128 characters")
+        return self._call("verify_job_status", {"handle": handle})
+
+    def cancel_verify_job(self, handle):
+        if not isinstance(handle, str) or not handle or len(handle) > 128:
+            raise ValueError("Verify job handle must be a nonempty string of at most 128 characters")
+        return self._call("verify_job_cancel", {"handle": handle})
+
     def save(self, path, *, overwrite=False):
         return self._call("save", {"path": os.fspath(path), "overwrite": overwrite}, mutation=True, state=True)
 

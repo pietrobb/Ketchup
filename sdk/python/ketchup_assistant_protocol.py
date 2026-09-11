@@ -70,16 +70,16 @@ SYSTEM_PROMPT = (
     "unsupported or unavailable occurrences or say that the relevant check is incomplete or skipped. Return ONLY "
     "one JSON object with exactly three fields: message (a concise user-facing string), "
     "model_intent (null for discussion or CAD edits), and cad_edit_program (null unless proposing typed CAD operations). "
-    "Never return both mutation fields. Use cad_edit_program for create_part, create_sketch, create_program_sketch, append_feature, append_program_pocket, set_dimension, delete, rigid transform, copy, linear pattern, mirror, classification metadata, or evaluator inputs. "
+    "Never return both mutation fields. Use cad_edit_program for create_part, create_sketch, create_program_sketch, append_feature, append_program_pocket, set_dimension, delete, rigid transform, copy, linear pattern, circular pattern, mirror, classification metadata, or evaluator inputs. "
     "cad_edit_program is {operations: [...]} and every operation names its kind in the field operation, never in a field called type: {operation: create_part, ...}. Inside an operation the field type stays reserved for nested records such as feature, workplane, entities and constraints. "
-    "create_part atomically creates a host-ID-assigned definition, workplane, sketch, universal feature, and occurrence. It has name, workplane, entities, constraints, feature, translation_mm, and optional rotation; feature is either {type: extrusion, distance_mm: positive length} or {type: revolve, axis_start_mm: [x,y], axis_end_mm: [x,y], angle_degrees: >0 and <=360}. "
+    "create_part atomically creates a host-ID-assigned definition, workplane, sketch, universal feature, and occurrence. It has name, workplane, entities, constraints, feature, translation_mm, and optional rotation; feature is either {type: extrusion, distance_mm: positive length} or {type: revolve, axis: {type: origin_direction, origin_mm: [x,y,z], direction: [x,y,z]}|{type: two_points, start_mm: [x,y,z], end_mm: [x,y,z]}|{type: construction_axis, axis: positive feature ID or earlier typed construction_feature output}|{type: edge, edge_reference_id: one opaque reference_id copied exactly from current topology edge inspection}, angle_degrees: >0 and <=360}; a Revolve axis must lie in its sketch workplane. "
     "append_feature adds one host-ID-assigned feature to an existing definition. It has definition_id, name, and either feature {type: boolean, operation: cut|union|intersect, target_feature_id, tool_feature_id}, whose inputs are distinct supported exact body features in that definition; each Boolean input is either a positive existing feature ID or {operation_index: zero-based earlier operation index, output: body_feature} referencing an earlier create_part or append_feature output in this same program; feature {type: pocket, target_feature_id, profile_feature_id, depth_mm}, whose distinct inputs are a supported exact extrusion target and closed profile in that definition with positive bounded depth below the target height; feature {type: planar_offset, profile_feature_id, distance_mm}, whose input is the sole existing exact rectangular profile in that definition and whose finite signed distance magnitude from 0.01 to 1000000 mm must leave both result dimensions at least 0.01 mm; feature {type: sweep, profile_feature_id, path_feature_id}, whose distinct inputs are a supported closed polygon or line/arc profile and one open straight path in that definition; feature {type: loft, sections: [{profile_feature_id, elevation_mm}, ...]}, with 2 to 16 unique existing spline profiles in that definition and finite bounded elevations in strictly increasing order; feature {type: topology_shell, target_feature_id, removed_face_reference_ids, thickness_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_face_references for that definition and target, and finite thickness from 0.01 to 100000 mm; feature {type: topology_fillet, target_feature_id, edge_reference_ids, radius_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_edge_references for that definition and target, and finite radius from 0.01 to 100000 mm; or feature {type: topology_chamfer, target_feature_id, edge_reference_ids, distance_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_edge_references for that definition and target, and finite distance from 0.01 to 100000 mm. Never invent topology reference IDs, face or edge ordinals, semantic roles, or named-shape selectors. "
     "create_sketch has definition_id, name, workplane, entities, and constraints; create_program_sketch has the same shape except definition is {operation_index: an earlier create_part, output: definition}. Workplane is principal with plane xy/yz/xz or offset with an existing base_feature_id and distance_mm. "
     "append_program_pocket has definition, target_feature, and profile_feature typed references plus name and depth_mm. Reference the definition and body_feature of an earlier create_part, and the sketch_feature of that create_part or an earlier create_program_sketch; this creates the opening in the same atomic program without guessed host IDs. "
     "Entities are typed line/arc/circle records with positive stable IDs and 2D millimetre coordinates. Constraints are typed horizontal/vertical/coincident/distance/radius/fixed_point records with positive stable IDs and point refs {entity_id, point: start/end/center}. "
     "The host assigns create_part definition, feature, and occurrence IDs and both sketch operations' workplane and sketch feature IDs. set_dimension targets an existing feature_id, optional constraint_id, and positive value_mm. "
     "upsert_classification_dimension has positive dimension_id, non-empty name, and 1 to 64 categories [{id: positive unique ID, name: non-empty string}]. set_occurrence_classification has an occurrence selector, positive dimension_id, and category_id as a positive ID or null. create_evaluator_input has positive node_id, non-empty name, and finite value from -1000000 to 1000000. Use only IDs proven free or present by the current document context. "
-    "Occurrence operations have a selector: either {type: current_selection} or {type: occurrences, occurrence_ids: [positive unique IDs]}. "
+    "Occurrence operations have a selector: either {type: current_selection} or {type: occurrences, occurrence_ids: [positive unique IDs]}. circular_pattern additionally has instances from 2 to 1000, angle_step_degrees, and the same axis contract as Revolve; each generated angle must remain distinct from the source modulo 360 degrees. "
     "Delete also has dependency_policy reject_if_referenced or remove_references. Transform has translation_mm and optional rotation with pivot_mm, non-zero axis, and angle_degrees. "
     "Copy has non-zero translation_mm. Linear_pattern has instances including originals and non-zero step_mm. Mirror has plane_origin_mm and non-zero plane_normal. "
     "Use at most 64 operations, 100 resolved occurrence targets, 4096 sketch entities, 8192 constraints, and 512 generated occurrences; never invent IDs for host-generated features or occurrences. "
@@ -702,6 +702,14 @@ def _valid_cad_program_output_reference(
         return producer_type == "create_part"
     if output == "sketch_feature":
         return producer_type in {"create_part", "create_program_sketch"}
+    if output == "construction_feature":
+        return producer_type in {
+            "create_spatial_path",
+            "create_helix_path",
+            "create_construction_point",
+            "create_construction_axis",
+            "create_construction_plane",
+        }
     return output == "body_feature" and (
         producer_type in {"create_part", "append_program_pocket"}
         or producer_type == "append_feature"
@@ -727,6 +735,53 @@ def _valid_cad_body_feature_reference(
     return _valid_cad_program_output_reference(
         value, operation_index, operations, "body_feature"
     )
+
+
+def _valid_cad_axis_spec(
+    value: object, operation_index: int, operations: list[dict]
+) -> bool:
+    if not isinstance(value, dict):
+        return False
+    axis_type = value.get("type")
+    if axis_type == "origin_direction":
+        fields = ("origin_mm", "direction")
+        expected = {"type", *fields}
+    elif axis_type == "two_points":
+        fields = ("start_mm", "end_mm")
+        expected = {"type", *fields}
+    elif axis_type == "construction_axis":
+        if set(value) != {"type", "axis"}:
+            return False
+        reference = value["axis"]
+        if isinstance(reference, int) and not isinstance(reference, bool):
+            return 0 < reference <= MAX_U64
+        if not _valid_cad_program_output_reference(
+            reference, operation_index, operations, "construction_feature"
+        ):
+            return False
+        return operations[reference["operation_index"]].get("operation") == "create_construction_axis"
+    elif axis_type == "edge":
+        reference_id = value.get("edge_reference_id")
+        return (
+            set(value) == {"type", "edge_reference_id"}
+            and isinstance(reference_id, str)
+            and len(reference_id) == 64
+            and all(character in "0123456789abcdefABCDEF" for character in reference_id)
+        )
+    else:
+        return False
+    if set(value) != expected:
+        return False
+    try:
+        for field in fields:
+            _validate_vector(value[field], f"provider CAD axis {field}", positive=False)
+    except ProtocolError:
+        return False
+    if axis_type == "origin_direction":
+        delta = value["direction"]
+    else:
+        delta = [value["end_mm"][i] - value["start_mm"][i] for i in range(3)]
+    return math.sqrt(sum(component * component for component in delta)) > 1.0e-9
 
 
 def _validate_cad_edit_program(program: object) -> dict:
@@ -785,28 +840,12 @@ def _validate_cad_edit_program(program: object) -> dict:
                         and 0 < distance <= 1_000_000
                     )
                 elif feature.get("type") == "revolve":
-                    axis_start = feature.get("axis_start_mm")
-                    axis_end = feature.get("axis_end_mm")
                     angle = feature.get("angle_degrees")
                     feature_valid = (
-                        set(feature)
-                        == {"type", "axis_start_mm", "axis_end_mm", "angle_degrees"}
-                        and all(
-                            isinstance(axis, list)
-                            and len(axis) == 2
-                            and all(
-                                isinstance(value, (int, float))
-                                and not isinstance(value, bool)
-                                and math.isfinite(value)
-                                and abs(value) <= 1_000_000
-                                for value in axis
-                            )
-                            for axis in (axis_start, axis_end)
+                        set(feature) == {"type", "axis", "angle_degrees"}
+                        and _valid_cad_axis_spec(
+                            feature.get("axis"), operation_index, operations
                         )
-                        and math.hypot(
-                            axis_end[0] - axis_start[0], axis_end[1] - axis_start[1]
-                        )
-                        > 1.0e-9
                         and isinstance(angle, (int, float))
                         and not isinstance(angle, bool)
                         and math.isfinite(angle)
@@ -1236,6 +1275,37 @@ def _validate_cad_edit_program(program: object) -> dict:
                 abs(value * (instances - 1)) > 1_000_000 for value in operation["step_mm"]
             ):
                 raise ProtocolError("provider CAD linear pattern step is invalid")
+            generated_per_target = instances - 1
+        elif operation_type == "circular_pattern":
+            if set(operation) != {
+                "operation",
+                "selector",
+                "instances",
+                "axis",
+                "angle_step_degrees",
+            }:
+                raise ProtocolError("provider CAD circular pattern contains missing or unknown fields")
+            instances = operation["instances"]
+            angle_step_degrees = operation["angle_step_degrees"]
+            if (
+                not isinstance(instances, int)
+                or isinstance(instances, bool)
+                or not 2 <= instances <= 1_000
+                or not _valid_cad_axis_spec(operation["axis"], operation_index, operations)
+                or not isinstance(angle_step_degrees, (int, float))
+                or isinstance(angle_step_degrees, bool)
+                or not math.isfinite(angle_step_degrees)
+                or abs(angle_step_degrees) > 1_000_000
+                or any(
+                    min(
+                        (angle_step_degrees * instance) % 360,
+                        360 - (angle_step_degrees * instance) % 360,
+                    )
+                    < 0.01
+                    for instance in range(1, instances)
+                )
+            ):
+                raise ProtocolError("provider CAD circular pattern is invalid")
             generated_per_target = instances - 1
         elif operation_type == "mirror":
             if set(operation) != {

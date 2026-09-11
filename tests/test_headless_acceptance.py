@@ -11,6 +11,7 @@ import math
 import os
 from pathlib import Path
 import sys
+import time
 from unittest.mock import patch
 import warnings
 
@@ -321,6 +322,136 @@ def test_real_process_rejects_replayed_response(native_paths):
         with patch.object(session._responses, "get", side_effect=replay):
             with pytest.raises(ProtocolError, match="response id mismatch"):
                 session.capabilities()
+
+
+def test_native_async_verify_reports_progress_reuses_cache_and_cancels(native_paths):
+    with Session(*native_paths) as session:
+        doc = session.new_document()
+        made = doc.box("Async Verify", 10, 20, 30)
+        definition_id, = made["created"]["definition_ids"]
+        feature_id = created_feature(made, "Pad")
+        before = doc.state
+
+        started = doc.start_verify_job()
+        handle = started["job_handle"]
+        assert started["state"] == "running"
+        assert started["source"] == {key: before[key] for key in (
+            "document_id", "revision", "canonical_digest")}
+        assert {key: started["progress"][key] for key in (
+            "total_bodies", "completed_bodies", "reused_bodies")} == {
+                "total_bodies": 1, "completed_bodies": 0, "reused_bodies": 0}
+        assert {key: started["progress"]["active_body"][key] for key in (
+            "definition_id", "feature_id")} == {
+                "definition_id": definition_id, "feature_id": feature_id}
+        assert started["timing"] == {"elapsed_ms": 0, "timeout_ms": 30000}
+        for _ in range(3000):
+            status = doc.verify_job_status(handle)
+            if status["state"] != "running":
+                break
+            time.sleep(0.001)
+        assert status["state"] == "completed", status
+        assert status["progress"]["completed_bodies"] == 1
+        assert status["report"]["complete"] is True
+        assert status["report"]["producers"][0]["feature_id"] == feature_id
+        assert doc.state == before
+
+        cached = doc.start_verify_job()
+        assert cached["progress"] == {
+            "total_bodies": 1, "completed_bodies": 1, "reused_bodies": 1,
+            "active_body": None}
+        for _ in range(100):
+            cached = doc.verify_job_status(cached["job_handle"])
+            if cached["state"] != "running":
+                break
+            time.sleep(0.001)
+        assert cached["state"] == "completed"
+        assert cached["report"]["producers"][0]["render"]["status"] == "current"
+
+        cancellable = doc.start_verify_job()
+        cancelled = doc.cancel_verify_job(cancellable["job_handle"])
+        assert cancelled["state"] == "cancelled"
+        assert doc.verify_job_status(cancellable["job_handle"])["state"] == "cancelled"
+
+        slow = doc.box("Deadline Verify", 11, 21, 31)
+        slow_key = {
+            "definition_id": slow["created"]["definition_ids"][0],
+            "feature_id": created_feature(slow, "Pad"),
+        }
+        before_timeout = doc.state
+        timed_out = doc.start_verify_job(scope=[slow_key], timeout_ms=1)
+        time.sleep(0.002)
+        for _ in range(100):
+            timed_out = doc.verify_job_status(timed_out["job_handle"])
+            if timed_out["state"] != "running":
+                break
+            time.sleep(0.001)
+        assert timed_out["state"] == "timed_out", timed_out
+        assert timed_out["timing"]["timeout_ms"] == 1
+        assert timed_out["timing"]["elapsed_ms"] >= 1
+        assert timed_out["diagnostic"]["code"] == "verify_timeout"
+        assert {key: timed_out["diagnostic"]["active_body"][key] for key in (
+            "definition_id", "feature_id")} == slow_key
+        assert timed_out["diagnostic"]["active_body"]["elapsed_ms"] >= 1
+        assert timed_out["diagnostic"]["completed_bodies"] == 0
+        assert timed_out["diagnostic"]["remaining_bodies"] == 1
+        assert "report" not in timed_out
+        assert doc.state == before_timeout
+
+
+def test_native_async_verify_limits_work_and_report_to_explicit_scope(native_paths):
+    with Session(*native_paths) as session:
+        doc = session.new_document()
+        first = doc.box("Scoped A", 10, 20, 30)
+        second = doc.box("Scoped B", 15, 25, 35)
+        first_key = {
+            "definition_id": first["created"]["definition_ids"][0],
+            "feature_id": created_feature(first, "Pad"),
+        }
+        second_key = {
+            "definition_id": second["created"]["definition_ids"][0],
+            "feature_id": created_feature(second, "Pad"),
+        }
+
+        scoped = doc.start_verify_job(scope=[first_key])
+        assert scoped["scope"] == [first_key]
+        assert {key: scoped["progress"][key] for key in (
+            "total_bodies", "completed_bodies", "reused_bodies")} == {
+                "total_bodies": 1, "completed_bodies": 0, "reused_bodies": 0}
+        assert {key: scoped["progress"]["active_body"][key] for key in (
+            "definition_id", "feature_id")} == first_key
+        for _ in range(3000):
+            scoped = doc.verify_job_status(scoped["job_handle"])
+            if scoped["state"] != "running":
+                break
+            time.sleep(0.001)
+        assert scoped["state"] == "completed", scoped
+        assert scoped["report"]["producers"] == [{
+            "definition_id": first_key["definition_id"],
+            "feature_id": first_key["feature_id"],
+            "render": {"status": "evaluated"},
+            "topology": {"status": "evaluated"},
+        }]
+        assert [(entry["definition_id"], entry["feature_id"])
+                for entry in scoped["report"]["geometry"]] == [
+                    (first_key["definition_id"], first_key["feature_id"])]
+
+        global_job = doc.start_verify_job()
+        assert global_job["scope"] is None
+        assert {key: global_job["progress"][key] for key in (
+            "total_bodies", "completed_bodies", "reused_bodies")} == {
+                "total_bodies": 2, "completed_bodies": 1, "reused_bodies": 1}
+        assert global_job["progress"]["active_body"] is not None
+        for _ in range(3000):
+            global_job = doc.verify_job_status(global_job["job_handle"])
+            if global_job["state"] != "running":
+                break
+            time.sleep(0.001)
+        assert global_job["state"] == "completed", global_job
+        assert {(entry["definition_id"], entry["feature_id"])
+                for entry in global_job["report"]["producers"]} == {
+                    (first_key["definition_id"], first_key["feature_id"]),
+                    (second_key["definition_id"], second_key["feature_id"]),
+                }
 
 
 def test_missing_worker_cannot_claim_exact_evaluation(native_paths, tmp_path):

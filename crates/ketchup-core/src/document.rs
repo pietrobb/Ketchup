@@ -601,6 +601,18 @@ pub enum FeatureKind {
     SpatialPath {
         segments: Vec<SpatialPathSegment>,
     },
+    ConstructionPoint {
+        position_mm: [f64; 3],
+    },
+    ConstructionAxis {
+        origin_mm: [f64; 3],
+        direction: [f64; 3],
+    },
+    ConstructionPlane {
+        origin_mm: [f64; 3],
+        normal: [f64; 3],
+        x_direction: [f64; 3],
+    },
     SplineProfile {
         control_points_mm: Vec<[f64; 2]>,
     },
@@ -896,6 +908,9 @@ impl FeatureKind {
             | Self::Boolean { .. }
             | Self::Sweep { .. }
             | Self::SpatialPath { .. }
+            | Self::ConstructionPoint { .. }
+            | Self::ConstructionAxis { .. }
+            | Self::ConstructionPlane { .. }
             | Self::ImportedExactBody(_)
             | Self::RigidTransform { .. }
             | Self::MeshBody(_)
@@ -910,6 +925,7 @@ impl FeatureKind {
             Self::Workplane(spec) => match &spec.support {
                 WorkplaneSupport::Free | WorkplaneSupport::Principal(_) => BTreeSet::new(),
                 WorkplaneSupport::Offset { base, .. } => [*base].into_iter().collect(),
+                WorkplaneSupport::ConstructionPlane { feature } => [*feature].into_iter().collect(),
                 WorkplaneSupport::PlanarFace { reference, .. } => {
                     [reference.profile_feature_id, reference.producer_feature_id]
                         .into_iter()
@@ -931,6 +947,9 @@ impl FeatureKind {
             Self::Profile { .. }
             | Self::SegmentProfile { .. }
             | Self::SpatialPath { .. }
+            | Self::ConstructionPoint { .. }
+            | Self::ConstructionAxis { .. }
+            | Self::ConstructionPlane { .. }
             | Self::SplineProfile { .. }
             | Self::ImportedExactBody(_)
             | Self::MeshBody(_) => BTreeSet::new(),
@@ -4322,7 +4341,13 @@ impl DocumentStore {
                         &current.snapshot,
                         reference.definition_id,
                     )
-                    .is_ok_and(|request| reference_matches_revolve_request(&reference, &request));
+                    .is_ok_and(|request| reference_matches_revolve_request(&reference, &request))
+                    || ExactBRepGraph::from_snapshot(
+                        &current.snapshot,
+                        reference.definition_id,
+                        reference.producer_feature_id,
+                    )
+                    .is_ok_and(|graph| reference.matches_exact_brep_graph(&graph));
                 if !matches_request {
                     return Err(ReferenceEvidenceError::InvalidLineage);
                 }
@@ -8724,6 +8749,7 @@ pub enum CanonicalError {
     EmptyProductName,
     InvalidTransform,
     InvalidProfile,
+    InvalidConstructionGeometry,
     Sketch(SketchError),
     InvalidStableSubshapeRole,
     SubshapeRolesNotCanonical,
@@ -8858,6 +8884,7 @@ impl CanonicalError {
             Self::EmptyProductName => "canonical.empty_product_name",
             Self::InvalidTransform => "canonical.invalid_transform",
             Self::InvalidProfile => "canonical.invalid_profile",
+            Self::InvalidConstructionGeometry => "canonical.invalid_construction_geometry",
             Self::Sketch(..) => "canonical.sketch",
             Self::InvalidStableSubshapeRole => "canonical.invalid_stable_subshape_role",
             Self::SubshapeRolesNotCanonical => "canonical.subshape_roles_not_canonical",
@@ -9026,7 +9053,7 @@ impl fmt::Display for CanonicalError {
                 formatter.write_str("spline profile requires bounded canonical control points")
             }
             Self::InvalidLoft => {
-                formatter.write_str("loft requires ordered bounded spline-profile sections")
+                formatter.write_str("loft requires ordered bounded closed-profile sections")
             }
             Self::ReservedNodeId => formatter.write_str("node ID zero is reserved"),
             Self::EmptyNodeName => formatter.write_str("node name is empty"),
@@ -9047,6 +9074,8 @@ impl fmt::Display for CanonicalError {
             Self::InvalidProfile => {
                 formatter.write_str("profile must contain finite non-degenerate points")
             }
+            Self::InvalidConstructionGeometry => formatter
+                .write_str("construction geometry must contain finite bounded coordinates"),
             Self::Sketch(error) => write!(formatter, "invalid workplane or sketch: {error}"),
             Self::InvalidStableSubshapeRole => formatter.write_str(
                 "stable subshape role must be a bounded canonical semantic identifier",
@@ -10845,6 +10874,58 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
             }
             Ok(())
         }
+        FeatureKind::ConstructionPoint { position_mm } => {
+            if position_mm.iter().any(|coordinate| {
+                !coordinate.is_finite() || coordinate.abs() > MAX_CANONICAL_ABS_MM
+            }) {
+                return Err(CanonicalError::InvalidConstructionGeometry);
+            }
+            Ok(())
+        }
+        FeatureKind::ConstructionAxis {
+            origin_mm,
+            direction,
+        } => {
+            let direction_length_squared = direction.iter().map(|value| value * value).sum::<f64>();
+            if origin_mm.iter().chain(direction).any(|coordinate| {
+                !coordinate.is_finite() || coordinate.abs() > MAX_CANONICAL_ABS_MM
+            }) || !direction_length_squared.is_finite()
+                || direction_length_squared <= f64::EPSILON
+            {
+                return Err(CanonicalError::InvalidConstructionGeometry);
+            }
+            Ok(())
+        }
+        FeatureKind::ConstructionPlane {
+            origin_mm,
+            normal,
+            x_direction,
+        } => {
+            let normal_length_squared = normal.iter().map(|value| value * value).sum::<f64>();
+            let x_length_squared = x_direction.iter().map(|value| value * value).sum::<f64>();
+            let dot = normal
+                .iter()
+                .zip(x_direction)
+                .map(|(normal, x)| normal * x)
+                .sum::<f64>();
+            if origin_mm
+                .iter()
+                .chain(normal)
+                .chain(x_direction)
+                .any(|coordinate| {
+                    !coordinate.is_finite() || coordinate.abs() > MAX_CANONICAL_ABS_MM
+                })
+                || !normal_length_squared.is_finite()
+                || normal_length_squared <= f64::EPSILON
+                || !x_length_squared.is_finite()
+                || x_length_squared <= f64::EPSILON
+                || !dot.is_finite()
+                || dot.abs() > 1.0e-9 * (normal_length_squared * x_length_squared).sqrt()
+            {
+                return Err(CanonicalError::InvalidConstructionGeometry);
+            }
+            Ok(())
+        }
         FeatureKind::SplineProfile { control_points_mm } => {
             if !is_valid_profile(control_points_mm) || control_points_mm.len() < 4 {
                 return Err(CanonicalError::InvalidSplineProfile);
@@ -11814,10 +11895,10 @@ pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment]) -> bool {
     let total_length = metrics.iter().map(|metric| metric.0).sum::<f64>();
     if !(MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM..=MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM)
         .contains(&total_length)
-        || segments.first().unwrap().start_mm() == segments.last().unwrap().end_mm()
     {
         return false;
     }
+    let closed = segments.first().unwrap().start_mm() == segments.last().unwrap().end_mm();
     if segments
         .windows(2)
         .zip(metrics.windows(2))
@@ -11854,53 +11935,23 @@ pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment]) -> bool {
     {
         return false;
     }
-    let bounds = segments
-        .iter()
-        .map(|segment| {
-            let points = match segment {
-                SpatialPathSegment::Line { start_mm, end_mm } => vec![*start_mm, *end_mm],
-                SpatialPathSegment::CircularArc {
-                    start_mm,
-                    end_mm,
-                    center_mm,
-                    ..
-                } => {
-                    let radius =
-                        length(sub(*start_mm, *center_mm)).max(length(sub(*end_mm, *center_mm)));
-                    return [
-                        center_mm.map(|coordinate| coordinate - radius),
-                        center_mm.map(|coordinate| coordinate + radius),
-                    ];
-                }
-                SpatialPathSegment::CubicBezier {
-                    start_mm,
-                    control_1_mm,
-                    control_2_mm,
-                    end_mm,
-                } => vec![*start_mm, *control_1_mm, *control_2_mm, *end_mm],
-            };
-            [0, 1].map(|bound| {
-                [0, 1, 2].map(|axis| {
-                    points.iter().map(|point| point[axis]).fold(
-                        if bound == 0 {
-                            f64::INFINITY
-                        } else {
-                            f64::NEG_INFINITY
-                        },
-                        if bound == 0 { f64::min } else { f64::max },
-                    )
-                })
-            })
-        })
-        .collect::<Vec<_>>();
-    !(0..bounds.len()).any(|left| {
-        (left + 2..bounds.len()).any(|right| {
-            [0, 1, 2].into_iter().all(|axis| {
-                bounds[left][0][axis] <= bounds[right][1][axis] + PROFILE_EPSILON_MM
-                    && bounds[right][0][axis] <= bounds[left][1][axis] + PROFILE_EPSILON_MM
-            })
-        })
-    })
+    if closed {
+        let last = segments.last().unwrap();
+        let first = segments.first().unwrap();
+        let outgoing = metrics.last().unwrap().2;
+        let incoming = metrics.first().unwrap().1;
+        if !join_is_separated(last, first, outgoing)
+            || dot(outgoing, incoming) < 1.0 - 1.0e-9
+            || length(cross(outgoing, incoming)) > 1.0e-9
+        {
+            return false;
+        }
+    }
+    // World-axis AABB overlap is only a broad-phase candidate, not proof that two
+    // spatial curves intersect. Arbitrarily oriented helices routinely overlap in
+    // all three projected intervals while remaining disjoint. The exact worker
+    // performs the authoritative edge-to-edge distance test before any sweep.
+    true
 }
 
 fn is_valid_segment_profile(segments: &[ProfileSegment], closed: bool) -> bool {
@@ -12190,7 +12241,8 @@ fn clone_definition_and_repoint(
                 let mut cloned = spec.clone();
                 match &mut cloned.support {
                     WorkplaneSupport::Free | WorkplaneSupport::Principal(_) => {}
-                    WorkplaneSupport::Offset { base, .. } => {
+                    WorkplaneSupport::Offset { base, .. }
+                    | WorkplaneSupport::ConstructionPlane { feature: base } => {
                         *base = *mapping.get(base).ok_or(CanonicalError::InvalidFeatureMap)?;
                     }
                     WorkplaneSupport::PlanarFace { .. } => {
@@ -12215,6 +12267,25 @@ fn clone_definition_and_repoint(
             },
             FeatureKind::SpatialPath { segments } => FeatureKind::SpatialPath {
                 segments: segments.clone(),
+            },
+            FeatureKind::ConstructionPoint { position_mm } => FeatureKind::ConstructionPoint {
+                position_mm: *position_mm,
+            },
+            FeatureKind::ConstructionAxis {
+                origin_mm,
+                direction,
+            } => FeatureKind::ConstructionAxis {
+                origin_mm: *origin_mm,
+                direction: *direction,
+            },
+            FeatureKind::ConstructionPlane {
+                origin_mm,
+                normal,
+                x_direction,
+            } => FeatureKind::ConstructionPlane {
+                origin_mm: *origin_mm,
+                normal: *normal,
+                x_direction: *x_direction,
             },
             FeatureKind::SplineProfile { control_points_mm } => FeatureKind::SplineProfile {
                 control_points_mm: control_points_mm.clone(),
@@ -12641,7 +12712,8 @@ fn remap_exact_solid_tool_feature_kind(
             let mut cloned = spec.clone();
             match &mut cloned.support {
                 WorkplaneSupport::Free | WorkplaneSupport::Principal(_) => {}
-                WorkplaneSupport::Offset { base, .. } => *base = mapped(base)?,
+                WorkplaneSupport::Offset { base, .. }
+                | WorkplaneSupport::ConstructionPlane { feature: base } => *base = mapped(base)?,
                 WorkplaneSupport::PlanarFace { .. } => {
                     return Err(CanonicalError::InvalidSolidToolPlan);
                 }
@@ -12662,6 +12734,25 @@ fn remap_exact_solid_tool_feature_kind(
         }),
         FeatureKind::SpatialPath { segments } => Ok(FeatureKind::SpatialPath {
             segments: segments.clone(),
+        }),
+        FeatureKind::ConstructionPoint { position_mm } => Ok(FeatureKind::ConstructionPoint {
+            position_mm: *position_mm,
+        }),
+        FeatureKind::ConstructionAxis {
+            origin_mm,
+            direction,
+        } => Ok(FeatureKind::ConstructionAxis {
+            origin_mm: *origin_mm,
+            direction: *direction,
+        }),
+        FeatureKind::ConstructionPlane {
+            origin_mm,
+            normal,
+            x_direction,
+        } => Ok(FeatureKind::ConstructionPlane {
+            origin_mm: *origin_mm,
+            normal: *normal,
+            x_direction: *x_direction,
         }),
         FeatureKind::SplineProfile { control_points_mm } => Ok(FeatureKind::SplineProfile {
             control_points_mm: control_points_mm.clone(),
@@ -15119,12 +15210,17 @@ fn validate_product_with_drawing_sources(
                         .iter()
                         .position(|candidate| *candidate == section.profile)
                         .is_some_and(|position| position < feature_position);
+                    let valid_profile = match &profile.kind {
+                        FeatureKind::SplineProfile { control_points_mm } => {
+                            control_points_mm.len() <= MAX_EXACT_BREP_LOFT_CONTROL_POINTS
+                        }
+                        FeatureKind::Sketch(sketch) => sketch
+                            .solved_regions()
+                            .is_ok_and(|regions| regions.len() == 1),
+                        _ => false,
+                    };
                     if profile.definition_id != feature.definition_id
-                        || !matches!(
-                            &profile.kind,
-                            FeatureKind::SplineProfile { control_points_mm }
-                                if control_points_mm.len() <= MAX_EXACT_BREP_LOFT_CONTROL_POINTS
-                        )
+                        || !valid_profile
                         || !source_precedes_loft
                     {
                         return Err(CanonicalError::InvalidLoft);
@@ -15274,6 +15370,42 @@ fn validate_product_with_drawing_sources(
                         ));
                     }
                 }
+                WorkplaneSupport::ConstructionPlane { feature: support } => {
+                    let support_feature = product.features.get(support).ok_or(
+                        CanonicalError::Sketch(SketchError::MissingWorkplaneSupport(*support)),
+                    )?;
+                    let FeatureKind::ConstructionPlane {
+                        origin_mm,
+                        normal,
+                        x_direction,
+                    } = &support_feature.kind
+                    else {
+                        return Err(CanonicalError::Sketch(
+                            SketchError::MissingWorkplaneSupport(*support),
+                        ));
+                    };
+                    let feature_position = definition
+                        .feature_ids
+                        .iter()
+                        .position(|candidate| *candidate == feature.id)
+                        .expect("validated definition contains feature");
+                    let support_precedes = definition
+                        .feature_ids
+                        .iter()
+                        .position(|candidate| *candidate == *support)
+                        .is_some_and(|position| position < feature_position);
+                    let expected_frame =
+                        WorkplaneFrame::from_construction_plane(*origin_mm, *normal, *x_direction)
+                            .map_err(CanonicalError::Sketch)?;
+                    if support_feature.definition_id != feature.definition_id
+                        || !support_precedes
+                        || spec.frame != expected_frame
+                    {
+                        return Err(CanonicalError::Sketch(SketchError::WorkplaneCycle(
+                            feature.id,
+                        )));
+                    }
+                }
                 WorkplaneSupport::Offset { base, distance } => {
                     let base_feature = product.features.get(base).ok_or(CanonicalError::Sketch(
                         SketchError::MissingWorkplaneSupport(*base),
@@ -15333,6 +15465,9 @@ fn validate_product_with_drawing_sources(
             FeatureKind::Profile { .. }
             | FeatureKind::SegmentProfile { .. }
             | FeatureKind::SpatialPath { .. }
+            | FeatureKind::ConstructionPoint { .. }
+            | FeatureKind::ConstructionAxis { .. }
+            | FeatureKind::ConstructionPlane { .. }
             | FeatureKind::SplineProfile { .. } => {}
         }
     }
@@ -16457,7 +16592,8 @@ fn authoritative_dependencies(
                 match kind {
                     FeatureKind::Workplane(spec) => match &spec.support {
                         WorkplaneSupport::Free | WorkplaneSupport::Principal(_) => {}
-                        WorkplaneSupport::Offset { base, .. } => {
+                        WorkplaneSupport::Offset { base, .. }
+                        | WorkplaneSupport::ConstructionPlane { feature: base } => {
                             add_feature_dependency_closure(snapshot, *base, &mut dependencies);
                         }
                         WorkplaneSupport::PlanarFace { reference, .. } => {
@@ -16530,6 +16666,9 @@ fn authoritative_dependencies(
                     FeatureKind::Profile { .. }
                     | FeatureKind::SegmentProfile { .. }
                     | FeatureKind::SpatialPath { .. }
+                    | FeatureKind::ConstructionPoint { .. }
+                    | FeatureKind::ConstructionAxis { .. }
+                    | FeatureKind::ConstructionPlane { .. }
                     | FeatureKind::SplineProfile { .. }
                     | FeatureKind::ImportedExactBody(_)
                     | FeatureKind::MeshBody(_) => {}
@@ -17173,7 +17312,8 @@ fn add_feature_dependency_closure(
         match feature.kind() {
             FeatureKind::Workplane(spec) => match &spec.support {
                 WorkplaneSupport::Free | WorkplaneSupport::Principal(_) => {}
-                WorkplaneSupport::Offset { base, .. } => {
+                WorkplaneSupport::Offset { base, .. }
+                | WorkplaneSupport::ConstructionPlane { feature: base } => {
                     add_feature_dependency_closure(snapshot, *base, dependencies);
                 }
                 WorkplaneSupport::PlanarFace { reference, .. } => {
@@ -17231,6 +17371,9 @@ fn add_feature_dependency_closure(
             FeatureKind::Profile { .. }
             | FeatureKind::SegmentProfile { .. }
             | FeatureKind::SpatialPath { .. }
+            | FeatureKind::ConstructionPoint { .. }
+            | FeatureKind::ConstructionAxis { .. }
+            | FeatureKind::ConstructionPlane { .. }
             | FeatureKind::SplineProfile { .. }
             | FeatureKind::ImportedExactBody(_)
             | FeatureKind::MeshBody(_) => {}

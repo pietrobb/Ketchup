@@ -730,6 +730,10 @@ impl StableDigest {
                         self.byte(3);
                         self.body_subshape_reference(reference);
                     }
+                    WorkplaneSupport::ConstructionPlane { feature } => {
+                        self.byte(5);
+                        self.u64(feature.0);
+                    }
                 }
                 if !matches!(&spec.support, WorkplaneSupport::PlanarFace { .. }) {
                     for coordinate in spec
@@ -961,6 +965,31 @@ impl StableDigest {
                             }
                         }
                     }
+                }
+            }
+            FeatureKind::ConstructionPoint { position_mm } => {
+                self.byte(26);
+                for coordinate in position_mm {
+                    self.u64(coordinate.to_bits());
+                }
+            }
+            FeatureKind::ConstructionAxis {
+                origin_mm,
+                direction,
+            } => {
+                self.byte(27);
+                for coordinate in origin_mm.iter().chain(direction) {
+                    self.u64(coordinate.to_bits());
+                }
+            }
+            FeatureKind::ConstructionPlane {
+                origin_mm,
+                normal,
+                x_direction,
+            } => {
+                self.byte(28);
+                for coordinate in origin_mm.iter().chain(normal).chain(x_direction) {
+                    self.u64(coordinate.to_bits());
                 }
             }
             FeatureKind::SpatialPath { segments } => {
@@ -2015,6 +2044,10 @@ impl StableDigest {
                             support: WorkplaneSupport::Offset { base, .. },
                             ..
                         }) if base == id => Some(feature.id),
+                        FeatureKind::Workplane(WorkplaneSpec {
+                            support: WorkplaneSupport::ConstructionPlane { feature: support },
+                            ..
+                        }) if support == id => Some(feature.id),
                         FeatureKind::Workplane(WorkplaneSpec {
                             support: WorkplaneSupport::PlanarFace { ref reference, .. },
                             ..

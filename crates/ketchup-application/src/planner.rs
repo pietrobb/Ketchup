@@ -9,19 +9,23 @@ use crate::transforms::{
     world_plane_mirror_transform,
 };
 use ketchup_core::assistant_sidecar::{
-    AssistantCadBodyFeature, AssistantCadDeletePolicy, AssistantCadEditOperation,
-    AssistantCadEditProgram, AssistantCadEntitySelector, AssistantCadFeatureReference,
-    AssistantCadProgramFeatureOutput, AssistantCadProgramFeatureReference,
-    AssistantRejectionDiagnostic, AssistantRejectionPhase,
+    AssistantAxisSpec, AssistantCadBodyFeature, AssistantCadDeletePolicy,
+    AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
+    AssistantCadFeatureReference, AssistantCadPartFeature, AssistantCadProgramFeatureOutput,
+    AssistantCadProgramFeatureReference, AssistantRejectionDiagnostic, AssistantRejectionPhase,
+    validated_spatial_path_segments,
 };
 use ketchup_core::document::{
     CanonicalCommand, CanonicalError, ClassificationCategoryId, ClassificationDimensionId,
-    CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, NodeId, OccurrenceId,
-    Snapshot, Transform,
+    CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind, NodeId,
+    OccurrenceId, ProfileSegment, Snapshot, SpatialPathSegment, Transform,
 };
 use ketchup_core::exact_brep_graph::ExactBRepGraph;
-use ketchup_core::exact_product::{ExactPlanarOffsetRequest, ExactResultRegistry};
+use ketchup_core::exact_product::{
+    ExactBodyPackage, ExactPlanarOffsetRequest, ExactResultRegistry,
+};
 use ketchup_core::sketch::SketchConstraintId;
+use ketchup_core::topology::TopologicalElementKind;
 use ketchup_interaction::Vec3;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -66,6 +70,7 @@ fn resolve_program_feature_reference(
     reference: AssistantCadFeatureReference,
     original_snapshot: &Snapshot,
     operation_outputs: &BTreeMap<(usize, AssistantCadProgramFeatureOutput), u64>,
+    expected_output: AssistantCadProgramFeatureOutput,
     operation: &str,
 ) -> AssistantPlanningResult<u64> {
     match reference {
@@ -80,18 +85,15 @@ fn resolve_program_feature_reference(
             &format!("feature:{id}"),
         )),
         AssistantCadFeatureReference::ProgramOutput(reference) => operation_outputs
-            .get(&(
-                reference.operation_index as usize,
-                AssistantCadProgramFeatureOutput::BodyFeature,
-            ))
+            .get(&(reference.operation_index as usize, expected_output))
             .copied()
             .ok_or_else(|| {
                 assistant_planning_rejection(
                     "planning.cad_program_feature_reference_unavailable",
                     operation,
                     &format!("operation:{}", reference.operation_index),
-                    "The referenced earlier operation did not produce an available body feature.",
-                    "Reference the body_feature output of an earlier create_part or append_feature operation.",
+                    "The referenced earlier operation did not produce the required typed feature.",
+                    "Reference a compatible typed output from an earlier operation in this CAD program.",
                 )
             }),
     }
@@ -118,6 +120,124 @@ fn resolve_program_output_reference(
         })
 }
 
+fn resolve_assistant_axis_spec(
+    axis: &AssistantAxisSpec,
+    original_snapshot: &Snapshot,
+    topology_results: &ExactResultRegistry,
+    operation_outputs: &BTreeMap<(usize, AssistantCadProgramFeatureOutput), u64>,
+    operations: &[AssistantCadEditOperation],
+    operation: &str,
+) -> AssistantPlanningResult<([f64; 3], [f64; 3])> {
+    if let AssistantAxisSpec::Edge { edge_reference_id } = axis {
+        let packages = topology_results
+            .body_values(original_snapshot)
+            .map_err(|_| {
+                assistant_planning_rejection(
+                    "planning.cad_axis_reference_unavailable",
+                    operation,
+                    "axis.edge_reference_id",
+                    "The current exact topology evidence is unavailable.",
+                    "Evaluate the current document and use a listed line or circle edge reference.",
+                )
+            })?;
+        let mut matches = Vec::new();
+        for package in packages.into_values() {
+            let ExactBodyPackage::Graph(package) = package.as_ref() else {
+                continue;
+            };
+            for evidence in &package.edge_evidence {
+                let reference = package
+                    .topological_references
+                    .iter()
+                    .filter(|reference| reference.kind == TopologicalElementKind::Edge)
+                    .nth(evidence.edge_ordinal as usize);
+                if reference.is_some_and(|reference| {
+                    reference.lineage_digest == *edge_reference_id
+                        && reference.document_id == original_snapshot.document_id()
+                        && reference.source_feature_id == reference.producer_feature_id
+                        && reference.has_valid_lineage()
+                }) && matches!(evidence.curve_kind.as_str(), "line" | "circle")
+                    && let (Some(origin_mm), Some(direction)) =
+                        (evidence.axis_origin_mm, evidence.unit_axis_direction)
+                {
+                    matches.push((origin_mm, direction));
+                }
+            }
+        }
+        let [(origin_mm, direction)] = matches.as_slice() else {
+            return Err(assistant_planning_rejection(
+                "planning.cad_axis_reference_unavailable",
+                operation,
+                "axis.edge_reference_id",
+                "The edge reference is not one unique current line or circle edge with exact axis evidence.",
+                "Refresh exact edge inspection and copy one current line or circle reference_id.",
+            ));
+        };
+        return Ok((*origin_mm, *direction));
+    }
+    let AssistantAxisSpec::ConstructionAxis { axis } = axis else {
+        return axis.origin_and_direction().map_err(|error| {
+            assistant_planning_rejection(
+                "planning.cad_axis_invalid",
+                operation,
+                "axis",
+                error,
+                "Use two distinct bounded points, a finite non-zero origin and direction, or one current exact edge reference.",
+            )
+        });
+    };
+    let (feature_id, construction_axis) = match axis {
+        AssistantCadFeatureReference::Existing(id) => {
+            let feature_id = FeatureId(*id);
+            let feature = original_snapshot.feature(feature_id).ok_or_else(|| {
+                assistant_canonical_rejection(
+                    CanonicalError::FeatureNotFound(feature_id),
+                    operation,
+                    &format!("feature:{id}"),
+                )
+            })?;
+            (feature_id, feature.kind())
+        }
+        AssistantCadFeatureReference::ProgramOutput(reference) => {
+            let id = resolve_program_output_reference(
+                *reference,
+                operation_outputs,
+                AssistantCadProgramFeatureOutput::ConstructionFeature,
+                operation,
+            )?;
+            let Some(AssistantCadEditOperation::CreateConstructionAxis {
+                origin_mm,
+                direction,
+                ..
+            }) = operations.get(reference.operation_index as usize)
+            else {
+                return Err(assistant_planning_rejection(
+                    "planning.cad_axis_reference_invalid",
+                    operation,
+                    &format!("feature:{id}"),
+                    "The referenced construction output is not an axis.",
+                    "Reference a ConstructionFeature output from create_construction_axis.",
+                ));
+            };
+            return Ok((*origin_mm, *direction));
+        }
+    };
+    let FeatureKind::ConstructionAxis {
+        origin_mm,
+        direction,
+    } = construction_axis
+    else {
+        return Err(assistant_planning_rejection(
+            "planning.cad_axis_reference_invalid",
+            operation,
+            &format!("feature:{}", feature_id.0),
+            "The referenced feature is not a construction axis.",
+            "Reference an existing ConstructionAxis feature.",
+        ));
+    };
+    Ok((*origin_mm, *direction))
+}
+
 fn resolve_program_feature_references(
     feature: &AssistantCadBodyFeature,
     original_snapshot: &Snapshot,
@@ -135,12 +255,14 @@ fn resolve_program_feature_references(
             *target_feature_id,
             original_snapshot,
             operation_outputs,
+            AssistantCadProgramFeatureOutput::BodyFeature,
             operation,
         )?;
         let tool = resolve_program_feature_reference(
             *tool_feature_id,
             original_snapshot,
             operation_outputs,
+            AssistantCadProgramFeatureOutput::BodyFeature,
             operation,
         )?;
         if target == tool {
@@ -155,7 +277,141 @@ fn resolve_program_feature_references(
         *target_feature_id = target.into();
         *tool_feature_id = tool.into();
     }
+    if let AssistantCadBodyFeature::Loft { sections } = &mut feature {
+        for section in sections {
+            section.profile_feature_id = resolve_program_feature_reference(
+                section.profile_feature_id,
+                original_snapshot,
+                operation_outputs,
+                AssistantCadProgramFeatureOutput::SketchFeature,
+                operation,
+            )?
+            .into();
+        }
+    }
     Ok(feature)
+}
+
+fn plan_assistant_construction_creation(
+    name: &str,
+    feature_suffix: &str,
+    feature_kind: FeatureKind,
+    next_definition: &mut Option<u64>,
+    next_feature: &mut Option<u64>,
+    next_occurrence: &mut Option<u64>,
+    operation: &str,
+    document_target: &str,
+) -> AssistantPlanningResult<(Vec<CanonicalCommand>, DefinitionId, FeatureId)> {
+    let mut exhausted =
+        || assistant_canonical_rejection(CanonicalError::IdExhausted, operation, document_target);
+    let definition_id = next_definition
+        .map(DefinitionId)
+        .ok_or_else(&mut exhausted)?;
+    *next_definition = definition_id.0.checked_add(1);
+    let construction_feature_id = next_feature.map(FeatureId).ok_or_else(&mut exhausted)?;
+    *next_feature = construction_feature_id.0.checked_add(1);
+    let occurrence_id = next_occurrence
+        .map(OccurrenceId)
+        .ok_or_else(&mut exhausted)?;
+    *next_occurrence = occurrence_id.0.checked_add(1);
+    Ok((
+        vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition_id,
+                name: name.to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: construction_feature_id,
+                definition_id,
+                name: format!("{name} {feature_suffix}"),
+                kind: feature_kind,
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: occurrence_id,
+                definition_id,
+                name: name.to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ],
+        definition_id,
+        construction_feature_id,
+    ))
+}
+
+fn plan_assistant_helix_thread_creation(
+    name: &str,
+    profile_segments: Vec<ProfileSegment>,
+    path_segments: Vec<SpatialPathSegment>,
+    next_definition: &mut Option<u64>,
+    next_feature: &mut Option<u64>,
+    next_occurrence: &mut Option<u64>,
+    operation: &str,
+    document_target: &str,
+) -> AssistantPlanningResult<(Vec<CanonicalCommand>, DefinitionId, FeatureId)> {
+    let mut exhausted =
+        || assistant_canonical_rejection(CanonicalError::IdExhausted, operation, document_target);
+    let definition_id = next_definition
+        .map(DefinitionId)
+        .ok_or_else(&mut exhausted)?;
+    *next_definition = definition_id.0.checked_add(1);
+    let profile_feature_id = next_feature.map(FeatureId).ok_or_else(&mut exhausted)?;
+    *next_feature = profile_feature_id.0.checked_add(1);
+    let path_feature_id = next_feature.map(FeatureId).ok_or_else(&mut exhausted)?;
+    *next_feature = path_feature_id.0.checked_add(1);
+    let body_feature_id = next_feature.map(FeatureId).ok_or_else(&mut exhausted)?;
+    *next_feature = body_feature_id.0.checked_add(1);
+    let occurrence_id = next_occurrence
+        .map(OccurrenceId)
+        .ok_or_else(&mut exhausted)?;
+    *next_occurrence = occurrence_id.0.checked_add(1);
+    Ok((
+        vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition_id,
+                name: name.to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: profile_feature_id,
+                definition_id,
+                name: format!("{name} profile"),
+                kind: FeatureKind::SegmentProfile {
+                    segments: profile_segments,
+                    closed: true,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: path_feature_id,
+                definition_id,
+                name: format!("{name} path"),
+                kind: FeatureKind::SpatialPath {
+                    segments: path_segments,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: body_feature_id,
+                definition_id,
+                name: format!("{name} body"),
+                kind: FeatureKind::Sweep {
+                    profile: profile_feature_id,
+                    path: path_feature_id,
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: occurrence_id,
+                definition_id,
+                name: name.to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ],
+        definition_id,
+        body_feature_id,
+    ))
 }
 
 /// Plans against the current document and explicit host-provided context without mutation.
@@ -242,6 +498,19 @@ pub fn plan_assistant_cad_edit_program(
             AssistantCadEditOperation::CreateSketch { .. } => "create_sketch",
             AssistantCadEditOperation::CreateProgramSketch { .. } => "create_program_sketch",
             AssistantCadEditOperation::CreatePart { .. } => "create_part",
+            AssistantCadEditOperation::CreateSpatialPath { .. } => "create_spatial_path",
+            AssistantCadEditOperation::CreateHelixPath { .. } => "create_helix_path",
+            AssistantCadEditOperation::CreateConstructionPoint { .. } => {
+                "create_construction_point"
+            }
+            AssistantCadEditOperation::CreateConstructionAxis { .. } => "create_construction_axis",
+            AssistantCadEditOperation::CreateConstructionPlane { .. } => {
+                "create_construction_plane"
+            }
+            AssistantCadEditOperation::CreateHelix { .. } => "create_helix",
+            AssistantCadEditOperation::CreateThread { .. } => "create_thread",
+            AssistantCadEditOperation::FilletEdges { .. } => "fillet_edges",
+            AssistantCadEditOperation::ChamferEdges { .. } => "chamfer_edges",
             AssistantCadEditOperation::AppendFeature { .. } => "append_feature",
             AssistantCadEditOperation::AppendProgramPocket { .. } => "append_program_pocket",
             AssistantCadEditOperation::SetDimension { .. } => "set_dimension",
@@ -257,12 +526,101 @@ pub fn plan_assistant_cad_edit_program(
             AssistantCadEditOperation::CreateEvaluatorInput { .. } => "create_evaluator_input",
             AssistantCadEditOperation::Copy { .. } => "copy_occurrence",
             AssistantCadEditOperation::LinearPattern { .. } => "linear_pattern_occurrence",
+            AssistantCadEditOperation::CircularPattern { .. } => "circular_pattern_occurrence",
             AssistantCadEditOperation::Mirror { .. } => "mirror_occurrence",
         };
+        let normalized_operation = match operation {
+            AssistantCadEditOperation::CreatePart {
+                feature: AssistantCadPartFeature::Revolve { axis, .. },
+                ..
+            } => {
+                let (origin_mm, direction) = resolve_assistant_axis_spec(
+                    axis,
+                    &snapshot,
+                    topology_results,
+                    &operation_outputs,
+                    &program.operations,
+                    operation_name,
+                )?;
+                let mut resolved = operation.clone();
+                let AssistantCadEditOperation::CreatePart {
+                    feature: AssistantCadPartFeature::Revolve { axis, .. },
+                    ..
+                } = &mut resolved
+                else {
+                    unreachable!("matched Revolve part")
+                };
+                *axis = AssistantAxisSpec::OriginDirection {
+                    origin_mm,
+                    direction,
+                };
+                Some(resolved)
+            }
+            AssistantCadEditOperation::CircularPattern { axis, .. } => {
+                let (origin_mm, direction) = resolve_assistant_axis_spec(
+                    axis,
+                    &snapshot,
+                    topology_results,
+                    &operation_outputs,
+                    &program.operations,
+                    operation_name,
+                )?;
+                let mut resolved = operation.clone();
+                let AssistantCadEditOperation::CircularPattern { axis, .. } = &mut resolved else {
+                    unreachable!("matched circular pattern")
+                };
+                *axis = AssistantAxisSpec::OriginDirection {
+                    origin_mm,
+                    direction,
+                };
+                Some(resolved)
+            }
+            AssistantCadEditOperation::FilletEdges {
+                definition_id,
+                name,
+                target_feature_id,
+                edge_reference_ids,
+                radius_mm,
+            } => Some(AssistantCadEditOperation::AppendFeature {
+                definition_id: *definition_id,
+                name: name.clone(),
+                feature: AssistantCadBodyFeature::TopologyFillet {
+                    target_feature_id: *target_feature_id,
+                    edge_reference_ids: edge_reference_ids.clone(),
+                    radius_mm: *radius_mm,
+                },
+            }),
+            AssistantCadEditOperation::ChamferEdges {
+                definition_id,
+                name,
+                target_feature_id,
+                edge_reference_ids,
+                distance_mm,
+            } => Some(AssistantCadEditOperation::AppendFeature {
+                definition_id: *definition_id,
+                name: name.clone(),
+                feature: AssistantCadBodyFeature::TopologyChamfer {
+                    target_feature_id: *target_feature_id,
+                    edge_reference_ids: edge_reference_ids.clone(),
+                    distance_mm: *distance_mm,
+                },
+            }),
+            _ => None,
+        };
+        let operation = normalized_operation.as_ref().unwrap_or(operation);
         let selector = match operation {
             AssistantCadEditOperation::CreateSketch { .. }
             | AssistantCadEditOperation::CreateProgramSketch { .. }
             | AssistantCadEditOperation::CreatePart { .. }
+            | AssistantCadEditOperation::CreateSpatialPath { .. }
+            | AssistantCadEditOperation::CreateHelixPath { .. }
+            | AssistantCadEditOperation::CreateConstructionPoint { .. }
+            | AssistantCadEditOperation::CreateConstructionAxis { .. }
+            | AssistantCadEditOperation::CreateConstructionPlane { .. }
+            | AssistantCadEditOperation::CreateHelix { .. }
+            | AssistantCadEditOperation::CreateThread { .. }
+            | AssistantCadEditOperation::FilletEdges { .. }
+            | AssistantCadEditOperation::ChamferEdges { .. }
             | AssistantCadEditOperation::AppendFeature { .. }
             | AssistantCadEditOperation::AppendProgramPocket { .. }
             | AssistantCadEditOperation::SetDimension { .. }
@@ -274,6 +632,7 @@ pub fn plan_assistant_cad_edit_program(
             | AssistantCadEditOperation::SetOccurrenceClassification { selector, .. }
             | AssistantCadEditOperation::Copy { selector, .. }
             | AssistantCadEditOperation::LinearPattern { selector, .. }
+            | AssistantCadEditOperation::CircularPattern { selector, .. }
             | AssistantCadEditOperation::Mirror { selector, .. } => Some(selector),
         };
         let targets = selector.map_or_else(
@@ -358,6 +717,321 @@ pub fn plan_assistant_cad_edit_program(
                 }
                 commands.extend(creation_commands);
             }
+            AssistantCadEditOperation::CreateSpatialPath { name, segments } => {
+                let path_segments = validated_spatial_path_segments(segments).map_err(|error| {
+                    assistant_planning_rejection(
+                        "planning.cad_spatial_path_invalid",
+                        operation_name,
+                        &document_target,
+                        error,
+                        "Use one to 64 finite, connected, non-degenerate 3D line, circular-arc, or cubic-Bezier segments.",
+                    )
+                })?;
+                let (creation_commands, definition_id, feature_id) =
+                    plan_assistant_construction_creation(
+                        name,
+                        "path",
+                        FeatureKind::SpatialPath {
+                            segments: path_segments,
+                        },
+                        &mut next_definition,
+                        &mut next_feature,
+                        &mut next_occurrence,
+                        operation_name,
+                        &document_target,
+                    )?;
+                operation_outputs.insert(
+                    (
+                        operation_index,
+                        AssistantCadProgramFeatureOutput::Definition,
+                    ),
+                    definition_id.0,
+                );
+                operation_outputs.insert(
+                    (
+                        operation_index,
+                        AssistantCadProgramFeatureOutput::ConstructionFeature,
+                    ),
+                    feature_id.0,
+                );
+                commands.extend(creation_commands);
+            }
+            AssistantCadEditOperation::CreateHelixPath { name, parameters } => {
+                let axis = resolve_assistant_axis_spec(
+                    &parameters.axis,
+                    &snapshot,
+                    topology_results,
+                    &operation_outputs,
+                    &program.operations,
+                    operation_name,
+                )?;
+                let path_segments =
+                    parameters
+                        .spatial_path_segments_for_axis(axis)
+                        .map_err(|error| {
+                            assistant_planning_rejection(
+                                "planning.cad_helix_path_invalid",
+                                operation_name,
+                                &document_target,
+                                error,
+                                "Use finite bounded Helix parameters and a non-zero 3D axis.",
+                            )
+                        })?;
+                let (creation_commands, definition_id, feature_id) =
+                    plan_assistant_construction_creation(
+                        name,
+                        "path",
+                        FeatureKind::SpatialPath {
+                            segments: path_segments,
+                        },
+                        &mut next_definition,
+                        &mut next_feature,
+                        &mut next_occurrence,
+                        operation_name,
+                        &document_target,
+                    )?;
+                operation_outputs.insert(
+                    (
+                        operation_index,
+                        AssistantCadProgramFeatureOutput::Definition,
+                    ),
+                    definition_id.0,
+                );
+                operation_outputs.insert(
+                    (
+                        operation_index,
+                        AssistantCadProgramFeatureOutput::ConstructionFeature,
+                    ),
+                    feature_id.0,
+                );
+                commands.extend(creation_commands);
+            }
+            AssistantCadEditOperation::CreateConstructionPoint { name, position_mm } => {
+                let (creation_commands, definition_id, feature_id) =
+                    plan_assistant_construction_creation(
+                        name,
+                        "point",
+                        FeatureKind::ConstructionPoint {
+                            position_mm: *position_mm,
+                        },
+                        &mut next_definition,
+                        &mut next_feature,
+                        &mut next_occurrence,
+                        operation_name,
+                        &document_target,
+                    )?;
+                operation_outputs.insert(
+                    (
+                        operation_index,
+                        AssistantCadProgramFeatureOutput::Definition,
+                    ),
+                    definition_id.0,
+                );
+                operation_outputs.insert(
+                    (
+                        operation_index,
+                        AssistantCadProgramFeatureOutput::ConstructionFeature,
+                    ),
+                    feature_id.0,
+                );
+                commands.extend(creation_commands);
+            }
+            AssistantCadEditOperation::CreateConstructionAxis {
+                name,
+                origin_mm,
+                direction,
+            } => {
+                let (creation_commands, definition_id, feature_id) =
+                    plan_assistant_construction_creation(
+                        name,
+                        "axis",
+                        FeatureKind::ConstructionAxis {
+                            origin_mm: *origin_mm,
+                            direction: *direction,
+                        },
+                        &mut next_definition,
+                        &mut next_feature,
+                        &mut next_occurrence,
+                        operation_name,
+                        &document_target,
+                    )?;
+                operation_outputs.insert(
+                    (
+                        operation_index,
+                        AssistantCadProgramFeatureOutput::Definition,
+                    ),
+                    definition_id.0,
+                );
+                operation_outputs.insert(
+                    (
+                        operation_index,
+                        AssistantCadProgramFeatureOutput::ConstructionFeature,
+                    ),
+                    feature_id.0,
+                );
+                commands.extend(creation_commands);
+            }
+            AssistantCadEditOperation::CreateConstructionPlane {
+                name,
+                origin_mm,
+                normal,
+                x_direction,
+            } => {
+                let (creation_commands, definition_id, feature_id) =
+                    plan_assistant_construction_creation(
+                        name,
+                        "plane",
+                        FeatureKind::ConstructionPlane {
+                            origin_mm: *origin_mm,
+                            normal: *normal,
+                            x_direction: *x_direction,
+                        },
+                        &mut next_definition,
+                        &mut next_feature,
+                        &mut next_occurrence,
+                        operation_name,
+                        &document_target,
+                    )?;
+                operation_outputs.insert(
+                    (
+                        operation_index,
+                        AssistantCadProgramFeatureOutput::Definition,
+                    ),
+                    definition_id.0,
+                );
+                operation_outputs.insert(
+                    (
+                        operation_index,
+                        AssistantCadProgramFeatureOutput::ConstructionFeature,
+                    ),
+                    feature_id.0,
+                );
+                commands.extend(creation_commands);
+            }
+            AssistantCadEditOperation::CreateHelix { name, parameters } => {
+                let axis = resolve_assistant_axis_spec(
+                    &parameters.axis,
+                    &snapshot,
+                    topology_results,
+                    &operation_outputs,
+                    &program.operations,
+                    operation_name,
+                )?;
+                let path_segments =
+                    parameters
+                        .spatial_path_segments_for_axis(axis)
+                        .map_err(|error| {
+                            assistant_planning_rejection(
+                                "planning.cad_helix_invalid",
+                                operation_name,
+                                &document_target,
+                                error,
+                                "Use finite bounded Helix parameters and a non-zero 3D axis.",
+                            )
+                        })?;
+                let wire_radius = (parameters.radius_mm * 0.01)
+                    .min(parameters.pitch_mm * 0.2)
+                    .clamp(0.002, 0.25);
+                let profile_segments = vec![
+                    ProfileSegment::CircularArc {
+                        start_mm: [-wire_radius, 0.0],
+                        end_mm: [wire_radius, 0.0],
+                        center_mm: [0.0, 0.0],
+                        clockwise: false,
+                    },
+                    ProfileSegment::CircularArc {
+                        start_mm: [wire_radius, 0.0],
+                        end_mm: [-wire_radius, 0.0],
+                        center_mm: [0.0, 0.0],
+                        clockwise: false,
+                    },
+                ];
+                let (creation_commands, definition_id, body_feature_id) =
+                    plan_assistant_helix_thread_creation(
+                        name,
+                        profile_segments,
+                        path_segments,
+                        &mut next_definition,
+                        &mut next_feature,
+                        &mut next_occurrence,
+                        operation_name,
+                        &document_target,
+                    )?;
+                operation_outputs.insert(
+                    (
+                        operation_index,
+                        AssistantCadProgramFeatureOutput::Definition,
+                    ),
+                    definition_id.0,
+                );
+                operation_outputs.insert(
+                    (
+                        operation_index,
+                        AssistantCadProgramFeatureOutput::BodyFeature,
+                    ),
+                    body_feature_id.0,
+                );
+                appended_exact_features.push((definition_id, body_feature_id));
+                commands.extend(creation_commands);
+            }
+            AssistantCadEditOperation::CreateThread { name, parameters } => {
+                let axis = resolve_assistant_axis_spec(
+                    &parameters.helix.axis,
+                    &snapshot,
+                    topology_results,
+                    &operation_outputs,
+                    &program.operations,
+                    operation_name,
+                )?;
+                let path_segments = parameters
+                    .helix
+                    .spatial_path_segments_for_axis(axis)
+                    .map_err(|error| {
+                        assistant_planning_rejection(
+                            "planning.cad_thread_invalid",
+                            operation_name,
+                            &document_target,
+                            error,
+                            "Use finite bounded Thread parameters and a non-zero 3D axis.",
+                        )
+                    })?;
+                let profile_segments = parameters.profile_segments().map_err(|error| {
+                    assistant_planning_rejection(
+                        "planning.cad_thread_invalid",
+                        operation_name,
+                        &document_target,
+                        error,
+                        "Use a positive profile radius smaller than half the pitch.",
+                    )
+                })?;
+                let (creation_commands, definition_id, body_feature_id) =
+                    plan_assistant_helix_thread_creation(
+                        name,
+                        profile_segments,
+                        path_segments,
+                        &mut next_definition,
+                        &mut next_feature,
+                        &mut next_occurrence,
+                        operation_name,
+                        &document_target,
+                    )?;
+                operation_outputs.insert(
+                    (
+                        operation_index,
+                        AssistantCadProgramFeatureOutput::Definition,
+                    ),
+                    definition_id.0,
+                );
+                operation_outputs.insert(
+                    (
+                        operation_index,
+                        AssistantCadProgramFeatureOutput::BodyFeature,
+                    ),
+                    body_feature_id.0,
+                );
+                appended_exact_features.push((definition_id, body_feature_id));
+                commands.extend(creation_commands);
+            }
             AssistantCadEditOperation::CreateProgramSketch {
                 definition,
                 name,
@@ -376,10 +1050,25 @@ pub fn plan_assistant_cad_edit_program(
                     .map_err(|error| {
                         assistant_canonical_rejection(error, operation_name, &document_target)
                     })?;
+                let workplane = match workplane {
+                    ketchup_core::assistant_sidecar::AssistantWorkplaneSpec::ConstructionPlane {
+                        plane: AssistantCadFeatureReference::ProgramOutput(reference),
+                    } => ketchup_core::assistant_sidecar::AssistantWorkplaneSpec::ConstructionPlane {
+                        plane: AssistantCadFeatureReference::Existing(
+                            resolve_program_output_reference(
+                                *reference,
+                                &operation_outputs,
+                                AssistantCadProgramFeatureOutput::ConstructionFeature,
+                                operation_name,
+                            )?,
+                        ),
+                    },
+                    _ => workplane.clone(),
+                };
                 let resolved = AssistantCadEditOperation::CreateSketch {
                     definition_id,
                     name: name.clone(),
-                    workplane: workplane.clone(),
+                    workplane,
                     entities: entities.clone(),
                     constraints: constraints.clone(),
                 };
@@ -424,6 +1113,13 @@ pub fn plan_assistant_cad_edit_program(
                         tool_feature_id: AssistantCadFeatureReference::ProgramOutput(_),
                         ..
                     }
+                ) || matches!(
+                    feature,
+                    AssistantCadBodyFeature::Loft { sections }
+                        if sections.iter().any(|section| matches!(
+                            section.profile_feature_id,
+                            AssistantCadFeatureReference::ProgramOutput(_)
+                        ))
                 );
                 let prefix_candidate = if commands.is_empty() || !references_program_output {
                     None
@@ -841,6 +1537,90 @@ pub fn plan_assistant_cad_edit_program(
                     }
                 }
             }
+            AssistantCadEditOperation::CircularPattern {
+                instances,
+                axis,
+                angle_step_degrees,
+                ..
+            } => {
+                let (origin_mm, direction) = axis
+                    .origin_and_direction()
+                    .expect("referenced circular pattern axis was normalized before planning");
+                let centre = Vec3::new(origin_mm[0], origin_mm[1], origin_mm[2]);
+                let direction = Vec3::new(direction[0], direction[1], direction[2]);
+                for instance in 1..*instances {
+                    let world_rotation = world_axis_rotation_transform(
+                        centre,
+                        direction,
+                        angle_step_degrees * f64::from(instance),
+                    )
+                    .map_err(|_| {
+                        assistant_planning_rejection(
+                            "planning.cad_pattern_invalid",
+                            operation_name,
+                            "occurrence_selection",
+                            "The requested circular pattern transform could not be represented.",
+                            "Use a valid shared axis, finite angle step, and instance count.",
+                        )
+                    })?;
+                    for id in &targets {
+                        let source = snapshot
+                            .occurrence(*id)
+                            .expect("resolved CAD selector targets a snapshot occurrence");
+                        let parent_transform = source
+                            .parent()
+                            .map_or(Some(Transform::identity()), |parent| {
+                                snapshot.world_transform_for_group(parent)
+                            })
+                            .ok_or_else(|| {
+                                assistant_planning_rejection(
+                                    "planning.cad_parent_transform_unavailable",
+                                    operation_name,
+                                    &format!("occurrence:{}", id.0),
+                                    "The occurrence parent transform could not be resolved.",
+                                    "Refresh the document context and retry the circular pattern.",
+                                )
+                            })?;
+                        let transform = rotation_in_parent_space(
+                            world_rotation,
+                            parent_transform,
+                            working_transforms[id],
+                        )
+                        .ok_or_else(|| {
+                            assistant_planning_rejection(
+                                "planning.cad_pattern_invalid",
+                                operation_name,
+                                &format!("occurrence:{}", id.0),
+                                "The circular pattern could not be represented in the occurrence parent.",
+                                "Use a finite invertible parent transform and shared axis.",
+                            )
+                        })?;
+                        let occurrence_id = next_occurrence.map(OccurrenceId).ok_or_else(|| {
+                            assistant_canonical_rejection(
+                                CanonicalError::IdExhausted,
+                                operation_name,
+                                &document_target,
+                            )
+                        })?;
+                        next_occurrence = occurrence_id.0.checked_add(1);
+                        commands.push(CanonicalCommand::CreateOccurrence {
+                            id: occurrence_id,
+                            definition_id: source.definition_id(),
+                            name: source.name().to_owned(),
+                            transform,
+                            parent: source.parent(),
+                            tag: source.tag(),
+                            visible: source.visible(),
+                        });
+                        if let Some(color) = working_colors[id] {
+                            commands.push(CanonicalCommand::SetOccurrenceColor {
+                                id: occurrence_id,
+                                color: Some(color),
+                            });
+                        }
+                    }
+                }
+            }
             AssistantCadEditOperation::Mirror {
                 plane_origin_mm,
                 plane_normal,
@@ -915,6 +1695,10 @@ pub fn plan_assistant_cad_edit_program(
                         });
                     }
                 }
+            }
+            AssistantCadEditOperation::FilletEdges { .. }
+            | AssistantCadEditOperation::ChamferEdges { .. } => {
+                unreachable!("direct edge finishes are normalized before planning")
             }
         }
     }
