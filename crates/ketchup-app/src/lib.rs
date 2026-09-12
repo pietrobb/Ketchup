@@ -12798,10 +12798,11 @@ impl KetchupApp {
                                 &mut self.render_cache,
                             )));
                             self.interaction_projection_cache.get_mut().take();
-                            self.exact_source = report.complete.then_some(source);
-                            self.exact_retry_at =
-                                (!report.complete).then(|| Instant::now() + Duration::from_secs(1));
-                            return;
+                            self.exact_source = (!report.needs_retry()).then(|| source.clone());
+                            self.exact_retry_at = report
+                                .needs_retry()
+                                .then(|| Instant::now() + Duration::from_secs(1));
+                            // Continue through the shared retry wake-up below.
                         }
                         Err(error) => {
                             eprintln!("exact evaluation rejected: {error}");
@@ -12816,12 +12817,15 @@ impl KetchupApp {
                 }
             }
         }
-        if self.exact_source.as_ref() == Some(&source)
-            || self
-                .exact_retry_at
-                .is_some_and(|retry| retry > Instant::now())
-        {
+        if self.exact_source.as_ref() == Some(&source) {
             return;
+        }
+        if let Some(retry) = self.exact_retry_at {
+            let remaining = retry.saturating_duration_since(Instant::now());
+            if !remaining.is_zero() {
+                context.request_repaint_after(remaining);
+                return;
+            }
         }
         if !self.exact_worker_attempted {
             self.exact_worker_attempted = true;

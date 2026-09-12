@@ -98,6 +98,110 @@ fn wait_for_exact_body(shell: &mut Shell) {
 }
 
 #[test]
+fn registered_disconnect_releases_consent_and_allows_reattach() {
+    let Some(python) = std::env::var_os("KETCHUP_LIVE_PYTHON") else {
+        eprintln!("SKIP: set KETCHUP_LIVE_PYTHON to Python 3.11+ with anthropic installed");
+        return;
+    };
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let directory = tempfile::tempdir().unwrap();
+    let mut shell = Shell::new();
+    let broker = shell
+        .app_mut()
+        .enable_live_consent_broker_in(&eframe::egui::Context::default(), directory.path())
+        .unwrap();
+    shell.step();
+    let instance_id = shell.app().live_consent_instance_id().unwrap().to_owned();
+    let stamp = shell.app().live_bridge_stamp();
+    let history = shell.app().undo_step_count();
+    let mut child = Python(
+        Command::new(python)
+            .args(["-B", "-u"])
+            .arg(root.join("tests/live_bridge_skill_client.py"))
+            .arg("consent-disconnect")
+            .current_dir(&root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("start explicitly configured Python + anthropic"),
+    );
+    let mut input = child.0.stdin.take().unwrap();
+    writeln!(
+        input,
+        "{}",
+        serde_json::json!({
+            "discovery_root": directory.path(), "instance_id": instance_id
+        })
+    )
+    .unwrap();
+    let output = child.0.stdout.take().unwrap();
+    let (tx, rx) = mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        for line in BufReader::new(output).lines() {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut approvals = 0;
+    for expected in [
+        "attached_0",
+        "disconnected_0",
+        "attached_1",
+        "disconnected_1",
+        "finished",
+    ] {
+        let message = loop {
+            assert!(Instant::now() < deadline, "timeout at {expected}");
+            shell.step();
+            if shell.app().live_consent_pending() {
+                assert!(expected.starts_with("attached_"));
+                assert!(shell.app().live_bridge_credentials().is_none());
+                shell.click_button_label(&shell.catalog().text("live-consent-allow"));
+                approvals += 1;
+            }
+            match rx.try_recv() {
+                Ok(line) => break line.expect("read checkpoint"),
+                Err(mpsc::TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(5)),
+                Err(mpsc::TryRecvError::Disconnected) => panic!("child exited at {expected}"),
+            }
+        };
+        let message: serde_json::Value = serde_json::from_str(&message).unwrap();
+        assert_eq!(
+            message["checkpoint"], expected,
+            "helper lines: {}",
+            message["lines"]
+        );
+        assert_eq!(message["stamp"], serde_json::to_value(&stamp).unwrap());
+        assert_eq!(shell.app().live_bridge_stamp(), stamp);
+        assert_eq!(shell.app().undo_step_count(), history);
+        assert_eq!(shell.app().live_consent_address(), Some(broker));
+        assert_eq!(
+            shell.app().live_consent_instance_id(),
+            Some(instance_id.as_str())
+        );
+        let attached = expected.starts_with("attached_");
+        assert_eq!(shell.app().live_consent_attached(), attached);
+        assert_eq!(shell.app().live_bridge_credentials().is_some(), attached);
+        // Publish discovery availability before allowing the next SDK list/attach.
+        shell.step();
+        input.write_all(b"continue\n").unwrap();
+    }
+    assert_eq!(approvals, 2);
+    loop {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            assert!(status.success());
+            break;
+        }
+        assert!(Instant::now() < deadline, "child exit timeout");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    reader.join().unwrap();
+}
+
+#[test]
 fn registered_python_skill_uses_same_gui_store_and_human_history() {
     let Some(python) = std::env::var_os("KETCHUP_LIVE_PYTHON") else {
         eprintln!("SKIP: set KETCHUP_LIVE_PYTHON to Python 3.11+ with anthropic installed");
@@ -214,7 +318,8 @@ fn registered_python_skill_uses_same_gui_store_and_human_history() {
             .unwrap_or_else(|_| panic!("invalid sanitized checkpoint: {checkpoint}"));
         assert!(
             event["checkpoint"].as_str() == Some(checkpoint),
-            "Python helper failed or checkpoint out of order at {checkpoint}"
+            "Python helper failed or checkpoint out of order at {checkpoint}; helper lines: {}",
+            event["lines"]
         );
         let observed: Stamp = serde_json::from_value(event["stamp"].clone())
             .unwrap_or_else(|_| panic!("missing checkpoint stamp at {checkpoint}"));

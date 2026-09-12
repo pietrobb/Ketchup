@@ -89,7 +89,10 @@ class Session:
     executable/worker override KETCHUP_HEADLESS/KETCHUP_EXACT_WORKER and PATH.
     Without a worker override, the CLI uses its sibling ketchup-exact-worker.
     env is merged with the current environment (for OCCT DLL search paths).
-    A session serializes requests. Document handles expire on new/open/close.
+    A session serializes requests. Document handles expire on new/open/close,
+    including possibly-applied new/open errors. After those errors, explicitly
+    call new_document/open_document again; fresh summary guards and the normal
+    discard_unsaved check protect any remaining work. No automatic retry occurs.
     """
     def __init__(self, executable=None, worker=None, *, timeout=30.0, env=None, compact=False):
         if not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or not 0 < timeout <= 600:
@@ -249,7 +252,7 @@ class Session:
 
     def _expected(self):
         if self._state is None:
-            self._observe(self._request("summary" if self.compact else "state"))
+            self._observe(self._request("summary"))
         return {"expected_revision": self._state["revision"],
                 "expected_digest": self._state["canonical_digest"]}
 
@@ -257,7 +260,16 @@ class Session:
         with self._lock:
             params.update(self._expected(), **({"response": "compact"} if self.compact else {}))
             params["discard_unsaved"] = discard_unsaved
-            self._observe(self._request(method, params))
+            try:
+                self._observe(self._request(method, params))
+            except HeadlessError as error:
+                if (isinstance(error.details, dict)
+                        and error.details.get("mutation_outcome") == "possibly_applied"):
+                    # The server may now own a different document. Never rebind old handles
+                    # or terminate potentially unsaved work; require explicit new/open.
+                    self._generation += 1
+                    self._state = None
+                raise
             self._generation += 1
             return Document(self, self._generation)
 

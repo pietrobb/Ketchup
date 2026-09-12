@@ -1,5 +1,11 @@
 use super::*;
 use crate::dialogs::ScriptedFileDialogs;
+#[path = "idle_retry_tests.rs"]
+mod idle_retry;
+#[path = "mesh_conversion_tests.rs"]
+mod mesh_conversion;
+#[path = "topology_recovery_tests.rs"]
+mod topology_recovery;
 use ketchup_core::{
     document::NodeId,
     document::Transform,

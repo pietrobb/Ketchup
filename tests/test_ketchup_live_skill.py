@@ -44,6 +44,14 @@ class SessionDouble:
         self.closed = True
         self.calls.append(("close",))
 
+    def disconnect(self):
+        self.calls.append(("disconnect",))
+        if self.closed:
+            return None
+        if self.fail:
+            raise self.fail
+        return envelope({"disconnected": True})
+
     def status(self):
         self.calls.append(("status",))
         return envelope({"selection": self.selected}, self.stamp)
@@ -190,6 +198,36 @@ def test_registered_attach_uses_only_instance_id_and_returns_nonowning_handle():
             registered, "KetchupLiveSession", action="disconnect", handle=handle
         )
         assert disconnected["ok"] and attached.closed
+        assert attached.calls[-2:] == [("disconnect",), ("close",)]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("failure", ["transport", "rejection", "unexpected", "closed"])
+def test_disconnect_failure_forgets_handle_without_claiming_remote_success(failure):
+    attached = SessionDouble()
+    state = SimpleNamespace(active=False)
+    registered = tools(state, lambda *args: attached)
+
+    async def scenario():
+        handle = (await launch(registered))["result"]["handle"]
+        state.active = True  # Cleanup remains available even in plan mode.
+        errors = {
+            "transport": skill._live().LiveTransportError("PRIVATE_TOKEN"),
+            "rejection": skill._live().LiveBridgeError("busy"),
+            "unexpected": RuntimeError("PRIVATE_TOKEN"),
+        }
+        attached.fail = errors.get(failure)
+        attached.closed = failure == "closed"
+        result = await call(registered, "KetchupLiveSession", action="disconnect", handle=handle)
+        assert result["ok"] is False
+        assert "disconnected" not in result.get("result", {})
+        assert "PRIVATE_TOKEN" not in json.dumps(result)
+        assert attached.closed
+        assert attached.calls[-2:] == [("disconnect",), ("close",)]
+        assert (await call(registered, "KetchupLiveInspect", action="status", handle=handle))["error"]["code"] == "invalid_handle"
+        assert (await call(registered, "KetchupLiveSession", action="disconnect", handle=handle))["error"]["code"] == "invalid_handle"
+        assert sum(c[0] == "disconnect" for c in attached.calls) == 1
 
     asyncio.run(scenario())
 

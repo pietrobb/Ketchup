@@ -48,6 +48,14 @@ pub struct EvaluationReport {
     pub not_evaluated: Option<String>,
 }
 impl EvaluationReport {
+    pub fn needs_retry(&self) -> bool {
+        !self.complete
+            || self
+                .producers
+                .iter()
+                .any(|entry| matches!(entry.topology, EvidenceStatus::Failed { .. }))
+    }
+
     pub(super) fn finish(&mut self) {
         self.complete = !self.producers.is_empty()
             && self

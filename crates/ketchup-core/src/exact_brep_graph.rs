@@ -887,12 +887,61 @@ impl<'a> GraphCompiler<'a> {
         &mut self,
         feature_id: FeatureId,
     ) -> Result<ExactBRepNodeId, ExactBRepGraphError> {
-        if let Some(id) = self.compiled_bodies.get(&feature_id) {
-            return Ok(*id);
+        // Preserve target-before-tool DFS order (and graph fingerprints) without host recursion.
+        let mut pending = vec![(feature_id, false)];
+        while let Some((id, expanded)) = pending.pop() {
+            if self.compiled_bodies.contains_key(&id) {
+                continue;
+            }
+            if expanded {
+                self.compile_node(id)?;
+                continue;
+            }
+            if self.visiting.contains(&id) {
+                return Err(ExactBRepGraphError::DependencyCycle(id));
+            }
+            if self.nodes.len() + self.visiting.len() >= MAX_EXACT_BREP_GRAPH_NODES {
+                return Err(ExactBRepGraphError::ResourceLimit);
+            }
+            let feature = self
+                .snapshot
+                .feature(id)
+                .filter(|feature| feature.definition_id() == self.definition_id)
+                .ok_or(ExactBRepGraphError::FeatureNotFound(id))?;
+            if self.snapshot.feature_is_suppressed(id) {
+                return Err(ExactBRepGraphError::SuppressedFeature(id));
+            }
+            self.visiting.insert(id);
+            pending.push((id, true));
+            match feature.kind() {
+                FeatureKind::SketchPocket(spec) => pending.push((spec.target, false)),
+                FeatureKind::ThroughCut { target, .. }
+                | FeatureKind::Pocket { target, .. }
+                | FeatureKind::TopologyShell { target, .. }
+                | FeatureKind::TopologyEdgeFinish { target, .. }
+                | FeatureKind::TopologyFaceOffset { target, .. }
+                | FeatureKind::RigidTransform { target, .. } => pending.push((*target, false)),
+                FeatureKind::Boolean { target, tool, .. } => {
+                    pending.push((*tool, false));
+                    pending.push((*target, false));
+                }
+                _ => {}
+            }
         }
-        if !self.visiting.insert(feature_id) {
-            return Err(ExactBRepGraphError::DependencyCycle(feature_id));
-        }
+        self.body_id(feature_id)
+    }
+
+    fn body_id(&self, feature_id: FeatureId) -> Result<ExactBRepNodeId, ExactBRepGraphError> {
+        self.compiled_bodies
+            .get(&feature_id)
+            .copied()
+            .ok_or(ExactBRepGraphError::InvalidDependencyGraph)
+    }
+
+    fn compile_node(
+        &mut self,
+        feature_id: FeatureId,
+    ) -> Result<ExactBRepNodeId, ExactBRepGraphError> {
         let feature = self
             .snapshot
             .feature(feature_id)
@@ -930,7 +979,7 @@ impl<'a> GraphCompiler<'a> {
                 {
                     return Err(ExactBRepGraphError::UnresolvedExtent);
                 }
-                let target = self.compile_body(spec.target)?;
+                let target = self.body_id(spec.target)?;
                 let target_bounds = self.node_bounds[target.0 as usize];
                 let (profile, origin_mm, direction) =
                     self.compile_sketch_profile(spec.sketch, spec.region, spec.direction)?;
@@ -945,7 +994,7 @@ impl<'a> GraphCompiler<'a> {
                 }
             }
             FeatureKind::ThroughCut { target, profile } => {
-                let target = self.compile_body(*target)?;
+                let target = self.body_id(*target)?;
                 let target_bounds = self.node_bounds[target.0 as usize]
                     .ok_or(ExactBRepGraphError::UnresolvedExtent)?;
                 ExactBRepOperation::ProfileCut {
@@ -965,7 +1014,7 @@ impl<'a> GraphCompiler<'a> {
                 profile,
                 depth,
             } => {
-                let target = self.compile_body(*target)?;
+                let target = self.body_id(*target)?;
                 let (profile, direction) = match self
                     .snapshot
                     .feature(*profile)
@@ -1004,15 +1053,15 @@ impl<'a> GraphCompiler<'a> {
                 tool,
             } => ExactBRepOperation::Boolean {
                 operation: (*operation).into(),
-                target: self.compile_body(*target)?,
-                tool: self.compile_body(*tool)?,
+                target: self.body_id(*target)?,
+                tool: self.body_id(*tool)?,
             },
             FeatureKind::TopologyShell {
                 target,
                 removed_faces,
                 thickness,
             } => ExactBRepOperation::Shell {
-                target: self.compile_body(*target)?,
+                target: self.body_id(*target)?,
                 removed_faces: topology_selectors(
                     removed_faces,
                     TopologicalElementKind::Face,
@@ -1026,7 +1075,7 @@ impl<'a> GraphCompiler<'a> {
                 kind,
                 amount,
             } => ExactBRepOperation::EdgeFinish {
-                target: self.compile_body(*target)?,
+                target: self.body_id(*target)?,
                 edges: topology_selectors(edges, TopologicalElementKind::Edge, *target)?,
                 kind: (*kind).into(),
                 amount_bits: positive_distance(amount.millimetres())?,
@@ -1036,7 +1085,7 @@ impl<'a> GraphCompiler<'a> {
                 face,
                 distance,
             } => ExactBRepOperation::FaceOffset {
-                target: self.compile_body(*target)?,
+                target: self.body_id(*target)?,
                 face: topology_selectors(
                     std::slice::from_ref(face),
                     TopologicalElementKind::Face,
@@ -1159,7 +1208,7 @@ impl<'a> GraphCompiler<'a> {
             },
             FeatureKind::RigidTransform { target, transform } => {
                 ExactBRepOperation::RigidTransform {
-                    target: self.compile_body(*target)?,
+                    target: self.body_id(*target)?,
                     matrix_bits: transform.matrix().map(f64::to_bits),
                 }
             }

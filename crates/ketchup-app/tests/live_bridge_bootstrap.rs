@@ -399,6 +399,35 @@ fn per_user_registry_lists_only_nonce_verified_live_window_metadata() {
 }
 
 #[test]
+fn consent_broker_accepts_a_request_arriving_after_the_connection() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut shell = Shell::new();
+    let address = shell
+        .app_mut()
+        .enable_live_consent_broker_in(&eframe::egui::Context::default(), directory.path())
+        .unwrap();
+    shell.step();
+    let before = shell.app().live_bridge_stamp();
+    let mut stream = TcpStream::connect(address).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    // Let the nonblocking listener accept before any request bytes arrive.
+    std::thread::sleep(Duration::from_millis(100));
+    let request = serde_json::json!({
+        "version": 1, "action": "list", "requester": "Supervisor", "nonce": "7".repeat(64)
+    });
+    writeln!(stream, "{request}").unwrap();
+    let mut response = String::new();
+    std::io::BufRead::read_line(&mut std::io::BufReader::new(stream), &mut response).unwrap();
+    let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+    assert_eq!(response["status"], "available");
+    assert_eq!(response["nonce"], "7".repeat(64));
+    assert_eq!(shell.app().live_bridge_stamp(), before);
+    assert!(!shell.app().live_consent_attached());
+}
+
+#[test]
 fn in_window_consent_is_required_and_disconnect_revokes_the_automatic_credential() {
     let mut shell = Shell::new();
     shell.enable_live_consent_broker();

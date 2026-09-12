@@ -12,6 +12,42 @@ use ketchup_core::{
     persistence::ContainerData,
 };
 use std::{collections::BTreeSet, time::Duration};
+#[test]
+fn evaluation_retry_distinguishes_failed_topology_from_unsupported_topology() {
+    let mut report = ketchup_application::evaluation::EvaluationReport {
+        source: exact_source(&DocumentStore::new().current()),
+        producers: vec![ProducerCoverage {
+            key: ProducerKey {
+                definition_id: DefinitionId(1),
+                feature_id: FeatureId(2),
+            },
+            render: EvidenceStatus::Current,
+            topology: EvidenceStatus::NotEvaluated {
+                reason: "topology not provided by this request".into(),
+            },
+        }],
+        complete: true,
+        topology_complete: false,
+        not_evaluated: None,
+    };
+    assert!(
+        !report.needs_retry(),
+        "unsupported topology must not retry forever"
+    );
+    report.producers[0].topology = EvidenceStatus::Failed {
+        reason: "worker disconnected".into(),
+    };
+    assert!(report.needs_retry());
+    report.producers[0].topology = EvidenceStatus::Evaluated;
+    report.topology_complete = true;
+    assert!(!report.needs_retry());
+    report.complete = false;
+    report.producers[0].render = EvidenceStatus::Failed {
+        reason: "render failed".into(),
+    };
+    assert!(report.needs_retry());
+}
+
 fn part() -> AssistantCadEditOperation {
     AssistantCadEditOperation::CreatePart {
         name: "Editable part".into(),

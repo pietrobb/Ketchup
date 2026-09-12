@@ -1289,6 +1289,13 @@ pub fn plan_assistant_cad_edit_program(
                     )
                 };
                 let planning_snapshot = prefix_candidate.as_ref().unwrap_or(&snapshot);
+                let planning_topology = prefix_candidate.as_ref().map(|candidate| {
+                    if topology_results.is_bound_to(&snapshot) {
+                        ExactResultRegistry::carried_forward(candidate, topology_results)
+                    } else {
+                        ExactResultRegistry::default()
+                    }
+                });
                 let feature = resolve_program_feature_references(
                     feature,
                     &snapshot,
@@ -1305,7 +1312,7 @@ pub fn plan_assistant_cad_edit_program(
                 }
                 let kind = plan_feature_kind(
                     planning_snapshot,
-                    topology_results,
+                    planning_topology.as_ref().unwrap_or(topology_results),
                     definition_id,
                     &feature,
                     operation_name,

@@ -415,6 +415,7 @@ fn serve(
     discovery: &Mutex<DiscoveryState>,
 ) {
     let _ = (|| -> io::Result<()> {
+        stream.set_nonblocking(false)?;
         stream.set_read_timeout(Some(IO_DEADLINE))?;
         stream.set_write_timeout(Some(IO_DEADLINE))?;
         let request = read_request(&mut stream)?;

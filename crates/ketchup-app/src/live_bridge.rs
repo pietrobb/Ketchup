@@ -465,6 +465,7 @@ impl LiveBridge {
             || app.pending_linear_pattern.is_some()
             || app.pending_rectangular_pattern.is_some()
             || app.pending_circular_pattern.is_some()
+            || app.mesh_conversion_active()
             || app.pending_stl_import.is_some()
             || app.pending_dxf_import.is_some()
             || app.pending_step_import.is_some()

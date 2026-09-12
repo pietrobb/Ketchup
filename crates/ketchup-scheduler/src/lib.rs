@@ -4,7 +4,9 @@ pub mod assistant;
 pub mod general;
 pub mod pair_query;
 pub mod plugin;
+pub mod response_transport;
 pub use pair_query::{ExactPairCandidate, ExactPairQueryResult, ExactPairRelation};
+use response_transport::read_worker_response;
 pub mod validator_runtime;
 
 use ketchup_core::assembly::AxialAttachmentKind;
@@ -3095,7 +3097,7 @@ fn spawn_worker_reader(stdout: ChildStdout, sender: mpsc::SyncSender<WorkerRespo
     });
 }
 
-fn read_worker_response(reader: &mut impl BufRead) -> WorkerResponse {
+fn read_worker_response_line(reader: &mut impl BufRead) -> WorkerResponse {
     let mut bytes = Vec::new();
     loop {
         let available = match reader.fill_buf() {

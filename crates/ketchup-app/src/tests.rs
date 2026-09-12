@@ -5,6 +5,8 @@ use ketchup_core::assistant_sidecar::AssistantCadLoftSection;
 use ketchup_core::document::{ProposalGoal, SpatialPathSegment};
 use ketchup_core::exact_brep_graph::EXACT_BREP_GRAPH_SCHEMA_V12;
 use ketchup_core::graph::{EvaluatorNodeKind, PortSpec};
+#[path = "planning_topology_tests.rs"]
+mod planning_topology;
 
 #[test]
 fn cad_edit_program_compiles_selection_to_one_host_id_canonical_batch() {

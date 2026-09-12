@@ -64,7 +64,7 @@ fn main() {
             .handle(&backend, &line)
             .or_else(|| handle_request(&backend, &line));
         if let Some(response) = response
-            && writeln!(stdout, "{response}")
+            && ketchup_scheduler::response_transport::write_worker_response(&mut stdout, &response)
                 .and_then(|()| stdout.flush())
                 .is_err()
         {

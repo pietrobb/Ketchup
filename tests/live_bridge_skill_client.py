@@ -68,7 +68,7 @@ async def scenario():
         return json.loads(output)
 
     def success(response):
-        assert response.get("ok") is True, "registered tool rejected operation"
+        assert response.get("ok") is True, response.get("error", {}).get("code")
         return response
 
     def rejected(response, code):
@@ -204,11 +204,77 @@ async def scenario():
     checkpoint("disconnected", state["stamp"])
 
 
+async def consent_disconnect_scenario():
+    attachment = json.loads(sys.stdin.readline(32769))
+    root = Path(__file__).resolve().parents[1]
+    discovery_root = Path(attachment["discovery_root"])
+    instance_id = attachment["instance_id"]
+    spec = importlib.util.spec_from_file_location(
+        "live_disconnect_skill", root / "skills" / "ketchup_live.py")
+    skill = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(skill)
+    sdk = skill._live()
+    plan = SimpleNamespace(active=False)
+    tools = {tool.name: tool for tool in skill._register_tools(
+        plan,
+        discoverer=lambda: sdk._list_live_instances(discovery_root, timeout=2),
+        attacher=lambda selected: sdk._attach_live_instance(
+            selected, discovery_root, discovery_timeout=2),
+    )}
+
+    async def call(name, **arguments):
+        text = await tools[name].call(arguments)
+        assert len(text.encode("utf-8")) <= 32768
+        assert "token" not in text and "address" not in text
+        result = json.loads(text)
+        if name == "KetchupLiveSession":
+            assert result["ok"], result.get("error", {}).get("code")
+        return result
+
+    def checkpoint(name, stamp):
+        print(json.dumps({"checkpoint": name, "stamp": stamp}), flush=True)
+        assert sys.stdin.readline(32) == "continue\n"
+
+    initial = None
+    handles = set()
+    for attempt in range(2):
+        listed = await call("KetchupLiveSession", action="list")
+        assert listed["ok"], listed.get("error", {}).get("code")
+        assert listed["result"]["instances"] == [{
+            "instance_id": instance_id, "document": "Untitled", "status": "available"}], "discovery_available"
+        plan.active = False
+        attached = await call("KetchupLiveSession", action="attach", instance_id=instance_id)
+        assert attached["ok"], attached.get("error", {}).get("code")
+        handle = attached["result"]["handle"]
+        assert handle not in handles
+        handles.add(handle)
+        initial = initial or attached["stamp"]
+        assert attached["stamp"] == initial
+        checkpoint(f"attached_{attempt}", initial)
+        busy = await call("KetchupLiveSession", action="list")
+        assert busy["result"]["instances"][0]["status"] == "busy", "discovery_busy"
+        plan.active = True
+        result = await call("KetchupLiveSession", action="disconnect", handle=handle)
+        assert result["ok"] and result["result"]["app_terminated"] is False
+        invalid = await call("KetchupLiveInspect", action="status", handle=handle)
+        assert invalid["error"]["code"] == "invalid_handle"
+        checkpoint(f"disconnected_{attempt}", initial)
+    listed = await call("KetchupLiveSession", action="list")
+    assert listed["result"]["instances"][0]["status"] == "available"
+    checkpoint("finished", initial)
+
+
 if __name__ == "__main__":
     try:
-        asyncio.run(scenario())
-    except BaseException:
-        # Do not print exception repr/traceback, locals, tool returns or input.
-        # Rust reports the expected stage, not any child-provided diagnostics.
-        print('{"checkpoint":"failed"}', flush=True)
+        asyncio.run(consent_disconnect_scenario() if sys.argv[1:] == ["consent-disconnect"] else scenario())
+    except BaseException as error:
+        # Only helper line numbers escape; never exception text, locals or input.
+        lines = []
+        trace = error.__traceback__
+        while trace is not None:
+            if trace.tb_frame.f_code.co_filename == __file__:
+                lines.append(trace.tb_lineno)
+            trace = trace.tb_next
+        code = str(error) if str(error) in {"live_operation_failed", "live_transport_error", "invalid_arguments", "busy", "stale_document", "invalid_program", "resource_limit", "planning_rejected", "invalid_handle", "plan_mode", "output_too_large", "instance_unavailable", "consent_rejected", "discovery_available", "discovery_busy"} else "suppressed"
+        print(json.dumps({"checkpoint": "failed", "lines": [*lines, code, type(error).__name__]}), flush=True)
         sys.exit(1)

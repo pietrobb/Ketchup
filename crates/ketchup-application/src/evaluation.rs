@@ -32,6 +32,10 @@ enum ExactEvaluationRequest {
         graph: Box<ExactBRepGraph>,
         imported_sources: Vec<Vec<u8>>,
     },
+    Topology {
+        graph: Box<ExactBRepGraph>,
+        imported_sources: Vec<Vec<u8>>,
+    },
     Rectangle {
         request: Box<ExactFeatureChainRequest>,
         topology: Option<Box<ExactBRepGraph>>,
@@ -162,15 +166,12 @@ fn prepare_requests(
                     && package.is_current(snapshot)
             })
         };
-        if current(exact_results) {
+        let render_current = current(exact_results);
+        if render_current && current(topology_results) {
             coverage.push(ProducerCoverage {
                 key,
                 render: EvidenceStatus::Current,
-                topology: if current(topology_results) {
-                    EvidenceStatus::Current
-                } else {
-                    EvidenceStatus::not_evaluated("topology not provided by this request")
-                },
+                topology: EvidenceStatus::Current,
             });
             continue;
         }
@@ -324,11 +325,63 @@ fn prepare_requests(
                 ExactEvaluationRequest::Imported(definition_id, source),
             )))
         })();
+        let compiled = if render_current {
+            match compiled {
+                Ok(Some((
+                    id,
+                    ExactEvaluationRequest::Graph {
+                        graph,
+                        imported_sources,
+                    },
+                ))) => Ok(Some((
+                    id,
+                    ExactEvaluationRequest::Topology {
+                        graph,
+                        imported_sources,
+                    },
+                ))),
+                Ok(Some((
+                    id,
+                    ExactEvaluationRequest::Rectangle {
+                        topology: Some(graph),
+                        ..
+                    },
+                ))) => Ok(Some((
+                    id,
+                    ExactEvaluationRequest::Topology {
+                        graph,
+                        imported_sources: Vec::new(),
+                    },
+                ))),
+                Ok(Some((id, request @ ExactEvaluationRequest::Imported(..)))) => {
+                    Ok(Some((id, request)))
+                }
+                other => {
+                    coverage.push(ProducerCoverage {
+                        key,
+                        render: EvidenceStatus::Current,
+                        topology: match other {
+                            Err(reason) => EvidenceStatus::Failed { reason },
+                            _ => EvidenceStatus::not_evaluated(
+                                "topology not provided by this request",
+                            ),
+                        },
+                    });
+                    continue;
+                }
+            }
+        } else {
+            compiled
+        };
         match compiled {
             Ok(Some((_, request))) => {
                 coverage.push(ProducerCoverage {
                     key,
-                    render: EvidenceStatus::not_evaluated("pending"),
+                    render: if render_current {
+                        EvidenceStatus::Current
+                    } else {
+                        EvidenceStatus::not_evaluated("pending")
+                    },
                     topology: EvidenceStatus::not_evaluated("pending"),
                 });
                 requests.push((key, request));
@@ -461,8 +514,12 @@ pub fn start_exact_evaluation_scoped(
                                     .iter_mut()
                                     .find(|entry| entry.key == *key)
                                     .expect("selected producer");
-                                entry.render = EvidenceStatus::not_evaluated(&reason);
-                                entry.topology = EvidenceStatus::not_evaluated(&reason);
+                                if !entry.render.is_evaluated() {
+                                    entry.render = EvidenceStatus::not_evaluated(&reason);
+                                }
+                                entry.topology = EvidenceStatus::Failed {
+                                    reason: reason.clone(),
+                                };
                             }
                             report.not_evaluated = Some(reason);
                             worker_completed_producers.store(total_producers, Ordering::Release);
@@ -482,6 +539,7 @@ pub fn start_exact_evaluation_scoped(
                                     .iter_mut()
                                     .find(|entry| entry.key == key)
                                     .expect("selected producer");
+                                let topology_only = entry.render.is_evaluated();
                                 let mut topology_failure = None;
                                 let evaluated =
     (|| -> Result<(ExactBodyPackage, Option<ExactBodyPackage>), String> {
@@ -489,7 +547,7 @@ pub fn start_exact_evaluation_scoped(
             ExactEvaluationRequest::Graph {
                 graph,
                 imported_sources,
-            } => {
+            } | ExactEvaluationRequest::Topology { graph, imported_sources } => {
                 let imported_sources = imported_sources
                     .iter()
                     .map(Vec::as_slice)
@@ -672,16 +730,23 @@ pub fn start_exact_evaluation_scoped(
                                             "exact evaluation rejected definition {}: {error}",
                                             definition_id.0
                                         );
-                                        entry.render = EvidenceStatus::Failed { reason: error };
-                                        entry.topology = EvidenceStatus::not_evaluated(
-                                            "render evaluation failed",
-                                        );
+                                        if topology_only {
+                                            entry.topology =
+                                                EvidenceStatus::Failed { reason: error };
+                                        } else {
+                                            entry.render = EvidenceStatus::Failed { reason: error };
+                                            entry.topology = EvidenceStatus::not_evaluated(
+                                                "render evaluation failed",
+                                            );
+                                        }
                                         worker_completed_producers.fetch_add(1, Ordering::AcqRel);
                                         continue;
                                     }
                                 };
 
-                                entry.render = EvidenceStatus::Evaluated;
+                                if !topology_only {
+                                    entry.render = EvidenceStatus::Evaluated;
+                                }
                                 entry.topology = if topology_package.is_some() {
                                     EvidenceStatus::Evaluated
                                 } else if let Some(reason) = topology_failure {
@@ -691,7 +756,9 @@ pub fn start_exact_evaluation_scoped(
                                         "topology not provided by this request",
                                     )
                                 };
-                                render_packages.push(Arc::new(package));
+                                if !topology_only {
+                                    render_packages.push(Arc::new(package));
+                                }
                                 if let Some(package) = topology_package {
                                     topology_packages.push(Arc::new(package));
                                 }

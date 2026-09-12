@@ -344,8 +344,12 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
             if action == "disconnect":
                 if instance_id or executable or document_path:
                     raise Rejection("invalid_arguments", "Disconnect accepts only a live handle.")
-                runtime.entry(handle)
-                runtime.forget(handle)
+                live_session = runtime.entry(handle)
+                try:
+                    if live_session.disconnect() is None:
+                        raise Rejection("live_transport_error", "Session already closed; remote disconnection was not confirmed.")
+                finally:
+                    runtime.forget(handle)
                 return {"ok": True, "result": {"disconnected": handle, "app_terminated": False}}
             runtime.guard()
             if action == "attach":

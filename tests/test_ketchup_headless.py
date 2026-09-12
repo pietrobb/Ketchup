@@ -137,6 +137,122 @@ class ClientTests(unittest.TestCase):
         with self.assertRaises(SessionClosedError):
             old.save("other.ketchup")
 
+    def test_ambiguous_replacement_expires_handles_until_explicit_recovery(self):
+        for method in ("new", "open"):
+            for compact in (False, True):
+                for applied in (False, True):
+                    with self.subTest(method=method, compact=compact, applied=applied):
+                        process = FakeProcess()
+                        with self.session(process, compact=compact) as session:
+                            old = session.new_document()
+                            old.box("unsaved", 10, 20, 3)
+                            old_state = dict(session._state)
+                            details = {"mutation_outcome": "possibly_applied"}
+
+                            def ambiguous(req):
+                                if req["method"] == method:
+                                    if applied:
+                                        process.revision += 1
+                                    return (json.dumps({"protocol": PROTOCOL, "id": req["id"], "error": {
+                                        "code": "output_too_large", "message": "response exceeds 4 MiB",
+                                        "details": details}}) + "\n").encode()
+                                return process.normal(req)
+
+                            process.answer = ambiguous
+                            replace = session.new_document if method == "new" else lambda **kw: session.open_document("next.ketchup", **kw)
+                            count = len(process.requests)
+                            with self.assertRaises(HeadlessError) as caught:
+                                replace(discard_unsaved=True)
+                            self.assertEqual(caught.exception.code, "output_too_large")
+                            self.assertEqual(caught.exception.details, details)
+                            self.assertEqual(len(process.requests), count + 1)
+                            self.assertFalse(process.stopped)
+                            self.assertIsNone(session._state)
+                            count = len(process.requests)
+                            for call in (old.summary, lambda: old.state, lambda: old.apply([]),
+                                         lambda: old.save("wrong.ketchup"), old.undo):
+                                with self.assertRaises(SessionClosedError):
+                                    call()
+                            self.assertEqual(len(process.requests), count)
+
+                            def recovered(req):
+                                # Full state can still overflow; guard recovery must use summary.
+                                self.assertNotEqual(req["method"], "state")
+                                response = json.loads(process.normal(req))
+                                if applied:
+                                    response["result"]["state"]["document_id"] = 2
+                                return (json.dumps(response) + "\n").encode()
+
+                            process.answer = recovered
+                            current_revision = process.revision
+                            fresh = session.new_document(discard_unsaved=False)
+                            self.assertEqual(process.requests[count]["method"], "summary")
+                            params = process.requests[count + 1]["params"]
+                            self.assertEqual(params["expected_revision"], current_revision)
+                            self.assertEqual(params["expected_digest"], str(current_revision))
+                            self.assertFalse(params["discard_unsaved"])
+                            self.assertEqual(fresh.summary()["state"]["document_id"], 2 if applied else old_state["document_id"])
+                            with self.assertRaises(SessionClosedError):
+                                old.summary()
+                            fresh.apply([])
+
+    def test_ambiguous_replacement_recovery_does_not_discard_unsaved_work(self):
+        process = FakeProcess()
+        with self.session(process) as session:
+            old = session.new_document()
+            old.box("unsaved", 10, 20, 3)
+
+            def answer(req):
+                if req["method"] in {"open", "new"}:
+                    ambiguous = req["method"] == "open"
+                    error = {"code": "output_too_large" if ambiguous else "unsaved_changes",
+                             "message": "replacement not confirmed"}
+                    if ambiguous:
+                        error["details"] = {"mutation_outcome": "possibly_applied"}
+                    return (json.dumps({"protocol": PROTOCOL, "id": req["id"], "error": error}) + "\n").encode()
+                return process.normal(req)
+
+            process.answer = answer
+            with self.assertRaises(HeadlessError):
+                session.open_document("next.ketchup", discard_unsaved=True)
+            before = process.revision
+            with self.assertRaises(HeadlessError) as caught:
+                session.new_document()
+            self.assertEqual(caught.exception.code, "unsaved_changes")
+            self.assertFalse(process.requests[-1]["params"]["discard_unsaved"])
+            self.assertEqual(process.revision, before)
+            self.assertFalse(process.stopped)
+            with self.assertRaises(SessionClosedError):
+                old.summary()
+
+    def test_definite_replacement_rejection_preserves_old_handle(self):
+        for method in ("new", "open"):
+            for code, details in (("unsaved_changes", None), ("stale_state", {"invariant": "revision"}),
+                                  ("persistence_error", None), ("invalid_params", {"mutation_outcome": "not_applied"})):
+                with self.subTest(method=method, code=code):
+                    process = FakeProcess()
+                    with self.session(process) as session:
+                        old = session.new_document()
+                        before = dict(session._state)
+                        generation = session._generation
+
+                        def reject(req):
+                            return (json.dumps({"protocol": PROTOCOL, "id": req["id"], "error": {
+                                "code": code, "message": "rejected before replacement", "details": details}}) + "\n").encode()
+
+                        process.answer = reject
+                        with self.assertRaises(HeadlessError):
+                            if method == "new":
+                                session.new_document()
+                            else:
+                                session.open_document("missing.ketchup")
+                        self.assertEqual(session._generation, generation)
+                        self.assertEqual(session._state, before)
+                        self.assertFalse(process.stopped)
+                        process.answer = process.normal
+                        self.assertEqual(old.summary()["state"], before)
+                        old.apply([])
+
     def test_nan_and_oversize_never_sent(self):
         process = FakeProcess()
         doc = self.session(process).new_document()

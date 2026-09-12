@@ -1170,6 +1170,93 @@ mod tests {
     }
 
     #[test]
+    fn oversized_open_response_reports_possible_replacement_and_recovers_compactly() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("large-state.ketchup");
+        let mut document = ketchup_core::document::DocumentStore::new();
+        let mut commands = vec![CanonicalCommand::CreateDefinition {
+            id: DefinitionId(1),
+            name: "Part".to_owned(),
+        }];
+        commands.extend((1..=35_000).map(|id| {
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(id),
+                definition_id: DefinitionId(1),
+                name: "Instance".to_owned(),
+                transform: ketchup_core::document::Transform::from_translation(
+                    id as f64 + 0.123456789,
+                    0.123456789,
+                    0.123456789,
+                )
+                .unwrap(),
+                parent: None,
+                tag: None,
+                visible: true,
+            }
+        }));
+        document.apply_batch(&CommandBatch::new(commands)).unwrap();
+        std::fs::write(&path, ketchup_core::persistence::save(&document.current())).unwrap();
+        let author = DocumentSession::open(&path, SessionSettings::default()).unwrap();
+        let mut expected = Server::new(SessionSettings::default());
+        expected.session = author;
+        let loaded = request(&mut expected, "summary", json!({}))["result"]["state"].clone();
+        let mut server = Server::new(SessionSettings::default());
+        let before = request(&mut server, "summary", json!({}))["result"]["state"].clone();
+        assert_ne!(before["canonical_digest"], loaded["canonical_digest"]);
+        let mut input = Vec::new();
+        for (id, method, params) in [
+            (
+                1,
+                "open",
+                json!({"path":path,"discard_unsaved":false,
+                "expected_revision":before["revision"],"expected_digest":before["canonical_digest"]}),
+            ),
+            (2, "summary", json!({})),
+            (
+                3,
+                "new",
+                json!({"discard_unsaved":false,"response":"compact",
+                "expected_revision":before["revision"],"expected_digest":before["canonical_digest"]}),
+            ),
+            (
+                4,
+                "open",
+                json!({"path":path,"discard_unsaved":false,"response":"compact",
+                "expected_revision":loaded["revision"],"expected_digest":loaded["canonical_digest"]}),
+            ),
+            (5, "summary", json!({})),
+        ] {
+            serde_json::to_writer(
+                &mut input,
+                &json!({"protocol":PROTOCOL,"id":id,"method":method,"params":params}),
+            )
+            .unwrap();
+            input.push(b'\n');
+        }
+        let mut output = Vec::new();
+        serve(io::Cursor::new(input), &mut output, server).unwrap();
+        let output = String::from_utf8(output).unwrap();
+        let responses: Vec<Value> = output
+            .lines()
+            .map(|line| {
+                assert!(line.len() < MAX_LINE_BYTES);
+                serde_json::from_str(line).unwrap()
+            })
+            .collect();
+        assert_eq!(responses.len(), 5);
+        assert_eq!(responses[0]["error"]["code"], "output_too_large");
+        assert_eq!(
+            responses[0]["error"]["details"]["mutation_outcome"],
+            "possibly_applied"
+        );
+        assert_eq!(responses[1]["result"]["state"], loaded);
+        assert_eq!(responses[2]["error"]["code"], "stale_state");
+        assert_eq!(responses[3]["result"]["response"], "compact");
+        assert_eq!(responses[3]["result"]["state"], loaded);
+        assert_eq!(responses[4]["result"]["state"], loaded);
+    }
+
+    #[test]
     fn bounded_lines_resynchronize() {
         let mut input = vec![b'x'; MAX_LINE_BYTES + 1];
         input.extend_from_slice(b"\n{\"protocol\":\"ketchup.headless.v1\",\"id\":9,\"method\":\"state\",\"params\":{}}\n");
