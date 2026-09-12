@@ -2575,6 +2575,10 @@ fn worker_evaluates_planar_offset_face_through_exact_brep_graph() {
             .all(|ordinal| *ordinal == 0)
     );
     assert_eq!(
+        package.identity.exact_input_digest,
+        dedicated.identity.exact_input_digest
+    );
+    assert_eq!(
         package.identity.result_fingerprint,
         dedicated.identity.result_fingerprint
     );

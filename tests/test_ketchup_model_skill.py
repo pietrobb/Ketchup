@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
 import threading
 from types import SimpleNamespace
@@ -133,6 +134,26 @@ def test_preconditions_check_observed_and_fresh_identity():
         skill._precondition(entry, identity, 2, "abc")
 
 
+def test_summary_preserves_authoritative_recovery_provenance():
+    runtime = skill.Runtime(SimpleNamespace(active=False))
+    state = {"document_id": "doc", "revision": 2, "canonical_digest": "abc",
+             "undo_steps": 1, "redo_steps": 0}
+    requested = {"text": "C:/models/primary.ketchup", "original_bytes": 25, "truncated": False}
+    source = {"text": "C:/models/.primary.ketchup.recovery", "original_bytes": 35, "truncated": False}
+    recovery = {"requested_path": requested, "source_path": source, "save_as_required": True}
+    result = {"state": state, "summary": {"counts": {}}, "path": None,
+              "recovery": recovery, "modified": True}
+
+    summary = runtime.summary({"path": requested["text"]}, result)
+
+    assert summary["path"] is None
+    assert summary["recovery"] == recovery
+    assert summary["recovery"]["requested_path"] == requested
+    assert summary["recovery"]["source_path"] == source
+    assert summary["recovery"]["save_as_required"] is True
+    assert summary["unsaved"] is True
+
+
 class SafetyDocument:
     def __init__(self):
         self.snapshot = {"document_id": str(uuid.uuid4()), "revision": 0, "canonical_digest": "zero",
@@ -150,7 +171,8 @@ class SafetyDocument:
     def summary(self):
         return {"state": copy.deepcopy(self.snapshot), "summary": {
             "identity": skill._identity(self.snapshot), "counts": {"root_occurrences": 0, "definitions": 0, "features": 0},
-            "complete": True, "coverage": {"spatial": False}}, "modified": self.modified}
+            "complete": True, "coverage": {"spatial": False}}, "path": None, "recovery": None,
+                "modified": self.modified}
 
     def query(self, **params):
         self.calls.append(("query", params))
@@ -503,6 +525,57 @@ def test_errors_transport_and_cancellation_close_only_owned():
         with pytest.raises(asyncio.CancelledError):
             await task
         assert closed == [handle, handle] and not runtime.sessions
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(not os.environ.get("KETCHUP_HEADLESS"), reason="Set KETCHUP_HEADLESS to updated real build")
+def test_real_recovery_provenance_survives_session_and_inspect(monkeypatch, tmp_path):
+    registered = tools(monkeypatch)
+
+    async def scenario():
+        requested = tmp_path / "primary.ketchup"
+        recovery_path = requested.with_suffix(".ketchup.recovery")
+        destination = tmp_path / "recovered.ketchup"
+        opened = (await call(registered, "KetchupSession", action="new"))["result"]
+        saved = await call(registered, "KetchupSave", handle=opened["handle"],
+                           path=str(requested), **expected(opened))
+        assert saved["ok"]
+        observed = (await call(registered, "KetchupInspect", handle=opened["handle"]))["result"]
+        assert (await call(registered, "KetchupSession", action="close", handle=opened["handle"],
+                           **expected(observed)))["ok"]
+        shutil.copy2(requested, recovery_path)
+        requested.write_bytes(b"corrupt primary")
+
+        recovered = (await call(registered, "KetchupSession", action="open",
+                                path=str(requested)))["result"]
+        handle = recovered["handle"]
+        try:
+            requested_text = str(requested.resolve())
+            recovery_text = str(recovery_path.resolve())
+            assert recovered["path"] is None
+            assert recovered["unsaved"] is True
+            assert recovered["recovery"] == {
+                "requested_path": {"text": requested_text,
+                                   "original_bytes": len(requested_text.encode("utf-8")),
+                                   "truncated": False},
+                "source_path": {"text": recovery_text,
+                                "original_bytes": len(recovery_text.encode("utf-8")),
+                                "truncated": False},
+                "save_as_required": True,
+            }
+            inspected = (await call(registered, "KetchupInspect", handle=handle))["result"]
+            assert inspected["path"] is None
+            assert inspected["recovery"] == recovered["recovery"]
+            saved_as = await call(registered, "KetchupSave", handle=handle,
+                                  path=str(destination), **expected(inspected))
+            assert saved_as["ok"]
+            assert saved_as["result"]["recovery"] is None
+            assert saved_as["result"]["path"]["text"] == str(destination.resolve())
+        finally:
+            inspected = (await call(registered, "KetchupInspect", handle=handle))["result"]
+            await call(registered, "KetchupSession", action="close", handle=handle,
+                       discard=True, **expected(inspected))
+
     asyncio.run(scenario())
 
 

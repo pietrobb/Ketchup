@@ -6824,6 +6824,10 @@ impl KetchupApp {
         self.sketch_start = None;
         self.sketch_end = None;
         self.sketch_cursor = None;
+        self.line_chain_origin = None;
+        self.line_chain_points.clear();
+        self.line_chain_items.clear();
+        self.clear_measurement();
         self.value_input.clear();
         self.focus_value_box = false;
         if let Some(task) = self.exact_task.take() {
@@ -6841,6 +6845,13 @@ impl KetchupApp {
 
     fn new_document(&mut self) {
         self.cancel_pending_assistant_work();
+        let mut live_bridge = self.live_bridge.take();
+        if let Some(bridge) = live_bridge.as_mut() {
+            bridge.invalidate_document_context();
+        }
+        let live_consent_broker = self.live_consent_broker.take();
+        let live_pending_consent = self.live_pending_consent.take();
+        let live_consent_attached = self.live_consent_attached;
         let dialogs = std::mem::replace(&mut self.dialogs, Box::new(NativeFileDialogs::default()));
         let assistant_transport = Arc::clone(&self.assistant_transport);
         let assistant_request_sequence = self.assistant_request_sequence;
@@ -6861,6 +6872,10 @@ impl KetchupApp {
         *self = Self::with_catalog(catalog)
             .with_dialogs(dialogs)
             .with_assistant_transport(assistant_transport);
+        self.live_bridge = live_bridge;
+        self.live_consent_broker = live_consent_broker;
+        self.live_pending_consent = live_pending_consent;
+        self.live_consent_attached = live_consent_attached;
         self.wgpu_target_format = wgpu_target_format;
         self.wgpu_device = wgpu_device;
         self.wgpu_queue = wgpu_queue;
@@ -25109,6 +25124,7 @@ impl KetchupApp {
             self.assistant_verification = None;
         }
         self.clear_ephemeral_edit_state();
+        self.cancel_rectangle_sketch();
         self.parameter_editor_node = None;
         self.parameter_provenance = None;
         self.parameter_last_recomputed_nodes.clear();
@@ -25123,6 +25139,7 @@ impl KetchupApp {
         }
         self.invalidate_pending_import_reviews();
         self.clear_ephemeral_edit_state();
+        self.cancel_rectangle_sketch();
         self.parameter_editor_node = None;
         self.parameter_provenance = None;
         self.parameter_last_recomputed_nodes.clear();

@@ -355,6 +355,13 @@ def test_cross_language_cad_contract_corpus_passes_public_parser_fail_closed():
             )
             assert parsed["cad_edit_program"] == case[field]
 
+    for case in corpus["validation_cases"]:
+        if case["valid"]:
+            assert assistant._validate_cad_edit_program(case["program"]) == case["program"]
+        else:
+            with pytest.raises(assistant.ProtocolError):
+                assistant._validate_cad_edit_program(case["program"])
+
     general = corpus["cases"][0]["program"]
 
     def invalid(operation_name, mutate):

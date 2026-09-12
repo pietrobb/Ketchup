@@ -1862,6 +1862,56 @@ pub struct SceneOccurrence {
 }
 
 impl SceneOccurrence {
+    pub(crate) fn matches_snapshot(&self, snapshot: &Snapshot) -> bool {
+        let Ok(resolved) = snapshot.resolve_instance_path(&self.instance_path) else {
+            return false;
+        };
+        let root_id = self.instance_path.root_occurrence();
+        let Some(root) = snapshot.occurrence(root_id) else {
+            return false;
+        };
+        let mut definition_id = root.definition_id;
+        let mut name = root.name.as_str();
+        let mut parent = root.parent;
+        let mut local_parent = None;
+        let mut visible = snapshot.occurrence_effectively_visible(root_id) == Some(true);
+        let mut color = root.color;
+        for step in self.instance_path.steps() {
+            if let InstancePathStep::Occurrence(local_id) = step {
+                let Some(local) = snapshot.local_occurrence(LocalOccurrenceKey {
+                    definition_id,
+                    local_id: *local_id,
+                }) else {
+                    return false;
+                };
+                visible &= local.visible
+                    && local
+                        .tag
+                        .and_then(|id| snapshot.tag(id))
+                        .is_none_or(|tag| tag.visible);
+                color = color.or(local.color);
+                definition_id = local.definition_id;
+                name = &local.name;
+                parent = None;
+                local_parent = local.parent;
+            }
+        }
+        !matches!(
+            self.instance_path.steps().last(),
+            Some(InstancePathStep::Group(_))
+        ) && self.occurrence_id == root_id
+            && self.definition_id == resolved.definition_id
+            && self.transform == resolved.world_transform
+            && self.occurrence_name == name
+            && snapshot
+                .definition(definition_id)
+                .is_some_and(|definition| self.definition_name == definition.name)
+            && self.parent == parent
+            && self.local_parent == local_parent
+            && self.visible == visible
+            && self.color == color
+    }
+
     /// Resolved inherited sRGB color for this projected occurrence.
     #[must_use]
     pub const fn color(&self) -> Option<[u8; 3]> {
@@ -5816,6 +5866,7 @@ impl DocumentStore {
                             kind,
                         }),
                     );
+                    recompute_offset_workplane_frames(&mut product)?;
                 }
                 CanonicalCommand::SetFeatureParameter { target, dimension } => {
                     set_feature_parameter(&mut product, target, dimension.clone())?;
@@ -9894,6 +9945,53 @@ fn set_feature_parameter(
             kind,
         }),
     );
+    recompute_offset_workplane_frames(product)?;
+    Ok(())
+}
+
+fn recompute_offset_workplane_frames(product: &mut ProductModel) -> Result<(), CanonicalError> {
+    let ordered_feature_ids = product
+        .definitions
+        .values()
+        .flat_map(|definition| definition.feature_ids.iter().copied())
+        .collect::<Vec<_>>();
+    for feature_id in ordered_feature_ids {
+        let Some(feature) = product.features.get(&feature_id) else {
+            continue;
+        };
+        let FeatureKind::Workplane(spec) = &feature.kind else {
+            continue;
+        };
+        let WorkplaneSupport::Offset { base, distance } = &spec.support else {
+            continue;
+        };
+        let base_frame = product
+            .features
+            .get(base)
+            .and_then(|feature| match &feature.kind {
+                FeatureKind::Workplane(spec) => Some(spec.frame),
+                _ => None,
+            })
+            .ok_or(CanonicalError::Sketch(
+                SketchError::MissingWorkplaneSupport(*base),
+            ))?;
+        let frame = base_frame.offset(distance.millimetres());
+        if spec.frame == frame {
+            continue;
+        }
+        product.features.insert(
+            feature_id,
+            Arc::new(Feature {
+                id: feature.id,
+                definition_id: feature.definition_id,
+                name: feature.name.clone(),
+                kind: FeatureKind::Workplane(WorkplaneSpec {
+                    support: spec.support.clone(),
+                    frame,
+                }),
+            }),
+        );
+    }
     Ok(())
 }
 

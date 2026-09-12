@@ -191,6 +191,11 @@ fn matches_segment(
         || (close(line.start_mm, second) && close(line.end_mm, first))
 }
 
+fn rendered_svg_node_bounds(tree: &resvg::usvg::Tree, id: &str) -> [f32; 4] {
+    let bounds = tree.node_by_id(id).unwrap().abs_stroke_bounding_box();
+    [bounds.x(), bounds.y(), bounds.right(), bounds.bottom()]
+}
+
 fn overlapping_pair_with_views(
     rear_transform: Transform,
     front_transform: Transform,
@@ -1605,6 +1610,103 @@ fn associative_notes_and_title_block_follow_source_metadata_across_undo_redo_and
         .unwrap(),
         renamed
     );
+}
+
+#[test]
+fn svg_text_renders_at_viewbox_scale_without_annotation_collisions() {
+    let mut document = seeded_document();
+    let exact = registry(
+        &document.current(),
+        "svg-text-scale",
+        [[0.0, 0.0, 0.0], [20.0, 10.0, 30.0]],
+    );
+    let plain_sheet = DrawingSheet::with_contract_and_views(
+        SHEET,
+        "SVG text scale",
+        DrawingSource::Definition(DEFINITION),
+        DrawingPageTemplate::default(),
+        DrawingTitleBlock::new("Title", "Number", "Revision", "Author").unwrap(),
+        vec![OrthographicViewKind::Front],
+    )
+    .unwrap();
+    let plain = project_orthographic_drawing(&document.current(), &exact, &plain_sheet).unwrap();
+    let source_line_id = plain.views[0]
+        .visible_lines
+        .iter()
+        .find(|line| {
+            let delta = [
+                line.end_mm[0] - line.start_mm[0],
+                line.end_mm[1] - line.start_mm[1],
+            ];
+            (delta[0] * delta[0] + delta[1] * delta[1] - 900.0).abs() <= 1.0e-9
+        })
+        .unwrap()
+        .stable_line_id
+        .clone();
+    let sheet = DrawingSheet::with_contract_views_and_annotations(
+        SHEET,
+        "SVG text scale",
+        DrawingSource::Definition(DEFINITION),
+        DrawingPageTemplate::default(),
+        DrawingTitleBlock::new("Title", "Number", "Revision", "Author").unwrap(),
+        vec![OrthographicViewKind::Front],
+        DrawingAnnotations::new(
+            vec![
+                DrawingLinearDimension::new(
+                    DrawingDimensionId(1),
+                    OrthographicViewKind::Front,
+                    source_line_id,
+                    8.0,
+                )
+                .unwrap(),
+            ],
+            vec![],
+        ),
+    )
+    .unwrap();
+    let (create, drawing) = prepare_create_drawing_sheet(&document, &exact, sheet).unwrap();
+    document.commit_proposal(&create).unwrap();
+    let exported = export_drawing(&document.current(), &drawing).unwrap();
+
+    let mut options = resvg::usvg::Options::default();
+    options.fontdb_mut().load_system_fonts();
+    let font_family = options
+        .fontdb
+        .faces()
+        .next()
+        .and_then(|face| face.families.first())
+        .map(|(family, _)| family.clone())
+        .unwrap();
+    options.fontdb_mut().set_sans_serif_family(font_family);
+    let tree = resvg::usvg::Tree::from_data(exported.svg(), &options).unwrap();
+    let size = tree.size().to_int_size();
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(size.width(), size.height()).unwrap();
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::identity(),
+        &mut pixmap.as_mut(),
+    );
+    assert!(pixmap.data().chunks_exact(4).any(|pixel| pixel[3] != 0));
+
+    let pixels_per_mm = tree.size().height() / drawing.layout.page_size_mm[1] as f32;
+    let max_text_height = 5.0 * pixels_per_mm;
+    let dimension = rendered_svg_node_bounds(&tree, "sheet-10/dimension-1");
+    assert!(dimension[3] - dimension[1] < max_text_height);
+
+    let title_border = rendered_svg_node_bounds(&tree, "title-block-2");
+    let title_rows = [
+        rendered_svg_node_bounds(&tree, "title-block/title"),
+        rendered_svg_node_bounds(&tree, "title-block/drawing-number"),
+        rendered_svg_node_bounds(&tree, "title-block/revision"),
+        rendered_svg_node_bounds(&tree, "title-block/author"),
+    ];
+    assert!(title_rows[0][1] > title_border[3]);
+    assert!(
+        title_rows
+            .iter()
+            .all(|bounds| bounds[3] - bounds[1] < max_text_height)
+    );
+    assert!(title_rows.windows(2).all(|rows| rows[0][3] < rows[1][1]));
 }
 
 #[test]

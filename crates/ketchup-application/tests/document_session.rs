@@ -59,6 +59,15 @@ fn shared_python_contract_corpus_plans_and_evaluates_with_real_worker() {
     assert_eq!(corpus["schema"], "ketchup.assistant-cad-contract-corpus.v1");
     let cases = corpus["cases"].as_array().unwrap();
     assert_eq!(cases.len(), 2);
+    for case in corpus["validation_cases"].as_array().unwrap() {
+        let program: AssistantCadEditProgram =
+            serde_json::from_value(case["program"].clone()).unwrap();
+        assert_eq!(
+            program.validate().is_ok(),
+            case["valid"].as_bool().unwrap(),
+            "{case}"
+        );
+    }
 
     for case in cases {
         let mut session = DocumentSession::new(worker_settings());

@@ -10,7 +10,7 @@
 //! On a lost response, do not retry mutations blindly. Re-observe the document.
 //! Images are callback-correlated CAD-only PNG thumbnails; geometry completeness is not claimed.
 
-use crate::{AppCommand, KetchupApp, SelectionId};
+use crate::{ActiveTool, AppCommand, KetchupApp, SelectionId};
 use eframe::egui;
 use ketchup_application::{
     batch_task::{OccurrenceBatchOperation, OccurrenceBatchState, OccurrenceBatchTask},
@@ -391,6 +391,17 @@ impl KetchupApp {
 }
 
 impl LiveBridge {
+    pub(super) fn invalidate_document_context(&mut self) {
+        self.observed = None;
+        self.pending = None;
+        self.receipts.clear();
+        self.batch_jobs.clear();
+        self.batch_job_key = RandomState::new();
+        self.next_batch_job = 1;
+        self.query.invalidate();
+        self.image.revoke();
+    }
+
     fn batch_job_handle(&self, id: u64) -> String {
         format!("batch-{id:016x}-{:016x}", self.batch_job_key.hash_one(id))
     }
@@ -408,6 +419,7 @@ impl LiveBridge {
             || app.revolve_tool.is_some()
             || app.revolve_preview.is_some()
             || app.planar_offset_preview.is_some()
+            || matches!(app.active_tool, ActiveTool::Helix | ActiveTool::Thread)
             || app.sweep_preview.is_some()
             || app.loft_input_sections.is_some()
             || app.loft_preview.is_some()
@@ -848,13 +860,7 @@ impl LiveBridge {
                 if !app.confirm_discard_if_dirty() || !app.open_document_from(Path::new(&path)) {
                     return Err("open_rejected");
                 }
-                self.pending = None;
-                self.receipts.clear();
-                self.batch_jobs.clear();
-                self.batch_job_key = RandomState::new();
-                self.next_batch_job = 1;
-                self.query.invalidate();
-                self.image.revoke();
+                self.invalidate_document_context();
                 self.observed = Some(app.live_bridge_stamp());
                 Ok(json!({"opened":true,"same_gui_window":true,"dirty":app.is_dirty()}))
             }

@@ -1606,6 +1606,116 @@ fn same_program_boolean_resolves_host_assigned_body_outputs_atomically() {
 }
 
 #[test]
+fn same_program_set_dimension_updates_existing_boolean_inputs_atomically() {
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Dimensioned Boolean".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(1),
+                definition_id: DefinitionId(1),
+                name: "Profile".into(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(2),
+                definition_id: DefinitionId(1),
+                name: "Adjustable body".into(),
+                kind: FeatureKind::Extrusion {
+                    profile: FeatureId(1),
+                    height: Dimension::new("10", 10.0).unwrap(),
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(3),
+                definition_id: DefinitionId(1),
+                name: "Raised body".into(),
+                kind: FeatureKind::RigidTransform {
+                    target: FeatureId(2),
+                    transform: Transform::from_translation(0.0, 0.0, 15.0).unwrap(),
+                },
+            },
+        ]))
+        .unwrap();
+    let baseline = document.current();
+    let undo = document.visible_undo_steps();
+    let intersect = AssistantCadEditOperation::AppendFeature {
+        definition_id: 1,
+        name: "Overlap".into(),
+        feature: AssistantCadBodyFeature::Boolean {
+            operation: AssistantCadBooleanOperation::Intersect,
+            target_feature_id: 2.into(),
+            tool_feature_id: 3.into(),
+        },
+    };
+
+    let rejection = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &program(vec![intersect.clone()]),
+    )
+    .unwrap_err();
+    assert_eq!(rejection.code, "planning.cad_feature_result_empty");
+
+    let batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &program(vec![
+            AssistantCadEditOperation::SetDimension {
+                feature_id: 2,
+                constraint_id: None,
+                value_mm: 20.0,
+            },
+            intersect,
+        ]),
+    )
+    .unwrap();
+    assert_eq!(batch.commands().len(), 2);
+    assert_eq!(
+        document.current().canonical_digest(),
+        baseline.canonical_digest()
+    );
+    assert_eq!(document.visible_undo_steps(), undo);
+
+    let candidate = document.preview_batch(&batch).unwrap();
+    assert!(matches!(
+        candidate.feature(FeatureId(2)).unwrap().kind(),
+        FeatureKind::Extrusion { height, .. } if height.millimetres() == 20.0
+    ));
+    assert!(matches!(
+        candidate.feature(FeatureId(4)).unwrap().kind(),
+        FeatureKind::Boolean {
+            operation: ketchup_core::document::BooleanOperation::Intersect,
+            target: FeatureId(2),
+            tool: FeatureId(3),
+        }
+    ));
+    ExactBRepGraph::from_snapshot(&candidate, DefinitionId(1), FeatureId(4)).unwrap();
+
+    document.apply_batch(&batch).unwrap();
+    let committed = document.current();
+    assert_eq!(committed.revision_id(), baseline.revision_id() + 1);
+    assert_eq!(document.visible_undo_steps(), undo + 1);
+    document.undo().unwrap();
+    assert_eq!(
+        document.current().canonical_digest(),
+        baseline.canonical_digest()
+    );
+    document.redo().unwrap();
+    assert_eq!(
+        document.current().canonical_digest(),
+        committed.canonical_digest()
+    );
+}
+
+#[test]
 fn create_part_sketch_and_pocket_resolve_typed_program_outputs_atomically() {
     let mut document = DocumentStore::new();
     let baseline = document.current();

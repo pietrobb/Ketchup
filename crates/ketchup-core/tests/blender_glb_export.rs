@@ -176,6 +176,176 @@ fn rewrite_glb_json(glb: &[u8], mutate: impl FnOnce(&mut Value)) -> Vec<u8> {
 }
 
 #[test]
+fn model_exports_reject_stale_scene_occurrences_with_current_geometry() {
+    use ketchup_core::three_mf_export::{ExactThreeMfInstance, exact_model_three_mf_export};
+
+    for change in [
+        CanonicalCommand::SetOccurrenceVisibility {
+            id: FIRST,
+            visible: false,
+        },
+        CanonicalCommand::SetOccurrenceColor {
+            id: FIRST,
+            color: Some([0, 255, 0]),
+        },
+        CanonicalCommand::SetOccurrenceTransform {
+            id: FIRST,
+            transform: Transform::from_translation(17.0, -23.0, 31.0).unwrap(),
+        },
+    ] {
+        let mut document = seeded_document(Some([255, 0, 0]), None);
+        let stale_occurrence = document
+            .current()
+            .scene_query()
+            .into_iter()
+            .find(|occurrence| occurrence.occurrence_id == FIRST)
+            .unwrap();
+        document
+            .apply_batch(&CommandBatch::new(vec![change]))
+            .unwrap();
+        let snapshot = document.current();
+        let digest = snapshot.canonical_digest();
+        let package = current_package(&snapshot);
+        assert!(package.is_current(&snapshot));
+        let glb = exact_model_glb_export(
+            &snapshot,
+            &[ExactGlbInstance {
+                package: &package,
+                occurrence: &stale_occurrence,
+            }],
+        );
+        let three_mf = exact_model_three_mf_export(
+            &snapshot,
+            &[ExactThreeMfInstance {
+                package: &package,
+                occurrence: &stale_occurrence,
+            }],
+        );
+        assert_eq!(
+            (glb.err(), three_mf.err()),
+            (
+                Some(ExactProductError::StaleResult),
+                Some(ExactProductError::StaleResult)
+            ),
+            "current geometry must not authorize stale scene visibility or color"
+        );
+        assert_eq!(document.current().canonical_digest(), digest);
+    }
+}
+
+#[test]
+fn model_exports_bind_nested_instances_and_inherited_appearance() {
+    use ketchup_core::three_mf_export::{ExactThreeMfInstance, exact_model_three_mf_export};
+
+    for mutation in 0..3 {
+        let mut document = seeded_document(Some([255, 0, 0]), None);
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateGroup {
+                    id: GroupId(20),
+                    name: "Assembly".into(),
+                    transform: Transform::from_translation(11.0, 13.0, 17.0).unwrap(),
+                    parent: None,
+                },
+                CanonicalCommand::CreateGroup {
+                    id: GroupId(21),
+                    name: "Nested group".into(),
+                    transform: Transform::from_translation(2.0, 3.0, 5.0).unwrap(),
+                    parent: Some(GroupId(20)),
+                },
+                CanonicalCommand::SetOccurrenceParent {
+                    id: FIRST,
+                    parent: Some(GroupId(21)),
+                },
+            ]))
+            .unwrap();
+        let converted = document
+            .convert_group_to_component(GroupId(20), "Component")
+            .unwrap();
+        let root = converted.component_occurrence_id;
+        let snapshot = document.current();
+        let package = current_package(&snapshot);
+        let occurrence = snapshot
+            .scene_query()
+            .into_iter()
+            .find(|item| item.definition_id == DEFINITION && !item.instance_path.steps().is_empty())
+            .unwrap();
+        let export_errors =
+            |snapshot: &ketchup_core::document::Snapshot,
+             package: &ExactBodyPackage,
+             occurrence: &ketchup_core::document::SceneOccurrence| {
+                (
+                    exact_model_glb_export(
+                        snapshot,
+                        &[ExactGlbInstance {
+                            package,
+                            occurrence,
+                        }],
+                    )
+                    .err(),
+                    exact_model_three_mf_export(
+                        snapshot,
+                        &[ExactThreeMfInstance {
+                            package,
+                            occurrence,
+                        }],
+                    )
+                    .err(),
+                )
+            };
+        assert_eq!(
+            export_errors(&snapshot, &package, &occurrence),
+            (None, None)
+        );
+        let command = match mutation {
+            0 => CanonicalCommand::SetOccurrenceVisibility {
+                id: root,
+                visible: false,
+            },
+            1 => CanonicalCommand::SetOccurrenceColor {
+                id: root,
+                color: Some([0, 255, 0]),
+            },
+            _ => CanonicalCommand::SetOccurrenceTransform {
+                id: root,
+                transform: Transform::from_translation(-31.0, 37.0, 41.0).unwrap(),
+            },
+        };
+        document
+            .apply_batch(&CommandBatch::new(vec![command]))
+            .unwrap();
+        let snapshot = document.current();
+        let digest = snapshot.canonical_digest();
+        let package = current_package(&snapshot);
+        assert_eq!(
+            export_errors(&snapshot, &package, &occurrence),
+            (
+                Some(ExactProductError::StaleResult),
+                Some(ExactProductError::StaleResult)
+            )
+        );
+        let current = snapshot
+            .scene_query()
+            .into_iter()
+            .find(|item| item.instance_path == occurrence.instance_path)
+            .unwrap();
+        if current.visible {
+            assert_eq!(export_errors(&snapshot, &package, &current), (None, None));
+            let mut tampered = current.clone();
+            tampered.occurrence_id = SECOND;
+            assert_eq!(
+                export_errors(&snapshot, &package, &tampered),
+                (
+                    Some(ExactProductError::StaleResult),
+                    Some(ExactProductError::StaleResult)
+                )
+            );
+        }
+        assert_eq!(document.current().canonical_digest(), digest);
+    }
+}
+
+#[test]
 fn glb_preserves_named_transformed_instances_and_reuses_geometry() {
     let document = seeded_document(None, None);
     let snapshot = document.current();

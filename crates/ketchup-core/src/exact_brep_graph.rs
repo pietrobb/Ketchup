@@ -549,7 +549,11 @@ impl ExactBRepGraph {
         }) {
             return false;
         }
-        let evidence_bounds = local_bounds_mm.unwrap_or(bounds_mm);
+        let evidence_bounds = if framed {
+            local_bounds_mm.expect("framed planar offsets require projected local bounds")
+        } else {
+            bounds_mm
+        };
         let distance_mm = f64::from_bits(*distance_bits);
         match &profile.geometry {
             ExactBRepPlanarGeometry::Circle {

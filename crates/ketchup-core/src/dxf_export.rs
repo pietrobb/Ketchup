@@ -5,6 +5,9 @@ use std::fmt::{self, Write as _};
 
 use crate::document::{FeatureKind, ProfileSegment, Snapshot, Transform};
 use crate::import::{DxfImportOptions, inspect_dxf};
+use crate::sketch::{
+    SketchSpec, SolvedSketchRegionEdge, SolvedSketchRegionProfile, WorkplaneFrame,
+};
 
 pub const DXF_PROFILE_EXPORT_SCHEMA_V1: &str = "ketchup.dxf-profile-export.v1";
 const MAX_EXPORT_PROFILES: usize = 170;
@@ -71,7 +74,7 @@ enum ExportEntity {
     },
 }
 
-/// Export every visible canonical polygon/segment profile as a bounded ASCII DXF.
+/// Export every visible canonical polygon, segment, or solved Sketch profile as bounded ASCII DXF.
 ///
 /// Each profile is isolated in a block so two profiles on the same layer cannot
 /// be accidentally joined by a receiving importer. Native DWG is deliberately
@@ -97,32 +100,52 @@ pub fn export_visible_profiles_dxf(
                 .name()
                 .strip_prefix(IMPORTED_LAYER_PREFIX)
                 .unwrap_or_else(|| definition.name());
-            let source_segments = match feature.kind() {
-                FeatureKind::Profile { points_mm } => polygon_segments(points_mm)?,
-                FeatureKind::SegmentProfile { segments, .. } => segments.clone(),
+            let (source_profiles, transform) = match feature.kind() {
+                FeatureKind::Profile { points_mm } => {
+                    (vec![polygon_segments(points_mm)?], occurrence.transform)
+                }
+                FeatureKind::SegmentProfile { segments, .. } => {
+                    (vec![segments.clone()], occurrence.transform)
+                }
+                FeatureKind::Sketch(sketch) => {
+                    let workplane = snapshot
+                        .feature(sketch.workplane)
+                        .ok_or(DxfProfileExportError::InvalidGeometry)?;
+                    let FeatureKind::Workplane(workplane) = workplane.kind() else {
+                        return Err(DxfProfileExportError::InvalidGeometry);
+                    };
+                    (
+                        sketch_profiles(sketch)?,
+                        occurrence
+                            .transform
+                            .compose(workplane_transform(workplane.frame)?),
+                    )
+                }
                 _ => continue,
             };
             validate_layer(layer)?;
-            segment_count = segment_count
-                .checked_add(source_segments.len())
-                .ok_or(DxfProfileExportError::TooManySegments)?;
-            if segment_count > MAX_EXPORT_SEGMENTS {
-                return Err(DxfProfileExportError::TooManySegments);
-            }
-            let entities = transform_segments(&source_segments, occurrence.transform)?;
-            let block_name = format!(
-                "KETCHUP_P_{:016X}_{:016X}_{:04}",
-                occurrence.occurrence_id.0,
-                feature.id().0,
-                profiles.len() + 1
-            );
-            profiles.push(ExportProfile {
-                layer: layer.to_owned(),
-                block_name,
-                entities,
-            });
-            if profiles.len() > MAX_EXPORT_PROFILES {
-                return Err(DxfProfileExportError::TooManyProfiles);
+            for source_segments in source_profiles {
+                segment_count = segment_count
+                    .checked_add(source_segments.len())
+                    .ok_or(DxfProfileExportError::TooManySegments)?;
+                if segment_count > MAX_EXPORT_SEGMENTS {
+                    return Err(DxfProfileExportError::TooManySegments);
+                }
+                let entities = transform_segments(&source_segments, transform)?;
+                let block_name = format!(
+                    "KETCHUP_P_{:016X}_{:016X}_{:04}",
+                    occurrence.occurrence_id.0,
+                    feature.id().0,
+                    profiles.len() + 1
+                );
+                profiles.push(ExportProfile {
+                    layer: layer.to_owned(),
+                    block_name,
+                    entities,
+                });
+                if profiles.len() > MAX_EXPORT_PROFILES {
+                    return Err(DxfProfileExportError::TooManyProfiles);
+                }
             }
         }
     }
@@ -148,7 +171,9 @@ pub fn export_visible_profiles_dxf(
         .filter(|feature| {
             !matches!(
                 feature.kind(),
-                FeatureKind::Profile { .. } | FeatureKind::SegmentProfile { .. }
+                FeatureKind::Profile { .. }
+                    | FeatureKind::SegmentProfile { .. }
+                    | FeatureKind::Sketch(_)
             )
         })
         .count();
@@ -172,6 +197,105 @@ fn polygon_segments(points: &[[f64; 2]]) -> Result<Vec<ProfileSegment>, DxfProfi
         .take(points.len())
         .map(|(start_mm, end_mm)| ProfileSegment::Line { start_mm, end_mm })
         .collect())
+}
+
+fn sketch_profiles(sketch: &SketchSpec) -> Result<Vec<Vec<ProfileSegment>>, DxfProfileExportError> {
+    let regions = sketch
+        .solved_regions()
+        .map_err(|_| DxfProfileExportError::InvalidGeometry)?;
+    let mut profiles = Vec::new();
+    for region in regions {
+        profiles.push(solved_profile_segments(&region.outer)?);
+        for hole in &region.holes {
+            profiles.push(solved_profile_segments(hole)?);
+        }
+    }
+    Ok(profiles)
+}
+
+fn solved_profile_segments(
+    profile: &SolvedSketchRegionProfile,
+) -> Result<Vec<ProfileSegment>, DxfProfileExportError> {
+    match profile {
+        SolvedSketchRegionProfile::Polyline(points) => polygon_segments(points),
+        SolvedSketchRegionProfile::Boundary(edges) => Ok(edges
+            .iter()
+            .map(|edge| match edge {
+                SolvedSketchRegionEdge::Line { start_mm, end_mm } => ProfileSegment::Line {
+                    start_mm: *start_mm,
+                    end_mm: *end_mm,
+                },
+                SolvedSketchRegionEdge::Arc {
+                    start_mm,
+                    end_mm,
+                    center_mm,
+                    clockwise,
+                } => ProfileSegment::CircularArc {
+                    start_mm: *start_mm,
+                    end_mm: *end_mm,
+                    center_mm: *center_mm,
+                    clockwise: *clockwise,
+                },
+                SolvedSketchRegionEdge::CubicBezier {
+                    start_mm,
+                    control_1_mm,
+                    control_2_mm,
+                    end_mm,
+                } => ProfileSegment::CubicBezier {
+                    start_mm: *start_mm,
+                    control_1_mm: *control_1_mm,
+                    control_2_mm: *control_2_mm,
+                    end_mm: *end_mm,
+                },
+            })
+            .collect()),
+        SolvedSketchRegionProfile::Circle {
+            center_mm,
+            radius_mm,
+        } => {
+            let right = [center_mm[0] + radius_mm, center_mm[1]];
+            let left = [center_mm[0] - radius_mm, center_mm[1]];
+            Ok(vec![
+                ProfileSegment::CircularArc {
+                    start_mm: right,
+                    end_mm: left,
+                    center_mm: *center_mm,
+                    clockwise: false,
+                },
+                ProfileSegment::CircularArc {
+                    start_mm: left,
+                    end_mm: right,
+                    center_mm: *center_mm,
+                    clockwise: false,
+                },
+            ])
+        }
+    }
+}
+
+fn workplane_transform(frame: WorkplaneFrame) -> Result<Transform, DxfProfileExportError> {
+    frame
+        .validate()
+        .map_err(|_| DxfProfileExportError::InvalidGeometry)?;
+    Transform::from_matrix([
+        frame.x_axis[0],
+        frame.y_axis[0],
+        frame.normal[0],
+        frame.origin_mm[0],
+        frame.x_axis[1],
+        frame.y_axis[1],
+        frame.normal[1],
+        frame.origin_mm[1],
+        frame.x_axis[2],
+        frame.y_axis[2],
+        frame.normal[2],
+        frame.origin_mm[2],
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ])
+    .map_err(|_| DxfProfileExportError::UnsupportedTransform)
 }
 
 fn transform_segments(

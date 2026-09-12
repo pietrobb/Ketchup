@@ -167,8 +167,8 @@ class Runtime:
 
     def summary(self, entry, result):
         state = result["state"]
-        return {**result["summary"], "identity": _identity(state), "path": entry["path"],
-                "unsaved": result["modified"],
+        return {**result["summary"], "identity": _identity(state), "path": result["path"],
+                "recovery": result["recovery"], "unsaved": result["modified"],
                 "undo_steps": state["undo_steps"], "redo_steps": state["redo_steps"],
                 "backend_compact": True}
 

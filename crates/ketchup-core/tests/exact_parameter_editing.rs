@@ -32,6 +32,7 @@ const SKETCH: FeatureId = FeatureId(12);
 const PAD: FeatureId = FeatureId(13);
 const CUT_SKETCH: FeatureId = FeatureId(14);
 const CUT: FeatureId = FeatureId(15);
+const CHILD_OFFSET: FeatureId = FeatureId(16);
 const RADIUS: SketchConstraintId = SketchConstraintId(1);
 
 fn stamp(document: &DocumentStore) -> (u64, String, usize, usize) {
@@ -206,6 +207,75 @@ fn exact_body_parameter_preview_has_manual_ai_parity_and_one_undo() {
 
     document.undo().unwrap();
     assert_eq!(document.current().canonical_digest(), before.1);
+}
+
+#[test]
+fn offset_workplane_edits_recompute_the_full_descendant_frame_chain() {
+    let mut document = seed_body_parameter_edit();
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+            id: CHILD_OFFSET,
+            definition_id: DEFINITION,
+            name: "Child offset".to_owned(),
+            kind: FeatureKind::Workplane(WorkplaneSpec {
+                support: WorkplaneSupport::Offset {
+                    base: OFFSET,
+                    distance: Dimension::from_decimal("3").unwrap(),
+                },
+                frame: WorkplaneSpec::principal(PrincipalPlane::Xy)
+                    .frame
+                    .offset(5.0),
+            }),
+        }]))
+        .unwrap();
+    let before = stamp(&document);
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureParameter {
+                target: FeatureParameterTarget::new(
+                    OFFSET,
+                    "support.offset.distance",
+                    ParameterValueType::Length,
+                )
+                .unwrap(),
+                dimension: Dimension::from_decimal("8").unwrap(),
+            },
+        ]))
+        .unwrap();
+    assert_eq!(document.current().revision_id(), before.0 + 1);
+    let snapshot = document.current();
+    for (feature_id, expected_z) in [(OFFSET, 8.0), (CHILD_OFFSET, 11.0)] {
+        let FeatureKind::Workplane(workplane) = snapshot.feature(feature_id).unwrap().kind() else {
+            panic!("expected offset workplane");
+        };
+        assert_eq!(workplane.frame.origin_mm, [0.0, 0.0, expected_z]);
+    }
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: OFFSET,
+                dimension: Dimension::from_decimal("5").unwrap(),
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    for (feature_id, expected_z) in [(OFFSET, 5.0), (CHILD_OFFSET, 8.0)] {
+        let FeatureKind::Workplane(workplane) = snapshot.feature(feature_id).unwrap().kind() else {
+            panic!("expected offset workplane");
+        };
+        assert_eq!(workplane.frame.origin_mm, [0.0, 0.0, expected_z]);
+    }
+
+    document.undo().unwrap();
+    assert_eq!(document.current().revision_id(), before.0 + 1);
+    document.undo().unwrap();
+    let restored = stamp(&document);
+    assert_eq!(restored.0, before.0);
+    assert_eq!(restored.1, before.1);
+    assert_eq!(restored.2, before.2);
+    assert_eq!(restored.3, 2);
 }
 
 fn seed_movable_circular_pocket() -> DocumentStore {

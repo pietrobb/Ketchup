@@ -494,7 +494,7 @@ fn export_svg(drawing: &OrthographicDrawing, lines: &[PageLine], texts: &[PageTe
     }
     for text in texts {
         svg.push_str(&format!(
-            "<text id=\"{}\" x=\"{}\" y=\"{}\" font-size=\"{}mm\">{}</text>\n",
+            "<text id=\"{}\" x=\"{}\" y=\"{}\" font-size=\"{}\">{}</text>\n",
             xml_escape(&text.id),
             number(text.position[0]),
             number(height - text.position[1]),

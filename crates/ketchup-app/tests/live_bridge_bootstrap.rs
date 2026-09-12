@@ -1,9 +1,18 @@
 //! Bootstrap contract against real pipes/TCP and the actual offscreen app, not OS input.
 mod harness;
 use harness::Shell;
-use ketchup_app::live_bridge::{
-    CaptureMode, Envelope, IMAGE_PROTOCOL_VERSION, ImageFraming, Request, Response, bootstrap::*,
+use ketchup_app::{
+    AppCommand,
+    dialogs::ScriptedFileDialogs,
+    live_bridge::{
+        CaptureMode, Envelope, IMAGE_PROTOCOL_VERSION, ImageFraming, Request, Response,
+        bootstrap::*,
+    },
 };
+use ketchup_core::assistant_sidecar::{
+    AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
+};
+use ketchup_interaction::Vec3;
 use std::{
     ffi::OsString,
     io::{self, Cursor, Read, Write},
@@ -447,6 +456,285 @@ fn in_window_consent_is_required_and_disconnect_revokes_the_automatic_credential
     assert!(!shell.app().live_consent_attached());
     assert!(shell.app().live_bridge_credentials().is_none());
     assert_eq!(shell.app().live_consent_address(), Some(consent_address));
+}
+
+#[test]
+fn file_new_preserves_window_live_services_and_invalidates_document_authority() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut shell = Shell::new();
+    let consent_address = shell
+        .app_mut()
+        .enable_live_consent_broker_in(&eframe::egui::Context::default(), directory.path())
+        .unwrap();
+    shell.step();
+    let instance_id = shell.app().live_consent_instance_id().unwrap().to_owned();
+    let registry_path = directory.path().join(format!("{instance_id}.json"));
+    assert!(registry_path.is_file());
+
+    let nonce = "4".repeat(64);
+    let attach = std::thread::spawn({
+        let nonce = nonce.clone();
+        move || request_consent(consent_address, &nonce)
+    });
+    wait_for_consent(&mut shell);
+    shell.click_button_label(&shell.catalog().text("live-consent-allow"));
+    let allowed = attach.join().unwrap();
+    assert_eq!(allowed["status"], "allowed");
+    let token = allowed["token"].as_str().unwrap().to_owned();
+    let live_address = allowed["live_bridge_address"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut live = TcpStream::connect(live_address).unwrap();
+
+    let before = call(&mut shell, &mut live, &token, Request::Status {})
+        .stamp
+        .unwrap();
+    let proposed = call(
+        &mut shell,
+        &mut live,
+        &token,
+        Request::Propose {
+            expected: before.clone(),
+            selection: vec![],
+            program: AssistantCadEditProgram {
+                operations: vec![AssistantCadEditOperation::SetColor {
+                    selector: AssistantCadEntitySelector::Occurrences {
+                        occurrence_ids: vec![1],
+                    },
+                    color: Some([17, 29, 41]),
+                }],
+            },
+        },
+    );
+    assert!(proposed.ok, "{:?}", proposed.error);
+    let proposal_id = proposed.result.unwrap()["proposal_id"].as_u64().unwrap();
+
+    shell.click_menu_command("menu-file", AppCommand::New);
+    shell.step();
+
+    let credentials = shell.app().live_bridge_credentials().unwrap();
+    assert_eq!(credentials.address, live_address);
+    assert_eq!(credentials.token, token);
+    assert_eq!(shell.app().live_consent_address(), Some(consent_address));
+    assert_eq!(
+        shell.app().live_consent_instance_id(),
+        Some(instance_id.as_str())
+    );
+    assert!(shell.app().live_consent_attached());
+    assert!(registry_path.is_file());
+    let listed = request_broker(consent_address, "list", &"5".repeat(64));
+    assert_eq!(listed["status"], "busy");
+    assert_eq!(listed["instance_id"], instance_id);
+
+    let status = call(&mut shell, &mut live, &token, Request::Status {});
+    assert!(status.ok, "{:?}", status.error);
+    let after = status.stamp.unwrap();
+    assert_ne!(after.document_id, before.document_id);
+    let stale = call(
+        &mut shell,
+        &mut live,
+        &token,
+        Request::Commit {
+            expected: before,
+            proposal_id,
+        },
+    );
+    assert_eq!(stale.error.as_deref(), Some("stale_document"));
+    let invalidated = call(
+        &mut shell,
+        &mut live,
+        &token,
+        Request::Commit {
+            expected: after,
+            proposal_id,
+        },
+    );
+    assert_eq!(invalidated.error.as_deref(), Some("proposal_not_found"));
+}
+
+#[test]
+fn file_open_clears_line_chain_and_measurement_before_live_mutation() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("open-interaction-reset.ketchup");
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_save(&path)
+        .queue_open(&path)
+        .always_discard();
+    let mut shell = Shell::with_dialogs(dialogs);
+    shell.click_menu_command("menu-file", AppCommand::SaveAs);
+    let saved_digest = shell.app().canonical_digest();
+    let saved_occurrence_count = shell.app().occurrence_count();
+
+    pending()
+        .enable(
+            shell.app_mut(),
+            &eframe::egui::Context::default(),
+            Output::default(),
+        )
+        .unwrap();
+    let credentials = shell.app().live_bridge_credentials().unwrap();
+    let address = credentials.address;
+    let token = credentials.token.clone();
+    let mut live = TcpStream::connect(address).unwrap();
+
+    let points = [
+        Vec3::new(10.0, 10.0, 20.0),
+        Vec3::new(25.0, 10.0, 20.0),
+        Vec3::new(25.0, 30.0, 20.0),
+    ]
+    .map(|point| shell.app().viewport_position(point).unwrap());
+    shell.click_command(AppCommand::Line);
+    for point in points {
+        shell.click_at(point);
+    }
+    assert_eq!(shell.app().occurrence_count(), saved_occurrence_count + 2);
+    shell.click_command(AppCommand::Measure);
+    shell.click_at(points[0]);
+    shell.click_at(points[1]);
+    assert!(shell.app().measured_points().is_some());
+
+    let dirty = call(&mut shell, &mut live, &token, Request::Status {})
+        .stamp
+        .unwrap();
+    let blocked = call(
+        &mut shell,
+        &mut live,
+        &token,
+        Request::Propose {
+            expected: dirty,
+            selection: vec![],
+            program: AssistantCadEditProgram {
+                operations: vec![AssistantCadEditOperation::SetColor {
+                    selector: AssistantCadEntitySelector::Occurrences {
+                        occurrence_ids: vec![1],
+                    },
+                    color: Some([17, 29, 41]),
+                }],
+            },
+        },
+    );
+    assert_eq!(blocked.error.as_deref(), Some("busy"));
+
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert_eq!(shell.app().canonical_digest(), saved_digest);
+    assert_eq!(shell.app().occurrence_count(), saved_occurrence_count);
+    assert_eq!(shell.app().measured_points(), None);
+    assert!(shell.app().value_input().is_empty());
+
+    let opened = call(&mut shell, &mut live, &token, Request::Status {})
+        .stamp
+        .unwrap();
+    let proposed = call(
+        &mut shell,
+        &mut live,
+        &token,
+        Request::Propose {
+            expected: opened,
+            selection: vec![],
+            program: AssistantCadEditProgram {
+                operations: vec![AssistantCadEditOperation::SetColor {
+                    selector: AssistantCadEntitySelector::Occurrences {
+                        occurrence_ids: vec![1],
+                    },
+                    color: Some([17, 29, 41]),
+                }],
+            },
+        },
+    );
+    assert!(proposed.ok, "{:?}", proposed.error);
+}
+
+#[test]
+fn unfinished_helix_and_thread_previews_block_live_mutations_without_losing_human_work() {
+    for (tool, panel_key, create_key) in [
+        (
+            AppCommand::Helix,
+            "helix-panel-title",
+            "action-create-helix",
+        ),
+        (
+            AppCommand::Thread,
+            "thread-panel-title",
+            "action-create-thread",
+        ),
+    ] {
+        let mut shell = Shell::new();
+        pending()
+            .enable(
+                shell.app_mut(),
+                &eframe::egui::Context::default(),
+                Output::default(),
+            )
+            .unwrap();
+        let credentials = shell.app().live_bridge_credentials().unwrap();
+        let token = credentials.token.clone();
+        let mut live = TcpStream::connect(credentials.address).unwrap();
+        let expected = call(&mut shell, &mut live, &token, Request::Status {})
+            .stamp
+            .unwrap();
+        let color_program = || AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::SetColor {
+                selector: AssistantCadEntitySelector::Occurrences {
+                    occurrence_ids: vec![1],
+                },
+                color: Some([17, 29, 41]),
+            }],
+        };
+        let proposed = call(
+            &mut shell,
+            &mut live,
+            &token,
+            Request::Propose {
+                expected: expected.clone(),
+                selection: vec![],
+                program: color_program(),
+            },
+        );
+        assert!(proposed.ok, "{:?}", proposed.error);
+        let proposal_id = proposed.result.unwrap()["proposal_id"].as_u64().unwrap();
+        let baseline_revision = shell.app().document_revision();
+        let baseline_digest = shell.app().canonical_digest();
+        let baseline_undo = shell.app().undo_step_count();
+
+        shell.click_menu_command("menu-model", tool);
+        assert!(shell.has_visible_label(&shell.catalog().text(panel_key)));
+        assert!(shell.has_visible_label(&shell.catalog().text(create_key)));
+
+        let blocked_commit = call(
+            &mut shell,
+            &mut live,
+            &token,
+            Request::Commit {
+                expected: expected.clone(),
+                proposal_id,
+            },
+        );
+        assert_eq!(blocked_commit.error.as_deref(), Some("busy"));
+        let blocked_proposal = call(
+            &mut shell,
+            &mut live,
+            &token,
+            Request::Propose {
+                expected: expected.clone(),
+                selection: vec![],
+                program: color_program(),
+            },
+        );
+        assert_eq!(blocked_proposal.error.as_deref(), Some("busy"));
+        let blocked_undo = call(&mut shell, &mut live, &token, Request::Undo { expected });
+        assert_eq!(blocked_undo.error.as_deref(), Some("busy"));
+
+        assert_eq!(shell.app().document_revision(), baseline_revision);
+        assert_eq!(shell.app().canonical_digest(), baseline_digest);
+        assert_eq!(shell.app().undo_step_count(), baseline_undo);
+        assert!(shell.has_visible_label(&shell.catalog().text(panel_key)));
+        assert!(shell.has_visible_label(&shell.catalog().text(create_key)));
+        shell.click_button_label(&shell.catalog().text(create_key));
+        assert!(shell.app().document_revision() > baseline_revision);
+        assert!(!shell.has_visible_label(&shell.catalog().text(panel_key)));
+    }
 }
 
 #[test]

@@ -1,0 +1,303 @@
+{
+  "schema": "ketchup.assistant-cad-contract-corpus.v1",
+  "cases": [
+    {
+      "name": "generic_frame_loft_and_construction_geometry",
+      "program": {
+        "operations": [
+          {
+            "operation": "create_part",
+            "name": "Frame extrusion",
+            "workplane": {
+              "type": "frame",
+              "origin_mm": [0.0, 0.0, 0.0],
+              "x_axis": [1.0, 0.0, 0.0],
+              "y_axis": [0.0, 1.0, 0.0]
+            },
+            "entities": [
+              {"type": "circle", "id": 1, "center_mm": [0.0, 0.0], "radius_mm": 8.0}
+            ],
+            "constraints": [],
+            "feature": {"type": "extrusion", "distance_mm": 4.0},
+            "translation_mm": [0.0, 0.0, 0.0]
+          },
+          {
+            "operation": "create_program_sketch",
+            "definition": {"operation_index": 0, "output": "definition"},
+            "name": "Lower loft section",
+            "workplane": {"type": "principal", "plane": "xy"},
+            "entities": [
+              {"type": "circle", "id": 1, "center_mm": [24.0, 0.0], "radius_mm": 7.0}
+            ],
+            "constraints": []
+          },
+          {
+            "operation": "create_program_sketch",
+            "definition": {"operation_index": 0, "output": "definition"},
+            "name": "Upper loft section",
+            "workplane": {"type": "principal", "plane": "xy"},
+            "entities": [
+              {"type": "circle", "id": 1, "center_mm": [24.0, 0.0], "radius_mm": 4.0}
+            ],
+            "constraints": []
+          },
+          {
+            "operation": "append_feature",
+            "definition_id": 1,
+            "name": "Typed sketch loft",
+            "feature": {
+              "type": "loft",
+              "sections": [
+                {
+                  "profile_feature_id": {"operation_index": 1, "output": "sketch_feature"},
+                  "elevation_mm": 0.0
+                },
+                {
+                  "profile_feature_id": {"operation_index": 2, "output": "sketch_feature"},
+                  "elevation_mm": 18.0
+                }
+              ]
+            }
+          },
+          {
+            "operation": "create_construction_point",
+            "name": "Datum point",
+            "position_mm": [0.0, 0.0, 0.0]
+          },
+          {
+            "operation": "create_construction_axis",
+            "name": "Datum axis",
+            "origin_mm": [48.0, 0.0, 0.0],
+            "direction": [0.0, 0.0, 1.0]
+          },
+          {
+            "operation": "create_construction_plane",
+            "name": "Datum plane",
+            "origin_mm": [0.0, 36.0, 0.0],
+            "normal": [0.0, 0.0, 1.0],
+            "x_direction": [1.0, 0.0, 0.0]
+          },
+          {
+            "operation": "create_program_sketch",
+            "definition": {"operation_index": 6, "output": "definition"},
+            "name": "Construction plane sketch",
+            "workplane": {
+              "type": "construction_plane",
+              "plane": {"operation_index": 6, "output": "construction_feature"}
+            },
+            "entities": [
+              {"type": "circle", "id": 1, "center_mm": [0.0, 0.0], "radius_mm": 3.0}
+            ],
+            "constraints": []
+          },
+          {
+            "operation": "create_helix_path",
+            "name": "Construction helix path",
+            "parameters": {
+              "axis": {
+                "type": "construction_axis",
+                "axis": {"operation_index": 5, "output": "construction_feature"}
+              },
+              "radius_mm": 5.0,
+              "pitch_mm": 4.0,
+              "turns": 1.5,
+              "start_angle_degrees": 0.0,
+              "handedness": "right"
+            }
+          },
+          {
+            "operation": "create_helix",
+            "name": "Solid helix",
+            "parameters": {
+              "axis": {
+                "type": "construction_axis",
+                "axis": {"operation_index": 5, "output": "construction_feature"}
+              },
+              "radius_mm": 6.0,
+              "pitch_mm": 5.0,
+              "turns": 1.25,
+              "start_angle_degrees": 15.0,
+              "handedness": "left"
+            }
+          },
+          {
+            "operation": "create_thread",
+            "name": "Solid thread",
+            "parameters": {
+              "helix": {
+                "axis": {"type": "origin_direction", "origin_mm": [72.0, 0.0, 0.0], "direction": [0.0, 0.0, 1.0]},
+                "radius_mm": 6.0,
+                "pitch_mm": 5.0,
+                "turns": 1.25,
+                "start_angle_degrees": 0.0,
+                "handedness": "right"
+              },
+              "profile_radius_mm": 0.6,
+              "profile": "v"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "generic_occurrence_color",
+      "setup_program": {
+        "operations": [
+          {
+            "operation": "create_part",
+            "name": "Color target",
+            "workplane": {"type": "principal", "plane": "xy"},
+            "entities": [
+              {"type": "circle", "id": 1, "center_mm": [0.0, 0.0], "radius_mm": 5.0}
+            ],
+            "constraints": [],
+            "feature": {"type": "extrusion", "distance_mm": 10.0},
+            "translation_mm": [0.0, 0.0, 0.0]
+          }
+        ]
+      },
+      "program": {
+        "operations": [
+          {
+            "operation": "set_color",
+            "selector": {"type": "occurrences", "occurrence_ids": [1]},
+            "color": [12, 128, 255]
+          }
+        ]
+      },
+      "expected_color": [12, 128, 255]
+    }
+  ],
+  "validation_cases": [
+    {
+      "name": "spatial_path_line",
+      "valid": true,
+      "program": {
+        "operations": [
+          {
+            "operation": "create_spatial_path",
+            "name": "Mixed spatial path",
+            "segments": [
+              {"type": "line", "start_mm": [0.0, 0.0, 0.0], "end_mm": [1.0, 0.0, 0.0]},
+              {
+                "type": "cubic_bezier",
+                "start_mm": [1.0, 0.0, 0.0],
+                "control_1_mm": [2.0, 0.0, 0.0],
+                "control_2_mm": [3.0, 0.0, 0.0],
+                "end_mm": [4.0, 0.0, 0.0]
+              },
+              {
+                "type": "circular_arc",
+                "start_mm": [4.0, 0.0, 0.0],
+                "end_mm": [5.0, 1.0, 0.0],
+                "center_mm": [4.0, 1.0, 0.0],
+                "normal": [0.0, 0.0, 1.0],
+                "clockwise": false
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "direct_fillet_edges",
+      "valid": true,
+      "program": {
+        "operations": [
+          {
+            "operation": "fillet_edges",
+            "definition_id": 1,
+            "name": "Edge fillet",
+            "target_feature_id": 2,
+            "edge_reference_ids": ["1111111111111111111111111111111111111111111111111111111111111111"],
+            "radius_mm": 1.5
+          }
+        ]
+      }
+    },
+    {
+      "name": "direct_chamfer_edges",
+      "valid": true,
+      "program": {
+        "operations": [
+          {
+            "operation": "chamfer_edges",
+            "definition_id": 1,
+            "name": "Edge chamfer",
+            "target_feature_id": 2,
+            "edge_reference_ids": ["2222222222222222222222222222222222222222222222222222222222222222"],
+            "distance_mm": 1.25
+          }
+        ]
+      }
+    },
+    {
+      "name": "set_dimension_without_constraint",
+      "valid": true,
+      "program": {
+        "operations": [
+          {"operation": "set_dimension", "feature_id": 2, "value_mm": 12.0}
+        ]
+      }
+    },
+    {
+      "name": "degenerate_spatial_path",
+      "valid": false,
+      "program": {
+        "operations": [
+          {
+            "operation": "create_spatial_path",
+            "name": "Degenerate path",
+            "segments": [
+              {"type": "line", "start_mm": [0.0, 0.0, 0.0], "end_mm": [0.0, 0.0, 0.0]}
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "duplicate_fillet_edges",
+      "valid": false,
+      "program": {
+        "operations": [
+          {
+            "operation": "fillet_edges",
+            "definition_id": 1,
+            "name": "Duplicate fillet",
+            "target_feature_id": 2,
+            "edge_reference_ids": [
+              "3333333333333333333333333333333333333333333333333333333333333333",
+              "3333333333333333333333333333333333333333333333333333333333333333"
+            ],
+            "radius_mm": 1.0
+          }
+        ]
+      }
+    },
+    {
+      "name": "zero_chamfer_distance",
+      "valid": false,
+      "program": {
+        "operations": [
+          {
+            "operation": "chamfer_edges",
+            "definition_id": 1,
+            "name": "Zero chamfer",
+            "target_feature_id": 2,
+            "edge_reference_ids": ["4444444444444444444444444444444444444444444444444444444444444444"],
+            "distance_mm": 0.0
+          }
+        ]
+      }
+    },
+    {
+      "name": "zero_constraint_id",
+      "valid": false,
+      "program": {
+        "operations": [
+          {"operation": "set_dimension", "feature_id": 2, "constraint_id": 0, "value_mm": 12.0}
+        ]
+      }
+    }
+  ]
+}

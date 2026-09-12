@@ -70,7 +70,7 @@ SYSTEM_PROMPT = (
     "unsupported or unavailable occurrences or say that the relevant check is incomplete or skipped. Return ONLY "
     "one JSON object with exactly three fields: message (a concise user-facing string), "
     "model_intent (null for discussion or CAD edits), and cad_edit_program (null unless proposing typed CAD operations). "
-    "Never return both mutation fields. Use cad_edit_program for create_part, create_sketch, create_program_sketch, typed construction geometry, helix paths, solid helixes, threads, append_feature, append_program_pocket, set_dimension, delete, rigid transform, color, copy, linear pattern, circular pattern, mirror, classification metadata, or evaluator inputs. "
+    "Never return both mutation fields. Use cad_edit_program for create_part, create_sketch, create_program_sketch, typed construction geometry, spatial paths, helix paths, solid helixes, threads, direct edge fillets/chamfers, append_feature, append_program_pocket, set_dimension, delete, rigid transform, color, copy, linear pattern, circular pattern, mirror, classification metadata, or evaluator inputs. "
     "cad_edit_program is {operations: [...]} and every operation names its kind in the field operation, never in a field called type: {operation: create_part, ...}. Inside an operation the field type stays reserved for nested records such as feature, workplane, entities and constraints. "
     "create_part atomically creates a host-ID-assigned definition, workplane, sketch, universal feature, and occurrence. It has name, workplane, entities, constraints, feature, translation_mm, and optional rotation; feature is either {type: extrusion, distance_mm: positive length} or {type: revolve, axis: {type: origin_direction, origin_mm: [x,y,z], direction: [x,y,z]}|{type: two_points, start_mm: [x,y,z], end_mm: [x,y,z]}|{type: construction_axis, axis: positive feature ID or earlier typed construction_feature output}|{type: edge, edge_reference_id: one opaque reference_id copied exactly from current topology edge inspection, optional instance_path: the exact {root_occurrence_id, steps: [{owner_definition_id, kind: group|occurrence, local_id}]} copied from current instance inspection; instance_path is required when that definition has multiple visible instances}, angle_degrees: >0 and <=360}; a Revolve axis must lie in its sketch workplane. "
     "append_feature adds one host-ID-assigned feature to an existing definition. It has definition_id, name, and either feature {type: boolean, operation: cut|union|intersect, target_feature_id, tool_feature_id}, whose inputs are distinct supported exact body features in that definition; each Boolean input is either a positive existing feature ID or {operation_index: zero-based earlier operation index, output: body_feature} referencing an earlier create_part or append_feature output in this same program; feature {type: pocket, target_feature_id, profile_feature_id, depth_mm}, whose distinct inputs are a supported exact extrusion target and closed profile in that definition with positive bounded depth below the target height; feature {type: planar_offset, profile_feature_id, distance_mm}, whose input is the sole existing exact rectangular profile in that definition and whose finite signed distance magnitude from 0.01 to 1000000 mm must leave both result dimensions at least 0.01 mm; feature {type: sweep, profile_feature_id, path_feature_id}, whose distinct inputs are a supported closed polygon or line/arc profile and one open straight path in that definition; feature {type: loft, sections: [{profile_feature_id, elevation_mm}, ...]}, with 2 to 16 unique existing or typed earlier sketch profiles in that definition and finite bounded elevations in strictly increasing order; feature {type: topology_shell, target_feature_id, removed_face_reference_ids, thickness_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_face_references for that definition and target, and finite thickness from 0.01 to 100000 mm; feature {type: topology_fillet, target_feature_id, edge_reference_ids, radius_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_edge_references for that definition and target, and finite radius from 0.01 to 100000 mm; or feature {type: topology_chamfer, target_feature_id, edge_reference_ids, distance_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_edge_references for that definition and target, and finite distance from 0.01 to 100000 mm. Never invent topology reference IDs, face or edge ordinals, semantic roles, or named-shape selectors. "
@@ -79,7 +79,7 @@ SYSTEM_PROMPT = (
     "Entities are typed line/arc/circle/cubic_bezier records with positive stable IDs and 2D millimetre coordinates; ellipse uses four positive unique segment_ids, center_mm, positive radius_x_mm/radius_y_mm, rotation_degrees, and a required positive maximum_deviation_mm that must cover its bounded cubic approximation error. Constraints are typed horizontal/vertical/coincident/distance/radius/fixed_point records with positive stable IDs and point refs {entity_id, point: start/end/center/control1/control2}. "
     "The host assigns create_part definition, feature, and occurrence IDs and both sketch operations' workplane and sketch feature IDs. set_dimension targets an existing feature_id, optional constraint_id, and positive value_mm. "
     "upsert_classification_dimension has positive dimension_id, non-empty name, and 1 to 64 categories [{id: positive unique ID, name: non-empty string}]. set_occurrence_classification has an occurrence selector, positive dimension_id, and category_id as a positive ID or null. create_evaluator_input has positive node_id, non-empty name, and finite value from -1000000 to 1000000. Use only IDs proven free or present by the current document context. "
-    "create_construction_point uses name and position_mm; create_construction_axis uses name, origin_mm and non-zero direction; create_construction_plane uses name, origin_mm, non-zero perpendicular normal and x_direction. create_helix_path and create_helix use name plus parameters {axis, radius_mm, pitch_mm, turns, start_angle_degrees, handedness: right|left}; create_thread wraps those helix parameters plus profile_radius_mm and profile round|v|trapezoid. A same-program helix axis may be the typed construction_feature output of an earlier create_construction_axis. "
+    "create_construction_point uses name and position_mm; create_construction_axis uses name, origin_mm and non-zero direction; create_construction_plane uses name, origin_mm, non-zero perpendicular normal and x_direction. create_spatial_path uses a name and 1 to 64 continuously joined, tangent-compatible line, circular_arc, or cubic_bezier segments with bounded 3D millimetre points. create_helix_path and create_helix use name plus parameters {axis, radius_mm, pitch_mm, turns, start_angle_degrees, handedness: right|left}; create_thread wraps those helix parameters plus profile_radius_mm and profile round|v|trapezoid. fillet_edges and chamfer_edges use definition_id, name, target_feature_id, 1 to 64 unique opaque edge_reference_ids, and radius_mm or distance_mm from 0.01 to 100000; copy references exactly from current topology inspection. A same-program helix axis may be the typed construction_feature output of an earlier create_construction_axis. "
     "Occurrence operations have a selector: either {type: current_selection} or {type: occurrences, occurrence_ids: [positive unique IDs]}. set_color has color as null or exactly three integer RGB channels from 0 to 255. circular_pattern additionally has instances from 2 to 1000, angle_step_degrees, and the same axis contract as Revolve; each generated angle must remain distinct from the source modulo 360 degrees. "
     "Delete also has dependency_policy reject_if_referenced or remove_references. Transform has translation_mm and optional rotation with pivot_mm, non-zero axis, and angle_degrees. "
     "Copy has non-zero translation_mm. Linear_pattern has instances including originals and non-zero step_mm. Mirror has plane_origin_mm and non-zero plane_normal. "
@@ -936,6 +936,204 @@ def _valid_helix_parameters(
     )
 
 
+def _valid_spatial_path_segments(value: object) -> bool:
+    if not isinstance(value, list) or not 1 <= len(value) <= 64:
+        return False
+
+    epsilon = 1.0e-9
+    minimum_segment_length = 1.0e-7
+
+    def subtract(left, right):
+        return [left[index] - right[index] for index in range(3)]
+
+    def dot(left, right):
+        return sum(left[index] * right[index] for index in range(3))
+
+    def cross(left, right):
+        return [
+            left[1] * right[2] - left[2] * right[1],
+            left[2] * right[0] - left[0] * right[2],
+            left[0] * right[1] - left[1] * right[0],
+        ]
+
+    def length(vector):
+        return math.sqrt(dot(vector, vector))
+
+    def unit(vector):
+        magnitude = length(vector)
+        if not math.isfinite(magnitude) or magnitude <= minimum_segment_length:
+            return None
+        return [component / magnitude for component in vector]
+
+    def bounded_vector(vector):
+        try:
+            _validate_vector(vector, "provider CAD spatial path coordinate", positive=False)
+        except ProtocolError:
+            return False
+        return True
+
+    segments = []
+    metrics = []
+    for segment in value:
+        if not isinstance(segment, dict):
+            return False
+        segment_type = segment.get("type")
+        if segment_type == "line":
+            if set(segment) != {"type", "start_mm", "end_mm"}:
+                return False
+            start = segment["start_mm"]
+            end = segment["end_mm"]
+            if not bounded_vector(start) or not bounded_vector(end):
+                return False
+            direction = subtract(end, start)
+            tangent = unit(direction)
+            if tangent is None:
+                return False
+            metric = (length(direction), tangent, tangent)
+        elif segment_type == "circular_arc":
+            if set(segment) != {
+                "type",
+                "start_mm",
+                "end_mm",
+                "center_mm",
+                "normal",
+                "clockwise",
+            } or not isinstance(segment["clockwise"], bool):
+                return False
+            start = segment["start_mm"]
+            end = segment["end_mm"]
+            center = segment["center_mm"]
+            normal_value = segment["normal"]
+            if not all(bounded_vector(vector) for vector in (start, end, center, normal_value)):
+                return False
+            normal_length = length(normal_value)
+            normal = unit(normal_value)
+            if normal is None or abs(normal_length - 1.0) > epsilon:
+                return False
+            start_radius = subtract(start, center)
+            end_radius = subtract(end, center)
+            radius = length(start_radius)
+            if (
+                radius <= minimum_segment_length
+                or abs(radius - length(end_radius)) > epsilon
+                or abs(dot(start_radius, normal)) > epsilon
+                or abs(dot(end_radius, normal)) > epsilon
+                or start == end
+            ):
+                return False
+            signed = math.atan2(dot(normal, cross(start_radius, end_radius)), dot(start_radius, end_radius))
+            angle = (-signed if segment["clockwise"] else signed) % math.tau
+            if radius * angle <= minimum_segment_length:
+                return False
+            sign = -1.0 if segment["clockwise"] else 1.0
+            start_tangent = unit([sign * value for value in cross(normal, start_radius)])
+            end_tangent = unit([sign * value for value in cross(normal, end_radius)])
+            if start_tangent is None or end_tangent is None:
+                return False
+            metric = (radius * angle, start_tangent, end_tangent)
+        elif segment_type == "cubic_bezier":
+            if set(segment) != {
+                "type",
+                "start_mm",
+                "control_1_mm",
+                "control_2_mm",
+                "end_mm",
+            }:
+                return False
+            start = segment["start_mm"]
+            end = segment["end_mm"]
+            control_1 = segment["control_1_mm"]
+            control_2 = segment["control_2_mm"]
+            if not all(bounded_vector(vector) for vector in (start, end, control_1, control_2)):
+                return False
+            chord = subtract(end, start)
+            first = subtract(control_1, start)
+            middle = subtract(control_2, control_1)
+            last = subtract(end, control_2)
+            chord_squared = dot(chord, chord)
+            projection_1 = dot(first, chord)
+            projection_2 = dot(subtract(control_2, start), chord)
+            start_tangent = unit(first)
+            end_tangent = unit(last)
+            if (
+                projection_1 <= 0.0
+                or projection_2 < projection_1
+                or projection_2 >= chord_squared
+                or start_tangent is None
+                or end_tangent is None
+            ):
+                return False
+            metric = (length(first) + length(middle) + length(last), start_tangent, end_tangent)
+        else:
+            return False
+        segments.append({**segment, "start_mm": start, "end_mm": end})
+        metrics.append(metric)
+
+    total_length = sum(metric[0] for metric in metrics)
+    if not 0.01 <= total_length <= 100_000.0:
+        return False
+
+    def arc_angle(segment):
+        if segment["type"] != "circular_arc":
+            return None
+        normal = unit(segment["normal"])
+        if normal is None:
+            return None
+        start_radius = subtract(segment["start_mm"], segment["center_mm"])
+        end_radius = subtract(segment["end_mm"], segment["center_mm"])
+        signed = math.atan2(dot(normal, cross(start_radius, end_radius)), dot(start_radius, end_radius))
+        return (-signed if segment["clockwise"] else signed) % math.tau
+
+    def join_is_separated(left, right, tangent):
+        join = left["end_mm"]
+        projection = lambda point: dot(subtract(point, join), tangent)
+        if left["type"] == "line":
+            left_is_behind = projection(left["start_mm"]) < -epsilon
+        elif left["type"] == "circular_arc":
+            angle = arc_angle(left)
+            left_is_behind = angle is not None and angle < math.pi - epsilon
+        else:
+            left_is_behind = all(
+                projection(left[field]) < -epsilon
+                for field in ("start_mm", "control_1_mm", "control_2_mm")
+            )
+        if right["type"] == "line":
+            right_is_ahead = projection(right["end_mm"]) > epsilon
+        elif right["type"] == "circular_arc":
+            angle = arc_angle(right)
+            right_is_ahead = angle is not None and angle < math.pi - epsilon
+        else:
+            right_is_ahead = all(
+                projection(right[field]) > epsilon
+                for field in ("control_1_mm", "control_2_mm", "end_mm")
+            )
+        return left_is_behind and right_is_ahead
+
+    pairs = list(zip(segments, segments[1:], metrics, metrics[1:]))
+    if segments[0]["start_mm"] == segments[-1]["end_mm"]:
+        pairs.append((segments[-1], segments[0], metrics[-1], metrics[0]))
+    for left, right, left_metric, right_metric in pairs:
+        if left["end_mm"] != right["start_mm"]:
+            return False
+        if (
+            left["type"] == "circular_arc"
+            and right["type"] == "circular_arc"
+            and left["center_mm"] == right["center_mm"]
+        ):
+            radius = length(subtract(left["start_mm"], left["center_mm"]))
+            if left_metric[0] + right_metric[0] >= math.tau * radius - epsilon:
+                return False
+        outgoing = left_metric[2]
+        incoming = right_metric[1]
+        if (
+            not join_is_separated(left, right, outgoing)
+            or dot(outgoing, incoming) < 1.0 - 1.0e-9
+            or length(cross(outgoing, incoming)) > 1.0e-9
+        ):
+            return False
+    return True
+
+
 def _validate_cad_edit_program(program: object) -> dict:
     if not isinstance(program, dict) or set(program) != {"operations"}:
         raise ProtocolError("provider CAD edit program contains missing or unknown fields")
@@ -1030,6 +1228,14 @@ def _validate_cad_edit_program(program: object) -> dict:
                 raise ProtocolError("provider CAD sketch entity count is invalid")
             if not isinstance(constraints, list) or len(constraints) > 8_192:
                 raise ProtocolError("provider CAD sketch constraint count is invalid")
+        elif operation_type == "create_spatial_path":
+            if (
+                set(operation) != {"operation", "name", "segments"}
+                or not _valid_cad_name(operation.get("name"))
+                or not _valid_spatial_path_segments(operation.get("segments"))
+            ):
+                raise ProtocolError("provider CAD spatial path is invalid")
+            target_count = generated_per_target = 1
         elif operation_type == "create_construction_point":
             if set(operation) != {"operation", "name", "position_mm"} or not _valid_cad_name(
                 operation.get("name")
@@ -1349,11 +1555,55 @@ def _validate_cad_edit_program(program: object) -> dict:
                 valid_feature = False
             if not valid_feature:
                 raise ProtocolError("provider CAD body feature is invalid")
+        elif operation_type in {"fillet_edges", "chamfer_edges"}:
+            amount_field = "radius_mm" if operation_type == "fillet_edges" else "distance_mm"
+            reference_ids = operation.get("edge_reference_ids")
+            amount = operation.get(amount_field)
+            if (
+                set(operation)
+                != {
+                    "operation",
+                    "definition_id",
+                    "name",
+                    "target_feature_id",
+                    "edge_reference_ids",
+                    amount_field,
+                }
+                or not isinstance(operation.get("definition_id"), int)
+                or isinstance(operation.get("definition_id"), bool)
+                or not 0 < operation["definition_id"] <= MAX_U64
+                or not _valid_cad_name(operation.get("name"))
+                or not isinstance(operation.get("target_feature_id"), int)
+                or isinstance(operation.get("target_feature_id"), bool)
+                or not 0 < operation["target_feature_id"] <= MAX_U64
+                or not isinstance(reference_ids, list)
+                or not 1 <= len(reference_ids) <= 64
+                or any(
+                    not isinstance(reference_id, str)
+                    or len(reference_id) != 64
+                    or any(
+                        character not in "0123456789abcdefABCDEF"
+                        for character in reference_id
+                    )
+                    for reference_id in reference_ids
+                )
+                or len(set(reference_ids)) != len(reference_ids)
+                or not isinstance(amount, (int, float))
+                or isinstance(amount, bool)
+                or not math.isfinite(amount)
+                or not 0.01 <= amount <= 100_000
+            ):
+                raise ProtocolError(f"provider CAD {operation_type} is invalid")
         elif operation_type == "set_dimension":
-            if set(operation) != {"operation", "feature_id", "constraint_id", "value_mm"}:
+            if not {"operation", "feature_id", "value_mm"} <= set(operation) <= {
+                "operation",
+                "feature_id",
+                "constraint_id",
+                "value_mm",
+            }:
                 raise ProtocolError("provider CAD dimension edit contains missing or unknown fields")
             feature_id = operation["feature_id"]
-            constraint_id = operation["constraint_id"]
+            constraint_id = operation.get("constraint_id")
             value = operation["value_mm"]
             if (
                 not isinstance(feature_id, int)
@@ -1422,6 +1672,7 @@ def _validate_cad_edit_program(program: object) -> dict:
             "create_sketch",
             "create_program_sketch",
             "create_part",
+            "create_spatial_path",
             "create_construction_point",
             "create_construction_axis",
             "create_construction_plane",
@@ -1430,6 +1681,8 @@ def _validate_cad_edit_program(program: object) -> dict:
             "create_thread",
             "append_feature",
             "append_program_pocket",
+            "fillet_edges",
+            "chamfer_edges",
             "set_dimension",
             "upsert_classification_dimension",
             "create_evaluator_input",

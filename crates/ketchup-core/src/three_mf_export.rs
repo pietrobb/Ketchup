@@ -113,6 +113,12 @@ fn model_three_mf_export_with_limits(
         return Err(ExactProductError::InvalidMeshExport);
     }
 
+    if instances
+        .iter()
+        .any(|instance| !instance.occurrence.matches_snapshot(snapshot))
+    {
+        return Err(ExactProductError::StaleResult);
+    }
     let mut packages = BTreeMap::<MeshKey, MeshExportSource<'_>>::new();
     let mut vertex_count = 0_usize;
     let mut triangle_count = 0_usize;

@@ -111,6 +111,12 @@ pub fn model_glb_export(
         return Err(ExactProductError::InvalidMeshExport);
     }
 
+    if instances
+        .iter()
+        .any(|instance| !instance.occurrence.matches_snapshot(snapshot))
+    {
+        return Err(ExactProductError::StaleResult);
+    }
     let mut binary = Vec::new();
     let mut buffer_views = Vec::<Value>::new();
     let mut accessors = Vec::<Value>::new();

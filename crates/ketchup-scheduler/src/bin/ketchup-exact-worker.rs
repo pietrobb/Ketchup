@@ -2568,7 +2568,13 @@ fn exact_brep_planar_offset(
     } else {
         backend.offset_planar_profile(&exact_brep_planar_offset_loop(profile)?, distance_mm)?
     };
-    transform_local_to_profile_frame(backend, profile, &local)
+    if profile.frame_bits.map(f64::from_bits)
+        == [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+    {
+        Ok(local)
+    } else {
+        transform_local_to_profile_frame(backend, profile, &local)
+    }
 }
 
 fn exact_brep_planar_offset_loop(

@@ -381,6 +381,97 @@ fn deliberate_alt_pick_through_has_transient_xray_feedback_without_mutation() {
 }
 
 #[test]
+fn undo_and_redo_cancel_an_active_two_segment_line_chain() {
+    let mut shell = Shell::new();
+    let points = [
+        Vec3::new(25.0, 20.0, 20.0),
+        Vec3::new(40.0, 20.0, 20.0),
+        Vec3::new(40.0, 35.0, 20.0),
+        Vec3::new(25.0, 35.0, 20.0),
+    ]
+    .map(|point| shell.app().viewport_position(point).unwrap());
+
+    shell.click_command(AppCommand::Line);
+    shell.click_at(points[0]);
+    shell.click_at(points[1]);
+    shell.click_at(points[2]);
+    let two_segment_digest = shell.app().canonical_digest();
+    let two_segment_undo_steps = shell.app().undo_step_count();
+    assert_eq!(
+        shell
+            .app()
+            .document_snapshot()
+            .features()
+            .filter(|feature| matches!(feature.kind(), FeatureKind::SegmentProfile { closed: false, segments } if segments.len() == 1))
+            .count(),
+        2
+    );
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    let after_undo = (
+        shell.app().document_revision(),
+        shell.app().canonical_digest(),
+        shell.app().undo_step_count(),
+        shell.app().redo_step_count(),
+    );
+    assert_eq!(
+        shell
+            .app()
+            .document_snapshot()
+            .features()
+            .filter(|feature| matches!(feature.kind(), FeatureKind::SegmentProfile { closed: false, segments } if segments.len() == 1))
+            .count(),
+        1
+    );
+
+    shell.click_at(points[3]);
+    assert_eq!(
+        (
+            shell.app().document_revision(),
+            shell.app().canonical_digest(),
+            shell.app().undo_step_count(),
+            shell.app().redo_step_count(),
+        ),
+        after_undo,
+        "Undo must cancel the active chain, so the next click starts a new one without mutating"
+    );
+
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().canonical_digest(), two_segment_digest);
+    assert_eq!(shell.app().undo_step_count(), two_segment_undo_steps);
+    let after_redo = (
+        shell.app().document_revision(),
+        shell.app().canonical_digest(),
+        shell.app().undo_step_count(),
+        shell.app().redo_step_count(),
+    );
+
+    shell.click_at(points[0]);
+    assert_eq!(
+        (
+            shell.app().document_revision(),
+            shell.app().canonical_digest(),
+            shell.app().undo_step_count(),
+            shell.app().redo_step_count(),
+        ),
+        after_redo,
+        "Redo must cancel the active chain instead of closing it from stale bookkeeping"
+    );
+    let snapshot = shell.app().document_snapshot();
+    assert_eq!(
+        snapshot
+            .features()
+            .filter(|feature| matches!(feature.kind(), FeatureKind::SegmentProfile { closed: false, segments } if segments.len() == 1))
+            .count(),
+        2
+    );
+    assert!(!snapshot.features().any(|feature| matches!(
+        feature.kind(),
+        FeatureKind::SegmentProfile { closed: true, .. }
+    )));
+}
+
+#[test]
 fn line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical() {
     let directory = tempfile::tempdir().unwrap();
     let saved = directory.path().join("line-workflow.ketchup");

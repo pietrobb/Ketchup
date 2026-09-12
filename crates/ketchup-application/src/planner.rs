@@ -1273,24 +1273,7 @@ pub fn plan_assistant_cad_edit_program(
                 name,
                 feature,
             } => {
-                let references_program_output = matches!(
-                    feature,
-                    AssistantCadBodyFeature::Boolean {
-                        target_feature_id: AssistantCadFeatureReference::ProgramOutput(_),
-                        ..
-                    } | AssistantCadBodyFeature::Boolean {
-                        tool_feature_id: AssistantCadFeatureReference::ProgramOutput(_),
-                        ..
-                    }
-                ) || matches!(
-                    feature,
-                    AssistantCadBodyFeature::Loft { sections }
-                        if sections.iter().any(|section| matches!(
-                            section.profile_feature_id,
-                            AssistantCadFeatureReference::ProgramOutput(_)
-                        ))
-                );
-                let prefix_candidate = if commands.is_empty() || !references_program_output {
+                let prefix_candidate = if commands.is_empty() {
                     None
                 } else {
                     Some(
