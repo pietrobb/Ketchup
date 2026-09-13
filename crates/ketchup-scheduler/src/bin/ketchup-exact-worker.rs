@@ -1,15 +1,22 @@
 #![forbid(unsafe_code)]
 
+use ketchup_core::cam::CAM_SIMULATION_SCHEMA_V1;
+use ketchup_core::document::Transform;
 use ketchup_core::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V6, EXACT_BREP_GRAPH_SCHEMA_V7, EXACT_BREP_GRAPH_SCHEMA_V8,
     EXACT_BREP_GRAPH_SCHEMA_V9, EXACT_BREP_GRAPH_SCHEMA_V10, EXACT_BREP_GRAPH_SCHEMA_V11,
     EXACT_BREP_GRAPH_SCHEMA_V12, EXACT_BREP_GRAPH_SCHEMA_V13, EXACT_BREP_GRAPH_SCHEMA_V14,
-    ExactBRepBooleanOperation, ExactBRepEdgeFinishKind, ExactBRepGraph, ExactBRepLinearInterval,
-    ExactBRepLoftSection, ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop,
-    ExactBRepPlanarSegment, ExactBRepProfile, ExactBRepSpatialPathSegment, ExactBRepTopologyKind,
-    ExactBRepTopologySelector, MAX_EXACT_BREP_COORDINATE_MM, MAX_EXACT_BREP_GRAPH_BYTES,
-    MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS, MAX_EXACT_BREP_REGION_HOLES,
-    MAX_EXACT_BREP_REGION_SEGMENTS, SKETCH_SWEEP_FRAME_EPSILON_MM,
+    EXACT_BREP_GRAPH_SCHEMA_V15, EXACT_BREP_GRAPH_SCHEMA_V16, EXACT_BREP_GRAPH_SCHEMA_V17,
+    EXACT_BREP_GRAPH_SCHEMA_V18, EXACT_BREP_GRAPH_SCHEMA_V19, EXACT_BREP_GRAPH_SCHEMA_V20,
+    EXACT_BREP_GRAPH_SCHEMA_V21, EXACT_BREP_GRAPH_SCHEMA_V22, EXACT_BREP_GRAPH_SCHEMA_V23,
+    ExactBRepBooleanOperation, ExactBRepChamferMode, ExactBRepEdgeFinishKind, ExactBRepGraph,
+    ExactBRepLinearInterval, ExactBRepLoftContinuity, ExactBRepLoftSection, ExactBRepOperation,
+    ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment, ExactBRepProfile,
+    ExactBRepSheetMetalEdge, ExactBRepSheetMetalFlange, ExactBRepShellDirection,
+    ExactBRepSpatialPath, ExactBRepSpatialPathSegment, ExactBRepTopologyKind,
+    ExactBRepTopologySelector, ExactBRepWeldmentJointPolicy, ExactBRepWeldmentJointPrimary,
+    MAX_EXACT_BREP_COORDINATE_MM, MAX_EXACT_BREP_GRAPH_BYTES, MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS,
+    MAX_EXACT_BREP_REGION_HOLES, MAX_EXACT_BREP_REGION_SEGMENTS, SKETCH_SWEEP_FRAME_EPSILON_MM,
     exact_brep_planar_rectangle_bounds,
 };
 use ketchup_core::exact_product::{EXACT_BREP_GRAPH_EVALUATOR_V1, ExactCircleProfile};
@@ -17,32 +24,40 @@ use ketchup_core::graph::sha256_hex;
 use ketchup_core::import::{
     MAX_STEP_MESH_TRIANGLES, MAX_STEP_SOURCE_BYTES, StepImportMesh, StepMeshTriangle,
 };
+use ketchup_core::topology::{
+    TopologicalElementRef, TopologicalReferenceStability, topological_edge_provenance_tokens,
+};
 use ketchup_exact::{
-    BoxSpec, CircleExtrudeSpec, CutMode, CylinderToolSpec, EdgeFinish, ExactBackend,
-    ExactBodyBooleanOperation, ExactKernel, ExactOpOutput, FramedLoftProfile, FramedLoftSection,
-    FramedLoftSpec, PlanarProfileLoop, PlanarProfileSegment, Point3, RectangleExtrudeSpec,
-    RectangleOffsetSpec, RectangleSweepSpec, ReferenceResolution, Size3, SpatialProfileSegment,
-    SplineLoftSection, SplineLoftSpec, StabilityClass, capture_bounded_pocket_references,
-    capture_bounded_through_cut_references, capture_box_shell_references,
-    capture_circle_extrusion_references, capture_circular_pocket_references,
-    capture_circular_split_references, capture_circular_through_cut_references,
-    capture_contained_polygon_intersection_references, capture_contained_polygon_union_references,
-    capture_general_revolve_references, capture_guaranteed_references,
-    capture_mixed_profile_extrusion_references, capture_planar_offset_reference,
-    capture_polygon_through_cut_references, capture_profile_split_references,
-    capture_rectangular_intersection_references, capture_rectangular_split_references,
-    capture_rectangular_sweep_references, capture_rectangular_union_references,
-    capture_revolve_references, capture_shell_references, capture_spline_loft_references,
-    resolve_subshape_reference,
+    AdvancedChamferMode, AxialToolMotion, AxialToolSweepSpec, BoxSpec, CircleExtrudeSpec, CutMode,
+    CylinderToolSpec, EdgeFinish, ExactBackend, ExactBodyBooleanOperation, ExactKernel,
+    ExactOpOutput, ExactPairRelation, ExactVolumeMeshOptions, FramedLoftProfile, FramedLoftSection,
+    FramedLoftSpec, LoftSurfaceContinuity, PlanarProfileLoop, PlanarProfileSegment, Point3,
+    RectangleExtrudeSpec, RectangleOffsetSpec, RectangleSweepSpec, ReferenceResolution,
+    ShellDirection as NativeShellDirection, Size3, SpatialProfileSegment, SplineLoftSection,
+    SplineLoftSpec, StabilityClass, StepXdeExportNode, StepXdeExportPart,
+    capture_bounded_pocket_references, capture_bounded_through_cut_references,
+    capture_box_shell_references, capture_circle_extrusion_references,
+    capture_circular_pocket_references, capture_circular_split_references,
+    capture_circular_through_cut_references, capture_contained_polygon_intersection_references,
+    capture_contained_polygon_union_references, capture_general_revolve_references,
+    capture_guaranteed_references, capture_mixed_profile_extrusion_references,
+    capture_planar_offset_reference, capture_polygon_through_cut_references,
+    capture_profile_split_references, capture_rectangular_intersection_references,
+    capture_rectangular_split_references, capture_rectangular_sweep_references,
+    capture_rectangular_union_references, capture_revolve_references, capture_shell_references,
+    capture_spline_loft_references, resolve_subshape_reference,
 };
 #[cfg(feature = "named-product-fixtures")]
 use ketchup_exact::{
     HalfLapFaceRole, HalfLapNotchSpec, HalfLapParticipant, capture_half_lap_notch_references,
 };
 use ketchup_scheduler::{
+    CamSimulationWireCollision, CamSimulationWireEvidence, CamSimulationWireRequest,
+    EXACT_VOLUME_MESH_WIRE_SCHEMA_V1, ExactVolumeMeshWireOptions,
     MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES, MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES,
     StepAssemblyManifest, StepFeatureExportSpec, StepProfileSegment, StepRevolveExportSpec,
-    WorkerExactBRepGraphEdgeEvidence, WorkerExactBRepGraphFaceEvidence,
+    StepXdeWorkerEvidence, StepXdeWorkerNode, StepXdeWorkerPart, WorkerExactBRepGraphEdgeEvidence,
+    WorkerExactBRepGraphFaceEvidence, WorkerExactVolumeBoundaryTriangle, WorkerExactVolumeMesh,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -124,7 +139,11 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
         (Some("CAPS"), Some("M21_STEP_MODEL_V1"), None) => {
             Some("CAPS M21_STEP_MODEL_V1".to_owned())
         }
+        (Some("CAPS"), Some("M21_STEP_XDE_V1"), None) => Some("CAPS M21_STEP_XDE_V1".to_owned()),
         (Some("CAPS"), Some("M21_IGES_V1"), None) => Some("CAPS M21_IGES_V1".to_owned()),
+        (Some("CAPS"), Some("CAM_SIMULATION_V1"), None) => {
+            Some("CAPS CAM_SIMULATION_V1".to_owned())
+        }
         (Some("CAPS"), Some("EXACT_BREP_GRAPH_V6"), None) => {
             Some("CAPS EXACT_BREP_GRAPH_V6".to_owned())
         }
@@ -152,6 +171,74 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
         (Some("CAPS"), Some("EXACT_BREP_GRAPH_V14"), None) => {
             Some("CAPS EXACT_BREP_GRAPH_V14".to_owned())
         }
+        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V15"), None) => {
+            Some("CAPS EXACT_BREP_GRAPH_V15".to_owned())
+        }
+        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V16"), None) => {
+            Some("CAPS EXACT_BREP_GRAPH_V16".to_owned())
+        }
+        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V17"), None) => {
+            Some("CAPS EXACT_BREP_GRAPH_V17".to_owned())
+        }
+        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V18"), None) => {
+            Some("CAPS EXACT_BREP_GRAPH_V18".to_owned())
+        }
+        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V19"), None) => {
+            Some("CAPS EXACT_BREP_GRAPH_V19".to_owned())
+        }
+        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V20"), None) => {
+            Some("CAPS EXACT_BREP_GRAPH_V20".to_owned())
+        }
+        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V21"), None) => {
+            Some("CAPS EXACT_BREP_GRAPH_V21".to_owned())
+        }
+        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V22"), None) => {
+            Some("CAPS EXACT_BREP_GRAPH_V22".to_owned())
+        }
+        (Some("CAPS"), Some("EXACT_BREP_GRAPH_V23"), None) => {
+            Some("CAPS EXACT_BREP_GRAPH_V23".to_owned())
+        }
+        (Some("SIMULATE_CAM_V1"), Some(graph_digest), Some(encoded_graph)) => {
+            let remaining = fields.collect::<Vec<_>>();
+            Some(if remaining.len() == 1 {
+                cam_simulation_response(backend, graph_digest, encoded_graph, remaining[0])
+            } else {
+                "ERR invalid_request".to_owned()
+            })
+        }
+        (
+            Some(
+                operation @ ("VOLUME_MESH_BREP_GRAPH_V6"
+                | "VOLUME_MESH_BREP_GRAPH_V7"
+                | "VOLUME_MESH_BREP_GRAPH_V8"
+                | "VOLUME_MESH_BREP_GRAPH_V9"
+                | "VOLUME_MESH_BREP_GRAPH_V10"
+                | "VOLUME_MESH_BREP_GRAPH_V11"
+                | "VOLUME_MESH_BREP_GRAPH_V12"
+                | "VOLUME_MESH_BREP_GRAPH_V13"
+                | "VOLUME_MESH_BREP_GRAPH_V14"
+                | "VOLUME_MESH_BREP_GRAPH_V15"
+                | "VOLUME_MESH_BREP_GRAPH_V16"
+                | "VOLUME_MESH_BREP_GRAPH_V17"
+                | "VOLUME_MESH_BREP_GRAPH_V18"
+                | "VOLUME_MESH_BREP_GRAPH_V19"
+                | "VOLUME_MESH_BREP_GRAPH_V20"
+                | "VOLUME_MESH_BREP_GRAPH_V21"
+                | "VOLUME_MESH_BREP_GRAPH_V22"
+                | "VOLUME_MESH_BREP_GRAPH_V23"),
+            ),
+            Some(graph_digest),
+            Some(encoded_graph),
+        ) => {
+            let remaining = fields.collect::<Vec<_>>();
+            Some(exact_brep_graph_volume_mesh_response(
+                backend,
+                operation,
+                graph_digest,
+                encoded_graph,
+                &remaining,
+            ))
+        }
         (
             Some(
                 operation @ ("TESSELLATE_BREP_GRAPH_V6"
@@ -162,7 +249,16 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
                 | "TESSELLATE_BREP_GRAPH_V11"
                 | "TESSELLATE_BREP_GRAPH_V12"
                 | "TESSELLATE_BREP_GRAPH_V13"
-                | "TESSELLATE_BREP_GRAPH_V14"),
+                | "TESSELLATE_BREP_GRAPH_V14"
+                | "TESSELLATE_BREP_GRAPH_V15"
+                | "TESSELLATE_BREP_GRAPH_V16"
+                | "TESSELLATE_BREP_GRAPH_V17"
+                | "TESSELLATE_BREP_GRAPH_V18"
+                | "TESSELLATE_BREP_GRAPH_V19"
+                | "TESSELLATE_BREP_GRAPH_V20"
+                | "TESSELLATE_BREP_GRAPH_V21"
+                | "TESSELLATE_BREP_GRAPH_V22"
+                | "TESSELLATE_BREP_GRAPH_V23"),
             ),
             Some(graph_digest),
             Some(encoded_graph),
@@ -204,7 +300,16 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
                 | "EVAL_BREP_GRAPH_V11"
                 | "EVAL_BREP_GRAPH_V12"
                 | "EVAL_BREP_GRAPH_V13"
-                | "EVAL_BREP_GRAPH_V14"),
+                | "EVAL_BREP_GRAPH_V14"
+                | "EVAL_BREP_GRAPH_V15"
+                | "EVAL_BREP_GRAPH_V16"
+                | "EVAL_BREP_GRAPH_V17"
+                | "EVAL_BREP_GRAPH_V18"
+                | "EVAL_BREP_GRAPH_V19"
+                | "EVAL_BREP_GRAPH_V20"
+                | "EVAL_BREP_GRAPH_V21"
+                | "EVAL_BREP_GRAPH_V22"
+                | "EVAL_BREP_GRAPH_V23"),
             ),
             Some(graph_digest),
             Some(encoded_graph),
@@ -234,9 +339,32 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
                 &remaining,
             ))
         }
-        (Some("INSPECT_STEP_PART_M21_V1"), Some(source_sha256), Some(source_path)) => Some(
-            m21_step_part_inspection_response(backend, source_sha256, source_path),
+        (Some("INSPECT_STEP_XDE_M21_V1"), Some(source_sha256), Some(source_path)) => Some(
+            m21_step_xde_inspection_response(backend, source_sha256, source_path),
         ),
+        (Some("INSPECT_STEP_PART_M21_V1"), Some(source_sha256), Some(source_path)) => Some(
+            m21_step_part_inspection_response(backend, source_sha256, source_path, None),
+        ),
+        (Some("INSPECT_STEP_XDE_PART_M21_V1"), Some(source_sha256), Some(source_path)) => {
+            let remaining = fields.collect::<Vec<_>>();
+            let part_index = remaining
+                .first()
+                .and_then(|value| value.parse::<u32>().ok());
+            Some(if remaining.len() == 1 && part_index.is_some() {
+                m21_step_part_inspection_response(backend, source_sha256, source_path, part_index)
+            } else {
+                "ERR invalid_request".to_owned()
+            })
+        }
+        (Some("EXPORT_STEP_XDE_PART_M21_V1"), Some(source_sha256), Some(source_path)) => {
+            let remaining = fields.collect::<Vec<_>>();
+            Some(m21_step_xde_part_export_response(
+                backend,
+                source_sha256,
+                source_path,
+                &remaining,
+            ))
+        }
         (Some("TESSELLATE_STEP_PART_M21_V1"), Some(source_sha256), Some(source_path)) => {
             let remaining = fields.collect::<Vec<_>>();
             Some(m21_step_part_mesh_response(
@@ -244,11 +372,43 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
                 source_sha256,
                 source_path,
                 &remaining,
+                None,
             ))
         }
-        (Some("INSPECT_IGES_PART_M21_V1"), Some(source_sha256), Some(source_path)) => Some(
-            m21_iges_part_inspection_response(backend, source_sha256, source_path),
+        (Some("TESSELLATE_STEP_XDE_PART_M21_V1"), Some(source_sha256), Some(source_path)) => {
+            let remaining = fields.collect::<Vec<_>>();
+            let part_index = remaining
+                .first()
+                .and_then(|value| value.parse::<u32>().ok());
+            Some(if remaining.len() == 2 && part_index.is_some() {
+                m21_step_part_mesh_response(
+                    backend,
+                    source_sha256,
+                    source_path,
+                    &remaining[1..],
+                    part_index,
+                )
+            } else {
+                "ERR invalid_request".to_owned()
+            })
+        }
+        (Some("INSPECT_IGES_XDE_M21_V1"), Some(source_sha256), Some(source_path)) => Some(
+            m21_iges_xde_inspection_response(backend, source_sha256, source_path),
         ),
+        (Some("INSPECT_IGES_PART_M21_V1"), Some(source_sha256), Some(source_path)) => Some(
+            m21_iges_part_inspection_response(backend, source_sha256, source_path, None),
+        ),
+        (Some("INSPECT_IGES_XDE_PART_M21_V1"), Some(source_sha256), Some(source_path)) => {
+            let remaining = fields.collect::<Vec<_>>();
+            let part_index = remaining
+                .first()
+                .and_then(|value| value.parse::<u32>().ok());
+            Some(if remaining.len() == 1 && part_index.is_some() {
+                m21_iges_part_inspection_response(backend, source_sha256, source_path, part_index)
+            } else {
+                "ERR invalid_request".to_owned()
+            })
+        }
         (Some("TESSELLATE_IGES_PART_M21_V1"), Some(source_sha256), Some(source_path)) => {
             let remaining = fields.collect::<Vec<_>>();
             Some(m21_iges_part_mesh_response(
@@ -256,11 +416,38 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
                 source_sha256,
                 source_path,
                 &remaining,
+                None,
             ))
+        }
+        (Some("TESSELLATE_IGES_XDE_PART_M21_V1"), Some(source_sha256), Some(source_path)) => {
+            let remaining = fields.collect::<Vec<_>>();
+            let part_index = remaining
+                .first()
+                .and_then(|value| value.parse::<u32>().ok());
+            Some(if remaining.len() == 2 && part_index.is_some() {
+                m21_iges_part_mesh_response(
+                    backend,
+                    source_sha256,
+                    source_path,
+                    &remaining[1..],
+                    part_index,
+                )
+            } else {
+                "ERR invalid_request".to_owned()
+            })
         }
         (Some("CONVERT_STEP_TO_IGES_M21_V1"), Some(source_sha256), Some(source_path)) => {
             let remaining = fields.collect::<Vec<_>>();
             Some(m21_step_to_iges_response(
+                backend,
+                source_sha256,
+                source_path,
+                &remaining,
+            ))
+        }
+        (Some("CONVERT_STEP_XDE_TO_IGES_M21_V1"), Some(source_sha256), Some(source_path)) => {
+            let remaining = fields.collect::<Vec<_>>();
+            Some(m21_step_xde_to_iges_response(
                 backend,
                 source_sha256,
                 source_path,
@@ -1490,26 +1677,34 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
 const MAX_EXACT_BREP_GRAPH_MESH_TRIANGLES: u32 = 200_000;
 
 fn exact_brep_graph_schema_matches_operation(operation: &str, schema: &str) -> bool {
+    let graph_version = operation
+        .strip_prefix("EVAL_BREP_GRAPH_V")
+        .or_else(|| operation.strip_prefix("TESSELLATE_BREP_GRAPH_V"))
+        .or_else(|| operation.strip_prefix("VOLUME_MESH_BREP_GRAPH_V"));
+    if let Some(graph_version) = graph_version {
+        return match graph_version {
+            "6" => schema == EXACT_BREP_GRAPH_SCHEMA_V6,
+            "7" => schema == EXACT_BREP_GRAPH_SCHEMA_V7,
+            "8" => schema == EXACT_BREP_GRAPH_SCHEMA_V8,
+            "9" => schema == EXACT_BREP_GRAPH_SCHEMA_V9,
+            "10" => schema == EXACT_BREP_GRAPH_SCHEMA_V10,
+            "11" => schema == EXACT_BREP_GRAPH_SCHEMA_V11,
+            "12" => schema == EXACT_BREP_GRAPH_SCHEMA_V12,
+            "13" => schema == EXACT_BREP_GRAPH_SCHEMA_V13,
+            "14" => schema == EXACT_BREP_GRAPH_SCHEMA_V14,
+            "15" => schema == EXACT_BREP_GRAPH_SCHEMA_V15,
+            "16" => schema == EXACT_BREP_GRAPH_SCHEMA_V16,
+            "17" => schema == EXACT_BREP_GRAPH_SCHEMA_V17,
+            "18" => schema == EXACT_BREP_GRAPH_SCHEMA_V18,
+            "19" => schema == EXACT_BREP_GRAPH_SCHEMA_V19,
+            "20" => schema == EXACT_BREP_GRAPH_SCHEMA_V20,
+            "21" => schema == EXACT_BREP_GRAPH_SCHEMA_V21,
+            "22" => schema == EXACT_BREP_GRAPH_SCHEMA_V22,
+            "23" => schema == EXACT_BREP_GRAPH_SCHEMA_V23,
+            _ => false,
+        };
+    }
     match operation {
-        "EVAL_BREP_GRAPH_V6" | "TESSELLATE_BREP_GRAPH_V6" => schema == EXACT_BREP_GRAPH_SCHEMA_V6,
-        "EVAL_BREP_GRAPH_V7" | "TESSELLATE_BREP_GRAPH_V7" => schema == EXACT_BREP_GRAPH_SCHEMA_V7,
-        "EVAL_BREP_GRAPH_V8" | "TESSELLATE_BREP_GRAPH_V8" => schema == EXACT_BREP_GRAPH_SCHEMA_V8,
-        "EVAL_BREP_GRAPH_V9" | "TESSELLATE_BREP_GRAPH_V9" => schema == EXACT_BREP_GRAPH_SCHEMA_V9,
-        "EVAL_BREP_GRAPH_V10" | "TESSELLATE_BREP_GRAPH_V10" => {
-            schema == EXACT_BREP_GRAPH_SCHEMA_V10
-        }
-        "EVAL_BREP_GRAPH_V11" | "TESSELLATE_BREP_GRAPH_V11" => {
-            schema == EXACT_BREP_GRAPH_SCHEMA_V11
-        }
-        "EVAL_BREP_GRAPH_V12" | "TESSELLATE_BREP_GRAPH_V12" => {
-            schema == EXACT_BREP_GRAPH_SCHEMA_V12
-        }
-        "EVAL_BREP_GRAPH_V13" | "TESSELLATE_BREP_GRAPH_V13" => {
-            schema == EXACT_BREP_GRAPH_SCHEMA_V13
-        }
-        "EVAL_BREP_GRAPH_V14" | "TESSELLATE_BREP_GRAPH_V14" => {
-            schema == EXACT_BREP_GRAPH_SCHEMA_V14
-        }
         "EXPORT_BREP_GRAPH_STEP_V2" => matches!(
             schema,
             EXACT_BREP_GRAPH_SCHEMA_V6
@@ -1522,7 +1717,17 @@ fn exact_brep_graph_schema_matches_operation(operation: &str, schema: &str) -> b
         "EXPORT_BREP_GRAPH_STEP_V3" => schema == EXACT_BREP_GRAPH_SCHEMA_V12,
         "EXPORT_BREP_GRAPH_STEP_V4" => matches!(
             schema,
-            EXACT_BREP_GRAPH_SCHEMA_V13 | EXACT_BREP_GRAPH_SCHEMA_V14
+            EXACT_BREP_GRAPH_SCHEMA_V13
+                | EXACT_BREP_GRAPH_SCHEMA_V14
+                | EXACT_BREP_GRAPH_SCHEMA_V15
+                | EXACT_BREP_GRAPH_SCHEMA_V16
+                | EXACT_BREP_GRAPH_SCHEMA_V17
+                | EXACT_BREP_GRAPH_SCHEMA_V18
+                | EXACT_BREP_GRAPH_SCHEMA_V19
+                | EXACT_BREP_GRAPH_SCHEMA_V20
+                | EXACT_BREP_GRAPH_SCHEMA_V21
+                | EXACT_BREP_GRAPH_SCHEMA_V22
+                | EXACT_BREP_GRAPH_SCHEMA_V23
         ),
         _ => false,
     }
@@ -1698,6 +1903,96 @@ fn exact_brep_graph_mesh_response(
     )
 }
 
+fn exact_brep_graph_volume_mesh_response(
+    backend: &ExactBackend,
+    operation: &str,
+    graph_digest: &str,
+    encoded_graph: &str,
+    fields: &[&str],
+) -> String {
+    if fields.len() < 3 || !is_result_fingerprint(fields[0]) {
+        return "ERR invalid_request".to_owned();
+    }
+    let Some(graph) = decode_exact_brep_graph(operation, graph_digest, encoded_graph) else {
+        return "ERR invalid_request".to_owned();
+    };
+    let Some(output_path) = decode_hex_utf8(fields[1]) else {
+        return "ERR invalid_request".to_owned();
+    };
+    let Some(options_json) = decode_hex_utf8(fields[2]) else {
+        return "ERR invalid_request".to_owned();
+    };
+    let Ok(options) = serde_json::from_str::<ExactVolumeMeshWireOptions>(&options_json) else {
+        return "ERR invalid_request".to_owned();
+    };
+    let sources = match verified_exact_brep_graph_sources(&graph, &fields[3..]) {
+        Ok(sources) => sources,
+        Err(response) => return response,
+    };
+    let output = match evaluate_exact_brep_graph(backend, &graph, &sources) {
+        Ok(output) if output.body.result_fingerprint == fields[0] => output,
+        Ok(_) => return "ERR invalid_result".to_owned(),
+        Err(error) => return geometry_error_response(&error),
+    };
+    let mesh = match backend.volume_mesh_body(
+        &output.body,
+        ExactVolumeMeshOptions {
+            surface_deflection_mm: options.surface_deflection_mm,
+            angular_deflection_rad: options.angular_deflection_rad,
+            max_tetrahedra: options.max_tetrahedra,
+            max_relative_volume_error: options.max_relative_volume_error,
+            min_tetrahedron_quality: options.min_tetrahedron_quality,
+        },
+    ) {
+        Ok(mesh) => WorkerExactVolumeMesh {
+            schema: EXACT_VOLUME_MESH_WIRE_SCHEMA_V1.to_owned(),
+            graph_digest: graph.graph_digest.clone(),
+            source_result_fingerprint: mesh.source_result_fingerprint,
+            request_digest: mesh.request_digest,
+            mesh_fingerprint: mesh.mesh_fingerprint,
+            vertices_mm: mesh.vertices_mm,
+            tetrahedra: mesh
+                .tetrahedra
+                .into_iter()
+                .map(|tetrahedron| tetrahedron.vertex_indices)
+                .collect(),
+            boundary_triangles: mesh
+                .boundary_triangles
+                .into_iter()
+                .map(|triangle| WorkerExactVolumeBoundaryTriangle {
+                    vertex_indices: triangle.vertex_indices,
+                    face_ordinal: triangle.face_ordinal,
+                })
+                .collect(),
+            exact_volume_mm3: mesh.exact_volume_mm3,
+            tetrahedral_volume_mm3: mesh.tetrahedral_volume_mm3,
+            relative_volume_error: mesh.relative_volume_error,
+            minimum_signed_volume_mm3: mesh.minimum_signed_volume_mm3,
+            minimum_quality: mesh.minimum_quality,
+            maximum_edge_ratio: mesh.maximum_edge_ratio,
+        },
+        Err(error) => return geometry_error_response(&error),
+    };
+    let encoded = match serde_json::to_vec(&mesh) {
+        Ok(encoded) => encoded,
+        Err(error) => {
+            return transport_error_response("volume_mesh_exact_brep_graph", &error.to_string());
+        }
+    };
+    if let Err(error) = std::fs::write(&output_path, &encoded) {
+        return transport_error_response("volume_mesh_exact_brep_graph", &error.to_string());
+    }
+    format!(
+        "OK_BREP_GRAPH_VOLUME_MESH_V1 {graph_digest} {} {} {} {} {} {}",
+        output.body.result_fingerprint,
+        mesh.vertices_mm.len(),
+        mesh.tetrahedra.len(),
+        mesh.boundary_triangles.len(),
+        sha256_hex(&encoded),
+        mesh.mesh_fingerprint,
+    )
+}
+
 fn exact_brep_graph_step_response(
     backend: &ExactBackend,
     operation: &str,
@@ -1833,11 +2128,16 @@ fn exact_brep_graph_response(
         Err(error) => return geometry_error_response(&error),
     };
     let topology = &output.body.topology;
-    let area_mm2 = if graph.terminal_is_planar_offset() {
-        if topology.face_count != 1 || topology.faces.len() != 1 {
+    let area_mm2 = if graph.terminal_is_surface() {
+        let area = topology.faces.iter().map(|face| face.area_mm2).sum::<f64>();
+        if topology.face_count == 0
+            || topology.faces.len() != topology.face_count as usize
+            || !area.is_finite()
+            || area <= 0.0
+        {
             return "ERR invalid_shape".to_owned();
         }
-        topology.faces[0].area_mm2
+        area
     } else {
         0.0
     };
@@ -1850,9 +2150,27 @@ fn exact_brep_graph_response(
             | EXACT_BREP_GRAPH_SCHEMA_V12
             | EXACT_BREP_GRAPH_SCHEMA_V13
             | EXACT_BREP_GRAPH_SCHEMA_V14
+            | EXACT_BREP_GRAPH_SCHEMA_V15
+            | EXACT_BREP_GRAPH_SCHEMA_V16
+            | EXACT_BREP_GRAPH_SCHEMA_V17
+            | EXACT_BREP_GRAPH_SCHEMA_V18
+            | EXACT_BREP_GRAPH_SCHEMA_V19
+            | EXACT_BREP_GRAPH_SCHEMA_V20
+            | EXACT_BREP_GRAPH_SCHEMA_V21
+            | EXACT_BREP_GRAPH_SCHEMA_V22
+            | EXACT_BREP_GRAPH_SCHEMA_V23
     ) {
         (
             match graph.schema.as_str() {
+                EXACT_BREP_GRAPH_SCHEMA_V23 => "OK_BREP_GRAPH_V23",
+                EXACT_BREP_GRAPH_SCHEMA_V22 => "OK_BREP_GRAPH_V22",
+                EXACT_BREP_GRAPH_SCHEMA_V21 => "OK_BREP_GRAPH_V21",
+                EXACT_BREP_GRAPH_SCHEMA_V20 => "OK_BREP_GRAPH_V20",
+                EXACT_BREP_GRAPH_SCHEMA_V19 => "OK_BREP_GRAPH_V19",
+                EXACT_BREP_GRAPH_SCHEMA_V18 => "OK_BREP_GRAPH_V18",
+                EXACT_BREP_GRAPH_SCHEMA_V17 => "OK_BREP_GRAPH_V17",
+                EXACT_BREP_GRAPH_SCHEMA_V16 => "OK_BREP_GRAPH_V16",
+                EXACT_BREP_GRAPH_SCHEMA_V15 => "OK_BREP_GRAPH_V15",
                 EXACT_BREP_GRAPH_SCHEMA_V14 => "OK_BREP_GRAPH_V14",
                 EXACT_BREP_GRAPH_SCHEMA_V13 => "OK_BREP_GRAPH_V13",
                 EXACT_BREP_GRAPH_SCHEMA_V12 => "OK_BREP_GRAPH_V12",
@@ -1907,6 +2225,457 @@ fn exact_brep_graph_response(
         encode_hex(output.backend_fingerprint.as_bytes()),
         encode_hex(output.tolerance_report.profile.as_bytes()),
     )
+}
+
+fn exact_brep_sheet_metal(
+    backend: &ExactBackend,
+    width: f64,
+    depth: f64,
+    thickness: f64,
+    flanges: &[ExactBRepSheetMetalFlange],
+) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
+    let rectangle = |width: f64, depth: f64| {
+        vec![
+            PlanarProfileSegment::Line {
+                start_mm: [0.0, 0.0],
+                end_mm: [width, 0.0],
+            },
+            PlanarProfileSegment::Line {
+                start_mm: [width, 0.0],
+                end_mm: [width, depth],
+            },
+            PlanarProfileSegment::Line {
+                start_mm: [width, depth],
+                end_mm: [0.0, depth],
+            },
+            PlanarProfileSegment::Line {
+                start_mm: [0.0, depth],
+                end_mm: [0.0, 0.0],
+            },
+        ]
+    };
+    let transform = |body: &ketchup_exact::ExactBody,
+                     x: [f64; 3],
+                     y: [f64; 3],
+                     z: [f64; 3],
+                     origin: [f64; 3]| {
+        backend.transform_body(
+            body,
+            &[
+                x[0], y[0], z[0], origin[0], x[1], y[1], z[1], origin[1], x[2], y[2], z[2],
+                origin[2], 0.0, 0.0, 0.0, 1.0,
+            ],
+        )
+    };
+    let mut output = backend.extrude_mixed_profile(&rectangle(width, depth), thickness)?;
+    for flange in flanges {
+        let length = f64::from_bits(flange.length_bits);
+        let angle = f64::from_bits(flange.angle_degrees_bits);
+        let inner = f64::from_bits(flange.inner_radius_bits);
+        let beta = angle.abs().to_radians();
+        let sign = angle.signum();
+        let outer = inner + thickness;
+        let middle = inner + thickness * 0.5;
+        let (outward, edge_axis, bend_origin, flange_origin) = match flange.edge {
+            ExactBRepSheetMetalEdge::MinX => (
+                [-1.0, 0.0, 0.0],
+                [0.0, -1.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [0.0, depth, 0.0],
+            ),
+            ExactBRepSheetMetalEdge::MaxX => (
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [width, depth, 0.0],
+                [width, 0.0, 0.0],
+            ),
+            ExactBRepSheetMetalEdge::MinY => (
+                [0.0, -1.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [width, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+            ),
+            ExactBRepSheetMetalEdge::MaxY => (
+                [0.0, 1.0, 0.0],
+                [-1.0, 0.0, 0.0],
+                [0.0, depth, 0.0],
+                [width, depth, 0.0],
+            ),
+        };
+        let span = if matches!(
+            flange.edge,
+            ExactBRepSheetMetalEdge::MinX | ExactBRepSheetMetalEdge::MaxX
+        ) {
+            depth
+        } else {
+            width
+        };
+        let center_v = thickness * 0.5 + sign * middle;
+        let outer_start = [0.0, center_v - sign * outer];
+        let outer_end = [outer * beta.sin(), center_v - sign * outer * beta.cos()];
+        let inner_end = [inner * beta.sin(), center_v - sign * inner * beta.cos()];
+        let inner_start = [0.0, center_v - sign * inner];
+        let clockwise = sign < 0.0;
+        let bend_profile = vec![
+            PlanarProfileSegment::CircularArc {
+                start_mm: outer_start,
+                end_mm: outer_end,
+                center_mm: [0.0, center_v],
+                clockwise,
+            },
+            PlanarProfileSegment::Line {
+                start_mm: outer_end,
+                end_mm: inner_end,
+            },
+            PlanarProfileSegment::CircularArc {
+                start_mm: inner_end,
+                end_mm: inner_start,
+                center_mm: [0.0, center_v],
+                clockwise: !clockwise,
+            },
+            PlanarProfileSegment::Line {
+                start_mm: inner_start,
+                end_mm: outer_start,
+            },
+        ];
+        let local_bend = backend.extrude_mixed_profile(&bend_profile, span)?;
+        let bend_axis = [-edge_axis[0], -edge_axis[1], -edge_axis[2]];
+        let bend = transform(
+            &local_bend.body,
+            outward,
+            [0.0, 0.0, 1.0],
+            bend_axis,
+            bend_origin,
+        )?;
+        output =
+            backend.boolean_bodies(&output.body, &bend.body, ExactBodyBooleanOperation::Union)?;
+
+        let tangent = [
+            outward[0] * beta.cos(),
+            outward[1] * beta.cos(),
+            sign * beta.sin(),
+        ];
+        let normal = [
+            tangent[1] * edge_axis[2] - tangent[2] * edge_axis[1],
+            tangent[2] * edge_axis[0] - tangent[0] * edge_axis[2],
+            tangent[0] * edge_axis[1] - tangent[1] * edge_axis[0],
+        ];
+        let radial = if sign > 0.0 { outer_end } else { inner_end };
+        let panel_origin = [
+            flange_origin[0] + outward[0] * radial[0],
+            flange_origin[1] + outward[1] * radial[0],
+            radial[1],
+        ];
+        let local_panel = backend.extrude_mixed_profile(&rectangle(length, span), thickness)?;
+        let panel = transform(&local_panel.body, tangent, edge_axis, normal, panel_origin)?;
+        output =
+            backend.boolean_bodies(&output.body, &panel.body, ExactBodyBooleanOperation::Union)?;
+    }
+    Ok(output)
+}
+
+fn cam_simulation_response(
+    backend: &ExactBackend,
+    graph_digest: &str,
+    encoded_graph: &str,
+    encoded_request: &str,
+) -> String {
+    let Some(graph_bytes) = decode_hex_bytes(encoded_graph) else {
+        return "ERR invalid_request".to_owned();
+    };
+    let Ok(graph) = ExactBRepGraph::from_bytes(&graph_bytes) else {
+        return "ERR invalid_request".to_owned();
+    };
+    let Some(request_bytes) = decode_hex_bytes(encoded_request) else {
+        return "ERR invalid_request".to_owned();
+    };
+    let Ok(request) = serde_json::from_slice::<CamSimulationWireRequest>(&request_bytes) else {
+        return "ERR invalid_request".to_owned();
+    };
+    let bounded_values = request
+        .stock_bounds_mm
+        .iter()
+        .flatten()
+        .chain(request.setup_to_world.iter())
+        .copied()
+        .chain([
+            request.cutter_radius_mm,
+            request.cutter_length_mm,
+            request.tool_length_mm,
+            request.holder_radius_mm,
+            request.holder_offset_mm,
+            request.holder_length_mm,
+        ])
+        .all(|value| value.is_finite() && value.abs() <= 1.0e6);
+    let bounded_pairs = request
+        .motions
+        .len()
+        .checked_mul(request.fixtures.len().saturating_mul(2).saturating_add(2))
+        .is_some_and(|checks| checks <= 16_384);
+    if graph.graph_digest != graph_digest
+        || request.schema != CAM_SIMULATION_SCHEMA_V1
+        || request.target_exact_graph_digest != graph.graph_digest
+        || !is_canonical_digest(&request.plan_digest)
+        || !is_canonical_digest(&request.toolpath_digest)
+        || request.motions.is_empty()
+        || request.motions.len() > 4_096
+        || request.fixtures.len() > 64
+        || !bounded_pairs
+        || !bounded_values
+        || request.cutter_radius_mm <= 0.0
+        || request.cutter_length_mm <= 0.0
+        || request.tool_length_mm < request.cutter_length_mm
+        || request.holder_radius_mm <= 0.0
+        || request.holder_offset_mm < request.tool_length_mm
+        || request.holder_length_mm <= 0.0
+        || (0..3).any(|axis| request.stock_bounds_mm[0][axis] >= request.stock_bounds_mm[1][axis])
+        || request.motions.iter().any(|motion| {
+            motion.kind > 3
+                || motion.path_kind > 1
+                || motion
+                    .start_mm
+                    .into_iter()
+                    .chain(motion.end_mm)
+                    .chain(motion.center_mm)
+                    .any(|value| !value.is_finite() || value.abs() > 1.0e6)
+        })
+        || request.fixtures.iter().any(|fixture| {
+            fixture.id == 0
+                || (0..3).any(|axis| fixture.bounds_mm[0][axis] >= fixture.bounds_mm[1][axis])
+                || fixture
+                    .bounds_mm
+                    .iter()
+                    .flatten()
+                    .any(|value| !value.is_finite() || value.abs() > 1.0e6)
+        })
+        || request
+            .fixtures
+            .iter()
+            .map(|fixture| fixture.id)
+            .collect::<BTreeSet<_>>()
+            .len()
+            != request.fixtures.len()
+    {
+        return "ERR invalid_request".to_owned();
+    }
+    let evidence = match simulate_cam_geometry(backend, &graph, &request) {
+        Ok(evidence) => evidence,
+        Err(error) => return geometry_error_response(&error),
+    };
+    match serde_json::to_vec(&evidence) {
+        Ok(encoded) => format!(
+            "OK_CAM_SIMULATION_V1 {graph_digest} {}",
+            encode_hex(&encoded)
+        ),
+        Err(_) => "ERR invalid_result".to_owned(),
+    }
+}
+
+fn cam_axial_sweep(
+    backend: &ExactBackend,
+    motion: &ketchup_scheduler::CamSimulationWireMotion,
+    radius_mm: f64,
+    axial_length_mm: f64,
+    axial_offset_mm: f64,
+) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
+    let offset = |mut point: [f64; 3]| {
+        point[2] += axial_offset_mm;
+        point
+    };
+    backend.sweep_axial_tool(AxialToolSweepSpec {
+        motion: if motion.path_kind == 0 {
+            AxialToolMotion::Line {
+                start_mm: offset(motion.start_mm),
+                end_mm: offset(motion.end_mm),
+            }
+        } else {
+            AxialToolMotion::Arc {
+                start_mm: offset(motion.start_mm),
+                end_mm: offset(motion.end_mm),
+                center_mm: offset(motion.center_mm),
+                clockwise: motion.clockwise,
+            }
+        },
+        radius_mm,
+        axial_length_mm,
+    })
+}
+
+fn cam_world_sweep(
+    backend: &ExactBackend,
+    request: &CamSimulationWireRequest,
+    motion: &ketchup_scheduler::CamSimulationWireMotion,
+    radius_mm: f64,
+    axial_length_mm: f64,
+    axial_offset_mm: f64,
+) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
+    let local = cam_axial_sweep(backend, motion, radius_mm, axial_length_mm, axial_offset_mm)?;
+    backend.transform_body(&local.body, &request.setup_to_world)
+}
+
+fn append_cam_collision(
+    collisions: &mut Vec<CamSimulationWireCollision>,
+    backend: &ExactBackend,
+    motion_index: usize,
+    motion_kind: u8,
+    participant: u8,
+    target: u8,
+    fixture_id: Option<u64>,
+    moving: &ketchup_exact::ExactBody,
+    obstacle: &ketchup_exact::ExactBody,
+) -> Result<(), ketchup_exact::GeometryError> {
+    let relation = backend.query_body_pair(moving, obstacle, 1.0e-7)?;
+    if relation.relation != ExactPairRelation::Separated {
+        collisions.push(CamSimulationWireCollision {
+            motion_index,
+            motion_kind,
+            participant,
+            target,
+            fixture_id,
+            common_volume_mm3: relation.common_volume_mm3,
+            contact_area_mm2: relation.common_contact_area_mm2,
+            distance_mm: relation.distance_mm,
+        });
+    }
+    Ok(())
+}
+
+fn simulate_cam_geometry(
+    backend: &ExactBackend,
+    graph: &ExactBRepGraph,
+    request: &CamSimulationWireRequest,
+) -> Result<CamSimulationWireEvidence, ketchup_exact::GeometryError> {
+    let target = evaluate_exact_brep_graph(backend, graph, &[])?;
+    let box_from_bounds = |bounds: [[f64; 3]; 2]| BoxSpec {
+        origin_mm: Point3 {
+            x: bounds[0][0],
+            y: bounds[0][1],
+            z: bounds[0][2],
+        },
+        size_mm: Size3 {
+            x: bounds[1][0] - bounds[0][0],
+            y: bounds[1][1] - bounds[0][1],
+            z: bounds[1][2] - bounds[0][2],
+        },
+    };
+    let mut stock = backend.make_box(box_from_bounds(request.stock_bounds_mm))?;
+    let stock_before_mm3 = stock.body.topology.volume_mm3;
+    let fixture_bodies = request
+        .fixtures
+        .iter()
+        .map(|fixture| {
+            backend
+                .make_box(box_from_bounds(fixture.bounds_mm))
+                .map(|body| (fixture.id, body))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut collisions = Vec::new();
+    let mut cutting_motion_count = 0;
+    for (motion_index, motion) in request.motions.iter().enumerate() {
+        let tool = cam_world_sweep(
+            backend,
+            request,
+            motion,
+            request.cutter_radius_mm,
+            request.tool_length_mm,
+            0.0,
+        )?;
+        let holder = cam_world_sweep(
+            backend,
+            request,
+            motion,
+            request.holder_radius_mm,
+            request.holder_length_mm,
+            request.holder_offset_mm,
+        )?;
+        if motion.kind == 0 {
+            append_cam_collision(
+                &mut collisions,
+                backend,
+                motion_index,
+                motion.kind,
+                0,
+                0,
+                None,
+                &tool.body,
+                &stock.body,
+            )?;
+        }
+        append_cam_collision(
+            &mut collisions,
+            backend,
+            motion_index,
+            motion.kind,
+            1,
+            0,
+            None,
+            &holder.body,
+            &stock.body,
+        )?;
+        for (fixture_id, fixture) in &fixture_bodies {
+            append_cam_collision(
+                &mut collisions,
+                backend,
+                motion_index,
+                motion.kind,
+                0,
+                1,
+                Some(*fixture_id),
+                &tool.body,
+                &fixture.body,
+            )?;
+            append_cam_collision(
+                &mut collisions,
+                backend,
+                motion_index,
+                motion.kind,
+                1,
+                1,
+                Some(*fixture_id),
+                &holder.body,
+                &fixture.body,
+            )?;
+        }
+        if matches!(motion.kind, 1 | 2) {
+            cutting_motion_count += 1;
+            let cutter = cam_world_sweep(
+                backend,
+                request,
+                motion,
+                request.cutter_radius_mm,
+                request.cutter_length_mm,
+                0.0,
+            )?;
+            stock = backend.boolean_bodies(
+                &stock.body,
+                &cutter.body,
+                ExactBodyBooleanOperation::Cut,
+            )?;
+        }
+    }
+    let stock_after_mm3 = stock.body.topology.volume_mm3;
+    let common = backend.query_body_pair(&stock.body, &target.body, 1.0e-7)?;
+    let residual_stock_mm3 = (stock_after_mm3 - common.common_volume_mm3).max(0.0);
+    let gouge_mm3 = (target.body.topology.volume_mm3 - common.common_volume_mm3).max(0.0);
+    let evidence = CamSimulationWireEvidence {
+        schema: CAM_SIMULATION_SCHEMA_V1.to_owned(),
+        plan_digest: request.plan_digest.clone(),
+        toolpath_digest: request.toolpath_digest.clone(),
+        target_exact_graph_digest: request.target_exact_graph_digest.clone(),
+        motion_count: request.motions.len(),
+        cutting_motion_count,
+        fixture_count: request.fixtures.len(),
+        stock_before_mm3,
+        stock_after_mm3,
+        removed_stock_mm3: (stock_before_mm3 - stock_after_mm3).max(0.0),
+        residual_stock_mm3,
+        gouge_mm3,
+        collisions,
+        backend: ketchup_exact::backend_fingerprint().to_owned(),
+        tolerance: ketchup_exact::tolerance_profile().to_owned(),
+        result_fingerprint: String::new(),
+    };
+    Ok(evidence)
 }
 
 fn evaluate_exact_brep_graph(
@@ -1990,6 +2759,9 @@ fn evaluate_exact_brep_graph(
                 &graph.profiles[profile.0 as usize],
                 f64::from_bits(*distance_bits),
             )?,
+            ExactBRepOperation::PlanarSurface { profile } => {
+                exact_brep_planar_surface(backend, &graph.profiles[profile.0 as usize])?
+            }
             ExactBRepOperation::Sweep { profile, path } => exact_brep_sweep(
                 backend,
                 &graph.profiles[profile.0 as usize],
@@ -2007,11 +2779,75 @@ fn evaluate_exact_brep_graph(
                 &graph.profiles[profile.0 as usize],
                 &path.segments,
             )?,
-            ExactBRepOperation::Loft { sections } => exact_brep_loft(backend, graph, sections)?,
+            ExactBRepOperation::WeldmentJoint {
+                first,
+                second,
+                joint_point_bits,
+                first_direction_bits,
+                second_direction_bits,
+                policy,
+                primary,
+            } => exact_brep_weldment_joint(
+                backend,
+                graph,
+                &outputs[first.0 as usize],
+                &outputs[second.0 as usize],
+                joint_point_bits.map(f64::from_bits),
+                first_direction_bits.map(f64::from_bits),
+                second_direction_bits.map(f64::from_bits),
+                *policy,
+                *primary,
+            )?,
+            ExactBRepOperation::Loft {
+                sections,
+                guide,
+                continuity,
+            } => exact_brep_loft(backend, graph, sections, guide.as_ref(), *continuity, true)?,
+            ExactBRepOperation::LoftSurface {
+                sections,
+                guide,
+                continuity,
+            } => exact_brep_loft(backend, graph, sections, guide.as_ref(), *continuity, false)?,
+            ExactBRepOperation::SurfaceTrim { target, cutter } => backend.trim_surface(
+                &outputs[target.0 as usize].body,
+                &outputs[cutter.0 as usize].body,
+            )?,
+            ExactBRepOperation::SurfaceExtend {
+                target,
+                distance_bits,
+            } => backend.extend_planar_surface(
+                &outputs[target.0 as usize].body,
+                f64::from_bits(*distance_bits),
+            )?,
+            ExactBRepOperation::SurfaceKnit {
+                surfaces,
+                tolerance_bits,
+                make_solid,
+            } => {
+                let surfaces = surfaces
+                    .iter()
+                    .map(|surface| &outputs[surface.0 as usize].body)
+                    .collect::<Vec<_>>();
+                backend.knit_surfaces(&surfaces, f64::from_bits(*tolerance_bits), *make_solid)?
+            }
+            ExactBRepOperation::SurfaceThicken {
+                target,
+                thickness_bits,
+                direction,
+            } => backend.thicken_surface(
+                &outputs[target.0 as usize].body,
+                f64::from_bits(*thickness_bits),
+                match direction {
+                    ExactBRepShellDirection::Inward => NativeShellDirection::Inward,
+                    ExactBRepShellDirection::Outward => NativeShellDirection::Outward,
+                    ExactBRepShellDirection::Symmetric => NativeShellDirection::Symmetric,
+                },
+            )?,
             ExactBRepOperation::Shell {
                 target,
                 removed_faces,
                 thickness_bits,
+                direction,
             } => {
                 let target_output = &outputs[target.0 as usize];
                 let ordinals = exact_brep_topology_ordinals(
@@ -2021,10 +2857,15 @@ fn evaluate_exact_brep_graph(
                     removed_faces,
                     ExactBRepTopologyKind::Face,
                 )?;
-                backend.shell_body(
+                backend.shell_body_with_direction(
                     &target_output.body,
                     &ordinals,
                     f64::from_bits(*thickness_bits),
+                    match direction {
+                        ExactBRepShellDirection::Inward => NativeShellDirection::Inward,
+                        ExactBRepShellDirection::Outward => NativeShellDirection::Outward,
+                        ExactBRepShellDirection::Symmetric => NativeShellDirection::Symmetric,
+                    },
                 )?
             }
             ExactBRepOperation::FaceOffset {
@@ -2053,6 +2894,9 @@ fn evaluate_exact_brep_graph(
                 edges,
                 kind,
                 amount_bits,
+                fillet_radius_stations,
+                chamfer_mode,
+                chamfer_edge_sides,
             } => {
                 let target_output = &outputs[target.0 as usize];
                 let ordinals = exact_brep_topology_ordinals(
@@ -2062,16 +2906,87 @@ fn evaluate_exact_brep_graph(
                     edges,
                     ExactBRepTopologyKind::Edge,
                 )?;
-                backend.finish_body(
-                    &target_output.body,
-                    &ordinals,
-                    match kind {
-                        ExactBRepEdgeFinishKind::Fillet => EdgeFinish::Fillet,
-                        ExactBRepEdgeFinishKind::Chamfer => EdgeFinish::Chamfer,
-                    },
-                    f64::from_bits(*amount_bits),
-                )?
+                let radius_stations = fillet_radius_stations
+                    .iter()
+                    .map(|station| {
+                        [
+                            f64::from_bits(station.position_bits),
+                            f64::from_bits(station.radius_bits),
+                        ]
+                    })
+                    .collect::<Vec<_>>();
+                match chamfer_mode {
+                    ExactBRepChamferMode::Symmetric => backend.finish_body_with_radius_stations(
+                        &target_output.body,
+                        &ordinals,
+                        match kind {
+                            ExactBRepEdgeFinishKind::Fillet => EdgeFinish::Fillet,
+                            ExactBRepEdgeFinishKind::Chamfer => EdgeFinish::Chamfer,
+                        },
+                        f64::from_bits(*amount_bits),
+                        &radius_stations,
+                    )?,
+                    ExactBRepChamferMode::TwoDistance {
+                        second_distance_bits,
+                    } => {
+                        let face_selectors = chamfer_edge_sides
+                            .iter()
+                            .map(|selection| selection.side_face.clone())
+                            .collect::<Vec<_>>();
+                        let (edge_ordinals, face_ordinals) = exact_brep_chamfer_ordinal_pairs(
+                            graph,
+                            *target,
+                            target_output,
+                            edges,
+                            &face_selectors,
+                        )?;
+                        backend.finish_body_advanced_chamfer(
+                            &target_output.body,
+                            &edge_ordinals,
+                            &face_ordinals,
+                            f64::from_bits(*amount_bits),
+                            AdvancedChamferMode::TwoDistance {
+                                second_distance_mm: f64::from_bits(*second_distance_bits),
+                            },
+                        )?
+                    }
+                    ExactBRepChamferMode::DistanceAngle { angle_degrees_bits } => {
+                        let face_selectors = chamfer_edge_sides
+                            .iter()
+                            .map(|selection| selection.side_face.clone())
+                            .collect::<Vec<_>>();
+                        let (edge_ordinals, face_ordinals) = exact_brep_chamfer_ordinal_pairs(
+                            graph,
+                            *target,
+                            target_output,
+                            edges,
+                            &face_selectors,
+                        )?;
+                        backend.finish_body_advanced_chamfer(
+                            &target_output.body,
+                            &edge_ordinals,
+                            &face_ordinals,
+                            f64::from_bits(*amount_bits),
+                            AdvancedChamferMode::DistanceAngle {
+                                angle_degrees: f64::from_bits(*angle_degrees_bits),
+                            },
+                        )?
+                    }
+                }
             }
+            ExactBRepOperation::SheetMetal {
+                width_bits,
+                depth_bits,
+                thickness_bits,
+                flanges,
+                ..
+            } => exact_brep_sheet_metal(
+                backend,
+                f64::from_bits(*width_bits),
+                f64::from_bits(*depth_bits),
+                f64::from_bits(*thickness_bits),
+                flanges,
+            )?,
             ExactBRepOperation::ImportedExact {
                 source_sha256,
                 result_fingerprint,
@@ -2146,7 +3061,60 @@ fn exact_brep_through_all_interval(
     })
 }
 
-fn exact_brep_topology_ordinals(
+fn durable_face_ordinal(output: &ExactOpOutput, reference: &TopologicalElementRef) -> Option<u32> {
+    let matches = exact_brep_graph_face_evidence(output)
+        .into_iter()
+        .filter(|face| {
+            face.semantic_role == reference.producer_element_id
+                && face.source_element_id == reference.source_element_id
+        })
+        .map(|face| face.face_ordinal)
+        .collect::<BTreeSet<_>>();
+    if matches.len() != 1 {
+        return None;
+    }
+    matches.into_iter().next()
+}
+
+fn durable_edge_ordinal(output: &ExactOpOutput, reference: &TopologicalElementRef) -> Option<u32> {
+    let face_evidence = exact_brep_graph_face_evidence(output);
+    let mut face_provenance = BTreeMap::<u32, Vec<(&str, &str)>>::new();
+    for face in &face_evidence {
+        face_provenance
+            .entry(face.face_ordinal)
+            .or_default()
+            .push((&face.semantic_role, &face.source_element_id));
+    }
+    let matches = output
+        .body
+        .topology
+        .edges
+        .iter()
+        .filter_map(|edge| {
+            let adjacent_faces = edge
+                .adjacent_face_ordinals
+                .iter()
+                .map(|face_ordinal| {
+                    let [face] = face_provenance.get(face_ordinal)?.as_slice() else {
+                        return None;
+                    };
+                    Some(*face)
+                })
+                .collect::<Option<Vec<_>>>()?;
+            let (source_element_id, producer_element_id) =
+                topological_edge_provenance_tokens(&adjacent_faces)?;
+            (source_element_id == reference.source_element_id
+                && producer_element_id == reference.producer_element_id)
+                .then_some(edge.ordinal)
+        })
+        .collect::<BTreeSet<_>>();
+    if matches.len() != 1 {
+        return None;
+    }
+    matches.into_iter().next()
+}
+
+fn exact_brep_topology_ordinals_preserving_order(
     graph: &ExactBRepGraph,
     target: ketchup_core::exact_brep_graph::ExactBRepNodeId,
     target_output: &ExactOpOutput,
@@ -2158,32 +3126,39 @@ fn exact_brep_topology_ordinals(
         ExactBRepTopologyKind::Face => "face",
         ExactBRepTopologyKind::Edge => "edge",
     };
-    let (producer_prefix, source_prefix, expected_evaluator, expected_result_fingerprint) =
-        match &target_node.operation {
-            ExactBRepOperation::ImportedExact {
-                source_sha256,
-                result_fingerprint,
-                ..
-            } => {
-                let source_sha256 = source_sha256
-                    .iter()
-                    .map(|byte| format!("{byte:02x}"))
-                    .collect::<String>();
-                (
-                    format!("imported-result/{kind_token}/"),
-                    format!("imported-source/{source_sha256}/{kind_token}/"),
-                    "ketchup.imported-step-evaluator.v1",
-                    result_fingerprint.as_str(),
-                )
-            }
-            _ => (
-                format!("generated-result/{kind_token}/"),
-                format!("generated-source/{kind_token}/"),
-                EXACT_BREP_GRAPH_EVALUATOR_V1,
-                target_output.body.result_fingerprint.as_str(),
-            ),
-        };
-    let mut ordinals = selectors
+    let (
+        producer_prefix,
+        source_prefix,
+        expected_evaluator,
+        expected_result_fingerprint,
+        imported_target,
+    ) = match &target_node.operation {
+        ExactBRepOperation::ImportedExact {
+            source_sha256,
+            result_fingerprint,
+            ..
+        } => {
+            let source_sha256 = source_sha256
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            (
+                format!("imported-result/{kind_token}/"),
+                format!("imported-source/{source_sha256}/{kind_token}/"),
+                "ketchup.imported-step-evaluator.v1",
+                result_fingerprint.as_str(),
+                true,
+            )
+        }
+        _ => (
+            format!("generated-result/{kind_token}/"),
+            format!("generated-source/{kind_token}/"),
+            EXACT_BREP_GRAPH_EVALUATOR_V1,
+            target_output.body.result_fingerprint.as_str(),
+            false,
+        ),
+    };
+    let ordinals = selectors
         .iter()
         .map(|selector| {
             if selector.kind != expected_kind {
@@ -2197,7 +3172,6 @@ fn exact_brep_topology_ordinals(
                 .map_err(|error| exact_brep_graph_error(graph, &error.to_string()))?;
             if reference.producer_feature_id.0 != target_node.source_feature_id
                 || reference.source_feature_id.0 != target_node.source_feature_id
-                || reference.result_fingerprint != expected_result_fingerprint
                 || reference.evaluator != expected_evaluator
                 || reference.backend != target_output.backend_fingerprint
                 || reference.tolerance != target_output.tolerance_report.profile
@@ -2207,26 +3181,51 @@ fn exact_brep_topology_ordinals(
                     "topology selector is stale or belongs to a different exact target",
                 ));
             }
-            let ordinal_token = reference
-                .producer_element_id
-                .strip_prefix(&producer_prefix)
-                .ok_or_else(|| {
-                    exact_brep_graph_error(graph, "topology selector producer token is invalid")
-                })?;
-            let ordinal = ordinal_token.parse::<u32>().map_err(|_| {
-                exact_brep_graph_error(graph, "topology selector ordinal is invalid")
-            })?;
-            if ordinal_token != ordinal.to_string()
-                || reference.source_element_id != format!("{source_prefix}{ordinal}")
+            if reference.result_fingerprint == expected_result_fingerprint
+                && let Some(ordinal_token) =
+                    reference.producer_element_id.strip_prefix(&producer_prefix)
+                && let Ok(ordinal) = ordinal_token.parse::<u32>()
+                && ordinal_token == ordinal.to_string()
+                && reference.source_element_id == format!("{source_prefix}{ordinal}")
             {
+                return Ok(ordinal);
+            }
+            if imported_target || reference.stability != TopologicalReferenceStability::Guaranteed {
                 return Err(exact_brep_graph_error(
                     graph,
-                    "topology selector ordinal encoding is non-canonical",
+                    "topology selector has no durable unambiguous provenance",
                 ));
             }
+            let ordinal = match expected_kind {
+                ExactBRepTopologyKind::Face => durable_face_ordinal(target_output, &reference),
+                ExactBRepTopologyKind::Edge => durable_edge_ordinal(target_output, &reference),
+            }
+            .ok_or_else(|| {
+                exact_brep_graph_error(
+                    graph,
+                    "topology selector provenance is lost or ambiguous after recompute",
+                )
+            })?;
             Ok(ordinal)
         })
         .collect::<Result<Vec<_>, _>>()?;
+    Ok(ordinals)
+}
+
+fn exact_brep_topology_ordinals(
+    graph: &ExactBRepGraph,
+    target: ketchup_core::exact_brep_graph::ExactBRepNodeId,
+    target_output: &ExactOpOutput,
+    selectors: &[ExactBRepTopologySelector],
+    expected_kind: ExactBRepTopologyKind,
+) -> Result<Vec<u32>, ketchup_exact::GeometryError> {
+    let mut ordinals = exact_brep_topology_ordinals_preserving_order(
+        graph,
+        target,
+        target_output,
+        selectors,
+        expected_kind,
+    )?;
     ordinals.sort_unstable();
     if ordinals.windows(2).any(|pair| pair[0] == pair[1]) {
         return Err(exact_brep_graph_error(
@@ -2237,43 +3236,157 @@ fn exact_brep_topology_ordinals(
     Ok(ordinals)
 }
 
+fn exact_brep_chamfer_ordinal_pairs(
+    graph: &ExactBRepGraph,
+    target: ketchup_core::exact_brep_graph::ExactBRepNodeId,
+    target_output: &ExactOpOutput,
+    edge_selectors: &[ExactBRepTopologySelector],
+    face_selectors: &[ExactBRepTopologySelector],
+) -> Result<(Vec<u32>, Vec<u32>), ketchup_exact::GeometryError> {
+    let edge_ordinals = exact_brep_topology_ordinals_preserving_order(
+        graph,
+        target,
+        target_output,
+        edge_selectors,
+        ExactBRepTopologyKind::Edge,
+    )?;
+    let face_ordinals = exact_brep_topology_ordinals_preserving_order(
+        graph,
+        target,
+        target_output,
+        face_selectors,
+        ExactBRepTopologyKind::Face,
+    )?;
+    let mut pairs = edge_ordinals
+        .into_iter()
+        .zip(face_ordinals)
+        .collect::<Vec<_>>();
+    pairs.sort_unstable_by_key(|pair| pair.0);
+    if pairs.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+        return Err(exact_brep_graph_error(
+            graph,
+            "advanced chamfer edge ordinals are duplicated",
+        ));
+    }
+    Ok(pairs.into_iter().unzip())
+}
+
 fn exact_brep_loft(
     backend: &ExactBackend,
     graph: &ExactBRepGraph,
     sections: &[ExactBRepLoftSection],
+    guide: Option<&ExactBRepSpatialPath>,
+    continuity: ExactBRepLoftContinuity,
+    make_solid: bool,
 ) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
-    let sections = sections
-        .iter()
-        .map(|section| {
-            let profile = &graph.profiles[section.profile.0 as usize];
-            let profile_geometry = match &profile.geometry {
-                ExactBRepPlanarGeometry::Spline { control_point_bits } => {
-                    FramedLoftProfile::Spline {
-                        control_points_mm: control_point_bits
-                            .iter()
-                            .map(|point| point.map(f64::from_bits))
-                            .collect(),
-                    }
-                }
-                ExactBRepPlanarGeometry::Circle { .. }
-                | ExactBRepPlanarGeometry::Boundary { closed: true, .. } => {
-                    FramedLoftProfile::Planar(exact_brep_planar_offset_loop(profile)?)
-                }
-                _ => {
-                    return Err(exact_brep_profile_error(
-                        profile,
-                        "exact Loft requires closed line/arc/circle/cubic or spline sections",
-                    ));
-                }
-            };
-            Ok(FramedLoftSection {
-                elevation_mm: f64::from_bits(section.elevation_bits),
-                frame: profile.frame_bits.map(f64::from_bits),
-                profile: profile_geometry,
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    backend.loft_framed_profiles(&FramedLoftSpec { sections })
+    let guide_segments = guide.map(|guide| {
+        guide
+            .segments
+            .iter()
+            .map(exact_brep_spatial_path_segment)
+            .collect::<Vec<_>>()
+    });
+    let continuity = match continuity {
+        ExactBRepLoftContinuity::Position => LoftSurfaceContinuity::Position,
+        ExactBRepLoftContinuity::Tangent => LoftSurfaceContinuity::Tangent,
+        ExactBRepLoftContinuity::Curvature => LoftSurfaceContinuity::Curvature,
+    };
+    let mut outer_sections = Vec::with_capacity(sections.len());
+    let mut hole_sections: Option<Vec<Vec<FramedLoftSection>>> = None;
+    for section in sections {
+        let profile = &graph.profiles[section.profile.0 as usize];
+        let (outer, holes) = match &profile.geometry {
+            ExactBRepPlanarGeometry::Spline { control_point_bits } => (
+                FramedLoftProfile::Spline {
+                    control_points_mm: control_point_bits
+                        .iter()
+                        .map(|point| point.map(f64::from_bits))
+                        .collect(),
+                },
+                Vec::new(),
+            ),
+            ExactBRepPlanarGeometry::Circle { .. }
+            | ExactBRepPlanarGeometry::Boundary { closed: true, .. } => (
+                FramedLoftProfile::Planar(exact_brep_planar_offset_loop(profile)?),
+                Vec::new(),
+            ),
+            ExactBRepPlanarGeometry::Region { outer, holes } => (
+                FramedLoftProfile::Planar(exact_brep_planar_loop(outer)),
+                holes
+                    .iter()
+                    .map(|hole| FramedLoftProfile::Planar(exact_brep_planar_loop(hole)))
+                    .collect(),
+            ),
+            _ => {
+                return Err(exact_brep_profile_error(
+                    profile,
+                    "exact Loft requires closed line/arc/circle/cubic or spline sections",
+                ));
+            }
+        };
+        let elevation_mm = f64::from_bits(section.elevation_bits);
+        let frame = profile.frame_bits.map(f64::from_bits);
+        let hole_groups = hole_sections.get_or_insert_with(|| {
+            (0..holes.len())
+                .map(|_| Vec::with_capacity(sections.len()))
+                .collect()
+        });
+        if hole_groups.len() != holes.len() {
+            return Err(exact_brep_profile_error(
+                profile,
+                "exact Loft requires the same hole count in every section",
+            ));
+        }
+        outer_sections.push(FramedLoftSection {
+            elevation_mm,
+            frame,
+            profile: outer,
+        });
+        for (group, hole) in hole_groups.iter_mut().zip(holes) {
+            group.push(FramedLoftSection {
+                elevation_mm,
+                frame,
+                profile: hole,
+            });
+        }
+    }
+    let mut output = if make_solid {
+        backend.loft_framed_profiles_with_controls(
+            &FramedLoftSpec {
+                sections: outer_sections,
+            },
+            guide_segments.as_deref(),
+            continuity,
+        )?
+    } else {
+        backend.loft_framed_surface(
+            &FramedLoftSpec {
+                sections: outer_sections,
+            },
+            guide_segments.as_deref(),
+            continuity,
+        )?
+    };
+    let hole_sections = hole_sections.unwrap_or_default();
+    if !make_solid && !hole_sections.is_empty() {
+        return Err(ketchup_exact::GeometryError {
+            code: ketchup_exact::GeometryErrorCode::InvalidProfile,
+            diagnostic: "Loft surface holes are not supported".to_owned(),
+            operation: "loft_framed_surface",
+            input_digest: graph.canonical_input_digest.clone(),
+            backend_fingerprint: ketchup_exact::backend_fingerprint(),
+        });
+    }
+    for sections in hole_sections {
+        let tool = backend.loft_framed_profiles_with_controls(
+            &FramedLoftSpec { sections },
+            guide_segments.as_deref(),
+            continuity,
+        )?;
+        output =
+            backend.boolean_bodies(&output.body, &tool.body, ExactBodyBooleanOperation::Cut)?;
+    }
+    Ok(output)
 }
 
 fn exact_brep_revolve(
@@ -2445,6 +3558,98 @@ fn exact_brep_sweep(
     )
 }
 
+fn exact_brep_weldment_joint(
+    backend: &ExactKernel,
+    graph: &ExactBRepGraph,
+    first: &ExactOpOutput,
+    second: &ExactOpOutput,
+    joint: [f64; 3],
+    first_direction: [f64; 3],
+    second_direction: [f64; 3],
+    policy: ExactBRepWeldmentJointPolicy,
+    primary: ExactBRepWeldmentJointPrimary,
+) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
+    let input_relation = backend.query_body_pair(&first.body, &second.body, 1.0e-7)?;
+    if input_relation.relation != ExactPairRelation::Penetrating
+        || input_relation.common_volume_mm3 <= 1.0e-9
+    {
+        return Err(exact_brep_graph_error(
+            graph,
+            "weldment joint members must have a bounded positive intersection",
+        ));
+    }
+    match policy {
+        ExactBRepWeldmentJointPolicy::Butt => match primary {
+            ExactBRepWeldmentJointPrimary::First => {
+                let second_trimmed = backend.boolean_bodies(
+                    &second.body,
+                    &first.body,
+                    ExactBodyBooleanOperation::Cut,
+                )?;
+                finish_exact_brep_weldment_joint(graph, backend, &first.body, &second_trimmed.body)
+            }
+            ExactBRepWeldmentJointPrimary::Second => {
+                let first_trimmed = backend.boolean_bodies(
+                    &first.body,
+                    &second.body,
+                    ExactBodyBooleanOperation::Cut,
+                )?;
+                finish_exact_brep_weldment_joint(graph, backend, &first_trimmed.body, &second.body)
+            }
+        },
+        ExactBRepWeldmentJointPolicy::Miter => {
+            let normal = [
+                first_direction[0] - second_direction[0],
+                first_direction[1] - second_direction[1],
+                first_direction[2] - second_direction[2],
+            ];
+            let first_keep = [
+                joint[0] + first_direction[0],
+                joint[1] + first_direction[1],
+                joint[2] + first_direction[2],
+            ];
+            let second_keep = [
+                joint[0] + second_direction[0],
+                joint[1] + second_direction[1],
+                joint[2] + second_direction[2],
+            ];
+            let first_trimmed =
+                backend.trim_body_by_plane(&first.body, joint, normal, first_keep)?;
+            let second_trimmed =
+                backend.trim_body_by_plane(&second.body, joint, normal, second_keep)?;
+            finish_exact_brep_weldment_joint(
+                graph,
+                backend,
+                &first_trimmed.body,
+                &second_trimmed.body,
+            )
+        }
+    }
+}
+
+fn finish_exact_brep_weldment_joint(
+    graph: &ExactBRepGraph,
+    backend: &ExactKernel,
+    first: &ketchup_exact::ExactBody,
+    second: &ketchup_exact::ExactBody,
+) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
+    let relation = backend.query_body_pair(first, second, 1.0e-6)?;
+    if relation.relation == ExactPairRelation::Penetrating {
+        return Err(exact_brep_graph_error(
+            graph,
+            "weldment joint output members still penetrate",
+        ));
+    }
+    let combined = backend.combine_bodies(first, second)?;
+    if combined.body.topology.solid_count != 2 {
+        return Err(exact_brep_graph_error(
+            graph,
+            "weldment joint must preserve exactly two participant solids",
+        ));
+    }
+    Ok(combined)
+}
+
 fn exact_brep_spatial_sweep(
     backend: &ExactKernel,
     profile: &ExactBRepProfile,
@@ -2546,6 +3751,57 @@ fn exact_brep_spatial_path_segment(segment: &ExactBRepSpatialPathSegment) -> Spa
             end_mm: end_bits.map(f64::from_bits),
         },
     }
+}
+
+fn exact_brep_planar_surface(
+    backend: &ExactBackend,
+    profile: &ExactBRepProfile,
+) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
+    let planar_loop = match &profile.geometry {
+        ExactBRepPlanarGeometry::Boundary { .. } => {
+            PlanarProfileLoop::Segments(exact_brep_boundary_segments(profile, true)?)
+        }
+        ExactBRepPlanarGeometry::Circle {
+            center_bits,
+            radius_bits,
+        } => {
+            let center_mm = center_bits.map(f64::from_bits);
+            let radius_mm = f64::from_bits(*radius_bits);
+            let positive = [center_mm[0] + radius_mm, center_mm[1]];
+            let negative = [center_mm[0] - radius_mm, center_mm[1]];
+            PlanarProfileLoop::Segments(vec![
+                PlanarProfileSegment::CircularArc {
+                    start_mm: positive,
+                    end_mm: negative,
+                    center_mm,
+                    clockwise: false,
+                },
+                PlanarProfileSegment::CircularArc {
+                    start_mm: negative,
+                    end_mm: positive,
+                    center_mm,
+                    clockwise: false,
+                },
+            ])
+        }
+        ExactBRepPlanarGeometry::Region { outer, holes } if holes.is_empty() => {
+            exact_brep_planar_loop(outer)
+        }
+        ExactBRepPlanarGeometry::Region { .. } => {
+            return Err(exact_brep_profile_error(
+                profile,
+                "exact planar surface does not yet support profile holes",
+            ));
+        }
+        ExactBRepPlanarGeometry::Spline { .. } => {
+            return Err(exact_brep_profile_error(
+                profile,
+                "exact planar surface requires a closed line/arc/circle/cubic profile",
+            ));
+        }
+    };
+    let local = backend.planar_surface_profile(&planar_loop)?;
+    transform_local_to_profile_frame(backend, profile, &local)
 }
 
 fn exact_brep_planar_offset(
@@ -6020,10 +7276,135 @@ fn verified_iges_copy(
     Ok(copy)
 }
 
+fn m21_iges_xde_inspection_response(
+    backend: &ExactBackend,
+    source_sha256: &str,
+    source_path: &str,
+) -> String {
+    if !is_canonical_digest(source_sha256) {
+        return "ERR invalid_request".to_owned();
+    }
+    let Some(source_path) = decode_hex_utf8(source_path) else {
+        return "ERR invalid_request".to_owned();
+    };
+    let source = match verified_iges_copy(&source_path, source_sha256, "inspect_iges_xde") {
+        Ok(source) => source,
+        Err(response) => return response,
+    };
+    let source_byte_len = match source.as_file().metadata() {
+        Ok(metadata) => metadata.len(),
+        Err(error) => return transport_error_response("inspect_iges_xde", &error.to_string()),
+    };
+    let source_path = source.path().to_string_lossy();
+    let Some(raw_unit) = backend.iges_length_unit_name(&source_path) else {
+        return transport_error_response(
+            "inspect_iges_xde",
+            "IGES source has missing or ambiguous representation length units",
+        );
+    };
+    let source_unit = match raw_unit.as_str() {
+        "mm" | "millimetre" | "millimeter" => "millimetre",
+        "cm" | "centimetre" | "centimeter" => "centimetre",
+        "m" | "metre" | "meter" => "metre",
+        "in" | "inch" => "inch",
+        "ft" | "foot" => "foot",
+        _ => {
+            return transport_error_response(
+                "inspect_iges_xde",
+                "IGES source declares an unsupported length unit",
+            );
+        }
+    };
+    let manifest = match backend.iges_xde_manifest(&source_path) {
+        Ok(manifest) => manifest,
+        Err(error) => return transport_error_response("inspect_iges_xde", &error.to_string()),
+    };
+    let mut parts = Vec::with_capacity(manifest.parts.len());
+    for part in manifest.parts {
+        let output = match backend.import_iges_xde_part(&source_path, part.index) {
+            Ok(output) => output,
+            Err(error) => return geometry_error_response(&error),
+        };
+        let topology = &output.body.topology;
+        parts.push(StepXdeWorkerPart {
+            index: part.index,
+            name: part.name,
+            name_from_source: part.name_from_source,
+            color: part.color,
+            result_fingerprint: step_import_result_fingerprint(source_sha256, &output),
+            body_kind: if topology.solid_count == 0 {
+                "surface"
+            } else {
+                "solid"
+            }
+            .to_owned(),
+            solid_count: topology.solid_count,
+            topology_counts: [
+                topology.vertex_count,
+                topology.edge_count,
+                topology.face_count,
+                topology.shell_count,
+                topology.solid_count,
+            ],
+            area_mm2: output
+                .body
+                .topology
+                .faces
+                .iter()
+                .map(|face| face.area_mm2)
+                .sum(),
+            volume_mm3: topology.volume_mm3,
+            bounds_mm: [
+                [
+                    topology.bounds_mm.min.x,
+                    topology.bounds_mm.min.y,
+                    topology.bounds_mm.min.z,
+                ],
+                [
+                    topology.bounds_mm.max.x,
+                    topology.bounds_mm.max.y,
+                    topology.bounds_mm.max.z,
+                ],
+            ],
+            backend: output.backend_fingerprint.to_owned(),
+            tolerance: output.tolerance_report.profile.to_owned(),
+        });
+    }
+    let evidence = StepXdeWorkerEvidence {
+        source_sha256: source_sha256.to_owned(),
+        source_byte_len,
+        source_unit: source_unit.to_owned(),
+        parts,
+        nodes: manifest
+            .nodes
+            .into_iter()
+            .map(|node| StepXdeWorkerNode {
+                id: node.id,
+                parent_id: node.parent_id,
+                part_index: node.part_index,
+                name: node.name,
+                name_from_source: node.name_from_source,
+                color: node.color,
+                transform: node.transform,
+            })
+            .collect(),
+    };
+    let encoded = match serde_json::to_vec(&evidence) {
+        Ok(encoded) => encoded,
+        Err(error) => return transport_error_response("inspect_iges_xde", &error.to_string()),
+    };
+    format!(
+        "OK_M21_IGES_XDE_V2 {source_sha256} {} {}",
+        sha256_hex(&encoded),
+        encode_hex(&encoded),
+    )
+}
+
 fn m21_iges_part_inspection_response(
     backend: &ExactBackend,
     source_sha256: &str,
     source_path: &str,
+    part_index: Option<u32>,
 ) -> String {
     if !is_canonical_digest(source_sha256) {
         return "ERR invalid_request".to_owned();
@@ -6055,13 +7436,35 @@ fn m21_iges_part_inspection_response(
             );
         }
     };
-    match backend.import_iges(&source_path) {
+    let imported = match part_index {
+        Some(index) => backend.import_iges_xde_part(&source_path, index),
+        None => backend.import_iges(&source_path),
+    };
+    match imported {
         Ok(output) => {
             let topology = &output.body.topology;
+            let response_schema = if part_index.is_some() {
+                "OK_M21_IGES_XDE_PART_V2"
+            } else {
+                "OK_M21_IGES_PART_V2"
+            };
+            let body_kind = if topology.solid_count == 0 {
+                "surface"
+            } else {
+                "solid"
+            };
+            let area_mm2 = output
+                .body
+                .topology
+                .faces
+                .iter()
+                .map(|face| face.area_mm2)
+                .sum::<f64>();
             format!(
-                "OK_M21_IGES_PART_V1 {source_sha256} {} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {} {}",
+                "{response_schema} {source_sha256} {} {body_kind} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {} {}",
                 step_import_result_fingerprint(source_sha256, &output),
                 topology.solid_count,
+                area_mm2.to_bits(),
                 topology.volume_mm3.to_bits(),
                 topology.bounds_mm.min.x.to_bits(),
                 topology.bounds_mm.min.y.to_bits(),
@@ -6087,6 +7490,7 @@ fn m21_iges_part_mesh_response(
     source_sha256: &str,
     source_path: &str,
     fields: &[&str],
+    part_index: Option<u32>,
 ) -> String {
     if !is_canonical_digest(source_sha256) || fields.len() != 1 {
         return "ERR invalid_request".to_owned();
@@ -6100,7 +7504,11 @@ fn m21_iges_part_mesh_response(
         Ok(source) => source,
         Err(response) => return response,
     };
-    let output = match backend.import_iges(&source.path().to_string_lossy()) {
+    let output = match part_index {
+        Some(index) => backend.import_iges_xde_part(&source.path().to_string_lossy(), index),
+        None => backend.import_iges(&source.path().to_string_lossy()),
+    };
+    let output = match output {
         Ok(output) => output,
         Err(error) => return geometry_error_response(&error),
     };
@@ -6140,8 +7548,13 @@ fn m21_iges_part_mesh_response(
     if let Err(error) = std::fs::write(&output_path, &encoded) {
         return transport_error_response("tessellate_iges_part", &error.to_string());
     }
+    let response_schema = if part_index.is_some() {
+        "OK_M21_IGES_XDE_MESH_V1"
+    } else {
+        "OK_M21_IGES_MESH_V1"
+    };
     format!(
-        "OK_M21_IGES_MESH_V1 {source_sha256} {} {} {} {} {:016x}",
+        "{response_schema} {source_sha256} {} {} {} {} {:016x}",
         step_import_result_fingerprint(source_sha256, &output),
         mesh.vertices_mm.len(),
         mesh.triangles.len(),
@@ -6181,10 +7594,256 @@ fn m21_step_to_iges_response(
     }
 }
 
+fn m21_step_xde_to_iges_response(
+    backend: &ExactBackend,
+    source_sha256: &str,
+    source_path: &str,
+    fields: &[&str],
+) -> String {
+    if !is_canonical_digest(source_sha256) || fields.len() != 1 {
+        return "ERR invalid_request".to_owned();
+    }
+    let (Some(source_path), Some(output_path)) =
+        (decode_hex_utf8(source_path), decode_hex_utf8(fields[0]))
+    else {
+        return "ERR invalid_request".to_owned();
+    };
+    let source = match verified_step_copy(&source_path, source_sha256, "convert_step_xde_to_iges") {
+        Ok(source) => source,
+        Err(response) => return response,
+    };
+    let source_path = source.path().to_string_lossy();
+    let manifest = match backend.step_xde_manifest(&source_path) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            return transport_error_response("convert_step_xde_to_iges", &error.to_string());
+        }
+    };
+    let directory = match tempfile::Builder::new()
+        .prefix("ketchup-iges-flat-roots-")
+        .tempdir()
+    {
+        Ok(directory) => directory,
+        Err(error) => {
+            return transport_error_response("convert_step_xde_to_iges", &error.to_string());
+        }
+    };
+    let mut world_transforms: Vec<Transform> = Vec::with_capacity(manifest.nodes.len());
+    let mut inherited_colors: Vec<Option<[u8; 3]>> = Vec::with_capacity(manifest.nodes.len());
+    let mut parts = Vec::new();
+    let mut nodes = Vec::new();
+    for (index, node) in manifest.nodes.iter().enumerate() {
+        if node.id as usize != index
+            || node
+                .parent_id
+                .is_some_and(|parent| parent as usize >= index)
+        {
+            return transport_error_response(
+                "convert_step_xde_to_iges",
+                "STEP XDE hierarchy is not canonical parent-before order",
+            );
+        }
+        let Some(local) = Transform::from_matrix(node.transform)
+            .ok()
+            .filter(|transform| transform.rigid_inverse().is_some())
+        else {
+            return transport_error_response(
+                "convert_step_xde_to_iges",
+                "STEP XDE hierarchy contains a non-rigid transform",
+            );
+        };
+        let world = node.parent_id.map_or(local, |parent| {
+            world_transforms[parent as usize].compose(local)
+        });
+        let inherited = node.color.or_else(|| {
+            node.parent_id
+                .and_then(|parent| inherited_colors[parent as usize])
+        });
+        world_transforms.push(world);
+        inherited_colors.push(inherited);
+        let Some(source_part_index) = node.part_index else {
+            continue;
+        };
+        let Some(source_part) = manifest.parts.get(source_part_index as usize) else {
+            return transport_error_response(
+                "convert_step_xde_to_iges",
+                "STEP XDE occurrence references a missing part",
+            );
+        };
+        let imported = match backend.import_step_xde_part(&source_path, source_part_index) {
+            Ok(imported) => imported,
+            Err(error) => return geometry_error_response(&error),
+        };
+        let part_path = directory.path().join(format!("root-{}.step", nodes.len()));
+        if let Err(error) = backend.export_step(&imported.body, &part_path.to_string_lossy()) {
+            return geometry_error_response(&error);
+        }
+        let part_index = parts.len() as u32;
+        parts.push(StepXdeExportPart {
+            path: part_path.to_string_lossy().into_owned(),
+            name: source_part.name.clone(),
+        });
+        nodes.push(StepXdeExportNode {
+            parent_id: None,
+            part_index: Some(part_index),
+            name: node.name.clone(),
+            color: inherited.or(source_part.color),
+            transform: *world.matrix(),
+        });
+    }
+    if nodes.is_empty() || nodes.len() > 1_024 {
+        return transport_error_response(
+            "convert_step_xde_to_iges",
+            "STEP XDE source has no bounded leaf occurrences",
+        );
+    }
+    if let Err(error) = backend.export_iges_xde_assembly(&parts, &nodes, &output_path) {
+        return geometry_error_response(&error);
+    }
+    let reread = match backend.iges_xde_manifest(&output_path) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            return transport_error_response("reread_iges_xde_output", &error.to_string());
+        }
+    };
+    if reread.parts.len() != parts.len()
+        || reread.nodes.len() != nodes.len()
+        || reread.nodes.iter().any(|node| node.parent_id.is_some())
+        || reread.nodes.iter().zip(&nodes).any(|(actual, expected)| {
+            actual.name != expected.name || actual.color != expected.color
+        })
+    {
+        return transport_error_response(
+            "reread_iges_xde_output",
+            "IGES output lost a flat root, name, or color",
+        );
+    }
+    let first = match backend.import_iges_xde_part(&output_path, 0) {
+        Ok(output) => output,
+        Err(error) => return geometry_error_response(&error),
+    };
+    format!(
+        "OK_M21_IGES_EXPORT_V1 {source_sha256} {}",
+        step_import_result_fingerprint(source_sha256, &first)
+    )
+}
+
+fn m21_step_xde_inspection_response(
+    backend: &ExactBackend,
+    source_sha256: &str,
+    source_path: &str,
+) -> String {
+    if !is_canonical_digest(source_sha256) {
+        return "ERR invalid_request".to_owned();
+    }
+    let Some(source_path) = decode_hex_utf8(source_path) else {
+        return "ERR invalid_request".to_owned();
+    };
+    let source = match verified_step_copy(&source_path, source_sha256, "inspect_step_xde") {
+        Ok(source) => source,
+        Err(response) => return response,
+    };
+    let source_byte_len = match source.as_file().metadata() {
+        Ok(metadata) => metadata.len(),
+        Err(error) => return transport_error_response("inspect_step_xde", &error.to_string()),
+    };
+    let source_path = source.path().to_string_lossy();
+    let Some(source_unit) = backend.step_length_unit_name(&source_path) else {
+        return transport_error_response(
+            "inspect_step_xde",
+            "STEP source has missing or ambiguous representation length units",
+        );
+    };
+    let manifest = match backend.step_xde_manifest(&source_path) {
+        Ok(manifest) => manifest,
+        Err(error) => return transport_error_response("inspect_step_xde", &error.to_string()),
+    };
+    let mut parts = Vec::with_capacity(manifest.parts.len());
+    for part in manifest.parts {
+        let output = match backend.import_step_xde_part(&source_path, part.index) {
+            Ok(output) => output,
+            Err(error) => return geometry_error_response(&error),
+        };
+        let topology = &output.body.topology;
+        parts.push(StepXdeWorkerPart {
+            index: part.index,
+            name: part.name,
+            name_from_source: part.name_from_source,
+            color: part.color,
+            result_fingerprint: step_import_result_fingerprint(source_sha256, &output),
+            body_kind: if topology.solid_count == 0 {
+                "surface"
+            } else {
+                "solid"
+            }
+            .to_owned(),
+            solid_count: topology.solid_count,
+            topology_counts: [
+                topology.vertex_count,
+                topology.edge_count,
+                topology.face_count,
+                topology.shell_count,
+                topology.solid_count,
+            ],
+            area_mm2: output
+                .body
+                .topology
+                .faces
+                .iter()
+                .map(|face| face.area_mm2)
+                .sum(),
+            volume_mm3: topology.volume_mm3,
+            bounds_mm: [
+                [
+                    topology.bounds_mm.min.x,
+                    topology.bounds_mm.min.y,
+                    topology.bounds_mm.min.z,
+                ],
+                [
+                    topology.bounds_mm.max.x,
+                    topology.bounds_mm.max.y,
+                    topology.bounds_mm.max.z,
+                ],
+            ],
+            backend: output.backend_fingerprint.to_owned(),
+            tolerance: output.tolerance_report.profile.to_owned(),
+        });
+    }
+    let evidence = StepXdeWorkerEvidence {
+        source_sha256: source_sha256.to_owned(),
+        source_byte_len,
+        source_unit,
+        parts,
+        nodes: manifest
+            .nodes
+            .into_iter()
+            .map(|node| StepXdeWorkerNode {
+                id: node.id,
+                parent_id: node.parent_id,
+                part_index: node.part_index,
+                name: node.name,
+                name_from_source: node.name_from_source,
+                color: node.color,
+                transform: node.transform,
+            })
+            .collect(),
+    };
+    let encoded = match serde_json::to_vec(&evidence) {
+        Ok(encoded) => encoded,
+        Err(error) => return transport_error_response("inspect_step_xde", &error.to_string()),
+    };
+    format!(
+        "OK_M21_STEP_XDE_V2 {source_sha256} {} {}",
+        sha256_hex(&encoded),
+        encode_hex(&encoded),
+    )
+}
+
 fn m21_step_part_inspection_response(
     backend: &ExactBackend,
     source_sha256: &str,
     source_path: &str,
+    part_index: Option<u32>,
 ) -> String {
     if !is_canonical_digest(source_sha256) {
         return "ERR invalid_request".to_owned();
@@ -6203,13 +7862,35 @@ fn m21_step_part_inspection_response(
             "STEP source has missing or ambiguous representation length units",
         );
     };
-    match backend.import_step(&source_path) {
+    let imported = match part_index {
+        Some(index) => backend.import_step_xde_part(&source_path, index),
+        None => backend.import_step(&source_path),
+    };
+    match imported {
         Ok(output) => {
             let topology = &output.body.topology;
+            let response_schema = if part_index.is_some() {
+                "OK_M21_STEP_XDE_PART_V2"
+            } else {
+                "OK_M21_STEP_PART_V4"
+            };
+            let body_kind = if topology.solid_count == 0 {
+                "surface"
+            } else {
+                "solid"
+            };
+            let area_mm2 = output
+                .body
+                .topology
+                .faces
+                .iter()
+                .map(|face| face.area_mm2)
+                .sum::<f64>();
             format!(
-                "OK_M21_STEP_PART_V3 {source_sha256} {} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {} {}",
+                "{response_schema} {source_sha256} {} {body_kind} {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {} {}",
                 step_import_result_fingerprint(source_sha256, &output),
                 topology.solid_count,
+                area_mm2.to_bits(),
                 topology.volume_mm3.to_bits(),
                 topology.bounds_mm.min.x.to_bits(),
                 topology.bounds_mm.min.y.to_bits(),
@@ -6230,6 +7911,47 @@ fn m21_step_part_inspection_response(
     }
 }
 
+fn m21_step_xde_part_export_response(
+    backend: &ExactBackend,
+    source_sha256: &str,
+    source_path: &str,
+    fields: &[&str],
+) -> String {
+    if !is_canonical_digest(source_sha256) || fields.len() != 3 {
+        return "ERR invalid_request".to_owned();
+    }
+    let (Some(source_path), Ok(part_index), result_fingerprint, Some(output_path)) = (
+        decode_hex_utf8(source_path),
+        fields[0].parse::<u32>(),
+        fields[1],
+        decode_hex_utf8(fields[2]),
+    ) else {
+        return "ERR invalid_request".to_owned();
+    };
+    let source = match verified_step_copy(&source_path, source_sha256, "export_step_xde_part") {
+        Ok(source) => source,
+        Err(response) => return response,
+    };
+    let output = match backend.import_step_xde_part(&source.path().to_string_lossy(), part_index) {
+        Ok(output) => output,
+        Err(error) => return geometry_error_response(&error),
+    };
+    if step_import_result_fingerprint(source_sha256, &output) != result_fingerprint {
+        return "ERR invalid_shape".to_owned();
+    }
+    if let Err(error) = backend.export_step(&output.body, &output_path) {
+        return geometry_error_response(&error);
+    }
+    let exported = match std::fs::read(&output_path) {
+        Ok(exported) => exported,
+        Err(error) => return transport_error_response("export_step_xde_part", &error.to_string()),
+    };
+    format!(
+        "OK_M21_STEP_XDE_EXPORT_V1 {source_sha256} {result_fingerprint} {}",
+        sha256_hex(&exported)
+    )
+}
+
 /// Tessellate an already-inspected STEP part into a bounded display mesh.
 ///
 /// The mesh is written to the caller's path and identified by its own digest;
@@ -6240,6 +7962,7 @@ fn m21_step_part_mesh_response(
     source_sha256: &str,
     source_path: &str,
     fields: &[&str],
+    part_index: Option<u32>,
 ) -> String {
     if !is_canonical_digest(source_sha256) || fields.len() != 1 {
         return "ERR invalid_request".to_owned();
@@ -6253,7 +7976,11 @@ fn m21_step_part_mesh_response(
         Ok(source) => source,
         Err(response) => return response,
     };
-    let output = match backend.import_step(&source.path().to_string_lossy()) {
+    let output = match part_index {
+        Some(index) => backend.import_step_xde_part(&source.path().to_string_lossy(), index),
+        None => backend.import_step(&source.path().to_string_lossy()),
+    };
+    let output = match output {
         Ok(output) => output,
         Err(error) => return geometry_error_response(&error),
     };
@@ -6293,8 +8020,13 @@ fn m21_step_part_mesh_response(
     if let Err(error) = std::fs::write(&output_path, &encoded) {
         return transport_error_response("tessellate_step_part", &error.to_string());
     }
+    let response_schema = if part_index.is_some() {
+        "OK_M21_STEP_XDE_MESH_V1"
+    } else {
+        "OK_M21_STEP_MESH_V1"
+    };
     format!(
-        "OK_M21_STEP_MESH_V1 {source_sha256} {} {} {} {} {:016x}",
+        "{response_schema} {source_sha256} {} {} {} {} {:016x}",
         step_import_result_fingerprint(source_sha256, &output),
         mesh.vertices_mm.len(),
         mesh.triangles.len(),
@@ -6310,13 +8042,22 @@ fn m21_step_assembly_response(
     fields: &[&str],
 ) -> String {
     if !is_canonical_digest(assembly_digest) || fields.len() < 2 {
-        return "ERR invalid_request".to_owned();
+        return transport_error_response(
+            "verify_step_manifest",
+            "STEP XDE assembly request digest or field count is malformed",
+        );
     }
     let Some(output_path) = decode_hex_utf8(output_path) else {
-        return "ERR invalid_request".to_owned();
+        return transport_error_response(
+            "verify_step_manifest",
+            "STEP XDE assembly output path is not valid encoded UTF-8",
+        );
     };
     let Some(encoded_manifest) = decode_hex_bytes(fields[0]) else {
-        return "ERR invalid_request".to_owned();
+        return transport_error_response(
+            "verify_step_manifest",
+            "STEP XDE assembly manifest is not valid hexadecimal data",
+        );
     };
     if sha256_hex(&encoded_manifest) != assembly_digest {
         return transport_error_response(
@@ -6325,37 +8066,61 @@ fn m21_step_assembly_response(
         );
     }
     let Ok(manifest) = serde_json::from_slice::<StepAssemblyManifest>(&encoded_manifest) else {
-        return "ERR invalid_request".to_owned();
-    };
-    if !is_snapshot_digest(&manifest.source_digest) || manifest.parts.is_empty() {
         return transport_error_response(
             "verify_step_manifest",
-            "STEP assembly manifest has no source digest or parts",
+            "STEP XDE assembly manifest JSON does not match the versioned schema",
+        );
+    };
+    if manifest.schema != "ketchup.step-xde-assembly.v2"
+        || !is_snapshot_digest(&manifest.source_digest)
+        || manifest.parts.is_empty()
+        || manifest.parts.len() > 1_024
+        || manifest.nodes.is_empty()
+        || manifest.nodes.len() > 1_024
+    {
+        return transport_error_response(
+            "verify_step_manifest",
+            "STEP XDE assembly manifest schema, digest, parts, or nodes are invalid",
         );
     }
     let Some(count) = fields.get(1).and_then(|value| value.parse::<usize>().ok()) else {
-        return "ERR invalid_request".to_owned();
+        return transport_error_response(
+            "verify_step_manifest",
+            "STEP XDE assembly source count is malformed",
+        );
     };
     if count != manifest.parts.len() || fields.len() != 2 + count {
-        return "ERR invalid_request".to_owned();
+        return transport_error_response(
+            "verify_step_manifest",
+            "STEP XDE assembly source count differs from the manifest",
+        );
     }
 
-    let mut transformed = Vec::with_capacity(count);
+    let mut verified_sources = Vec::with_capacity(count);
+    let mut export_parts = Vec::with_capacity(count);
     for (manifest_part, source_field) in manifest.parts.iter().zip(&fields[2..]) {
         if manifest_part.document_id != manifest.document_id
             || manifest_part.source_revision != manifest.source_revision
             || manifest_part.source_digest != manifest.source_digest
+            || manifest_part.definition_id == 0
+            || manifest_part.producer_feature_id == 0
+            || manifest_part.name.is_empty()
+            || manifest_part.name.len() > 4_096
+            || manifest_part.name.chars().any(char::is_control)
             || !is_result_fingerprint(&manifest_part.expected_result_fingerprint)
             || !is_result_fingerprint(&manifest_part.imported_result_fingerprint)
             || !is_canonical_digest(&manifest_part.source_sha256)
         {
             return transport_error_response(
                 "verify_step_part",
-                "STEP part manifest fingerprint or SHA-256 is malformed",
+                "STEP part manifest identity, name, fingerprint, or SHA-256 is malformed",
             );
         }
         let Some(source_path) = decode_hex_utf8(source_field) else {
-            return "ERR invalid_request".to_owned();
+            return transport_error_response(
+                "verify_step_part",
+                "STEP XDE part source path is not valid encoded UTF-8",
+            );
         };
         let source = match verified_step_copy(
             &source_path,
@@ -6377,26 +8142,68 @@ fn m21_step_assembly_response(
                 "STEP part reimport identity differs from the inspected manifest identity",
             );
         }
-        let matrix = manifest_part.transform_bits.map(f64::from_bits);
-        let body = match backend.transform_body(&imported.body, &matrix) {
-            Ok(output) => output.body,
-            Err(error) => return geometry_error_response(&error),
-        };
-        transformed.push(body);
+        export_parts.push(StepXdeExportPart {
+            path: source.path().to_string_lossy().into_owned(),
+            name: manifest_part.name.clone(),
+        });
+        verified_sources.push(source);
     }
 
-    let mut bodies = transformed.into_iter();
-    let Some(mut assembly) = bodies.next() else {
-        return "ERR invalid_request".to_owned();
-    };
-    for body in bodies {
-        assembly = match backend.combine_bodies(&assembly, &body) {
-            Ok(output) => output.body,
-            Err(error) => return geometry_error_response(&error),
-        };
+    let mut export_nodes = Vec::with_capacity(manifest.nodes.len());
+    for (index, node) in manifest.nodes.iter().enumerate() {
+        if node.id as usize != index
+            || node.name.is_empty()
+            || node.name.len() > 4_096
+            || node.name.chars().any(char::is_control)
+            || node
+                .parent_id
+                .is_some_and(|parent| parent as usize >= index)
+            || node
+                .part_index
+                .is_some_and(|part| part as usize >= manifest.parts.len())
+            || node
+                .parent_id
+                .is_some_and(|parent| manifest.nodes[parent as usize].part_index.is_some())
+        {
+            return transport_error_response(
+                "verify_step_hierarchy",
+                "STEP XDE assembly hierarchy is malformed",
+            );
+        }
+        export_nodes.push(StepXdeExportNode {
+            parent_id: node.parent_id,
+            part_index: node.part_index,
+            name: node.name.clone(),
+            color: node.color,
+            transform: node.transform_bits.map(f64::from_bits),
+        });
     }
-    if let Err(error) = backend.export_step(&assembly, &output_path) {
+    if let Err(error) = backend.export_step_xde_assembly(&export_parts, &export_nodes, &output_path)
+    {
         return geometry_error_response(&error);
+    }
+    let reread_xde = match backend.step_xde_manifest(&output_path) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            return transport_error_response("reread_step_xde_output", &error.to_string());
+        }
+    };
+    if reread_xde.parts.len() != manifest.parts.len()
+        || reread_xde
+            .nodes
+            .iter()
+            .filter(|node| node.part_index.is_some())
+            .count()
+            != manifest
+                .nodes
+                .iter()
+                .filter(|node| node.part_index.is_some())
+                .count()
+    {
+        return transport_error_response(
+            "reread_step_xde_output",
+            "STEP XDE output lost a part definition or occurrence",
+        );
     }
     let step_bytes = match std::fs::read(&output_path) {
         Ok(bytes) => bytes,

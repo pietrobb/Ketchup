@@ -10,8 +10,8 @@ use ketchup_core::exact_brep_graph::ExactBRepOperation;
 use ketchup_core::exact_product::{ExactResultRegistry, ExactSnapshotPreparation};
 use ketchup_core::exact_validation::{
     GeneralBodyNarrowPhaseRelation, GeneralBodyParticipant, GeneralClearanceCase,
-    general_body_input_bytes, general_body_narrow_phase, general_body_validation_policy,
-    general_body_validator_descriptor,
+    GravitySupportContact, general_body_input_bytes, general_body_narrow_phase,
+    general_body_validation_policy, general_body_validator_descriptor,
 };
 use ketchup_core::persistence::ContainerData;
 use ketchup_core::prismatic::TolerancePolicy;
@@ -82,8 +82,8 @@ pub fn assistant_validation_context(
     exact_results: &ExactResultRegistry,
     selection: &AssistantValidationSelection,
 ) -> Value {
-    let collision = collision_report(snapshot, selection, None, None, None);
-    assistant_validation_context_base(snapshot, exact_results, selection, collision)
+    let collision = collision_report(snapshot, selection, None, None, None, None);
+    assistant_validation_context_base(snapshot, exact_results, selection, collision, &[])
 }
 
 /// Shared desktop/session/repair entry point. `None` discovers the worker beside
@@ -97,14 +97,42 @@ pub fn assistant_validation_context_with_worker(
     worker_path: Option<PathBuf>,
     timeout: Duration,
 ) -> Value {
+    assistant_validation_context_with_worker_cancellation(
+        snapshot,
+        exact_results,
+        selection,
+        container,
+        worker_path,
+        timeout,
+        Arc::new(AtomicBool::new(false)),
+    )
+}
+
+pub fn assistant_validation_context_with_worker_cancellation(
+    snapshot: &Snapshot,
+    exact_results: &ExactResultRegistry,
+    selection: &AssistantValidationSelection,
+    container: &ContainerData,
+    worker_path: Option<PathBuf>,
+    timeout: Duration,
+    cancellation: Arc<AtomicBool>,
+) -> Value {
+    let mut gravity_contacts = Vec::new();
     let collision = collision_report(
         snapshot,
         selection,
         Some((container, worker_path, timeout)),
         None,
-        None,
+        Some(cancellation),
+        Some(&mut gravity_contacts),
     );
-    assistant_validation_context_base(snapshot, exact_results, selection, collision)
+    assistant_validation_context_base(
+        snapshot,
+        exact_results,
+        selection,
+        collision,
+        &gravity_contacts,
+    )
 }
 
 /// Exact collision validation for a snapshot-bound occurrence scope. Spatial
@@ -124,6 +152,7 @@ pub fn scoped_collision_report_with_worker(
         Some((container, worker_path, timeout)),
         Some(scope),
         Some(cancelled),
+        None,
     )
 }
 
@@ -171,6 +200,7 @@ pub fn fabrication_collision_validation_with_worker(
         snapshot,
         &AssistantValidationSelection::only(&["collision"]),
         Some((container, worker_path, timeout)),
+        None,
         None,
         None,
     );
@@ -281,6 +311,7 @@ fn collision_report(
     worker: Option<(&ContainerData, Option<PathBuf>, Duration)>,
     scope: Option<&CollisionScope>,
     cancellation: Option<Arc<AtomicBool>>,
+    mut gravity_contacts: Option<&mut Vec<GravitySupportContact>>,
 ) -> Value {
     let started = Instant::now();
     let mut report = json!({"document_id": snapshot.document_id().0,
@@ -300,7 +331,12 @@ fn collision_report(
             "max_graphs_per_batch": MAX_EXACT_PAIR_GRAPHS,
             "max_pairs_per_batch": MAX_EXACT_PAIR_CANDIDATES, "max_imported_source_bytes": MAX_COLLISION_SOURCE_BYTES},
         "method": if worker.is_some() {"worker_brep_common_volume"} else {"canonical_box_analytic"}});
-    if !selection.is_valid() || !selection.requested.contains("collision") {
+    let collect_gravity_contacts = worker.is_some()
+        && gravity_contacts.is_some()
+        && selection.requested.contains("gravity_support");
+    if !selection.is_valid()
+        || (!selection.requested.contains("collision") && !collect_gravity_contacts)
+    {
         return report;
     }
     if cancellation
@@ -641,6 +677,7 @@ fn collision_report(
         bodies.len() * bodies.len().saturating_sub(1) / 2
     };
     let mut issues = Vec::new();
+    let mut exact_contact_areas = BTreeMap::<(InstancePath, InstancePath), f64>::new();
     let mut checked = 0;
     let mut broad_rejected = 0;
     let mut checked_bodies = BTreeSet::new();
@@ -941,6 +978,21 @@ fn collision_report(
                                 }
                                 if left != right {
                                     checked += 1;
+                                    if collect_gravity_contacts {
+                                        let left_path =
+                                            bodies[left].occurrence.instance_path.clone();
+                                        let right_path =
+                                            bodies[right].occurrence.instance_path.clone();
+                                        if left_path != right_path {
+                                            let key = if left_path <= right_path {
+                                                (left_path, right_path)
+                                            } else {
+                                                (right_path, left_path)
+                                            };
+                                            *exact_contact_areas.entry(key).or_default() +=
+                                                result.common_contact_area_mm2;
+                                        }
+                                    }
                                     if result.relation == ExactPairRelation::Penetrating {
                                         issues.push(issue(&bodies[left], &bodies[right], json!({"method": "occt_brep_common_volume", "common_volume_mm3": result.common_volume_mm3, "distance_mm": result.distance_mm})));
                                     }
@@ -992,6 +1044,23 @@ fn collision_report(
             "unchecked_pair_count": total_pairs.saturating_sub(checked),
             "unchecked_scoped_body_count": scoped_body_count.saturating_sub(checked_bodies.len())}));
     }
+    if collect_gravity_contacts && failures.is_empty() {
+        let contacts = exact_contact_areas
+            .into_iter()
+            .map(|((left, right), area)| GravitySupportContact::new(left, right, area))
+            .collect::<Result<Vec<_>, _>>();
+        match contacts {
+            Ok(contacts) => {
+                if let Some(output) = gravity_contacts.take() {
+                    *output = contacts;
+                }
+            }
+            Err(error) => failures.push(json!({
+                "reason": "invalid_exact_gravity_contact",
+                "detail": format!("{error:?}"),
+            })),
+        }
+    }
     let checked_occurrences = checked_bodies
         .iter()
         .map(|i| &bodies[*i].occurrence.instance_path)
@@ -1022,5 +1091,19 @@ fn collision_report(
     report["issues"] = json!(issues);
     report["not_evaluated"] = json!(failures);
     report["unavailable_occurrences"] = json!(unavailable);
+    if !selection.requested.contains("collision") {
+        report["state"] = json!("skipped");
+        report["complete"] = json!(false);
+        report["checked_occurrence_count"] = json!(0);
+        report["checked_body_count"] = json!(0);
+        report["checked_pair_count"] = json!(0);
+        report["total_pair_count"] = json!(0);
+        report["broad_phase_rejected_pair_count"] = json!(0);
+        report["narrow_phase_pair_count"] = json!(0);
+        report["issue_count"] = json!(0);
+        report["issues"] = json!([]);
+        report["not_evaluated"] = json!([]);
+        report["unavailable_occurrences"] = json!([]);
+    }
     report
 }

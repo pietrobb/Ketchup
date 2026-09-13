@@ -582,6 +582,179 @@ fn typed_axial_endpoints_are_bit_exact_ignore_labels_transform_origins_and_round
 }
 
 #[test]
+fn repeated_component_mate_endpoints_keep_full_instance_paths_through_solve_and_persistence() {
+    const COMPONENT_GROUP: GroupId = GroupId(70);
+    const COPY: OccurrenceId = OccurrenceId(13);
+    let (mut document, top, bottom, _east) = seeded_document();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateGroup {
+                id: COMPONENT_GROUP,
+                name: "Reusable mate component".into(),
+                transform: Transform::from_translation(100.0, 0.0, 0.0).unwrap(),
+                parent: None,
+            },
+            CanonicalCommand::SetOccurrenceParent {
+                id: FIRST,
+                parent: Some(COMPONENT_GROUP),
+            },
+            CanonicalCommand::SetOccurrenceParent {
+                id: SECOND,
+                parent: Some(COMPONENT_GROUP),
+            },
+        ]))
+        .unwrap();
+    let converted = document
+        .convert_group_to_component(COMPONENT_GROUP, "Reusable mate component")
+        .unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateOccurrence {
+                id: COPY,
+                definition_id: converted.component_definition_id,
+                name: "Reusable mate component copy".into(),
+                transform: Transform::from_translation(500.0, 0.0, 50.0).unwrap(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+
+    let snapshot = document.current();
+    let first_path = snapshot
+        .scene_query()
+        .into_iter()
+        .find(|item| {
+            item.instance_path.root_occurrence() == converted.component_occurrence_id
+                && !item.instance_path.is_root()
+        })
+        .unwrap()
+        .instance_path;
+    let copy_path = snapshot
+        .scene_query()
+        .into_iter()
+        .find(|item| {
+            item.instance_path.root_occurrence() == COPY
+                && item.instance_path.steps() == first_path.steps()
+        })
+        .unwrap()
+        .instance_path;
+    assert_ne!(first_path, copy_path);
+    assert_eq!(first_path.steps(), copy_path.steps());
+    drop(snapshot);
+
+    let mate = AssemblyMate::new(
+        MATE,
+        AssemblyMateEndpoint::resolved_planar_face_at_path(
+            first_path.clone(),
+            PlanarFaceAttachment::new(top, [0.0; 3], [0.0, 0.0, 1.0]).unwrap(),
+        ),
+        AssemblyMateEndpoint::resolved_planar_face_at_path(
+            copy_path.clone(),
+            PlanarFaceAttachment::new(bottom, [0.0; 3], [0.0, 0.0, -1.0]).unwrap(),
+        ),
+        AssemblyMateKind::CoincidentPlanar {
+            offset_mm: 0.0,
+            reversed: false,
+        },
+    );
+    let before_mate = document.current().canonical_digest();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: converted.component_occurrence_id,
+                grounded: true,
+            },
+            CanonicalCommand::CreateAssemblyMate(mate.clone()),
+        ]))
+        .unwrap();
+    let committed_digest = document.current().canonical_digest();
+    assert_ne!(committed_digest, before_mate);
+    assert_eq!(
+        document
+            .current()
+            .assembly_mate(MATE)
+            .unwrap()
+            .endpoint_a()
+            .instance_path(),
+        &first_path
+    );
+    assert_eq!(
+        document
+            .current()
+            .assembly_mate(MATE)
+            .unwrap()
+            .endpoint_b()
+            .instance_path(),
+        &copy_path
+    );
+
+    let solved =
+        solve_rigid_assembly(&document.current(), AssemblySolverPolicy::default()).unwrap();
+    assert!(matches!(
+        solved.status(),
+        AssemblySolveStatus::UnderConstrained | AssemblySolveStatus::FullyConstrained
+    ));
+    assert!(solved.maximum_residual() <= AssemblySolverPolicy::default().linear_tolerance_mm);
+    assert!(solved.occurrence_at_path(&first_path).unwrap().grounded());
+    assert!(!solved.occurrence_at_path(&copy_path).unwrap().grounded());
+    assert!(
+        solved
+            .occurrence(first_path.root_occurrence())
+            .unwrap()
+            .instance_path()
+            .is_root()
+    );
+    let proposal = solved.prepare_publication(&document).unwrap();
+    let before_publication = store_stamp(&document);
+    assert_eq!(store_stamp(&document), before_publication);
+    document.commit_proposal(&proposal).unwrap();
+    let published = document.current();
+    let published_digest = published.canonical_digest();
+    assert_ne!(published_digest, committed_digest);
+    assert_eq!(
+        document.visible_undo_steps(),
+        before_publication.undo_steps + 1
+    );
+    assert_eq!(
+        published
+            .resolve_instance_path(&copy_path)
+            .unwrap()
+            .local_transform,
+        solved.occurrence_at_path(&copy_path).unwrap().transform()
+    );
+    assert_eq!(
+        published
+            .resolve_instance_path(&first_path)
+            .unwrap()
+            .local_transform,
+        solved.occurrence_at_path(&first_path).unwrap().transform()
+    );
+
+    let reopened = persistence::load(&persistence::save(&published)).unwrap();
+    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.snapshot().canonical_digest(), published_digest);
+    assert_eq!(reopened.snapshot().assembly_mate(MATE), Some(&mate));
+    assert_eq!(
+        reopened
+            .snapshot()
+            .resolve_instance_path(&copy_path)
+            .unwrap()
+            .local_transform,
+        solved.occurrence_at_path(&copy_path).unwrap().transform()
+    );
+    assert_eq!(
+        document.undo().unwrap().canonical_digest(),
+        committed_digest
+    );
+    assert_eq!(
+        document.redo().unwrap().canonical_digest(),
+        published_digest
+    );
+}
+
+#[test]
 fn typed_planar_solver_transforms_local_frames_and_ignores_semantic_role_text() {
     let (mut document, mut top, mut bottom, _east) = seeded_document();
     top.semantic_role = ExactFaceRole::Bottom.semantic_role().to_owned();

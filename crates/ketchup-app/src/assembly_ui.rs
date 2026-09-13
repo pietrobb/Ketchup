@@ -14,7 +14,8 @@ use ketchup_core::assembly_joint::{
 };
 use ketchup_core::drawing::project_orthographic_drawing;
 use ketchup_core::drawing::{
-    DrawingSheet, DrawingSheetId, DrawingSource, prepare_create_drawing_sheet,
+    DrawingBomBalloon, DrawingBomBalloonId, DrawingSheet, DrawingSheetId, DrawingSource,
+    OrthographicViewKind, prepare_create_drawing_sheet,
 };
 use ketchup_core::exact_product::BodySubshapeRef;
 use ketchup_core::mechanical_coupling::{
@@ -160,7 +161,7 @@ pub(super) enum AssemblyPreviewSource {
         grounded: bool,
     },
     SelectionDrawing {
-        occurrence_ids: Vec<OccurrenceId>,
+        instance_paths: Vec<InstancePath>,
         sheet_id: DrawingSheetId,
         name: String,
     },
@@ -631,11 +632,11 @@ impl KetchupApp {
                 }])
             }
             AssemblyPreviewSource::SelectionDrawing {
-                occurrence_ids,
+                instance_paths,
                 sheet_id,
                 name,
             } => {
-                return self.plan_selection_drawing(occurrence_ids, *sheet_id, name);
+                return self.plan_selection_drawing(instance_paths, *sheet_id, name);
             }
             AssemblyPreviewSource::Mate { mate, editing } => {
                 let existing = snapshot.assembly_mate(mate.id());
@@ -705,6 +706,7 @@ impl KetchupApp {
                     let transforms = solution
                         .poses()
                         .iter()
+                        .filter(|pose| pose.instance_path().is_root())
                         .filter_map(|pose| {
                             snapshot
                                 .occurrence(pose.occurrence_id())
@@ -712,6 +714,20 @@ impl KetchupApp {
                                     occurrence.transform() != pose.local_transform()
                                 })
                                 .map(|_| (pose.occurrence_id(), pose.local_transform()))
+                        })
+                        .collect::<Vec<_>>();
+                    let instance_transforms = solution
+                        .poses()
+                        .iter()
+                        .filter(|pose| !pose.instance_path().is_root())
+                        .filter_map(|pose| {
+                            snapshot
+                                .resolve_instance_path(pose.instance_path())
+                                .ok()
+                                .filter(|resolved| {
+                                    resolved.local_transform != pose.local_transform()
+                                })
+                                .map(|_| (pose.instance_path().clone(), pose.local_transform()))
                         })
                         .collect::<Vec<_>>();
                     let edit = if position_only {
@@ -731,6 +747,7 @@ impl KetchupApp {
                             source_revision: snapshot.revision_id(),
                             source_digest: snapshot.canonical_digest(),
                             transforms,
+                            instance_transforms,
                         },
                     ])
                 } else {
@@ -1494,38 +1511,66 @@ impl KetchupApp {
 
     fn plan_selection_drawing(
         &self,
-        occurrence_ids: &[OccurrenceId],
+        instance_paths: &[InstancePath],
         sheet_id: DrawingSheetId,
         name: &str,
     ) -> Result<Proposal, String> {
         let snapshot = self.document.current();
-        let selected = self
-            .selected_root_occurrence_ids()
-            .map_err(|error| self.root_occurrence_selection_error(&error))?;
-        if occurrence_ids.is_empty()
-            || occurrence_ids.iter().copied().collect::<BTreeSet<_>>() != selected
+        let selected = self.selected_instance_paths();
+        if instance_paths.is_empty()
+            || instance_paths.iter().cloned().collect::<BTreeSet<_>>() != selected
             || snapshot.drawing_sheet(sheet_id).is_some()
+            || instance_paths
+                .iter()
+                .any(|path| snapshot.resolve_instance_path(path).is_err())
         {
             return Err(self.catalog.text("error-preview-stale"));
         }
-        let source = if let [occurrence_id] = occurrence_ids {
+        let source = if let [instance_path] = instance_paths
+            && instance_path.is_root()
+        {
             let definition_id = snapshot
-                .occurrence(*occurrence_id)
-                .ok_or_else(|| self.catalog.text("error-preview-stale"))?
-                .definition_id();
+                .resolve_instance_path(instance_path)
+                .map_err(|_| self.catalog.text("error-preview-stale"))?
+                .definition_id;
             DrawingSource::Definition(definition_id)
         } else {
-            if occurrence_ids
-                .iter()
-                .any(|occurrence_id| snapshot.occurrence(*occurrence_id).is_none())
-            {
-                return Err(self.catalog.text("error-preview-stale"));
-            }
-            DrawingSource::RigidAssembly {
-                occurrence_ids: occurrence_ids.to_vec(),
+            DrawingSource::RigidAssemblyInstances {
+                instance_paths: instance_paths.to_vec(),
             }
         };
-        let sheet = DrawingSheet::new(sheet_id, name, source).map_err(|error| error.to_string())?;
+        let balloons = if matches!(&source, DrawingSource::RigidAssemblyInstances { .. }) {
+            let mut positions = BTreeMap::new();
+            let mut next_position = 1_u32;
+            instance_paths
+                .iter()
+                .enumerate()
+                .map(|(index, path)| {
+                    let definition_id = snapshot
+                        .resolve_instance_path(path)
+                        .map_err(|_| self.catalog.text("error-preview-stale"))?
+                        .definition_id;
+                    let position = *positions.entry(definition_id).or_insert_with(|| {
+                        let assigned = next_position;
+                        next_position += 1;
+                        assigned
+                    });
+                    DrawingBomBalloon::new(
+                        DrawingBomBalloonId(index as u64 + 1),
+                        OrthographicViewKind::Front,
+                        path.clone(),
+                        position,
+                        [8.0, 8.0],
+                    )
+                    .map_err(|error| error.to_string())
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            Vec::new()
+        };
+        let sheet = DrawingSheet::new(sheet_id, name, source)
+            .and_then(|sheet| sheet.with_bom_balloons(balloons))
+            .map_err(|error| error.to_string())?;
         let (proposal, drawing) =
             prepare_create_drawing_sheet(&self.document, &self.exact_results, sheet)
                 .map_err(|error| error.to_string())?;
@@ -1542,15 +1587,15 @@ impl KetchupApp {
 
     pub(super) fn preview_selection_drawing(&mut self) -> bool {
         let snapshot = self.document.current();
-        let occurrence_ids = match self.selected_root_occurrence_ids() {
-            Ok(selected) => selected.into_iter().collect::<Vec<_>>(),
-            Err(error) => {
-                let reason = self.root_occurrence_selection_error(&error);
-                self.assembly_error(reason);
-                return false;
-            }
-        };
-        if occurrence_ids.is_empty() {
+        let instance_paths = self
+            .selected_instance_paths()
+            .into_iter()
+            .collect::<Vec<_>>();
+        if instance_paths.is_empty()
+            || instance_paths
+                .iter()
+                .any(|path| snapshot.resolve_instance_path(path).is_err())
+        {
             self.assembly_error(self.catalog.text("assembly-error-drawing-selection"));
             return false;
         }
@@ -1562,23 +1607,27 @@ impl KetchupApp {
                 .unwrap_or(0)
                 + 1,
         );
-        let name = if let [occurrence_id] = occurrence_ids.as_slice() {
-            let Some(occurrence) = snapshot.occurrence(*occurrence_id) else {
+        let name = if let [instance_path] = instance_paths.as_slice() {
+            let Some(occurrence) = snapshot
+                .scene_query()
+                .into_iter()
+                .find(|occurrence| occurrence.instance_path == *instance_path)
+            else {
                 self.assembly_error(self.catalog.text("assembly-error-drawing-selection"));
                 return false;
             };
             self.catalog.format(
                 "assembly-selection-drawing-part-name",
-                &BTreeMap::from([("name", occurrence.name().to_owned())]),
+                &BTreeMap::from([("name", occurrence.occurrence_name)]),
             )
         } else {
             self.catalog.format(
                 "assembly-selection-drawing-name",
-                &BTreeMap::from([("count", occurrence_ids.len().to_string())]),
+                &BTreeMap::from([("count", instance_paths.len().to_string())]),
             )
         };
         self.prepare_assembly_preview(AssemblyPreviewSource::SelectionDrawing {
-            occurrence_ids,
+            instance_paths,
             sheet_id,
             name,
         })
@@ -1797,7 +1846,7 @@ impl KetchupApp {
         }
     }
 
-    fn confirm_assembly_preview(&mut self) -> bool {
+    pub(super) fn confirm_assembly_preview(&mut self) -> bool {
         let Some(preview) = self.assembly_editor.preview.take() else {
             return false;
         };
@@ -1969,58 +2018,74 @@ impl KetchupApp {
                 );
             }
             if let Some(clearance) = preview.plan.drag_clearance.as_ref() {
-                let minimum = clearance.minimum_clearance();
-                let pair = minimum.pair();
-                ui.label(self.catalog.format(
-                    "assembly-drag-clearance-minimum",
-                    &BTreeMap::from([
-                        ("clearance", clearance.minimum_clearance_mm().to_string()),
-                        ("first", pair.first_occurrence_id().0.to_string()),
-                        ("second", pair.second_occurrence_id().0.to_string()),
-                        ("progress", minimum.progress_start().to_string()),
-                    ]),
-                ));
-                if let Some(contact) = clearance.first_contact() {
-                    let pair = contact.pair();
-                    let allowed = matches!(
-                        &preview.plan.source,
-                        AssemblyPreviewSource::Drag {
-                            allow_contact: true,
-                            ..
-                        }
-                    );
+                if let Some(unresolved) = clearance.unresolved_intervals().first() {
+                    let pair = unresolved.pair();
                     ui.label(self.catalog.format(
-                        "assembly-drag-clearance-contact",
+                        "assembly-drag-clearance-unresolved",
                         &BTreeMap::from([
                             ("first", pair.first_occurrence_id().0.to_string()),
                             ("second", pair.second_occurrence_id().0.to_string()),
-                            ("progress", contact.progress_start().to_string()),
-                            (
-                                "policy",
-                                self.catalog.text(if allowed {
-                                    "assembly-drag-contact-allowed"
-                                } else {
-                                    "assembly-drag-contact-blocked"
-                                }),
-                            ),
+                            ("start", unresolved.progress_start().to_string()),
+                            ("end", unresolved.progress_end().to_string()),
                         ]),
                     ));
                 } else {
-                    ui.label(self.catalog.text("assembly-drag-clearance-safe"));
+                    let minimum = clearance.minimum_clearance();
+                    let pair = minimum.pair();
+                    ui.label(self.catalog.format(
+                        "assembly-drag-clearance-minimum",
+                        &BTreeMap::from([
+                            ("clearance", clearance.minimum_clearance_mm().to_string()),
+                            ("first", pair.first_occurrence_id().0.to_string()),
+                            ("second", pair.second_occurrence_id().0.to_string()),
+                            ("progress", minimum.progress_start().to_string()),
+                        ]),
+                    ));
+                    if let Some(contact) = clearance.first_contact() {
+                        let pair = contact.pair();
+                        let allowed = matches!(
+                            &preview.plan.source,
+                            AssemblyPreviewSource::Drag {
+                                allow_contact: true,
+                                ..
+                            }
+                        );
+                        ui.label(self.catalog.format(
+                            "assembly-drag-clearance-contact",
+                            &BTreeMap::from([
+                                ("first", pair.first_occurrence_id().0.to_string()),
+                                ("second", pair.second_occurrence_id().0.to_string()),
+                                ("progress", contact.progress_start().to_string()),
+                                (
+                                    "policy",
+                                    self.catalog.text(if allowed {
+                                        "assembly-drag-contact-allowed"
+                                    } else {
+                                        "assembly-drag-contact-blocked"
+                                    }),
+                                ),
+                            ]),
+                        ));
+                    } else {
+                        ui.label(self.catalog.text("assembly-drag-clearance-safe"));
+                    }
                 }
             }
             let contact_blocked = preview
                 .plan
                 .drag_clearance
                 .as_ref()
-                .is_some_and(|clearance| clearance.first_contact().is_some())
-                && !matches!(
-                    &preview.plan.source,
-                    AssemblyPreviewSource::Drag {
-                        allow_contact: true,
-                        ..
-                    }
-                );
+                .is_some_and(|clearance| {
+                    !clearance.is_conclusive()
+                        || clearance.first_contact().is_some()
+                            && !matches!(
+                                &preview.plan.source,
+                                AssemblyPreviewSource::Drag {
+                                    allow_contact: true,
+                                    ..
+                                }
+                            )
+                });
             let confirm = ui
                 .add_enabled(
                     !contact_blocked,

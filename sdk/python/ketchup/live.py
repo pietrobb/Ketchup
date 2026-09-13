@@ -620,8 +620,8 @@ def _broker_exchange(endpoint: tuple[str, int], action: str, instance_id: str,
     try:
         stream.settimeout(_remaining(deadline))
         stream.connect(endpoint)
-        request = json.dumps({"version": 1, "action": action, "requester": "Supervisor",
-                              "nonce": nonce}, separators=(",", ":")).encode("ascii") + b"\n"
+        request = json.dumps({"version": 1, "action": action, "nonce": nonce},
+                             separators=(",", ":")).encode("ascii") + b"\n"
         stream.sendall(request)
         response = bytearray()
         while len(response) < MAX_DISCOVERY_BYTES:

@@ -4,11 +4,19 @@
 #![deny(unsafe_code)]
 
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
+use ketchup_application::cam_workflow::{CamReviewRequest, CamReviewSummary, CamReviewWorkflow};
 use ketchup_application::diagnostics::{
     AssistantPlanningResult, AssistantRejection, assistant_canonical_rejection,
     assistant_planning_rejection, assistant_rejection,
 };
 use ketchup_application::evaluation::{ExactEvaluationTask, ExactSource, exact_worker_candidates};
+use ketchup_application::fea_workflow::{
+    ExactFeaFaceTraction, ExactFeaSetup, ExactVolumeMeshWireOptions, FeaReviewSummary,
+    FeaReviewWorkflow, FeaStudyRequest,
+};
+use ketchup_application::pdm_workflow::{
+    LocalPdmWorkflow, PdmCreateReleaseRequest, PdmSourceIdentity,
+};
 pub use ketchup_application::topology::GeneralFinishKind;
 use ketchup_application::topology::{
     MAX_TOPOLOGICAL_FINISH_REFERENCES, assistant_topology_references, plan_topology_finish_kind,
@@ -21,7 +29,7 @@ use ketchup_core::assistant_sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantApiDiagnostics, AssistantBalloonTextIntent,
     AssistantBoxIntent, AssistantCadEditOperation, AssistantCadEditProgram,
     AssistantCadEntitySelector, AssistantCapability, AssistantChatResult, AssistantDistribution,
-    AssistantGableRoofIntent, AssistantHandshake, AssistantModelIntent,
+    AssistantFeaReviewRequest, AssistantGableRoofIntent, AssistantHandshake, AssistantModelIntent,
     AssistantOrientedBeamIntent, AssistantRejectionDiagnostic, AssistantRejectionPhase,
     AssistantStaircaseIntent,
 };
@@ -30,6 +38,7 @@ use ketchup_core::assistant_sidecar::{AssistantBottleFinishKind, AssistantBottle
 #[cfg(test)]
 use ketchup_core::assistant_sidecar::{
     AssistantCadBodyFeature, AssistantCadBooleanOperation, AssistantCadDeletePolicy,
+    AssistantCadLoftContinuity,
 };
 #[cfg(feature = "named-product-fixtures")]
 use ketchup_core::beam_m4ae::{
@@ -38,16 +47,17 @@ use ketchup_core::beam_m4ae::{
 #[cfg(feature = "named-product-fixtures")]
 use ketchup_core::beam_m5::{BeamExactPiecePackage, BeamM5Products};
 use ketchup_core::blender_export::{ExactGlbExport, MeshGlbInstance, model_glb_export};
+use ketchup_core::cam::{CamPlanId, CamPostprocessorDialect};
 use ketchup_core::document::{
     AuthenticatedApprover, AuthoritativeDependency, BodyId, BooleanOperation, BottleEdgeFinishKind,
     CanonicalCommand, CanonicalError, ClassificationCategoryId, ClassificationDimensionId,
     CloneDefinitionPlan, CollectionId, CommandBatch, DefinitionId, Dimension, DimensionDisplayUnit,
     DimensionPresentation, DocumentId, DocumentStore, EdgeFinishKind, EvaluationIdentity,
     FeatureId, FeatureKind, FeatureParameterTarget, GroupId, HighRiskClass, HighRiskScope,
-    InstancePath, LoftSection, MAX_HUMAN_CONFIRMATION_LIFETIME_MS, MESH_BODY_SCHEMA_V1,
-    MeshAuthority, MeshBodySpec, NodeId, OccurrenceId, PersistentDimensionId, ProfileSegment,
-    Proposal, ProposalCommitError, ProposalContext, ProposalGoal, ProposalPrepareError,
-    ProposalPrincipal, ProposalValue, SceneOccurrence, SceneQueryContext,
+    InstancePath, LoftContinuity, LoftSection, MAX_HUMAN_CONFIRMATION_LIFETIME_MS,
+    MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, NodeId, OccurrenceId, PersistentDimensionId,
+    ProfileSegment, Proposal, ProposalCommitError, ProposalContext, ProposalGoal,
+    ProposalPrepareError, ProposalPrincipal, ProposalValue, SceneOccurrence, SceneQueryContext,
     SideEffectAuthorizationReceipt, SlotPath, Snapshot, SolidToolPlan, SpatialPathSegment, TagId,
     TipReplacementParent, TipReplacementProposal, Transform, TrustedConfirmationSurface,
 };
@@ -78,26 +88,38 @@ use ketchup_core::exact_validation::{
     GeneralBodyNarrowPhaseRelation, GeneralBodyParticipant, general_body_narrow_phase,
 };
 use ketchup_core::fabrication::{
-    BtlxExportOptions, BtlxProfileProcessingRequest, project_general_fabrication,
+    BtlxExportOptions, BtlxProfileProcessingRequest, GeneralFabricationProjection,
+    project_general_fabrication,
 };
 #[cfg(feature = "named-product-fixtures")]
 use ketchup_core::fabrication::{FullBomProjection, PieceDimensionSheet};
+use ketchup_core::fea::{FeaMaterial, FeaSolveSettings};
 use ketchup_core::graph::{
     DerivedIdentity, EvaluationStatus, EvaluatorNodeKind, RuleOutput, SlotSegment, sha256_bytes,
 };
 use ketchup_core::import::{
-    DxfImportOptions, IgesImportEvidence, ImportDiagnosticSeverity, ImportFormat, ImportLengthUnit,
-    ImportUnitAuthority, ImportUnitDecision, MAX_DXF_SOURCE_BYTES, MAX_GLB_SOURCE_BYTES,
-    MAX_IGES_SOURCE_BYTES, MAX_SKETCHUP_SCENE_SOURCE_BYTES, MAX_STEP_SOURCE_BYTES,
-    MAX_STL_SOURCE_BYTES, ParsedDxf, ParsedGlbScene, ParsedSketchupScene, ParsedStlMesh,
-    StepImportEvidence, inspect_dxf, inspect_glb, inspect_sketchup_scene, parse_stl,
-    plan_dxf_import, plan_glb_import, plan_iges_import, plan_sketchup_scene_import,
-    plan_step_import, plan_stl_import,
+    DxfImportOptions, IgesXdeImportEvidence, ImportDiagnosticSeverity, ImportFormat,
+    ImportLengthUnit, ImportUnitAuthority, ImportUnitDecision, MAX_DXF_SOURCE_BYTES,
+    MAX_GLB_SOURCE_BYTES, MAX_IGES_SOURCE_BYTES, MAX_SKETCHUP_SCENE_SOURCE_BYTES,
+    MAX_STEP_SOURCE_BYTES, MAX_STL_SOURCE_BYTES, ParsedDxf, ParsedGlbScene, ParsedSketchupScene,
+    ParsedStlMesh, StepXdeImportEvidence, inspect_dxf, inspect_glb, inspect_sketchup_scene,
+    parse_stl, plan_dxf_import, plan_glb_import, plan_iges_xde_import, plan_sketchup_scene_import,
+    plan_step_xde_import, plan_stl_import,
 };
 #[cfg(test)]
-use ketchup_core::import::{StepImportMesh, StepMeshTriangle};
+use ketchup_core::import::{
+    StepImportEvidence, StepImportMesh, StepMeshTriangle, plan_step_import,
+};
 use ketchup_core::intent::{IntentRequest, WorkflowIntent, propose_intent};
+use ketchup_core::local_pdm::{
+    ReleaseAudit, ReleaseCatalogEntry, ReleaseComparison, ReleaseConflictVerdict,
+    ReleaseDependencyInput, ReleaseManifest,
+};
+use ketchup_core::persistence::ContainerData;
 use ketchup_core::prismatic::{JointId, TolerancePolicy};
+use ketchup_core::sheet_metal::{
+    SheetMetalManufacturingProjection, project_sheet_metal_manufacturing,
+};
 use ketchup_core::sketch::{
     FeatureDirection, FeatureExtent, PadSpec, PrincipalPlane, SketchConstraint, SketchConstraintId,
     SketchConstraintKind, SketchEntity, SketchEntityId, SketchPointKind, SketchPointRef,
@@ -134,6 +156,7 @@ use ketchup_scheduler::{ExactWorkerSupervisor, assistant::AssistantCancellation}
 mod assembly_ui;
 mod assistant_runtime;
 mod body_ui;
+mod close_guard;
 pub mod dialogs;
 mod face_workflow_ui;
 mod feature_history_ui;
@@ -219,6 +242,7 @@ const ASSISTANT_CHAT_PATH: &str = "conversation-v1.json";
 const ASSISTANT_MEMORY_PATH: &str = "project-memory-v1.json";
 const ASSISTANT_MEMORY_SCHEMA: &str = "ketchup.project-memory.v1";
 const MAX_ASSISTANT_PROVIDER_CONTEXT_BYTES: usize = 24 * 1024;
+const ASSISTANT_LOCAL_INSPECTION_CATALOG: &str = "_local_inspection_catalog";
 const MAX_ASSISTANT_PROVIDER_STATE_VIEW_BYTES: usize = 1024;
 const MAX_ASSISTANT_PROVIDER_CONVERSATION_MESSAGES: usize = 6;
 const MAX_ASSISTANT_PROVIDER_CONVERSATION_TEXT_BYTES: usize = 2 * 1024;
@@ -431,6 +455,11 @@ fn bind_assistant_cad_current_selection(
             | AssistantCadEditOperation::AppendFeature { .. }
             | AssistantCadEditOperation::AppendProgramPocket { .. }
             | AssistantCadEditOperation::SetDimension { .. }
+            | AssistantCadEditOperation::SetFeatureParameter { .. }
+            | AssistantCadEditOperation::CreateAssemblyJoint { .. }
+            | AssistantCadEditOperation::SetAssemblyJointPosition { .. }
+            | AssistantCadEditOperation::CreateDrawing { .. }
+            | AssistantCadEditOperation::UpsertCamPlan { .. }
             | AssistantCadEditOperation::UpsertClassificationDimension { .. }
             | AssistantCadEditOperation::CreateEvaluatorInput { .. } => None,
             AssistantCadEditOperation::Delete { selector, .. }
@@ -3220,6 +3249,12 @@ pub enum AppCommand {
     ExportMeshStl,
     ExportPrintThreeMf,
     ExportBlenderGlb,
+    ExportGeneralFabrication,
+    ExportWeldmentCutList,
+    ExportSheetMetalManufacturing,
+    ReviewCamExport,
+    ReviewStaticFea,
+    ReviewLocalPdm,
     ExportHundeggerBtlx,
     Select,
     Line,
@@ -3391,7 +3426,7 @@ struct CommandSpec {
 struct CommandRegistry;
 
 impl CommandRegistry {
-    const COMMANDS: [CommandSpec; 117] = [
+    const COMMANDS: [CommandSpec; 123] = [
         CommandSpec {
             id: AppCommand::New,
             label_key: "file-new",
@@ -3507,6 +3542,48 @@ impl CommandRegistry {
         CommandSpec {
             id: AppCommand::ExportBlenderGlb,
             label_key: "file-export-blender-glb",
+            shortcut_key: "shortcut-none",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::ExportGeneralFabrication,
+            label_key: "file-export-general-fabrication",
+            shortcut_key: "shortcut-none",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::ExportWeldmentCutList,
+            label_key: "file-export-weldment-cut-list",
+            shortcut_key: "shortcut-none",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::ExportSheetMetalManufacturing,
+            label_key: "file-export-sheet-metal-manufacturing",
+            shortcut_key: "shortcut-none",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::ReviewCamExport,
+            label_key: "file-review-cam-export",
+            shortcut_key: "shortcut-none",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::ReviewStaticFea,
+            label_key: "file-review-static-fea",
+            shortcut_key: "shortcut-none",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::ReviewLocalPdm,
+            label_key: "file-review-local-pdm",
             shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
@@ -4724,6 +4801,45 @@ fn assistant_context_byte_length(context: &serde_json::Value) -> usize {
     serde_json::to_vec(context).map_or(usize::MAX, |bytes| bytes.len())
 }
 
+fn assistant_interoperability_context(snapshot: &Snapshot) -> serde_json::Value {
+    let receipt_count = snapshot
+        .import_receipts()
+        .filter(|receipt| matches!(receipt.format(), ImportFormat::Step | ImportFormat::Iges))
+        .count();
+    let imports = snapshot
+        .import_receipts()
+        .filter(|receipt| matches!(receipt.format(), ImportFormat::Step | ImportFormat::Iges))
+        .take(64)
+        .map(|receipt| {
+            let diagnostic_count = receipt.diagnostics().len();
+            serde_json::json!({
+                "import_id": receipt.id().0,
+                "format": match receipt.format() {
+                    ImportFormat::Step => "step",
+                    ImportFormat::Iges => "iges",
+                    _ => unreachable!("interoperability context filters exact exchange formats"),
+                },
+                "source_name": receipt.source_name(),
+                "exact_brep": "preserved",
+                "source_parametric_history": "unavailable",
+                "canonical_editability": "exact_brep_and_occurrence_metadata",
+                "diagnostics_complete": diagnostic_count <= 32,
+                "diagnostic_codes": receipt
+                    .diagnostics()
+                    .iter()
+                    .take(32)
+                    .map(|diagnostic| diagnostic.code())
+                    .collect::<Vec<_>>(),
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "complete": receipt_count <= 64,
+        "import_count": receipt_count,
+        "imports": imports,
+    })
+}
+
 fn bounded_assistant_provider_text(text: &str) -> String {
     if text.len() <= MAX_ASSISTANT_PROVIDER_CONVERSATION_TEXT_BYTES {
         return text.to_owned();
@@ -4804,6 +4920,17 @@ fn summarized_assistant_validation_context(validation: &serde_json::Value) -> se
 }
 
 fn bounded_assistant_provider_context(mut context: serde_json::Value) -> serde_json::Value {
+    let inspection_catalog = context
+        .as_object_mut()
+        .and_then(|object| object.remove(ASSISTANT_LOCAL_INSPECTION_CATALOG));
+    let mut context = bounded_assistant_public_context(context);
+    if let Some(inspection_catalog) = inspection_catalog {
+        context[ASSISTANT_LOCAL_INSPECTION_CATALOG] = inspection_catalog;
+    }
+    context
+}
+
+fn bounded_assistant_public_context(mut context: serde_json::Value) -> serde_json::Value {
     if assistant_context_byte_length(&context) <= MAX_ASSISTANT_PROVIDER_CONTEXT_BYTES {
         return context;
     }
@@ -4890,6 +5017,13 @@ fn bounded_assistant_provider_context(mut context: serde_json::Value) -> serde_j
     {
         references.clear();
         context["topology_face_references_complete"] = serde_json::Value::Bool(false);
+    }
+    if let Some(faces) = context
+        .get_mut("fea_faces")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        faces.clear();
+        context["fea_faces_complete"] = serde_json::Value::Bool(false);
     }
     if let Some(references) = context
         .get_mut("topology_edge_references")
@@ -5016,6 +5150,7 @@ fn bounded_assistant_provider_context(mut context: serde_json::Value) -> serde_j
 pub struct AssistantTransportResponse {
     pub result: AssistantChatResult,
     pub cad_edit_program: Option<AssistantCadEditProgram>,
+    pub fea_review: Option<AssistantFeaReviewRequest>,
     pub diagnostics: Option<AssistantApiDiagnostics>,
 }
 
@@ -5054,6 +5189,7 @@ pub trait AssistantTransport: Send + Sync {
             .map(|result| AssistantTransportResponse {
                 result,
                 cad_edit_program: None,
+                fea_review: None,
                 diagnostics: None,
             })
     }
@@ -5071,6 +5207,234 @@ struct AssistantChatTask {
     canonical_digest: String,
     selected_occurrence_ids: Vec<u64>,
     source: String,
+}
+
+fn assistant_fea_face_context(
+    snapshot: &Snapshot,
+    topology_results: &ExactResultRegistry,
+) -> (bool, Vec<serde_json::Value>) {
+    let mut faces = topology_results
+        .body_values(snapshot)
+        .unwrap_or_default()
+        .into_values()
+        .flat_map(|package| match package.as_ref() {
+            ExactBodyPackage::Graph(package) => package
+                .face_evidence
+                .iter()
+                .map(|face| {
+                    serde_json::json!({
+                        "definition_id": package.identity.definition_id.0,
+                        "target_feature_id": package.identity.producer_feature_id.0,
+                        "face_ordinal": face.face_ordinal,
+                        "surface_kind": face.surface_kind,
+                        "centroid_mm": face.centroid_mm,
+                        "unit_normal": face.unit_normal,
+                    })
+                })
+                .collect::<Vec<_>>(),
+            ExactBodyPackage::Rectangle(_)
+            | ExactBodyPackage::Revolve(_)
+            | ExactBodyPackage::Imported(_) => Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    faces.sort_unstable_by_key(|face| {
+        (
+            face["definition_id"].as_u64().unwrap_or_default(),
+            face["target_feature_id"].as_u64().unwrap_or_default(),
+            face["face_ordinal"].as_u64().unwrap_or_default(),
+        )
+    });
+    let complete = faces.len() <= 256;
+    faces.truncate(256);
+    (complete, faces)
+}
+
+struct AssistantRequestSnapshot {
+    snapshot: Snapshot,
+    exact_results: ExactResultRegistry,
+    topology_results: ExactResultRegistry,
+    container_data: ContainerData,
+    worker_path: Option<PathBuf>,
+    query: String,
+    project_memory: AssistantProjectMemory,
+    conversation: Vec<AssistantChatMessage>,
+    selected_paths: BTreeSet<InstancePath>,
+    selected_occurrence_ids: Vec<u64>,
+    selection_scope: &'static str,
+    selected_group_id: Option<u64>,
+    selected_profile_translation_target: serde_json::Value,
+    selected_parameter_edit_target: serde_json::Value,
+    preparation_delay: Duration,
+}
+
+impl AssistantRequestSnapshot {
+    fn build(
+        &self,
+        cancellation: &AssistantCancellation,
+        request_context: bool,
+    ) -> Result<serde_json::Value, String> {
+        if cancellation.is_cancelled() {
+            return Err("assistant request was cancelled".to_owned());
+        }
+        let delay_started = Instant::now();
+        while delay_started.elapsed() < self.preparation_delay {
+            if cancellation.is_cancelled() {
+                return Err("assistant request was cancelled".to_owned());
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let semantic_state = encode_semantic_state(&self.snapshot);
+        let state_view = bounded_assistant_state_view(&semantic_state.agent_v1());
+        let (fea_faces_complete, fea_faces) =
+            assistant_fea_face_context(&self.snapshot, &self.topology_results);
+        let project_memory = self.project_memory.retrieval_context(&self.query);
+        let validation_selection = AssistantValidationSelection::parse(&self.query);
+        let validation =
+            ketchup_application::validation::assistant_validation_context_with_worker_cancellation(
+                &self.snapshot,
+                &self.exact_results,
+                &ketchup_application::validation::AssistantValidationSelection {
+                    mode: validation_selection.mode,
+                    requested: validation_selection.requested,
+                    unknown: validation_selection.unknown,
+                },
+                &self.container_data,
+                self.worker_path.clone(),
+                Duration::from_secs(30),
+                cancellation.shared_flag(),
+            );
+        if cancellation.is_cancelled() {
+            return Err("assistant request was cancelled".to_owned());
+        }
+        let body_bounds = assistant_body_bounds_from_snapshot(&self.snapshot, &self.exact_results);
+        let occurrence_records =
+            assistant_occurrence_records_from_snapshot(&self.snapshot, &self.exact_results);
+        let occurrence_count = occurrence_records.len();
+        let occurrences = occurrence_records
+            .iter()
+            .filter(|(path, _)| self.selected_paths.contains(path))
+            .chain(
+                occurrence_records
+                    .iter()
+                    .filter(|(path, _)| !self.selected_paths.contains(path)),
+            )
+            .take(100)
+            .map(|(_, record)| record.clone())
+            .collect::<Vec<_>>();
+        let conversation = self
+            .conversation
+            .iter()
+            .rev()
+            .take(20)
+            .rev()
+            .map(|message| {
+                serde_json::json!({
+                    "role": match message.role {
+                        AssistantMessageRole::User => "user",
+                        AssistantMessageRole::Assistant => "assistant",
+                        AssistantMessageRole::Error => "error",
+                    },
+                    "text": message.text,
+                    "diagnostic": message.diagnostic,
+                })
+            })
+            .collect::<Vec<_>>();
+        let selected_instance_paths = self
+            .selected_paths
+            .iter()
+            .map(KetchupApp::assistant_instance_path_label)
+            .collect::<Vec<_>>();
+        let mut topology_face_references = assistant_topology_references(
+            &self.snapshot,
+            &self.topology_results,
+            TopologicalElementKind::Face,
+        );
+        let topology_face_references_complete = topology_face_references.len() <= 64;
+        topology_face_references.truncate(64);
+        let topology_face_references = topology_face_references
+            .into_iter()
+            .map(|reference| {
+                serde_json::json!({
+                    "definition_id": reference.definition_id.0,
+                    "target_feature_id": reference.producer_feature_id.0,
+                    "reference_id": reference.lineage_digest,
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut topology_edge_references = assistant_topology_references(
+            &self.snapshot,
+            &self.topology_results,
+            TopologicalElementKind::Edge,
+        );
+        let topology_edge_references_complete = topology_edge_references.len() <= 64;
+        topology_edge_references.truncate(64);
+        let topology_edge_references = topology_edge_references
+            .into_iter()
+            .map(|reference| {
+                serde_json::json!({
+                    "definition_id": reference.definition_id.0,
+                    "target_feature_id": reference.producer_feature_id.0,
+                    "reference_id": reference.lineage_digest,
+                })
+            })
+            .collect::<Vec<_>>();
+        let boxes = body_bounds
+            .into_iter()
+            .filter(|(path, _)| path.is_root())
+            .take(100)
+            .map(|(path, (definition_id, [minimum, maximum]))| {
+                let size = maximum - minimum;
+                serde_json::json!({
+                    "occurrence_id": path.root_occurrence().0,
+                    "definition_id": definition_id.0,
+                    "origin_mm": [minimum.x, minimum.y, minimum.z],
+                    "size_mm": [size.x, size.y, size.z],
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut context = serde_json::json!({
+            "document_id": self.snapshot.document_id().0,
+            "revision": self.snapshot.revision_id(),
+            "canonical_digest": self.snapshot.canonical_digest(),
+            "state_view": state_view,
+            "interoperability": assistant_interoperability_context(&self.snapshot),
+            "project_memory": project_memory,
+            "validation": validation,
+            "selected_occurrence_ids": self.selected_occurrence_ids,
+            "selected_instance_paths": selected_instance_paths,
+            "selection_scope": self.selection_scope,
+            "selected_group_id": self.selected_group_id,
+            "selected_profile_translation_target": self.selected_profile_translation_target,
+            "selected_parameter_edit_target": self.selected_parameter_edit_target,
+            "topology_face_references_complete": topology_face_references_complete,
+            "topology_face_references": topology_face_references,
+            "fea_faces_complete": fea_faces_complete,
+            "fea_faces": fea_faces,
+            "topology_edge_references_complete": topology_edge_references_complete,
+            "topology_edge_references": topology_edge_references,
+            "occurrence_count": occurrence_count,
+            "occurrences_complete": occurrence_count <= 100,
+            "occurrences": occurrences,
+            "boxes": boxes,
+            "conversation": conversation,
+        });
+        if request_context {
+            context = bounded_assistant_provider_context(context);
+            let selection = self
+                .selected_paths
+                .iter()
+                .map(|path| KetchupApp::assistant_instance_path_value(&self.snapshot, path))
+                .collect::<Vec<_>>();
+            context[ASSISTANT_LOCAL_INSPECTION_CATALOG] = serde_json::json!({
+                "document_id": self.snapshot.document_id().0,
+                "revision": self.snapshot.revision_id(),
+                "canonical_digest": self.snapshot.canonical_digest(),
+                "selection": selection,
+                "occurrences": occurrence_records.into_iter().map(|(_, record)| record).collect::<Vec<_>>(),
+            });
+        }
+        Ok(context)
+    }
 }
 
 fn format_assistant_elapsed(elapsed: Duration) -> String {
@@ -6055,7 +6419,7 @@ struct StepImportSourcePlan {
 #[derive(Clone, Debug, PartialEq)]
 struct StepImportPreviewPlan {
     source: StepImportSourcePlan,
-    evidence: StepImportEvidence,
+    evidence: StepXdeImportEvidence,
     proposal: Proposal,
     blob_hash: String,
 }
@@ -6063,7 +6427,7 @@ struct StepImportPreviewPlan {
 #[derive(Clone, Debug, PartialEq)]
 struct IgesImportPreviewPlan {
     source: StepImportSourcePlan,
-    evidence: IgesImportEvidence,
+    evidence: IgesXdeImportEvidence,
     proposal: Proposal,
     blob_hash: String,
 }
@@ -6170,9 +6534,47 @@ enum BtlxProfileStrategy {
     EdgeSawCutsThenMillContour,
 }
 
+struct CamExportDialog {
+    plan_id: CamPlanId,
+    review: Option<CamReviewSummary>,
+}
+
+struct FeaReviewDialog {
+    definition_id: DefinitionId,
+    feature_id: FeatureId,
+    occurrence_id: OccurrenceId,
+    case_id: String,
+    youngs_modulus_mpa: String,
+    poisson_ratio: String,
+    yield_strength_mpa: String,
+    constrained_face_ordinals: String,
+    loaded_face_ordinal: String,
+    traction_x_n_per_mm2: String,
+    traction_y_n_per_mm2: String,
+    traction_z_n_per_mm2: String,
+    coarse_deflection_mm: String,
+    fine_deflection_mm: String,
+    review: Option<FeaReviewSummary>,
+}
+
+struct PdmReviewDialog {
+    source: PdmSourceIdentity,
+    repository: String,
+    parent_release_id: String,
+    release_id: String,
+    compare_release_id: String,
+    dependencies: String,
+    actor: String,
+    note: String,
+    catalog: Vec<ReleaseCatalogEntry>,
+    opened: Option<ReleaseManifest>,
+    comparison: Option<ReleaseComparison>,
+}
+
 pub struct KetchupApp {
     document: DocumentStore,
     live_bridge: Option<live_bridge::LiveBridge>,
+    close_guard: close_guard::CloseGuard,
     live_consent_broker: Option<live_bridge::consent::ConsentBroker>,
     live_pending_consent: Option<live_bridge::consent::PendingConsent>,
     live_consent_attached: bool,
@@ -6181,6 +6583,8 @@ pub struct KetchupApp {
     migration_review_plan: Option<MigrationReviewPlan>,
     recovery_open: Option<RecoveryOpenState>,
     document_path: Option<PathBuf>,
+    file_identity: Option<ketchup_core::persistence::FileIdentity>,
+    work_recovery_digest: Option<String>,
     saved_digest: String,
     confirmation_surface: TrustedConfirmationSurface,
     side_effect_receipts: Vec<SideEffectAuthorizationReceipt>,
@@ -6284,6 +6688,7 @@ pub struct KetchupApp {
     assistant_inspector_tab: AssistantInspectorTab,
     assistant_memory_search: String,
     assistant_transport: Arc<dyn AssistantTransport>,
+    assistant_context_preparation_delay: Duration,
     assistant_chat_task: Option<AssistantChatTask>,
     assistant_pending_execution: Option<AssistantPendingExecution>,
     assistant_request_sequence: u64,
@@ -6350,6 +6755,12 @@ pub struct KetchupApp {
     mesh_conversion_state: mesh_conversion_ui::MeshConversionUiState,
     viewport_rect: Option<Rect>,
     dialogs: Box<dyn FileDialogs>,
+    cam_reviews: CamReviewWorkflow,
+    cam_export_dialog: Option<CamExportDialog>,
+    fea_reviews: FeaReviewWorkflow,
+    fea_review_dialog: Option<FeaReviewDialog>,
+    pdm: LocalPdmWorkflow,
+    pdm_review_dialog: Option<PdmReviewDialog>,
     exact_worker_path: Option<PathBuf>,
     exact_worker_attempted: bool,
     exact_task: Option<ExactEvaluationTask>,
@@ -6437,6 +6848,7 @@ impl KetchupApp {
         Self {
             document,
             live_bridge: None,
+            close_guard: close_guard::CloseGuard::default(),
             live_consent_broker: None,
             live_pending_consent: None,
             live_consent_attached: false,
@@ -6445,6 +6857,8 @@ impl KetchupApp {
             migration_review_plan: None,
             recovery_open: None,
             document_path: None,
+            file_identity: None,
+            work_recovery_digest: None,
             saved_digest,
             confirmation_surface,
             side_effect_receipts: Vec::new(),
@@ -6548,6 +6962,7 @@ impl KetchupApp {
             assistant_inspector_tab: AssistantInspectorTab::default(),
             assistant_memory_search: String::new(),
             assistant_transport: Arc::new(ProcessAssistantTransport),
+            assistant_context_preparation_delay: Duration::ZERO,
             assistant_chat_task: None,
             assistant_pending_execution: None,
             assistant_request_sequence: 0,
@@ -6610,6 +7025,12 @@ impl KetchupApp {
             mesh_conversion_state: mesh_conversion_ui::MeshConversionUiState::default(),
             viewport_rect: None,
             dialogs: Box::new(NativeFileDialogs::default()),
+            cam_reviews: CamReviewWorkflow::new(None),
+            cam_export_dialog: None,
+            fea_reviews: FeaReviewWorkflow::new(None),
+            fea_review_dialog: None,
+            pdm: LocalPdmWorkflow::new(),
+            pdm_review_dialog: None,
             exact_worker_path: None,
             exact_worker_attempted: false,
             exact_task: None,
@@ -6687,10 +7108,7 @@ impl KetchupApp {
 
     #[must_use]
     pub const fn is_manual_alpha_build() -> bool {
-        cfg!(all(
-            feature = "manual-alpha",
-            not(feature = "private-oauth")
-        ))
+        cfg!(feature = "manual-alpha")
     }
 
     #[must_use]
@@ -6981,6 +7399,8 @@ impl KetchupApp {
                     );
                     return false;
                 }
+                let file_identity = (effective_path == path)
+                    .then(|| ketchup_core::persistence::FileIdentity::from_bytes(&source));
                 let recovery_open = (effective_path != path).then(|| RecoveryOpenState {
                     requested_path: path.to_owned(),
                     source_path: effective_path,
@@ -7001,6 +7421,8 @@ impl KetchupApp {
                 self.migration_review_plan = None;
                 self.document_path = recovery_open.is_none().then(|| path.to_owned());
                 self.recovery_open = recovery_open;
+                self.file_identity = file_identity;
+                self.work_recovery_digest = None;
                 self.saved_digest = self.document.history_digest();
                 self.reset_document_presentation();
                 self.load_assistant_conversation();
@@ -7159,6 +7581,39 @@ impl KetchupApp {
         )
     }
 
+    fn refresh_work_recovery_checkpoint(&mut self) {
+        let checkpoint_digest = format!(
+            "{}:{}",
+            self.document.history_digest(),
+            assistant_conversation_digest(&self.assistant_messages)
+        );
+        if !self.is_dirty() {
+            if let Some(path) = self.document_path.as_deref() {
+                let _ = ketchup_core::persistence::clear_work_recovery(path);
+            }
+            self.work_recovery_digest = None;
+            return;
+        }
+        if self.work_recovery_digest.as_deref() == Some(&checkpoint_digest) {
+            return;
+        }
+        let (Some(path), Some(identity)) = (self.document_path.clone(), self.file_identity) else {
+            return;
+        };
+        self.store_assistant_conversation();
+        self.store_assistant_memory();
+        if ketchup_core::persistence::save_work_recovery_document_store_with_container(
+            &path,
+            &self.document,
+            &self.container_data,
+            identity,
+        )
+        .is_ok()
+        {
+            self.work_recovery_digest = Some(checkpoint_digest);
+        }
+    }
+
     fn save_document_to(&mut self, path: &Path) -> bool {
         if path.is_dir() {
             self.digest = self.catalog.format(
@@ -7231,6 +7686,26 @@ impl KetchupApp {
                 return false;
             }
         };
+        let saved_identity = ketchup_core::persistence::FileIdentity::from_bytes(&prepared);
+        let expected_identity = (self.document_path.as_deref() == Some(path))
+            .then_some(self.file_identity)
+            .flatten();
+        if let Some(expected) = expected_identity
+            && ketchup_core::persistence::read_native_document_identity(path).ok() != Some(expected)
+        {
+            self.digest = self.catalog.format(
+                "error-save-document",
+                &BTreeMap::from([
+                    ("path", path.display().to_string()),
+                    (
+                        "reason",
+                        ketchup_core::persistence::FilePersistenceError::ExternalConflict
+                            .to_string(),
+                    ),
+                ]),
+            );
+            return false;
+        }
         if path.exists()
             && let Err(error) = self.authorize_overwrite(path, &prepared)
         {
@@ -7240,18 +7715,31 @@ impl KetchupApp {
             );
             return false;
         }
-        let result = if truncate_history {
-            ketchup_core::persistence::save_atomic_document_store_current_snapshot_with_container(
+        let result = match (truncate_history, expected_identity) {
+            (true, Some(expected)) => ketchup_core::persistence::save_atomic_document_store_current_snapshot_with_container_if_unchanged(
                 path,
                 &self.document,
                 &self.container_data,
+                expected,
             )
-        } else {
-            ketchup_core::persistence::save_atomic_document_store_with_container(
+            .map(|_| ()),
+            (false, Some(expected)) => ketchup_core::persistence::save_atomic_document_store_with_container_if_unchanged(
                 path,
                 &self.document,
                 &self.container_data,
+                expected,
             )
+            .map(|_| ()),
+            (true, None) => ketchup_core::persistence::save_atomic_document_store_current_snapshot_with_container(
+                path,
+                &self.document,
+                &self.container_data,
+            ),
+            (false, None) => ketchup_core::persistence::save_atomic_document_store_with_container(
+                path,
+                &self.document,
+                &self.container_data,
+            ),
         }
         .map_err(|error| error.to_string());
         match result {
@@ -7259,8 +7747,22 @@ impl KetchupApp {
                 if truncate_history {
                     self.document.discard_history_before_current();
                 }
+                let previous_path = self.document_path.clone();
+                let recovery_requested = self
+                    .recovery_open
+                    .as_ref()
+                    .map(|recovery| recovery.requested_path.clone());
+                let _ = ketchup_core::persistence::clear_work_recovery(path);
+                if let Some(previous_path) = previous_path {
+                    let _ = ketchup_core::persistence::clear_work_recovery(&previous_path);
+                }
+                if let Some(recovery_requested) = recovery_requested {
+                    let _ = ketchup_core::persistence::clear_work_recovery(&recovery_requested);
+                }
                 self.document_path = Some(path.to_owned());
                 self.recovery_open = None;
+                self.file_identity = Some(saved_identity);
+                self.work_recovery_digest = None;
                 self.saved_digest = self.document.history_digest();
                 self.saved_assistant_conversation_digest =
                     assistant_conversation_digest(&self.assistant_messages);
@@ -7323,9 +7825,11 @@ impl KetchupApp {
             "stl" => ("file-filter-stl", "stl"),
             "3mf" => ("file-filter-3mf", "3mf"),
             "glb" => ("file-filter-glb", "glb"),
+            "csv" => ("file-filter-general-bom", "csv"),
+            "nc" => ("file-filter-cam-gcode", "nc"),
             "btlx" => ("file-filter-btlx", "btlx"),
             _ => unreachable!(
-                "the File menu exposes only DXF, STEP, IGES, STL, 3MF, GLB, and BTLx export"
+                "the File menu exposes only DXF, STEP, IGES, STL, 3MF, GLB, CSV, NC, and BTLx export"
             ),
         };
         let filter_label = self.catalog.text(filter_key);
@@ -7342,6 +7846,37 @@ impl KetchupApp {
             extension,
             suggested_name: &suggested_name,
         })
+    }
+
+    fn validate_exact_exchange_extension(
+        path: &Path,
+        format: &str,
+        allowed_extensions: &[&str],
+    ) -> Result<(), String> {
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        if allowed_extensions
+            .iter()
+            .any(|allowed| extension.eq_ignore_ascii_case(allowed))
+        {
+            return Ok(());
+        }
+        match extension.to_ascii_lowercase().as_str() {
+            "sldprt" | "sldasm" => Err(
+                "native SolidWorks part and assembly files are unsupported; use an audited STEP or IGES exchange file"
+                    .to_owned(),
+            ),
+            "x_t" | "x_b" => Err(
+                "native Parasolid files are unsupported; use an audited STEP or IGES exchange file"
+                    .to_owned(),
+            ),
+            _ => Err(format!(
+                "{format} requires an explicit .{} file; content sniffing and extension substitution are refused",
+                allowed_extensions.join(" or .")
+            )),
+        }
     }
 
     fn choose_stl_import_path(&mut self) -> Option<PathBuf> {
@@ -7606,6 +8141,7 @@ impl KetchupApp {
     }
 
     fn read_step_source(path: &Path) -> Result<Vec<u8>, String> {
+        Self::validate_exact_exchange_extension(path, "STEP import", &["step", "stp"])?;
         if std::fs::metadata(path)
             .map_err(|error| error.to_string())?
             .len()
@@ -7641,7 +8177,7 @@ impl KetchupApp {
         &mut self,
         path: &Path,
         source_sha256: &[u8; 32],
-    ) -> Result<StepImportEvidence, String> {
+    ) -> Result<StepXdeImportEvidence, String> {
         let executable = self.exact_worker_executable()?;
         let source_sha256 = source_sha256
             .iter()
@@ -7651,7 +8187,7 @@ impl KetchupApp {
         let mut worker = ExactWorkerSupervisor::spawn_with_cancellation(executable, &cancelled)
             .map_err(|error| error.to_string())?;
         worker
-            .inspect_step_import_with_cancellation(path, &source_sha256, &cancelled)
+            .inspect_step_xde_import_with_cancellation(path, &source_sha256, &cancelled)
             .map_err(|error| error.to_string())
     }
 
@@ -7685,7 +8221,7 @@ impl KetchupApp {
             .map_err(|error| error.to_string())?;
         temporary.flush().map_err(|error| error.to_string())?;
         let evidence = self.inspect_step_for_review(temporary.path(), &source.source_sha256)?;
-        let batch = plan_step_import(&snapshot, &source.source, source_name, &evidence)
+        let batch = plan_step_xde_import(&snapshot, &source.source, source_name, &evidence)
             .map_err(|error| error.to_string())?;
         let proposal = self
             .document
@@ -7766,6 +8302,7 @@ impl KetchupApp {
     }
 
     fn read_iges_source(path: &Path) -> Result<Vec<u8>, String> {
+        Self::validate_exact_exchange_extension(path, "IGES import", &["iges", "igs"])?;
         if std::fs::metadata(path)
             .map_err(|error| error.to_string())?
             .len()
@@ -7824,9 +8361,9 @@ impl KetchupApp {
         let mut worker = ExactWorkerSupervisor::spawn_with_cancellation(executable, &cancelled)
             .map_err(|error| error.to_string())?;
         let evidence = worker
-            .inspect_iges_import_with_cancellation(temporary.path(), &source_sha256, &cancelled)
+            .inspect_iges_xde_import_with_cancellation(temporary.path(), &source_sha256, &cancelled)
             .map_err(|error| error.to_string())?;
-        let batch = plan_iges_import(&snapshot, &source.source, source_name, &evidence)
+        let batch = plan_iges_xde_import(&snapshot, &source.source, source_name, &evidence)
             .map_err(|error| error.to_string())?;
         let proposal = self
             .document
@@ -8062,18 +8599,6 @@ impl KetchupApp {
             );
         }
         Ok(scene)
-    }
-
-    fn current_visible_exact_model(
-        &self,
-        snapshot: &Snapshot,
-    ) -> Result<Vec<(ExactBodyPackage, Transform)>, String> {
-        self.current_visible_exact_scene(snapshot).map(|scene| {
-            scene
-                .into_iter()
-                .map(|(package, occurrence)| (package, occurrence.transform))
-                .collect()
-        })
     }
 
     fn current_visible_mesh_scene(
@@ -8486,6 +9011,372 @@ impl KetchupApp {
         }
     }
 
+    fn sole_exportable_sheet_metal_feature_id(&self) -> Result<FeatureId, String> {
+        let snapshot = self.document.current();
+        let feature_ids = snapshot
+            .features()
+            .filter(|feature| {
+                matches!(feature.kind(), FeatureKind::SheetMetal(_))
+                    && !snapshot.feature_is_suppressed(feature.id())
+            })
+            .map(|feature| feature.id())
+            .collect::<Vec<_>>();
+        match feature_ids.as_slice() {
+            [feature_id] => Ok(*feature_id),
+            [] => Err("the document contains no exportable sheet-metal feature".to_owned()),
+            _ => Err(
+                "sheet-metal export requires exactly one unsuppressed sheet-metal feature"
+                    .to_owned(),
+            ),
+        }
+    }
+
+    pub fn current_sheet_metal_manufacturing_projection(
+        &self,
+        feature_id: FeatureId,
+    ) -> Result<SheetMetalManufacturingProjection, String> {
+        project_sheet_metal_manufacturing(&self.document.current(), feature_id)
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn export_current_sheet_metal_manufacturing_to(
+        &mut self,
+        feature_id: FeatureId,
+        path: &Path,
+    ) -> bool {
+        self.side_effect_receipts.clear();
+        let snapshot = self.document.current();
+        let result = (|| {
+            if !path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("dxf"))
+            {
+                return Err(
+                    "sheet-metal flat pattern requires an explicit .dxf destination".to_owned(),
+                );
+            }
+            let projection = project_sheet_metal_manufacturing(&snapshot, feature_id)
+                .map_err(|error| error.to_string())?;
+            let artifacts = projection
+                .artifacts(&snapshot)
+                .map_err(|error| error.to_string())?;
+            let bend_table_path = path.with_extension("bends.csv");
+            let precondition = ExportBundlePrecondition::capture(path, &bend_table_path)?;
+            let evidence = export_bundle_evidence(
+                b"ketchup.sheet-metal-manufacturing-export.v1",
+                path,
+                &artifacts.flat_pattern_dxf,
+                &bend_table_path,
+                &artifacts.bend_table_csv,
+            );
+            let title = self.catalog.text("dialog-export-general-fabrication-title");
+            let risk = self.catalog.text("dialog-export-general-fabrication-risk");
+            self.authorize_path_side_effect(
+                HighRiskClass::ReleaseManufacturingExportWithWarnings,
+                "release-sheet-metal-flat-pattern-and-bend-table",
+                &title,
+                &risk,
+                path,
+                &evidence,
+            )?;
+            if precondition.primary_sha256.is_some() {
+                let title = self.catalog.text("dialog-export-overwrite-title");
+                let risk = self.catalog.text("dialog-export-overwrite-risk");
+                self.authorize_path_side_effect(
+                    HighRiskClass::Overwrite,
+                    "overwrite-sheet-metal-flat-pattern",
+                    &title,
+                    &risk,
+                    path,
+                    &evidence,
+                )?;
+            }
+            if precondition.report_sha256.is_some() {
+                let title = self.catalog.text("dialog-export-overwrite-title");
+                let risk = self.catalog.text("dialog-export-overwrite-risk");
+                self.authorize_path_side_effect(
+                    HighRiskClass::Overwrite,
+                    "overwrite-sheet-metal-bend-table",
+                    &title,
+                    &risk,
+                    &bend_table_path,
+                    &evidence,
+                )?;
+            }
+            projection
+                .artifacts(&self.document.current())
+                .map_err(|error| error.to_string())?;
+            write_export_bundle(
+                path,
+                &artifacts.flat_pattern_dxf,
+                &bend_table_path,
+                &artifacts.bend_table_csv,
+                &precondition,
+            )
+        })();
+        match result {
+            Ok(()) => {
+                self.digest = self.catalog.format(
+                    "digest-exported-general-fabrication",
+                    &BTreeMap::from([("path", path.display().to_string())]),
+                );
+                true
+            }
+            Err(error) => {
+                self.digest = self.catalog.format(
+                    "error-export-general-fabrication",
+                    &BTreeMap::from([("path", path.display().to_string()), ("reason", error)]),
+                );
+                false
+            }
+        }
+    }
+
+    pub fn current_general_fabrication_projection(
+        &mut self,
+    ) -> Result<GeneralFabricationProjection, String> {
+        let snapshot = self.document.current();
+        self.rebind_exact_results(&snapshot);
+        let tolerance = TolerancePolicy::default();
+        let occurrences = snapshot
+            .scene_query()
+            .into_iter()
+            .filter(|occurrence| occurrence.visible)
+            .filter(|occurrence| {
+                snapshot
+                    .definition(occurrence.definition_id)
+                    .is_some_and(|definition| {
+                        definition.feature_ids().iter().any(|feature_id| {
+                            snapshot
+                                .feature(*feature_id)
+                                .is_some_and(|feature| feature.kind().produces_body())
+                        })
+                    })
+            })
+            .collect::<Vec<_>>();
+        if let Some(occurrence) = occurrences
+            .iter()
+            .find(|occurrence| definition_mesh_body(&snapshot, occurrence.definition_id).is_some())
+        {
+            return Err(format!(
+                "visible occurrence {:?} is a mesh body without verified exact geometry; general fabrication projection is unavailable until explicit exact conversion",
+                occurrence.instance_path
+            ));
+        }
+        let participants = occurrences
+            .into_iter()
+            .map(|occurrence| {
+                GeneralBodyParticipant::accept(
+                    &snapshot,
+                    &self.exact_results,
+                    occurrence.instance_path,
+                    tolerance,
+                )
+                .map_err(|error| format!("visible exact body is not fabrication-ready: {error:?}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let collision_validation =
+            ketchup_application::validation::fabrication_collision_validation_with_worker(
+                &snapshot,
+                &participants,
+                &self.container_data,
+                self.validator_worker_path(),
+                Duration::from_secs(30),
+            )?;
+        project_general_fabrication(
+            &snapshot,
+            &self.exact_results,
+            &collision_validation.cases,
+            &collision_validation.report,
+            tolerance,
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    fn export_current_general_fabrication_to(&mut self, path: &Path) -> bool {
+        self.side_effect_receipts.clear();
+        let snapshot = self.document.current();
+        let result = (|| {
+            if !path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("csv"))
+            {
+                return Err(
+                    "general fabrication BOM requires an explicit .csv destination".to_owned(),
+                );
+            }
+            let projection = self.current_general_fabrication_projection()?;
+            let bom = projection
+                .bom_export(&snapshot)
+                .map_err(|error| error.to_string())?;
+            let drawings = projection
+                .drawing_svg(&snapshot)
+                .map_err(|error| error.to_string())?;
+            let drawing_path = path.with_extension("drawings.svg");
+            let precondition = ExportBundlePrecondition::capture(path, &drawing_path)?;
+            let evidence = export_bundle_evidence(
+                b"ketchup.general-fabrication-export.v1",
+                path,
+                &bom,
+                &drawing_path,
+                &drawings,
+            );
+            let title = self.catalog.text("dialog-export-general-fabrication-title");
+            let risk = self.catalog.text("dialog-export-general-fabrication-risk");
+            self.authorize_path_side_effect(
+                HighRiskClass::ReleaseManufacturingExportWithWarnings,
+                "release-general-fabrication-bom-and-drawings",
+                &title,
+                &risk,
+                path,
+                &evidence,
+            )?;
+            if precondition.primary_sha256.is_some() {
+                let title = self.catalog.text("dialog-export-overwrite-title");
+                let risk = self.catalog.text("dialog-export-overwrite-risk");
+                self.authorize_path_side_effect(
+                    HighRiskClass::Overwrite,
+                    "overwrite-general-fabrication-bom",
+                    &title,
+                    &risk,
+                    path,
+                    &evidence,
+                )?;
+            }
+            if precondition.report_sha256.is_some() {
+                let title = self.catalog.text("dialog-export-overwrite-title");
+                let risk = self.catalog.text("dialog-export-overwrite-risk");
+                self.authorize_path_side_effect(
+                    HighRiskClass::Overwrite,
+                    "overwrite-general-fabrication-drawings",
+                    &title,
+                    &risk,
+                    &drawing_path,
+                    &evidence,
+                )?;
+            }
+            write_export_bundle(path, &bom, &drawing_path, &drawings, &precondition)
+        })();
+        match result {
+            Ok(()) => {
+                self.digest = self.catalog.format(
+                    "digest-exported-general-fabrication",
+                    &BTreeMap::from([("path", path.display().to_string())]),
+                );
+                true
+            }
+            Err(error) => {
+                self.digest = self.catalog.format(
+                    "error-export-general-fabrication",
+                    &BTreeMap::from([("path", path.display().to_string()), ("reason", error)]),
+                );
+                false
+            }
+        }
+    }
+
+    pub fn export_current_weldment_cut_list_to(&mut self, path: &Path) -> bool {
+        self.side_effect_receipts.clear();
+        let snapshot = self.document.current();
+        let result = (|| {
+            if !path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("csv"))
+            {
+                return Err("weldment cut list requires an explicit .csv destination".to_owned());
+            }
+            let weldment = self
+                .current_general_fabrication_projection()?
+                .weldment
+                .ok_or_else(|| "the current document has no exportable weldment".to_owned())?;
+            let cut_list = weldment
+                .cut_list_export(&snapshot)
+                .map_err(|error| error.to_string())?;
+            let drawing = weldment
+                .drawing_svg(&snapshot)
+                .map_err(|error| error.to_string())?;
+            let drawing_path = path.with_extension("svg");
+            let precondition = ExportBundlePrecondition::capture(path, &drawing_path)?;
+            let evidence = export_bundle_evidence(
+                b"ketchup.weldment-cut-list-export.v1",
+                path,
+                &cut_list,
+                &drawing_path,
+                &drawing,
+            );
+            let title = self.catalog.text("dialog-export-general-fabrication-title");
+            let risk = self.catalog.text("dialog-export-general-fabrication-risk");
+            self.authorize_path_side_effect(
+                HighRiskClass::ReleaseManufacturingExportWithWarnings,
+                "release-weldment-cut-list-and-drawing",
+                &title,
+                &risk,
+                path,
+                &evidence,
+            )?;
+            if precondition.primary_sha256.is_some() {
+                let title = self.catalog.text("dialog-export-overwrite-title");
+                let risk = self.catalog.text("dialog-export-overwrite-risk");
+                self.authorize_path_side_effect(
+                    HighRiskClass::Overwrite,
+                    "overwrite-weldment-cut-list",
+                    &title,
+                    &risk,
+                    path,
+                    &evidence,
+                )?;
+            }
+            if precondition.report_sha256.is_some() {
+                let title = self.catalog.text("dialog-export-overwrite-title");
+                let risk = self.catalog.text("dialog-export-overwrite-risk");
+                self.authorize_path_side_effect(
+                    HighRiskClass::Overwrite,
+                    "overwrite-weldment-drawing",
+                    &title,
+                    &risk,
+                    &drawing_path,
+                    &evidence,
+                )?;
+            }
+            let current = self.document.current();
+            let current_weldment = self
+                .current_general_fabrication_projection()?
+                .weldment
+                .ok_or_else(|| "the current document has no exportable weldment".to_owned())?;
+            if current_weldment
+                .cut_list_export(&current)
+                .map_err(|error| error.to_string())?
+                != cut_list
+                || current_weldment
+                    .drawing_svg(&current)
+                    .map_err(|error| error.to_string())?
+                    != drawing
+            {
+                return Err("weldment changed while export consent was pending".to_owned());
+            }
+            write_export_bundle(path, &cut_list, &drawing_path, &drawing, &precondition)
+        })();
+        match result {
+            Ok(()) => {
+                self.digest = self.catalog.format(
+                    "digest-exported-general-fabrication",
+                    &BTreeMap::from([("path", path.display().to_string())]),
+                );
+                true
+            }
+            Err(error) => {
+                self.digest = self.catalog.format(
+                    "error-export-general-fabrication",
+                    &BTreeMap::from([("path", path.display().to_string()), ("reason", error)]),
+                );
+                false
+            }
+        }
+    }
+
     fn export_current_model_btlx_to(&mut self, path: &Path) -> bool {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
@@ -8507,61 +9398,7 @@ impl KetchupApp {
                 ),
             };
         let result = (|| {
-            let tolerance = TolerancePolicy::default();
-            let occurrences = snapshot
-                .scene_query()
-                .into_iter()
-                .filter(|occurrence| occurrence.visible)
-                .filter(|occurrence| {
-                    snapshot
-                        .definition(occurrence.definition_id)
-                        .is_some_and(|definition| {
-                            definition.feature_ids().iter().any(|feature_id| {
-                                snapshot
-                                    .feature(*feature_id)
-                                    .is_some_and(|feature| feature.kind().produces_body())
-                            })
-                        })
-                })
-                .collect::<Vec<_>>();
-            if let Some(occurrence) = occurrences.iter().find(|occurrence| {
-                definition_mesh_body(&snapshot, occurrence.definition_id).is_some()
-            }) {
-                return Err(format!(
-                    "visible occurrence {:?} is a mesh body without verified exact geometry; BTLx manufacturing export is unavailable until explicit exact conversion",
-                    occurrence.instance_path
-                ));
-            }
-            let participants = occurrences
-                .into_iter()
-                .map(|occurrence| {
-                    GeneralBodyParticipant::accept(
-                        &snapshot,
-                        &self.exact_results,
-                        occurrence.instance_path,
-                        tolerance,
-                    )
-                    .map_err(|error| {
-                        format!("visible exact body is not fabrication-ready: {error:?}")
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let collision_validation =
-                ketchup_application::validation::fabrication_collision_validation_with_worker(
-                    &snapshot,
-                    &participants,
-                    &self.container_data,
-                    self.validator_worker_path(),
-                    Duration::from_secs(30),
-                )?;
-            let projection = project_general_fabrication(
-                &snapshot,
-                &self.exact_results,
-                &collision_validation.cases,
-                &collision_validation.report,
-                tolerance,
-            )
-            .map_err(|error| error.to_string())?;
+            let projection = self.current_general_fabrication_projection()?;
             let btlx = projection
                 .btlx_2_3_1_export_with_options(&snapshot, options)
                 .map_err(|error| error.to_string())?;
@@ -8637,7 +9474,8 @@ impl KetchupApp {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
         let result = (|| {
-            let model = self.current_visible_exact_model(&snapshot)?;
+            Self::validate_exact_exchange_extension(path, "STEP export", &["step", "stp"])?;
+            let model = self.current_visible_exact_scene(&snapshot)?;
             let executable = self
                 .exact_worker_path
                 .clone()
@@ -8656,7 +9494,7 @@ impl KetchupApp {
             let mut worker =
                 ExactWorkerSupervisor::spawn(executable).map_err(|error| error.to_string())?;
             worker
-                .export_current_model_step_with_imported_sources(
+                .export_current_model_step_scene_with_imported_sources(
                     &snapshot,
                     &model,
                     &prepared_step,
@@ -8748,7 +9586,8 @@ impl KetchupApp {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
         let result = (|| {
-            let model = self.current_visible_exact_model(&snapshot)?;
+            Self::validate_exact_exchange_extension(path, "IGES export", &["iges", "igs"])?;
+            let model = self.current_visible_exact_scene(&snapshot)?;
             let executable = self
                 .exact_worker_path
                 .clone()
@@ -8768,7 +9607,7 @@ impl KetchupApp {
             let mut worker =
                 ExactWorkerSupervisor::spawn(executable).map_err(|error| error.to_string())?;
             worker
-                .export_current_model_step_with_imported_sources(
+                .export_current_model_step_scene_with_imported_sources(
                     &snapshot,
                     &model,
                     &prepared_step,
@@ -8785,7 +9624,7 @@ impl KetchupApp {
             let iges = std::fs::read(&prepared_iges).map_err(|error| error.to_string())?;
             let iges_sha256 = ketchup_core::graph::sha256_hex(&iges);
             let exported_evidence = worker
-                .inspect_iges_import_with_cancellation(
+                .inspect_iges_xde_import_with_cancellation(
                     &prepared_iges,
                     &iges_sha256,
                     &AtomicBool::new(false),
@@ -8793,8 +9632,13 @@ impl KetchupApp {
                 .map_err(|error| {
                     format!("exported IGES failed exact worker reinspection: {error}")
                 })?;
-            if exported_evidence.source_unit != ImportLengthUnit::Millimetre {
-                return Err("exported IGES did not preserve millimetre units".to_owned());
+            if exported_evidence.parts.len() != model.len()
+                || exported_evidence
+                    .parts
+                    .iter()
+                    .any(|part| part.exact.source_unit != ImportLengthUnit::Millimetre)
+            {
+                return Err("exported IGES lost a root or millimetre units".to_owned());
             }
             let report = exact_model_iges_loss_report(&snapshot, &model);
             let report_path = path.with_extension("iges.loss.txt");
@@ -8865,6 +9709,24 @@ impl KetchupApp {
             AppCommand::New if self.confirm_discard_if_dirty() => self.new_document(),
             AppCommand::Open if self.confirm_discard_if_dirty() => {
                 if let Some(path) = self.choose_open_path() {
+                    let reopening_active = self.document_path.as_deref() == Some(path.as_path())
+                        || self
+                            .recovery_open
+                            .as_ref()
+                            .is_some_and(|recovery| recovery.requested_path == path);
+                    if reopening_active {
+                        if let Err(error) = ketchup_core::persistence::clear_work_recovery(&path) {
+                            self.digest = self.catalog.format(
+                                "error-open-document",
+                                &BTreeMap::from([
+                                    ("path", path.display().to_string()),
+                                    ("reason", error.to_string()),
+                                ]),
+                            );
+                            return;
+                        }
+                        self.work_recovery_digest = None;
+                    }
                     self.open_document_from(&path);
                 }
             }
@@ -9089,6 +9951,115 @@ impl KetchupApp {
                 if let Some(path) = self.choose_export_path("glb") {
                     self.export_current_model_glb_to(&path);
                 }
+            }
+            AppCommand::ExportGeneralFabrication => {
+                if let Some(path) = self.choose_export_path("csv") {
+                    self.export_current_general_fabrication_to(&path);
+                }
+            }
+            AppCommand::ExportWeldmentCutList => {
+                if let Some(path) = self.choose_export_path("csv") {
+                    self.export_current_weldment_cut_list_to(&path);
+                }
+            }
+            AppCommand::ExportSheetMetalManufacturing => {
+                match self.sole_exportable_sheet_metal_feature_id() {
+                    Ok(feature_id) => {
+                        if let Some(path) = self.choose_export_path("dxf") {
+                            self.export_current_sheet_metal_manufacturing_to(feature_id, &path);
+                        }
+                    }
+                    Err(error) => {
+                        self.digest = self.catalog.format(
+                            "error-export-general-fabrication",
+                            &BTreeMap::from([
+                                ("path", "sheet-metal flat pattern".to_owned()),
+                                ("reason", error),
+                            ]),
+                        );
+                    }
+                }
+            }
+            AppCommand::ReviewCamExport => {
+                self.cam_export_dialog =
+                    self.document
+                        .current()
+                        .cam_plans()
+                        .next()
+                        .map(|plan| CamExportDialog {
+                            plan_id: plan.id(),
+                            review: None,
+                        });
+                if self.cam_export_dialog.is_none() {
+                    self.digest = self.catalog.text("cam-review-no-plan");
+                }
+            }
+            AppCommand::ReviewStaticFea => {
+                let result = (|| {
+                    let selected = self
+                        .selected_root_occurrence_ids()
+                        .map_err(|error| self.root_occurrence_selection_error(&error))?;
+                    if selected.len() != 1 {
+                        return Err(self.catalog.text("fea-review-select-one"));
+                    }
+                    let occurrence_id = *selected.iter().next().expect("one selected occurrence");
+                    let snapshot = self.document.current();
+                    let occurrence = snapshot
+                        .occurrence(occurrence_id)
+                        .ok_or_else(|| self.catalog.text("fea-review-select-one"))?;
+                    let terminals =
+                        exact_body_terminal_features(&snapshot, occurrence.definition_id())
+                            .map_err(|error| error.to_string())?;
+                    let terminal_features = terminals.values().copied().collect::<Vec<_>>();
+                    let [feature_id] = terminal_features.as_slice() else {
+                        return Err(self.catalog.text("fea-review-one-body"));
+                    };
+                    Ok(FeaReviewDialog {
+                        definition_id: occurrence.definition_id(),
+                        feature_id: *feature_id,
+                        occurrence_id,
+                        case_id: "linear-static-case".to_owned(),
+                        youngs_modulus_mpa: "200000".to_owned(),
+                        poisson_ratio: "0.3".to_owned(),
+                        yield_strength_mpa: "250".to_owned(),
+                        constrained_face_ordinals: "0".to_owned(),
+                        loaded_face_ordinal: "1".to_owned(),
+                        traction_x_n_per_mm2: "0".to_owned(),
+                        traction_y_n_per_mm2: "0".to_owned(),
+                        traction_z_n_per_mm2: "-1".to_owned(),
+                        coarse_deflection_mm: "0.3".to_owned(),
+                        fine_deflection_mm: "0.12".to_owned(),
+                        review: None,
+                    })
+                })();
+                match result {
+                    Ok(dialog) => self.fea_review_dialog = Some(dialog),
+                    Err(error) => self.digest = error,
+                }
+            }
+            AppCommand::ReviewLocalPdm => {
+                let snapshot = self.document.current();
+                let repository = self
+                    .document_path
+                    .as_deref()
+                    .and_then(Path::parent)
+                    .map_or_else(
+                        || PathBuf::from(".ketchup-pdm"),
+                        |parent| parent.join(".ketchup-pdm"),
+                    );
+                self.pdm_review_dialog = Some(PdmReviewDialog {
+                    source: PdmSourceIdentity::observed(&snapshot),
+                    repository: repository.display().to_string(),
+                    parent_release_id: String::new(),
+                    release_id: String::new(),
+                    compare_release_id: String::new(),
+                    dependencies: String::new(),
+                    actor: "local-user".to_owned(),
+                    note: String::new(),
+                    catalog: Vec::new(),
+                    opened: None,
+                    comparison: None,
+                });
             }
             AppCommand::ExportHundeggerBtlx => {
                 if let Some(path) = self.choose_export_path("btlx") {
@@ -9711,9 +10682,10 @@ impl KetchupApp {
             temporary
                 .persist_noclobber(destination)
                 .map_err(|error| error.error.to_string())?;
-            Ok((document, container_data))
+            let file_identity = ketchup_core::persistence::FileIdentity::from_bytes(&bytes);
+            Ok((document, container_data, file_identity))
         })();
-        let (mut document, container_data) = match result {
+        let (mut document, container_data, file_identity) = match result {
             Ok(confirmed) => confirmed,
             Err(reason) => {
                 self.digest = self.catalog.format(
@@ -9732,6 +10704,8 @@ impl KetchupApp {
         self.migration_review_plan = None;
         self.recovery_open = None;
         self.document_path = Some(destination.to_owned());
+        self.file_identity = Some(file_identity);
+        self.work_recovery_digest = None;
         self.saved_digest = saved_digest;
         self.reset_document_presentation();
         self.digest = self.catalog.format(
@@ -9988,6 +10962,7 @@ impl KetchupApp {
             AuthoritativeDependency::ClearanceVolume(id) => {
                 Some(("assistant-entity-clearance", id.0))
             }
+            AuthoritativeDependency::CamPlan(id) => Some(("assistant-entity-cam-plan", id.0)),
             AuthoritativeDependency::PersistentDimension(id) => {
                 Some(("assistant-entity-persistent-dimension", id.0))
             }
@@ -10137,6 +11112,46 @@ impl KetchupApp {
             }
         }
         label
+    }
+
+    fn assistant_instance_path_value(
+        snapshot: &Snapshot,
+        path: &InstancePath,
+    ) -> serde_json::Value {
+        let root_occurrence_id = path.root_occurrence();
+        let mut owner_definition_id = snapshot
+            .occurrence(root_occurrence_id)
+            .expect("scene paths have a root occurrence")
+            .definition_id();
+        let steps = path
+            .steps()
+            .iter()
+            .map(|step| {
+                let step_owner_definition_id = owner_definition_id;
+                let (kind, local_id) = match step {
+                    ketchup_core::document::InstancePathStep::Group(id) => ("group", id.0),
+                    ketchup_core::document::InstancePathStep::Occurrence(id) => {
+                        owner_definition_id = snapshot
+                            .local_occurrence(ketchup_core::document::LocalOccurrenceKey {
+                                definition_id: step_owner_definition_id,
+                                local_id: *id,
+                            })
+                            .expect("scene paths have valid local occurrences")
+                            .definition_id();
+                        ("occurrence", id.0)
+                    }
+                };
+                serde_json::json!({
+                    "owner_definition_id": step_owner_definition_id.0,
+                    "kind": kind,
+                    "local_id": local_id,
+                })
+            })
+            .collect::<Vec<_>>();
+        serde_json::json!({
+            "root_occurrence_id": root_occurrence_id.0,
+            "steps": steps,
+        })
     }
 
     fn assistant_transform_matrix_label(transform: &Transform) -> String {
@@ -10908,44 +11923,23 @@ impl KetchupApp {
     fn assistant_body_bounds(
         &self,
         snapshot: &Snapshot,
-    ) -> BTreeMap<OccurrenceId, (DefinitionId, [Vec3; 2])> {
-        self.refresh_interaction_projection_cache(snapshot);
-        let cache = self.interaction_projection_cache.borrow();
-        cache
-            .as_ref()
-            .expect("interaction cache was built")
-            .canonical
-            .occurrences()
-            .iter()
-            .filter(|occurrence| occurrence.visible)
-            .filter_map(|occurrence| {
-                let [minimum, maximum] = self.definition_local_bounds(
-                    snapshot,
-                    occurrence.body.definition_id,
-                    occurrence.local_box,
-                    true,
-                )?;
-                let size = maximum - minimum;
-                let bounds = bounds_of(box_corners(size.x, size.y, size.z).into_iter().map(
-                    |corner| {
-                        transform_model_point(
-                            occurrence.canonical_world_transform,
-                            corner + minimum,
-                        )
-                    },
-                ))?;
-                Some((
-                    occurrence.instance_path.root_occurrence(),
-                    (occurrence.body.definition_id, bounds),
-                ))
-            })
-            .collect()
+    ) -> BTreeMap<InstancePath, (DefinitionId, [Vec3; 2])> {
+        assistant_body_bounds_from_snapshot(snapshot, &self.exact_results)
+    }
+
+    fn assistant_occurrence_records(
+        &self,
+        snapshot: &Snapshot,
+    ) -> Vec<(InstancePath, serde_json::Value)> {
+        assistant_occurrence_records_from_snapshot(snapshot, &self.exact_results)
     }
 
     fn assistant_context_for(&self, query: &str) -> serde_json::Value {
         let snapshot = self.document.current();
         let semantic_state = encode_semantic_state(&snapshot);
         let state_view = bounded_assistant_state_view(&semantic_state.agent_v1());
+        let (fea_faces_complete, fea_faces) =
+            assistant_fea_face_context(&snapshot, &self.topology_results);
         let project_memory = self.assistant_memory.retrieval_context(query);
         let validation_selection = AssistantValidationSelection::parse(query);
         let validation = self.assistant_validation_context(
@@ -10954,32 +11948,19 @@ impl KetchupApp {
             &validation_selection,
         );
         let body_bounds = self.assistant_body_bounds(&snapshot);
-        let box_bounds = body_bounds
+        let occurrence_records = self.assistant_occurrence_records(&snapshot);
+        let occurrence_count = occurrence_records.len();
+        let selected_paths = self.selected_instance_paths();
+        let occurrences = occurrence_records
             .iter()
-            .map(|(occurrence_id, (_, bounds))| (*occurrence_id, *bounds))
-            .collect::<BTreeMap<_, _>>();
-        let scene_occurrences = snapshot.scene_query();
-        let occurrence_count = scene_occurrences.len();
-        let occurrences = scene_occurrences
-            .into_iter()
+            .filter(|(path, _)| selected_paths.contains(path))
+            .chain(
+                occurrence_records
+                    .iter()
+                    .filter(|(path, _)| !selected_paths.contains(path)),
+            )
             .take(100)
-            .map(|occurrence| {
-                let bounds = box_bounds
-                    .get(&occurrence.occurrence_id)
-                    .copied()
-                    .or_else(|| assistant_mesh_body_bounds(&snapshot, &occurrence));
-                serde_json::json!({
-                    "occurrence_id": occurrence.occurrence_id.0,
-                    "definition_id": occurrence.definition_id.0,
-                    "name": occurrence.occurrence_name,
-                    "visible": occurrence.visible,
-                    "copyable": occurrence.instance_path.is_root(),
-                    "bounds_mm": bounds.map(|[minimum, maximum]| serde_json::json!({
-                        "min": [minimum.x, minimum.y, minimum.z],
-                        "max": [maximum.x, maximum.y, maximum.z],
-                    })),
-                })
-            })
+            .map(|(_, record)| record.clone())
             .collect::<Vec<_>>();
         let conversation = self
             .assistant_messages
@@ -11085,11 +12066,12 @@ impl KetchupApp {
             .collect::<Vec<_>>();
         let boxes = body_bounds
             .into_iter()
+            .filter(|(path, _)| path.is_root())
             .take(100)
-            .map(|(occurrence_id, (definition_id, [minimum, maximum]))| {
+            .map(|(path, (definition_id, [minimum, maximum]))| {
                 let size = maximum - minimum;
                 serde_json::json!({
-                    "occurrence_id": occurrence_id.0,
+                    "occurrence_id": path.root_occurrence().0,
                     "definition_id": definition_id.0,
                     "origin_mm": [minimum.x, minimum.y, minimum.z],
                     "size_mm": [size.x, size.y, size.z],
@@ -11101,6 +12083,7 @@ impl KetchupApp {
             "revision": snapshot.revision_id(),
             "canonical_digest": snapshot.canonical_digest(),
             "state_view": state_view,
+            "interoperability": assistant_interoperability_context(&snapshot),
             "project_memory": project_memory,
             "validation": validation,
             "selected_occurrence_ids": selected_occurrence_ids,
@@ -11111,6 +12094,8 @@ impl KetchupApp {
             "selected_parameter_edit_target": selected_parameter_edit_target,
             "topology_face_references_complete": topology_face_references_complete,
             "topology_face_references": topology_face_references,
+            "fea_faces_complete": fea_faces_complete,
+            "fea_faces": fea_faces,
             "topology_edge_references_complete": topology_edge_references_complete,
             "topology_edge_references": topology_edge_references,
             "occurrence_count": occurrence_count,
@@ -11119,6 +12104,75 @@ impl KetchupApp {
             "boxes": boxes,
             "conversation": conversation,
         })
+    }
+
+    fn assistant_request_snapshot(&self, query: &str) -> AssistantRequestSnapshot {
+        let snapshot = self.document.current();
+        let selected_paths = self.selected_instance_paths();
+        let (selected_occurrence_ids, selection_scope) = match self.selected_root_occurrence_ids() {
+            Ok(ids) => (
+                ids.into_iter().map(|id| id.0).collect::<Vec<_>>(),
+                "root_occurrences",
+            ),
+            Err(RootOccurrenceSelectionError::Nested { .. }) => {
+                (Vec::new(), "nested_instance_paths")
+            }
+            Err(RootOccurrenceSelectionError::Mixed { .. }) => (Vec::new(), "mixed_instance_paths"),
+        };
+        let selected_profile_translation_target = self
+            .assistant_profile_translation_target()
+            .map(|(definition_id, body_id, profile_id, name)| {
+                serde_json::json!({
+                    "definition_id": definition_id.0,
+                    "body_id": body_id.0,
+                    "profile_id": profile_id.0,
+                    "name": name,
+                })
+            })
+            .unwrap_or(serde_json::Value::Null);
+        let selected_parameter_edit_target = self
+            .assistant_parameter_edit_target()
+            .map(|(definition_id, body_id, target, name, current_value_mm)| {
+                let (feature_id, constraint_id, parameter_path) = match target {
+                    ketchup_core::feature_history::ExactParameterEditTarget::FeatureDimension(
+                        feature_id,
+                    ) => (feature_id, None, None),
+                    ketchup_core::feature_history::ExactParameterEditTarget::FeatureParameter(
+                        target,
+                    ) => (target.feature_id, None, Some(target.path.as_str().to_owned())),
+                    ketchup_core::feature_history::ExactParameterEditTarget::SketchConstraintDimension {
+                        sketch_id,
+                        constraint_id,
+                    } => (sketch_id, Some(constraint_id.0), None),
+                };
+                serde_json::json!({
+                    "definition_id": definition_id.0,
+                    "body_id": body_id.0,
+                    "feature_id": feature_id.0,
+                    "constraint_id": constraint_id,
+                    "parameter_path": parameter_path,
+                    "name": name,
+                    "current_value_mm": current_value_mm,
+                })
+            })
+            .unwrap_or(serde_json::Value::Null);
+        AssistantRequestSnapshot {
+            snapshot,
+            exact_results: self.exact_results.clone(),
+            topology_results: self.topology_results.clone(),
+            container_data: self.container_data.clone(),
+            worker_path: self.validator_worker_path(),
+            query: query.to_owned(),
+            project_memory: self.assistant_memory.clone(),
+            conversation: self.assistant_messages.clone(),
+            selected_paths,
+            selected_occurrence_ids,
+            selection_scope,
+            selected_group_id: self.selection.selected_group.map(|id| id.0),
+            selected_profile_translation_target,
+            selected_parameter_edit_target,
+            preparation_delay: self.assistant_context_preparation_delay,
+        }
     }
 
     fn localized_assistant_rejection(
@@ -11175,27 +12229,14 @@ impl KetchupApp {
         diagnostic
     }
 
-    fn assistant_replan_context(
-        &self,
-        message: &str,
-        diagnostic: &AssistantRejectionDiagnostic,
-    ) -> serde_json::Value {
-        let mut context = self.assistant_context_for(message);
-        context["assistant_replan"] = serde_json::json!({
-            "attempt": 1,
-            "max_attempts": 1,
-            "diagnostic": diagnostic,
-        });
-        bounded_assistant_provider_context(context)
-    }
-
     fn start_assistant_request(
         &mut self,
         context: &egui::Context,
         message: String,
-        document_context: serde_json::Value,
+        request_snapshot: AssistantRequestSnapshot,
         source: String,
         replan_attempted: bool,
+        replan_diagnostic: Option<AssistantRejectionDiagnostic>,
     ) -> Result<(), String> {
         let handshake = self.assistant_handshake();
         handshake.validate().map_err(|error| error.to_string())?;
@@ -11212,14 +12253,28 @@ impl KetchupApp {
         let worker_cancellation = cancellation.clone();
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
-            let result = transport
-                .chat_with_diagnostics(
-                    handshake,
-                    &request_id,
-                    &message,
-                    &document_context,
-                    worker_cancellation,
-                )
+            let result = request_snapshot
+                .build(&worker_cancellation, true)
+                .map(|mut document_context| {
+                    if let Some(diagnostic) = replan_diagnostic {
+                        document_context["assistant_replan"] = serde_json::json!({
+                            "attempt": 1,
+                            "max_attempts": 1,
+                            "diagnostic": diagnostic,
+                        });
+                        document_context = bounded_assistant_provider_context(document_context);
+                    }
+                    document_context
+                })
+                .and_then(|document_context| {
+                    transport.chat_with_diagnostics(
+                        handshake,
+                        &request_id,
+                        &message,
+                        &document_context,
+                        worker_cancellation,
+                    )
+                })
                 .and_then(|response| {
                     response.result.validate()?;
                     if let Some(diagnostics) = response.diagnostics.as_ref() {
@@ -11287,8 +12342,7 @@ impl KetchupApp {
             return;
         }
         self.assistant_input.clear();
-        let document_context =
-            bounded_assistant_provider_context(self.assistant_context_for(&message));
+        let request_snapshot = self.assistant_request_snapshot(&message);
         let source = self.assistant_source_label();
         self.assistant_messages.push(AssistantChatMessage {
             role: AssistantMessageRole::User,
@@ -11296,9 +12350,14 @@ impl KetchupApp {
             source: source.clone(),
             diagnostic: None,
         });
-        if let Err(error) =
-            self.start_assistant_request(context, message, document_context, source.clone(), false)
-        {
+        if let Err(error) = self.start_assistant_request(
+            context,
+            message,
+            request_snapshot,
+            source.clone(),
+            false,
+            None,
+        ) {
             self.assistant_messages.push(AssistantChatMessage {
                 role: AssistantMessageRole::Error,
                 text: error,
@@ -11456,6 +12515,49 @@ impl KetchupApp {
             &self.topology_results,
             program,
         )
+    }
+
+    fn prepare_assistant_fea_review(
+        &mut self,
+        request: &AssistantFeaReviewRequest,
+    ) -> Result<(), String> {
+        request.validate()?;
+        let snapshot = self.document.current();
+        let occurrence = snapshot
+            .occurrence(OccurrenceId(request.occurrence_id))
+            .ok_or_else(|| "assistant FEA occurrence is not current".to_owned())?;
+        if occurrence.definition_id() != DefinitionId(request.definition_id) {
+            return Err("assistant FEA occurrence and definition do not match".to_owned());
+        }
+        let terminals = exact_body_terminal_features(&snapshot, occurrence.definition_id())
+            .map_err(|error| error.to_string())?;
+        let terminal_features = terminals.values().copied().collect::<Vec<_>>();
+        if terminal_features.as_slice() != [FeatureId(request.feature_id)] {
+            return Err("assistant FEA target is not the sole current exact body".to_owned());
+        }
+        self.fea_review_dialog = Some(FeaReviewDialog {
+            definition_id: occurrence.definition_id(),
+            feature_id: FeatureId(request.feature_id),
+            occurrence_id: OccurrenceId(request.occurrence_id),
+            case_id: request.case_id.clone(),
+            youngs_modulus_mpa: request.youngs_modulus_mpa.to_string(),
+            poisson_ratio: request.poisson_ratio.to_string(),
+            yield_strength_mpa: request.yield_strength_mpa.to_string(),
+            constrained_face_ordinals: request
+                .constrained_face_ordinals
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+            loaded_face_ordinal: request.loaded_face_ordinal.to_string(),
+            traction_x_n_per_mm2: request.traction_local_n_per_mm2[0].to_string(),
+            traction_y_n_per_mm2: request.traction_local_n_per_mm2[1].to_string(),
+            traction_z_n_per_mm2: request.traction_local_n_per_mm2[2].to_string(),
+            coarse_deflection_mm: request.coarse_deflection_mm.to_string(),
+            fine_deflection_mm: request.fine_deflection_mm.to_string(),
+            review: None,
+        });
+        Ok(())
     }
 
     fn derive_assistant_cad_edit_proposal(
@@ -12494,14 +13596,15 @@ impl KetchupApp {
                         let diagnostic =
                             self.record_assistant_rejection(*rejection, replan_will_run);
                         if replan_will_run {
-                            let document_context =
-                                self.assistant_replan_context(&pending.message, &diagnostic);
+                            let request_snapshot =
+                                self.assistant_request_snapshot(&pending.message);
                             if let Err(text) = self.start_assistant_request(
                                 context,
                                 pending.message,
-                                document_context,
+                                request_snapshot,
                                 pending.source.clone(),
                                 true,
+                                Some(diagnostic),
                             ) {
                                 self.assistant_messages.push(AssistantChatMessage {
                                     role: AssistantMessageRole::Error,
@@ -12529,10 +13632,29 @@ impl KetchupApp {
         let request_revision_id = task.revision_id;
         let request_canonical_digest = task.canonical_digest.clone();
         let request_selected_occurrence_ids = task.selected_occurrence_ids.clone();
+        let snapshot = self.document.current();
+        if snapshot.document_id() != request_document_id
+            || snapshot.revision_id() != request_revision_id
+            || snapshot.canonical_digest() != request_canonical_digest
+        {
+            let task = self
+                .assistant_chat_task
+                .take()
+                .expect("stale assistant task is still pending");
+            task.cancellation.cancel();
+            self.assistant_messages.push(AssistantChatMessage {
+                role: AssistantMessageRole::Error,
+                text: self.catalog.text("assistant-error-stale-response"),
+                source: self.catalog.text("assistant-role-error"),
+                diagnostic: None,
+            });
+            self.store_assistant_conversation();
+            return;
+        }
         match task.receiver.try_recv() {
             Ok(response) => {
                 self.assistant_chat_task = None;
-                let result = response.map(|response| {
+                let result = response.and_then(|response| {
                     if let Some(diagnostics) = response.diagnostics {
                         self.assistant_api_logs.push(AssistantApiLogEntry {
                             request_id,
@@ -12552,10 +13674,34 @@ impl KetchupApp {
                             &request_selected_occurrence_ids,
                         );
                     }
-                    (response.result, cad_edit_program)
+                    if response.fea_review.is_some()
+                        && (response.result.model_intent.is_some() || cad_edit_program.is_some())
+                    {
+                        return Err("assistant returned multiple action programs".to_owned());
+                    }
+                    Ok((response.result, cad_edit_program, response.fea_review))
                 });
                 match result {
-                    Ok((result, cad_edit_program))
+                    Ok((result, _, Some(request))) => {
+                        match self.prepare_assistant_fea_review(&request) {
+                            Ok(()) => {
+                                self.remember_latest_assistant_exchange(&result.message);
+                                self.assistant_messages.push(AssistantChatMessage {
+                                    role: AssistantMessageRole::Assistant,
+                                    text: result.message,
+                                    source,
+                                    diagnostic: None,
+                                });
+                            }
+                            Err(text) => self.assistant_messages.push(AssistantChatMessage {
+                                role: AssistantMessageRole::Error,
+                                text,
+                                source,
+                                diagnostic: None,
+                            }),
+                        }
+                    }
+                    Ok((result, cad_edit_program, None))
                         if result.model_intent.is_some() || cad_edit_program.is_some() =>
                     {
                         self.assistant_pending_execution = Some(AssistantPendingExecution {
@@ -12571,7 +13717,7 @@ impl KetchupApp {
                         context.request_repaint();
                         return;
                     }
-                    Ok((result, _)) => {
+                    Ok((result, _, None)) => {
                         self.remember_latest_assistant_exchange(&result.message);
                         self.assistant_messages.push(AssistantChatMessage {
                             role: AssistantMessageRole::Assistant,
@@ -12848,6 +13994,11 @@ impl KetchupApp {
     pub fn headless_force_exact_worker_path(&mut self, executable: impl AsRef<Path>) {
         self.exact_worker_path = Some(executable.as_ref().to_owned());
         self.exact_worker_attempted = true;
+    }
+
+    #[doc(hidden)]
+    pub fn headless_set_assistant_context_preparation_delay(&mut self, delay: Duration) {
+        self.assistant_context_preparation_delay = delay;
     }
 
     #[doc(hidden)]
@@ -15312,6 +16463,8 @@ impl KetchupApp {
             name: self.catalog.text("model-loft-feature"),
             kind: FeatureKind::Loft {
                 sections: source.sections.clone(),
+                guide: None,
+                continuity: LoftContinuity::Position,
             },
         };
         let batch = CommandBatch::new(vec![command.clone()]);
@@ -15400,7 +16553,7 @@ impl KetchupApp {
             .current()
             .features()
             .filter_map(|feature| {
-                let FeatureKind::Loft { sections } = feature.kind() else {
+                let FeatureKind::Loft { sections, .. } = feature.kind() else {
                     return None;
                 };
                 Some((
@@ -16112,6 +17265,12 @@ impl KetchupApp {
             | AppCommand::ExportMeshStl
             | AppCommand::ExportPrintThreeMf
             | AppCommand::ExportBlenderGlb
+            | AppCommand::ExportGeneralFabrication
+            | AppCommand::ExportWeldmentCutList
+            | AppCommand::ExportSheetMetalManufacturing
+            | AppCommand::ReviewCamExport
+            | AppCommand::ReviewStaticFea
+            | AppCommand::ReviewLocalPdm
             | AppCommand::ExportHundeggerBtlx => {
                 self.dispatch_file_command(id);
             }
@@ -30914,6 +32073,12 @@ impl KetchupApp {
                 self.menu_command(ui, AppCommand::ExportMeshStl);
                 self.menu_command(ui, AppCommand::ExportPrintThreeMf);
                 self.menu_command(ui, AppCommand::ExportBlenderGlb);
+                self.menu_command(ui, AppCommand::ExportGeneralFabrication);
+                self.menu_command(ui, AppCommand::ExportWeldmentCutList);
+                self.menu_command(ui, AppCommand::ExportSheetMetalManufacturing);
+                self.menu_command(ui, AppCommand::ReviewCamExport);
+                self.menu_command(ui, AppCommand::ReviewStaticFea);
+                self.menu_command(ui, AppCommand::ReviewLocalPdm);
                 ui.menu_button(self.catalog.text("file-export-btlx-options"), |ui| {
                     ui.selectable_value(
                         &mut self.btlx_profile_strategy,
@@ -35476,6 +36641,501 @@ impl KetchupApp {
         }
     }
 
+    fn show_cam_export_window(&mut self, context: &egui::Context) {
+        let Some(mut pending) = self.cam_export_dialog.take() else {
+            return;
+        };
+        let mut open = true;
+        let mut preview = false;
+        let mut confirm = false;
+        let mut cancel = false;
+        egui::Window::new(self.catalog.text("cam-review-title"))
+            .id(egui::Id::new("cam-review-export"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .show(context, |ui| {
+                ui.label(format!(
+                    "{} {}",
+                    self.catalog.text("cam-review-plan"),
+                    pending.plan_id.0
+                ));
+                if let Some(review) = &pending.review {
+                    ui.label(format!("{}: {}", review.units, review.work_offset));
+                    ui.label(format!(
+                        "T{} · S{} · F{} mm/min",
+                        review.tool_number, review.spindle_rpm, review.cutting_feed_mm_per_min
+                    ));
+                    ui.label(format!(
+                        "{}: {:.6} mm³ · {}: {:.6} mm³",
+                        self.catalog.text("cam-review-removed"),
+                        review.removed_stock_mm3,
+                        self.catalog.text("cam-review-gouge"),
+                        review.gouge_mm3
+                    ));
+                    ui.monospace(format!("SHA-256 {}", review.content_digest));
+                } else {
+                    ui.label(self.catalog.text("cam-review-not-previewed"));
+                }
+                ui.horizontal(|ui| {
+                    if ui.button(self.catalog.text("cam-review-preview")).clicked() {
+                        preview = true;
+                    }
+                    if ui
+                        .add_enabled(
+                            pending.review.is_some(),
+                            egui::Button::new(self.catalog.text("cam-review-confirm-export")),
+                        )
+                        .clicked()
+                    {
+                        confirm = true;
+                    }
+                    if ui.button(self.catalog.text("dialog-cancel")).clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if preview {
+            let result = (|| {
+                let snapshot = self.document.current();
+                let plan = snapshot
+                    .cam_plan(pending.plan_id)
+                    .ok_or_else(|| self.catalog.text("cam-review-no-plan"))?;
+                let operation = plan
+                    .default_facing_operation(&snapshot, 1)
+                    .map_err(|error| error.to_string())?;
+                let worker_path = self.exact_worker_executable()?;
+                self.cam_reviews.set_worker_path(worker_path);
+                self.cam_reviews
+                    .preview(
+                        &snapshot,
+                        CamReviewRequest {
+                            plan_id: pending.plan_id,
+                            operations: vec![operation],
+                            fixtures: Vec::new(),
+                            dialect: CamPostprocessorDialect::IsoMetricGCode,
+                        },
+                        &AtomicBool::new(false),
+                    )
+                    .map_err(|error| error.to_string())
+            })();
+            match result {
+                Ok(review) => {
+                    pending.review = Some(review);
+                    self.digest = self.catalog.text("cam-review-ready");
+                }
+                Err(error) => self.digest = error,
+            }
+        }
+        if confirm && let Some(review) = &pending.review {
+            if let Some(path) = self.choose_export_path("nc") {
+                let result = self.cam_reviews.export(
+                    &self.document.current(),
+                    &review.token,
+                    &path,
+                    true,
+                    &AtomicBool::new(false),
+                );
+                match result {
+                    Ok(_) => {
+                        self.digest = self.catalog.text("cam-review-exported");
+                        cancel = true;
+                    }
+                    Err(error) => self.digest = error.to_string(),
+                }
+            }
+        }
+        if open && !cancel {
+            self.cam_export_dialog = Some(pending);
+        }
+    }
+
+    fn show_fea_review_window(&mut self, context: &egui::Context) {
+        let Some(mut pending) = self.fea_review_dialog.take() else {
+            return;
+        };
+        let mut open = true;
+        let mut run = false;
+        let mut cancel = false;
+        egui::Window::new(self.catalog.text("fea-review-title"))
+            .id(egui::Id::new("static-fea-review"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .show(context, |ui| {
+                ui.label(format!(
+                    "Definition {} · Feature {} · Occurrence {}",
+                    pending.definition_id.0, pending.feature_id.0, pending.occurrence_id.0
+                ));
+                ui.horizontal(|ui| {
+                    ui.label(self.catalog.text("fea-review-case"));
+                    ui.text_edit_singleline(&mut pending.case_id);
+                });
+                for (label, value) in [
+                    ("fea-review-young", &mut pending.youngs_modulus_mpa),
+                    ("fea-review-poisson", &mut pending.poisson_ratio),
+                    ("fea-review-yield", &mut pending.yield_strength_mpa),
+                    (
+                        "fea-review-fixed-face",
+                        &mut pending.constrained_face_ordinals,
+                    ),
+                    ("fea-review-loaded-face", &mut pending.loaded_face_ordinal),
+                    ("fea-review-traction-x", &mut pending.traction_x_n_per_mm2),
+                    ("fea-review-traction-y", &mut pending.traction_y_n_per_mm2),
+                    ("fea-review-traction-z", &mut pending.traction_z_n_per_mm2),
+                    ("fea-review-coarse", &mut pending.coarse_deflection_mm),
+                    ("fea-review-fine", &mut pending.fine_deflection_mm),
+                ] {
+                    ui.horizontal(|ui| {
+                        ui.label(self.catalog.text(label));
+                        ui.text_edit_singleline(value);
+                    });
+                }
+                ui.label(self.catalog.text("fea-review-limits"));
+                if let Some(review) = &pending.review {
+                    ui.separator();
+                    ui.label(format!(
+                        "{}: {} · {}: {}",
+                        self.catalog.text("fea-review-converged"),
+                        review.converged,
+                        self.catalog.text("fea-review-within-limits"),
+                        review.all_levels_within_declared_limits
+                    ));
+                    for (index, level) in review.levels.iter().enumerate() {
+                        ui.label(format!(
+                            "L{}: {} nodes · {} tetra · u={:.6} mm · σvm={:.6} MPa · qmin={:.6}",
+                            index + 1,
+                            level.node_count,
+                            level.element_count,
+                            level.maximum_displacement_mm,
+                            level.maximum_von_mises_stress_mpa,
+                            level.minimum_quality
+                        ));
+                    }
+                    ui.monospace(format!("SHA-256 {}", review.review_digest));
+                }
+                ui.horizontal(|ui| {
+                    if ui
+                        .button(self.catalog.text("fea-review-run-confirmed"))
+                        .clicked()
+                    {
+                        run = true;
+                    }
+                    if ui.button(self.catalog.text("dialog-cancel")).clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if run {
+            let result = (|| {
+                let parse_f64 = |value: &str, name: &str| {
+                    value
+                        .parse::<f64>()
+                        .map_err(|_| format!("{name} must be a finite number"))
+                };
+                let youngs_modulus_mpa = parse_f64(&pending.youngs_modulus_mpa, "Young's modulus")?;
+                let poisson_ratio = parse_f64(&pending.poisson_ratio, "Poisson ratio")?;
+                let yield_strength_mpa = parse_f64(&pending.yield_strength_mpa, "Yield strength")?;
+                let constrained_face_ordinals = pending
+                    .constrained_face_ordinals
+                    .split(',')
+                    .map(str::trim)
+                    .map(|value| {
+                        value.parse::<u32>().map_err(|_| {
+                            "Fixed face ordinals must be comma-separated u32 values".to_owned()
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let loaded_face_ordinal = pending
+                    .loaded_face_ordinal
+                    .parse::<u32>()
+                    .map_err(|_| "Loaded face ordinal must be u32".to_owned())?;
+                let traction = [
+                    parse_f64(&pending.traction_x_n_per_mm2, "Traction X")?,
+                    parse_f64(&pending.traction_y_n_per_mm2, "Traction Y")?,
+                    parse_f64(&pending.traction_z_n_per_mm2, "Traction Z")?,
+                ];
+                let coarse = parse_f64(&pending.coarse_deflection_mm, "Coarse deflection")?;
+                let fine = parse_f64(&pending.fine_deflection_mm, "Fine deflection")?;
+                let worker_path = self.exact_worker_executable()?;
+                self.fea_reviews.set_worker_path(worker_path);
+                self.fea_reviews
+                    .review(
+                        &self.document.current(),
+                        &FeaStudyRequest {
+                            definition_id: pending.definition_id,
+                            feature_id: pending.feature_id,
+                            setup: ExactFeaSetup {
+                                case_id: pending.case_id.clone(),
+                                instance_path: InstancePath::root(pending.occurrence_id),
+                                material: FeaMaterial {
+                                    id: 1,
+                                    youngs_modulus_mpa,
+                                    poisson_ratio,
+                                    yield_strength_mpa: Some(yield_strength_mpa),
+                                },
+                                constrained_face_ordinals,
+                                face_tractions: vec![ExactFeaFaceTraction {
+                                    face_ordinal: loaded_face_ordinal,
+                                    traction_local_n_per_mm2: traction,
+                                }],
+                            },
+                            mesh_levels: vec![
+                                ExactVolumeMeshWireOptions {
+                                    surface_deflection_mm: coarse,
+                                    angular_deflection_rad: coarse,
+                                    max_tetrahedra: 512,
+                                    max_relative_volume_error: 0.05,
+                                    min_tetrahedron_quality: 1.0e-6,
+                                },
+                                ExactVolumeMeshWireOptions {
+                                    surface_deflection_mm: fine,
+                                    angular_deflection_rad: fine,
+                                    max_tetrahedra: 1_024,
+                                    max_relative_volume_error: 0.02,
+                                    min_tetrahedron_quality: 1.0e-6,
+                                },
+                            ],
+                            solve_settings: FeaSolveSettings::default(),
+                        },
+                        true,
+                        &AtomicBool::new(false),
+                    )
+                    .map_err(|error| error.to_string())
+            })();
+            match result {
+                Ok(review) => {
+                    pending.review = Some(review);
+                    self.digest = self.catalog.text("fea-review-ready");
+                }
+                Err(error) => self.digest = error,
+            }
+        }
+        if open && !cancel {
+            self.fea_review_dialog = Some(pending);
+        }
+    }
+
+    fn show_pdm_review_window(&mut self, context: &egui::Context) {
+        let Some(mut pending) = self.pdm_review_dialog.take() else {
+            return;
+        };
+        let mut open = true;
+        let mut refresh = false;
+        let mut open_release = false;
+        let mut compare = false;
+        let mut create = false;
+        let mut cancel = false;
+        egui::Window::new(self.catalog.text("pdm-review-title"))
+            .id(egui::Id::new("local-pdm-review"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .show(context, |ui| {
+                ui.label(format!(
+                    "Revision {} · SHA-256 {}",
+                    pending.source.revision, pending.source.canonical_digest
+                ));
+                for (label, value) in [
+                    ("pdm-repository", &mut pending.repository),
+                    ("pdm-parent-release", &mut pending.parent_release_id),
+                    ("pdm-release-id", &mut pending.release_id),
+                    ("pdm-compare-release", &mut pending.compare_release_id),
+                    ("pdm-audit-actor", &mut pending.actor),
+                    ("pdm-audit-note", &mut pending.note),
+                ] {
+                    ui.horizontal(|ui| {
+                        ui.label(self.catalog.text(label));
+                        ui.text_edit_singleline(value);
+                    });
+                }
+                ui.label(self.catalog.text("pdm-dependencies"));
+                ui.text_edit_multiline(&mut pending.dependencies);
+                ui.label(self.catalog.text("pdm-dependencies-help"));
+                if !pending.catalog.is_empty() {
+                    ui.separator();
+                    ui.label(self.catalog.format(
+                        "pdm-catalog-count",
+                        &BTreeMap::from([("count", pending.catalog.len().to_string())]),
+                    ));
+                    for entry in pending.catalog.iter().rev().take(4) {
+                        ui.monospace(format!(
+                            "{} · r{} · {} · {} dependencies",
+                            entry.release_id,
+                            entry.revision,
+                            entry.audit.actor,
+                            entry.dependency_count
+                        ));
+                    }
+                }
+                if let Some(manifest) = &pending.opened {
+                    ui.separator();
+                    ui.label(self.catalog.text("pdm-open-verified"));
+                    ui.monospace(format!(
+                        "{} · r{} · SHA-256 {}",
+                        manifest.release_id,
+                        manifest.document.revision,
+                        manifest.document.canonical_digest
+                    ));
+                }
+                if let Some(comparison) = &pending.comparison {
+                    ui.separator();
+                    let verdict = match comparison.conflict_verdict {
+                        ReleaseConflictVerdict::AlreadyCurrent => "already current",
+                        ReleaseConflictVerdict::FastForward => "fast forward",
+                        ReleaseConflictVerdict::IncomingBehind => "incoming behind",
+                        ReleaseConflictVerdict::DivergedConflict => "diverged conflict",
+                        ReleaseConflictVerdict::UnrelatedConflict => "unrelated conflict",
+                    };
+                    ui.label(format!(
+                        "{}: {verdict} · document changed: {} · dependency changes: {}",
+                        self.catalog.text("pdm-comparison"),
+                        comparison.document_changed,
+                        comparison.dependency_changes.len()
+                    ));
+                }
+                ui.horizontal(|ui| {
+                    if ui
+                        .button(self.catalog.text("pdm-catalog-refresh"))
+                        .clicked()
+                    {
+                        refresh = true;
+                    }
+                    if ui.button(self.catalog.text("pdm-open-release")).clicked() {
+                        open_release = true;
+                    }
+                    if ui
+                        .button(self.catalog.text("pdm-compare-releases"))
+                        .clicked()
+                    {
+                        compare = true;
+                    }
+                });
+                ui.horizontal(|ui| {
+                    if ui.button(self.catalog.text("pdm-confirm-create")).clicked() {
+                        create = true;
+                    }
+                    if ui.button(self.catalog.text("dialog-cancel")).clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+
+        let cancelled = AtomicBool::new(false);
+        if refresh {
+            match self.pdm.catalog(
+                &self.document.current(),
+                &pending.source,
+                &pending.repository,
+                &cancelled,
+            ) {
+                Ok(catalog) => {
+                    if let Some(latest) = catalog
+                        .iter()
+                        .rev()
+                        .find(|entry| entry.document_id == self.document.current().document_id().0)
+                    {
+                        if pending.parent_release_id.is_empty() {
+                            pending.parent_release_id.clone_from(&latest.release_id);
+                        }
+                        if pending.release_id.is_empty() {
+                            pending.release_id.clone_from(&latest.release_id);
+                        }
+                    }
+                    pending.catalog = catalog;
+                    self.digest = self.catalog.text("pdm-catalog-ready");
+                }
+                Err(error) => self.digest = error.to_string(),
+            }
+        }
+        if open_release {
+            match self.pdm.open(
+                &self.document.current(),
+                &pending.source,
+                &pending.repository,
+                pending.release_id.trim(),
+                &cancelled,
+            ) {
+                Ok(release) => {
+                    pending.opened = Some(release.manifest);
+                    self.digest = self.catalog.text("pdm-open-verified");
+                }
+                Err(error) => self.digest = error.to_string(),
+            }
+        }
+        if compare {
+            match self.pdm.compare(
+                &self.document.current(),
+                &pending.source,
+                &pending.repository,
+                pending.release_id.trim(),
+                pending.compare_release_id.trim(),
+                &cancelled,
+            ) {
+                Ok(comparison) => {
+                    pending.comparison = Some(comparison);
+                    self.digest = self.catalog.text("pdm-comparison-ready");
+                }
+                Err(error) => self.digest = error.to_string(),
+            }
+        }
+        if create {
+            let result = (|| {
+                let dependencies = pending
+                    .dependencies
+                    .lines()
+                    .filter(|line| !line.trim().is_empty())
+                    .map(|line| {
+                        let (logical_path, source_path) =
+                            line.split_once('=').ok_or_else(|| {
+                                "PDM dependencies must use logical/path=source/path".to_owned()
+                            })?;
+                        let logical_path = logical_path.trim();
+                        let source_path = source_path.trim();
+                        if logical_path.is_empty() || source_path.is_empty() {
+                            return Err(
+                                "PDM dependencies must use logical/path=source/path".to_owned()
+                            );
+                        }
+                        Ok(ReleaseDependencyInput::new(logical_path, source_path))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                let request = PdmCreateReleaseRequest {
+                    repository: PathBuf::from(pending.repository.trim()),
+                    parent_release_id: (!pending.parent_release_id.trim().is_empty())
+                        .then(|| pending.parent_release_id.trim().to_owned()),
+                    dependencies,
+                    audit: ReleaseAudit::new(
+                        pending.actor.trim(),
+                        current_unix_time_ms()?,
+                        pending.note.trim(),
+                    ),
+                };
+                self.pdm
+                    .create(
+                        &self.document.current(),
+                        &pending.source,
+                        &request,
+                        true,
+                        &cancelled,
+                    )
+                    .map_err(|error| error.to_string())
+            })();
+            match result {
+                Ok(manifest) => {
+                    pending.release_id.clone_from(&manifest.release_id);
+                    pending.parent_release_id.clone_from(&manifest.release_id);
+                    pending.opened = Some(manifest);
+                    self.digest = self.catalog.text("pdm-release-created");
+                }
+                Err(error) => self.digest = error,
+            }
+        }
+        if open && !cancel {
+            self.pdm_review_dialog = Some(pending);
+        }
+    }
+
     fn show_stl_import_window(&mut self, context: &egui::Context) {
         let Some(pending) = self.pending_stl_import.as_ref() else {
             return;
@@ -35693,6 +37353,18 @@ impl KetchupApp {
         };
         let path = pending.plan.source.path.clone();
         let evidence = pending.plan.evidence.clone();
+        let solid_count = evidence
+            .nodes
+            .iter()
+            .filter_map(|node| node.part_index)
+            .map(|index| evidence.parts[index as usize].exact.solid_count)
+            .sum::<u32>();
+        let volume_mm3 = evidence
+            .nodes
+            .iter()
+            .filter_map(|node| node.part_index)
+            .map(|index| evidence.parts[index as usize].exact.volume_mm3)
+            .sum::<f64>();
         let mut import = false;
         let mut cancel = false;
         egui::Window::new(self.catalog.text("dialog-import-step-title"))
@@ -35707,19 +37379,13 @@ impl KetchupApp {
                 ui.label(self.catalog.format(
                     "dialog-import-step-summary",
                     &BTreeMap::from([
-                        ("solids", evidence.solid_count.to_string()),
-                        ("volume", format!("{:.6}", evidence.volume_mm3)),
+                        ("solids", solid_count.to_string()),
+                        ("volume", format!("{volume_mm3:.6}")),
                     ]),
                 ));
                 ui.label(self.catalog.text("dialog-import-step-preserved"));
-                ui.colored_label(
-                    Color32::YELLOW,
-                    self.catalog.text("dialog-import-step-root-warning"),
-                );
-                ui.colored_label(
-                    Color32::YELLOW,
-                    self.catalog.text("dialog-import-step-metadata-warning"),
-                );
+                ui.label(self.catalog.text("dialog-import-step-root-warning"));
+                ui.label(self.catalog.text("dialog-import-step-metadata-warning"));
                 ui.separator();
                 ui.horizontal(|ui| {
                     import = ui
@@ -35759,13 +37425,33 @@ impl KetchupApp {
                     "dialog-import-iges-source",
                     &BTreeMap::from([("path", path.display().to_string())]),
                 ));
-                ui.label(self.catalog.format(
-                    "dialog-import-iges-summary",
-                    &BTreeMap::from([
-                        ("solids", evidence.solid_count.to_string()),
-                        ("volume", format!("{:.6}", evidence.volume_mm3)),
-                    ]),
-                ));
+                ui.label(
+                    self.catalog.format(
+                        "dialog-import-iges-summary",
+                        &BTreeMap::from([
+                            (
+                                "solids",
+                                evidence
+                                    .parts
+                                    .iter()
+                                    .map(|part| part.exact.solid_count)
+                                    .sum::<u32>()
+                                    .to_string(),
+                            ),
+                            (
+                                "volume",
+                                format!(
+                                    "{:.6}",
+                                    evidence
+                                        .parts
+                                        .iter()
+                                        .map(|part| part.exact.volume_mm3)
+                                        .sum::<f64>()
+                                ),
+                            ),
+                        ]),
+                    ),
+                );
                 ui.label(self.catalog.text("dialog-import-iges-preserved"));
                 ui.colored_label(
                     Color32::YELLOW,
@@ -36301,6 +37987,9 @@ impl KetchupApp {
         self.show_linear_pattern_window(context);
         self.show_rectangular_pattern_window(context);
         self.show_circular_pattern_window(context);
+        self.show_cam_export_window(context);
+        self.show_fea_review_window(context);
+        self.show_pdm_review_window(context);
         self.show_stl_import_window(context);
         self.show_dxf_import_window(context);
         self.show_step_import_window(context);
@@ -36313,6 +38002,8 @@ impl KetchupApp {
         self.show_live_consent(context);
         self.poll_assistant_chat(context);
         self.finish_live_image_frame(context);
+        self.show_close_guard(context);
+        self.refresh_work_recovery_checkpoint();
     }
 }
 
@@ -37132,7 +38823,7 @@ fn exact_step_loss_report(package: &ExactRevolvePackage) -> String {
 
 fn exact_model_step_loss_report(
     snapshot: &Snapshot,
-    model: &[(ExactBodyPackage, Transform)],
+    model: &[(ExactBodyPackage, SceneOccurrence)],
 ) -> String {
     let fingerprints = model
         .iter()
@@ -37140,7 +38831,7 @@ fn exact_model_step_loss_report(
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        "authority=accepted exact OCCT B-Rep\nformat=ISO 10303 STEP\nconversion=current-visible-exact-model-to-world-space-brep\neditability_loss=canonical Ketchup features, rules, dimensions, hierarchy, and Undo history are not preserved\ntopology_loss=exact B-Rep topology is preserved, but durable Ketchup subshape and occurrence identity are not preserved\ntolerance_loss=no tessellation loss; receiving systems may apply a different modeling tolerance\nsource_digest={}\noccurrence_count={}\nresult_fingerprints={fingerprints}\n",
+        "authority=accepted exact OCCT B-Rep and canonical scene hierarchy\nformat=ISO 10303 STEP with XDE assembly metadata\nconversion=current-visible-exact-model-to-xde-assembly\nassembly=global groups, nested occurrences, repeated part definitions, local rigid transforms, names, and occurrence sRGB colors are preserved\neditability_loss=canonical Ketchup features, rules, dimensions, and Undo history are not preserved\ntopology_loss=exact B-Rep topology is preserved, but durable Ketchup subshape, group, occurrence, and feature IDs are not preserved\ntolerance_loss=no tessellation loss; receiving systems may apply a different modeling tolerance\nsource_digest={}\noccurrence_body_count={}\nresult_fingerprints={fingerprints}\n",
         snapshot.canonical_digest(),
         model.len(),
     )
@@ -37148,7 +38839,7 @@ fn exact_model_step_loss_report(
 
 fn exact_model_iges_loss_report(
     snapshot: &Snapshot,
-    model: &[(ExactBodyPackage, Transform)],
+    model: &[(ExactBodyPackage, SceneOccurrence)],
 ) -> String {
     let fingerprints = model
         .iter()
@@ -37156,7 +38847,7 @@ fn exact_model_iges_loss_report(
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        "authority=accepted exact OCCT B-Rep\nformat=IGES 5.3\nunits=millimetre\nconversion=current-visible-exact-model-to-world-space-step-then-iges-brep\neditability_loss=canonical Ketchup features, rules, dimensions, names, colors, hierarchy, and Undo history are not preserved\ntopology_loss=exact B-Rep geometry is transferred, but durable Ketchup subshape and occurrence identity are not preserved\nassembly_loss=world-space occurrences are flattened because this bounded IGES workflow does not claim assembly reconstruction\ntolerance_loss=no tessellation loss; receiving systems may apply a different modeling tolerance\nsource_digest={}\noccurrence_count={}\nresult_fingerprints={fingerprints}\n",
+        "authority=accepted exact OCCT B-Rep and canonical scene metadata\nformat=IGES 5.3\nunits=millimetre\nconversion=current-visible-exact-scene-to-flat-iges-brep-roots\npreserved=one exact root per visible occurrence, occurrence names, sRGB colors, and world placement baked into geometry\neditability_loss=canonical Ketchup features, rules, dimensions, and Undo history are not preserved\ntopology_loss=exact B-Rep geometry is transferred, but durable Ketchup subshape and occurrence identity are not preserved\nassembly_loss=hierarchy, local transforms, and repeated shared definitions are unavailable; roots are duplicated and world transforms are baked into exact geometry\ntolerance_loss=no tessellation loss; receiving systems may apply a different modeling tolerance\nsource_digest={}\noccurrence_count={}\nresult_fingerprints={fingerprints}\n",
         snapshot.canonical_digest(),
         model.len(),
     )
@@ -37718,6 +39409,129 @@ fn transform_model_point(transform: Transform, point: Vec3) -> Vec3 {
         matrix[4] * point.x + matrix[5] * point.y + matrix[6] * point.z + matrix[7],
         matrix[8] * point.x + matrix[9] * point.y + matrix[10] * point.z + matrix[11],
     )
+}
+
+fn assistant_definition_local_bounds(
+    snapshot: &Snapshot,
+    exact_results: &ExactResultRegistry,
+    definition_id: DefinitionId,
+    local_box: Option<ProjectedBox>,
+) -> Option<[Vec3; 2]> {
+    if let Some(package) = exact_results.get_render(snapshot, definition_id) {
+        let [minimum, maximum] = package.bounds_mm();
+        return Some([
+            Vec3::new(minimum[0], minimum[1], minimum[2]),
+            Vec3::new(maximum[0], maximum[1], maximum[2]),
+        ]);
+    }
+    if let Some(definition) = snapshot.definition(definition_id) {
+        if let [feature_id] = definition.feature_ids()
+            && let Some(feature) = snapshot.feature(*feature_id)
+            && let FeatureKind::ImportedExactBody(spec) = feature.kind()
+        {
+            return Some([
+                Vec3::new(
+                    spec.bounds_mm[0][0],
+                    spec.bounds_mm[0][1],
+                    spec.bounds_mm[0][2],
+                ),
+                Vec3::new(
+                    spec.bounds_mm[1][0],
+                    spec.bounds_mm[1][1],
+                    spec.bounds_mm[1][2],
+                ),
+            ]);
+        }
+        if let Some([minimum, maximum]) =
+            definition
+                .feature_ids()
+                .iter()
+                .rev()
+                .find_map(|feature_id| {
+                    ExactBRepGraph::from_snapshot(snapshot, definition_id, *feature_id)
+                        .ok()?
+                        .producer_bounds_mm()
+                        .ok()?
+                })
+        {
+            return Some([
+                Vec3::new(minimum[0], minimum[1], minimum[2]),
+                Vec3::new(maximum[0], maximum[1], maximum[2]),
+            ]);
+        }
+        for feature_id in definition.feature_ids() {
+            if let Some(feature) = snapshot.feature(*feature_id)
+                && let FeatureKind::MeshBody(mesh) = feature.kind()
+            {
+                return bounds_of(
+                    mesh.vertices_mm
+                        .iter()
+                        .map(|vertex| Vec3::new(vertex[0], vertex[1], vertex[2])),
+                );
+            }
+        }
+    }
+    local_box.map(|item| [item.origin_mm, item.origin_mm + item.size_mm])
+}
+
+fn assistant_body_bounds_from_snapshot(
+    snapshot: &Snapshot,
+    exact_results: &ExactResultRegistry,
+) -> BTreeMap<InstancePath, (DefinitionId, [Vec3; 2])> {
+    CanonicalInteractionProjection::from_snapshot(snapshot)
+        .occurrences()
+        .iter()
+        .filter(|occurrence| occurrence.visible)
+        .filter_map(|occurrence| {
+            let [minimum, maximum] = assistant_definition_local_bounds(
+                snapshot,
+                exact_results,
+                occurrence.body.definition_id,
+                occurrence.local_box,
+            )?;
+            let size = maximum - minimum;
+            let bounds = bounds_of(box_corners(size.x, size.y, size.z).into_iter().map(
+                |corner| {
+                    transform_model_point(occurrence.canonical_world_transform, corner + minimum)
+                },
+            ))?;
+            Some((
+                occurrence.instance_path.clone(),
+                (occurrence.body.definition_id, bounds),
+            ))
+        })
+        .collect()
+}
+
+fn assistant_occurrence_records_from_snapshot(
+    snapshot: &Snapshot,
+    exact_results: &ExactResultRegistry,
+) -> Vec<(InstancePath, serde_json::Value)> {
+    let body_bounds = assistant_body_bounds_from_snapshot(snapshot, exact_results);
+    snapshot
+        .scene_query()
+        .into_iter()
+        .map(|occurrence| {
+            let instance_path = occurrence.instance_path.clone();
+            let bounds = body_bounds
+                .get(&instance_path)
+                .map(|(_, bounds)| *bounds)
+                .or_else(|| assistant_mesh_body_bounds(snapshot, &occurrence));
+            let record = serde_json::json!({
+                "occurrence_id": occurrence.occurrence_id.0,
+                "instance_path": KetchupApp::assistant_instance_path_value(snapshot, &instance_path),
+                "definition_id": occurrence.definition_id.0,
+                "name": occurrence.occurrence_name,
+                "visible": occurrence.visible,
+                "copyable": instance_path.is_root(),
+                "bounds_mm": bounds.map(|[minimum, maximum]| serde_json::json!({
+                    "min": [minimum.x, minimum.y, minimum.z],
+                    "max": [maximum.x, maximum.y, maximum.z],
+                })),
+            });
+            (instance_path, record)
+        })
+        .collect()
 }
 
 fn assistant_mesh_body_bounds(

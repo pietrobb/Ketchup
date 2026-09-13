@@ -1,6 +1,7 @@
 //! Real Rust GUI store -> TCP -> Python LiveSession -> registered beta tool.call.
 //! Requires KETCHUP_LIVE_PYTHON pointing at Python 3.11+ with anthropic installed.
-//! Only an unset variable skips; a missing/broken dependency is a test failure.
+//! These explicit integration tests run through scripts/run_production_tests.py;
+//! an absent or broken configured runtime is a test failure, never a false pass.
 //! This is trusted host attachment integration, NOT production launcher proof.
 //! Shell is offscreen AccessKit/egui_kittest: no desktop, renderer or image proof.
 mod harness;
@@ -98,11 +99,10 @@ fn wait_for_exact_body(shell: &mut Shell) {
 }
 
 #[test]
+#[ignore = "run via scripts/run_production_tests.py with a required real Python runtime"]
 fn registered_disconnect_releases_consent_and_allows_reattach() {
-    let Some(python) = std::env::var_os("KETCHUP_LIVE_PYTHON") else {
-        eprintln!("SKIP: set KETCHUP_LIVE_PYTHON to Python 3.11+ with anthropic installed");
-        return;
-    };
+    let python = std::env::var_os("KETCHUP_LIVE_PYTHON")
+        .expect("KETCHUP_LIVE_PYTHON must identify the provisioned Python 3.11+ runtime");
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let directory = tempfile::tempdir().unwrap();
     let mut shell = Shell::new();
@@ -202,16 +202,17 @@ fn registered_disconnect_releases_consent_and_allows_reattach() {
 }
 
 #[test]
+#[ignore = "run via scripts/run_production_tests.py with a required real Python runtime"]
 fn registered_python_skill_uses_same_gui_store_and_human_history() {
-    let Some(python) = std::env::var_os("KETCHUP_LIVE_PYTHON") else {
-        eprintln!("SKIP: set KETCHUP_LIVE_PYTHON to Python 3.11+ with anthropic installed");
-        return;
-    };
+    let python = std::env::var_os("KETCHUP_LIVE_PYTHON")
+        .expect("KETCHUP_LIVE_PYTHON must identify the provisioned Python 3.11+ runtime");
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
         .parent()
         .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let persistence_path = directory.path().join("live-bridge-roundtrip.ketchup");
     let mut shell = Shell::new();
     shell
         .app_mut()
@@ -247,6 +248,7 @@ fn registered_python_skill_uses_same_gui_store_and_human_history() {
         "address": credentials.address.to_string(),
         "token": credentials.token,
         "program": program(),
+        "persistence_path": persistence_path,
     }))
     .expect("encode private host attachment");
     attachment.push(b'\n');
@@ -286,6 +288,8 @@ fn registered_python_skill_uses_same_gui_store_and_human_history() {
         "stale_rejected",
         "undone",
         "redone",
+        "saved",
+        "reopened",
         "image_renderer_unavailable",
         "disconnected",
     ] {
@@ -397,6 +401,19 @@ fn registered_python_skill_uses_same_gui_store_and_human_history() {
                     committed.as_ref().unwrap().canonical_digest
                 );
                 assert!(actual.mutation_epoch > undone.as_ref().unwrap().mutation_epoch);
+                committed = Some(actual);
+            }
+            "saved" => {
+                assert_eq!(Some(&actual), committed.as_ref());
+                assert_eq!(actual_count, count + 2);
+                assert!(persistence_path.is_file());
+            }
+            "reopened" => {
+                let before_reopen = committed.as_ref().unwrap();
+                assert_eq!(actual.document_id, before_reopen.document_id);
+                assert_eq!(actual.revision, before_reopen.revision);
+                assert_eq!(actual.canonical_digest, before_reopen.canonical_digest);
+                assert_eq!(actual_count, count + 2);
                 committed = Some(actual);
             }
             "image_renderer_unavailable" | "disconnected" => {

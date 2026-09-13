@@ -9,6 +9,7 @@ use ketchup_core::document::{
 #[cfg(not(feature = "named-product-fixtures"))]
 use ketchup_core::persistence::LegacyFeatureKind;
 use ketchup_core::persistence::{self, LoadDisposition, PersistenceError};
+use ketchup_core::sheet_metal::{SheetMetalEdge, SheetMetalFlange, SheetMetalSpec};
 
 fn load_error(bytes: &[u8]) -> PersistenceError {
     match persistence::load(bytes) {
@@ -1279,6 +1280,149 @@ fn interrupted_or_corrupt_primary_recovers_the_last_verified_container() {
 }
 
 #[test]
+fn conditional_save_rejects_external_replacement_without_touching_primary_or_recovery() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("shared.ketchup");
+    let container_data = persistence::ContainerData::default();
+    let initial = graph_document();
+    persistence::save_atomic_document_store_with_container(&path, &initial, &container_data)
+        .unwrap();
+    let opened_identity = persistence::read_native_document_identity(&path).unwrap();
+    let source = std::fs::read(&path).unwrap();
+    let mut first = persistence::load(&source)
+        .unwrap()
+        .into_editable()
+        .ok()
+        .unwrap();
+    let mut second = persistence::load(&source)
+        .unwrap()
+        .into_editable()
+        .ok()
+        .unwrap();
+
+    first
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetEvaluatorDimension {
+                id: NodeId(1),
+                dimension: Dimension::new("11", 11.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+    let first_identity = persistence::save_atomic_document_store_with_container_if_unchanged(
+        &path,
+        &first,
+        &container_data,
+        opened_identity,
+    )
+    .unwrap();
+    let primary_after_first = std::fs::read(&path).unwrap();
+    let recovery_after_first = std::fs::read(path.with_extension("ketchup.recovery")).unwrap();
+
+    second
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetEvaluatorDimension {
+                id: NodeId(1),
+                dimension: Dimension::new("12", 12.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+    assert!(matches!(
+        persistence::save_atomic_document_store_with_container_if_unchanged(
+            &path,
+            &second,
+            &container_data,
+            opened_identity,
+        ),
+        Err(persistence::FilePersistenceError::ExternalConflict)
+    ));
+    assert_eq!(std::fs::read(&path).unwrap(), primary_after_first);
+    assert_eq!(
+        std::fs::read(path.with_extension("ketchup.recovery")).unwrap(),
+        recovery_after_first
+    );
+
+    std::fs::remove_file(&path).unwrap();
+    assert!(matches!(
+        persistence::save_atomic_document_store_with_container_if_unchanged(
+            &path,
+            &second,
+            &container_data,
+            first_identity,
+        ),
+        Err(persistence::FilePersistenceError::ExternalConflict)
+    ));
+    assert!(!path.exists());
+}
+
+#[test]
+fn dirty_work_recovery_is_bound_to_the_primary_and_corruption_is_ignored() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("working.ketchup");
+    let work_recovery = persistence::work_recovery_path(&path);
+    let container_data = persistence::ContainerData::default();
+    let mut store = graph_document();
+    persistence::save_atomic_document_store_with_container(&path, &store, &container_data).unwrap();
+    let primary_bytes = std::fs::read(&path).unwrap();
+    let base_identity = persistence::read_native_document_identity(&path).unwrap();
+
+    store
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetEvaluatorDimension {
+                id: NodeId(1),
+                dimension: Dimension::new("17", 17.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+    let dirty_digest = store.current().canonical_digest();
+    persistence::save_work_recovery_document_store_with_container(
+        &path,
+        &store,
+        &container_data,
+        base_identity,
+    )
+    .unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), primary_bytes);
+
+    let recovered = persistence::load_file_with_source(&path).unwrap();
+    assert_eq!(recovered.source_path(), work_recovery);
+    assert_eq!(
+        recovered.outcome().snapshot().canonical_digest(),
+        dirty_digest
+    );
+    assert!(recovered.outcome().audit().recovered_from_backup);
+
+    std::fs::write(&work_recovery, b"interrupted checkpoint").unwrap();
+    let clean = persistence::load_file_with_source(&path).unwrap();
+    assert_eq!(clean.source_path(), path);
+    assert_ne!(clean.outcome().snapshot().canonical_digest(), dirty_digest);
+
+    persistence::save_work_recovery_document_store_with_container(
+        &path,
+        &store,
+        &container_data,
+        base_identity,
+    )
+    .unwrap();
+    let mut replacement = graph_document();
+    replacement
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetEvaluatorDimension {
+                id: NodeId(1),
+                dimension: Dimension::new("23", 23.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+    persistence::save_atomic_document_store_with_container(&path, &replacement, &container_data)
+        .unwrap();
+    let replaced = persistence::load_file_with_source(&path).unwrap();
+    assert_eq!(replaced.source_path(), path);
+    assert_eq!(
+        replaced.outcome().snapshot().canonical_digest(),
+        replacement.current().canonical_digest()
+    );
+}
+
+#[test]
 fn sparse_native_documents_and_recovery_fail_before_unbounded_reads() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("oversized.ketchup");
@@ -1372,4 +1516,62 @@ fn schema_52_occurrences_migrate_with_no_color() {
         loaded.document().canonical_digest(),
         store.current().canonical_digest()
     );
+}
+
+#[test]
+fn sheet_metal_schema_81_remains_readable_and_current_schema_is_byte_stable() {
+    let definition_id = DefinitionId(1);
+    let feature_id = FeatureId(1);
+    let spec = SheetMetalSpec {
+        width: Dimension::new("100 mm", 100.0).unwrap(),
+        depth: Dimension::new("50 mm", 50.0).unwrap(),
+        thickness: Dimension::new("2 mm", 2.0).unwrap(),
+        k_factor: 0.4,
+        flanges: vec![SheetMetalFlange {
+            edge: SheetMetalEdge::MaxX,
+            length: Dimension::new("30 mm", 30.0).unwrap(),
+            angle_degrees: -90.0,
+            inner_radius: Dimension::new("3 mm", 3.0).unwrap(),
+        }],
+    };
+    let mut store = DocumentStore::new();
+    store
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition_id,
+                name: "Sheet metal part".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: feature_id,
+                definition_id,
+                name: "Base with flange".into(),
+                kind: FeatureKind::SheetMetal(spec.clone()),
+            },
+        ]))
+        .unwrap();
+
+    let expected_digest = store.current().canonical_digest();
+    let bytes = persistence::save(&store.current());
+    assert_eq!(
+        u16::from_le_bytes(bytes[10..12].try_into().unwrap()),
+        persistence::CURRENT_SCHEMA
+    );
+    let loaded = persistence::load(&bytes).unwrap();
+    assert_eq!(loaded.disposition(), LoadDisposition::EditableLossless);
+    assert_eq!(loaded.snapshot().canonical_digest(), expected_digest);
+    assert_eq!(persistence::save(&loaded.snapshot()), bytes);
+    assert!(matches!(
+        loaded.snapshot().feature(feature_id).unwrap().kind(),
+        FeatureKind::SheetMetal(reopened) if reopened == &spec
+    ));
+
+    let mut schema_81 = bytes;
+    rewrite_envelope_schema(&mut schema_81, 81);
+    let loaded_81 = persistence::load(&schema_81).unwrap();
+    assert_eq!(loaded_81.disposition(), LoadDisposition::EditableLossless);
+    assert_eq!(loaded_81.snapshot().canonical_digest(), expected_digest);
+    assert!(matches!(
+        loaded_81.snapshot().feature(feature_id).unwrap().kind(),
+        FeatureKind::SheetMetal(reopened) if reopened == &spec
+    ));
 }

@@ -402,9 +402,12 @@ try {
         throw "Installed exact worker failed its headless PING."
     }
 
-    $manualAlphaVerification = (& (Join-Path $installedDir "Ketchup.exe") --verify-manual-alpha).Trim()
-    if ($LASTEXITCODE -ne 0 -or $manualAlphaVerification -cne "Ketchup Manual Alpha $Version verified") {
-        throw "Installed application failed its headless Manual Alpha identity check."
+    $persistenceSmokePath = Join-Path $tempRoot "manual-alpha-persistence-smoke.ketchup"
+    $manualAlphaVerification = (& (Join-Path $installedDir "Ketchup.exe") --verify-manual-alpha $persistenceSmokePath).Trim()
+    $expectedVerification = "Ketchup Manual Alpha $Version verified; private-oauth codex-oauth gpt-5.6-sol"
+    if ($LASTEXITCODE -ne 0 -or $manualAlphaVerification -cne $expectedVerification -or
+        -not (Test-Path $persistenceSmokePath -PathType Leaf)) {
+        throw "Installed application failed its headless Manual Alpha OAuth/startup/persistence check."
     }
 
     $uninstaller = Join-Path $installedDir "unins000.exe"

@@ -11,30 +11,38 @@
 #include <BRepBuilderAPI_FindPlane.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakeSolid.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepBuilderAPI_Sewing.hxx>
 #include <BRepBuilderAPI_GTransform.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepCheck_Analyzer.hxx>
+#include <BRepClass3d_SolidClassifier.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
 #include <BRep_Builder.hxx>
 #include <BRepGProp.hxx>
+#include <BRepLib.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
+#include <BRepTools.hxx>
 #include <Poly_Triangulation.hxx>
 #include <TopLoc_Location.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepOffsetAPI_MakeOffset.hxx>
+#include <BRepOffsetAPI_MakeOffsetShape.hxx>
 #include <BRepOffsetAPI_MakePipeShell.hxx>
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
 #include <BRepOffsetAPI_ThruSections.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRepPrimAPI_MakeHalfSpace.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
 #include <GProp_GProps.hxx>
 #include <GC_MakeArcOfCircle.hxx>
+#include <GeomAbs_Shape.hxx>
 #include <GeomAbs_CurveType.hxx>
 #include <GeomAbs_JoinType.hxx>
 #include <GeomAbs_SurfaceType.hxx>
@@ -43,18 +51,33 @@
 #include <Geom_Plane.hxx>
 #include <Geom_TrimmedCurve.hxx>
 #include <Standard_Failure.hxx>
+#include <STEPCAFControl_Reader.hxx>
+#include <STEPCAFControl_Writer.hxx>
 #include <STEPControl_Reader.hxx>
 #include <STEPControl_Writer.hxx>
 #include <IFSelect_ReturnStatus.hxx>
+#include <Quantity_Color.hxx>
+#include <TDataStd_Name.hxx>
+#include <TDF_Tool.hxx>
+#include <TDocStd_Document.hxx>
+#include <XCAFDoc_ColorTool.hxx>
+#include <XCAFDoc_DocumentTool.hxx>
+#include <XCAFDoc_ShapeTool.hxx>
+#include <IGESCAFControl_Reader.hxx>
+#include <IGESCAFControl_Writer.hxx>
+#include <IGESControl_Controller.hxx>
 #include <IGESControl_Reader.hxx>
 #include <IGESControl_Writer.hxx>
+#include <Interface_Static.hxx>
 #include <IGESData_GlobalSection.hxx>
 #include <IGESData_IGESModel.hxx>
 #include <TopAbs_Orientation.hxx>
 #include <TopAbs_ShapeEnum.hxx>
+#include <TopAbs_State.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopLoc_Location.hxx>
+#include <NCollection_Array1.hxx>
 #include <NCollection_List.hxx>
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
@@ -65,6 +88,8 @@
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
+#include <TopoDS_Shell.hxx>
+#include <TopoDS_Solid.hxx>
 #include <TopoDS_Vertex.hxx>
 #include <TopoDS_Wire.hxx>
 #include <gp_Ax1.hxx>
@@ -76,17 +101,26 @@
 #include <gp_Pln.hxx>
 #include <gp_Trsf.hxx>
 #include <gp_Pnt.hxx>
+#include <gp_Pnt2d.hxx>
 #include <gp_Vec.hxx>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <exception>
 #include <functional>
+#include <iomanip>
 #include <limits>
 #include <memory>
+#include <map>
+#include <mutex>
+#include <set>
+#include <sstream>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -389,7 +423,8 @@ std::unique_ptr<NativeOperationResult> success_result(
     std::vector<HistoryRecord> history,
     bool allow_multi_solid = false,
     bool allow_planar_face = false,
-    std::vector<EdgeHistoryRecord> edge_history = {}) {
+    std::vector<EdgeHistoryRecord> edge_history = {},
+    bool allow_surface = false) {
   auto impl = std::make_unique<NativeOperationResult::Impl>();
   impl->shape = std::move(shape);
   impl->history = std::move(history);
@@ -405,7 +440,9 @@ std::unique_ptr<NativeOperationResult> success_result(
   const std::uint32_t solids = count_subshapes(impl->shape, TopAbs_SOLID);
   GProp_GProps properties;
   BRepGProp::VolumeProperties(impl->shape, properties);
-  const double volume = properties.Mass();
+  const double volume = (allow_planar_face || allow_surface) && solids == 0
+      ? 0.0
+      : properties.Mass();
 
   TopTools_IndexedMapOfShape vertices;
   TopTools_IndexedMapOfShape edges;
@@ -480,16 +517,23 @@ std::unique_ptr<NativeOperationResult> success_result(
       && faces.Extent() == 1
       && std::isfinite(volume)
       && std::abs(volume) <= 1.0e-12;
-  const bool valid_solid = !allow_planar_face
+  const bool valid_surface = allow_surface
+      && solids == 0
+      && faces.Extent() >= 1
+      && std::isfinite(volume)
+      && std::abs(volume) <= 1.0e-12;
+  const bool valid_solid = !allow_planar_face && !allow_surface
       && ((!allow_multi_solid && solids == 1) || (allow_multi_solid && solids >= 2))
       && std::isfinite(volume)
       && volume > 0.0;
-  if (!analyzer.IsValid() || (!valid_planar_face && !valid_solid)) {
+  if (!analyzer.IsValid() || (!valid_planar_face && !valid_surface && !valid_solid)) {
     impl->status = STATUS_INVALID_SHAPE;
     impl->diagnostic = "OCCT result failed the exact-shape validity oracle";
   } else {
     impl->status = STATUS_OK;
-    impl->diagnostic = valid_planar_face ? "valid exact planar face" : "valid exact solid";
+    impl->diagnostic = valid_planar_face
+        ? "valid exact planar face"
+        : (valid_surface ? "valid exact surface" : "valid exact solid");
   }
   return std::make_unique<NativeOperationResult>(std::move(impl));
 }
@@ -752,7 +796,18 @@ std::unique_ptr<NativeOperationResult> make_box_native(
     if (!operation.IsDone()) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT box builder did not complete");
     }
-    return success_result(result, {});
+    std::vector<HistoryRecord> history;
+    for (const auto& [role, face] : std::array<std::pair<const char*, TopoDS_Face>, 6>{
+             std::pair{"box.face.bottom", operation.BottomFace()},
+             std::pair{"box.face.top", operation.TopFace()},
+             std::pair{"box.face.left", operation.LeftFace()},
+             std::pair{"box.face.right", operation.RightFace()},
+             std::pair{"box.face.front", operation.FrontFace()},
+             std::pair{"box.face.back", operation.BackFace()},
+         }) {
+      history.push_back(history_record(role, "generated", role, result, face));
+    }
+    return success_result(result, std::move(history));
   });
 }
 
@@ -918,7 +973,7 @@ std::unique_ptr<NativeOperationResult> offset_planar_profile_native(
     rust::Slice<const double> segments, double distance) noexcept {
   return guarded([&] {
     if (segments.size() < 20 || segments.size() % 10 != 0 || segments.size() > 640
-        || !std::isfinite(distance) || std::abs(distance) < 0.01
+        || !std::isfinite(distance)
         || std::abs(distance) > 100000.0) {
       return error_result(STATUS_INVALID_PARAMETER, "Planar offset payload is malformed");
     }
@@ -1026,6 +1081,13 @@ std::unique_ptr<NativeOperationResult> offset_planar_profile_native(
         || !BRepCheck_Analyzer(source_face_builder.Face()).IsValid()) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT planar offset source face is invalid");
     }
+    if (distance == 0.0) {
+      const TopoDS_Face result = source_face_builder.Face();
+      std::vector<HistoryRecord> history;
+      history.push_back(history_record(
+          "planar_surface.face", "generated", "profile.face", result, result));
+      return success_result(result, std::move(history), false, true);
+    }
 
     BRepOffsetAPI_MakeOffset operation(source_builder.Wire(), GeomAbs_Intersection, false);
     operation.Perform(distance);
@@ -1051,6 +1113,317 @@ std::unique_ptr<NativeOperationResult> offset_planar_profile_native(
     history.push_back(history_record(
         "planar_offset.face", "offset_generated", "profile.face", result, result));
     return success_result(result, std::move(history), false, true);
+  });
+}
+
+std::unique_ptr<NativeOperationResult> planar_surface_profile_native(
+    rust::Slice<const double> segments) noexcept {
+  return offset_planar_profile_native(segments, 0.0);
+}
+
+std::unique_ptr<NativeOperationResult> trim_surface_native(
+    const NativeOperationResult& target,
+    const NativeOperationResult& cutter) noexcept {
+  return guarded([&] {
+    if (!target.valid() || !cutter.valid()
+        || target.impl().shape.IsNull() || cutter.impl().shape.IsNull()
+        || target.impl().summary.solid_count != 0 || cutter.impl().summary.solid_count != 0
+        || target.impl().summary.face_count == 0 || cutter.impl().summary.face_count == 0) {
+      return error_result(STATUS_INVALID_PARAMETER, "Surface trim requires valid non-solid target and cutter surfaces");
+    }
+    BRepAlgoAPI_Common operation(target.impl().shape, cutter.impl().shape);
+    operation.SetNonDestructive(true);
+    operation.Build();
+    if (!operation.IsDone() || operation.HasErrors() || operation.HasWarnings()
+        || operation.Shape().IsNull()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT surface trim did not produce an unambiguous intersection");
+    }
+    const TopoDS_Shape result = operation.Shape();
+    if (!BRepCheck_Analyzer(result, true).IsValid()
+        || count_subshapes(result, TopAbs_SOLID) != 0
+        || count_subshapes(result, TopAbs_FACE) != 1
+        || count_subshapes(result, TopAbs_WIRE) != 1) {
+      return error_result(STATUS_INVALID_SHAPE, "Surface trim must produce one valid bounded non-solid face");
+    }
+    GProp_GProps target_properties;
+    GProp_GProps result_properties;
+    BRepGProp::SurfaceProperties(target.impl().shape, target_properties);
+    BRepGProp::SurfaceProperties(result, result_properties);
+    const double target_area = target_properties.Mass();
+    const double result_area = result_properties.Mass();
+    const double tolerance = 1.0e-9 * std::max({target_area, result_area, 1.0});
+    if (!std::isfinite(target_area) || !std::isfinite(result_area)
+        || result_area <= tolerance || result_area >= target_area - tolerance) {
+      return error_result(STATUS_NO_GEOMETRIC_CHANGE, "Surface trim requires a finite proper subset of the target");
+    }
+    std::vector<HistoryRecord> history;
+    append_propagated_history(history, operation, result, target.impl());
+    history.push_back(history_record(
+        "surface_trim.face", "trimmed", "surface.target", result, result));
+    return success_result(result, std::move(history), false, true);
+  });
+}
+
+std::unique_ptr<NativeOperationResult> extend_planar_surface_native(
+    const NativeOperationResult& target, double distance) noexcept {
+  return guarded([&] {
+    if (!target.valid() || target.impl().shape.IsNull()
+        || target.impl().summary.solid_count != 0
+        || target.impl().summary.face_count != 1
+        || target.impl().summary.wire_count != 1
+        || !std::isfinite(distance) || distance < 0.01 || distance > 100000.0) {
+      return error_result(STATUS_INVALID_PARAMETER, "Planar surface extend payload is outside the bounded envelope");
+    }
+    const TopoDS_Face source = face_at_ordinal(target.impl().shape, 0);
+    if (source.IsNull()) {
+      return error_result(STATUS_INVALID_SHAPE, "Planar surface extend source face is absent");
+    }
+    const BRepAdaptor_Surface surface(source);
+    if (surface.GetType() != GeomAbs_Plane) {
+      return error_result(STATUS_INVALID_PARAMETER, "Surface extend currently requires one planar face");
+    }
+    BRepOffsetAPI_MakeOffset operation(source, GeomAbs_Intersection, false);
+    operation.Perform(distance);
+    if (!operation.IsDone() || operation.Shape().IsNull()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT planar surface boundary extension did not complete");
+    }
+    TopoDS_Wire offset_wire;
+    for (TopExp_Explorer wires(operation.Shape(), TopAbs_WIRE); wires.More(); wires.Next()) {
+      if (!offset_wire.IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "Surface extend produced an ambiguous multi-wire boundary");
+      }
+      offset_wire = TopoDS::Wire(wires.Current());
+    }
+    if (offset_wire.IsNull()) {
+      return error_result(STATUS_NULL_RESULT, "Surface extend produced no bounded wire");
+    }
+    BRepBuilderAPI_MakeFace face_builder(surface.Plane(), offset_wire, true);
+    if (!face_builder.IsDone() || face_builder.Face().IsNull()
+        || !BRepCheck_Analyzer(face_builder.Face(), true).IsValid()) {
+      return error_result(STATUS_INVALID_SHAPE, "Surface extend produced an invalid planar face");
+    }
+    const TopoDS_Face result = face_builder.Face();
+    GProp_GProps source_properties;
+    GProp_GProps result_properties;
+    BRepGProp::SurfaceProperties(source, source_properties);
+    BRepGProp::SurfaceProperties(result, result_properties);
+    const double source_area = source_properties.Mass();
+    const double result_area = result_properties.Mass();
+    const double tolerance = 1.0e-9 * std::max({source_area, result_area, 1.0});
+    if (!std::isfinite(source_area) || !std::isfinite(result_area)
+        || result_area <= source_area + tolerance) {
+      return error_result(STATUS_NO_GEOMETRIC_CHANGE, "Surface extend did not increase the bounded face area");
+    }
+    std::vector<HistoryRecord> history;
+    history.push_back(history_record(
+        "surface_extend.face", "extended", "surface.target", result, result));
+    return success_result(result, std::move(history), false, true);
+  });
+}
+
+std::unique_ptr<NativeOperationResult> combine_surfaces_native(
+    const NativeOperationResult& base,
+    const NativeOperationResult& added) noexcept {
+  return guarded([&] {
+    if (!base.valid() || !added.valid()
+        || base.impl().shape.IsNull() || added.impl().shape.IsNull()
+        || base.impl().summary.solid_count != 0 || added.impl().summary.solid_count != 0
+        || base.impl().summary.face_count == 0 || added.impl().summary.face_count == 0) {
+      return error_result(
+          STATUS_INVALID_PARAMETER,
+          "Surface compound requires valid non-solid surface inputs");
+    }
+    const std::uint64_t face_count = static_cast<std::uint64_t>(base.impl().summary.face_count)
+        + static_cast<std::uint64_t>(added.impl().summary.face_count);
+    if (face_count > 256) {
+      return error_result(STATUS_INVALID_PARAMETER, "Surface compound exceeds the face limit");
+    }
+    BRep_Builder builder;
+    TopoDS_Compound compound;
+    builder.MakeCompound(compound);
+    builder.Add(compound, base.impl().shape);
+    builder.Add(compound, added.impl().shape);
+    return success_result(compound, {}, false, false, {}, true);
+  });
+}
+
+std::unique_ptr<NativeOperationResult> knit_surface_compound_native(
+    const NativeOperationResult& surfaces,
+    double tolerance, bool make_solid) noexcept {
+  return guarded([&] {
+    if (!surfaces.valid() || surfaces.impl().shape.IsNull()
+        || surfaces.impl().summary.solid_count != 0
+        || surfaces.impl().summary.face_count < 2
+        || surfaces.impl().summary.face_count > 256
+        || !std::isfinite(tolerance)
+        || tolerance < 1.0e-7 || tolerance > 10.0) {
+      return error_result(
+          STATUS_INVALID_PARAMETER,
+          "Surface knit requires 2..256 non-solid faces and a tolerance from 1e-7 to 10 mm");
+    }
+
+    BRepBuilderAPI_Sewing sewing(tolerance, true, true, true, false);
+    for (TopExp_Explorer faces(surfaces.impl().shape, TopAbs_FACE); faces.More(); faces.Next()) {
+      sewing.Add(faces.Current());
+    }
+    sewing.Perform();
+    const TopoDS_Shape sewed = sewing.SewedShape();
+    if (sewed.IsNull() || !BRepCheck_Analyzer(sewed, true).IsValid()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT surface sewing produced no valid result");
+    }
+    if (sewing.NbMultipleEdges() != 0) {
+      return error_result(
+          STATUS_INVALID_SHAPE,
+          "Surface knit is non-manifold: multiple_edges="
+              + std::to_string(sewing.NbMultipleEdges()));
+    }
+    if (sewing.NbContigousEdges() == 0) {
+      return error_result(
+          STATUS_NO_GEOMETRIC_CHANGE,
+          "Surface knit found no shared boundaries within tolerance="
+              + std::to_string(tolerance));
+    }
+    if (count_subshapes(sewed, TopAbs_SHELL) != 1) {
+      return error_result(
+          STATUS_INVALID_SHAPE,
+          "Surface knit must produce one connected shell; shells="
+              + std::to_string(count_subshapes(sewed, TopAbs_SHELL)));
+    }
+
+    TopoDS_Shape result = sewed;
+    if (make_solid) {
+      if (sewing.NbFreeEdges() != 0) {
+        return error_result(
+            STATUS_INVALID_SHAPE,
+            "Surface knit cannot create a solid from an open shell: free_edges="
+                + std::to_string(sewing.NbFreeEdges())
+                + ", tolerance_mm=" + std::to_string(tolerance));
+      }
+      TopoDS_Shell shell;
+      for (TopExp_Explorer shells(sewed, TopAbs_SHELL); shells.More(); shells.Next()) {
+        shell = TopoDS::Shell(shells.Current());
+      }
+      if (shell.IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "Surface knit produced no shell for solid conversion");
+      }
+      BRepBuilderAPI_MakeSolid solid_builder(shell);
+      if (!solid_builder.IsDone()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT surface knit solid builder did not complete");
+      }
+      TopoDS_Solid solid = solid_builder.Solid();
+      if (solid.IsNull() || !BRepLib::OrientClosedSolid(solid)
+          || !BRepCheck_Analyzer(solid, true).IsValid()
+          || count_subshapes(solid, TopAbs_SOLID) != 1) {
+        return error_result(
+            STATUS_INVALID_SHAPE,
+            "Surface knit shell is not a valid closed watertight solid");
+      }
+      result = solid;
+    }
+
+    std::vector<HistoryRecord> history;
+    for (TopExp_Explorer faces(result, TopAbs_FACE); faces.More(); faces.Next()) {
+      history.push_back(history_record(
+          "surface_knit.face", "sewn", "surface.input.face", result, faces.Current()));
+    }
+    return success_result(result, std::move(history), false, false, {}, !make_solid);
+  });
+}
+
+std::unique_ptr<NativeOperationResult> thicken_surface_native(
+    const NativeOperationResult& surface,
+    double thickness, std::uint8_t direction) noexcept {
+  return guarded([&] {
+    if (!surface.valid() || surface.impl().shape.IsNull()
+        || surface.impl().summary.solid_count != 0
+        || surface.impl().summary.face_count == 0
+        || surface.impl().summary.face_count > 256
+        || !std::isfinite(thickness) || thickness < 0.01
+        || thickness > 100000.0 || direction > 2) {
+      return error_result(
+          STATUS_INVALID_PARAMETER,
+          "Surface thicken requires a valid non-solid surface, bounded positive thickness, and explicit direction");
+    }
+
+    const auto build_half = [&](BRepOffsetAPI_MakeThickSolid& operation, double offset) {
+      operation.MakeThickSolidBySimple(surface.impl().shape, offset);
+      return operation.IsDone() && !operation.Shape().IsNull();
+    };
+    const auto oriented_solid = [&](const TopoDS_Shape& candidate) {
+      TopoDS_Solid solid;
+      if (!candidate.IsNull() && count_subshapes(candidate, TopAbs_SOLID) == 1) {
+        for (TopExp_Explorer solids(candidate, TopAbs_SOLID); solids.More(); solids.Next()) {
+          solid = TopoDS::Solid(solids.Current());
+        }
+      }
+      if (solid.IsNull()
+          || count_subshapes(candidate, TopAbs_FACE) != count_subshapes(solid, TopAbs_FACE)
+          || count_subshapes(candidate, TopAbs_EDGE) != count_subshapes(solid, TopAbs_EDGE)
+          || !BRepLib::OrientClosedSolid(solid)
+          || !BRepCheck_Analyzer(solid, true).IsValid()) {
+        return TopoDS_Solid{};
+      }
+      GProp_GProps properties;
+      BRepGProp::VolumeProperties(solid, properties);
+      if (!std::isfinite(properties.Mass()) || properties.Mass() <= 1.0e-9) {
+        return TopoDS_Solid{};
+      }
+      return solid;
+    };
+    const auto result_history = [&](const TopoDS_Shape& result) {
+      std::vector<HistoryRecord> history;
+      for (TopExp_Explorer faces(result, TopAbs_FACE); faces.More(); faces.Next()) {
+        history.push_back(history_record(
+            "surface_thicken.face", "thickened", "surface.target", result, faces.Current()));
+      }
+      return history;
+    };
+
+    if (direction != 2) {
+      BRepOffsetAPI_MakeThickSolid operation;
+      const double offset = direction == 0 ? -thickness : thickness;
+      if (!build_half(operation, offset)) {
+        return error_result(
+            STATUS_INVALID_SHAPE,
+            "OCCT surface thicken failed or produced a self-intersecting/non-solid result");
+      }
+      const TopoDS_Solid result = oriented_solid(operation.Shape());
+      if (result.IsNull()) {
+        return error_result(
+            STATUS_INVALID_SHAPE,
+            "OCCT surface thicken did not produce one orientable positive-volume solid");
+      }
+      return success_result(result, result_history(result));
+    }
+
+    BRepOffsetAPI_MakeThickSolid inward;
+    BRepOffsetAPI_MakeThickSolid outward;
+    if (!build_half(inward, -thickness * 0.5)
+        || !build_half(outward, thickness * 0.5)) {
+      return error_result(
+          STATUS_INVALID_SHAPE,
+          "OCCT symmetric surface thicken half failed or self-intersected");
+    }
+    const TopoDS_Solid inward_solid = oriented_solid(inward.Shape());
+    const TopoDS_Solid outward_solid = oriented_solid(outward.Shape());
+    if (inward_solid.IsNull() || outward_solid.IsNull()) {
+      return error_result(
+          STATUS_INVALID_SHAPE,
+          "OCCT symmetric surface thicken half was not an orientable positive-volume solid");
+    }
+    BRepAlgoAPI_Fuse fusion(inward_solid, outward_solid);
+    fusion.Build();
+    if (!fusion.IsDone() || fusion.HasErrors() || fusion.Shape().IsNull()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT symmetric surface thicken fuse failed");
+    }
+    fusion.SimplifyResult(true, true);
+    const TopoDS_Solid result = oriented_solid(fusion.Shape());
+    if (result.IsNull()) {
+      return error_result(
+          STATUS_INVALID_SHAPE,
+          "Symmetric surface thicken did not produce one valid positive-volume solid");
+    }
+    return success_result(result, result_history(result));
   });
 }
 
@@ -2159,7 +2532,10 @@ std::unique_ptr<NativeOperationResult> sweep_spatial_profile_native_impl(
 }
 
 std::unique_ptr<NativeOperationResult> loft_framed_profiles_native(
-    rust::Slice<const double> values) noexcept {
+    rust::Slice<const double> values,
+    rust::Slice<const double> guide_segments,
+    std::uint8_t continuity,
+    bool make_solid) noexcept {
   return guarded([&] {
     if (values.empty() || !std::isfinite(values[0])) {
       return error_result(STATUS_INVALID_PARAMETER, "OCCT framed Loft payload is malformed");
@@ -2368,18 +2744,135 @@ std::unique_ptr<NativeOperationResult> loft_framed_profiles_native(
     if (cursor != values.size()) {
       return error_result(STATUS_INVALID_PARAMETER, "OCCT framed Loft payload has trailing values");
     }
-    BRepOffsetAPI_ThruSections operation(true, false, 1.0e-6);
+    if (continuity > 2 || (!guide_segments.empty() && continuity == 2)) {
+      return error_result(STATUS_INVALID_PARAMETER, "OCCT framed Loft continuity is unsupported");
+    }
+    if (!guide_segments.empty()) {
+      constexpr std::size_t spatial_stride = 14;
+      if (guide_segments.size() % spatial_stride != 0) {
+        return error_result(STATUS_INVALID_PARAMETER, "OCCT guided Loft path payload is malformed");
+      }
+      BRepBuilderAPI_MakeWire spine_builder;
+      gp_Pnt previous_end;
+      bool has_previous = false;
+      for (std::size_t offset = 0; offset < guide_segments.size(); offset += spatial_stride) {
+        for (std::size_t index = 0; index < spatial_stride; ++index) {
+          if (!std::isfinite(guide_segments[offset + index])) {
+            return error_result(STATUS_INVALID_PARAMETER, "OCCT guided Loft path is not finite");
+          }
+        }
+        const gp_Pnt start(
+            guide_segments[offset + 1], guide_segments[offset + 2], guide_segments[offset + 3]);
+        const gp_Pnt end(
+            guide_segments[offset + 4], guide_segments[offset + 5], guide_segments[offset + 6]);
+        if (has_previous && previous_end.Distance(start) > 1.0e-7) {
+          return error_result(STATUS_INVALID_PARAMETER, "OCCT guided Loft path is disconnected");
+        }
+        TopoDS_Edge edge;
+        if (guide_segments[offset] == 10.0) {
+          BRepBuilderAPI_MakeEdge builder(start, end);
+          if (builder.IsDone()) edge = builder.Edge();
+        } else if (guide_segments[offset] == 12.0) {
+          TColgp_Array1OfPnt poles(1, 4);
+          poles.SetValue(1, start);
+          poles.SetValue(2, gp_Pnt(
+              guide_segments[offset + 7], guide_segments[offset + 8], guide_segments[offset + 9]));
+          poles.SetValue(3, gp_Pnt(
+              guide_segments[offset + 10], guide_segments[offset + 11], guide_segments[offset + 12]));
+          poles.SetValue(4, end);
+          occ::handle<Geom_BezierCurve> curve = new Geom_BezierCurve(poles);
+          BRepBuilderAPI_MakeEdge builder(curve);
+          if (builder.IsDone()) edge = builder.Edge();
+        } else if (guide_segments[offset] == 11.0) {
+          const gp_Pnt center(
+              guide_segments[offset + 7], guide_segments[offset + 8], guide_segments[offset + 9]);
+          const gp_Vec normal(
+              guide_segments[offset + 10], guide_segments[offset + 11], guide_segments[offset + 12]);
+          const gp_Vec start_radius(center, start);
+          const gp_Vec end_radius(center, end);
+          if (normal.SquareMagnitude() <= 1.0e-18
+              || start_radius.SquareMagnitude() <= 1.0e-18) {
+            return error_result(STATUS_INVALID_PARAMETER, "OCCT guided Loft arc is degenerate");
+          }
+          const double signed_angle = std::atan2(
+              normal.Dot(start_radius.Crossed(end_radius)), start_radius.Dot(end_radius));
+          const bool clockwise = guide_segments[offset + 13] != 0.0;
+          const double full_turn = 2.0 * std::acos(-1.0);
+          double angle = std::fmod(clockwise ? -signed_angle : signed_angle, full_turn);
+          if (angle <= 0.0) angle += full_turn;
+          const gp_Vec middle_radius = start_radius.Rotated(
+              gp_Ax1(center, gp_Dir(normal)), (clockwise ? -angle : angle) / 2.0);
+          GC_MakeArcOfCircle arc_builder(start, center.Translated(middle_radius), end);
+          if (arc_builder.IsDone()) {
+            BRepBuilderAPI_MakeEdge builder(arc_builder.Value());
+            if (builder.IsDone()) edge = builder.Edge();
+          }
+        } else {
+          return error_result(STATUS_INVALID_PARAMETER, "OCCT guided Loft path kind is invalid");
+        }
+        if (edge.IsNull()) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT guided Loft path edge is null");
+        }
+        spine_builder.Add(edge);
+        previous_end = end;
+        has_previous = true;
+      }
+      if (!spine_builder.IsDone() || !BRepCheck_Analyzer(spine_builder.Wire()).IsValid()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT guided Loft spine is invalid");
+      }
+      BRepOffsetAPI_MakePipeShell operation(spine_builder.Wire());
+      operation.SetMode(false);
+      operation.SetTolerance(1.0e-7, 1.0e-7, 1.0e-9);
+      operation.SetForceApproxC1(continuity == 1);
+      for (const TopoDS_Wire& wire : wires) operation.Add(wire, false, false);
+      if (!operation.IsReady()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT guided Loft pipe is not ready");
+      }
+      operation.Build();
+      if (!operation.IsDone() || (make_solid && !operation.MakeSolid())) {
+        return error_result(
+            STATUS_INVALID_SHAPE,
+            make_solid
+                ? "OCCT guided Loft pipe did not produce a solid"
+                : "OCCT guided Loft pipe did not produce a surface");
+      }
+      const TopoDS_Shape result = operation.Shape();
+      const std::uint32_t solid_count = count_subshapes(result, TopAbs_SOLID);
+      if (result.IsNull() || !BRepCheck_Analyzer(result).IsValid()
+          || (make_solid ? solid_count != 1 : solid_count != 0)) {
+        return error_result(
+            STATUS_INVALID_SHAPE,
+            make_solid
+                ? "OCCT guided Loft result is not one valid solid"
+                : "OCCT guided Loft result is not a valid open surface");
+      }
+      std::vector<HistoryRecord> history;
+      history.push_back(history_record(
+          "loft.start", "first_shape", "profile.wire", result, operation.FirstShape()));
+      history.push_back(history_record(
+          "loft.end", "last_shape", "profile.wire", result, operation.LastShape()));
+      return success_result(
+          result, std::move(history), false, false, {}, !make_solid);
+    }
+    BRepOffsetAPI_ThruSections operation(make_solid, false, 1.0e-6);
     operation.CheckCompatibility(true);
     operation.SetMutableInput(false);
+    operation.SetContinuity(
+        continuity == 0 ? GeomAbs_C0 : (continuity == 1 ? GeomAbs_C1 : GeomAbs_C2));
     for (const TopoDS_Wire& wire : wires) operation.AddWire(wire);
     operation.Build();
     if (!operation.IsDone()) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT framed Loft builder did not complete");
     }
     const TopoDS_Shape result = operation.Shape();
+    const std::uint32_t solid_count = count_subshapes(result, TopAbs_SOLID);
     if (result.IsNull() || !BRepCheck_Analyzer(result).IsValid()
-        || count_subshapes(result, TopAbs_SOLID) != 1) {
-      return error_result(STATUS_INVALID_SHAPE, "OCCT framed Loft did not produce one valid solid");
+        || (make_solid ? solid_count != 1 : solid_count != 0)) {
+      return error_result(
+          STATUS_INVALID_SHAPE,
+          make_solid
+              ? "OCCT framed Loft did not produce one valid solid"
+              : "OCCT framed Loft did not produce a valid open surface");
     }
     std::vector<HistoryRecord> history;
     history.push_back(history_record(
@@ -2389,7 +2882,8 @@ std::unique_ptr<NativeOperationResult> loft_framed_profiles_native(
     history.push_back(history_record(
         "loft.side", "generated_face", "profile.edge", result,
         operation.GeneratedFace(section_edges.front())));
-    return success_result(result, std::move(history));
+    return success_result(
+        result, std::move(history), false, false, {}, !make_solid);
   });
 }
 
@@ -2703,6 +3197,168 @@ TopoDS_Edge cubic_bezier_edge(
   occ::handle<Geom_BezierCurve> curve = new Geom_BezierCurve(poles);
   BRepBuilderAPI_MakeEdge edge_builder(curve);
   return edge_builder.IsDone() ? edge_builder.Edge() : TopoDS_Edge{};
+}
+
+std::unique_ptr<NativeOperationResult> sweep_axial_tool_native(
+    rust::Slice<const double> values) noexcept {
+  return guarded([&] {
+    if (values.size() != 13
+        || !std::all_of(values.begin(), values.end(), [](double value) { return std::isfinite(value); })
+        || (values[0] != 0.0 && values[0] != 1.0)
+        || values[11] <= 0.0 || values[12] <= 0.0) {
+      return error_result(STATUS_INVALID_PARAMETER, "Axial tool sweep payload is malformed");
+    }
+    const gp_Pnt start(values[1], values[2], values[3]);
+    const gp_Pnt end(values[4], values[5], values[6]);
+    const double radius = values[11];
+    const double length = values[12];
+    const auto cylinder = [&](const gp_Pnt& point) {
+      BRepPrimAPI_MakeCylinder builder(
+          gp_Ax2(point, gp_Dir(0.0, 0.0, 1.0)), radius, length);
+      builder.Build();
+      return builder.IsDone() ? builder.Shape() : TopoDS_Shape{};
+    };
+    const auto fuse = [](const TopoDS_Shape& left, const TopoDS_Shape& right) {
+      if (left.IsNull() || right.IsNull()) return TopoDS_Shape{};
+      BRepAlgoAPI_Fuse operation(left, right);
+      operation.Build();
+      if (!operation.IsDone() || operation.HasErrors()) return TopoDS_Shape{};
+      operation.SimplifyResult(true, true);
+      return operation.Shape();
+    };
+
+    TopoDS_Shape result;
+    if (values[0] == 0.0) {
+      const double dx = end.X() - start.X();
+      const double dy = end.Y() - start.Y();
+      const double dz = end.Z() - start.Z();
+      const double planar_length = std::hypot(dx, dy);
+      if (planar_length <= 1.0e-9) {
+        const gp_Pnt bottom(start.X(), start.Y(), std::min(start.Z(), end.Z()));
+        result = cylinder(bottom);
+        if (std::abs(dz) > 1.0e-9) {
+          BRepPrimAPI_MakeCylinder builder(
+              gp_Ax2(bottom, gp_Dir(0.0, 0.0, 1.0)),
+              radius,
+              length + std::abs(dz));
+          builder.Build();
+          result = builder.IsDone() ? builder.Shape() : TopoDS_Shape{};
+        }
+      } else {
+        if (std::abs(dz) > 1.0e-9) {
+          return error_result(
+              STATUS_INVALID_PARAMETER,
+              "Axial tool line sweep must be horizontal or vertical");
+        }
+        const gp_Dir along(dx, dy, 0.0);
+        const gp_Dir perpendicular(-dy, dx, 0.0);
+        BRepPrimAPI_MakeBox bridge(
+            gp_Ax2(
+                gp_Pnt(
+                    start.X() - radius * perpendicular.X(),
+                    start.Y() - radius * perpendicular.Y(),
+                    start.Z()),
+                gp_Dir(0.0, 0.0, 1.0),
+                along),
+            planar_length,
+            2.0 * radius,
+            length);
+        bridge.Build();
+        if (!bridge.IsDone()) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT axial line sweep bridge failed");
+        }
+        result = fuse(fuse(bridge.Shape(), cylinder(start)), cylinder(end));
+      }
+    } else {
+      const gp_Pnt center(values[7], values[8], values[9]);
+      if (std::abs(start.Z() - end.Z()) > 1.0e-9
+          || std::abs(start.Z() - center.Z()) > 1.0e-9
+          || (values[10] != 0.0 && values[10] != 1.0)) {
+        return error_result(STATUS_INVALID_PARAMETER, "Axial tool arc sweep is malformed");
+      }
+      const double centerline_radius = std::hypot(start.X() - center.X(), start.Y() - center.Y());
+      const double end_radius = std::hypot(end.X() - center.X(), end.Y() - center.Y());
+      if (centerline_radius <= 1.0e-9
+          || std::abs(centerline_radius - end_radius) > 1.0e-7
+          || start.Distance(end) <= 1.0e-9) {
+        return error_result(STATUS_DEGENERATE_OPERATION, "Axial tool arc sweep is degenerate");
+      }
+      const bool clockwise = values[10] != 0.0;
+      const double tau = 2.0 * std::acos(-1.0);
+      const double start_angle = std::atan2(start.Y() - center.Y(), start.X() - center.X());
+      const double end_angle = std::atan2(end.Y() - center.Y(), end.X() - center.X());
+      double sweep = end_angle - start_angle;
+      if (clockwise) {
+        while (sweep >= 0.0) sweep -= tau;
+      } else {
+        while (sweep <= 0.0) sweep += tau;
+      }
+      const auto point = [&](double radial, double angle) {
+        return gp_Pnt(
+            center.X() + radial * std::cos(angle),
+            center.Y() + radial * std::sin(angle),
+            start.Z());
+      };
+      const auto arc = [&](double radial, double angle, double arc_sweep) {
+        GC_MakeArcOfCircle builder(
+            point(radial, angle),
+            point(radial, angle + arc_sweep * 0.5),
+            point(radial, angle + arc_sweep));
+        if (!builder.IsDone()) return TopoDS_Edge{};
+        BRepBuilderAPI_MakeEdge edge(builder.Value());
+        return edge.IsDone() ? edge.Edge() : TopoDS_Edge{};
+      };
+      const double outer_radius = centerline_radius + radius;
+      const double inner_radius = centerline_radius - radius;
+      const TopoDS_Edge outer = arc(outer_radius, start_angle, sweep);
+      BRepBuilderAPI_MakeWire wire;
+      wire.Add(outer);
+      if (inner_radius > 1.0e-9) {
+        const TopoDS_Edge end_cap = BRepBuilderAPI_MakeEdge(
+            point(outer_radius, start_angle + sweep),
+            point(inner_radius, start_angle + sweep)).Edge();
+        const TopoDS_Edge inner = arc(inner_radius, start_angle + sweep, -sweep);
+        const TopoDS_Edge start_cap = BRepBuilderAPI_MakeEdge(
+            point(inner_radius, start_angle),
+            point(outer_radius, start_angle)).Edge();
+        if (outer.IsNull() || end_cap.IsNull() || inner.IsNull() || start_cap.IsNull()) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT axial arc sweep boundary failed");
+        }
+        wire.Add(end_cap);
+        wire.Add(inner);
+        wire.Add(start_cap);
+      } else {
+        const gp_Pnt arc_center(center.X(), center.Y(), start.Z());
+        const TopoDS_Edge end_cap = BRepBuilderAPI_MakeEdge(
+            point(outer_radius, start_angle + sweep), arc_center).Edge();
+        const TopoDS_Edge start_cap = BRepBuilderAPI_MakeEdge(
+            arc_center, point(outer_radius, start_angle)).Edge();
+        if (outer.IsNull() || end_cap.IsNull() || start_cap.IsNull()) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT axial broad arc sweep boundary failed");
+        }
+        wire.Add(end_cap);
+        wire.Add(start_cap);
+      }
+      if (!wire.IsDone()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT axial arc sweep wire failed");
+      }
+      BRepBuilderAPI_MakeFace face(wire.Wire());
+      if (!face.IsDone()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT axial arc sweep face failed");
+      }
+      BRepPrimAPI_MakePrism prism(face.Face(), gp_Vec(0.0, 0.0, length));
+      prism.Build();
+      if (!prism.IsDone()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT axial arc sweep prism failed");
+      }
+      result = fuse(fuse(prism.Shape(), cylinder(start)), cylinder(end));
+    }
+    if (result.IsNull() || !BRepCheck_Analyzer(result, true).IsValid()
+        || count_subshapes(result, TopAbs_SOLID) != 1) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT axial tool sweep is not one valid solid");
+    }
+    return success_result(result, {});
+  });
 }
 
 std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
@@ -3826,10 +4482,11 @@ std::unique_ptr<NativeOperationResult> finish_shell_revolve_profile_native(
 std::unique_ptr<NativeOperationResult> shell_body_native(
     const NativeOperationResult& body,
     rust::Slice<const std::uint32_t> face_ordinals,
-    double thickness) noexcept {
+    double thickness,
+    std::uint8_t direction) noexcept {
   return guarded([&] {
-    if (!body.valid() || face_ordinals.empty() || face_ordinals.size() > 64
-        || !std::isfinite(thickness) || thickness <= 0.0) {
+    if (!body.valid() || face_ordinals.size() > 64
+        || !std::isfinite(thickness) || thickness <= 0.0 || direction > 2) {
       return error_result(STATUS_INVALID_PARAMETER, "Body shell payload is outside the bounded envelope");
     }
     NCollection_List<TopoDS_Shape> closing_faces;
@@ -3849,43 +4506,236 @@ std::unique_ptr<NativeOperationResult> shell_body_native(
       first = false;
     }
 
-    BRepOffsetAPI_MakeThickSolid operation;
-    operation.MakeThickSolidByJoin(
-        body.impl().shape,
-        closing_faces,
-        -thickness,
-        1.0e-6,
-        BRepOffset_Skin,
-        false,
-        false,
-        GeomAbs_Intersection,
-        true);
-    if (!operation.IsDone() || operation.Shape().IsNull()) {
-      return error_result(STATUS_INVALID_SHAPE, "OCCT body shell did not complete");
+    const auto build_thick = [&](BRepOffsetAPI_MakeThickSolid& operation, double offset) {
+      operation.MakeThickSolidByJoin(
+          body.impl().shape,
+          closing_faces,
+          offset,
+          1.0e-6,
+          BRepOffset_Skin,
+          false,
+          false,
+          GeomAbs_Intersection,
+          true);
+      return operation.IsDone() && !operation.Shape().IsNull();
+    };
+    const auto append_selected_history = [&](
+        std::vector<HistoryRecord>& history,
+        BRepOffsetAPI_MakeThickSolid& operation,
+        const TopoDS_Shape& result,
+        const std::string& relation_prefix) {
+      for (const std::uint32_t ordinal : face_ordinals) {
+        const TopoDS_Face source = face_at_ordinal(body.impl().shape, ordinal);
+        const std::string source_id = "generated-result/face/" + std::to_string(ordinal);
+        const NCollection_List<TopoDS_Shape>& modified = operation.Modified(source);
+        const NCollection_List<TopoDS_Shape>& generated = operation.Generated(source);
+        for (NCollection_List<TopoDS_Shape>::Iterator iterator(modified);
+             iterator.More(); iterator.Next()) {
+          history.push_back(history_record(
+              "", relation_prefix + "_selected_modified", source_id, result, iterator.Value()));
+        }
+        for (NCollection_List<TopoDS_Shape>::Iterator iterator(generated);
+             iterator.More(); iterator.Next()) {
+          history.push_back(history_record(
+              "", relation_prefix + "_selected_generated", source_id, result, iterator.Value()));
+        }
+        if (operation.IsDeleted(source) || (modified.IsEmpty() && generated.IsEmpty())) {
+          history.push_back(HistoryRecord{
+              "", relation_prefix + "_selected_removed", source_id, 0, false});
+        }
+      }
+    };
+
+    if (face_ordinals.empty()) {
+      BRepOffsetAPI_MakeOffsetShape inward_offset;
+      BRepOffsetAPI_MakeOffsetShape outward_offset;
+      const auto build_offset = [&](BRepOffsetAPI_MakeOffsetShape& operation, double offset) {
+        operation.PerformByJoin(
+            body.impl().shape,
+            offset,
+            1.0e-6,
+            BRepOffset_Skin,
+            false,
+            false,
+            GeomAbs_Intersection,
+            true);
+        return operation.IsDone() && !operation.Shape().IsNull()
+            && BRepCheck_Analyzer(operation.Shape()).IsValid()
+            && count_subshapes(operation.Shape(), TopAbs_SOLID) == 1;
+      };
+      const double inward_distance = direction == 2 ? -thickness * 0.5 : -thickness;
+      const double outward_distance = direction == 2 ? thickness * 0.5 : thickness;
+      const TopoDS_Shape* inner = &body.impl().shape;
+      const TopoDS_Shape* outer = &body.impl().shape;
+      if (direction != 1) {
+        if (!build_offset(inward_offset, inward_distance)) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT closed Shell inward offset did not complete");
+        }
+        inner = &inward_offset.Shape();
+      }
+      if (direction != 0) {
+        if (!build_offset(outward_offset, outward_distance)) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT closed Shell outward offset did not complete");
+        }
+        outer = &outward_offset.Shape();
+      }
+      BRepAlgoAPI_Cut cut(*outer, *inner);
+      cut.Build();
+      if (!cut.IsDone() || cut.HasErrors() || cut.Shape().IsNull()
+          || !BRepCheck_Analyzer(cut.Shape()).IsValid()
+          || count_subshapes(cut.Shape(), TopAbs_SOLID) != 1) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT closed Shell boolean cut did not complete");
+      }
+      const TopoDS_Shape result = cut.Shape();
+      std::vector<HistoryRecord> history;
+      const auto map_intermediate = [&cut, &result](
+          std::vector<HistoryRecord>& records,
+          const HistoryRecord& source,
+          const TopoDS_Shape& intermediate,
+          const std::string& relation_prefix) {
+        const NCollection_List<TopoDS_Shape>& modified = cut.Modified(intermediate);
+        const NCollection_List<TopoDS_Shape>& generated = cut.Generated(intermediate);
+        const std::string semantic_role = source.semantic_role.empty()
+            ? ""
+            : relation_prefix + "(" + source.semantic_role + ")";
+        for (NCollection_List<TopoDS_Shape>::Iterator iterator(modified);
+             iterator.More(); iterator.Next()) {
+          records.push_back(history_record(
+              semantic_role,
+              relation_prefix + "_modified",
+              source.source_element_id,
+              result,
+              iterator.Value()));
+        }
+        for (NCollection_List<TopoDS_Shape>::Iterator iterator(generated);
+             iterator.More(); iterator.Next()) {
+          records.push_back(history_record(
+              semantic_role,
+              relation_prefix + "_generated",
+              source.source_element_id,
+              result,
+              iterator.Value()));
+        }
+        if (!cut.IsDeleted(intermediate) && modified.IsEmpty() && generated.IsEmpty()) {
+          const HistoryRecord unchanged = history_record(
+              semantic_role,
+              relation_prefix + "_unchanged",
+              source.source_element_id,
+              result,
+              intermediate);
+          if (unchanged.output_present) records.push_back(unchanged);
+        }
+      };
+      const auto append_direct = [&](const std::string& relation_prefix) {
+        for (const HistoryRecord& source : body.impl().history) {
+          if (!source.output_present) continue;
+          const TopoDS_Face source_face =
+              face_at_ordinal(body.impl().shape, source.output_ordinal);
+          if (!source_face.IsNull()) map_intermediate(history, source, source_face, relation_prefix);
+        }
+      };
+      const auto append_offset = [&](
+          BRepOffsetAPI_MakeOffsetShape& offset,
+          const std::string& relation_prefix) {
+        for (const HistoryRecord& source : body.impl().history) {
+          if (!source.output_present) continue;
+          const TopoDS_Face source_face =
+              face_at_ordinal(body.impl().shape, source.output_ordinal);
+          if (source_face.IsNull()) continue;
+          const NCollection_List<TopoDS_Shape>& modified = offset.Modified(source_face);
+          const NCollection_List<TopoDS_Shape>& generated = offset.Generated(source_face);
+          for (NCollection_List<TopoDS_Shape>::Iterator iterator(modified);
+               iterator.More(); iterator.Next()) {
+            map_intermediate(history, source, iterator.Value(), relation_prefix);
+          }
+          for (NCollection_List<TopoDS_Shape>::Iterator iterator(generated);
+               iterator.More(); iterator.Next()) {
+            map_intermediate(history, source, iterator.Value(), relation_prefix);
+          }
+        }
+      };
+      if (direction == 0) {
+        append_direct("shell_closed_inward_outer");
+        append_offset(inward_offset, "shell_closed_inward_inner");
+      } else if (direction == 1) {
+        append_offset(outward_offset, "shell_closed_outward_outer");
+        append_direct("shell_closed_outward_inner");
+      } else {
+        append_offset(outward_offset, "shell_closed_symmetric_outer");
+        append_offset(inward_offset, "shell_closed_symmetric_inner");
+      }
+      return success_result(result, std::move(history));
     }
-    const TopoDS_Shape result = operation.Shape();
+
+    if (direction != 2) {
+      BRepOffsetAPI_MakeThickSolid operation;
+      const double offset = direction == 0 ? -thickness : thickness;
+      if (!build_thick(operation, offset)) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT body shell did not complete");
+      }
+      const TopoDS_Shape result = operation.Shape();
+      std::vector<HistoryRecord> history;
+      append_propagated_history(history, operation, result, body.impl());
+      append_selected_history(
+          history, operation, result, direction == 0 ? "shell_inward" : "shell_outward");
+      return success_result(result, std::move(history));
+    }
+
+    BRepOffsetAPI_MakeThickSolid inward;
+    BRepOffsetAPI_MakeThickSolid outward;
+    if (!build_thick(inward, -thickness * 0.5)
+        || !build_thick(outward, thickness * 0.5)) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT symmetric body shell halves did not complete");
+    }
+    BRepAlgoAPI_Fuse fusion(inward.Shape(), outward.Shape());
+    fusion.Build();
+    if (!fusion.IsDone() || fusion.HasErrors() || fusion.Shape().IsNull()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT symmetric body shell fuse did not complete");
+    }
+    fusion.SimplifyResult(true, true);
+    const TopoDS_Shape result = fusion.Shape();
     std::vector<HistoryRecord> history;
-    append_propagated_history(history, operation, result, body.impl());
-    for (const std::uint32_t ordinal : face_ordinals) {
-      const TopoDS_Face source = face_at_ordinal(body.impl().shape, ordinal);
-      const std::string source_id = "generated-result/face/" + std::to_string(ordinal);
-      const NCollection_List<TopoDS_Shape>& modified = operation.Modified(source);
-      const NCollection_List<TopoDS_Shape>& generated = operation.Generated(source);
-      for (NCollection_List<TopoDS_Shape>::Iterator iterator(modified);
-           iterator.More(); iterator.Next()) {
-        history.push_back(history_record(
-            "", "shell_selected_modified", source_id, result, iterator.Value()));
+    const auto append_half_history = [&](
+        BRepOffsetAPI_MakeThickSolid& half,
+        const std::string& relation_prefix) {
+      std::vector<HistoryRecord> half_history;
+      append_propagated_history(half_history, half, half.Shape(), body.impl());
+      append_selected_history(half_history, half, half.Shape(), relation_prefix);
+      for (const HistoryRecord& source : half_history) {
+        const std::string semantic_role = source.semantic_role.empty()
+            ? ""
+            : relation_prefix + "(" + source.semantic_role + ")";
+        if (!source.output_present) {
+          history.push_back(source);
+          continue;
+        }
+        const TopoDS_Face intermediate = face_at_ordinal(half.Shape(), source.output_ordinal);
+        const NCollection_List<TopoDS_Shape>& modified = fusion.Modified(intermediate);
+        if (modified.IsEmpty()) {
+          HistoryRecord mapped = history_record(
+              semantic_role,
+              source.relation,
+              source.source_element_id,
+              result,
+              intermediate);
+          if (mapped.output_present) {
+            history.push_back(std::move(mapped));
+          }
+        } else {
+          for (NCollection_List<TopoDS_Shape>::Iterator iterator(modified);
+               iterator.More(); iterator.Next()) {
+            history.push_back(history_record(
+                semantic_role,
+                source.relation,
+                source.source_element_id,
+                result,
+                iterator.Value()));
+          }
+        }
       }
-      for (NCollection_List<TopoDS_Shape>::Iterator iterator(generated);
-           iterator.More(); iterator.Next()) {
-        history.push_back(history_record(
-            "", "shell_selected_generated", source_id, result, iterator.Value()));
-      }
-      if (operation.IsDeleted(source) || (modified.IsEmpty() && generated.IsEmpty())) {
-        history.push_back(HistoryRecord{
-            "", "shell_selected_removed", source_id, 0, false});
-      }
-    }
+    };
+    append_half_history(inward, "shell_symmetric_inward");
+    append_half_history(outward, "shell_symmetric_outward");
     return success_result(result, std::move(history));
   });
 }
@@ -3957,12 +4807,38 @@ std::unique_ptr<NativeOperationResult> offset_body_face_native(
 std::unique_ptr<NativeOperationResult> finish_body_native(
     const NativeOperationResult& body,
     rust::Slice<const std::uint32_t> edge_ordinals,
+    rust::Slice<const std::uint32_t> face_ordinals,
     double amount,
-    bool fillet) noexcept {
+    bool fillet,
+    rust::Slice<const double> fillet_radius_stations,
+    std::uint8_t chamfer_mode,
+    double chamfer_secondary) noexcept {
   return guarded([&] {
     if (!body.valid() || edge_ordinals.empty() || edge_ordinals.size() > 64
-        || !std::isfinite(amount) || amount <= 0.0) {
+        || !std::isfinite(amount) || amount <= 0.0
+        || fillet_radius_stations.size() > 64
+        || fillet_radius_stations.size() % 2 != 0
+        || (!fillet && !fillet_radius_stations.empty())
+        || chamfer_mode > 2
+        || (chamfer_mode == 0 && !face_ordinals.empty())
+        || (chamfer_mode != 0 && (fillet || face_ordinals.size() != edge_ordinals.size()))
+        || (chamfer_mode == 1 && (!std::isfinite(chamfer_secondary) || chamfer_secondary <= 0.0))
+        || (chamfer_mode == 2 && (!std::isfinite(chamfer_secondary)
+            || chamfer_secondary <= 0.1 || chamfer_secondary >= 89.9))) {
       return error_result(STATUS_INVALID_PARAMETER, "Body edge finish payload is outside the bounded envelope");
+    }
+    double previous_position = 0.0;
+    for (std::size_t index = 0; index < fillet_radius_stations.size(); index += 2) {
+      const double position = fillet_radius_stations[index];
+      const double radius = fillet_radius_stations[index + 1];
+      if (!std::isfinite(position) || position <= previous_position || position > 1.0
+          || !std::isfinite(radius) || radius <= 0.0) {
+        return error_result(STATUS_INVALID_PARAMETER, "Variable fillet stations are invalid or non-canonical");
+      }
+      previous_position = position;
+    }
+    if (!fillet_radius_stations.empty() && previous_position != 1.0) {
+      return error_result(STATUS_INVALID_PARAMETER, "Variable fillet stations must end at normalized position one");
     }
     std::vector<TopoDS_Edge> selected;
     selected.reserve(edge_ordinals.size());
@@ -3980,6 +4856,18 @@ std::unique_ptr<NativeOperationResult> finish_body_native(
       selected.push_back(edge);
       previous = ordinal;
       first = false;
+    }
+    std::vector<TopoDS_Face> selected_faces;
+    selected_faces.reserve(face_ordinals.size());
+    for (const std::uint32_t ordinal : face_ordinals) {
+      if (ordinal >= body.impl().summary.face_count) {
+        return error_result(STATUS_INVALID_PARAMETER, "Advanced chamfer face ordinal is out of range");
+      }
+      const TopoDS_Face face = face_at_ordinal(body.impl().shape, ordinal);
+      if (face.IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "Advanced chamfer side face is absent");
+      }
+      selected_faces.push_back(face);
     }
 
     const auto collect_finished = [&](auto& operation) -> std::unique_ptr<NativeOperationResult> {
@@ -4022,14 +4910,36 @@ std::unique_ptr<NativeOperationResult> finish_body_native(
 
     if (fillet) {
       BRepFilletAPI_MakeFillet operation(body.impl().shape);
-      for (const TopoDS_Edge& edge : selected) {
-        operation.Add(amount, edge);
+      if (fillet_radius_stations.empty()) {
+        for (const TopoDS_Edge& edge : selected) {
+          operation.Add(amount, edge);
+        }
+      } else {
+        NCollection_Array1<gp_Pnt2d> stations(1, static_cast<Standard_Integer>(fillet_radius_stations.size() / 2 + 1));
+        stations.SetValue(1, gp_Pnt2d(0.0, amount));
+        for (std::size_t index = 0; index < fillet_radius_stations.size(); index += 2) {
+          stations.SetValue(
+              static_cast<Standard_Integer>(index / 2 + 2),
+              gp_Pnt2d(fillet_radius_stations[index], fillet_radius_stations[index + 1]));
+        }
+        for (const TopoDS_Edge& edge : selected) {
+          operation.Add(stations, edge);
+        }
       }
       return collect_finished(operation);
     }
     BRepFilletAPI_MakeChamfer operation(body.impl().shape);
-    for (const TopoDS_Edge& edge : selected) {
-      operation.Add(amount, edge);
+    for (std::size_t index = 0; index < selected.size(); ++index) {
+      if (chamfer_mode == 1) {
+        operation.Add(amount, chamfer_secondary, selected[index], selected_faces[index]);
+      } else if (chamfer_mode == 2) {
+        constexpr double DEGREES_TO_RADIANS = 3.14159265358979323846 / 180.0;
+        operation.AddDA(
+            amount, chamfer_secondary * DEGREES_TO_RADIANS,
+            selected[index], selected_faces[index]);
+      } else {
+        operation.Add(amount, selected[index]);
+      }
     }
     return collect_finished(operation);
   });
@@ -4847,6 +5757,780 @@ std::unique_ptr<NativeOperationResult> exception_probe_native() noexcept {
   });
 }
 
+namespace {
+
+constexpr std::size_t MAX_STEP_XDE_NODES = 1024;
+constexpr std::size_t MAX_STEP_XDE_DEPTH = 64;
+
+class IgesBrepModeGuard {
+public:
+  IgesBrepModeGuard() : lock_(mutex()) {
+    IGESControl_Controller::Init();
+    previous_ = Interface_Static::IVal("write.iges.brep.mode");
+    active_ = Interface_Static::SetIVal("write.iges.brep.mode", 1);
+  }
+
+  ~IgesBrepModeGuard() {
+    if (active_) {
+      Interface_Static::SetIVal("write.iges.brep.mode", previous_);
+    }
+  }
+
+  bool active() const noexcept { return active_; }
+
+private:
+  static std::mutex& mutex() {
+    static std::mutex value;
+    return value;
+  }
+
+  std::unique_lock<std::mutex> lock_;
+  int previous_ = 0;
+  bool active_ = false;
+};
+
+struct StepXdeNode {
+  std::uint32_t id;
+  std::int32_t parent_id;
+  std::int32_t part_index;
+  std::string name;
+  bool name_from_source;
+  std::string color;
+  gp_Trsf transform;
+};
+
+struct StepXdeData {
+  occ::handle<TDocStd_Document> document;
+  occ::handle<XCAFDoc_ShapeTool> shapes;
+  occ::handle<XCAFDoc_ColorTool> colors;
+  std::vector<TDF_Label> parts;
+  std::vector<StepXdeNode> nodes;
+};
+
+std::string hex_encode(const std::string& value) {
+  static constexpr char digits[] = "0123456789abcdef";
+  std::string encoded;
+  encoded.reserve(value.size() * 2);
+  for (const unsigned char byte : value) {
+    encoded.push_back(digits[byte >> 4]);
+    encoded.push_back(digits[byte & 0x0f]);
+  }
+  return encoded;
+}
+
+std::string label_entry(const TDF_Label& label) {
+  TCollection_AsciiString entry;
+  TDF_Tool::Entry(label, entry);
+  return entry.ToCString();
+}
+
+std::string label_name(const TDF_Label& label) {
+  occ::handle<TDataStd_Name> attribute;
+  if (!label.FindAttribute(TDataStd_Name::GetID(), attribute) || attribute.IsNull()) {
+    return {};
+  }
+  const TCollection_ExtendedString& value = attribute->Get();
+  std::vector<char> utf8(static_cast<std::size_t>(value.LengthOfCString()) + 1, '\0');
+  Standard_PCharacter output = utf8.data();
+  const int length = value.ToUTF8CString(output);
+  return length > 0 ? std::string(utf8.data(), static_cast<std::size_t>(length)) : std::string();
+}
+
+std::string label_color(
+    const occ::handle<XCAFDoc_ColorTool>& colors,
+    const TDF_Label& primary,
+    const TDF_Label& fallback) {
+  Quantity_Color color;
+  const auto read = [&](const TDF_Label& label) {
+    return XCAFDoc_ColorTool::GetColor(label, XCAFDoc_ColorGen, color)
+        || XCAFDoc_ColorTool::GetColor(label, XCAFDoc_ColorSurf, color);
+  };
+  if (!read(primary) && (fallback.IsNull() || !read(fallback))) {
+    return "-";
+  }
+  double red = 0.0;
+  double green = 0.0;
+  double blue = 0.0;
+  color.Values(red, green, blue, Quantity_TOC_sRGB);
+  const auto byte = [](double value) {
+    return static_cast<unsigned int>(std::lround(std::clamp(value, 0.0, 1.0) * 255.0));
+  };
+  std::ostringstream encoded;
+  encoded << std::hex << std::setfill('0')
+          << std::setw(2) << byte(red)
+          << std::setw(2) << byte(green)
+          << std::setw(2) << byte(blue);
+  return encoded.str();
+}
+
+template <typename Reader>
+bool load_xde(const std::string& path, StepXdeData& data, std::string& error) {
+  data.document = new TDocStd_Document(TCollection_ExtendedString("BinXCAF"));
+  Reader reader;
+  reader.SetColorMode(true);
+  reader.SetNameMode(true);
+  if (reader.ReadFile(path.c_str()) != IFSelect_RetDone) {
+    error = "STEP XDE reader could not read the source";
+    return false;
+  }
+  if (!reader.Transfer(data.document)) {
+    error = "STEP XDE source contains no transferable roots";
+    return false;
+  }
+  data.shapes = XCAFDoc_DocumentTool::ShapeTool(data.document->Main());
+  data.colors = XCAFDoc_DocumentTool::ColorTool(data.document->Main());
+  if (data.shapes.IsNull() || data.colors.IsNull()) {
+    error = "STEP XDE document tools are unavailable";
+    return false;
+  }
+
+  std::map<std::string, std::uint32_t> part_indices;
+  std::set<std::string> active_assemblies;
+  std::function<bool(const TDF_Label&, const TDF_Label&, std::int32_t, const gp_Trsf&, std::size_t)>
+      visit;
+  visit = [&](const TDF_Label& instance,
+              const TDF_Label& referred,
+              std::int32_t parent_id,
+              const gp_Trsf& transform,
+              std::size_t depth) {
+    if (depth > MAX_STEP_XDE_DEPTH || data.nodes.size() >= MAX_STEP_XDE_NODES) {
+      error = "STEP XDE hierarchy exceeds the bounded envelope";
+      return false;
+    }
+    const bool assembly = XCAFDoc_ShapeTool::IsAssembly(referred);
+    std::int32_t part_index = -1;
+    if (!assembly) {
+      const std::string entry = label_entry(referred);
+      const auto [iterator, inserted] = part_indices.emplace(entry, part_indices.size());
+      if (inserted) {
+        if (data.parts.size() >= MAX_STEP_XDE_NODES) {
+          error = "STEP XDE part count exceeds the bounded envelope";
+          return false;
+        }
+        data.parts.push_back(referred);
+      }
+      part_index = static_cast<std::int32_t>(iterator->second);
+    }
+    std::string name = label_name(instance);
+    if (name.empty()) {
+      name = label_name(referred);
+    }
+    const bool name_from_source = !name.empty();
+    if (!name_from_source) {
+      name = assembly ? "Imported STEP assembly" : "Imported STEP part";
+    }
+    const std::uint32_t node_id = static_cast<std::uint32_t>(data.nodes.size());
+    data.nodes.push_back(StepXdeNode{
+        node_id,
+        parent_id,
+        part_index,
+        std::move(name),
+        name_from_source,
+        label_color(data.colors, instance, referred),
+        transform,
+    });
+    if (!assembly) {
+      return true;
+    }
+
+    const std::string assembly_entry = label_entry(referred);
+    if (!active_assemblies.insert(assembly_entry).second) {
+      error = "STEP XDE hierarchy contains an assembly cycle";
+      return false;
+    }
+    NCollection_Sequence<TDF_Label> components;
+    if (!XCAFDoc_ShapeTool::GetComponents(referred, components, false)) {
+      active_assemblies.erase(assembly_entry);
+      error = "STEP XDE assembly has no readable components";
+      return false;
+    }
+    for (int index = 1; index <= components.Length(); ++index) {
+      const TDF_Label component = components.Value(index);
+      TDF_Label target;
+      if (!XCAFDoc_ShapeTool::GetReferredShape(component, target) || target.IsNull()) {
+        active_assemblies.erase(assembly_entry);
+        error = "STEP XDE component has no referred definition";
+        return false;
+      }
+      const gp_Trsf local = XCAFDoc_ShapeTool::GetLocation(component).Transformation();
+      if (!visit(component, target, static_cast<std::int32_t>(node_id), local, depth + 1)) {
+        active_assemblies.erase(assembly_entry);
+        return false;
+      }
+    }
+    active_assemblies.erase(assembly_entry);
+    return true;
+  };
+
+  NCollection_Sequence<TDF_Label> roots;
+  data.shapes->GetFreeShapes(roots);
+  if (roots.IsEmpty()) {
+    error = "STEP XDE source contains no free shapes";
+    return false;
+  }
+  for (int index = 1; index <= roots.Length(); ++index) {
+    const TDF_Label root = roots.Value(index);
+    TDF_Label referred = root;
+    if (XCAFDoc_ShapeTool::IsReference(root)
+        && !XCAFDoc_ShapeTool::GetReferredShape(root, referred)) {
+      error = "STEP XDE root reference is unresolved";
+      return false;
+    }
+    const gp_Trsf transform = XCAFDoc_ShapeTool::GetLocation(root).Transformation();
+    if (!visit(root, referred, -1, transform, 0)) {
+      return false;
+    }
+  }
+  if (data.parts.empty() || data.nodes.empty()) {
+    error = "STEP XDE source contains no supported exact parts";
+    return false;
+  }
+  return true;
+}
+
+bool load_step_xde(const std::string& path, StepXdeData& data, std::string& error) {
+  return load_xde<STEPCAFControl_Reader>(path, data, error);
+}
+
+bool load_iges_xde(const std::string& path, StepXdeData& data, std::string& error) {
+  if (!load_xde<IGESCAFControl_Reader>(path, data, error)) {
+    return false;
+  }
+  if (data.parts.size() != 1 || data.nodes.size() != 1) {
+    return true;
+  }
+  const TDF_Label root = data.parts.front();
+  const TopoDS_Shape root_shape = XCAFDoc_ShapeTool::GetShape(root);
+  if (root_shape.IsNull() || count_subshapes(root_shape, TopAbs_SOLID) < 2) {
+    return true;
+  }
+
+  std::vector<TDF_Label> parts;
+  std::vector<StepXdeNode> nodes;
+  std::string root_name = label_name(root);
+  const bool root_name_from_source = !root_name.empty();
+  if (!root_name_from_source) {
+    root_name = "Imported IGES model";
+  }
+  nodes.push_back(StepXdeNode{
+      0, -1, -1, root_name, root_name_from_source,
+      label_color(data.colors, root, TDF_Label()), gp_Trsf()});
+  for (TopExp_Explorer solids(root_shape, TopAbs_SOLID); solids.More(); solids.Next()) {
+    if (parts.size() >= MAX_STEP_XDE_NODES || nodes.size() >= MAX_STEP_XDE_NODES) {
+      error = "IGES XDE solid count exceeds the bounded envelope";
+      return false;
+    }
+    TDF_Label part;
+    if (!data.shapes->FindSubShape(root, solids.Current(), part) || part.IsNull()) {
+      part = data.shapes->AddSubShape(root, solids.Current());
+    }
+    if (part.IsNull()) {
+      error = "IGES XDE reader could not identify a transferred solid";
+      return false;
+    }
+    std::string name = label_name(part);
+    const bool name_from_source = !name.empty();
+    if (!name_from_source) {
+      name = "Imported IGES part " + std::to_string(parts.size() + 1);
+    }
+    const std::uint32_t part_index = static_cast<std::uint32_t>(parts.size());
+    parts.push_back(part);
+    nodes.push_back(StepXdeNode{
+        static_cast<std::uint32_t>(nodes.size()), 0,
+        static_cast<std::int32_t>(part_index), name, name_from_source,
+        label_color(data.colors, part, root), gp_Trsf()});
+  }
+  data.parts = std::move(parts);
+  data.nodes = std::move(nodes);
+  return true;
+}
+
+std::string matrix_fields(const gp_Trsf& transform) {
+  std::ostringstream output;
+  output << std::hex << std::setfill('0');
+  for (int row = 1; row <= 4; ++row) {
+    for (int column = 1; column <= 4; ++column) {
+      const double value = row == 4 ? (column == 4 ? 1.0 : 0.0) : transform.Value(row, column);
+      std::uint64_t bits = 0;
+      static_assert(sizeof(bits) == sizeof(value));
+      std::memcpy(&bits, &value, sizeof(bits));
+      output << '\t' << std::setw(16) << bits;
+    }
+  }
+  return output.str();
+}
+
+struct StepXdeExportPart {
+  std::string path;
+  std::string name;
+  TopoDS_Shape shape;
+  TDF_Label label;
+};
+
+struct StepXdeExportNode {
+  std::int32_t parent_id;
+  std::int32_t part_index;
+  std::string name;
+  bool has_color;
+  std::array<unsigned char, 3> color;
+  gp_Trsf transform;
+};
+
+bool hex_decode(const std::string& encoded, std::string& decoded) {
+  if (encoded.size() % 2 != 0) {
+    return false;
+  }
+  const auto nibble = [](char value) -> int {
+    if (value >= '0' && value <= '9') return value - '0';
+    if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+    if (value >= 'A' && value <= 'F') return value - 'A' + 10;
+    return -1;
+  };
+  decoded.clear();
+  decoded.reserve(encoded.size() / 2);
+  for (std::size_t index = 0; index < encoded.size(); index += 2) {
+    const int high = nibble(encoded[index]);
+    const int low = nibble(encoded[index + 1]);
+    if (high < 0 || low < 0) {
+      return false;
+    }
+    decoded.push_back(static_cast<char>((high << 4) | low));
+  }
+  return true;
+}
+
+std::vector<std::string> split_tabs(const std::string& line) {
+  std::vector<std::string> fields;
+  std::size_t start = 0;
+  while (true) {
+    const std::size_t end = line.find('\t', start);
+    fields.push_back(line.substr(start, end - start));
+    if (end == std::string::npos) break;
+    start = end + 1;
+  }
+  return fields;
+}
+
+bool parse_i32(const std::string& value, std::int32_t& parsed) {
+  try {
+    std::size_t consumed = 0;
+    const long long number = std::stoll(value, &consumed, 10);
+    if (consumed != value.size()
+        || number < std::numeric_limits<std::int32_t>::min()
+        || number > std::numeric_limits<std::int32_t>::max()) {
+      return false;
+    }
+    parsed = static_cast<std::int32_t>(number);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+bool parse_export_color(
+    const std::string& value, bool& has_color, std::array<unsigned char, 3>& color) {
+  if (value == "-") {
+    has_color = false;
+    color = {0, 0, 0};
+    return true;
+  }
+  std::string bytes;
+  if (value.size() != 6 || !hex_decode(value, bytes) || bytes.size() != 3) {
+    return false;
+  }
+  has_color = true;
+  color = {
+      static_cast<unsigned char>(bytes[0]),
+      static_cast<unsigned char>(bytes[1]),
+      static_cast<unsigned char>(bytes[2])};
+  return true;
+}
+
+bool parse_export_transform(
+    const std::vector<std::string>& fields, std::size_t start, gp_Trsf& transform) {
+  if (fields.size() != start + 16) {
+    return false;
+  }
+  std::array<double, 16> matrix{};
+  for (std::size_t index = 0; index < matrix.size(); ++index) {
+    try {
+      std::size_t consumed = 0;
+      const std::uint64_t bits = std::stoull(fields[start + index], &consumed, 16);
+      if (consumed != fields[start + index].size()) return false;
+      std::memcpy(&matrix[index], &bits, sizeof(bits));
+      if (!std::isfinite(matrix[index])) return false;
+    } catch (...) {
+      return false;
+    }
+  }
+  constexpr double epsilon = 1.0e-10;
+  if (std::abs(matrix[12]) > epsilon || std::abs(matrix[13]) > epsilon
+      || std::abs(matrix[14]) > epsilon || std::abs(matrix[15] - 1.0) > epsilon) {
+    return false;
+  }
+  try {
+    transform.SetValues(
+        matrix[0], matrix[1], matrix[2], matrix[3],
+        matrix[4], matrix[5], matrix[6], matrix[7],
+        matrix[8], matrix[9], matrix[10], matrix[11]);
+    return transform.Form() != gp_Other;
+  } catch (...) {
+    return false;
+  }
+}
+
+bool parse_step_xde_export(
+    const std::string& manifest,
+    std::vector<StepXdeExportPart>& parts,
+    std::vector<StepXdeExportNode>& nodes,
+    std::string& error) {
+  std::istringstream input(manifest);
+  std::string line;
+  if (!std::getline(input, line) || line != "KETCHUP_STEP_XDE_EXPORT_V1") {
+    error = "STEP XDE export manifest has an unsupported schema";
+    return false;
+  }
+  while (std::getline(input, line)) {
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (line.empty()) continue;
+    const auto fields = split_tabs(line);
+    if (fields[0] == "P" && fields.size() == 3) {
+      if (parts.size() >= MAX_STEP_XDE_NODES) {
+        error = "STEP XDE export part count exceeds the bounded envelope";
+        return false;
+      }
+      StepXdeExportPart part;
+      if (!hex_decode(fields[1], part.path) || !hex_decode(fields[2], part.name)
+          || part.path.empty() || part.name.empty()) {
+        error = "STEP XDE export part is malformed";
+        return false;
+      }
+      parts.push_back(std::move(part));
+      continue;
+    }
+    if (fields[0] == "N" && fields.size() == 21) {
+      if (nodes.size() >= MAX_STEP_XDE_NODES) {
+        error = "STEP XDE export node count exceeds the bounded envelope";
+        return false;
+      }
+      StepXdeExportNode node;
+      if (!parse_i32(fields[1], node.parent_id)
+          || !parse_i32(fields[2], node.part_index)
+          || !hex_decode(fields[3], node.name)
+          || node.name.empty()
+          || !parse_export_color(fields[4], node.has_color, node.color)
+          || !parse_export_transform(fields, 5, node.transform)) {
+        error = "STEP XDE export node is malformed";
+        return false;
+      }
+      const std::int32_t node_id = static_cast<std::int32_t>(nodes.size());
+      if (node.parent_id >= node_id || node.parent_id < -1
+          || node.part_index < -1
+          || node.part_index >= static_cast<std::int32_t>(parts.size())) {
+        error = "STEP XDE export hierarchy or part reference is invalid";
+        return false;
+      }
+      if (node.parent_id >= 0
+          && nodes[static_cast<std::size_t>(node.parent_id)].part_index >= 0) {
+        error = "STEP XDE export part node cannot contain children";
+        return false;
+      }
+      std::size_t depth = 0;
+      for (std::int32_t parent = node.parent_id; parent >= 0;
+           parent = nodes[static_cast<std::size_t>(parent)].parent_id) {
+        if (++depth > MAX_STEP_XDE_DEPTH) {
+          error = "STEP XDE export hierarchy exceeds the bounded depth";
+          return false;
+        }
+      }
+      nodes.push_back(std::move(node));
+      continue;
+    }
+    error = "STEP XDE export manifest row is malformed";
+    return false;
+  }
+  if (parts.empty() || nodes.empty()) {
+    error = "STEP XDE export manifest has no parts or nodes";
+    return false;
+  }
+  for (std::size_t index = 0; index < parts.size(); ++index) {
+    if (std::none_of(nodes.begin(), nodes.end(), [index](const StepXdeExportNode& node) {
+          return node.part_index == static_cast<std::int32_t>(index);
+        })) {
+      error = "STEP XDE export contains an unreferenced part";
+      return false;
+    }
+  }
+  return true;
+}
+
+void set_xde_name(const TDF_Label& label, const std::string& name) {
+  TDataStd_Name::Set(label, TCollection_ExtendedString(name.c_str(), true));
+}
+
+} // namespace
+
+rust::String xde_manifest_native(rust::Str path, bool iges) noexcept {
+  try {
+    StepXdeData data;
+    std::string error;
+    const std::string native_path(path.data(), path.size());
+    const bool loaded = iges
+        ? load_iges_xde(native_path, data, error)
+        : load_step_xde(native_path, data, error);
+    if (native_path.empty() || !loaded) {
+      return rust::String("ERR\t" + hex_encode(error.empty() ? "invalid STEP XDE path" : error));
+    }
+    std::ostringstream output;
+    output << "KETCHUP_STEP_XDE_V1\n";
+    for (std::size_t index = 0; index < data.parts.size(); ++index) {
+      const TDF_Label& part = data.parts[index];
+      std::string name = label_name(part);
+      const bool name_from_source = !name.empty();
+      if (!name_from_source) {
+        name = "Imported STEP part";
+      }
+      output << "P\t" << index << '\t' << hex_encode(name) << '\t'
+             << (name_from_source ? '1' : '0') << '\t'
+             << label_color(data.colors, part, TDF_Label()) << '\n';
+    }
+    for (const StepXdeNode& node : data.nodes) {
+      output << "N\t" << node.id << '\t' << node.parent_id << '\t' << node.part_index
+             << '\t' << hex_encode(node.name) << '\t' << (node.name_from_source ? '1' : '0')
+             << '\t' << node.color << matrix_fields(node.transform) << '\n';
+    }
+    return rust::String(output.str());
+  } catch (const Standard_Failure& failure) {
+    return rust::String("ERR\t" + hex_encode(failure.GetMessageString()));
+  } catch (const std::exception& failure) {
+    return rust::String("ERR\t" + hex_encode(failure.what()));
+  } catch (...) {
+    return rust::String("ERR\t" + hex_encode("unknown STEP XDE exception"));
+  }
+}
+
+rust::String step_xde_manifest_native(rust::Str path) noexcept {
+  return xde_manifest_native(path, false);
+}
+
+rust::String iges_xde_manifest_native(rust::Str path) noexcept {
+  return xde_manifest_native(path, true);
+}
+
+template <typename Writer>
+rust::String export_xde_assembly_native(
+    rust::Str manifest, rust::Str path) noexcept {
+  try {
+    const std::string encoded(manifest.data(), manifest.size());
+    const std::string output_path(path.data(), path.size());
+    std::vector<StepXdeExportPart> parts;
+    std::vector<StepXdeExportNode> nodes;
+    std::string error;
+    if (output_path.empty() || !parse_step_xde_export(encoded, parts, nodes, error)) {
+      return rust::String(error.empty() ? "invalid STEP XDE export path" : error);
+    }
+
+    const occ::handle<TDocStd_Document> document =
+        new TDocStd_Document(TCollection_ExtendedString("BinXCAF"));
+    const occ::handle<XCAFDoc_ShapeTool> shapes =
+        XCAFDoc_DocumentTool::ShapeTool(document->Main());
+    const occ::handle<XCAFDoc_ColorTool> colors =
+        XCAFDoc_DocumentTool::ColorTool(document->Main());
+    if (shapes.IsNull() || colors.IsNull()) {
+      return rust::String("STEP XDE document tools are unavailable");
+    }
+
+    for (StepXdeExportPart& part : parts) {
+      STEPControl_Reader reader;
+      if (reader.ReadFile(part.path.c_str()) != IFSelect_RetDone
+          || reader.TransferRoots() == 0) {
+        return rust::String("STEP XDE writer could not reread an exact part source");
+      }
+      part.shape = reader.OneShape();
+      if (part.shape.IsNull()) {
+        return rust::String("STEP XDE writer received a null exact part shape");
+      }
+      if constexpr (std::is_same_v<Writer, STEPCAFControl_Writer>) {
+        part.label = shapes->AddShape(part.shape, false);
+        if (part.label.IsNull()) {
+          return rust::String("STEP XDE writer could not register an exact part definition");
+        }
+        set_xde_name(part.label, part.name);
+      }
+    }
+
+    if constexpr (std::is_same_v<Writer, STEPCAFControl_Writer>) {
+      std::vector<TDF_Label> node_definitions(nodes.size());
+    for (std::size_t index = 0; index < nodes.size(); ++index) {
+      const StepXdeExportNode& node = nodes[index];
+      if (node.part_index >= 0) {
+        node_definitions[index] = parts[static_cast<std::size_t>(node.part_index)].label;
+      } else {
+        node_definitions[index] = shapes->NewShape();
+        if (node_definitions[index].IsNull()) {
+          return rust::String("STEP XDE writer could not create an assembly definition");
+        }
+        set_xde_name(node_definitions[index], node.name);
+      }
+    }
+
+    const TDF_Label root = shapes->NewShape();
+    if (root.IsNull()) {
+      return rust::String("STEP XDE writer could not create the model root");
+    }
+    set_xde_name(root, "Ketchup model");
+    for (std::size_t index = 0; index < nodes.size(); ++index) {
+      const StepXdeExportNode& node = nodes[index];
+      const TDF_Label parent = node.parent_id < 0
+          ? root
+          : node_definitions[static_cast<std::size_t>(node.parent_id)];
+      const TDF_Label component = shapes->AddComponent(
+          parent, node_definitions[index], TopLoc_Location(node.transform));
+      if (component.IsNull()) {
+        return rust::String("STEP XDE writer could not attach an assembly component");
+      }
+      set_xde_name(component, node.name);
+      if (node.has_color) {
+        const Quantity_Color color(
+            static_cast<double>(node.color[0]) / 255.0,
+            static_cast<double>(node.color[1]) / 255.0,
+            static_cast<double>(node.color[2]) / 255.0,
+            Quantity_TOC_sRGB);
+        colors->SetColor(component, color, XCAFDoc_ColorGen);
+        colors->SetColor(component, color, XCAFDoc_ColorSurf);
+      }
+    }
+      shapes->UpdateAssemblies();
+    } else {
+      for (std::size_t index = 0; index < nodes.size(); ++index) {
+        const StepXdeExportNode& node = nodes[index];
+        if (node.part_index < 0) {
+          continue;
+        }
+        gp_Trsf world = node.transform;
+        for (std::int32_t parent = node.parent_id; parent >= 0;
+             parent = nodes[static_cast<std::size_t>(parent)].parent_id) {
+          gp_Trsf composed = nodes[static_cast<std::size_t>(parent)].transform;
+          composed.Multiply(world);
+          world = composed;
+        }
+        BRepBuilderAPI_Transform placed(
+            parts[static_cast<std::size_t>(node.part_index)].shape, world, true);
+        if (!placed.IsDone()) {
+          return rust::String("IGES XDE writer could not bake an occurrence transform");
+        }
+        const TDF_Label occurrence = shapes->AddShape(placed.Shape(), false);
+        if (occurrence.IsNull()) {
+          return rust::String("IGES XDE writer could not register an occurrence solid");
+        }
+        set_xde_name(occurrence, node.name);
+        if (node.has_color) {
+          const Quantity_Color color(
+              static_cast<double>(node.color[0]) / 255.0,
+              static_cast<double>(node.color[1]) / 255.0,
+              static_cast<double>(node.color[2]) / 255.0,
+              Quantity_TOC_sRGB);
+          colors->SetColor(occurrence, color, XCAFDoc_ColorGen);
+          colors->SetColor(occurrence, color, XCAFDoc_ColorSurf);
+        }
+      }
+    }
+
+    std::unique_ptr<IgesBrepModeGuard> iges_mode;
+    if constexpr (std::is_same_v<Writer, IGESCAFControl_Writer>) {
+      iges_mode = std::make_unique<IgesBrepModeGuard>();
+      if (!iges_mode->active()) {
+        return rust::String("IGES XDE writer could not enable BRep mode");
+      }
+    }
+    Writer writer;
+    writer.SetColorMode(true);
+    writer.SetNameMode(true);
+    bool transferred = false;
+    if constexpr (std::is_same_v<Writer, STEPCAFControl_Writer>) {
+      transferred = writer.Transfer(document, STEPControl_AsIs);
+    } else {
+      transferred = writer.Transfer(document);
+    }
+    if (!transferred) {
+      return rust::String("XDE writer could not transfer the assembly document");
+    }
+    bool written = false;
+    if constexpr (std::is_same_v<Writer, STEPCAFControl_Writer>) {
+      written = writer.Write(output_path.c_str()) == IFSelect_RetDone;
+    } else {
+      written = writer.Write(output_path.c_str());
+    }
+    if (!written) {
+      return rust::String("XDE writer could not write the assembly document");
+    }
+    return rust::String();
+  } catch (const Standard_Failure& failure) {
+    return rust::String(failure.GetMessageString());
+  } catch (const std::exception& failure) {
+    return rust::String(failure.what());
+  } catch (...) {
+    return rust::String("unknown STEP XDE export exception");
+  }
+}
+
+rust::String export_step_xde_assembly_native(
+    rust::Str manifest, rust::Str path) noexcept {
+  return export_xde_assembly_native<STEPCAFControl_Writer>(manifest, path);
+}
+
+rust::String export_iges_xde_assembly_native(
+    rust::Str manifest, rust::Str path) noexcept {
+  return export_xde_assembly_native<IGESCAFControl_Writer>(manifest, path);
+}
+
+std::unique_ptr<NativeOperationResult> import_xde_part_native(
+    rust::Str path, std::uint32_t part_index, bool iges) noexcept {
+  return guarded([&] {
+    const std::string native_path(path.data(), path.size());
+    if (iges) {
+      IGESControl_Reader reader;
+      if (reader.ReadFile(native_path.c_str()) != IFSelect_RetDone) {
+        return error_result(STATUS_INVALID_PARAMETER, "IGES reader could not read the source");
+      }
+      const int roots = reader.NbRootsForTransfer();
+      if (part_index >= static_cast<std::uint32_t>(std::max(roots, 0))
+          || !reader.TransferOneRoot(static_cast<int>(part_index) + 1)
+          || reader.NbShapes() == 0) {
+        return error_result(STATUS_INVALID_PARAMETER, "IGES part index is outside the transferable roots");
+      }
+      const TopoDS_Shape shape = reader.Shape(reader.NbShapes());
+      const std::uint32_t solids = count_subshapes(shape, TopAbs_SOLID);
+      return success_result(shape, {}, solids >= 2, false, {}, solids == 0);
+    }
+    StepXdeData data;
+    std::string error;
+    const bool loaded = load_step_xde(native_path, data, error);
+    if (!loaded) {
+      return error_result(STATUS_INVALID_PARAMETER, error);
+    }
+    if (part_index >= data.parts.size()) {
+      return error_result(STATUS_INVALID_PARAMETER, "STEP XDE part index is outside the manifest");
+    }
+    const TopoDS_Shape shape = XCAFDoc_ShapeTool::GetShape(data.parts[part_index]);
+    if (shape.IsNull()) {
+      return error_result(STATUS_INVALID_SHAPE, "STEP XDE part has no exact shape");
+    }
+    const std::uint32_t solids = count_subshapes(shape, TopAbs_SOLID);
+    return success_result(shape, {}, solids >= 2, false, {}, solids == 0);
+  });
+}
+
+std::unique_ptr<NativeOperationResult> import_step_xde_part_native(
+    rust::Str path, std::uint32_t part_index) noexcept {
+  return import_xde_part_native(path, part_index, false);
+}
+
+std::unique_ptr<NativeOperationResult> import_iges_xde_part_native(
+    rust::Str path, std::uint32_t part_index) noexcept {
+  return import_xde_part_native(path, part_index, true);
+}
+
 std::unique_ptr<NativeOperationResult> import_step_native(rust::Str path) noexcept {
   return guarded([&] {
     const std::string native_path(path.data(), path.size());
@@ -4858,7 +6542,8 @@ std::unique_ptr<NativeOperationResult> import_step_native(rust::Str path) noexce
       return error_result(STATUS_INVALID_SHAPE, "STEP fixture contains no transferable roots");
     }
     const TopoDS_Shape shape = reader.OneShape();
-    return success_result(shape, {}, count_subshapes(shape, TopAbs_SOLID) >= 2);
+    const std::uint32_t solids = count_subshapes(shape, TopAbs_SOLID);
+    return success_result(shape, {}, solids >= 2, false, {}, solids == 0);
   });
 }
 
@@ -4919,7 +6604,8 @@ std::unique_ptr<NativeOperationResult> import_iges_native(rust::Str path) noexce
       return error_result(STATUS_INVALID_SHAPE, "IGES source contains no transferable roots");
     }
     const TopoDS_Shape shape = reader.OneShape();
-    return success_result(shape, {}, count_subshapes(shape, TopAbs_SOLID) >= 2);
+    const std::uint32_t solids = count_subshapes(shape, TopAbs_SOLID);
+    return success_result(shape, {}, solids >= 2, false, {}, solids == 0);
   });
 }
 
@@ -5017,6 +6703,62 @@ std::unique_ptr<NativeOperationResult> combine_bodies_native(
     builder.Add(compound, base.impl().shape);
     builder.Add(compound, added.impl().shape);
     return success_result(compound, {}, true);
+  });
+}
+
+std::unique_ptr<NativeOperationResult> trim_body_by_plane_native(
+    const NativeOperationResult& body,
+    double origin_x, double origin_y, double origin_z,
+    double normal_x, double normal_y, double normal_z,
+    double keep_x, double keep_y, double keep_z) noexcept {
+  return guarded([&] {
+    const std::array<double, 9> values = {
+        origin_x, origin_y, origin_z, normal_x, normal_y, normal_z, keep_x, keep_y, keep_z};
+    if (!body.valid() || body.impl().shape.IsNull()
+        || !std::all_of(values.begin(), values.end(), [](double value) { return std::isfinite(value); })) {
+      return error_result(STATUS_INVALID_PARAMETER, "Plane trim input is unavailable or non-finite");
+    }
+    const gp_Vec normal(normal_x, normal_y, normal_z);
+    if (normal.SquareMagnitude() <= 1.0e-18) {
+      return error_result(STATUS_DEGENERATE_OPERATION, "Plane trim normal is degenerate");
+    }
+    const gp_Pnt origin(origin_x, origin_y, origin_z);
+    const gp_Pnt keep(keep_x, keep_y, keep_z);
+    if (std::abs(gp_Vec(origin, keep).Dot(normal.Normalized())) <= 1.0e-7) {
+      return error_result(STATUS_DEGENERATE_OPERATION, "Plane trim keep point lies on the cutting plane");
+    }
+    BRepBuilderAPI_MakeFace face_builder(gp_Pln(origin, gp_Dir(normal)));
+    if (!face_builder.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT plane trim face did not complete");
+    }
+    BRepPrimAPI_MakeHalfSpace half_space_builder(face_builder.Face(), keep);
+    if (!half_space_builder.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT plane trim half-space did not complete");
+    }
+    BRepAlgoAPI_Common operation(body.impl().shape, half_space_builder.Solid());
+    operation.Build();
+    if (!operation.IsDone() || operation.HasErrors()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT plane trim did not complete");
+    }
+    const TopoDS_Shape result = operation.Shape();
+    if (result.IsNull() || !BRepCheck_Analyzer(result, true).IsValid()
+        || count_subshapes(result, TopAbs_SOLID) != 1) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT plane trim must produce exactly one valid solid");
+    }
+    GProp_GProps source_properties;
+    GProp_GProps result_properties;
+    BRepGProp::VolumeProperties(body.impl().shape, source_properties);
+    BRepGProp::VolumeProperties(result, result_properties);
+    const double source_volume = source_properties.Mass();
+    const double result_volume = result_properties.Mass();
+    const double tolerance = 1.0e-9 * std::max(source_volume, 1.0);
+    if (!std::isfinite(source_volume) || !std::isfinite(result_volume)
+        || result_volume <= tolerance || result_volume >= source_volume - tolerance) {
+      return error_result(STATUS_NO_GEOMETRIC_CHANGE, "Plane trim must remove a bounded positive volume");
+    }
+    std::vector<HistoryRecord> history;
+    append_propagated_history(history, operation, result, body.impl());
+    return success_result(result, std::move(history));
   });
 }
 
@@ -5134,6 +6876,7 @@ NativePairQuery query_body_pair_native(
     BRepBndLib::AddOptimal(left.impl().shape, left_bounds, false, true);
     BRepBndLib::AddOptimal(right.impl().shape, right_bounds, false, true);
     double volume = 0.0;
+    double contact_area = 0.0;
     if (left_bounds.IsVoid() || right_bounds.IsVoid() || !left_bounds.IsOut(right_bounds)) {
       // Non-destructive: the same native shapes are reused by subsequent pairs.
       BRepAlgoAPI_Common common;
@@ -5159,13 +6902,15 @@ NativePairQuery query_body_pair_native(
       }
       volume = properties.Mass();
     }
-    if (!std::isfinite(volume) || volume < 0.0) {
+    if (!std::isfinite(volume) || volume < 0.0 || !std::isfinite(contact_area) ||
+        contact_area < 0.0) {
       result.diagnostic = "OCCT pair volume query failed";
       return result;
     }
     // A verified positive common volume proves zero solid-set distance.
     if (volume > 0.0) {
       result.common_volume_mm3 = volume;
+      result.common_contact_area_mm2 = 0.0;
       result.distance_mm = 0.0;
       result.status = STATUS_OK;
       return result;
@@ -5178,7 +6923,42 @@ NativePairQuery query_body_pair_native(
       result.diagnostic = "OCCT pair volume or distance query failed";
       return result;
     }
+    if (distance.Value() == 0.0) {
+      for (TopExp_Explorer left_faces(left.impl().shape, TopAbs_FACE); left_faces.More();
+           left_faces.Next()) {
+        Bnd_Box left_face_bounds;
+        BRepBndLib::AddOptimal(left_faces.Current(), left_face_bounds, false, true);
+        for (TopExp_Explorer right_faces(right.impl().shape, TopAbs_FACE); right_faces.More();
+             right_faces.Next()) {
+          Bnd_Box right_face_bounds;
+          BRepBndLib::AddOptimal(right_faces.Current(), right_face_bounds, false, true);
+          if (left_face_bounds.IsVoid() || right_face_bounds.IsVoid() ||
+              left_face_bounds.IsOut(right_face_bounds)) {
+            continue;
+          }
+          BRepAlgoAPI_Common face_common(left_faces.Current(), right_faces.Current());
+          face_common.SetNonDestructive(true);
+          face_common.Build();
+          if (!face_common.IsDone() || face_common.HasErrors()) {
+            result.diagnostic = "OCCT pair face-contact query failed";
+            return result;
+          }
+          if (face_common.Shape().IsNull()) {
+            continue;
+          }
+          GProp_GProps face_properties;
+          BRepGProp::SurfaceProperties(face_common.Shape(), face_properties);
+          const double area = face_properties.Mass();
+          if (!std::isfinite(area) || area < 0.0) {
+            result.diagnostic = "OCCT pair face-contact area is invalid";
+            return result;
+          }
+          contact_area += area;
+        }
+      }
+    }
     result.common_volume_mm3 = volume;
+    result.common_contact_area_mm2 = contact_area;
     // Zero-volume common results still require the exact distance query.
     result.distance_mm = distance.Value();
     result.status = STATUS_OK;
@@ -5381,6 +7161,304 @@ std::unique_ptr<NativeMeshResult> tessellate_body_native(
     return mesh_error(STATUS_BACKEND_EXCEPTION, failure.what());
   } catch (...) {
     return mesh_error(STATUS_BACKEND_EXCEPTION, "Unknown native tessellation failure");
+  }
+}
+
+struct NativeVolumeMeshResult::Impl {
+  std::uint8_t status = STATUS_NULL_RESULT;
+  std::string diagnostic = "Native volume meshing did not produce a result";
+  std::vector<NativeMeshVertex> vertices;
+  std::vector<NativeVolumeMeshTetrahedron> tetrahedra;
+  std::vector<NativeMeshTriangle> boundary_triangles;
+};
+
+NativeVolumeMeshResult::NativeVolumeMeshResult(std::unique_ptr<Impl> impl) noexcept
+    : impl_(std::move(impl)) {}
+NativeVolumeMeshResult::~NativeVolumeMeshResult() = default;
+NativeVolumeMeshResult::NativeVolumeMeshResult(NativeVolumeMeshResult&&) noexcept = default;
+NativeVolumeMeshResult& NativeVolumeMeshResult::operator=(NativeVolumeMeshResult&&) noexcept = default;
+
+std::uint8_t NativeVolumeMeshResult::volume_mesh_status_code() const noexcept {
+  return impl_ == nullptr ? STATUS_NULL_RESULT : impl_->status;
+}
+
+rust::String NativeVolumeMeshResult::volume_mesh_diagnostic() const {
+  return rust::String(impl_ == nullptr ? "Missing native volume mesh" : impl_->diagnostic);
+}
+
+rust::Vec<NativeMeshVertex> NativeVolumeMeshResult::volume_mesh_vertices() const {
+  rust::Vec<NativeMeshVertex> output;
+  if (impl_ != nullptr) {
+    output.reserve(impl_->vertices.size());
+    for (const NativeMeshVertex& vertex : impl_->vertices) {
+      output.push_back(vertex);
+    }
+  }
+  return output;
+}
+
+rust::Vec<NativeVolumeMeshTetrahedron>
+NativeVolumeMeshResult::volume_mesh_tetrahedra() const {
+  rust::Vec<NativeVolumeMeshTetrahedron> output;
+  if (impl_ != nullptr) {
+    output.reserve(impl_->tetrahedra.size());
+    for (const NativeVolumeMeshTetrahedron& tetrahedron : impl_->tetrahedra) {
+      output.push_back(tetrahedron);
+    }
+  }
+  return output;
+}
+
+rust::Vec<NativeMeshTriangle>
+NativeVolumeMeshResult::volume_mesh_boundary_triangles() const {
+  rust::Vec<NativeMeshTriangle> output;
+  if (impl_ != nullptr) {
+    output.reserve(impl_->boundary_triangles.size());
+    for (const NativeMeshTriangle& triangle : impl_->boundary_triangles) {
+      output.push_back(triangle);
+    }
+  }
+  return output;
+}
+
+namespace {
+
+std::unique_ptr<NativeVolumeMeshResult> volume_mesh_error(
+    std::uint8_t status, std::string diagnostic) noexcept {
+  auto impl = std::make_unique<NativeVolumeMeshResult::Impl>();
+  impl->status = status;
+  impl->diagnostic = std::move(diagnostic);
+  return std::make_unique<NativeVolumeMeshResult>(std::move(impl));
+}
+
+bool point_is_inside_or_on(const TopoDS_Shape& solid, const gp_Pnt& point,
+                           double tolerance) {
+  BRepClass3d_SolidClassifier classifier(solid, point, tolerance);
+  return classifier.State() == TopAbs_IN || classifier.State() == TopAbs_ON;
+}
+
+bool point_is_strictly_inside(const TopoDS_Shape& solid, const gp_Pnt& point,
+                              double tolerance) {
+  BRepClass3d_SolidClassifier classifier(solid, point, tolerance);
+  return classifier.State() == TopAbs_IN;
+}
+
+gp_Pnt interpolate_point(const gp_Pnt& first, const gp_Pnt& second, double fraction) {
+  return gp_Pnt(first.X() + (second.X() - first.X()) * fraction,
+                first.Y() + (second.Y() - first.Y()) * fraction,
+                first.Z() + (second.Z() - first.Z()) * fraction);
+}
+
+double signed_six_volume(const gp_Pnt& first, const gp_Pnt& second,
+                         const gp_Pnt& third, const gp_Pnt& fourth) {
+  const gp_Vec ab(first, second);
+  const gp_Vec ac(first, third);
+  const gp_Vec ad(first, fourth);
+  return ab.Dot(ac.Crossed(ad));
+}
+
+} // namespace
+
+std::unique_ptr<NativeVolumeMeshResult> volume_mesh_body_native(
+    const NativeOperationResult& body, double deflection,
+    double angular_deflection, std::uint32_t max_tetrahedra) noexcept {
+  try {
+    if (!body.valid() || body.impl().shape.IsNull()) {
+      return volume_mesh_error(STATUS_INVALID_PARAMETER,
+                               "Exact body is unavailable or invalid");
+    }
+    if (!std::isfinite(deflection) || !std::isfinite(angular_deflection)
+        || !(deflection > 0.0) || !(angular_deflection > 0.0)
+        || max_tetrahedra < 4 || max_tetrahedra > 65536) {
+      return volume_mesh_error(STATUS_INVALID_PARAMETER,
+                               "Volume-mesh parameters are out of range");
+    }
+    if (count_subshapes(body.impl().shape, TopAbs_SOLID) != 1) {
+      return volume_mesh_error(STATUS_INVALID_SHAPE,
+                               "Volume meshing requires exactly one exact solid");
+    }
+    TopExp_Explorer solid_explorer(body.impl().shape, TopAbs_SOLID);
+    if (!solid_explorer.More()) {
+      return volume_mesh_error(STATUS_INVALID_SHAPE,
+                               "Volume meshing found no exact solid");
+    }
+    const TopoDS_Solid solid = TopoDS::Solid(solid_explorer.Current());
+    if (!BRepCheck_Analyzer(solid, Standard_True).IsValid()) {
+      return volume_mesh_error(STATUS_INVALID_SHAPE,
+                               "Volume meshing requires a valid closed solid");
+    }
+
+    const double classifier_tolerance = std::max(1.0e-9, deflection * 1.0e-7);
+    GProp_GProps volume_properties;
+    BRepGProp::VolumeProperties(solid, volume_properties);
+    gp_Pnt interior = volume_properties.CentreOfMass();
+    bool found_interior = point_is_strictly_inside(solid, interior, classifier_tolerance);
+    if (!found_interior) {
+      Bnd_Box bounds;
+      BRepBndLib::Add(solid, bounds);
+      if (bounds.IsVoid() || bounds.IsOpen()) {
+        return volume_mesh_error(STATUS_INVALID_SHAPE,
+                                 "Exact solid has no finite closed bounds");
+      }
+      double min_x = 0.0;
+      double min_y = 0.0;
+      double min_z = 0.0;
+      double max_x = 0.0;
+      double max_y = 0.0;
+      double max_z = 0.0;
+      bounds.Get(min_x, min_y, min_z, max_x, max_y, max_z);
+      constexpr std::array<double, 7> fractions{
+          0.5, 0.25, 0.75, 0.125, 0.375, 0.625, 0.875};
+      for (double x_fraction : fractions) {
+        for (double y_fraction : fractions) {
+          for (double z_fraction : fractions) {
+            const gp_Pnt candidate(
+                min_x + (max_x - min_x) * x_fraction,
+                min_y + (max_y - min_y) * y_fraction,
+                min_z + (max_z - min_z) * z_fraction);
+            if (point_is_strictly_inside(solid, candidate, classifier_tolerance)) {
+              interior = candidate;
+              found_interior = true;
+              break;
+            }
+          }
+          if (found_interior) {
+            break;
+          }
+        }
+        if (found_interior) {
+          break;
+        }
+      }
+    }
+    if (!found_interior) {
+      return volume_mesh_error(STATUS_INVALID_SHAPE,
+                               "Could not find a verified point inside the exact solid");
+    }
+
+    TopoDS_Shape meshed_shape = body.impl().shape;
+    BRepTools::Clean(meshed_shape);
+    BRepMesh_IncrementalMesh mesher(
+        meshed_shape, deflection, Standard_False, angular_deflection, Standard_True);
+    mesher.Perform();
+    if (!mesher.IsDone()) {
+      return volume_mesh_error(STATUS_INVALID_SHAPE,
+                               "OCCT boundary tessellation did not complete");
+    }
+
+    auto impl = std::make_unique<NativeVolumeMeshResult::Impl>();
+    impl->vertices.push_back(
+        NativeMeshVertex{interior.X(), interior.Y(), interior.Z()});
+    const double merge_tolerance = std::max(1.0e-9, deflection * 1.0e-7);
+    std::map<std::array<std::int64_t, 3>, std::uint32_t> vertex_indices;
+    const auto append_boundary_vertex = [&](const gp_Pnt& point) {
+      const std::array<std::int64_t, 3> key{
+          static_cast<std::int64_t>(std::llround(point.X() / merge_tolerance)),
+          static_cast<std::int64_t>(std::llround(point.Y() / merge_tolerance)),
+          static_cast<std::int64_t>(std::llround(point.Z() / merge_tolerance))};
+      const auto existing = vertex_indices.find(key);
+      if (existing != vertex_indices.end()) {
+        return existing->second;
+      }
+      const auto index = static_cast<std::uint32_t>(impl->vertices.size());
+      impl->vertices.push_back(NativeMeshVertex{point.X(), point.Y(), point.Z()});
+      vertex_indices.emplace(key, index);
+      return index;
+    };
+
+    TopTools_IndexedMapOfShape faces;
+    TopExp::MapShapes(meshed_shape, TopAbs_FACE, faces);
+    const double volume_epsilon =
+        std::max(1.0e-15, std::abs(body.impl().summary.volume_mm3) * 1.0e-14);
+    for (Standard_Integer face_index = 1; face_index <= faces.Extent(); ++face_index) {
+      const auto face_ordinal = static_cast<std::uint32_t>(face_index - 1);
+      const TopoDS_Face face = TopoDS::Face(faces(face_index));
+      TopLoc_Location location;
+      const Handle(Poly_Triangulation) triangulation =
+          BRep_Tool::Triangulation(face, location);
+      if (triangulation.IsNull() || triangulation->NbTriangles() == 0) {
+        return volume_mesh_error(
+            STATUS_INVALID_SHAPE,
+            "An exact face has no boundary triangulation or provenance");
+      }
+      const gp_Trsf transform = location.Transformation();
+      const bool reversed = face.Orientation() == TopAbs_REVERSED;
+      for (Standard_Integer triangle_index = 1;
+           triangle_index <= triangulation->NbTriangles(); ++triangle_index) {
+        if (impl->tetrahedra.size() >= static_cast<std::size_t>(max_tetrahedra)) {
+          return volume_mesh_error(
+              STATUS_INVALID_SHAPE,
+              "Volume mesh exceeds the bounded tetrahedron budget");
+        }
+        Standard_Integer first_node = 0;
+        Standard_Integer second_node = 0;
+        Standard_Integer third_node = 0;
+        triangulation->Triangle(triangle_index).Get(
+            first_node, second_node, third_node);
+        if (reversed) {
+          std::swap(second_node, third_node);
+        }
+        std::array<gp_Pnt, 3> points{
+            triangulation->Node(first_node).Transformed(transform),
+            triangulation->Node(second_node).Transformed(transform),
+            triangulation->Node(third_node).Transformed(transform)};
+        double six_volume =
+            signed_six_volume(interior, points[0], points[1], points[2]);
+        if (!std::isfinite(six_volume) || std::abs(six_volume) <= volume_epsilon) {
+          return volume_mesh_error(
+              STATUS_INVALID_SHAPE,
+              "Boundary cone contains a degenerate tetrahedron");
+        }
+        if (six_volume < 0.0) {
+          std::swap(points[1], points[2]);
+          six_volume = -six_volume;
+        }
+        const gp_Pnt triangle_centroid(
+            (points[0].X() + points[1].X() + points[2].X()) / 3.0,
+            (points[0].Y() + points[1].Y() + points[2].Y()) / 3.0,
+            (points[0].Z() + points[1].Z() + points[2].Z()) / 3.0);
+        const std::array<gp_Pnt, 4> ray_targets{
+            points[0], points[1], points[2], triangle_centroid};
+        for (const gp_Pnt& target : ray_targets) {
+          for (double fraction : std::array<double, 4>{0.25, 0.5, 0.75, 0.99}) {
+            if (!point_is_inside_or_on(
+                    solid, interpolate_point(interior, target, fraction),
+                    classifier_tolerance)) {
+              return volume_mesh_error(
+                  STATUS_INVALID_SHAPE,
+                  "Exact solid is not visibility-safe for the bounded cone mesher");
+            }
+          }
+        }
+        const std::uint32_t first = append_boundary_vertex(points[0]);
+        const std::uint32_t second = append_boundary_vertex(points[1]);
+        const std::uint32_t third = append_boundary_vertex(points[2]);
+        if (first == second || first == third || second == third) {
+          return volume_mesh_error(
+              STATUS_INVALID_SHAPE,
+              "Boundary tessellation contains a collapsed triangle");
+        }
+        impl->tetrahedra.push_back(
+            NativeVolumeMeshTetrahedron{0, first, second, third});
+        impl->boundary_triangles.push_back(
+            NativeMeshTriangle{first, second, third, face_ordinal});
+      }
+    }
+    if (impl->tetrahedra.empty()) {
+      return volume_mesh_error(STATUS_INVALID_SHAPE,
+                               "OCCT boundary produced no tetrahedra");
+    }
+    impl->status = STATUS_OK;
+    impl->diagnostic.clear();
+    return std::make_unique<NativeVolumeMeshResult>(std::move(impl));
+  } catch (const Standard_Failure& failure) {
+    return volume_mesh_error(STATUS_BACKEND_EXCEPTION,
+                             standard_failure_message(failure));
+  } catch (const std::exception& failure) {
+    return volume_mesh_error(STATUS_BACKEND_EXCEPTION, failure.what());
+  } catch (...) {
+    return volume_mesh_error(STATUS_BACKEND_EXCEPTION,
+                             "Unknown native volume-meshing failure");
   }
 }
 

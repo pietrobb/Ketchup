@@ -14,7 +14,9 @@ if __package__ in (None, ""):
 from ketchup_assistant_protocol import (  # noqa: E402, F401
     AssistantSidecarBase,
     INSPECT_DOCUMENT_PARAMETERS,
+    LIST_OCCURRENCES_PARAMETERS,
     LIST_VALIDATORS_PARAMETERS,
+    LOCAL_INSPECTION_CATALOG,
     MAX_INSPECT_ROUNDS,
     MAX_LINE_BYTES,
     MAX_MESSAGE_CHARS,
@@ -29,14 +31,18 @@ from ketchup_assistant_protocol import (  # noqa: E402, F401
     SYSTEM_PROMPT,
     _anthropic_output_text,
     _anthropic_tool_calls,
+    _document_context_from_message,
     _inspect_document,
+    _list_occurrences,
     _measure_bounds,
     _openai_tool_calls,
     _parse_assistant_result,
     _plan_linear_array,
     _plan_placement,
     _read_only_tool_result,
+    _read_only_tool_result_from_context,
     _validate_cad_edit_program,
+    _validate_fea_review,
     _validate_planned_linear_array_answer,
     _validate_planned_placement_answer,
     _validate_selected_parameter_edit_answer,
@@ -107,8 +113,18 @@ class PublicAssistantSidecar(AssistantSidecarBase):
 
 
 def send_public_exchange(
-    provider: str, model: str, message: str, history: tuple[dict, ...]
+    provider: str,
+    model: str,
+    message: str,
+    history: tuple[dict, ...],
+    document_context: dict | None = None,
 ) -> ProviderExchange:
+    if document_context is None:
+        document_context = (
+            _document_context_from_message(message)
+            if message.startswith("<document-context>")
+            else {}
+        )
     if provider == "anthropic-api":
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
@@ -116,6 +132,11 @@ def send_public_exchange(
         url = "https://api.anthropic.com/v1/messages"
         headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
         tools = [
+            {
+                "name": "list_occurrences",
+                "description": "Page through the complete revision-bound occurrence and nested-instance catalog without adding the catalog to the prompt.",
+                "input_schema": LIST_OCCURRENCES_PARAMETERS,
+            },
             {
                 "name": "inspect_document",
                 "description": "Read the current selection or exact occurrence IDs from the revision-bound Kečup context. This tool cannot mutate anything.",
@@ -203,6 +224,7 @@ def send_public_exchange(
             call = calls[0]
             if (
                 call.get("name") not in {
+                    "list_occurrences",
                     "inspect_document",
                     "measure_bounds",
                     "plan_placement",
@@ -214,7 +236,9 @@ def send_public_exchange(
                 or not call["id"]
             ):
                 raise ProtocolError("provider requested an unknown or invalid tool")
-            result = _read_only_tool_result(message, call.get("name"), call.get("input"))
+            result = _read_only_tool_result_from_context(
+                document_context, call.get("name"), call.get("input")
+            )
             fingerprint = _tool_query_identity(call["name"], call.get("input"))
             if call["id"] in seen_call_ids:
                 raise ProtocolError("provider repeated a document inspection call ID")
@@ -251,6 +275,13 @@ def send_public_exchange(
         url = "https://api.openai.com/v1/responses"
         headers = {"Authorization": f"Bearer {api_key}"}
         tools = [
+            {
+                "type": "function",
+                "name": "list_occurrences",
+                "description": "Page through the complete revision-bound occurrence and nested-instance catalog without adding the catalog to the prompt.",
+                "parameters": LIST_OCCURRENCES_PARAMETERS,
+                "strict": True,
+            },
             {
                 "type": "function",
                 "name": "inspect_document",
@@ -347,6 +378,7 @@ def send_public_exchange(
             call = calls[0]
             if (
                 call.get("name") not in {
+                    "list_occurrences",
                     "inspect_document",
                     "measure_bounds",
                     "plan_placement",
@@ -363,7 +395,9 @@ def send_public_exchange(
                 arguments = json.loads(call["arguments"])
             except json.JSONDecodeError as error:
                 raise ProtocolError("provider tool arguments are invalid JSON") from error
-            result = _read_only_tool_result(message, call.get("name"), arguments)
+            result = _read_only_tool_result_from_context(
+                document_context, call.get("name"), arguments
+            )
             fingerprint = _tool_query_identity(call["name"], arguments)
             if call["call_id"] in seen_call_ids:
                 raise ProtocolError("provider repeated a document inspection call ID")
@@ -392,9 +426,13 @@ def send_public_exchange(
 
 
 def send_public_request(
-    provider: str, model: str, message: str, history: tuple[dict, ...]
+    provider: str,
+    model: str,
+    message: str,
+    history: tuple[dict, ...],
+    document_context: dict | None = None,
 ) -> str:
-    return send_public_exchange(provider, model, message, history).text
+    return send_public_exchange(provider, model, message, history, document_context).text
 
 
 def _post_json(url: str, payload: dict, headers: dict[str, str]) -> dict:

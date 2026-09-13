@@ -3,18 +3,23 @@ use ketchup_core::document::{
     FeatureKind, OccurrenceId, ProposalCommitError, Transform,
 };
 use ketchup_core::drawing::{
-    DrawingAnnotations, DrawingAuthoringError, DrawingDimensionId, DrawingDimensionTolerance,
-    DrawingError, DrawingLinearDimension, DrawingMargins, DrawingNote, DrawingNoteId,
-    DrawingPageOrientation, DrawingPageSize, DrawingPageTemplate, DrawingScale, DrawingSheet,
-    DrawingSheetId, DrawingSource, DrawingTitleBlock, OrthographicViewKind,
-    prepare_create_drawing_sheet, prepare_delete_drawing_sheet, prepare_edit_drawing_sheet,
-    project_orthographic_drawing,
+    DrawingAngularDimension, DrawingAnnotations, DrawingAuthoringError, DrawingCircularDimension,
+    DrawingCircularDimensionKind, DrawingDatumId, DrawingDatumReference, DrawingDatumSymbol,
+    DrawingDimensionId, DrawingDimensionTolerance, DrawingError, DrawingFeatureControlFrame,
+    DrawingFeatureControlFrameId, DrawingGeometricCharacteristic, DrawingLinearDimension,
+    DrawingMargins, DrawingMaterialCondition, DrawingNote, DrawingNoteId, DrawingPageOrientation,
+    DrawingPageSize, DrawingPageTemplate, DrawingScale, DrawingSheet, DrawingSheetId,
+    DrawingSource, DrawingTitleBlock, OrthographicViewKind, prepare_create_drawing_sheet,
+    prepare_delete_drawing_sheet, prepare_edit_drawing_sheet, project_orthographic_drawing,
 };
 use ketchup_core::drawing_export::{DrawingExportError, export_drawing};
+use ketchup_core::exact_brep_graph::ExactBRepGraph;
 use ketchup_core::exact_product::{
+    ExactBRepGraphEdgeEvidence, ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence,
     ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactProductError,
     ExactResultRegistry, build_box_render_package, canonical_reference_lineage_digest,
 };
+use ketchup_core::import::{StepImportMesh, StepMeshTriangle};
 use ketchup_core::persistence;
 use std::sync::Arc;
 
@@ -130,6 +135,84 @@ fn registry(
     bounds: [[f64; 3]; 2],
 ) -> ExactResultRegistry {
     ExactResultRegistry::accept(snapshot, [exact_package(snapshot, fingerprint, bounds)]).unwrap()
+}
+
+fn graph_registry_with_circle(
+    snapshot: &ketchup_core::document::Snapshot,
+    fingerprint: &str,
+    radius_mm: f64,
+) -> ExactResultRegistry {
+    let graph = ExactBRepGraph::from_snapshot(snapshot, DEFINITION, EXTRUSION).unwrap();
+    let bounds_mm = graph.producer_bounds_mm().unwrap().unwrap();
+    let [minimum, maximum] = bounds_mm;
+    let center = [10.0, 0.0, (minimum[2] + maximum[2]) * 0.5];
+    let mesh = StepImportMesh {
+        vertices_mm: vec![
+            [minimum[0], minimum[1], minimum[2]],
+            [maximum[0], minimum[1], minimum[2]],
+            [maximum[0], maximum[1], minimum[2]],
+            [minimum[0], maximum[1], minimum[2]],
+            [minimum[0], minimum[1], maximum[2]],
+            [maximum[0], minimum[1], maximum[2]],
+            [maximum[0], maximum[1], maximum[2]],
+            [minimum[0], maximum[1], maximum[2]],
+        ],
+        triangles: [
+            ([0, 2, 1], 0),
+            ([0, 3, 2], 0),
+            ([4, 5, 6], 1),
+            ([4, 6, 7], 1),
+            ([0, 1, 5], 2),
+            ([0, 5, 4], 2),
+            ([1, 2, 6], 3),
+            ([1, 6, 5], 3),
+            ([2, 3, 7], 4),
+            ([2, 7, 6], 4),
+            ([3, 0, 4], 5),
+            ([3, 4, 7], 5),
+        ]
+        .into_iter()
+        .map(|(vertex_indices, face_ordinal)| StepMeshTriangle {
+            vertex_indices,
+            face_ordinal,
+        })
+        .collect(),
+    };
+    let package = ExactBRepGraphPackage::from_worker_evidence(
+        &graph,
+        ExactBRepGraphWorkerEvidence {
+            exact_input_digest: format!("typed-dimension-input:{fingerprint}"),
+            result_fingerprint: fingerprint.into(),
+            volume_mm3: (maximum[0] - minimum[0])
+                * (maximum[1] - minimum[1])
+                * (maximum[2] - minimum[2]),
+            area_mm2: 0.0,
+            topology_counts: [8, 12, 6, 1, 1],
+            wire_count: None,
+            bounds_mm,
+            backend: "typed-dimension-exact".into(),
+            tolerance: "1e-7-mm".into(),
+            faces: Vec::new(),
+            edges: vec![ExactBRepGraphEdgeEvidence {
+                edge_ordinal: 0,
+                curve_kind: "circle".into(),
+                length_mm: std::f64::consts::TAU * radius_mm,
+                centroid_mm: center,
+                bounds_mm: [
+                    [center[0] - radius_mm, center[1], center[2] - radius_mm],
+                    [center[0] + radius_mm, center[1], center[2] + radius_mm],
+                ],
+                closed: true,
+                circle_radius_mm: Some(radius_mm),
+                axis_origin_mm: Some(center),
+                unit_axis_direction: Some([0.0, -1.0, 0.0]),
+                adjacent_face_ordinals: Vec::new(),
+            }],
+        },
+        &mesh,
+    )
+    .unwrap();
+    ExactResultRegistry::accept(snapshot, [Arc::new(ExactBodyPackage::from(package))]).unwrap()
 }
 
 fn sheet(name: &str) -> DrawingSheet {
@@ -1097,6 +1180,16 @@ fn custom_views_are_reviewed_undoable_and_persisted() {
         prepare_create_drawing_sheet(&document, &exact, initial_sheet.clone()).unwrap();
     document.commit_proposal(&create).unwrap();
     let exact = ExactResultRegistry::carried_forward(&document.current(), &exact);
+    let secondary_sheet = DrawingSheet::new(
+        DrawingSheetId(11),
+        "Secondary sheet",
+        DrawingSource::Definition(DEFINITION),
+    )
+    .unwrap();
+    let (create_secondary, _) =
+        prepare_create_drawing_sheet(&document, &exact, secondary_sheet.clone()).unwrap();
+    document.commit_proposal(&create_secondary).unwrap();
+    let exact = ExactResultRegistry::carried_forward(&document.current(), &exact);
     let auxiliary = OrthographicViewKind::auxiliary([2.0, -3.0, 4.0], [0.0, 0.0, 1.0]).unwrap();
     let section = OrthographicViewKind::section([0.0, -1.0, 0.0], [0.0, 0.0, 1.0], -5.0).unwrap();
     let detail = OrthographicViewKind::detail(
@@ -1113,14 +1206,22 @@ fn custom_views_are_reviewed_undoable_and_persisted() {
         DrawingSource::Definition(DEFINITION),
         DrawingPageTemplate::default(),
         DrawingTitleBlock::new("Custom views", "", "", "").unwrap(),
-        vec![OrthographicViewKind::Isometric, auxiliary, section, detail],
+        vec![
+            OrthographicViewKind::Front,
+            OrthographicViewKind::Top,
+            OrthographicViewKind::Right,
+            OrthographicViewKind::Isometric,
+            auxiliary,
+            section,
+            detail,
+        ],
     )
     .unwrap();
     let before_edit = stamp(&document);
     let (edit, projected) =
         prepare_edit_drawing_sheet(&document, &exact, custom_sheet.clone()).unwrap();
     assert_eq!(stamp(&document), before_edit);
-    assert_eq!(projected.views.len(), 4);
+    assert_eq!(projected.views.len(), 7);
     let isometric = projected
         .views
         .iter()
@@ -1187,6 +1288,10 @@ fn custom_views_are_reviewed_undoable_and_persisted() {
         .ok()
         .unwrap();
     assert_eq!(reopened.current().drawing_sheet(SHEET), Some(&custom_sheet));
+    assert_eq!(
+        reopened.current().drawing_sheet(DrawingSheetId(11)),
+        Some(&secondary_sheet)
+    );
     assert_eq!(persistence::save(&reopened.current()), saved);
     let reopened_exact = registry(
         &reopened.current(),
@@ -1259,16 +1364,19 @@ fn invalid_auxiliary_and_view_sets_fail_closed() {
         ]),
         Err(DrawingError::InvalidView)
     );
-    assert_eq!(
-        make_sheet(vec![
-            OrthographicViewKind::Front,
-            OrthographicViewKind::Top,
-            OrthographicViewKind::Right,
-            OrthographicViewKind::Isometric,
-            OrthographicViewKind::auxiliary([1.0, 2.0, 3.0], [0.0, 0.0, 1.0]).unwrap(),
-        ]),
-        Err(DrawingError::InvalidView)
-    );
+    let excessive_views = (0..33)
+        .map(|index| {
+            OrthographicViewKind::detail(
+                [0.0, -1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [f64::from(index), 0.0],
+                1.0,
+                DrawingScale::default(),
+            )
+            .unwrap()
+        })
+        .collect();
+    assert_eq!(make_sheet(excessive_views), Err(DrawingError::InvalidView));
 }
 
 #[test]
@@ -1303,6 +1411,290 @@ fn empty_detail_crop_fails_without_mutation() {
         Err(DrawingAuthoringError::Drawing(DrawingError::SourceFailed))
     ));
     assert_eq!(stamp(&document), before);
+}
+
+#[test]
+fn typed_dimensions_follow_exact_graph_model_change_undo_redo_and_save_open() {
+    let mut document = seeded_document();
+    let initial_registry = graph_registry_with_circle(&document.current(), "typed-initial", 5.0);
+    let plain_sheet = DrawingSheet::with_contract_and_views(
+        SHEET,
+        "Typed exact dimensions",
+        DrawingSource::Definition(DEFINITION),
+        DrawingPageTemplate::default(),
+        DrawingTitleBlock::new("Typed exact dimensions", "TD-001", "A", "Kečup").unwrap(),
+        vec![OrthographicViewKind::Front],
+    )
+    .unwrap();
+    let plain =
+        project_orthographic_drawing(&document.current(), &initial_registry, &plain_sheet).unwrap();
+    let circle_id = plain.views[0].circles[0].stable_circle_id.clone();
+    let perpendicular = plain.views[0]
+        .visible_lines
+        .iter()
+        .enumerate()
+        .find_map(|(left_index, left)| {
+            let left_delta = [
+                left.end_mm[0] - left.start_mm[0],
+                left.end_mm[1] - left.start_mm[1],
+            ];
+            plain.views[0]
+                .visible_lines
+                .iter()
+                .skip(left_index + 1)
+                .find_map(|right| {
+                    let right_delta = [
+                        right.end_mm[0] - right.start_mm[0],
+                        right.end_mm[1] - right.start_mm[1],
+                    ];
+                    ((left_delta[0] * right_delta[0] + left_delta[1] * right_delta[1]).abs()
+                        <= 1.0e-9)
+                        .then(|| [left.stable_line_id.clone(), right.stable_line_id.clone()])
+                })
+        })
+        .unwrap();
+    let typed_sheet = DrawingSheet::with_contract_views_and_annotations(
+        SHEET,
+        "Typed exact dimensions",
+        DrawingSource::Definition(DEFINITION),
+        DrawingPageTemplate::default(),
+        DrawingTitleBlock::new("Typed exact dimensions", "TD-001", "A", "Kečup").unwrap(),
+        vec![OrthographicViewKind::Front],
+        DrawingAnnotations::with_typed_dimensions(
+            Vec::new(),
+            vec![
+                DrawingAngularDimension::new(
+                    DrawingDimensionId(1),
+                    OrthographicViewKind::Front,
+                    perpendicular,
+                    8.0,
+                    DrawingDimensionTolerance::None,
+                )
+                .unwrap(),
+            ],
+            vec![
+                DrawingCircularDimension::new(
+                    DrawingDimensionId(2),
+                    OrthographicViewKind::Front,
+                    circle_id.clone(),
+                    DrawingCircularDimensionKind::Radius,
+                    45.0,
+                    6.0,
+                    DrawingDimensionTolerance::None,
+                )
+                .unwrap(),
+                DrawingCircularDimension::new(
+                    DrawingDimensionId(3),
+                    OrthographicViewKind::Front,
+                    circle_id,
+                    DrawingCircularDimensionKind::Diameter,
+                    135.0,
+                    6.0,
+                    DrawingDimensionTolerance::symmetric(0.1).unwrap(),
+                )
+                .unwrap(),
+            ],
+            Vec::new(),
+        ),
+    )
+    .unwrap();
+    let (create, initial) =
+        prepare_create_drawing_sheet(&document, &initial_registry, typed_sheet).unwrap();
+    assert_eq!(initial.layout.angular_dimensions[0].label, "90°");
+    assert_eq!(initial.layout.circular_dimensions[0].label, "R5 mm");
+    assert_eq!(initial.layout.circular_dimensions[1].label, "⌀10 ±0.1 mm");
+    document.commit_proposal(&create).unwrap();
+
+    let edit = document
+        .prepare_proposal(CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: EXTRUSION,
+                dimension: Dimension::from_decimal("60").unwrap(),
+            },
+        ]))
+        .unwrap();
+    document.commit_proposal(&edit).unwrap();
+    let edited_registry = graph_registry_with_circle(&document.current(), "typed-edited", 7.0);
+    let edited = project_orthographic_drawing(
+        &document.current(),
+        &edited_registry,
+        document.current().drawing_sheet(SHEET).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(edited.layout.angular_dimensions[0].label, "90°");
+    assert_eq!(edited.layout.circular_dimensions[0].label, "R7 mm");
+    assert_eq!(edited.layout.circular_dimensions[1].label, "⌀14 ±0.1 mm");
+    assert_ne!(edited.layout.digest, initial.layout.digest);
+
+    document.undo().unwrap();
+    let undo_registry = graph_registry_with_circle(&document.current(), "typed-initial", 5.0);
+    assert_eq!(
+        project_orthographic_drawing(
+            &document.current(),
+            &undo_registry,
+            document.current().drawing_sheet(SHEET).unwrap(),
+        )
+        .unwrap(),
+        initial
+    );
+    document.redo().unwrap();
+    let reopened = persistence::load(&persistence::save(&document.current()))
+        .unwrap()
+        .into_editable()
+        .ok()
+        .unwrap();
+    let reopened_registry = graph_registry_with_circle(&reopened.current(), "typed-edited", 7.0);
+    assert_eq!(
+        project_orthographic_drawing(
+            &reopened.current(),
+            &reopened_registry,
+            reopened.current().drawing_sheet(SHEET).unwrap(),
+        )
+        .unwrap(),
+        edited
+    );
+}
+
+#[test]
+fn gdt_datums_follow_exact_model_change_consent_undo_and_save_open() {
+    let mut document = seeded_document();
+    let initial_registry = graph_registry_with_circle(&document.current(), "gdt-initial", 5.0);
+    let plain_sheet = DrawingSheet::with_contract_and_views(
+        SHEET,
+        "GD&T exact",
+        DrawingSource::Definition(DEFINITION),
+        DrawingPageTemplate::default(),
+        DrawingTitleBlock::new("GD&T exact", "GDT-001", "A", "Kečup").unwrap(),
+        vec![OrthographicViewKind::Front],
+    )
+    .unwrap();
+    let plain =
+        project_orthographic_drawing(&document.current(), &initial_registry, &plain_sheet).unwrap();
+    let source_line_id = plain.views[0].visible_lines[0].stable_line_id.clone();
+    let make_sheet = |tolerance_mm| {
+        DrawingSheet::with_contract_views_and_annotations(
+            SHEET,
+            "GD&T exact",
+            DrawingSource::Definition(DEFINITION),
+            DrawingPageTemplate::default(),
+            DrawingTitleBlock::new("GD&T exact", "GDT-001", "A", "Kečup").unwrap(),
+            vec![OrthographicViewKind::Front],
+            DrawingAnnotations::with_manufacturing_annotations(
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                vec![
+                    DrawingDatumSymbol::new(
+                        DrawingDatumId(1),
+                        OrthographicViewKind::Front,
+                        source_line_id.clone(),
+                        "A",
+                        [15.0, 15.0],
+                    )
+                    .unwrap(),
+                ],
+                vec![
+                    DrawingFeatureControlFrame::new(
+                        DrawingFeatureControlFrameId(1),
+                        OrthographicViewKind::Front,
+                        source_line_id.clone(),
+                        DrawingGeometricCharacteristic::Perpendicularity,
+                        tolerance_mm,
+                        false,
+                        DrawingMaterialCondition::RegardlessOfFeatureSize,
+                        vec![
+                            DrawingDatumReference::new("A", DrawingMaterialCondition::None)
+                                .unwrap(),
+                        ],
+                        [25.0, 25.0],
+                    )
+                    .unwrap(),
+                ],
+                Vec::new(),
+            ),
+        )
+        .unwrap()
+    };
+
+    let before = stamp(&document);
+    let (create, initial) =
+        prepare_create_drawing_sheet(&document, &initial_registry, make_sheet(0.05)).unwrap();
+    assert_eq!(
+        stamp(&document),
+        before,
+        "preview must remain observational"
+    );
+    assert_eq!(initial.layout.datum_symbols[0].label, "A");
+    assert_eq!(
+        initial.layout.feature_control_frames[0].label,
+        "PERPENDICULARITY | 0.05 RFS | A"
+    );
+    document.commit_proposal(&create).unwrap();
+    let committed_digest = document.current().canonical_digest();
+    assert_eq!(document.visible_undo_steps(), before.undo + 1);
+    document.undo().unwrap();
+    assert!(document.current().drawing_sheet(SHEET).is_none());
+    document.redo().unwrap();
+    assert_eq!(document.current().canonical_digest(), committed_digest);
+
+    let current_registry =
+        ExactResultRegistry::carried_forward(&document.current(), &initial_registry);
+    let stale_edit = prepare_edit_drawing_sheet(&document, &current_registry, make_sheet(0.1))
+        .unwrap()
+        .0;
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: EXTRUSION,
+                dimension: Dimension::from_decimal("60").unwrap(),
+            },
+        ]))
+        .unwrap();
+    let before_stale_confirm = stamp(&document);
+    assert!(matches!(
+        document.commit_proposal(&stale_edit),
+        Err(ProposalCommitError::Stale(_))
+    ));
+    assert_eq!(stamp(&document), before_stale_confirm);
+    assert_eq!(
+        document
+            .current()
+            .drawing_sheet(SHEET)
+            .unwrap()
+            .feature_control_frames()[0]
+            .tolerance_mm(),
+        0.05
+    );
+
+    let edited_registry = graph_registry_with_circle(&document.current(), "gdt-edited", 7.0);
+    let edited = project_orthographic_drawing(
+        &document.current(),
+        &edited_registry,
+        document.current().drawing_sheet(SHEET).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        edited.layout.datum_symbols[0].source_line_id,
+        source_line_id
+    );
+    assert_eq!(edited.layout.feature_control_frames[0].tolerance_mm, 0.05);
+    assert_ne!(edited.layout.digest, initial.layout.digest);
+
+    let reopened = persistence::load(&persistence::save(&document.current()))
+        .unwrap()
+        .into_editable()
+        .ok()
+        .unwrap();
+    let reopened_registry = graph_registry_with_circle(&reopened.current(), "gdt-edited", 7.0);
+    assert_eq!(
+        project_orthographic_drawing(
+            &reopened.current(),
+            &reopened_registry,
+            reopened.current().drawing_sheet(SHEET).unwrap(),
+        )
+        .unwrap(),
+        edited
+    );
 }
 
 #[test]
@@ -2178,9 +2570,34 @@ fn model_edit_recomputes_associative_output_with_stable_source_identity() {
         "initial",
         [[0.0, 0.0, 0.0], [20.0, 10.0, 30.0]],
     );
+    let seven_view_sheet = DrawingSheet::with_contract_and_views(
+        SHEET,
+        "Seven-view associative sheet",
+        DrawingSource::Definition(DEFINITION),
+        DrawingPageTemplate::default(),
+        DrawingTitleBlock::new("Seven-view associative sheet", "", "", "").unwrap(),
+        vec![
+            OrthographicViewKind::Front,
+            OrthographicViewKind::Top,
+            OrthographicViewKind::Right,
+            OrthographicViewKind::Isometric,
+            OrthographicViewKind::auxiliary([2.0, -3.0, 4.0], [0.0, 0.0, 1.0]).unwrap(),
+            OrthographicViewKind::section([0.0, -1.0, 0.0], [0.0, 0.0, 1.0], -5.0).unwrap(),
+            OrthographicViewKind::detail(
+                [0.0, -1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [0.0, 0.0],
+                8.0,
+                DrawingScale::new(2, 1).unwrap(),
+            )
+            .unwrap(),
+        ],
+    )
+    .unwrap();
     let (proposal, initial) =
-        prepare_create_drawing_sheet(&document, &initial_registry, sheet("A3")).unwrap();
+        prepare_create_drawing_sheet(&document, &initial_registry, seven_view_sheet).unwrap();
     document.commit_proposal(&proposal).unwrap();
+    assert_eq!(initial.views.len(), 7);
 
     let edit = document
         .prepare_proposal(CommandBatch::new(vec![

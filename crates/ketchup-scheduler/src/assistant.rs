@@ -1,6 +1,6 @@
 use ketchup_core::assistant_sidecar::{
     AssistantApiDiagnostics, AssistantCadEditProgram, AssistantCapability, AssistantChatResult,
-    AssistantDistribution, AssistantHandshake, AssistantModelIntent,
+    AssistantDistribution, AssistantFeaReviewRequest, AssistantHandshake, AssistantModelIntent,
 };
 use ketchup_core::graph::sha256_hex;
 use serde::{Deserialize, Serialize};
@@ -49,12 +49,17 @@ impl AssistantCancellation {
     pub fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Acquire)
     }
+
+    pub fn shared_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.0)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AssistantProcessChatResult {
     pub result: AssistantChatResult,
     pub cad_edit_program: Option<AssistantCadEditProgram>,
+    pub fea_review: Option<AssistantFeaReviewRequest>,
     pub diagnostics: Option<AssistantApiDiagnostics>,
 }
 
@@ -98,6 +103,8 @@ enum SidecarResponse {
         model_intent: Box<Option<AssistantModelIntent>>,
         #[serde(default)]
         cad_edit_program: Box<Option<AssistantCadEditProgram>>,
+        #[serde(default)]
+        fea_review: Box<Option<AssistantFeaReviewRequest>>,
         diagnostics: Option<Box<AssistantApiDiagnostics>>,
     },
     Error {
@@ -319,6 +326,7 @@ impl AssistantProcessClient {
                 message,
                 model_intent,
                 cad_edit_program,
+                fea_review,
                 diagnostics,
             } if returned_id == request_id => {
                 let result = AssistantChatResult {
@@ -328,13 +336,21 @@ impl AssistantProcessClient {
                 if let Err(error) = result.validate() {
                     return self.fail(AssistantProcessError::Protocol(error));
                 }
-                if result.model_intent.is_some() && cad_edit_program.is_some() {
+                let response_action_count = usize::from(result.model_intent.is_some())
+                    + usize::from(cad_edit_program.is_some())
+                    + usize::from(fea_review.is_some());
+                if response_action_count > 1 {
                     return self.fail(AssistantProcessError::Protocol(
-                        "assistant returned multiple mutation programs".to_owned(),
+                        "assistant returned multiple action programs".to_owned(),
                     ));
                 }
                 if let Some(program) = cad_edit_program.as_ref()
                     && let Err(error) = program.validate()
+                {
+                    return self.fail(AssistantProcessError::Protocol(error));
+                }
+                if let Some(request) = fea_review.as_ref()
+                    && let Err(error) = request.validate()
                 {
                     return self.fail(AssistantProcessError::Protocol(error));
                 }
@@ -346,6 +362,7 @@ impl AssistantProcessClient {
                 Ok(AssistantProcessChatResult {
                     result,
                     cad_edit_program: *cad_edit_program,
+                    fea_review: *fea_review,
                     diagnostics: diagnostics.map(|diagnostics| *diagnostics),
                 })
             }

@@ -575,6 +575,11 @@ impl LiveBridge {
                 | AssistantCadEditOperation::AppendFeature { .. }
                 | AssistantCadEditOperation::AppendProgramPocket { .. }
                 | AssistantCadEditOperation::SetDimension { .. }
+                | AssistantCadEditOperation::SetFeatureParameter { .. }
+                | AssistantCadEditOperation::CreateAssemblyJoint { .. }
+                | AssistantCadEditOperation::SetAssemblyJointPosition { .. }
+                | AssistantCadEditOperation::CreateDrawing { .. }
+                | AssistantCadEditOperation::UpsertCamPlan { .. }
                 | AssistantCadEditOperation::UpsertClassificationDimension { .. }
                 | AssistantCadEditOperation::CreateEvaluatorInput { .. } => None,
             };

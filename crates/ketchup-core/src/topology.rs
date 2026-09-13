@@ -552,6 +552,35 @@ fn imported_topological_evidence_fingerprint(
     sha256_hex(&evidence)
 }
 
+pub fn topological_edge_provenance_tokens(
+    adjacent_faces: &[(&str, &str)],
+) -> Option<(String, String)> {
+    if adjacent_faces.is_empty()
+        || adjacent_faces
+            .iter()
+            .any(|(producer, source)| producer.is_empty() || source.is_empty())
+    {
+        return None;
+    }
+    let mut faces = adjacent_faces.to_vec();
+    faces.sort_unstable();
+    if faces.windows(2).any(|pair| pair[0] == pair[1]) {
+        return None;
+    }
+    let mut provenance = b"ketchup.topological-edge-provenance.v1".to_vec();
+    for (producer, source) in faces {
+        for token in [producer.as_bytes(), source.as_bytes()] {
+            provenance.extend_from_slice(&(token.len() as u64).to_le_bytes());
+            provenance.extend_from_slice(token);
+        }
+    }
+    let digest = sha256_hex(&provenance);
+    Some((
+        format!("topology-source-boundary/{digest}"),
+        format!("topology-result-edge/{digest}"),
+    ))
+}
+
 fn generated_topological_evidence_fingerprint(
     identity: &BodyResultIdentity,
     kind: TopologicalElementKind,

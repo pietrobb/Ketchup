@@ -1,17 +1,19 @@
 use ketchup_core::assistant_sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantAxisSpec, AssistantBalloonTextIntent,
     AssistantBeamNotchIntent, AssistantBottleFinishKind, AssistantBottleIntent,
-    AssistantCadBodyFeature, AssistantCadBooleanOperation, AssistantCadDeletePolicy,
-    AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
-    AssistantCadLoftSection, AssistantCadPartFeature, AssistantCadRotation, AssistantDistribution,
-    AssistantHandshake, AssistantHandshakeError, AssistantHelixHandedness,
-    AssistantHelixParameters, AssistantKetchupBottleIntent, AssistantLinearArrayIntent,
-    AssistantModelIntent, AssistantOrientedBeamIntent, AssistantParameterEditIntent,
-    AssistantPrincipalPlane, AssistantProfileTranslationIntent, AssistantRejectionDiagnostic,
-    AssistantRejectionPhase, AssistantRotationIntent, AssistantSketchConstraint,
-    AssistantSketchEntity, AssistantSketchPointKind, AssistantSketchPointRef,
-    AssistantSketchProfileCopy, AssistantTeapotIntent, AssistantWorkplaneSpec,
-    distribution_is_enabled,
+    AssistantCadBodyFeature, AssistantCadBooleanOperation, AssistantCadChamferMode,
+    AssistantCadDeletePolicy, AssistantCadEditOperation, AssistantCadEditProgram,
+    AssistantCadEntitySelector, AssistantCadFeatureReference, AssistantCadLoftContinuity,
+    AssistantCadLoftSection, AssistantCadPartFeature, AssistantCadProgramFeatureOutput,
+    AssistantCadProgramFeatureReference, AssistantCadRotation, AssistantCadShellDirection,
+    AssistantCadSurfaceBodySource, AssistantDistribution, AssistantHandshake,
+    AssistantHandshakeError, AssistantHelixHandedness, AssistantHelixParameters,
+    AssistantKetchupBottleIntent, AssistantLinearArrayIntent, AssistantModelIntent,
+    AssistantOrientedBeamIntent, AssistantParameterEditIntent, AssistantPrincipalPlane,
+    AssistantProfileTranslationIntent, AssistantRejectionDiagnostic, AssistantRejectionPhase,
+    AssistantRotationIntent, AssistantSketchConstraint, AssistantSketchEntity,
+    AssistantSketchPointKind, AssistantSketchPointRef, AssistantSketchProfileCopy,
+    AssistantTeapotIntent, AssistantWorkplaneSpec, distribution_is_enabled,
 };
 
 const PUBLIC_HANDSHAKE: &str = r#"{
@@ -1148,7 +1150,11 @@ fn cad_edit_append_loft_contract_is_strict_bounded_and_host_id_assigned() {
         operations: vec![AssistantCadEditOperation::AppendFeature {
             definition_id: 7,
             name: "Exact loft".to_owned(),
-            feature: AssistantCadBodyFeature::Loft { sections },
+            feature: AssistantCadBodyFeature::Loft {
+                sections,
+                guide_feature_id: None,
+                continuity: AssistantCadLoftContinuity::Position,
+            },
         }],
     };
     let valid = program(vec![
@@ -1326,6 +1332,88 @@ fn cad_edit_append_loft_contract_is_strict_bounded_and_host_id_assigned() {
 }
 
 #[test]
+fn cad_edit_surface_contract_is_strict_typed_and_round_trips() {
+    let earlier_body = |operation_index| {
+        AssistantCadFeatureReference::ProgramOutput(AssistantCadProgramFeatureReference {
+            operation_index,
+            output: AssistantCadProgramFeatureOutput::BodyFeature,
+        })
+    };
+    let input = AssistantCadEditProgram {
+        operations: vec![
+            AssistantCadEditOperation::AppendFeature {
+                definition_id: 7,
+                name: "Planar surface".into(),
+                feature: AssistantCadBodyFeature::SurfaceBody {
+                    source: AssistantCadSurfaceBodySource::Planar {
+                        profile_feature_id: 11.into(),
+                    },
+                },
+            },
+            AssistantCadEditOperation::AppendFeature {
+                definition_id: 7,
+                name: "Extended surface".into(),
+                feature: AssistantCadBodyFeature::SurfaceExtend {
+                    target_feature_id: earlier_body(0),
+                    distance_mm: 2.0,
+                },
+            },
+            AssistantCadEditOperation::AppendFeature {
+                definition_id: 7,
+                name: "Thickened surface".into(),
+                feature: AssistantCadBodyFeature::SurfaceThicken {
+                    target_feature_id: earlier_body(1),
+                    thickness_mm: 1.5,
+                    direction: AssistantCadShellDirection::Symmetric,
+                },
+            },
+        ],
+    };
+
+    assert_eq!(input.validate(), Ok(()));
+    let serialized = serde_json::to_value(&input).unwrap();
+    assert_eq!(
+        serialized["operations"][0]["feature"]["source"]["type"],
+        "planar"
+    );
+    assert_eq!(
+        serialized["operations"][2]["feature"]["type"],
+        "surface_thicken"
+    );
+    assert_eq!(
+        serde_json::from_value::<AssistantCadEditProgram>(serialized).unwrap(),
+        input
+    );
+
+    let duplicate_knit = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::AppendFeature {
+            definition_id: 7,
+            name: "Invalid knit".into(),
+            feature: AssistantCadBodyFeature::SurfaceKnit {
+                surface_feature_ids: vec![11.into(), 11.into()],
+                tolerance_mm: 0.001,
+                make_solid: false,
+            },
+        }],
+    };
+    assert!(duplicate_knit.validate().is_err());
+    let injected = serde_json::json!({
+        "operations": [{
+            "operation": "append_feature",
+            "definition_id": 7,
+            "name": "Injected surface",
+            "feature": {
+                "type": "surface_extend",
+                "target_feature_id": 11,
+                "distance_mm": 2.0,
+                "named_edge": "north"
+            }
+        }]
+    });
+    assert!(serde_json::from_value::<AssistantCadEditProgram>(injected).is_err());
+}
+
+#[test]
 fn cad_edit_append_topology_shell_contract_is_strict_bounded_and_host_id_assigned() {
     let reference_id = "a".repeat(64);
     let program =
@@ -1337,12 +1425,15 @@ fn cad_edit_append_topology_shell_contract_is_strict_bounded_and_host_id_assigne
                     target_feature_id,
                     removed_face_reference_ids,
                     thickness_mm,
+                    direction: ketchup_core::assistant_sidecar::AssistantCadShellDirection::Inward,
                 },
             }],
         };
     let valid = program(11, vec![reference_id.clone()], 1.5);
+    let closed = program(11, Vec::new(), 1.5);
 
     assert_eq!(valid.validate(), Ok(()));
+    assert_eq!(closed.validate(), Ok(()));
     let serialized = serde_json::to_value(&valid).unwrap();
     assert_eq!(
         serialized["operations"][0]["feature"]["type"],
@@ -1369,7 +1460,6 @@ fn cad_edit_append_topology_shell_contract_is_strict_bounded_and_host_id_assigne
 
     for invalid in [
         program(0, vec![reference_id.clone()], 1.5),
-        program(11, Vec::new(), 1.5),
         program(11, vec![reference_id.clone(); 2], 1.5),
         program(11, vec!["short".to_owned()], 1.5),
         program(11, vec!["z".repeat(64)], 1.5),
@@ -1383,36 +1473,35 @@ fn cad_edit_append_topology_shell_contract_is_strict_bounded_and_host_id_assigne
         );
     }
 
-    for invalid in [
-        serde_json::json!({
-            "operations": [{
-                "operation": "append_feature",
-                "definition_id": 7,
-                "name": "Injected shell",
-                "feature": {
-                    "type": "topology_shell",
-                    "target_feature_id": 11,
-                    "removed_face_reference_ids": [reference_id],
-                    "thickness_mm": 1.5,
-                    "face_ordinal": 3
-                }
-            }]
-        }),
-        serde_json::json!({
-            "operations": [{
-                "operation": "append_feature",
-                "definition_id": 7,
-                "name": "Missing references",
-                "feature": {
-                    "type": "topology_shell",
-                    "target_feature_id": 11,
-                    "thickness_mm": 1.5
-                }
-            }]
-        }),
-    ] {
-        assert!(serde_json::from_value::<AssistantCadEditProgram>(invalid).is_err());
-    }
+    let invalid = serde_json::json!({
+        "operations": [{
+            "operation": "append_feature",
+            "definition_id": 7,
+            "name": "Injected shell",
+            "feature": {
+                "type": "topology_shell",
+                "target_feature_id": 11,
+                "removed_face_reference_ids": [reference_id],
+                "thickness_mm": 1.5,
+                "face_ordinal": 3
+            }
+        }]
+    });
+    assert!(serde_json::from_value::<AssistantCadEditProgram>(invalid).is_err());
+    let omitted_references = serde_json::json!({
+        "operations": [{
+            "operation": "append_feature",
+            "definition_id": 7,
+            "name": "Closed shell",
+            "feature": {
+                "type": "topology_shell",
+                "target_feature_id": 11,
+                "thickness_mm": 1.5
+            }
+        }]
+    });
+    let closed = serde_json::from_value::<AssistantCadEditProgram>(omitted_references).unwrap();
+    assert_eq!(closed.validate(), Ok(()));
 }
 
 #[test]
@@ -1426,6 +1515,7 @@ fn cad_edit_append_topology_fillet_contract_is_strict_bounded_and_host_id_assign
                 target_feature_id,
                 edge_reference_ids,
                 radius_mm,
+                radius_stations: Vec::new(),
             },
         }],
     };
@@ -1446,6 +1536,62 @@ fn cad_edit_append_topology_fillet_contract_is_strict_bounded_and_host_id_assign
         serde_json::from_value::<AssistantCadEditProgram>(serialized).unwrap(),
         valid
     );
+
+    let variable = serde_json::json!({
+        "operations": [{
+            "operation": "append_feature",
+            "definition_id": 7,
+            "name": "Variable fillet",
+            "feature": {
+                "type": "topology_fillet",
+                "target_feature_id": 11,
+                "edge_reference_ids": [reference_id],
+                "radius_mm": 1.5,
+                "radius_stations": [
+                    {"position": 0.5, "radius_mm": 2.5},
+                    {"position": 1.0, "radius_mm": 1.0}
+                ]
+            }
+        }]
+    });
+    assert_eq!(
+        serde_json::from_value::<AssistantCadEditProgram>(variable)
+            .unwrap()
+            .validate(),
+        Ok(())
+    );
+    for radius_stations in [
+        serde_json::json!([
+            {"position": 0.75, "radius_mm": 2.5},
+            {"position": 0.5, "radius_mm": 1.0},
+            {"position": 1.0, "radius_mm": 1.5}
+        ]),
+        serde_json::json!([
+            {"position": 0.5, "radius_mm": 2.5},
+            {"position": 0.75, "radius_mm": 1.0}
+        ]),
+    ] {
+        let invalid_profile = serde_json::json!({
+            "operations": [{
+                "operation": "append_feature",
+                "definition_id": 7,
+                "name": "Invalid variable fillet",
+                "feature": {
+                    "type": "topology_fillet",
+                    "target_feature_id": 11,
+                    "edge_reference_ids": ["a".repeat(64)],
+                    "radius_mm": 1.5,
+                    "radius_stations": radius_stations
+                }
+            }]
+        });
+        assert_eq!(
+            serde_json::from_value::<AssistantCadEditProgram>(invalid_profile)
+                .unwrap()
+                .validate(),
+            Err("assistant CAD body feature is invalid".to_owned())
+        );
+    }
     assert_eq!(
         program(
             11,
@@ -1534,9 +1680,25 @@ fn cad_edit_append_topology_chamfer_contract_is_strict_bounded_and_host_id_assig
                 target_feature_id,
                 edge_reference_ids,
                 distance_mm,
+                mode: Default::default(),
+                side_face_reference_ids: Vec::new(),
             },
         }],
     };
+    let advanced_program =
+        |edge_reference_ids, mode, side_face_reference_ids| AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::AppendFeature {
+                definition_id: 7,
+                name: "Advanced exact chamfer".to_owned(),
+                feature: AssistantCadBodyFeature::TopologyChamfer {
+                    target_feature_id: 11,
+                    edge_reference_ids,
+                    distance_mm: 1.5,
+                    mode,
+                    side_face_reference_ids,
+                },
+            }],
+        };
     let valid = program(11, vec![reference_id.clone()], 1.5);
 
     assert_eq!(valid.validate(), Ok(()));
@@ -1554,6 +1716,36 @@ fn cad_edit_append_topology_chamfer_contract_is_strict_bounded_and_host_id_assig
         serde_json::from_value::<AssistantCadEditProgram>(serialized).unwrap(),
         valid
     );
+    for advanced in [
+        advanced_program(
+            vec![reference_id.clone()],
+            AssistantCadChamferMode::TwoDistance {
+                second_distance_mm: 2.5,
+            },
+            vec!["c".repeat(64)],
+        ),
+        advanced_program(
+            vec![reference_id.clone()],
+            AssistantCadChamferMode::DistanceAngle {
+                angle_degrees: 30.0,
+            },
+            vec!["c".repeat(64)],
+        ),
+        advanced_program(
+            vec![reference_id.clone(), "d".repeat(64)],
+            AssistantCadChamferMode::TwoDistance {
+                second_distance_mm: 2.5,
+            },
+            vec!["c".repeat(64); 2],
+        ),
+    ] {
+        assert_eq!(advanced.validate(), Ok(()));
+        let serialized = serde_json::to_value(&advanced).unwrap();
+        assert_eq!(
+            serde_json::from_value::<AssistantCadEditProgram>(serialized).unwrap(),
+            advanced
+        );
+    }
     assert_eq!(
         program(
             11,
@@ -1582,6 +1774,77 @@ fn cad_edit_append_topology_chamfer_contract_is_strict_bounded_and_host_id_assig
         assert_eq!(
             invalid.validate(),
             Err("assistant CAD body feature is invalid".to_owned())
+        );
+    }
+
+    for (index, invalid) in [
+        advanced_program(
+            vec![reference_id.clone()],
+            AssistantCadChamferMode::Symmetric,
+            vec!["c".repeat(64)],
+        ),
+        advanced_program(
+            vec![reference_id.clone()],
+            AssistantCadChamferMode::TwoDistance {
+                second_distance_mm: 2.5,
+            },
+            Vec::new(),
+        ),
+        advanced_program(
+            vec![reference_id.clone(), "d".repeat(64)],
+            AssistantCadChamferMode::TwoDistance {
+                second_distance_mm: 2.5,
+            },
+            vec!["c".repeat(64)],
+        ),
+        advanced_program(
+            vec![reference_id.clone()],
+            AssistantCadChamferMode::TwoDistance {
+                second_distance_mm: 0.009,
+            },
+            vec!["c".repeat(64)],
+        ),
+        advanced_program(
+            vec![reference_id.clone()],
+            AssistantCadChamferMode::TwoDistance {
+                second_distance_mm: 100_000.1,
+            },
+            vec!["c".repeat(64)],
+        ),
+        advanced_program(
+            vec![reference_id.clone()],
+            AssistantCadChamferMode::DistanceAngle { angle_degrees: 0.1 },
+            vec!["c".repeat(64)],
+        ),
+        advanced_program(
+            vec![reference_id.clone()],
+            AssistantCadChamferMode::DistanceAngle {
+                angle_degrees: 89.9,
+            },
+            vec!["c".repeat(64)],
+        ),
+        advanced_program(
+            vec![reference_id.clone()],
+            AssistantCadChamferMode::DistanceAngle {
+                angle_degrees: f64::NAN,
+            },
+            vec!["c".repeat(64)],
+        ),
+        advanced_program(
+            vec![reference_id.clone()],
+            AssistantCadChamferMode::TwoDistance {
+                second_distance_mm: 2.5,
+            },
+            vec!["short".to_owned()],
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(
+            invalid.validate(),
+            Err("assistant CAD body feature is invalid".to_owned()),
+            "invalid advanced Chamfer case {index} was accepted"
         );
     }
 

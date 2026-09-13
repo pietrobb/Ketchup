@@ -1415,10 +1415,10 @@ fn live_oauth_assistant_builds_a_roofed_house_frame_across_turns() {
     let drawings = fabrication.drawing_svg(&committed).unwrap();
     let manufacturing = fabrication.manufacturing_export(&committed).unwrap();
     let bom_text = String::from_utf8_lossy(&bom);
-    assert!(bom_text.contains("ketchup.general-bom-export.v1"));
+    assert!(bom_text.contains("ketchup.general-bom-export.v2"));
     assert!(bom_text.contains(&format!("source_revision={}", committed.revision_id())));
     assert!(bom_text.contains(&format!("source_digest={}", committed.canonical_digest())));
-    assert!(String::from_utf8_lossy(&drawings).contains("ketchup.general-drawing-svg.v2"));
+    assert!(String::from_utf8_lossy(&drawings).contains("ketchup.general-drawing-svg.v3"));
     assert!(String::from_utf8_lossy(&manufacturing).contains("kind=stock"));
     publish_artifact("live-oauth-roofed-house-bom.txt", &bom);
     publish_artifact("live-oauth-roofed-house-drawings.svg", &drawings);
@@ -1707,7 +1707,7 @@ fn the_timber_frame_house_projects_a_manufacturable_handoff() {
     let bom = String::from_utf8(projection.bom_export(&snapshot).unwrap()).unwrap();
     assert!(bom.contains(&format!("quantity={}", STUD_INSTANCES)));
     let drawings = String::from_utf8(projection.drawing_svg(&snapshot).unwrap()).unwrap();
-    assert!(drawings.contains("ketchup.general-drawing-svg.v2"));
+    assert!(drawings.contains("ketchup.general-drawing-svg.v3"));
     let manufacturing =
         String::from_utf8(projection.manufacturing_export(&snapshot).unwrap()).unwrap();
     assert!(manufacturing.contains("kind=stock"));
@@ -2257,6 +2257,7 @@ fn assistant_authored_part_accepts_a_host_issued_topology_fillet() {
                     target_feature_id: body_id.0,
                     edge_reference_ids: vec![edge_reference.clone()],
                     radius_mm: 2.0,
+                    radius_stations: Vec::new(),
                 },
             }],
         },
@@ -2275,6 +2276,7 @@ fn assistant_authored_part_accepts_a_host_issued_topology_fillet() {
             edges,
             kind: EdgeFinishKind::Fillet,
             amount,
+            ..
         } if *target == body_id
             && edges.len() == 1
             && edges[0].lineage_digest == edge_reference

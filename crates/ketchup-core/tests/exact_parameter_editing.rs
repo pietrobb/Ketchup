@@ -1,7 +1,8 @@
 use ketchup_core::document::{
-    BodyId, BooleanOperation, CanonicalCommand, CommandBatch, DefinitionId, Dimension,
-    DocumentStore, EdgeFinishKind, FeatureId, FeatureKind, FeatureParameterTarget, LoftSection,
-    ParameterValueType, ProfileSegment, ProposalContext, ProposalPrincipal, SpatialPathSegment,
+    BodyId, BooleanOperation, CanonicalCommand, ChamferEdgeSide, ChamferMode, CommandBatch,
+    DefinitionId, Dimension, DocumentStore, EdgeFinishKind, FeatureId, FeatureKind,
+    FeatureParameterTarget, FilletRadiusStation, LoftContinuity, LoftSection, ParameterValueType,
+    ProfileSegment, ProposalContext, ProposalPrincipal, SpatialPathSegment,
 };
 use ketchup_core::exact_brep_graph::ExactBRepGraph;
 use ketchup_core::exact_product::{
@@ -878,7 +879,9 @@ fn seed_cross_body_history() -> DocumentStore {
                 id: TOOL_PROFILE,
                 definition_id: DEFINITION,
                 name: "Tool profile".to_owned(),
-                kind: profile(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[6.0, 0.0], [12.0, 0.0], [12.0, 8.0], [6.0, 8.0]],
+                },
             },
             CanonicalCommand::CreateFeature {
                 id: TOOL_EXTRUSION,
@@ -886,7 +889,7 @@ fn seed_cross_body_history() -> DocumentStore {
                 name: "Tool extrusion".to_owned(),
                 kind: FeatureKind::Extrusion {
                     profile: TOOL_PROFILE,
-                    height: Dimension::from_decimal("2").unwrap(),
+                    height: Dimension::from_decimal("5").unwrap(),
                 },
             },
             CanonicalCommand::SetActiveBody {
@@ -909,25 +912,63 @@ fn seed_cross_body_history() -> DocumentStore {
 }
 
 #[test]
-fn cross_body_affected_closure_fails_without_mutation() {
-    let document = seed_cross_body_history();
+fn cross_body_affected_closure_previews_and_commits_atomically() {
+    let mut document = seed_cross_body_history();
     let before = stamp(&document);
+    let before_exact = ExactFeatureChainRequest::from_snapshot_for_body(
+        &document.current(),
+        DEFINITION,
+        BodyId(1),
+    )
+    .unwrap();
+    let preview = prepare_body_parameter_edit(
+        &document,
+        BodyParameterEditRequest {
+            definition_id: DEFINITION,
+            body_id: BodyId(2),
+            edits: vec![generic_parameter(TOOL_PROFILE, "bounds.width", 7.0)],
+        },
+        ProposalPrincipal::LocalAssistant,
+    )
+    .unwrap();
+
+    assert_eq!(preview.affected_body_ids, vec![BodyId(1), BodyId(2)]);
     assert_eq!(
-        prepare_body_parameter_edit(
-            &document,
-            BodyParameterEditRequest {
-                definition_id: DEFINITION,
-                body_id: BodyId(2),
-                edits: vec![ExactParameterEdit {
-                    target: ExactParameterEditTarget::FeatureDimension(TOOL_EXTRUSION),
-                    dimension: Dimension::from_decimal("4").unwrap(),
-                }],
-            },
-            ProposalPrincipal::LocalAssistant,
-        ),
-        Err(BodyParameterEditError::CrossBodyAffected(UNION, BodyId(1)))
+        preview.affected_feature_ids,
+        vec![TOOL_PROFILE, TOOL_EXTRUSION, UNION]
+    );
+    assert!(preview.unchanged_body_ids.is_empty());
+    assert_eq!(stamp(&document), before);
+    let candidate = document.preview_batch(preview.proposal.batch()).unwrap();
+    let candidate_exact =
+        ExactFeatureChainRequest::from_snapshot_for_body(&candidate, DEFINITION, BodyId(1))
+            .unwrap();
+    assert_ne!(
+        candidate_exact.canonical_input_digest,
+        before_exact.canonical_input_digest
     );
     assert_eq!(stamp(&document), before);
+
+    let revision = document.commit_proposal(&preview.proposal).unwrap();
+    assert_eq!(
+        revision.dirty_features(),
+        &BTreeSet::from([TOOL_PROFILE, TOOL_EXTRUSION, UNION])
+    );
+    let edited_digest = document.current().canonical_digest();
+    assert_eq!(document.undo().unwrap().canonical_digest(), before.1);
+    assert_eq!(document.redo().unwrap().canonical_digest(), edited_digest);
+    let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
+    assert_eq!(reopened.snapshot().canonical_digest(), edited_digest);
+    assert_eq!(
+        ExactFeatureChainRequest::from_snapshot_for_body(
+            &reopened.snapshot(),
+            DEFINITION,
+            BodyId(1)
+        )
+        .unwrap()
+        .canonical_input_digest,
+        candidate_exact.canonical_input_digest
+    );
 }
 
 #[test]
@@ -1106,6 +1147,8 @@ fn general_feature_parameters_preview_recompute_undo_and_round_trip() {
                             elevation_mm: 10.0,
                         },
                     ],
+                    guide: None,
+                    continuity: LoftContinuity::Position,
                 },
             },
             CanonicalCommand::CreateFeature {
@@ -1156,6 +1199,7 @@ fn general_feature_parameters_preview_recompute_undo_and_round_trip() {
                 target: FACE_OFFSET,
                 removed_faces: vec![shell_face],
                 thickness: Dimension::from_decimal("1").unwrap(),
+                direction: ketchup_core::document::ShellDirection::Inward,
             },
         }]))
         .unwrap();
@@ -1171,6 +1215,18 @@ fn general_feature_parameters_preview_recompute_undo_and_round_trip() {
                 edges: vec![edge],
                 kind: EdgeFinishKind::Fillet,
                 amount: Dimension::from_decimal("0.5").unwrap(),
+                fillet_radius_stations: vec![
+                    FilletRadiusStation {
+                        position: 0.5,
+                        radius: Dimension::from_decimal("0.75").unwrap(),
+                    },
+                    FilletRadiusStation {
+                        position: 1.0,
+                        radius: Dimension::from_decimal("0.4").unwrap(),
+                    },
+                ],
+                chamfer_mode: ketchup_core::document::ChamferMode::Symmetric,
+                chamfer_edge_sides: Vec::new(),
             },
         }]))
         .unwrap();
@@ -1195,6 +1251,7 @@ fn general_feature_parameters_preview_recompute_undo_and_round_trip() {
                 generic_parameter(FACE_OFFSET, "distance", 1.0),
                 generic_parameter(SHELL, "thickness", 1.5),
                 generic_parameter(EDGE_FINISH, "amount", 0.75),
+                generic_parameter(EDGE_FINISH, "fillet_radius_stations.0.radius", 1.25),
             ],
         },
         ProposalPrincipal::ManualClient,
@@ -1234,4 +1291,180 @@ fn general_feature_parameters_preview_recompute_undo_and_round_trip() {
         .is_err()
     );
     assert_eq!(stamp(&document), invalid_before);
+}
+
+#[test]
+fn advanced_chamfer_parameters_preview_recompute_undo_and_schema_76_round_trip() {
+    const PROFILE: FeatureId = FeatureId(201);
+    const BASE: FeatureId = FeatureId(202);
+    const TWO_DISTANCE: FeatureId = FeatureId(203);
+    const DISTANCE_ANGLE: FeatureId = FeatureId(204);
+
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Advanced chamfer parameters".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PROFILE,
+                definition_id: DEFINITION,
+                name: "Profile".into(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [20.0, 0.0], [20.0, 14.0], [0.0, 14.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: BASE,
+                definition_id: DEFINITION,
+                name: "Base".into(),
+                kind: FeatureKind::Extrusion {
+                    profile: PROFILE,
+                    height: Dimension::from_decimal("12").unwrap(),
+                },
+            },
+        ]))
+        .unwrap();
+    let two_edge =
+        topology_parameter_reference(&document.current(), BASE, TopologicalElementKind::Edge);
+    let two_face =
+        topology_parameter_reference(&document.current(), BASE, TopologicalElementKind::Face);
+    let angle_edge = two_edge.clone();
+    let angle_face = two_face.clone();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateFeature {
+                id: TWO_DISTANCE,
+                definition_id: DEFINITION,
+                name: "Two-distance chamfer".into(),
+                kind: FeatureKind::TopologyEdgeFinish {
+                    target: BASE,
+                    edges: vec![two_edge.clone()],
+                    kind: EdgeFinishKind::Chamfer,
+                    amount: Dimension::from_decimal("1").unwrap(),
+                    fillet_radius_stations: Vec::new(),
+                    chamfer_mode: ChamferMode::TwoDistance {
+                        second_distance: Dimension::from_decimal("2").unwrap(),
+                    },
+                    chamfer_edge_sides: vec![ChamferEdgeSide {
+                        edge: two_edge,
+                        side_face: two_face,
+                    }],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: DISTANCE_ANGLE,
+                definition_id: DEFINITION,
+                name: "Distance-angle chamfer".into(),
+                kind: FeatureKind::TopologyEdgeFinish {
+                    target: BASE,
+                    edges: vec![angle_edge.clone()],
+                    kind: EdgeFinishKind::Chamfer,
+                    amount: Dimension::from_decimal("1").unwrap(),
+                    fillet_radius_stations: Vec::new(),
+                    chamfer_mode: ChamferMode::DistanceAngle {
+                        angle_degrees: 30.0,
+                    },
+                    chamfer_edge_sides: vec![ChamferEdgeSide {
+                        edge: angle_edge,
+                        side_face: angle_face,
+                    }],
+                },
+            },
+        ]))
+        .unwrap();
+    document.discard_history_before_current();
+
+    let before = stamp(&document);
+    let preview = prepare_body_parameter_edit(
+        &document,
+        BodyParameterEditRequest {
+            definition_id: DEFINITION,
+            body_id: BodyId(1),
+            edits: vec![
+                generic_parameter(TWO_DISTANCE, "chamfer_second_distance", 3.0),
+                ExactParameterEdit {
+                    target: ExactParameterEditTarget::FeatureParameter(
+                        FeatureParameterTarget::new(
+                            DISTANCE_ANGLE,
+                            "chamfer_angle",
+                            ParameterValueType::Angle,
+                        )
+                        .unwrap(),
+                    ),
+                    dimension: Dimension::from_decimal("45").unwrap(),
+                },
+            ],
+        },
+        ProposalPrincipal::LocalAssistant,
+    )
+    .unwrap();
+    assert_eq!(stamp(&document), before);
+    let candidate = document.preview_batch(preview.proposal.batch()).unwrap();
+    assert_eq!(stamp(&document), before);
+    assert!(matches!(
+        candidate.feature(TWO_DISTANCE).unwrap().kind(),
+        FeatureKind::TopologyEdgeFinish {
+            chamfer_mode: ChamferMode::TwoDistance { second_distance },
+            ..
+        } if second_distance.millimetres() == 3.0
+    ));
+    assert!(matches!(
+        candidate.feature(DISTANCE_ANGLE).unwrap().kind(),
+        FeatureKind::TopologyEdgeFinish {
+            chamfer_mode: ChamferMode::DistanceAngle { angle_degrees },
+            ..
+        } if *angle_degrees == 45.0
+    ));
+    ExactBRepGraph::from_snapshot(&candidate, DEFINITION, TWO_DISTANCE).unwrap();
+    ExactBRepGraph::from_snapshot(&candidate, DEFINITION, DISTANCE_ANGLE).unwrap();
+
+    document.commit_proposal(&preview.proposal).unwrap();
+    assert_eq!(document.visible_undo_steps(), before.2 + 1);
+    let edited_digest = document.current().canonical_digest();
+    assert_eq!(persistence::CURRENT_SCHEMA, 89);
+    let bytes = persistence::save(&document.current());
+    let reopened = persistence::load(&bytes).unwrap().snapshot();
+    assert_eq!(reopened.canonical_digest(), edited_digest);
+    assert_eq!(persistence::save(&reopened), bytes);
+
+    document.undo().unwrap();
+    assert_eq!(document.current().canonical_digest(), before.1);
+    document.redo().unwrap();
+    assert_eq!(document.current().canonical_digest(), edited_digest);
+
+    for (index, edit) in [
+        generic_parameter(TWO_DISTANCE, "chamfer_second_distance", 0.009),
+        ExactParameterEdit {
+            target: ExactParameterEditTarget::FeatureParameter(
+                FeatureParameterTarget::new(
+                    DISTANCE_ANGLE,
+                    "chamfer_angle",
+                    ParameterValueType::Angle,
+                )
+                .unwrap(),
+            ),
+            dimension: Dimension::from_decimal("0.1").unwrap(),
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let invalid_before = stamp(&document);
+        assert!(
+            prepare_body_parameter_edit(
+                &document,
+                BodyParameterEditRequest {
+                    definition_id: DEFINITION,
+                    body_id: BodyId(1),
+                    edits: vec![edit],
+                },
+                ProposalPrincipal::LocalAssistant,
+            )
+            .is_err(),
+            "invalid advanced Chamfer parameter case {index} was accepted"
+        );
+        assert_eq!(stamp(&document), invalid_before);
+    }
 }

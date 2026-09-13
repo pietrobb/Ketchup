@@ -15,29 +15,39 @@ use crate::assembly_joint::{
     AssemblyJointId, AssemblyJointKind, AssemblyJointLimits, AssemblyMotionDriver,
     AssemblyMotionStudy, AssemblyMotionStudyId,
 };
+use crate::cam::{
+    CamCutParameters, CamPlan, CamPlanId, CamSetup, CamStock, CamTarget, CamTool, CamToolKind,
+    CamUnits, CamWorkOffset,
+};
 use crate::document::{
-    BOTTLE_SHELL_OPENING_FACE_ROLE, BOTTLE_SHOULDER_EDGE_ROLE, Body, BodyId, BooleanOperation,
-    BottleEdgeFinishKind, CanonicalCommand, CanonicalError, ClassificationCategory,
-    ClassificationCategoryId, ClassificationDimension, ClassificationDimensionId, Collection,
-    CollectionId, CommandBatch, Definition, DefinitionId, Dimension, DimensionDisplayUnit,
-    DimensionPresentation, DocumentStore, EdgeFinishKind, EvaluationIdentity, EvaluatorNode,
-    ExactReferenceConversionConsequence, ExactToMeshConversion, Feature, FeatureBodyOwnership,
-    FeatureId, FeatureKind, FeatureParameterBinding, FeatureParameterFreshnessAudit,
-    FeatureParameterProvenance, FeatureParameterTarget, Group, GroupId, ImportedExactBodySpec,
-    InstancePath, InstancePathStep, LocalGroup, LocalGroupId, LocalGroupKey, LocalOccurrence,
-    LocalOccurrenceId, LocalOccurrenceKey, LoftSection, MeshAuthority, MeshBodySpec, NodeId,
+    BOTTLE_SHELL_OPENING_FACE_ROLE, BOTTLE_SHOULDER_EDGE_ROLE, Body, BodyId, BodyKind,
+    BooleanOperation, BottleEdgeFinishKind, CanonicalCommand, CanonicalError, ChamferEdgeSide,
+    ChamferMode, ClassificationCategory, ClassificationCategoryId, ClassificationDimension,
+    ClassificationDimensionId, Collection, CollectionId, CommandBatch, Definition, DefinitionId,
+    Dimension, DimensionDisplayUnit, DimensionPresentation, DocumentStore, EdgeFinishKind,
+    EvaluationIdentity, EvaluatorNode, ExactReferenceConversionConsequence, ExactToMeshConversion,
+    Feature, FeatureBodyOwnership, FeatureId, FeatureKind, FeatureParameterBinding,
+    FeatureParameterFreshnessAudit, FeatureParameterProvenance, FeatureParameterTarget,
+    FilletRadiusStation, Group, GroupId, ImportedExactBodySpec, InstancePath, InstancePathStep,
+    LocalGroup, LocalGroupId, LocalGroupKey, LocalOccurrence, LocalOccurrenceId,
+    LocalOccurrenceKey, LoftContinuity, LoftSection, MeshAuthority, MeshBodySpec, NodeId,
     Occurrence, OccurrenceId, ParameterPath, ParameterValueType, PersistentDimension,
     PersistentDimensionId, PersistentDimensionTarget, ProductModel, ProfileSegment,
-    ProposalPrincipal, Revision, RevisionOrigin, Snapshot, SpatialPathSegment, StableEdgeRole,
-    StableFaceRole, Tag, TagId, Transform, UnitSystem,
+    ProposalPrincipal, Revision, RevisionOrigin, ShellDirection, Snapshot, SpatialPathSegment,
+    StableEdgeRole, StableFaceRole, SurfaceBodySpec, Tag, TagId, Transform, UnitSystem,
+    WeldmentJointPolicy, WeldmentJointPrimary, WeldmentJointSpec, WeldmentMemberSpec,
 };
 use crate::drawing::{
-    DrawingAnnotations, DrawingDetailRegion, DrawingDimensionId, DrawingDimensionTolerance,
-    DrawingLinearDimension, DrawingMargins, DrawingNote, DrawingNoteId, DrawingPageOrientation,
-    DrawingPageSize, DrawingPageTemplate, DrawingScale, DrawingSectionPlane, DrawingSheet,
-    DrawingSheetId, DrawingSource, DrawingTitleBlock, DrawingViewFrame, MAX_DRAWING_DIMENSIONS,
-    MAX_DRAWING_NOTES, MAX_DRAWING_VIEWS, ORTHOGRAPHIC_DRAWING_SCHEMA_V1,
-    ORTHOGRAPHIC_DRAWING_SCHEMA_V2, OrthographicViewKind,
+    DrawingAngularDimension, DrawingAnnotations, DrawingBomBalloon, DrawingBomBalloonId,
+    DrawingCircularDimension, DrawingCircularDimensionKind, DrawingDatumId, DrawingDatumReference,
+    DrawingDatumSymbol, DrawingDetailRegion, DrawingDimensionId, DrawingDimensionTolerance,
+    DrawingFeatureControlFrame, DrawingFeatureControlFrameId, DrawingGeometricCharacteristic,
+    DrawingLinearDimension, DrawingMargins, DrawingMaterialCondition, DrawingNote, DrawingNoteId,
+    DrawingPageOrientation, DrawingPageSize, DrawingPageTemplate, DrawingScale,
+    DrawingSectionPlane, DrawingSheet, DrawingSheetId, DrawingSource, DrawingTitleBlock,
+    DrawingViewFrame, MAX_DRAWING_BOM_BALLOONS, MAX_DRAWING_DIMENSIONS, MAX_DRAWING_NOTES,
+    MAX_DRAWING_VIEWS, ORTHOGRAPHIC_DRAWING_SCHEMA_V1, ORTHOGRAPHIC_DRAWING_SCHEMA_V2,
+    OrthographicViewKind,
 };
 use crate::exact_product::{BODY_SUBSHAPE_REF_SCHEMA_V1, BodySubshapeRef, ReferenceStability};
 use crate::graph::{
@@ -59,6 +69,7 @@ use crate::mechanical_coupling::{
     AssemblyMotionDirection, AssemblyTransmissionKind, GearMeshKind, ScrewHandedness,
 };
 use crate::prismatic::{Aabb, CanonicalJoint, JointId, TolerancePolicy};
+use crate::sheet_metal::{SheetMetalEdge, SheetMetalFlange, SheetMetalSpec};
 use crate::sketch::{
     FeatureDirection, FeatureExtent, FeatureExtentEnd, MAX_SKETCH_CONSTRAINTS, MAX_SKETCH_ENTITIES,
     PadSpec, PocketSpec, PrincipalPlane, SketchConstraint, SketchConstraintId,
@@ -77,6 +88,8 @@ const CONTAINER_MAGIC: &[u8; 10] = b"KETCHUPCTR";
 const CONTAINER_SCHEMA: u16 = 1;
 const HISTORY_MAGIC: &[u8; 10] = b"KETCHUPHST";
 const HISTORY_SCHEMA: u16 = 2;
+const WORK_RECOVERY_MAGIC: &[u8; 10] = b"KETCHUPWRK";
+const WORK_RECOVERY_SCHEMA: u16 = 1;
 const MAX_HISTORY_REVISIONS: u32 = 4_096;
 const MESH_BODY_SCHEMA: u16 = 16;
 const SPACE_CLEARANCE_SCHEMA: u16 = 17;
@@ -131,7 +144,27 @@ const CONSTRUCTION_GEOMETRY_SCHEMA: u16 = 66;
 const CONSTRUCTION_AXIS_SCHEMA: u16 = 67;
 const CONSTRUCTION_PLANE_SCHEMA: u16 = 68;
 const CONSTRUCTION_PLANE_WORKPLANE_SCHEMA: u16 = 69;
-pub const CURRENT_SCHEMA: u16 = CONSTRUCTION_PLANE_WORKPLANE_SCHEMA;
+const LOFT_GUIDE_CONTINUITY_SCHEMA: u16 = 70;
+const SHELL_DIRECTION_SCHEMA: u16 = 71;
+const VARIABLE_FILLET_SCHEMA: u16 = 72;
+const ADVANCED_CHAMFER_SCHEMA: u16 = 73;
+const NESTED_ASSEMBLY_PATH_SCHEMA: u16 = 74;
+const NESTED_DRAWING_PATH_SCHEMA: u16 = 75;
+const NESTED_INSTANCE_TRANSFORM_SCHEMA: u16 = 76;
+const TYPED_DRAWING_DIMENSION_SCHEMA: u16 = 77;
+const DRAWING_GDT_SCHEMA: u16 = 78;
+const DRAWING_BOM_BALLOON_SCHEMA: u16 = 79;
+const IMPORTED_EXACT_PART_SCHEMA: u16 = 80;
+const SHEET_METAL_SCHEMA: u16 = 81;
+const WELDMENT_MEMBER_SCHEMA: u16 = 82;
+const WELDMENT_JOINT_SCHEMA: u16 = 83;
+const SURFACE_BODY_SCHEMA: u16 = 84;
+const SURFACE_OPERATION_SCHEMA: u16 = 85;
+const SURFACE_KNIT_SCHEMA: u16 = 86;
+const SURFACE_THICKEN_SCHEMA: u16 = 87;
+const IMPORTED_EXACT_BODY_KIND_SCHEMA: u16 = 88;
+const CAM_PLAN_SCHEMA: u16 = 89;
+pub const CURRENT_SCHEMA: u16 = CAM_PLAN_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -176,7 +209,9 @@ struct ProductSchemaCapabilities {
     loft_spline: bool,
     import_receipts: bool,
     imported_exact_body: bool,
+    imported_exact_part: bool,
     imported_topology_counts: bool,
+    imported_exact_body_kind: bool,
     topological_feature_references: bool,
     general_parameter_paths: bool,
     sketchup_scene: bool,
@@ -213,9 +248,27 @@ struct ProductSchemaCapabilities {
     construction_axis: bool,
     construction_plane: bool,
     construction_plane_workplanes: bool,
+    loft_guide_continuity: bool,
+    shell_direction: bool,
+    variable_fillet: bool,
+    advanced_chamfer: bool,
+    nested_assembly_paths: bool,
+    nested_drawing_paths: bool,
+    nested_instance_transforms: bool,
+    typed_drawing_dimensions: bool,
+    drawing_gdt: bool,
+    drawing_bom_balloons: bool,
     sketch_projection: bool,
     sketch_construction: bool,
     helical_assembly_joints: bool,
+    sheet_metal: bool,
+    weldment_member: bool,
+    weldment_joint: bool,
+    surface_body: bool,
+    surface_operations: bool,
+    surface_knit: bool,
+    surface_thicken: bool,
+    cam_plans: bool,
 }
 
 impl ProductSchemaCapabilities {
@@ -245,7 +298,9 @@ impl ProductSchemaCapabilities {
         loft_spline: false,
         import_receipts: false,
         imported_exact_body: false,
+        imported_exact_part: false,
         imported_topology_counts: false,
+        imported_exact_body_kind: false,
         topological_feature_references: false,
         general_parameter_paths: false,
         sketchup_scene: false,
@@ -282,9 +337,27 @@ impl ProductSchemaCapabilities {
         construction_axis: false,
         construction_plane: false,
         construction_plane_workplanes: false,
+        loft_guide_continuity: false,
+        shell_direction: false,
+        variable_fillet: false,
+        advanced_chamfer: false,
+        nested_assembly_paths: false,
+        nested_drawing_paths: false,
+        nested_instance_transforms: false,
+        typed_drawing_dimensions: false,
+        drawing_gdt: false,
+        drawing_bom_balloons: false,
         sketch_projection: false,
         sketch_construction: false,
         helical_assembly_joints: false,
+        sheet_metal: false,
+        weldment_member: false,
+        weldment_joint: false,
+        surface_body: false,
+        surface_operations: false,
+        surface_knit: false,
+        surface_thicken: false,
+        cam_plans: false,
     };
 
     const fn current(schema: u16) -> Self {
@@ -314,7 +387,9 @@ impl ProductSchemaCapabilities {
             loft_spline: schema >= LOFT_SPLINE_SCHEMA,
             import_receipts: schema >= IMPORT_RECEIPT_SCHEMA,
             imported_exact_body: schema >= IMPORTED_EXACT_BODY_SCHEMA,
+            imported_exact_part: schema >= IMPORTED_EXACT_PART_SCHEMA,
             imported_topology_counts: schema >= IMPORTED_TOPOLOGY_COUNTS_SCHEMA,
+            imported_exact_body_kind: schema >= IMPORTED_EXACT_BODY_KIND_SCHEMA,
             topological_feature_references: schema >= TOPOLOGICAL_FEATURE_REFERENCE_SCHEMA,
             general_parameter_paths: schema >= GENERAL_PARAMETER_PATH_SCHEMA,
             sketchup_scene: schema >= SKETCHUP_SCENE_SCHEMA,
@@ -351,9 +426,27 @@ impl ProductSchemaCapabilities {
             construction_axis: schema >= CONSTRUCTION_AXIS_SCHEMA,
             construction_plane: schema >= CONSTRUCTION_PLANE_SCHEMA,
             construction_plane_workplanes: schema >= CONSTRUCTION_PLANE_WORKPLANE_SCHEMA,
+            loft_guide_continuity: schema >= LOFT_GUIDE_CONTINUITY_SCHEMA,
+            shell_direction: schema >= SHELL_DIRECTION_SCHEMA,
+            variable_fillet: schema >= VARIABLE_FILLET_SCHEMA,
+            advanced_chamfer: schema >= ADVANCED_CHAMFER_SCHEMA,
+            nested_assembly_paths: schema >= NESTED_ASSEMBLY_PATH_SCHEMA,
+            nested_drawing_paths: schema >= NESTED_DRAWING_PATH_SCHEMA,
+            nested_instance_transforms: schema >= NESTED_INSTANCE_TRANSFORM_SCHEMA,
+            typed_drawing_dimensions: schema >= TYPED_DRAWING_DIMENSION_SCHEMA,
+            drawing_gdt: schema >= DRAWING_GDT_SCHEMA,
+            drawing_bom_balloons: schema >= DRAWING_BOM_BALLOON_SCHEMA,
             sketch_projection: schema >= SKETCH_PROJECTION_SCHEMA,
             sketch_construction: schema >= SKETCH_CONSTRUCTION_SCHEMA,
             helical_assembly_joints: schema >= HELICAL_ASSEMBLY_JOINT_SCHEMA,
+            sheet_metal: schema >= SHEET_METAL_SCHEMA,
+            weldment_member: schema >= WELDMENT_MEMBER_SCHEMA,
+            weldment_joint: schema >= WELDMENT_JOINT_SCHEMA,
+            surface_body: schema >= SURFACE_BODY_SCHEMA,
+            surface_operations: schema >= SURFACE_OPERATION_SCHEMA,
+            surface_knit: schema >= SURFACE_KNIT_SCHEMA,
+            surface_thicken: schema >= SURFACE_THICKEN_SCHEMA,
+            cam_plans: schema >= CAM_PLAN_SCHEMA,
         }
     }
 }
@@ -740,6 +833,7 @@ pub fn save(snapshot: &Snapshot) -> Vec<u8> {
 
 fn save_with_schema(snapshot: &Snapshot, schema: u16) -> Vec<u8> {
     let product = snapshot.product();
+    let capabilities = ProductSchemaCapabilities::current(schema);
     let mut payload = Vec::new();
     push_u64(&mut payload, snapshot.revision_id());
     push_u64(&mut payload, product.document_id.0);
@@ -777,7 +871,7 @@ fn save_with_schema(snapshot: &Snapshot, schema: u16) -> Vec<u8> {
             definition.local_occurrence_ids().iter().map(|id| id.0),
         );
     }
-    write_features(&mut payload, product);
+    write_features(&mut payload, product, capabilities);
     write_occurrences(&mut payload, product);
     write_groups(&mut payload, product);
 
@@ -924,6 +1018,24 @@ fn save_with_schema(snapshot: &Snapshot, schema: u16) -> Vec<u8> {
     for condition in product.mechanical_conditions.values() {
         write_mechanical_condition(&mut payload, condition);
     }
+    if capabilities.cam_plans
+        && (!product.cam_plans.is_empty() || !product.instance_transform_overrides.is_empty())
+    {
+        push_u32(&mut payload, product.cam_plans.len() as u32);
+        for plan in product.cam_plans.values() {
+            write_cam_plan(&mut payload, plan);
+        }
+    }
+    if capabilities.nested_instance_transforms && !product.instance_transform_overrides.is_empty() {
+        push_u32(
+            &mut payload,
+            product.instance_transform_overrides.len() as u32,
+        );
+        for (path, transform) in &product.instance_transform_overrides {
+            write_instance_path(&mut payload, path);
+            push_transform(&mut payload, *transform);
+        }
+    }
 
     let mut manifest = Vec::new();
     push_u64(&mut manifest, payload.len() as u64);
@@ -939,6 +1051,73 @@ fn save_with_schema(snapshot: &Snapshot, schema: u16) -> Vec<u8> {
     bytes.extend_from_slice(&manifest);
     bytes.extend_from_slice(&payload);
     bytes
+}
+
+fn write_cam_plan(bytes: &mut Vec<u8>, plan: &CamPlan) {
+    push_u64(bytes, plan.id().0);
+    push_string(bytes, plan.name());
+    push_u8(bytes, 1);
+    push_u64(bytes, plan.target().definition_id.0);
+    push_u64(bytes, plan.target().feature_id.0);
+    push_string(bytes, &plan.target().exact_graph_digest);
+    for value in plan
+        .stock()
+        .minimum_mm
+        .into_iter()
+        .chain(plan.stock().maximum_mm)
+    {
+        push_u64(bytes, value.to_bits());
+    }
+    push_u32(bytes, plan.tool().number);
+    push_u8(
+        bytes,
+        match plan.tool().kind {
+            CamToolKind::FlatEndMill => 1,
+            CamToolKind::BallEndMill => 2,
+            CamToolKind::Drill => 3,
+        },
+    );
+    for value in [
+        plan.tool().diameter_mm,
+        plan.tool().flute_length_mm,
+        plan.tool().overall_length_mm,
+        plan.tool().holder_diameter_mm,
+        plan.tool().holder_length_mm,
+    ] {
+        push_u64(bytes, value.to_bits());
+    }
+    push_u32(bytes, plan.tool().spindle_rpm);
+    push_u64(bytes, plan.tool().feed_mm_per_min.to_bits());
+    push_u64(bytes, plan.tool().plunge_mm_per_min.to_bits());
+    push_u8(
+        bytes,
+        match plan.setup().work_offset {
+            CamWorkOffset::G54 => 54,
+            CamWorkOffset::G55 => 55,
+            CamWorkOffset::G56 => 56,
+            CamWorkOffset::G57 => 57,
+            CamWorkOffset::G58 => 58,
+            CamWorkOffset::G59 => 59,
+        },
+    );
+    for value in plan
+        .setup()
+        .origin_mm
+        .into_iter()
+        .chain(plan.setup().x_axis)
+        .chain(plan.setup().y_axis)
+        .chain([plan.setup().safe_height_mm])
+    {
+        push_u64(bytes, value.to_bits());
+    }
+    for value in [
+        plan.cut_parameters().maximum_stepdown_mm,
+        plan.cut_parameters().stepover_ratio,
+        plan.cut_parameters().radial_allowance_mm,
+        plan.cut_parameters().axial_allowance_mm,
+    ] {
+        push_u64(bytes, value.to_bits());
+    }
 }
 
 fn imported_source_blob_hashes(snapshot: &Snapshot) -> BTreeSet<String> {
@@ -1224,6 +1403,23 @@ fn write_slot_path(bytes: &mut Vec<u8>, path: &SlotPath) {
 fn write_identity(bytes: &mut Vec<u8>, value: &DerivedIdentity) {
     push_u64(bytes, value.root_rule_node_id.0);
     write_slot_path(bytes, &value.slot_path);
+}
+
+fn write_instance_path(bytes: &mut Vec<u8>, path: &InstancePath) {
+    push_u64(bytes, path.root_occurrence().0);
+    push_u32(bytes, path.steps().len() as u32);
+    for step in path.steps() {
+        match step {
+            InstancePathStep::Group(id) => {
+                push_u8(bytes, 1);
+                push_u64(bytes, id.0);
+            }
+            InstancePathStep::Occurrence(id) => {
+                push_u8(bytes, 2);
+                push_u64(bytes, id.0);
+            }
+        }
+    }
 }
 
 fn write_joint(bytes: &mut Vec<u8>, value: &CanonicalJoint) {
@@ -1720,7 +1916,11 @@ fn write_sketch(bytes: &mut Vec<u8>, spec: &SketchSpec) {
     }
 }
 
-fn write_features(bytes: &mut Vec<u8>, product: &ProductModel) {
+fn write_features(
+    bytes: &mut Vec<u8>,
+    product: &ProductModel,
+    capabilities: ProductSchemaCapabilities,
+) {
     push_u32(bytes, product.features.len() as u32);
     for feature in product.features.values() {
         push_u64(bytes, feature.id().0);
@@ -1928,13 +2128,130 @@ fn write_features(bytes: &mut Vec<u8>, product: &ProductModel) {
                 push_u64(bytes, profile.0);
                 push_u64(bytes, path.0);
             }
-            FeatureKind::Loft { sections } => {
+            FeatureKind::WeldmentMember(spec) => {
+                push_u8(bytes, 30);
+                push_u64(bytes, spec.profile.0);
+                push_u64(bytes, spec.path.0);
+                push_u64(bytes, spec.orientation_degrees.to_bits());
+            }
+            FeatureKind::WeldmentJoint(spec) => {
+                push_u8(bytes, 31);
+                push_u64(bytes, spec.first_member.0);
+                push_u64(bytes, spec.second_member.0);
+                push_u8(
+                    bytes,
+                    match spec.policy {
+                        WeldmentJointPolicy::Butt => 1,
+                        WeldmentJointPolicy::Miter => 2,
+                    },
+                );
+                push_u8(
+                    bytes,
+                    match spec.primary {
+                        WeldmentJointPrimary::First => 1,
+                        WeldmentJointPrimary::Second => 2,
+                    },
+                );
+            }
+            FeatureKind::SurfaceBody(spec) => {
+                push_u8(bytes, 32);
+                match spec {
+                    SurfaceBodySpec::Planar { profile } => {
+                        push_u8(bytes, 1);
+                        push_u64(bytes, profile.0);
+                    }
+                    SurfaceBodySpec::Loft {
+                        sections,
+                        guide,
+                        continuity,
+                    } => {
+                        push_u8(bytes, 2);
+                        push_u32(bytes, sections.len() as u32);
+                        for section in sections {
+                            push_u64(bytes, section.profile.0);
+                            push_u64(bytes, section.elevation_mm.to_bits());
+                        }
+                        push_u8(bytes, u8::from(guide.is_some()));
+                        if let Some(guide) = guide {
+                            push_u64(bytes, guide.0);
+                        }
+                        push_u8(
+                            bytes,
+                            match continuity {
+                                LoftContinuity::Position => 1,
+                                LoftContinuity::Tangent => 2,
+                                LoftContinuity::Curvature => 3,
+                            },
+                        );
+                    }
+                }
+            }
+            FeatureKind::SurfaceTrim { target, cutter } => {
+                push_u8(bytes, 33);
+                push_u64(bytes, target.0);
+                push_u64(bytes, cutter.0);
+            }
+            FeatureKind::SurfaceExtend { target, distance } => {
+                push_u8(bytes, 34);
+                push_u64(bytes, target.0);
+                push_string(bytes, distance.source_token());
+                push_u64(bytes, distance.millimetres().to_bits());
+            }
+            FeatureKind::SurfaceKnit {
+                surfaces,
+                tolerance,
+                make_solid,
+            } => {
+                push_u8(bytes, 35);
+                push_u32(bytes, surfaces.len() as u32);
+                for surface in surfaces {
+                    push_u64(bytes, surface.0);
+                }
+                push_string(bytes, tolerance.source_token());
+                push_u64(bytes, tolerance.millimetres().to_bits());
+                push_u8(bytes, u8::from(*make_solid));
+            }
+            FeatureKind::SurfaceThicken {
+                target,
+                thickness,
+                direction,
+            } => {
+                push_u8(bytes, 36);
+                push_u64(bytes, target.0);
+                push_string(bytes, thickness.source_token());
+                push_u64(bytes, thickness.millimetres().to_bits());
+                push_u8(
+                    bytes,
+                    match direction {
+                        ShellDirection::Inward => 1,
+                        ShellDirection::Outward => 2,
+                        ShellDirection::Symmetric => 3,
+                    },
+                );
+            }
+            FeatureKind::Loft {
+                sections,
+                guide,
+                continuity,
+            } => {
                 push_u8(bytes, 15);
                 push_u32(bytes, sections.len() as u32);
                 for section in sections {
                     push_u64(bytes, section.profile.0);
                     push_u64(bytes, section.elevation_mm.to_bits());
                 }
+                push_u8(bytes, u8::from(guide.is_some()));
+                if let Some(guide) = guide {
+                    push_u64(bytes, guide.0);
+                }
+                push_u8(
+                    bytes,
+                    match continuity {
+                        LoftContinuity::Position => 1,
+                        LoftContinuity::Tangent => 2,
+                        LoftContinuity::Curvature => 3,
+                    },
+                );
             }
             FeatureKind::Revolve {
                 profile,
@@ -2002,6 +2319,7 @@ fn write_features(bytes: &mut Vec<u8>, product: &ProductModel) {
                 target,
                 removed_faces,
                 thickness,
+                direction,
             } => {
                 push_u8(bytes, 21);
                 push_u64(bytes, target.0);
@@ -2011,12 +2329,25 @@ fn write_features(bytes: &mut Vec<u8>, product: &ProductModel) {
                 }
                 push_string(bytes, thickness.source_token());
                 push_u64(bytes, thickness.millimetres().to_bits());
+                if capabilities.shell_direction {
+                    push_u8(
+                        bytes,
+                        match direction {
+                            ShellDirection::Inward => 1,
+                            ShellDirection::Outward => 2,
+                            ShellDirection::Symmetric => 3,
+                        },
+                    );
+                }
             }
             FeatureKind::TopologyEdgeFinish {
                 target,
                 edges,
                 kind,
                 amount,
+                fillet_radius_stations,
+                chamfer_mode,
+                chamfer_edge_sides,
             } => {
                 push_u8(bytes, 22);
                 push_u64(bytes, target.0);
@@ -2033,6 +2364,33 @@ fn write_features(bytes: &mut Vec<u8>, product: &ProductModel) {
                 );
                 push_string(bytes, amount.source_token());
                 push_u64(bytes, amount.millimetres().to_bits());
+                if capabilities.variable_fillet {
+                    push_u32(bytes, fillet_radius_stations.len() as u32);
+                    for station in fillet_radius_stations {
+                        push_u64(bytes, station.position.to_bits());
+                        push_string(bytes, station.radius.source_token());
+                        push_u64(bytes, station.radius.millimetres().to_bits());
+                    }
+                }
+                if capabilities.advanced_chamfer {
+                    match chamfer_mode {
+                        ChamferMode::Symmetric => push_u8(bytes, 1),
+                        ChamferMode::TwoDistance { second_distance } => {
+                            push_u8(bytes, 2);
+                            push_string(bytes, second_distance.source_token());
+                            push_u64(bytes, second_distance.millimetres().to_bits());
+                        }
+                        ChamferMode::DistanceAngle { angle_degrees } => {
+                            push_u8(bytes, 3);
+                            push_u64(bytes, angle_degrees.to_bits());
+                        }
+                    }
+                    push_u32(bytes, chamfer_edge_sides.len() as u32);
+                    for selection in chamfer_edge_sides {
+                        push_topological_reference(bytes, &selection.edge);
+                        push_topological_reference(bytes, &selection.side_face);
+                    }
+                }
             }
             FeatureKind::TopologyFaceOffset {
                 target,
@@ -2052,12 +2410,46 @@ fn write_features(bytes: &mut Vec<u8>, product: &ProductModel) {
                     push_u64(bytes, value.to_bits());
                 }
             }
+            FeatureKind::SheetMetal(spec) => {
+                push_u8(bytes, 29);
+                for dimension in [&spec.width, &spec.depth, &spec.thickness] {
+                    push_string(bytes, dimension.source_token());
+                    push_u64(bytes, dimension.millimetres().to_bits());
+                }
+                push_u64(bytes, spec.k_factor.to_bits());
+                push_u32(bytes, spec.flanges.len() as u32);
+                for flange in &spec.flanges {
+                    push_u8(
+                        bytes,
+                        match flange.edge {
+                            SheetMetalEdge::MinX => 1,
+                            SheetMetalEdge::MaxX => 2,
+                            SheetMetalEdge::MinY => 3,
+                            SheetMetalEdge::MaxY => 4,
+                        },
+                    );
+                    push_string(bytes, flange.length.source_token());
+                    push_u64(bytes, flange.length.millimetres().to_bits());
+                    push_u64(bytes, flange.angle_degrees.to_bits());
+                    push_string(bytes, flange.inner_radius.source_token());
+                    push_u64(bytes, flange.inner_radius.millimetres().to_bits());
+                }
+            }
             FeatureKind::ImportedExactBody(spec) => {
                 push_u8(bytes, 16);
                 push_string(bytes, &spec.schema);
                 push_u64(bytes, spec.import_id.0);
                 bytes.extend_from_slice(&spec.source_sha256);
                 push_u64(bytes, spec.source_byte_len);
+                if capabilities.imported_exact_part {
+                    match spec.source_part_index {
+                        Some(index) => {
+                            push_u8(bytes, 1);
+                            push_u32(bytes, index);
+                        }
+                        None => push_u8(bytes, 0),
+                    }
+                }
                 push_string(bytes, &spec.result_fingerprint);
                 push_u32(bytes, spec.solid_count);
                 match spec.topology_counts {
@@ -2068,6 +2460,16 @@ fn write_features(bytes: &mut Vec<u8>, product: &ProductModel) {
                         }
                     }
                     None => push_u8(bytes, 0),
+                }
+                if capabilities.imported_exact_body_kind {
+                    push_u8(
+                        bytes,
+                        match spec.body_kind {
+                            BodyKind::Solid => 1,
+                            BodyKind::Surface => 2,
+                        },
+                    );
+                    push_u64(bytes, spec.area_mm2.to_bits());
                 }
                 push_u64(bytes, spec.volume_mm3.to_bits());
                 for coordinate in spec.bounds_mm.iter().flatten() {
@@ -2157,7 +2559,7 @@ fn write_assembly_mate(bytes: &mut Vec<u8>, mate: &AssemblyMate) {
     push_string(bytes, mate.schema());
     push_u64(bytes, mate.id().0);
     for endpoint in [mate.endpoint_a(), mate.endpoint_b()] {
-        push_u64(bytes, endpoint.occurrence_id().0);
+        write_instance_path(bytes, endpoint.instance_path());
         match endpoint.attachment() {
             AssemblyMateAttachment::ReferenceOnly(reference) => {
                 push_u8(bytes, 1);
@@ -2230,8 +2632,8 @@ fn write_assembly_mate(bytes: &mut Vec<u8>, mate: &AssemblyMate) {
 fn write_assembly_joint(bytes: &mut Vec<u8>, joint: &AssemblyJoint) {
     push_string(bytes, joint.schema());
     push_u64(bytes, joint.id().0);
-    push_u64(bytes, joint.parent_occurrence_id().0);
-    push_u64(bytes, joint.child_occurrence_id().0);
+    write_instance_path(bytes, joint.parent_instance_path());
+    write_instance_path(bytes, joint.child_instance_path());
     match joint.kind() {
         AssemblyJointKind::Fixed => push_u8(bytes, 1),
         AssemblyJointKind::Revolute {
@@ -2487,6 +2889,14 @@ fn write_drawing_sheet(
             push_u8(bytes, 2);
             write_ids(bytes, occurrence_ids.iter().map(|id| id.0));
         }
+        DrawingSource::RigidAssemblyInstances { instance_paths } => {
+            assert!(capabilities.nested_drawing_paths);
+            push_u8(bytes, 3);
+            push_u32(bytes, instance_paths.len() as u32);
+            for path in instance_paths {
+                write_instance_path(bytes, path);
+            }
+        }
     }
     if !page_contract {
         return;
@@ -2622,6 +3032,143 @@ fn write_drawing_sheet(
         }
         push_string(bytes, note.text_template());
     }
+    if !capabilities.typed_drawing_dimensions {
+        assert!(
+            sheet.angular_dimensions().is_empty() && sheet.circular_dimensions().is_empty(),
+            "typed drawing dimensions require schema 77"
+        );
+        return;
+    }
+    push_u32(bytes, sheet.angular_dimensions().len() as u32);
+    for dimension in sheet.angular_dimensions() {
+        push_u64(bytes, dimension.id().0);
+        push_string(bytes, dimension.view_stable_name());
+        for source in dimension.source_line_ids() {
+            push_string(bytes, source);
+        }
+        push_u64(bytes, dimension.arc_radius_page_mm().to_bits());
+        write_drawing_tolerance(bytes, dimension.tolerance());
+    }
+    push_u32(bytes, sheet.circular_dimensions().len() as u32);
+    for dimension in sheet.circular_dimensions() {
+        push_u64(bytes, dimension.id().0);
+        push_string(bytes, dimension.view_stable_name());
+        push_string(bytes, dimension.source_circle_id());
+        push_u8(
+            bytes,
+            match dimension.kind() {
+                DrawingCircularDimensionKind::Radius => 1,
+                DrawingCircularDimensionKind::Diameter => 2,
+            },
+        );
+        push_u64(bytes, dimension.leader_angle_degrees().to_bits());
+        push_u64(bytes, dimension.offset_page_mm().to_bits());
+        write_drawing_tolerance(bytes, dimension.tolerance());
+    }
+    if !capabilities.drawing_gdt {
+        assert!(
+            sheet.datum_symbols().is_empty() && sheet.feature_control_frames().is_empty(),
+            "drawing GD&T requires schema 78"
+        );
+        return;
+    }
+    push_u32(bytes, sheet.datum_symbols().len() as u32);
+    for datum in sheet.datum_symbols() {
+        push_u64(bytes, datum.id().0);
+        push_string(bytes, datum.view_stable_name());
+        push_string(bytes, datum.source_line_id());
+        push_string(bytes, datum.label());
+        for coordinate in datum.offset_page_mm() {
+            push_u64(bytes, coordinate.to_bits());
+        }
+    }
+    push_u32(bytes, sheet.feature_control_frames().len() as u32);
+    for frame in sheet.feature_control_frames() {
+        push_u64(bytes, frame.id().0);
+        push_string(bytes, frame.view_stable_name());
+        push_string(bytes, frame.source_line_id());
+        push_u8(bytes, drawing_characteristic_code(frame.characteristic()));
+        push_u64(bytes, frame.tolerance_mm().to_bits());
+        push_u8(bytes, u8::from(frame.diameter_zone()));
+        push_u8(
+            bytes,
+            drawing_material_condition_code(frame.material_condition()),
+        );
+        push_u32(bytes, frame.datum_references().len() as u32);
+        for reference in frame.datum_references() {
+            push_string(bytes, reference.label());
+            push_u8(
+                bytes,
+                drawing_material_condition_code(reference.material_condition()),
+            );
+        }
+        for coordinate in frame.offset_page_mm() {
+            push_u64(bytes, coordinate.to_bits());
+        }
+    }
+    if !capabilities.drawing_bom_balloons {
+        assert!(
+            sheet.bom_balloons().is_empty(),
+            "drawing BOM balloons require schema 79"
+        );
+        return;
+    }
+    push_u32(bytes, sheet.bom_balloons().len() as u32);
+    for balloon in sheet.bom_balloons() {
+        push_u64(bytes, balloon.id().0);
+        push_string(bytes, balloon.view_stable_name());
+        write_instance_path(bytes, balloon.instance_path());
+        push_u32(bytes, balloon.position());
+        for coordinate in balloon.offset_page_mm() {
+            push_u64(bytes, coordinate.to_bits());
+        }
+    }
+}
+
+fn drawing_characteristic_code(characteristic: DrawingGeometricCharacteristic) -> u8 {
+    match characteristic {
+        DrawingGeometricCharacteristic::Straightness => 1,
+        DrawingGeometricCharacteristic::Flatness => 2,
+        DrawingGeometricCharacteristic::Circularity => 3,
+        DrawingGeometricCharacteristic::Cylindricity => 4,
+        DrawingGeometricCharacteristic::ProfileOfLine => 5,
+        DrawingGeometricCharacteristic::ProfileOfSurface => 6,
+        DrawingGeometricCharacteristic::Angularity => 7,
+        DrawingGeometricCharacteristic::Perpendicularity => 8,
+        DrawingGeometricCharacteristic::Parallelism => 9,
+        DrawingGeometricCharacteristic::Position => 10,
+        DrawingGeometricCharacteristic::Concentricity => 11,
+        DrawingGeometricCharacteristic::Symmetry => 12,
+        DrawingGeometricCharacteristic::CircularRunout => 13,
+        DrawingGeometricCharacteristic::TotalRunout => 14,
+    }
+}
+
+fn drawing_material_condition_code(condition: DrawingMaterialCondition) -> u8 {
+    match condition {
+        DrawingMaterialCondition::None => 0,
+        DrawingMaterialCondition::MaximumMaterial => 1,
+        DrawingMaterialCondition::LeastMaterial => 2,
+        DrawingMaterialCondition::RegardlessOfFeatureSize => 3,
+    }
+}
+
+fn write_drawing_tolerance(bytes: &mut Vec<u8>, tolerance: DrawingDimensionTolerance) {
+    match tolerance {
+        DrawingDimensionTolerance::None => push_u8(bytes, 0),
+        DrawingDimensionTolerance::Symmetric { deviation_bits } => {
+            push_u8(bytes, 1);
+            push_u64(bytes, deviation_bits);
+        }
+        DrawingDimensionTolerance::Bilateral {
+            upper_bits,
+            lower_bits,
+        } => {
+            push_u8(bytes, 2);
+            push_u64(bytes, upper_bits);
+            push_u64(bytes, lower_bits);
+        }
+    }
 }
 
 fn write_groups(bytes: &mut Vec<u8>, product: &ProductModel) {
@@ -2631,6 +3178,32 @@ fn write_groups(bytes: &mut Vec<u8>, product: &ProductModel) {
         push_string(bytes, group.name());
         push_transform(bytes, group.transform());
         push_optional_id(bytes, group.parent().map(|id| id.0));
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FileIdentity {
+    byte_len: u64,
+    sha256: [u8; 32],
+}
+
+impl FileIdentity {
+    #[must_use]
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        Self {
+            byte_len: bytes.len() as u64,
+            sha256: crate::graph::sha256_bytes(bytes),
+        }
+    }
+
+    #[must_use]
+    pub fn byte_len(self) -> u64 {
+        self.byte_len
+    }
+
+    #[must_use]
+    pub fn sha256(self) -> [u8; 32] {
+        self.sha256
     }
 }
 
@@ -2653,6 +3226,12 @@ pub fn read_native_document_file(path: impl AsRef<Path>) -> Result<Vec<u8>, File
     Ok(bytes)
 }
 
+pub fn read_native_document_identity(
+    path: impl AsRef<Path>,
+) -> Result<FileIdentity, FilePersistenceError> {
+    read_native_document_file(path).map(|bytes| FileIdentity::from_bytes(&bytes))
+}
+
 pub fn save_atomic(
     path: impl AsRef<Path>,
     snapshot: &Snapshot,
@@ -2666,7 +3245,7 @@ pub fn save_atomic_with_container(
     container_data: &ContainerData,
 ) -> Result<(), FilePersistenceError> {
     let bytes = save_container(snapshot, container_data).map_err(FilePersistenceError::Format)?;
-    save_atomic_bytes(path.as_ref(), &bytes)
+    save_atomic_bytes(path.as_ref(), &bytes, None)
 }
 
 pub fn save_atomic_document_store_with_container(
@@ -2676,7 +3255,19 @@ pub fn save_atomic_document_store_with_container(
 ) -> Result<(), FilePersistenceError> {
     let bytes =
         save_document_store(document, container_data).map_err(FilePersistenceError::Format)?;
-    save_atomic_bytes(path.as_ref(), &bytes)
+    save_atomic_bytes(path.as_ref(), &bytes, None)
+}
+
+pub fn save_atomic_document_store_with_container_if_unchanged(
+    path: impl AsRef<Path>,
+    document: &DocumentStore,
+    container_data: &ContainerData,
+    expected: FileIdentity,
+) -> Result<FileIdentity, FilePersistenceError> {
+    let bytes =
+        save_document_store(document, container_data).map_err(FilePersistenceError::Format)?;
+    save_atomic_bytes(path.as_ref(), &bytes, Some(expected))?;
+    Ok(FileIdentity::from_bytes(&bytes))
 }
 
 pub fn save_atomic_document_store_current_snapshot_with_container(
@@ -2686,12 +3277,33 @@ pub fn save_atomic_document_store_current_snapshot_with_container(
 ) -> Result<(), FilePersistenceError> {
     let bytes = save_document_store_current_snapshot(document, container_data)
         .map_err(FilePersistenceError::Format)?;
-    save_atomic_bytes(path.as_ref(), &bytes)
+    save_atomic_bytes(path.as_ref(), &bytes, None)
 }
 
-fn save_atomic_bytes(path: &Path, bytes: &[u8]) -> Result<(), FilePersistenceError> {
+pub fn save_atomic_document_store_current_snapshot_with_container_if_unchanged(
+    path: impl AsRef<Path>,
+    document: &DocumentStore,
+    container_data: &ContainerData,
+    expected: FileIdentity,
+) -> Result<FileIdentity, FilePersistenceError> {
+    let bytes = save_document_store_current_snapshot(document, container_data)
+        .map_err(FilePersistenceError::Format)?;
+    save_atomic_bytes(path.as_ref(), &bytes, Some(expected))?;
+    Ok(FileIdentity::from_bytes(&bytes))
+}
+
+fn save_atomic_bytes(
+    path: &Path,
+    bytes: &[u8],
+    expected: Option<FileIdentity>,
+) -> Result<(), FilePersistenceError> {
     load(bytes).map_err(FilePersistenceError::Format)?;
     match read_native_document_file(path) {
+        Ok(previous)
+            if expected.is_some_and(|identity| identity != FileIdentity::from_bytes(&previous)) =>
+        {
+            return Err(FilePersistenceError::ExternalConflict);
+        }
         Ok(previous) if load(&previous).is_ok() => {
             write_atomic(&recovery_path(path), &previous)?;
         }
@@ -2700,6 +3312,7 @@ fn save_atomic_bytes(path: &Path, bytes: &[u8]) -> Result<(), FilePersistenceErr
                 PersistenceError::ResourceLimit,
             ));
         }
+        Err(_) if expected.is_some() => return Err(FilePersistenceError::ExternalConflict),
         _ => {}
     }
     write_atomic(path, bytes)
@@ -2719,10 +3332,113 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), FilePersistenceError> {
     Ok(())
 }
 
+#[must_use]
+pub fn work_recovery_path(path: &Path) -> PathBuf {
+    let mut recovery = path.as_os_str().to_os_string();
+    recovery.push(".work-recovery");
+    PathBuf::from(recovery)
+}
+
+pub fn save_work_recovery_document_store_with_container(
+    path: &Path,
+    document: &DocumentStore,
+    container_data: &ContainerData,
+    base_identity: FileIdentity,
+) -> Result<(), FilePersistenceError> {
+    if read_native_document_identity(path)? != base_identity {
+        return Err(FilePersistenceError::ExternalConflict);
+    }
+    let payload =
+        save_document_store(document, container_data).map_err(FilePersistenceError::Format)?;
+    let mut bytes = Vec::with_capacity(WORK_RECOVERY_MAGIC.len() + 2 + 8 + 32 + 8 + payload.len());
+    bytes.extend_from_slice(WORK_RECOVERY_MAGIC);
+    push_u16(&mut bytes, WORK_RECOVERY_SCHEMA);
+    push_u64(&mut bytes, base_identity.byte_len());
+    bytes.extend_from_slice(&base_identity.sha256());
+    push_u64(&mut bytes, payload.len() as u64);
+    bytes.extend_from_slice(&payload);
+    write_atomic(&work_recovery_path(path), &bytes)
+}
+
+pub fn clear_work_recovery(path: &Path) -> Result<(), FilePersistenceError> {
+    match fs::remove_file(work_recovery_path(path)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(FilePersistenceError::Io(error)),
+    }
+}
+
 fn recovery_path(path: &Path) -> PathBuf {
     let mut recovery = path.as_os_str().to_os_string();
     recovery.push(".recovery");
     PathBuf::from(recovery)
+}
+
+fn try_load_work_recovery(
+    path: &Path,
+    base_identity: FileIdentity,
+) -> Result<Option<LoadedFile>, FilePersistenceError> {
+    let source_path = work_recovery_path(path);
+    let mut file = match fs::File::open(&source_path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(FilePersistenceError::Io(error)),
+    };
+    let wrapper_limit = MAX_NATIVE_DOCUMENT_BYTES as u64 + 60;
+    if file.metadata()?.len() > wrapper_limit {
+        return Ok(None);
+    }
+    let mut bytes = Vec::new();
+    std::io::Read::by_ref(&mut file)
+        .take(wrapper_limit + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > wrapper_limit {
+        return Ok(None);
+    }
+    let mut reader = Reader::new(&bytes);
+    if reader.take(WORK_RECOVERY_MAGIC.len()).ok() != Some(WORK_RECOVERY_MAGIC)
+        || reader.u16().ok() != Some(WORK_RECOVERY_SCHEMA)
+    {
+        return Ok(None);
+    }
+    let Some(byte_len) = reader.u64().ok() else {
+        return Ok(None);
+    };
+    let Some(sha256) = reader.take(32).ok().and_then(|value| value.try_into().ok()) else {
+        return Ok(None);
+    };
+    if (FileIdentity { byte_len, sha256 }) != base_identity {
+        return Ok(None);
+    }
+    let Some(payload_len) = reader
+        .u64()
+        .ok()
+        .and_then(|value| usize::try_from(value).ok())
+    else {
+        return Ok(None);
+    };
+    if payload_len > MAX_NATIVE_DOCUMENT_BYTES {
+        return Ok(None);
+    }
+    let Some(payload) = reader.take(payload_len).ok() else {
+        return Ok(None);
+    };
+    if !reader.is_finished() {
+        return Ok(None);
+    }
+    let mut outcome = match load(payload) {
+        Ok(outcome) => outcome,
+        Err(_) => return Ok(None),
+    };
+    match &mut outcome {
+        LoadOutcome::Editable { audit, .. } => audit.recovered_from_backup = true,
+        LoadOutcome::ReviewOnly(candidate) => candidate.audit.recovered_from_backup = true,
+    }
+    Ok(Some(LoadedFile {
+        outcome,
+        source_path,
+        source_bytes: payload.to_vec(),
+    }))
 }
 
 pub struct LoadedFile {
@@ -2761,11 +3477,17 @@ pub fn load_file_with_source(path: impl AsRef<Path>) -> Result<LoadedFile, FileP
     let path = path.as_ref();
     match read_native_document_file(path) {
         Ok(bytes) => match load(&bytes) {
-            Ok(outcome) => Ok(LoadedFile {
-                outcome,
-                source_path: path.to_owned(),
-                source_bytes: bytes,
-            }),
+            Ok(outcome) => {
+                let identity = FileIdentity::from_bytes(&bytes);
+                match try_load_work_recovery(path, identity) {
+                    Ok(Some(recovered)) => Ok(recovered),
+                    Ok(None) | Err(_) => Ok(LoadedFile {
+                        outcome,
+                        source_path: path.to_owned(),
+                        source_bytes: bytes,
+                    }),
+                }
+            }
             Err(primary_error @ PersistenceError::LegacyFeatureRequiresMigration { .. }) => {
                 Err(FilePersistenceError::Format(primary_error))
             }
@@ -2778,6 +3500,7 @@ pub fn load_file_with_source(path: impl AsRef<Path>) -> Result<LoadedFile, FileP
             try_load_recovery(path)?.ok_or(FilePersistenceError::Io(primary_error))
         }
         Err(FilePersistenceError::Format(error)) => Err(FilePersistenceError::Format(error)),
+        Err(FilePersistenceError::ExternalConflict) => Err(FilePersistenceError::ExternalConflict),
     }
 }
 
@@ -2791,6 +3514,9 @@ fn try_load_recovery(path: &Path) -> Result<Option<LoadedFile>, FilePersistenceE
         Err(FilePersistenceError::Io(_)) => return Ok(None),
         Err(FilePersistenceError::Format(error)) => {
             return Err(FilePersistenceError::Format(error));
+        }
+        Err(FilePersistenceError::ExternalConflict) => {
+            return Err(FilePersistenceError::ExternalConflict);
         }
     };
     let mut outcome = match load(&bytes) {
@@ -3145,6 +3871,25 @@ fn load_document(
             | CONSTRUCTION_GEOMETRY_SCHEMA
             | CONSTRUCTION_AXIS_SCHEMA
             | CONSTRUCTION_PLANE_SCHEMA
+            | CONSTRUCTION_PLANE_WORKPLANE_SCHEMA
+            | LOFT_GUIDE_CONTINUITY_SCHEMA
+            | SHELL_DIRECTION_SCHEMA
+            | VARIABLE_FILLET_SCHEMA
+            | ADVANCED_CHAMFER_SCHEMA
+            | NESTED_ASSEMBLY_PATH_SCHEMA
+            | NESTED_DRAWING_PATH_SCHEMA
+            | NESTED_INSTANCE_TRANSFORM_SCHEMA
+            | TYPED_DRAWING_DIMENSION_SCHEMA
+            | DRAWING_GDT_SCHEMA
+            | DRAWING_BOM_BALLOON_SCHEMA
+            | SHEET_METAL_SCHEMA
+            | WELDMENT_MEMBER_SCHEMA
+            | WELDMENT_JOINT_SCHEMA
+            | SURFACE_BODY_SCHEMA
+            | SURFACE_OPERATION_SCHEMA
+            | SURFACE_KNIT_SCHEMA
+            | SURFACE_THICKEN_SCHEMA
+            | IMPORTED_EXACT_BODY_KIND_SCHEMA
             | CURRENT_SCHEMA
     ) {
         return Err(PersistenceError::UnsupportedSchema(schema));
@@ -4216,10 +4961,27 @@ fn read_sketch(
     })
 }
 
+fn read_instance_path(reader: &mut Reader<'_>) -> Result<InstancePath, PersistenceError> {
+    let mut path = InstancePath::root(OccurrenceId(reader.u64()?));
+    for _ in 0..reader.count_with_limit(256)? {
+        path = path.with_step(match reader.u8()? {
+            1 => InstancePathStep::Group(LocalGroupId(reader.u64()?)),
+            2 => InstancePathStep::Occurrence(LocalOccurrenceId(reader.u64()?)),
+            _ => {
+                return Err(PersistenceError::InvalidCanonicalData(
+                    CanonicalError::InvalidInstancePath,
+                ));
+            }
+        });
+    }
+    Ok(path)
+}
+
 fn read_assembly_mate(
     reader: &mut Reader<'_>,
     typed_attachments: bool,
     axial_attachments: bool,
+    nested_assembly_paths: bool,
 ) -> Result<AssemblyMate, PersistenceError> {
     let schema = reader.string()?;
     if schema != ASSEMBLY_MATE_SCHEMA_V1 {
@@ -4227,7 +4989,11 @@ fn read_assembly_mate(
     }
     let id = AssemblyMateId(reader.u64()?);
     let mut endpoint = || -> Result<AssemblyMateEndpoint, PersistenceError> {
-        let occurrence_id = OccurrenceId(reader.u64()?);
+        let instance_path = if nested_assembly_paths {
+            read_instance_path(reader)?
+        } else {
+            InstancePath::root(OccurrenceId(reader.u64()?))
+        };
         let attachment = if typed_attachments {
             match reader.u8()? {
                 1 => AssemblyMateAttachment::ReferenceOnly(read_exact_reference(reader)?),
@@ -4281,7 +5047,7 @@ fn read_assembly_mate(
             _ => return Err(PersistenceError::InvalidAssemblyMate),
         };
         Ok(AssemblyMateEndpoint {
-            occurrence_id,
+            instance_path,
             attachment,
             health,
         })
@@ -4316,14 +5082,23 @@ fn read_assembly_mate(
 fn read_assembly_joint(
     reader: &mut Reader<'_>,
     allow_helical: bool,
+    nested_assembly_paths: bool,
 ) -> Result<AssemblyJoint, PersistenceError> {
     let schema = reader.string()?;
     if schema != ASSEMBLY_JOINT_SCHEMA_V1 {
         return Err(PersistenceError::InvalidAssemblyJoint);
     }
     let id = AssemblyJointId(reader.u64()?);
-    let parent_occurrence_id = OccurrenceId(reader.u64()?);
-    let child_occurrence_id = OccurrenceId(reader.u64()?);
+    let parent_instance_path = if nested_assembly_paths {
+        read_instance_path(reader)?
+    } else {
+        InstancePath::root(OccurrenceId(reader.u64()?))
+    };
+    let child_instance_path = if nested_assembly_paths {
+        read_instance_path(reader)?
+    } else {
+        InstancePath::root(OccurrenceId(reader.u64()?))
+    };
     let kind = match reader.u8()? {
         1 => AssemblyJointKind::Fixed,
         2 => AssemblyJointKind::Revolute {
@@ -4347,8 +5122,8 @@ fn read_assembly_joint(
     Ok(AssemblyJoint {
         schema,
         id,
-        parent_occurrence_id,
-        child_occurrence_id,
+        parent_instance_path,
+        child_instance_path,
         kind,
     })
 }
@@ -4572,6 +5347,10 @@ fn read_drawing_sheet(
         detail_contract,
         dimension_contract,
         (tolerance_contract, false),
+        false,
+        false,
+        false,
+        false,
     )
 }
 
@@ -4583,6 +5362,10 @@ fn read_drawing_sheet_with_annotations(
     detail_contract: bool,
     dimension_contract: bool,
     extended_contracts: (bool, bool),
+    nested_drawing_paths: bool,
+    typed_drawing_dimensions: bool,
+    drawing_gdt: bool,
+    drawing_bom_balloons: bool,
 ) -> Result<DrawingSheet, PersistenceError> {
     let (tolerance_contract, annotation_contract) = extended_contracts;
     let persisted_schema = reader.string()?;
@@ -4601,6 +5384,13 @@ fn read_drawing_sheet_with_annotations(
         2 => DrawingSource::RigidAssembly {
             occurrence_ids: read_ids(reader)?.into_iter().map(OccurrenceId).collect(),
         },
+        3 if nested_drawing_paths => {
+            let mut instance_paths = Vec::new();
+            for _ in 0..reader.count_with_limit(MAX_COLLECTION_ITEMS)? {
+                instance_paths.push(read_instance_path(reader)?);
+            }
+            DrawingSource::RigidAssemblyInstances { instance_paths }
+        }
         _ => return Err(invalid_drawing_sheet()),
     };
     if !page_contract {
@@ -4783,6 +5573,127 @@ fn read_drawing_sheet_with_annotations(
     } else {
         (title_block, Vec::new())
     };
+    let (angular_dimensions, circular_dimensions) = if typed_drawing_dimensions {
+        let angular_count = reader.count_with_limit(MAX_DRAWING_DIMENSIONS as u32)?;
+        let mut angular_dimensions = Vec::with_capacity(angular_count as usize);
+        for _ in 0..angular_count {
+            angular_dimensions.push(
+                DrawingAngularDimension::from_persisted(
+                    DrawingDimensionId(reader.u64()?),
+                    reader.string()?,
+                    [reader.string()?, reader.string()?],
+                    f64::from_bits(reader.u64()?),
+                    read_drawing_tolerance(reader)?,
+                )
+                .map_err(|_| invalid_drawing_sheet())?,
+            );
+        }
+        let circular_count = reader.count_with_limit(MAX_DRAWING_DIMENSIONS as u32)?;
+        let mut circular_dimensions = Vec::with_capacity(circular_count as usize);
+        for _ in 0..circular_count {
+            let dimension_id = DrawingDimensionId(reader.u64()?);
+            let view_stable_name = reader.string()?;
+            let source_circle_id = reader.string()?;
+            let kind = match reader.u8()? {
+                1 => DrawingCircularDimensionKind::Radius,
+                2 => DrawingCircularDimensionKind::Diameter,
+                _ => return Err(invalid_drawing_sheet()),
+            };
+            circular_dimensions.push(
+                DrawingCircularDimension::from_persisted(
+                    dimension_id,
+                    view_stable_name,
+                    source_circle_id,
+                    kind,
+                    f64::from_bits(reader.u64()?),
+                    f64::from_bits(reader.u64()?),
+                    read_drawing_tolerance(reader)?,
+                )
+                .map_err(|_| invalid_drawing_sheet())?,
+            );
+        }
+        (angular_dimensions, circular_dimensions)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    let (datum_symbols, feature_control_frames) = if drawing_gdt {
+        let datum_count = reader.count_with_limit(MAX_DRAWING_NOTES as u32)?;
+        let mut datum_symbols = Vec::with_capacity(datum_count as usize);
+        for _ in 0..datum_count {
+            datum_symbols.push(
+                DrawingDatumSymbol::from_persisted(
+                    DrawingDatumId(reader.u64()?),
+                    reader.string()?,
+                    reader.string()?,
+                    reader.string()?,
+                    [f64::from_bits(reader.u64()?), f64::from_bits(reader.u64()?)],
+                )
+                .map_err(|_| invalid_drawing_sheet())?,
+            );
+        }
+        let frame_count = reader.count_with_limit(MAX_DRAWING_NOTES as u32)?;
+        let mut feature_control_frames = Vec::with_capacity(frame_count as usize);
+        for _ in 0..frame_count {
+            let frame_id = DrawingFeatureControlFrameId(reader.u64()?);
+            let view_stable_name = reader.string()?;
+            let source_line_id = reader.string()?;
+            let characteristic = read_drawing_characteristic(reader.u8()?)?;
+            let tolerance_mm = f64::from_bits(reader.u64()?);
+            let diameter_zone = match reader.u8()? {
+                0 => false,
+                1 => true,
+                _ => return Err(invalid_drawing_sheet()),
+            };
+            let material_condition = read_drawing_material_condition(reader.u8()?)?;
+            let reference_count = reader.count_with_limit(3)?;
+            let mut references = Vec::with_capacity(reference_count as usize);
+            for _ in 0..reference_count {
+                references.push(
+                    DrawingDatumReference::new(
+                        reader.string()?,
+                        read_drawing_material_condition(reader.u8()?)?,
+                    )
+                    .map_err(|_| invalid_drawing_sheet())?,
+                );
+            }
+            feature_control_frames.push(
+                DrawingFeatureControlFrame::from_persisted(
+                    frame_id,
+                    view_stable_name,
+                    source_line_id,
+                    characteristic,
+                    tolerance_mm,
+                    diameter_zone,
+                    material_condition,
+                    references,
+                    [f64::from_bits(reader.u64()?), f64::from_bits(reader.u64()?)],
+                )
+                .map_err(|_| invalid_drawing_sheet())?,
+            );
+        }
+        (datum_symbols, feature_control_frames)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    let bom_balloons = if drawing_bom_balloons {
+        let balloon_count = reader.count_with_limit(MAX_DRAWING_BOM_BALLOONS as u32)?;
+        let mut bom_balloons = Vec::with_capacity(balloon_count as usize);
+        for _ in 0..balloon_count {
+            bom_balloons.push(
+                DrawingBomBalloon::from_persisted(
+                    DrawingBomBalloonId(reader.u64()?),
+                    reader.string()?,
+                    read_instance_path(reader)?,
+                    reader.u32()?,
+                    [f64::from_bits(reader.u64()?), f64::from_bits(reader.u64()?)],
+                )
+                .map_err(|_| invalid_drawing_sheet())?,
+            );
+        }
+        bom_balloons
+    } else {
+        Vec::new()
+    };
     DrawingSheet::with_contract_views_and_annotations(
         id,
         name,
@@ -4790,14 +5701,154 @@ fn read_drawing_sheet_with_annotations(
         page,
         title_block,
         views,
-        DrawingAnnotations::new(linear_dimensions, notes),
+        DrawingAnnotations::with_bom_annotations(
+            linear_dimensions,
+            angular_dimensions,
+            circular_dimensions,
+            datum_symbols,
+            feature_control_frames,
+            bom_balloons,
+            notes,
+        ),
     )
     .map_err(|error| PersistenceError::InvalidCanonicalData(CanonicalError::Drawing(error)))
+}
+
+fn read_drawing_characteristic(
+    code: u8,
+) -> Result<DrawingGeometricCharacteristic, PersistenceError> {
+    match code {
+        1 => Ok(DrawingGeometricCharacteristic::Straightness),
+        2 => Ok(DrawingGeometricCharacteristic::Flatness),
+        3 => Ok(DrawingGeometricCharacteristic::Circularity),
+        4 => Ok(DrawingGeometricCharacteristic::Cylindricity),
+        5 => Ok(DrawingGeometricCharacteristic::ProfileOfLine),
+        6 => Ok(DrawingGeometricCharacteristic::ProfileOfSurface),
+        7 => Ok(DrawingGeometricCharacteristic::Angularity),
+        8 => Ok(DrawingGeometricCharacteristic::Perpendicularity),
+        9 => Ok(DrawingGeometricCharacteristic::Parallelism),
+        10 => Ok(DrawingGeometricCharacteristic::Position),
+        11 => Ok(DrawingGeometricCharacteristic::Concentricity),
+        12 => Ok(DrawingGeometricCharacteristic::Symmetry),
+        13 => Ok(DrawingGeometricCharacteristic::CircularRunout),
+        14 => Ok(DrawingGeometricCharacteristic::TotalRunout),
+        _ => Err(invalid_drawing_sheet()),
+    }
+}
+
+fn read_drawing_material_condition(code: u8) -> Result<DrawingMaterialCondition, PersistenceError> {
+    match code {
+        0 => Ok(DrawingMaterialCondition::None),
+        1 => Ok(DrawingMaterialCondition::MaximumMaterial),
+        2 => Ok(DrawingMaterialCondition::LeastMaterial),
+        3 => Ok(DrawingMaterialCondition::RegardlessOfFeatureSize),
+        _ => Err(invalid_drawing_sheet()),
+    }
+}
+
+fn read_drawing_tolerance(
+    reader: &mut Reader<'_>,
+) -> Result<DrawingDimensionTolerance, PersistenceError> {
+    match reader.u8()? {
+        0 => Ok(DrawingDimensionTolerance::None),
+        1 => DrawingDimensionTolerance::symmetric(f64::from_bits(reader.u64()?))
+            .map_err(|_| invalid_drawing_sheet()),
+        2 => DrawingDimensionTolerance::bilateral(
+            f64::from_bits(reader.u64()?),
+            f64::from_bits(reader.u64()?),
+        )
+        .map_err(|_| invalid_drawing_sheet()),
+        _ => Err(invalid_drawing_sheet()),
+    }
 }
 
 fn invalid_drawing_sheet() -> PersistenceError {
     PersistenceError::InvalidCanonicalData(CanonicalError::Drawing(
         crate::drawing::DrawingError::InvalidSheet,
+    ))
+}
+
+fn read_cam_plan(reader: &mut Reader<'_>) -> Result<CamPlan, PersistenceError> {
+    let point = |reader: &mut Reader<'_>| -> Result<[f64; 3], PersistenceError> {
+        Ok([
+            f64::from_bits(reader.u64()?),
+            f64::from_bits(reader.u64()?),
+            f64::from_bits(reader.u64()?),
+        ])
+    };
+    let id = CamPlanId(reader.u64()?);
+    let name = reader.string()?;
+    let units = match reader.u8()? {
+        1 => CamUnits::Millimetres,
+        value => return Err(PersistenceError::UnsupportedUnits(value)),
+    };
+    let target = CamTarget {
+        definition_id: DefinitionId(reader.u64()?),
+        feature_id: FeatureId(reader.u64()?),
+        exact_graph_digest: reader.string()?,
+    };
+    let stock = CamStock {
+        minimum_mm: point(reader)?,
+        maximum_mm: point(reader)?,
+    };
+    let number = reader.u32()?;
+    let kind = match reader.u8()? {
+        1 => CamToolKind::FlatEndMill,
+        2 => CamToolKind::BallEndMill,
+        3 => CamToolKind::Drill,
+        _ => {
+            return Err(PersistenceError::InvalidCanonicalData(CanonicalError::Cam(
+                crate::cam::CamError::InvalidPlan,
+            )));
+        }
+    };
+    let tool = CamTool {
+        number,
+        kind,
+        diameter_mm: f64::from_bits(reader.u64()?),
+        flute_length_mm: f64::from_bits(reader.u64()?),
+        overall_length_mm: f64::from_bits(reader.u64()?),
+        holder_diameter_mm: f64::from_bits(reader.u64()?),
+        holder_length_mm: f64::from_bits(reader.u64()?),
+        spindle_rpm: reader.u32()?,
+        feed_mm_per_min: f64::from_bits(reader.u64()?),
+        plunge_mm_per_min: f64::from_bits(reader.u64()?),
+    };
+    let work_offset = match reader.u8()? {
+        54 => CamWorkOffset::G54,
+        55 => CamWorkOffset::G55,
+        56 => CamWorkOffset::G56,
+        57 => CamWorkOffset::G57,
+        58 => CamWorkOffset::G58,
+        59 => CamWorkOffset::G59,
+        _ => {
+            return Err(PersistenceError::InvalidCanonicalData(CanonicalError::Cam(
+                crate::cam::CamError::InvalidPlan,
+            )));
+        }
+    };
+    let setup = CamSetup {
+        work_offset,
+        origin_mm: point(reader)?,
+        x_axis: point(reader)?,
+        y_axis: point(reader)?,
+        safe_height_mm: f64::from_bits(reader.u64()?),
+    };
+    let cut_parameters = CamCutParameters {
+        maximum_stepdown_mm: f64::from_bits(reader.u64()?),
+        stepover_ratio: f64::from_bits(reader.u64()?),
+        radial_allowance_mm: f64::from_bits(reader.u64()?),
+        axial_allowance_mm: f64::from_bits(reader.u64()?),
+    };
+    Ok(CamPlan::from_parts(
+        id,
+        name,
+        units,
+        target,
+        stock,
+        tool,
+        setup,
+        cut_parameters,
     ))
 }
 
@@ -5157,10 +6208,22 @@ fn read_product(
                 for _ in 0..reader.count_with_limit(64)? {
                     removed_faces.push(read_topological_reference(reader)?);
                 }
+                let thickness = Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?;
+                let direction = if capabilities.shell_direction {
+                    match reader.u8()? {
+                        1 => ShellDirection::Inward,
+                        2 => ShellDirection::Outward,
+                        3 => ShellDirection::Symmetric,
+                        value => return Err(PersistenceError::InvalidFeatureKind(value)),
+                    }
+                } else {
+                    ShellDirection::Inward
+                };
                 FeatureKind::TopologyShell {
                     target,
                     removed_faces,
-                    thickness: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
+                    thickness,
+                    direction,
                 }
             }
             22 if capabilities.topological_feature_references => {
@@ -5169,15 +6232,57 @@ fn read_product(
                 for _ in 0..reader.count_with_limit(64)? {
                     edges.push(read_topological_reference(reader)?);
                 }
+                let kind = match reader.u8()? {
+                    1 => EdgeFinishKind::Fillet,
+                    2 => EdgeFinishKind::Chamfer,
+                    value => return Err(PersistenceError::InvalidFeatureKind(value)),
+                };
+                let amount = Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?;
+                let mut fillet_radius_stations = Vec::new();
+                if capabilities.variable_fillet {
+                    for _ in 0..reader.count_with_limit(32)? {
+                        fillet_radius_stations.push(FilletRadiusStation {
+                            position: f64::from_bits(reader.u64()?),
+                            radius: Dimension::new(
+                                reader.string()?,
+                                f64::from_bits(reader.u64()?),
+                            )?,
+                        });
+                    }
+                }
+                let (chamfer_mode, chamfer_edge_sides) = if capabilities.advanced_chamfer {
+                    let mode = match reader.u8()? {
+                        1 => ChamferMode::Symmetric,
+                        2 => ChamferMode::TwoDistance {
+                            second_distance: Dimension::new(
+                                reader.string()?,
+                                f64::from_bits(reader.u64()?),
+                            )?,
+                        },
+                        3 => ChamferMode::DistanceAngle {
+                            angle_degrees: f64::from_bits(reader.u64()?),
+                        },
+                        value => return Err(PersistenceError::InvalidFeatureKind(value)),
+                    };
+                    let mut selections = Vec::new();
+                    for _ in 0..reader.count_with_limit(64)? {
+                        selections.push(ChamferEdgeSide {
+                            edge: read_topological_reference(reader)?,
+                            side_face: read_topological_reference(reader)?,
+                        });
+                    }
+                    (mode, selections)
+                } else {
+                    (ChamferMode::Symmetric, Vec::new())
+                };
                 FeatureKind::TopologyEdgeFinish {
                     target,
                     edges,
-                    kind: match reader.u8()? {
-                        1 => EdgeFinishKind::Fillet,
-                        2 => EdgeFinishKind::Chamfer,
-                        value => return Err(PersistenceError::InvalidFeatureKind(value)),
-                    },
-                    amount: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
+                    kind,
+                    amount,
+                    fillet_radius_stations,
+                    chamfer_mode,
+                    chamfer_edge_sides,
                 }
             }
             23 if capabilities.topological_feature_references => FeatureKind::TopologyFaceOffset {
@@ -5209,6 +6314,89 @@ fn read_product(
                 profile: FeatureId(reader.u64()?),
                 path: FeatureId(reader.u64()?),
             },
+            30 if capabilities.weldment_member => FeatureKind::WeldmentMember(WeldmentMemberSpec {
+                profile: FeatureId(reader.u64()?),
+                path: FeatureId(reader.u64()?),
+                orientation_degrees: f64::from_bits(reader.u64()?),
+            }),
+            31 if capabilities.weldment_joint => FeatureKind::WeldmentJoint(WeldmentJointSpec {
+                first_member: FeatureId(reader.u64()?),
+                second_member: FeatureId(reader.u64()?),
+                policy: match reader.u8()? {
+                    1 => WeldmentJointPolicy::Butt,
+                    2 => WeldmentJointPolicy::Miter,
+                    value => return Err(PersistenceError::InvalidFeatureKind(value)),
+                },
+                primary: match reader.u8()? {
+                    1 => WeldmentJointPrimary::First,
+                    2 => WeldmentJointPrimary::Second,
+                    value => return Err(PersistenceError::InvalidFeatureKind(value)),
+                },
+            }),
+            32 if capabilities.surface_body => FeatureKind::SurfaceBody(match reader.u8()? {
+                1 => SurfaceBodySpec::Planar {
+                    profile: FeatureId(reader.u64()?),
+                },
+                2 => {
+                    let mut sections = Vec::new();
+                    for _ in 0..reader.count_with_limit(16)? {
+                        sections.push(LoftSection {
+                            profile: FeatureId(reader.u64()?),
+                            elevation_mm: f64::from_bits(reader.u64()?),
+                        });
+                    }
+                    let guide = match reader.u8()? {
+                        0 => None,
+                        1 => Some(FeatureId(reader.u64()?)),
+                        value => return Err(PersistenceError::InvalidBoolean(value)),
+                    };
+                    let continuity = match reader.u8()? {
+                        1 => LoftContinuity::Position,
+                        2 => LoftContinuity::Tangent,
+                        3 => LoftContinuity::Curvature,
+                        value => return Err(PersistenceError::InvalidFeatureKind(value)),
+                    };
+                    SurfaceBodySpec::Loft {
+                        sections,
+                        guide,
+                        continuity,
+                    }
+                }
+                value => return Err(PersistenceError::InvalidFeatureKind(value)),
+            }),
+            33 if capabilities.surface_operations => FeatureKind::SurfaceTrim {
+                target: FeatureId(reader.u64()?),
+                cutter: FeatureId(reader.u64()?),
+            },
+            34 if capabilities.surface_operations => FeatureKind::SurfaceExtend {
+                target: FeatureId(reader.u64()?),
+                distance: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
+            },
+            35 if capabilities.surface_knit => {
+                let mut surfaces = Vec::new();
+                for _ in 0..reader.count_with_limit(256)? {
+                    surfaces.push(FeatureId(reader.u64()?));
+                }
+                FeatureKind::SurfaceKnit {
+                    surfaces,
+                    tolerance: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
+                    make_solid: match reader.u8()? {
+                        0 => false,
+                        1 => true,
+                        value => return Err(PersistenceError::InvalidBoolean(value)),
+                    },
+                }
+            }
+            36 if capabilities.surface_thicken => FeatureKind::SurfaceThicken {
+                target: FeatureId(reader.u64()?),
+                thickness: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
+                direction: match reader.u8()? {
+                    1 => ShellDirection::Inward,
+                    2 => ShellDirection::Outward,
+                    3 => ShellDirection::Symmetric,
+                    value => return Err(PersistenceError::InvalidFeatureKind(value)),
+                },
+            },
             15 if capabilities.loft_spline => {
                 let mut sections = Vec::new();
                 for _ in 0..reader.count_with_limit(16)? {
@@ -5217,7 +6405,27 @@ fn read_product(
                         elevation_mm: f64::from_bits(reader.u64()?),
                     });
                 }
-                FeatureKind::Loft { sections }
+                let (guide, continuity) = if capabilities.loft_guide_continuity {
+                    let guide = match reader.u8()? {
+                        0 => None,
+                        1 => Some(FeatureId(reader.u64()?)),
+                        value => return Err(PersistenceError::InvalidBoolean(value)),
+                    };
+                    let continuity = match reader.u8()? {
+                        1 => LoftContinuity::Position,
+                        2 => LoftContinuity::Tangent,
+                        3 => LoftContinuity::Curvature,
+                        value => return Err(PersistenceError::InvalidFeatureKind(value)),
+                    };
+                    (guide, continuity)
+                } else {
+                    (None, LoftContinuity::Position)
+                };
+                FeatureKind::Loft {
+                    sections,
+                    guide,
+                    continuity,
+                }
             }
             24 if capabilities.rigid_transform_feature => {
                 let target = FeatureId(reader.u64()?);
@@ -5230,6 +6438,37 @@ fn read_product(
                     transform: Transform::from_matrix(matrix)?,
                 }
             }
+            29 if capabilities.sheet_metal => {
+                let width = Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?;
+                let depth = Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?;
+                let thickness = Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?;
+                let k_factor = f64::from_bits(reader.u64()?);
+                let mut flanges = Vec::new();
+                for _ in 0..reader.count_with_limit(4)? {
+                    flanges.push(SheetMetalFlange {
+                        edge: match reader.u8()? {
+                            1 => SheetMetalEdge::MinX,
+                            2 => SheetMetalEdge::MaxX,
+                            3 => SheetMetalEdge::MinY,
+                            4 => SheetMetalEdge::MaxY,
+                            value => return Err(PersistenceError::InvalidFeatureKind(value)),
+                        },
+                        length: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
+                        angle_degrees: f64::from_bits(reader.u64()?),
+                        inner_radius: Dimension::new(
+                            reader.string()?,
+                            f64::from_bits(reader.u64()?),
+                        )?,
+                    });
+                }
+                FeatureKind::SheetMetal(SheetMetalSpec {
+                    width,
+                    depth,
+                    thickness,
+                    k_factor,
+                    flanges,
+                })
+            }
             16 if capabilities.imported_exact_body => {
                 let schema = reader.string()?;
                 let import_id = ImportId(reader.u64()?);
@@ -5238,6 +6477,15 @@ fn read_product(
                     .try_into()
                     .map_err(|_| PersistenceError::Truncated)?;
                 let source_byte_len = reader.u64()?;
+                let source_part_index = if capabilities.imported_exact_part {
+                    match reader.u8()? {
+                        0 => None,
+                        1 => Some(reader.u32()?),
+                        value => return Err(PersistenceError::InvalidBoolean(value)),
+                    }
+                } else {
+                    None
+                };
                 let result_fingerprint = reader.string()?;
                 let solid_count = reader.u32()?;
                 let topology_counts = if capabilities.imported_topology_counts {
@@ -5255,6 +6503,16 @@ fn read_product(
                 } else {
                     None
                 };
+                let (body_kind, area_mm2) = if capabilities.imported_exact_body_kind {
+                    let body_kind = match reader.u8()? {
+                        1 => BodyKind::Solid,
+                        2 => BodyKind::Surface,
+                        value => return Err(PersistenceError::InvalidFeatureKind(value)),
+                    };
+                    (body_kind, f64::from_bits(reader.u64()?))
+                } else {
+                    (BodyKind::Solid, 0.0)
+                };
                 let volume_mm3 = f64::from_bits(reader.u64()?);
                 let mut bounds_mm = [[0.0; 3]; 2];
                 for coordinate in bounds_mm.iter_mut().flatten() {
@@ -5265,9 +6523,12 @@ fn read_product(
                     import_id,
                     source_sha256,
                     source_byte_len,
+                    source_part_index,
                     result_fingerprint,
+                    body_kind,
                     solid_count,
                     topology_counts,
+                    area_mm2,
                     volume_mm3,
                     bounds_mm,
                     backend: reader.string()?,
@@ -5569,6 +6830,7 @@ fn read_product(
                     reader,
                     capabilities.planar_face_attachments,
                     capabilities.axial_attachments,
+                    capabilities.nested_assembly_paths,
                 )?;
                 if product
                     .assembly_mates
@@ -5592,6 +6854,10 @@ fn read_product(
                         capabilities.drawing_tolerance_contract,
                         capabilities.drawing_annotation_contract,
                     ),
+                    capabilities.nested_drawing_paths,
+                    capabilities.typed_drawing_dimensions,
+                    capabilities.drawing_gdt,
+                    capabilities.drawing_bom_balloons,
                 )?;
                 let id = sheet.id();
                 if product.drawing_sheets.insert(id, Arc::new(sheet)).is_some() {
@@ -5751,7 +7017,11 @@ fn read_product(
         }
         if capabilities.assembly_kinematics {
             for _ in 0..reader.count()? {
-                let joint = read_assembly_joint(reader, capabilities.helical_assembly_joints)?;
+                let joint = read_assembly_joint(
+                    reader,
+                    capabilities.helical_assembly_joints,
+                    capabilities.nested_assembly_paths,
+                )?;
                 if product
                     .assembly_joints
                     .insert(joint.id(), Arc::new(joint))
@@ -5805,6 +7075,35 @@ fn read_product(
                 }
             }
         }
+        if capabilities.cam_plans && !reader.is_finished() {
+            for _ in 0..reader.count_with_limit(MAX_COLLECTION_ITEMS)? {
+                let plan = read_cam_plan(reader)?;
+                if product
+                    .cam_plans
+                    .insert(plan.id(), Arc::new(plan))
+                    .is_some()
+                {
+                    return Err(PersistenceError::InvalidCanonicalData(CanonicalError::Cam(
+                        crate::cam::CamError::InvalidPlan,
+                    )));
+                }
+            }
+        }
+        if capabilities.nested_instance_transforms && !reader.is_finished() {
+            for _ in 0..reader.count_with_limit(MAX_COLLECTION_ITEMS)? {
+                let path = read_instance_path(reader)?;
+                let transform = reader.transform()?;
+                if product
+                    .instance_transform_overrides
+                    .insert(path, transform)
+                    .is_some()
+                {
+                    return Err(PersistenceError::InvalidCanonicalData(
+                        CanonicalError::InvalidInstancePath,
+                    ));
+                }
+            }
+        }
     }
     if !capabilities.body_contract {
         crate::document::migrate_legacy_body_contract(&mut product)?;
@@ -5851,6 +7150,7 @@ fn validate_container_path(path: &str) -> Result<(), PersistenceError> {
 pub enum FilePersistenceError {
     Io(io::Error),
     Format(PersistenceError),
+    ExternalConflict,
 }
 
 impl fmt::Display for FilePersistenceError {
@@ -5858,6 +7158,9 @@ impl fmt::Display for FilePersistenceError {
         match self {
             Self::Io(error) => error.fmt(formatter),
             Self::Format(error) => error.fmt(formatter),
+            Self::ExternalConflict => {
+                formatter.write_str("the document changed outside this session")
+            }
         }
     }
 }
@@ -6925,6 +8228,10 @@ mod tests {
                 true,
                 true,
                 (true, true),
+                false,
+                false,
+                false,
+                false,
             )
             .unwrap(),
             sheet
@@ -6942,6 +8249,10 @@ mod tests {
                 true,
                 true,
                 (true, true),
+                false,
+                false,
+                false,
+                false,
             ),
             Err(PersistenceError::InvalidCanonicalData(_))
         ));
@@ -6958,6 +8269,10 @@ mod tests {
                 true,
                 true,
                 (true, true),
+                false,
+                false,
+                false,
+                false,
             ),
             Err(PersistenceError::InvalidCanonicalData(_))
         ));
@@ -7054,5 +8369,301 @@ mod tests {
         let mut truncated = valid;
         truncated.pop();
         assert_invalid_current_sheet(&truncated);
+    }
+
+    #[test]
+    fn schema_77_typed_drawing_dimensions_round_trip_and_schema_76_remains_readable() {
+        let view = OrthographicViewKind::Front;
+        let sheet = DrawingSheet::with_contract_views_and_annotations(
+            DrawingSheetId(10),
+            "Typed dimensions",
+            DrawingSource::Definition(DefinitionId(1)),
+            DrawingPageTemplate::default(),
+            DrawingTitleBlock::new("Typed dimensions", "TD-1", "A", "Kečup").unwrap(),
+            vec![view],
+            DrawingAnnotations::with_typed_dimensions(
+                Vec::new(),
+                vec![
+                    DrawingAngularDimension::new(
+                        DrawingDimensionId(1),
+                        view,
+                        [
+                            "sheet-10/view-front/definition-1:edge:1".into(),
+                            "sheet-10/view-front/definition-1:edge:2".into(),
+                        ],
+                        12.0,
+                        DrawingDimensionTolerance::symmetric(0.5).unwrap(),
+                    )
+                    .unwrap(),
+                ],
+                vec![
+                    DrawingCircularDimension::new(
+                        DrawingDimensionId(2),
+                        view,
+                        "sheet-10/view-front/definition-1:circle:7",
+                        DrawingCircularDimensionKind::Diameter,
+                        45.0,
+                        8.0,
+                        DrawingDimensionTolerance::bilateral(0.2, 0.1).unwrap(),
+                    )
+                    .unwrap(),
+                ],
+                Vec::new(),
+            ),
+        )
+        .unwrap();
+        let mut document = DocumentStore::new();
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(1),
+                    name: "Part".into(),
+                },
+                CanonicalCommand::CreateDrawingSheet(sheet.clone()),
+            ]))
+            .unwrap();
+        let loaded = load(&save(&document.current())).unwrap();
+        assert_eq!(loaded.source_schema(), CURRENT_SCHEMA);
+        assert_eq!(
+            loaded.snapshot().drawing_sheet(DrawingSheetId(10)),
+            Some(&sheet)
+        );
+        document.undo().unwrap();
+        assert!(
+            document
+                .current()
+                .drawing_sheet(DrawingSheetId(10))
+                .is_none()
+        );
+        document.redo().unwrap();
+        assert_eq!(
+            document.current().drawing_sheet(DrawingSheetId(10)),
+            Some(&sheet)
+        );
+
+        let legacy_sheet = DrawingSheet::new(
+            DrawingSheetId(11),
+            "Legacy page",
+            DrawingSource::Definition(DefinitionId(1)),
+        )
+        .unwrap();
+        let mut legacy_document = DocumentStore::new();
+        legacy_document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(1),
+                    name: "Part".into(),
+                },
+                CanonicalCommand::CreateDrawingSheet(legacy_sheet.clone()),
+            ]))
+            .unwrap();
+        let legacy = load(&save_with_schema(
+            &legacy_document.current(),
+            NESTED_INSTANCE_TRANSFORM_SCHEMA,
+        ))
+        .unwrap();
+        assert_eq!(legacy.source_schema(), NESTED_INSTANCE_TRANSFORM_SCHEMA);
+        assert_eq!(
+            legacy.snapshot().drawing_sheet(DrawingSheetId(11)),
+            Some(&legacy_sheet)
+        );
+    }
+
+    #[test]
+    fn schema_79_bom_balloon_round_trip_tamper_and_schema_78_compatibility() {
+        let path = InstancePath::root(OccurrenceId(1));
+        let sheet = DrawingSheet::new(
+            DrawingSheetId(14),
+            "BOM drawing",
+            DrawingSource::RigidAssemblyInstances {
+                instance_paths: vec![path.clone()],
+            },
+        )
+        .and_then(|sheet| {
+            sheet.with_bom_balloons(vec![DrawingBomBalloon::new(
+                DrawingBomBalloonId(1),
+                OrthographicViewKind::Front,
+                path,
+                1,
+                [8.0, 8.0],
+            )?])
+        })
+        .unwrap();
+        let mut document = DocumentStore::new();
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(1),
+                    name: "BOM part".into(),
+                },
+                CanonicalCommand::CreateOccurrence {
+                    id: OccurrenceId(1),
+                    definition_id: DefinitionId(1),
+                    name: "BOM instance".into(),
+                    transform: Transform::identity(),
+                    parent: None,
+                    tag: None,
+                    visible: true,
+                },
+                CanonicalCommand::SetOccurrenceGrounded {
+                    id: OccurrenceId(1),
+                    grounded: true,
+                },
+                CanonicalCommand::CreateDrawingSheet(sheet.clone()),
+            ]))
+            .unwrap();
+        let snapshot = document.current();
+        let encoded = save_with_schema(&snapshot, DRAWING_BOM_BALLOON_SCHEMA);
+        let loaded = load(&encoded).unwrap();
+        assert_eq!(loaded.source_schema(), DRAWING_BOM_BALLOON_SCHEMA);
+        assert_eq!(
+            loaded.snapshot().canonical_digest(),
+            snapshot.canonical_digest()
+        );
+        assert_eq!(
+            loaded.snapshot().drawing_sheet(DrawingSheetId(14)),
+            Some(&sheet)
+        );
+        document.undo().unwrap();
+        assert!(
+            document
+                .current()
+                .drawing_sheet(DrawingSheetId(14))
+                .is_none()
+        );
+        document.redo().unwrap();
+        assert_eq!(
+            document.current().drawing_sheet(DrawingSheetId(14)),
+            Some(&sheet)
+        );
+
+        let offset_bytes = 8.0_f64.to_bits().to_le_bytes();
+        let mut tampered = encoded;
+        let offset_index = tampered
+            .windows(offset_bytes.len())
+            .rposition(|window| window == offset_bytes)
+            .expect("schema 79 payload contains the balloon offset");
+        tampered[offset_index] ^= 1;
+        assert!(load(&tampered).is_err());
+
+        let legacy_sheet = DrawingSheet::new(
+            DrawingSheetId(15),
+            "Schema 78 drawing",
+            DrawingSource::Definition(DefinitionId(1)),
+        )
+        .unwrap();
+        let mut legacy_document = DocumentStore::new();
+        legacy_document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(1),
+                    name: "Legacy part".into(),
+                },
+                CanonicalCommand::CreateDrawingSheet(legacy_sheet.clone()),
+            ]))
+            .unwrap();
+        let legacy = load(&save_with_schema(
+            &legacy_document.current(),
+            DRAWING_GDT_SCHEMA,
+        ))
+        .unwrap();
+        assert_eq!(legacy.source_schema(), DRAWING_GDT_SCHEMA);
+        let legacy_snapshot = legacy.snapshot();
+        let reopened = legacy_snapshot.drawing_sheet(DrawingSheetId(15)).unwrap();
+        assert_eq!(reopened, &legacy_sheet);
+        assert!(reopened.bom_balloons().is_empty());
+    }
+
+    #[test]
+    fn schema_78_gdt_datums_round_trip_undo_redo_and_schema_77_remains_readable() {
+        let view = OrthographicViewKind::Front;
+        let source_line = "sheet-12/view-front/definition-1:edge:1";
+        let datum =
+            DrawingDatumSymbol::new(DrawingDatumId(1), view, source_line, "A", [20.0, 20.0])
+                .unwrap();
+        let frame = DrawingFeatureControlFrame::new(
+            DrawingFeatureControlFrameId(1),
+            view,
+            source_line,
+            DrawingGeometricCharacteristic::Perpendicularity,
+            0.05,
+            false,
+            DrawingMaterialCondition::RegardlessOfFeatureSize,
+            vec![DrawingDatumReference::new("A", DrawingMaterialCondition::None).unwrap()],
+            [30.0, 25.0],
+        )
+        .unwrap();
+        let sheet = DrawingSheet::with_contract_views_and_annotations(
+            DrawingSheetId(12),
+            "GD&T",
+            DrawingSource::Definition(DefinitionId(1)),
+            DrawingPageTemplate::default(),
+            DrawingTitleBlock::new("GD&T", "GDT-12", "A", "Kečup").unwrap(),
+            vec![view],
+            DrawingAnnotations::with_manufacturing_annotations(
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                vec![datum],
+                vec![frame],
+                Vec::new(),
+            ),
+        )
+        .unwrap();
+        let mut document = DocumentStore::new();
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(1),
+                    name: "Part".into(),
+                },
+                CanonicalCommand::CreateDrawingSheet(sheet.clone()),
+            ]))
+            .unwrap();
+        let loaded = load(&save(&document.current())).unwrap();
+        assert_eq!(loaded.source_schema(), CURRENT_SCHEMA);
+        assert_eq!(
+            loaded.snapshot().drawing_sheet(DrawingSheetId(12)),
+            Some(&sheet)
+        );
+        document.undo().unwrap();
+        assert!(
+            document
+                .current()
+                .drawing_sheet(DrawingSheetId(12))
+                .is_none()
+        );
+        document.redo().unwrap();
+        assert_eq!(
+            document.current().drawing_sheet(DrawingSheetId(12)),
+            Some(&sheet)
+        );
+
+        let legacy_sheet = DrawingSheet::new(
+            DrawingSheetId(13),
+            "Schema 77 page",
+            DrawingSource::Definition(DefinitionId(1)),
+        )
+        .unwrap();
+        let mut legacy_document = DocumentStore::new();
+        legacy_document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(1),
+                    name: "Part".into(),
+                },
+                CanonicalCommand::CreateDrawingSheet(legacy_sheet.clone()),
+            ]))
+            .unwrap();
+        let legacy = load(&save_with_schema(
+            &legacy_document.current(),
+            TYPED_DRAWING_DIMENSION_SCHEMA,
+        ))
+        .unwrap();
+        assert_eq!(legacy.source_schema(), TYPED_DRAWING_DIMENSION_SCHEMA);
+        assert_eq!(
+            legacy.snapshot().drawing_sheet(DrawingSheetId(13)),
+            Some(&legacy_sheet)
+        );
     }
 }

@@ -23,6 +23,17 @@ const fn parameter_value_type_label(value_type: ParameterValueType) -> &'static 
     }
 }
 
+fn import_format_label(format: crate::import::ImportFormat) -> &'static str {
+    match format {
+        crate::import::ImportFormat::Stl => "stl",
+        crate::import::ImportFormat::Dxf => "dxf",
+        crate::import::ImportFormat::Step => "step",
+        crate::import::ImportFormat::Iges => "iges",
+        crate::import::ImportFormat::SketchupScene => "sketchup_scene",
+        crate::import::ImportFormat::Glb => "glb",
+    }
+}
+
 fn write_feature_extent(
     output: &mut String,
     feature_id: u64,
@@ -1559,9 +1570,16 @@ pub fn encode_semantic_state_with_results(
                 target,
                 removed_faces,
                 thickness,
+                direction,
             } => {
                 writeln!(complete, "feature.{}.kind=topology_shell", feature.id().0).unwrap();
                 writeln!(complete, "feature.{}.target={}", feature.id().0, target.0).unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.direction={direction:?}",
+                    feature.id().0
+                )
+                .unwrap();
                 for (index, reference) in removed_faces.iter().enumerate() {
                     writeln!(
                         complete,
@@ -1595,6 +1613,7 @@ pub fn encode_semantic_state_with_results(
                 edges,
                 kind,
                 amount,
+                ..
             } => {
                 writeln!(
                     complete,
@@ -1754,8 +1773,206 @@ pub fn encode_semantic_state_with_results(
                 )
                 .unwrap();
             }
-            crate::document::FeatureKind::Loft { sections } => {
+            crate::document::FeatureKind::WeldmentMember(spec) => {
+                let id = feature.id().0;
+                writeln!(complete, "feature.{id}.kind=weldment_member").unwrap();
+                writeln!(complete, "feature.{id}.profile={}", spec.profile.0).unwrap();
+                writeln!(complete, "feature.{id}.path={}", spec.path.0).unwrap();
+                writeln!(
+                    complete,
+                    "feature.{id}.orientation.f64_bits={:016x}",
+                    spec.orientation_degrees.to_bits()
+                )
+                .unwrap();
+                writeln!(
+                    agent,
+                    "feature.{id}=name:{:?},kind:weldment_member,definition:{},profile:{},path:{},orientation_degrees:{:?}",
+                    feature.name(),
+                    feature.definition_id().0,
+                    spec.profile.0,
+                    spec.path.0,
+                    spec.orientation_degrees
+                )
+                .unwrap();
+            }
+            crate::document::FeatureKind::WeldmentJoint(spec) => {
+                let id = feature.id().0;
+                writeln!(complete, "feature.{id}.kind=weldment_joint").unwrap();
+                writeln!(
+                    complete,
+                    "feature.{id}.first_member={}",
+                    spec.first_member.0
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{id}.second_member={}",
+                    spec.second_member.0
+                )
+                .unwrap();
+                writeln!(complete, "feature.{id}.policy={:?}", spec.policy).unwrap();
+                writeln!(complete, "feature.{id}.primary={:?}", spec.primary).unwrap();
+                writeln!(
+                    agent,
+                    "feature.{id}=name:{:?},kind:weldment_joint,definition:{},first_member:{},second_member:{},policy:{:?},primary:{:?}",
+                    feature.name(),
+                    feature.definition_id().0,
+                    spec.first_member.0,
+                    spec.second_member.0,
+                    spec.policy,
+                    spec.primary
+                )
+                .unwrap();
+            }
+            crate::document::FeatureKind::SurfaceBody(spec) => {
+                let id = feature.id().0;
+                match spec {
+                    crate::document::SurfaceBodySpec::Planar { profile } => {
+                        writeln!(complete, "feature.{id}.kind=surface_body_planar").unwrap();
+                        writeln!(complete, "feature.{id}.profile={}", profile.0).unwrap();
+                        writeln!(
+                            agent,
+                            "feature.{id}=name:{:?},kind:surface_body_planar,definition:{},profile:{}",
+                            feature.name(),
+                            feature.definition_id().0,
+                            profile.0
+                        )
+                        .unwrap();
+                    }
+                    crate::document::SurfaceBodySpec::Loft {
+                        sections,
+                        guide,
+                        continuity,
+                    } => {
+                        writeln!(complete, "feature.{id}.kind=surface_body_loft").unwrap();
+                        writeln!(
+                            complete,
+                            "feature.{id}.guide={},continuity={continuity:?}",
+                            guide.map_or(0, |guide| guide.0)
+                        )
+                        .unwrap();
+                        for (index, section) in sections.iter().enumerate() {
+                            writeln!(
+                                complete,
+                                "feature.{id}.section.{index}=profile:{},elevation.f64_bits:{:016x}",
+                                section.profile.0,
+                                section.elevation_mm.to_bits()
+                            )
+                            .unwrap();
+                        }
+                        writeln!(
+                            agent,
+                            "feature.{id}=name:{:?},kind:surface_body_loft,definition:{},sections:{}",
+                            feature.name(),
+                            feature.definition_id().0,
+                            sections.len()
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+            crate::document::FeatureKind::SurfaceTrim { target, cutter } => {
+                let id = feature.id().0;
+                writeln!(complete, "feature.{id}.kind=surface_trim").unwrap();
+                writeln!(complete, "feature.{id}.target={}", target.0).unwrap();
+                writeln!(complete, "feature.{id}.cutter={}", cutter.0).unwrap();
+                writeln!(
+                    agent,
+                    "feature.{id}=name:{:?},kind:surface_trim,definition:{},target:{},cutter:{}",
+                    feature.name(),
+                    feature.definition_id().0,
+                    target.0,
+                    cutter.0
+                )
+                .unwrap();
+            }
+            crate::document::FeatureKind::SurfaceExtend { target, distance } => {
+                let id = feature.id().0;
+                writeln!(complete, "feature.{id}.kind=surface_extend").unwrap();
+                writeln!(complete, "feature.{id}.target={}", target.0).unwrap();
+                writeln!(
+                    complete,
+                    "feature.{id}.distance.f64_bits={:016x}",
+                    distance.millimetres().to_bits()
+                )
+                .unwrap();
+                writeln!(
+                    agent,
+                    "feature.{id}=name:{:?},kind:surface_extend,definition:{},target:{},distance_mm:{}",
+                    feature.name(),
+                    feature.definition_id().0,
+                    target.0,
+                    distance.millimetres()
+                )
+                .unwrap();
+            }
+            crate::document::FeatureKind::SurfaceKnit {
+                surfaces,
+                tolerance,
+                make_solid,
+            } => {
+                let id = feature.id().0;
+                writeln!(complete, "feature.{id}.kind=surface_knit").unwrap();
+                writeln!(complete, "feature.{id}.make_solid={make_solid}").unwrap();
+                writeln!(
+                    complete,
+                    "feature.{id}.tolerance.f64_bits={:016x}",
+                    tolerance.millimetres().to_bits()
+                )
+                .unwrap();
+                for (index, surface) in surfaces.iter().enumerate() {
+                    writeln!(complete, "feature.{id}.surface.{index}={}", surface.0).unwrap();
+                }
+                writeln!(
+                    agent,
+                    "feature.{id}=name:{:?},kind:surface_knit,definition:{},surfaces:{},tolerance_mm:{},make_solid:{}",
+                    feature.name(),
+                    feature.definition_id().0,
+                    surfaces.len(),
+                    tolerance.millimetres(),
+                    make_solid
+                )
+                .unwrap();
+            }
+            crate::document::FeatureKind::SurfaceThicken {
+                target,
+                thickness,
+                direction,
+            } => {
+                let id = feature.id().0;
+                writeln!(complete, "feature.{id}.kind=surface_thicken").unwrap();
+                writeln!(complete, "feature.{id}.target={}", target.0).unwrap();
+                writeln!(complete, "feature.{id}.direction={direction:?}").unwrap();
+                writeln!(
+                    complete,
+                    "feature.{id}.thickness.f64_bits={:016x}",
+                    thickness.millimetres().to_bits()
+                )
+                .unwrap();
+                writeln!(
+                    agent,
+                    "feature.{id}=name:{:?},kind:surface_thicken,definition:{},target:{},thickness_mm:{},direction:{direction:?}",
+                    feature.name(),
+                    feature.definition_id().0,
+                    target.0,
+                    thickness.millimetres()
+                )
+                .unwrap();
+            }
+            crate::document::FeatureKind::Loft {
+                sections,
+                guide,
+                continuity,
+            } => {
                 writeln!(complete, "feature.{}.kind=loft", feature.id().0).unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.guide={},continuity={:?}",
+                    feature.id().0,
+                    guide.map_or(0, |guide| guide.0),
+                    continuity
+                )
+                .unwrap();
                 for (index, section) in sections.iter().enumerate() {
                     writeln!(
                         complete,
@@ -1827,6 +2044,55 @@ pub fn encode_semantic_state_with_results(
                 )
                 .unwrap();
             }
+            crate::document::FeatureKind::SheetMetal(spec) => {
+                let id = feature.id().0;
+                writeln!(complete, "feature.{id}.kind=sheet_metal").unwrap();
+                for (name, dimension) in [
+                    ("width", &spec.width),
+                    ("depth", &spec.depth),
+                    ("thickness", &spec.thickness),
+                ] {
+                    writeln!(
+                        complete,
+                        "feature.{id}.{name}=bits:{:016x},token:{:?}",
+                        dimension.millimetres().to_bits(),
+                        dimension.source_token()
+                    )
+                    .unwrap();
+                }
+                writeln!(
+                    complete,
+                    "feature.{id}.k_factor_bits={:016x}",
+                    spec.k_factor.to_bits()
+                )
+                .unwrap();
+                for (index, flange) in spec.flanges.iter().enumerate() {
+                    writeln!(
+                        complete,
+                        "feature.{id}.flange.{index}=edge:{:?},length_bits:{:016x},angle_bits:{:016x},inner_radius_bits:{:016x},bend_allowance_bits:{:016x}",
+                        flange.edge,
+                        flange.length.millimetres().to_bits(),
+                        flange.angle_degrees.to_bits(),
+                        flange.inner_radius.millimetres().to_bits(),
+                        spec.bend_allowance_mm(flange)
+                            .expect("canonical sheet-metal bend remains valid")
+                            .to_bits()
+                    )
+                    .unwrap();
+                }
+                writeln!(
+                    agent,
+                    "feature.{id}=name:{:?},kind:sheet_metal,definition:{},width_mm:{:?},depth_mm:{:?},thickness_mm:{:?},k_factor:{:?},flanges:{}",
+                    feature.name(),
+                    feature.definition_id().0,
+                    spec.width.millimetres(),
+                    spec.depth.millimetres(),
+                    spec.thickness.millimetres(),
+                    spec.k_factor,
+                    spec.flanges.len()
+                )
+                .unwrap();
+            }
             crate::document::FeatureKind::ImportedExactBody(spec) => {
                 let source_sha256 = spec
                     .source_sha256
@@ -1844,6 +2110,23 @@ pub fn encode_semantic_state_with_results(
                     "feature.{}.import_id={}",
                     feature.id().0,
                     spec.import_id.0
+                )
+                .unwrap();
+                let source_format = snapshot
+                    .import_receipt(spec.import_id)
+                    .map_or("unknown", |receipt| import_format_label(receipt.format()));
+                writeln!(
+                    complete,
+                    "feature.{}.source_format={source_format}",
+                    feature.id().0
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.source_part_index={}",
+                    feature.id().0,
+                    spec.source_part_index
+                        .map_or_else(|| "none".to_owned(), |index| index.to_string())
                 )
                 .unwrap();
                 writeln!(
@@ -1902,12 +2185,26 @@ pub fn encode_semantic_state_with_results(
                 )
                 .unwrap();
                 writeln!(
+                    complete,
+                    "feature.{}.source_parametric_history=unavailable",
+                    feature.id().0
+                )
+                .unwrap();
+                writeln!(
+                    complete,
+                    "feature.{}.canonical_editability=exact_brep_and_occurrence_metadata",
+                    feature.id().0
+                )
+                .unwrap();
+                writeln!(
                     agent,
-                    "feature.{}=name:{:?},kind:imported_exact_body,definition:{},import:{},solids:{},volume_mm3:{:?}",
+                    "feature.{}=name:{:?},kind:imported_exact_body,definition:{},import:{},source_format:{source_format},source_part_index:{},solids:{},volume_mm3:{:?},source_parametric_history:unavailable,canonical_editability:exact_brep_and_occurrence_metadata",
                     feature.id().0,
                     feature.name(),
                     feature.definition_id().0,
                     spec.import_id.0,
+                    spec.source_part_index
+                        .map_or_else(|| "none".to_owned(), |index| index.to_string()),
                     spec.solid_count,
                     spec.volume_mm3
                 )

@@ -40,11 +40,11 @@ pub const GENERAL_BODY_OBB_NARROW_PHASE_METHOD_V1: &str =
     "ketchup.method.general-body-obb-sat.cpu-f64.v1";
 pub const GRAVITY_SUPPORT_VALIDATOR_CONTRACT_V1: &str = "ketchup.validator.gravity-support.v1";
 pub const GRAVITY_SUPPORT_VALIDATOR_IMPLEMENTATION_V1: &str =
-    "ketchup.builtin.gravity-support.exact-box-contact-cpu-f64.v2";
+    "ketchup.builtin.gravity-support.exact-contact-cpu-f64.v3";
 pub const GRAVITY_SUPPORT_VALIDATOR_INPUT_V1: &str = "ketchup.gravity-support-input.v1";
 pub const GRAVITY_SUPPORT_VALIDATION_POLICY_V1: &str = "ketchup.policy.gravity-support.v1";
 pub const GRAVITY_SUPPORT_EXACT_BOX_CONTACT_METHOD_V1: &str =
-    "ketchup.method.gravity-support-exact-box-face-contact.cpu-f64.v1";
+    "ketchup.method.gravity-support-exact-positive-face-contact.cpu-f64.v2";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExactValidationError {
@@ -1285,8 +1285,48 @@ impl GravitySupportParticipant {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct GravitySupportContact {
+    left: InstancePath,
+    right: InstancePath,
+    common_contact_area_mm2_bits: u64,
+}
+
+impl GravitySupportContact {
+    pub fn new(
+        left: InstancePath,
+        right: InstancePath,
+        common_contact_area_mm2: f64,
+    ) -> Result<Self, GeneralBodyValidationError> {
+        if left == right || !common_contact_area_mm2.is_finite() || common_contact_area_mm2 < 0.0 {
+            return Err(GeneralBodyValidationError::InvalidGeometry);
+        }
+        let (left, right) = if left <= right {
+            (left, right)
+        } else {
+            (right, left)
+        };
+        Ok(Self {
+            left,
+            right,
+            common_contact_area_mm2_bits: common_contact_area_mm2.to_bits(),
+        })
+    }
+
+    #[must_use]
+    pub fn connects(&self, left: &InstancePath, right: &InstancePath) -> bool {
+        (&self.left == left && &self.right == right) || (&self.left == right && &self.right == left)
+    }
+
+    #[must_use]
+    pub fn common_contact_area_mm2(&self) -> f64 {
+        f64::from_bits(self.common_contact_area_mm2_bits)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct GravitySupportInput {
     participants: Vec<GravitySupportParticipant>,
+    exact_contacts: Vec<GravitySupportContact>,
     gravity_vector_m_s2: [f64; 3],
     gravity_direction: [f64; 3],
     gravity_magnitude_m_s2: f64,
@@ -1309,6 +1349,7 @@ impl GravitySupportInput {
         }
         Ok(Self {
             participants,
+            exact_contacts: Vec::new(),
             gravity_vector_m_s2,
             gravity_direction: gravity_vector_m_s2
                 .map(|component| component / gravity_magnitude_m_s2),
@@ -1319,6 +1360,22 @@ impl GravitySupportInput {
     #[must_use]
     pub fn participants(&self) -> &[GravitySupportParticipant] {
         &self.participants
+    }
+
+    #[must_use]
+    pub fn with_exact_contacts(mut self, mut contacts: Vec<GravitySupportContact>) -> Self {
+        contacts.sort_by(|left, right| {
+            left.left
+                .cmp(&right.left)
+                .then_with(|| left.right.cmp(&right.right))
+        });
+        self.exact_contacts = contacts;
+        self
+    }
+
+    #[must_use]
+    pub fn exact_contacts(&self) -> &[GravitySupportContact] {
+        &self.exact_contacts
     }
 
     #[must_use]
@@ -1343,7 +1400,7 @@ pub fn gravity_support_validator_descriptor() -> ValidatorDescriptor {
         contract_id: GRAVITY_SUPPORT_VALIDATOR_CONTRACT_V1.to_owned(),
         contract_version: 1,
         implementation_id: GRAVITY_SUPPORT_VALIDATOR_IMPLEMENTATION_V1.to_owned(),
-        implementation_version: "2.0.0".to_owned(),
+        implementation_version: "3.0.0".to_owned(),
         input_schema: GRAVITY_SUPPORT_VALIDATOR_INPUT_V1.to_owned(),
         validation_class: ValidationClass::StructuralBestEffort,
         read_scopes: vec![ReadScope::CanonicalGraph, ReadScope::DerivedGeometry],
@@ -1599,6 +1656,12 @@ pub fn gravity_support_input_bytes(input: &GravitySupportInput) -> Vec<u8> {
         push_bytes(&mut output, participant.support_group.as_bytes());
         output.push(u8::from(participant.explicitly_grounded));
     }
+    output.extend_from_slice(&(input.exact_contacts().len() as u64).to_le_bytes());
+    for contact in input.exact_contacts() {
+        push_instance_path(&mut output, &contact.left);
+        push_instance_path(&mut output, &contact.right);
+        output.extend_from_slice(&contact.common_contact_area_mm2_bits.to_le_bytes());
+    }
     output
 }
 
@@ -1658,6 +1721,7 @@ fn evaluate_gravity_support(
                     && body_support_contact(
                         candidate,
                         &participants[supporter_index].body,
+                        input.exact_contacts(),
                         support_direction,
                         tolerance,
                     ) == GravityContactEvidence::ProvenExact
@@ -1677,6 +1741,7 @@ fn evaluate_gravity_support(
                         && body_support_contact(
                             candidate,
                             &participants[supporter_index].body,
+                            input.exact_contacts(),
                             support_direction,
                             tolerance,
                         ) != GravityContactEvidence::None
@@ -1796,7 +1861,7 @@ fn evaluate_gravity_support(
             "gravity uses the explicit typed non-zero vector supplied in the validator input"
                 .to_owned(),
             "only explicitly grounded participants seed support propagation".to_owned(),
-            "support propagation requires same-group exact full-box face contact with positive bearing area; OBB-only contact remains unresolved"
+            "support propagation requires same-group positive bearing area proven by native BRep face intersection or exact analytic box contact; OBB-only contact remains unresolved"
                 .to_owned(),
         ],
         unresolved_conditions,
@@ -1806,6 +1871,7 @@ fn evaluate_gravity_support(
 fn body_support_contact(
     candidate: &GeneralBodyParticipant,
     supporter: &GeneralBodyParticipant,
+    exact_contacts: &[GravitySupportContact],
     support_direction: [f64; 3],
     tolerance: TolerancePolicy,
 ) -> GravityContactEvidence {
@@ -1821,6 +1887,18 @@ fn body_support_contact(
         + obb_projection_radius(supporter_obb, support_direction);
     if (candidate_lower_mm - supporter_upper_mm).abs() > tolerance.epsilon_mm() {
         return GravityContactEvidence::None;
+    }
+    if let Some(contact) = exact_contacts
+        .iter()
+        .find(|contact| contact.connects(candidate.instance_path(), supporter.instance_path()))
+    {
+        return if contact.common_contact_area_mm2()
+            > tolerance.epsilon_mm() * tolerance.epsilon_mm()
+        {
+            GravityContactEvidence::ProvenExact
+        } else {
+            GravityContactEvidence::None
+        };
     }
     let Ok(narrow_phase) = general_body_narrow_phase(candidate, supporter, tolerance) else {
         return GravityContactEvidence::None;
@@ -2293,7 +2371,7 @@ mod tests {
         let validator = BuiltinGravitySupportValidator::default();
         assert_eq!(
             validator.descriptor().implementation_id,
-            "ketchup.builtin.gravity-support.exact-box-contact-cpu-f64.v2"
+            "ketchup.builtin.gravity-support.exact-contact-cpu-f64.v3"
         );
         let policy = gravity_support_validation_policy();
         let input = gravity_support_input_bytes(&validator_input);

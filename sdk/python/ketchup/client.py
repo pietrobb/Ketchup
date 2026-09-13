@@ -396,6 +396,193 @@ class Document:
         return self.append_feature(definition_id, name, {"type": "pocket", "target_feature_id": target_feature_id,
                                    "profile_feature_id": profile_feature_id, "depth_mm": depth_mm})
 
+    def planar_surface(self, definition_id, name, profile_feature_id):
+        return self.append_feature(definition_id, name, {
+            "type": "surface_body",
+            "source": {"type": "planar", "profile_feature_id": profile_feature_id},
+        })
+
+    def loft_surface(self, definition_id, name, sections, *, guide_feature_id=None,
+                     continuity="position"):
+        source = {"type": "loft", "sections": list(sections), "continuity": continuity}
+        if guide_feature_id is not None:
+            source["guide_feature_id"] = guide_feature_id
+        return self.append_feature(definition_id, name, {"type": "surface_body", "source": source})
+
+    def trim_surface(self, definition_id, name, target_feature_id, cutter_feature_id):
+        return self.append_feature(definition_id, name, {
+            "type": "surface_trim", "target_feature_id": target_feature_id,
+            "cutter_feature_id": cutter_feature_id,
+        })
+
+    def extend_surface(self, definition_id, name, target_feature_id, distance_mm):
+        return self.append_feature(definition_id, name, {
+            "type": "surface_extend", "target_feature_id": target_feature_id,
+            "distance_mm": distance_mm,
+        })
+
+    def knit_surfaces(self, definition_id, name, surface_feature_ids, *, tolerance_mm,
+                      make_solid=False):
+        return self.append_feature(definition_id, name, {
+            "type": "surface_knit", "surface_feature_ids": list(surface_feature_ids),
+            "tolerance_mm": tolerance_mm, "make_solid": make_solid,
+        })
+
+    def thicken_surface(self, definition_id, name, target_feature_id, thickness_mm,
+                        *, direction="inward"):
+        return self.append_feature(definition_id, name, {
+            "type": "surface_thicken", "target_feature_id": target_feature_id,
+            "thickness_mm": thickness_mm, "direction": direction,
+        })
+
+    def cam_setup(self, plan_id, name, target_definition_id, target_feature_id, *,
+                  stock_minimum_mm, stock_maximum_mm, tool_number, tool_kind,
+                  tool_diameter_mm, flute_length_mm, overall_length_mm,
+                  holder_diameter_mm, holder_length_mm, spindle_rpm,
+                  feed_mm_per_min, plunge_mm_per_min, work_offset="g54",
+                  origin_mm=(0, 0, 0), x_axis=(1, 0, 0), y_axis=(0, 1, 0),
+                  safe_height_mm, maximum_stepdown_mm, stepover_ratio,
+                  radial_allowance_mm=0, axial_allowance_mm=0):
+        """Commit one canonical, exact-target-bound CAM setup as one Undo step."""
+        return self.apply([{
+            "operation": "upsert_cam_plan", "plan_id": plan_id, "name": name,
+            "target_definition_id": target_definition_id,
+            "target_feature_id": target_feature_id,
+            "stock_minimum_mm": list(stock_minimum_mm),
+            "stock_maximum_mm": list(stock_maximum_mm),
+            "tool_number": tool_number, "tool_kind": tool_kind,
+            "tool_diameter_mm": tool_diameter_mm, "flute_length_mm": flute_length_mm,
+            "overall_length_mm": overall_length_mm,
+            "holder_diameter_mm": holder_diameter_mm,
+            "holder_length_mm": holder_length_mm, "spindle_rpm": spindle_rpm,
+            "feed_mm_per_min": feed_mm_per_min,
+            "plunge_mm_per_min": plunge_mm_per_min, "work_offset": work_offset,
+            "origin_mm": list(origin_mm), "x_axis": list(x_axis), "y_axis": list(y_axis),
+            "safe_height_mm": safe_height_mm,
+            "maximum_stepdown_mm": maximum_stepdown_mm,
+            "stepover_ratio": stepover_ratio,
+            "radial_allowance_mm": radial_allowance_mm,
+            "axial_allowance_mm": axial_allowance_mm,
+        }])
+
+    def cam_preview(self, plan_id, operations, *, fixtures=(),
+                    dialect="iso_metric_gcode"):
+        """Plan, exact-simulate and review a current CAM program without mutation."""
+        if type(plan_id) is not int or plan_id <= 0:
+            raise ValueError("plan_id must be a positive integer")
+        if not isinstance(operations, (list, tuple)) or not operations:
+            raise ValueError("operations must be a nonempty list or tuple")
+        if not isinstance(fixtures, (list, tuple)):
+            raise ValueError("fixtures must be a list or tuple")
+        if dialect not in {"iso_metric_gcode", "controller_neutral_json"}:
+            raise ValueError("unsupported CAM postprocessor dialect")
+        return self._call("cam_preview", {
+            "plan_id": plan_id,
+            "operations": [dict(operation) for operation in operations],
+            "fixtures": [dict(fixture) for fixture in fixtures],
+            "dialect": dialect,
+        }, guarded=True)
+
+    def cam_export(self, review_token, path, *, confirmed=False):
+        """Revalidate and export one reviewed CAM artifact without replacing files."""
+        if not isinstance(review_token, str) or not review_token or len(review_token) > 128:
+            raise ValueError("review_token must be a nonempty string of at most 128 characters")
+        if type(confirmed) is not bool:
+            raise ValueError("confirmed must be boolean")
+        return self._call("cam_export", {
+            "review_token": review_token,
+            "path": os.fspath(path),
+            "confirmed": confirmed,
+        }, guarded=True)
+
+    def fea_review(self, definition_id, feature_id, occurrence_id, case_id, *, material,
+                   constrained_face_ordinals, face_tractions, mesh_levels,
+                   maximum_nodes=256, relative_pivot_tolerance=1.0e-12,
+                   maximum_small_deformation_ratio=0.05,
+                   convergence_relative_tolerance=0.02, confirmed=False):
+        """Run a guarded exact-mesh linear-static convergence review without mutation."""
+        for name, value in (("definition_id", definition_id), ("feature_id", feature_id),
+                            ("occurrence_id", occurrence_id)):
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        if not isinstance(case_id, str) or not case_id.strip() or len(case_id) > 128:
+            raise ValueError("case_id must be a nonempty string of at most 128 characters")
+        if not isinstance(material, dict):
+            raise ValueError("material must be a dict")
+        if not isinstance(constrained_face_ordinals, (list, tuple)) or not constrained_face_ordinals:
+            raise ValueError("constrained_face_ordinals must be a nonempty list or tuple")
+        if not isinstance(face_tractions, (list, tuple)) or not face_tractions:
+            raise ValueError("face_tractions must be a nonempty list or tuple")
+        if not isinstance(mesh_levels, (list, tuple)) or not 2 <= len(mesh_levels) <= 4:
+            raise ValueError("mesh_levels must contain two to four refinement levels")
+        if type(confirmed) is not bool:
+            raise ValueError("confirmed must be boolean")
+        return self._call("fea_review", {
+            "definition_id": definition_id,
+            "feature_id": feature_id,
+            "occurrence_id": occurrence_id,
+            "case_id": case_id,
+            "material": dict(material),
+            "constrained_face_ordinals": list(constrained_face_ordinals),
+            "face_tractions": [dict(traction) for traction in face_tractions],
+            "mesh_levels": [dict(level) for level in mesh_levels],
+            "solve_settings": {
+                "maximum_nodes": maximum_nodes,
+                "relative_pivot_tolerance": relative_pivot_tolerance,
+                "maximum_small_deformation_ratio": maximum_small_deformation_ratio,
+                "convergence_relative_tolerance": convergence_relative_tolerance,
+            },
+            "confirmed": confirmed,
+        }, guarded=True)
+
+    def pdm_release(self, repository, *, parent_release_id=None, dependencies=(),
+                    actor, created_unix_ms, note="", confirmed=False):
+        """Create an immutable local release; disk writes require explicit confirmation."""
+        if parent_release_id is not None and (
+                not isinstance(parent_release_id, str) or not parent_release_id):
+            raise ValueError("parent_release_id must be None or a nonempty string")
+        if not isinstance(dependencies, (list, tuple)):
+            raise ValueError("dependencies must be a list or tuple")
+        if not isinstance(actor, str) or not actor:
+            raise ValueError("actor must be a nonempty string")
+        if type(created_unix_ms) is not int or created_unix_ms <= 0:
+            raise ValueError("created_unix_ms must be a positive integer")
+        if not isinstance(note, str):
+            raise ValueError("note must be a string")
+        if type(confirmed) is not bool:
+            raise ValueError("confirmed must be boolean")
+        return self._call("pdm_release_create", {
+            "repository": os.fspath(repository),
+            "parent_release_id": parent_release_id,
+            "dependencies": [dict(dependency) for dependency in dependencies],
+            "audit": {"actor": actor, "created_unix_ms": created_unix_ms, "note": note},
+            "confirmed": confirmed,
+        }, guarded=True)
+
+    def pdm_open_release(self, repository, release_id):
+        """Verify and review an immutable local release without opening it as the live document."""
+        if not isinstance(release_id, str) or not release_id:
+            raise ValueError("release_id must be a nonempty string")
+        return self._call("pdm_release_open", {
+            "repository": os.fspath(repository), "release_id": release_id,
+        }, guarded=True)
+
+    def pdm_catalog(self, repository):
+        """Return the verified bounded local release catalog."""
+        return self._call("pdm_catalog", {"repository": os.fspath(repository)}, guarded=True)
+
+    def pdm_compare(self, repository, left_release_id, right_release_id):
+        """Compare two verified releases and return lineage/conflict evidence."""
+        for name, value in (("left_release_id", left_release_id),
+                            ("right_release_id", right_release_id)):
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"{name} must be a nonempty string")
+        return self._call("pdm_compare", {
+            "repository": os.fspath(repository),
+            "left_release_id": left_release_id,
+            "right_release_id": right_release_id,
+        }, guarded=True)
+
     def move(self, occurrence_ids, translation_mm):
         return self.apply([{"operation": "transform", "selector": _selector(occurrence_ids),
                             "translation_mm": list(translation_mm)}])

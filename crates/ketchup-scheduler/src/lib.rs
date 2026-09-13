@@ -15,14 +15,22 @@ use ketchup_core::beam_m5::{
     BeamExactPiecePackage, BeamExactPieceRequest, BeamM5Error, BeamNotchFaceRole,
     BeamWorkerFaceEvidence, BeamWorkerResult, HalfLapParticipant, build_piece_package,
 };
+use ketchup_core::cam::{
+    CAM_SIMULATION_SCHEMA_V1, CamCollisionEvidence, CamCollisionParticipant, CamCollisionTarget,
+    CamFixture, CamMotionKind, CamMotionPath, CamPlan, CamSimulationEvidence, CamToolpath,
+};
 use ketchup_core::document::{
-    BooleanOperation, DerivedIdentity, EdgeFinishKind, NodeId, SlotPath, SlotSegment, Snapshot,
-    Transform,
+    BodyKind, BooleanOperation, DerivedIdentity, EdgeFinishKind, GroupId, InstancePath,
+    InstancePathStep, LocalGroupKey, LocalOccurrenceKey, NodeId, SceneOccurrence, SlotPath,
+    SlotSegment, Snapshot, Transform,
 };
 use ketchup_core::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V6, EXACT_BREP_GRAPH_SCHEMA_V7, EXACT_BREP_GRAPH_SCHEMA_V8,
     EXACT_BREP_GRAPH_SCHEMA_V9, EXACT_BREP_GRAPH_SCHEMA_V10, EXACT_BREP_GRAPH_SCHEMA_V11,
     EXACT_BREP_GRAPH_SCHEMA_V12, EXACT_BREP_GRAPH_SCHEMA_V13, EXACT_BREP_GRAPH_SCHEMA_V14,
+    EXACT_BREP_GRAPH_SCHEMA_V15, EXACT_BREP_GRAPH_SCHEMA_V16, EXACT_BREP_GRAPH_SCHEMA_V17,
+    EXACT_BREP_GRAPH_SCHEMA_V18, EXACT_BREP_GRAPH_SCHEMA_V19, EXACT_BREP_GRAPH_SCHEMA_V20,
+    EXACT_BREP_GRAPH_SCHEMA_V21, EXACT_BREP_GRAPH_SCHEMA_V22, EXACT_BREP_GRAPH_SCHEMA_V23,
     ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
 };
 use ketchup_core::exact_product::{
@@ -39,9 +47,15 @@ use ketchup_core::exact_product::{
 use ketchup_core::exact_revolve::{
     ExactRevolvePackage, ExactRevolveRequest, build_revolve_package, expected_volume_mm3,
 };
+use ketchup_core::fea::{
+    FEA_MODEL_SCHEMA_V1, FeaConstraint, FeaElement, FeaElementKind, FeaLoad, FeaMaterial, FeaModel,
+    FeaNode,
+};
 use ketchup_core::graph::sha256_hex;
 use ketchup_core::import::{
-    IgesImportEvidence, ImportLengthUnit, MAX_STEP_SOURCE_BYTES, StepImportEvidence, StepImportMesh,
+    IgesImportEvidence, IgesXdeImportEvidence, IgesXdeNodeEvidence, IgesXdePartEvidence,
+    ImportLengthUnit, MAX_STEP_SOURCE_BYTES, StepImportEvidence, StepImportMesh,
+    StepXdeImportEvidence, StepXdeNodeEvidence, StepXdePartEvidence,
 };
 #[cfg(feature = "named-product-fixtures")]
 use ketchup_core::prismatic::Aabb;
@@ -49,7 +63,7 @@ use ketchup_core::prismatic::Aabb;
 use ketchup_core::prismatic::JointId;
 use ketchup_exact::GeometryErrorCode;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -573,6 +587,290 @@ pub struct WorkerExactBRepGraphResult {
     pub edges: Vec<WorkerExactBRepGraphEdgeEvidence>,
 }
 
+pub const EXACT_VOLUME_MESH_WIRE_SCHEMA_V1: &str = "ketchup.exact-volume-mesh-wire.v1";
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExactVolumeMeshWireOptions {
+    pub surface_deflection_mm: f64,
+    pub angular_deflection_rad: f64,
+    pub max_tetrahedra: u32,
+    pub max_relative_volume_error: f64,
+    pub min_tetrahedron_quality: f64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerExactVolumeBoundaryTriangle {
+    pub vertex_indices: [u32; 3],
+    pub face_ordinal: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerExactVolumeMesh {
+    pub schema: String,
+    pub graph_digest: String,
+    pub source_result_fingerprint: String,
+    pub request_digest: String,
+    pub mesh_fingerprint: String,
+    pub vertices_mm: Vec<[f64; 3]>,
+    pub tetrahedra: Vec<[u32; 4]>,
+    pub boundary_triangles: Vec<WorkerExactVolumeBoundaryTriangle>,
+    pub exact_volume_mm3: f64,
+    pub tetrahedral_volume_mm3: f64,
+    pub relative_volume_error: f64,
+    pub minimum_signed_volume_mm3: f64,
+    pub minimum_quality: f64,
+    pub maximum_edge_ratio: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExactBRepVolumeMeshPackage {
+    pub source: ExactBRepGraphPackage,
+    pub options: ExactVolumeMeshWireOptions,
+    pub mesh: WorkerExactVolumeMesh,
+}
+
+impl ExactBRepVolumeMeshPackage {
+    #[must_use]
+    pub fn is_current(&self, snapshot: &Snapshot) -> bool {
+        self.source.is_current(snapshot)
+            && self.mesh.graph_digest == self.source.graph.graph_digest
+            && self.mesh.source_result_fingerprint == self.source.identity.result_fingerprint
+    }
+
+    pub fn occurrence_bound_model(
+        &self,
+        snapshot: &Snapshot,
+        setup: &ExactFeaSetup,
+    ) -> Result<OccurrenceBoundFeaModel, ExactFeaSetupError> {
+        if !self.is_current(snapshot) {
+            return Err(ExactFeaSetupError::StaleGeometry);
+        }
+        if snapshot
+            .resolve_instance_path(&setup.instance_path)
+            .map_err(|_| ExactFeaSetupError::OccurrenceMismatch)?
+            .definition_id
+            != self.source.identity.definition_id
+        {
+            return Err(ExactFeaSetupError::OccurrenceMismatch);
+        }
+        if setup.case_id.trim().is_empty()
+            || setup.constrained_face_ordinals.is_empty()
+            || setup.face_tractions.is_empty()
+        {
+            return Err(ExactFeaSetupError::IncompleteSetup);
+        }
+        let boundary_face_ordinals = self
+            .mesh
+            .boundary_triangles
+            .iter()
+            .map(|triangle| triangle.face_ordinal)
+            .collect::<BTreeSet<_>>();
+        if setup
+            .constrained_face_ordinals
+            .iter()
+            .any(|ordinal| !boundary_face_ordinals.contains(ordinal))
+            || setup
+                .face_tractions
+                .iter()
+                .any(|traction| !boundary_face_ordinals.contains(&traction.face_ordinal))
+            || setup
+                .face_tractions
+                .iter()
+                .flat_map(|traction| traction.traction_local_n_per_mm2)
+                .any(|value| !value.is_finite())
+        {
+            return Err(ExactFeaSetupError::InvalidBoundarySelection);
+        }
+        let constrained_faces = setup
+            .constrained_face_ordinals
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        if constrained_faces.len() != setup.constrained_face_ordinals.len() {
+            return Err(ExactFeaSetupError::InvalidBoundarySelection);
+        }
+        let traction_faces = setup
+            .face_tractions
+            .iter()
+            .map(|traction| traction.face_ordinal)
+            .collect::<BTreeSet<_>>();
+        if traction_faces.len() != setup.face_tractions.len() {
+            return Err(ExactFeaSetupError::InvalidBoundarySelection);
+        }
+
+        let constrained_nodes = self
+            .mesh
+            .boundary_triangles
+            .iter()
+            .filter(|triangle| constrained_faces.contains(&triangle.face_ordinal))
+            .flat_map(|triangle| triangle.vertex_indices)
+            .collect::<BTreeSet<_>>();
+        if constrained_nodes.is_empty() {
+            return Err(ExactFeaSetupError::InvalidBoundarySelection);
+        }
+        let loads = setup
+            .face_tractions
+            .iter()
+            .flat_map(|traction| {
+                self.mesh
+                    .boundary_triangles
+                    .iter()
+                    .filter(move |triangle| triangle.face_ordinal == traction.face_ordinal)
+                    .map(move |triangle| FeaLoad::SurfaceTraction {
+                        nodes: triangle.vertex_indices.map(|index| index as usize),
+                        traction_n_per_mm2: traction.traction_local_n_per_mm2,
+                    })
+            })
+            .collect::<Vec<_>>();
+        if loads.is_empty() {
+            return Err(ExactFeaSetupError::InvalidBoundarySelection);
+        }
+        let model = FeaModel {
+            schema: FEA_MODEL_SCHEMA_V1.to_owned(),
+            case_id: setup.case_id.clone(),
+            nodes: self
+                .mesh
+                .vertices_mm
+                .iter()
+                .copied()
+                .map(|position_mm| FeaNode { position_mm })
+                .collect(),
+            materials: vec![setup.material.clone()],
+            elements: self
+                .mesh
+                .tetrahedra
+                .iter()
+                .enumerate()
+                .map(|(index, nodes)| FeaElement {
+                    id: index as u64 + 1,
+                    kind: FeaElementKind::LinearTetrahedron4 {
+                        nodes: nodes.map(|node| node as usize),
+                        material_id: setup.material.id,
+                    },
+                })
+                .collect(),
+            constraints: constrained_nodes
+                .into_iter()
+                .map(|node| FeaConstraint {
+                    node: node as usize,
+                    displacement_mm: [Some(0.0); 3],
+                })
+                .collect(),
+            loads,
+        };
+        Ok(OccurrenceBoundFeaModel {
+            instance_path: setup.instance_path.clone(),
+            source_revision: self.source.identity.source_revision,
+            source_digest: self.source.identity.source_digest.clone(),
+            graph_digest: self.mesh.graph_digest.clone(),
+            mesh_fingerprint: self.mesh.mesh_fingerprint.clone(),
+            model,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExactFeaFaceTraction {
+    pub face_ordinal: u32,
+    pub traction_local_n_per_mm2: [f64; 3],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExactFeaSetup {
+    pub case_id: String,
+    pub instance_path: InstancePath,
+    pub material: FeaMaterial,
+    pub constrained_face_ordinals: Vec<u32>,
+    pub face_tractions: Vec<ExactFeaFaceTraction>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct OccurrenceBoundFeaModel {
+    pub instance_path: InstancePath,
+    pub source_revision: u64,
+    pub source_digest: String,
+    pub graph_digest: String,
+    pub mesh_fingerprint: String,
+    pub model: FeaModel,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExactFeaSetupError {
+    StaleGeometry,
+    OccurrenceMismatch,
+    IncompleteSetup,
+    InvalidBoundarySelection,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct CamSimulationWireRequest {
+    pub schema: String,
+    pub plan_digest: String,
+    pub toolpath_digest: String,
+    pub target_exact_graph_digest: String,
+    pub stock_bounds_mm: [[f64; 3]; 2],
+    pub setup_to_world: [f64; 16],
+    pub cutter_radius_mm: f64,
+    pub cutter_length_mm: f64,
+    pub tool_length_mm: f64,
+    pub holder_radius_mm: f64,
+    pub holder_offset_mm: f64,
+    pub holder_length_mm: f64,
+    pub motions: Vec<CamSimulationWireMotion>,
+    pub fixtures: Vec<CamSimulationWireFixture>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct CamSimulationWireMotion {
+    pub kind: u8,
+    pub path_kind: u8,
+    pub start_mm: [f64; 3],
+    pub end_mm: [f64; 3],
+    pub center_mm: [f64; 3],
+    pub clockwise: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct CamSimulationWireFixture {
+    pub id: u64,
+    pub bounds_mm: [[f64; 3]; 2],
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct CamSimulationWireEvidence {
+    pub schema: String,
+    pub plan_digest: String,
+    pub toolpath_digest: String,
+    pub target_exact_graph_digest: String,
+    pub motion_count: usize,
+    pub cutting_motion_count: usize,
+    pub fixture_count: usize,
+    pub stock_before_mm3: f64,
+    pub stock_after_mm3: f64,
+    pub removed_stock_mm3: f64,
+    pub residual_stock_mm3: f64,
+    pub gouge_mm3: f64,
+    pub collisions: Vec<CamSimulationWireCollision>,
+    pub backend: String,
+    pub tolerance: String,
+    pub result_fingerprint: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct CamSimulationWireCollision {
+    pub motion_index: usize,
+    pub motion_kind: u8,
+    pub participant: u8,
+    pub target: u8,
+    pub fixture_id: Option<u64>,
+    pub common_volume_mm3: f64,
+    pub contact_area_mm2: f64,
+    pub distance_mm: f64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkerError {
     Spawn(String),
@@ -656,6 +954,7 @@ const M6_REVOLVE_CAPABILITY: &str = "M6_REVOLVE_V1";
 const M6_SHELL_CAPABILITY: &str = "M6_SHELL_V1";
 const M14_STEP_CAPABILITY: &str = "M14_STEP_V1";
 const M21_STEP_MODEL_CAPABILITY: &str = "M21_STEP_MODEL_V1";
+const M21_STEP_XDE_CAPABILITY: &str = "M21_STEP_XDE_V1";
 const M21_IGES_CAPABILITY: &str = "M21_IGES_V1";
 const EXACT_BREP_GRAPH_CAPABILITY_V6: &str = "EXACT_BREP_GRAPH_V6";
 const EXACT_BREP_GRAPH_CAPABILITY_V7: &str = "EXACT_BREP_GRAPH_V7";
@@ -666,6 +965,19 @@ const EXACT_BREP_GRAPH_CAPABILITY_V11: &str = "EXACT_BREP_GRAPH_V11";
 const EXACT_BREP_GRAPH_CAPABILITY_V12: &str = "EXACT_BREP_GRAPH_V12";
 const EXACT_BREP_GRAPH_CAPABILITY_V13: &str = "EXACT_BREP_GRAPH_V13";
 const EXACT_BREP_GRAPH_CAPABILITY_V14: &str = "EXACT_BREP_GRAPH_V14";
+const EXACT_BREP_GRAPH_CAPABILITY_V15: &str = "EXACT_BREP_GRAPH_V15";
+const EXACT_BREP_GRAPH_CAPABILITY_V16: &str = "EXACT_BREP_GRAPH_V16";
+const EXACT_BREP_GRAPH_CAPABILITY_V17: &str = "EXACT_BREP_GRAPH_V17";
+const EXACT_BREP_GRAPH_CAPABILITY_V18: &str = "EXACT_BREP_GRAPH_V18";
+const EXACT_BREP_GRAPH_CAPABILITY_V19: &str = "EXACT_BREP_GRAPH_V19";
+const EXACT_BREP_GRAPH_CAPABILITY_V20: &str = "EXACT_BREP_GRAPH_V20";
+const EXACT_BREP_GRAPH_CAPABILITY_V21: &str = "EXACT_BREP_GRAPH_V21";
+const EXACT_BREP_GRAPH_CAPABILITY_V22: &str = "EXACT_BREP_GRAPH_V22";
+const EXACT_BREP_GRAPH_CAPABILITY_V23: &str = "EXACT_BREP_GRAPH_V23";
+const CAM_SIMULATION_CAPABILITY_V1: &str = "CAM_SIMULATION_V1";
+const MAX_CAM_SIMULATION_MOTIONS: usize = 4_096;
+const MAX_CAM_SIMULATION_FIXTURES: usize = 64;
+const MAX_CAM_SIMULATION_PAIR_CHECKS: usize = 16_384;
 pub const MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES: usize = 64;
 pub const MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
 const DEFAULT_WORKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -749,11 +1061,50 @@ impl From<&ExactRevolveRequest> for StepRevolveExportSpec {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StepXdeWorkerEvidence {
+    pub source_sha256: String,
+    pub source_byte_len: u64,
+    pub source_unit: String,
+    pub parts: Vec<StepXdeWorkerPart>,
+    pub nodes: Vec<StepXdeWorkerNode>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StepXdeWorkerPart {
+    pub index: u32,
+    pub name: String,
+    pub name_from_source: bool,
+    pub color: Option<[u8; 3]>,
+    pub result_fingerprint: String,
+    pub body_kind: String,
+    pub solid_count: u32,
+    pub topology_counts: [u32; 5],
+    pub area_mm2: f64,
+    pub volume_mm3: f64,
+    pub bounds_mm: [[f64; 3]; 2],
+    pub backend: String,
+    pub tolerance: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StepXdeWorkerNode {
+    pub id: u32,
+    pub parent_id: Option<u32>,
+    pub part_index: Option<u32>,
+    pub name: String,
+    pub name_from_source: bool,
+    pub color: Option<[u8; 3]>,
+    pub transform: [f64; 16],
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StepAssemblyManifest {
+    pub schema: String,
     pub document_id: u64,
     pub source_revision: u64,
     pub source_digest: String,
     pub parts: Vec<StepAssemblyPart>,
+    pub nodes: Vec<StepAssemblyNode>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -761,9 +1112,21 @@ pub struct StepAssemblyPart {
     pub document_id: u64,
     pub source_revision: u64,
     pub source_digest: String,
+    pub definition_id: u64,
+    pub producer_feature_id: u64,
+    pub name: String,
     pub expected_result_fingerprint: String,
     pub imported_result_fingerprint: String,
     pub source_sha256: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StepAssemblyNode {
+    pub id: u32,
+    pub parent_id: Option<u32>,
+    pub part_index: Option<u32>,
+    pub name: String,
+    pub color: Option<[u8; 3]>,
     pub transform_bits: [u64; 16],
 }
 
@@ -1279,6 +1642,21 @@ impl ExactWorkerClient {
         }
     }
 
+    fn verify_m21_step_xde_capability(
+        &mut self,
+        cancelled: &AtomicBool,
+    ) -> Result<(), WorkerError> {
+        let response = self.request_with_cancellation("CAPS M21_STEP_XDE_V1", cancelled)?;
+        if response == "CAPS M21_STEP_XDE_V1" {
+            Ok(())
+        } else {
+            self.terminate_worker();
+            Err(WorkerError::MissingCapability(
+                M21_STEP_XDE_CAPABILITY.to_owned(),
+            ))
+        }
+    }
+
     fn verify_m21_iges_capability(&mut self, cancelled: &AtomicBool) -> Result<(), WorkerError> {
         let response = self.request_with_cancellation("CAPS M21_IGES_V1", cancelled)?;
         if response == "CAPS M21_IGES_V1" {
@@ -1306,6 +1684,15 @@ impl ExactWorkerClient {
             EXACT_BREP_GRAPH_SCHEMA_V12 => EXACT_BREP_GRAPH_CAPABILITY_V12,
             EXACT_BREP_GRAPH_SCHEMA_V13 => EXACT_BREP_GRAPH_CAPABILITY_V13,
             EXACT_BREP_GRAPH_SCHEMA_V14 => EXACT_BREP_GRAPH_CAPABILITY_V14,
+            EXACT_BREP_GRAPH_SCHEMA_V15 => EXACT_BREP_GRAPH_CAPABILITY_V15,
+            EXACT_BREP_GRAPH_SCHEMA_V16 => EXACT_BREP_GRAPH_CAPABILITY_V16,
+            EXACT_BREP_GRAPH_SCHEMA_V17 => EXACT_BREP_GRAPH_CAPABILITY_V17,
+            EXACT_BREP_GRAPH_SCHEMA_V18 => EXACT_BREP_GRAPH_CAPABILITY_V18,
+            EXACT_BREP_GRAPH_SCHEMA_V19 => EXACT_BREP_GRAPH_CAPABILITY_V19,
+            EXACT_BREP_GRAPH_SCHEMA_V20 => EXACT_BREP_GRAPH_CAPABILITY_V20,
+            EXACT_BREP_GRAPH_SCHEMA_V21 => EXACT_BREP_GRAPH_CAPABILITY_V21,
+            EXACT_BREP_GRAPH_SCHEMA_V22 => EXACT_BREP_GRAPH_CAPABILITY_V22,
+            EXACT_BREP_GRAPH_SCHEMA_V23 => EXACT_BREP_GRAPH_CAPABILITY_V23,
             schema => {
                 return Err(WorkerError::Protocol(format!(
                     "unsupported graph schema {schema}"
@@ -1320,6 +1707,60 @@ impl ExactWorkerClient {
             self.terminate_worker();
             Err(WorkerError::MissingCapability(capability.to_owned()))
         }
+    }
+
+    fn verify_cam_simulation_capability(
+        &mut self,
+        cancelled: &AtomicBool,
+    ) -> Result<(), WorkerError> {
+        let request = format!("CAPS {CAM_SIMULATION_CAPABILITY_V1}");
+        let response = self.request_with_cancellation(&request, cancelled)?;
+        if response == request {
+            Ok(())
+        } else {
+            self.terminate_worker();
+            Err(WorkerError::MissingCapability(
+                CAM_SIMULATION_CAPABILITY_V1.to_owned(),
+            ))
+        }
+    }
+
+    fn simulate_cam_with_cancellation(
+        &mut self,
+        graph: &ExactBRepGraph,
+        request: &CamSimulationWireRequest,
+        cancelled: &AtomicBool,
+    ) -> Result<CamSimulationWireEvidence, WorkerError> {
+        self.verify_cam_simulation_capability(cancelled)?;
+        self.verify_exact_brep_graph_capability(graph, cancelled)?;
+        let graph_bytes = graph
+            .to_bytes()
+            .map_err(|error| WorkerError::Protocol(error.to_string()))?;
+        let request_bytes = serde_json::to_vec(request)
+            .map_err(|error| WorkerError::Protocol(error.to_string()))?;
+        let response = self.request_with_timeout(
+            &format!(
+                "SIMULATE_CAM_V1 {} {} {}",
+                graph.graph_digest,
+                hex_encode(&graph_bytes),
+                hex_encode(&request_bytes)
+            ),
+            cancelled,
+            EXACT_BREP_GRAPH_REQUEST_TIMEOUT,
+        )?;
+        let fields = response.split_whitespace().collect::<Vec<_>>();
+        if matches!(fields.first(), Some(&"ERR") | Some(&"ERR_DETAIL")) {
+            return Err(parse_error_response(&response, &fields));
+        }
+        if fields.len() != 3
+            || fields[0] != "OK_CAM_SIMULATION_V1"
+            || fields[1] != graph.graph_digest
+        {
+            return self.fail_protocol(response);
+        }
+        let encoded = hex_decode_utf8(fields[2])
+            .ok_or_else(|| WorkerError::Protocol("CAM evidence is not hexadecimal UTF-8".into()))?;
+        serde_json::from_str(&encoded).map_err(|_| WorkerError::Protocol(response))
     }
 
     fn evaluate_exact_brep_graph_with_cancellation(
@@ -1342,6 +1783,15 @@ impl ExactWorkerClient {
             EXACT_BREP_GRAPH_SCHEMA_V12 => "EVAL_BREP_GRAPH_V12",
             EXACT_BREP_GRAPH_SCHEMA_V13 => "EVAL_BREP_GRAPH_V13",
             EXACT_BREP_GRAPH_SCHEMA_V14 => "EVAL_BREP_GRAPH_V14",
+            EXACT_BREP_GRAPH_SCHEMA_V15 => "EVAL_BREP_GRAPH_V15",
+            EXACT_BREP_GRAPH_SCHEMA_V16 => "EVAL_BREP_GRAPH_V16",
+            EXACT_BREP_GRAPH_SCHEMA_V17 => "EVAL_BREP_GRAPH_V17",
+            EXACT_BREP_GRAPH_SCHEMA_V18 => "EVAL_BREP_GRAPH_V18",
+            EXACT_BREP_GRAPH_SCHEMA_V19 => "EVAL_BREP_GRAPH_V19",
+            EXACT_BREP_GRAPH_SCHEMA_V20 => "EVAL_BREP_GRAPH_V20",
+            EXACT_BREP_GRAPH_SCHEMA_V21 => "EVAL_BREP_GRAPH_V21",
+            EXACT_BREP_GRAPH_SCHEMA_V22 => "EVAL_BREP_GRAPH_V22",
+            EXACT_BREP_GRAPH_SCHEMA_V23 => "EVAL_BREP_GRAPH_V23",
             _ => unreachable!("capability validation rejects unsupported graph schemas"),
         };
         let mut request = format!("{operation} {} {}", graph.graph_digest, hex_encode(&bytes));
@@ -1357,6 +1807,15 @@ impl ExactWorkerClient {
             EXACT_BREP_GRAPH_SCHEMA_V12 => "OK_BREP_GRAPH_V12",
             EXACT_BREP_GRAPH_SCHEMA_V13 => "OK_BREP_GRAPH_V13",
             EXACT_BREP_GRAPH_SCHEMA_V14 => "OK_BREP_GRAPH_V14",
+            EXACT_BREP_GRAPH_SCHEMA_V15 => "OK_BREP_GRAPH_V15",
+            EXACT_BREP_GRAPH_SCHEMA_V16 => "OK_BREP_GRAPH_V16",
+            EXACT_BREP_GRAPH_SCHEMA_V17 => "OK_BREP_GRAPH_V17",
+            EXACT_BREP_GRAPH_SCHEMA_V18 => "OK_BREP_GRAPH_V18",
+            EXACT_BREP_GRAPH_SCHEMA_V19 => "OK_BREP_GRAPH_V19",
+            EXACT_BREP_GRAPH_SCHEMA_V20 => "OK_BREP_GRAPH_V20",
+            EXACT_BREP_GRAPH_SCHEMA_V21 => "OK_BREP_GRAPH_V21",
+            EXACT_BREP_GRAPH_SCHEMA_V22 => "OK_BREP_GRAPH_V22",
+            EXACT_BREP_GRAPH_SCHEMA_V23 => "OK_BREP_GRAPH_V23",
             _ => unreachable!("capability validation rejects unsupported graph schemas"),
         };
         match parse_exact_brep_graph_result(&response, expected_protocol) {
@@ -1387,6 +1846,15 @@ impl ExactWorkerClient {
             EXACT_BREP_GRAPH_SCHEMA_V12 => "TESSELLATE_BREP_GRAPH_V12",
             EXACT_BREP_GRAPH_SCHEMA_V13 => "TESSELLATE_BREP_GRAPH_V13",
             EXACT_BREP_GRAPH_SCHEMA_V14 => "TESSELLATE_BREP_GRAPH_V14",
+            EXACT_BREP_GRAPH_SCHEMA_V15 => "TESSELLATE_BREP_GRAPH_V15",
+            EXACT_BREP_GRAPH_SCHEMA_V16 => "TESSELLATE_BREP_GRAPH_V16",
+            EXACT_BREP_GRAPH_SCHEMA_V17 => "TESSELLATE_BREP_GRAPH_V17",
+            EXACT_BREP_GRAPH_SCHEMA_V18 => "TESSELLATE_BREP_GRAPH_V18",
+            EXACT_BREP_GRAPH_SCHEMA_V19 => "TESSELLATE_BREP_GRAPH_V19",
+            EXACT_BREP_GRAPH_SCHEMA_V20 => "TESSELLATE_BREP_GRAPH_V20",
+            EXACT_BREP_GRAPH_SCHEMA_V21 => "TESSELLATE_BREP_GRAPH_V21",
+            EXACT_BREP_GRAPH_SCHEMA_V22 => "TESSELLATE_BREP_GRAPH_V22",
+            EXACT_BREP_GRAPH_SCHEMA_V23 => "TESSELLATE_BREP_GRAPH_V23",
             _ => unreachable!("capability validation rejects unsupported graph schemas"),
         };
         let mut request = format!(
@@ -1435,6 +1903,97 @@ impl ExactWorkerClient {
         Ok(mesh)
     }
 
+    fn volume_mesh_exact_brep_graph_with_cancellation(
+        &mut self,
+        graph: &ExactBRepGraph,
+        result_fingerprint: &str,
+        options: ExactVolumeMeshWireOptions,
+        output_path: &Path,
+        imported_sources: &[(&str, &Path)],
+        cancelled: &AtomicBool,
+    ) -> Result<WorkerExactVolumeMesh, WorkerError> {
+        self.verify_exact_brep_graph_capability(graph, cancelled)?;
+        let bytes = graph
+            .to_bytes()
+            .map_err(|error| WorkerError::Protocol(error.to_string()))?;
+        let operation = match graph.schema.as_str() {
+            EXACT_BREP_GRAPH_SCHEMA_V6 => "VOLUME_MESH_BREP_GRAPH_V6",
+            EXACT_BREP_GRAPH_SCHEMA_V7 => "VOLUME_MESH_BREP_GRAPH_V7",
+            EXACT_BREP_GRAPH_SCHEMA_V8 => "VOLUME_MESH_BREP_GRAPH_V8",
+            EXACT_BREP_GRAPH_SCHEMA_V9 => "VOLUME_MESH_BREP_GRAPH_V9",
+            EXACT_BREP_GRAPH_SCHEMA_V10 => "VOLUME_MESH_BREP_GRAPH_V10",
+            EXACT_BREP_GRAPH_SCHEMA_V11 => "VOLUME_MESH_BREP_GRAPH_V11",
+            EXACT_BREP_GRAPH_SCHEMA_V12 => "VOLUME_MESH_BREP_GRAPH_V12",
+            EXACT_BREP_GRAPH_SCHEMA_V13 => "VOLUME_MESH_BREP_GRAPH_V13",
+            EXACT_BREP_GRAPH_SCHEMA_V14 => "VOLUME_MESH_BREP_GRAPH_V14",
+            EXACT_BREP_GRAPH_SCHEMA_V15 => "VOLUME_MESH_BREP_GRAPH_V15",
+            EXACT_BREP_GRAPH_SCHEMA_V16 => "VOLUME_MESH_BREP_GRAPH_V16",
+            EXACT_BREP_GRAPH_SCHEMA_V17 => "VOLUME_MESH_BREP_GRAPH_V17",
+            EXACT_BREP_GRAPH_SCHEMA_V18 => "VOLUME_MESH_BREP_GRAPH_V18",
+            EXACT_BREP_GRAPH_SCHEMA_V19 => "VOLUME_MESH_BREP_GRAPH_V19",
+            EXACT_BREP_GRAPH_SCHEMA_V20 => "VOLUME_MESH_BREP_GRAPH_V20",
+            EXACT_BREP_GRAPH_SCHEMA_V21 => "VOLUME_MESH_BREP_GRAPH_V21",
+            EXACT_BREP_GRAPH_SCHEMA_V22 => "VOLUME_MESH_BREP_GRAPH_V22",
+            EXACT_BREP_GRAPH_SCHEMA_V23 => "VOLUME_MESH_BREP_GRAPH_V23",
+            _ => unreachable!("capability validation rejects unsupported graph schemas"),
+        };
+        let options = serde_json::to_vec(&options)
+            .map_err(|error| WorkerError::Protocol(error.to_string()))?;
+        let mut request = format!(
+            "{operation} {} {} {} {} {}",
+            graph.graph_digest,
+            hex_encode(&bytes),
+            result_fingerprint,
+            hex_encode(output_path.to_string_lossy().as_bytes()),
+            hex_encode(&options),
+        );
+        append_exact_brep_graph_sources(&mut request, imported_sources);
+        let response =
+            self.request_with_timeout(&request, cancelled, EXACT_BREP_GRAPH_REQUEST_TIMEOUT)?;
+        let fields = response.split_whitespace().collect::<Vec<_>>();
+        if matches!(fields.first(), Some(&"ERR") | Some(&"ERR_DETAIL")) {
+            return Err(parse_error_response(&response, &fields));
+        }
+        if fields.len() != 8
+            || fields[0] != "OK_BREP_GRAPH_VOLUME_MESH_V1"
+            || fields[1] != graph.graph_digest
+            || fields[2] != result_fingerprint
+            || !is_sha256_digest(fields[6])
+        {
+            return self.fail_protocol(response);
+        }
+        let (Ok(vertex_count), Ok(tetrahedron_count), Ok(boundary_count)) = (
+            fields[3].parse::<u32>(),
+            fields[4].parse::<u32>(),
+            fields[5].parse::<u32>(),
+        ) else {
+            return self.fail_protocol(response);
+        };
+        let encoded = std::fs::read(output_path)
+            .map_err(|error| WorkerError::Transport(error.to_string()))?;
+        if sha256_hex(&encoded) != fields[6] {
+            return Err(WorkerError::Transport(
+                "exact volume-mesh digest does not match the worker receipt".to_owned(),
+            ));
+        }
+        let mesh = serde_json::from_slice::<WorkerExactVolumeMesh>(&encoded)
+            .map_err(|error| WorkerError::Protocol(error.to_string()))?;
+        if mesh.schema != EXACT_VOLUME_MESH_WIRE_SCHEMA_V1
+            || mesh.graph_digest != graph.graph_digest
+            || mesh.source_result_fingerprint != result_fingerprint
+            || mesh.mesh_fingerprint != fields[7]
+            || mesh.vertices_mm.len() as u32 != vertex_count
+            || mesh.tetrahedra.len() as u32 != tetrahedron_count
+            || mesh.boundary_triangles.len() as u32 != boundary_count
+        {
+            return Err(WorkerError::Transport(
+                "exact volume mesh does not match the worker receipt or request identity"
+                    .to_owned(),
+            ));
+        }
+        Ok(mesh)
+    }
+
     fn export_exact_brep_graph_step_with_cancellation(
         &mut self,
         graph: &ExactBRepGraph,
@@ -1455,9 +2014,17 @@ impl ExactWorkerClient {
             | EXACT_BREP_GRAPH_SCHEMA_V10
             | EXACT_BREP_GRAPH_SCHEMA_V11 => ("EXPORT_BREP_GRAPH_STEP_V2", "OK_BREP_GRAPH_STEP_V2"),
             EXACT_BREP_GRAPH_SCHEMA_V12 => ("EXPORT_BREP_GRAPH_STEP_V3", "OK_BREP_GRAPH_STEP_V3"),
-            EXACT_BREP_GRAPH_SCHEMA_V13 | EXACT_BREP_GRAPH_SCHEMA_V14 => {
-                ("EXPORT_BREP_GRAPH_STEP_V4", "OK_BREP_GRAPH_STEP_V4")
-            }
+            EXACT_BREP_GRAPH_SCHEMA_V13
+            | EXACT_BREP_GRAPH_SCHEMA_V14
+            | EXACT_BREP_GRAPH_SCHEMA_V15
+            | EXACT_BREP_GRAPH_SCHEMA_V16
+            | EXACT_BREP_GRAPH_SCHEMA_V17
+            | EXACT_BREP_GRAPH_SCHEMA_V18
+            | EXACT_BREP_GRAPH_SCHEMA_V19
+            | EXACT_BREP_GRAPH_SCHEMA_V20
+            | EXACT_BREP_GRAPH_SCHEMA_V21
+            | EXACT_BREP_GRAPH_SCHEMA_V22
+            | EXACT_BREP_GRAPH_SCHEMA_V23 => ("EXPORT_BREP_GRAPH_STEP_V4", "OK_BREP_GRAPH_STEP_V4"),
             _ => unreachable!("capability validation rejects unsupported graph schemas"),
         };
         let mut request = format!(
@@ -2502,16 +3069,250 @@ impl ExactWorkerClient {
         }
     }
 
-    fn inspect_step_part_request_with_cancellation(
+    fn inspect_step_xde_request_with_cancellation(
         &mut self,
         path: &Path,
         source_sha256: &str,
         cancelled: &AtomicBool,
-    ) -> Result<StepImportEvidence, WorkerError> {
-        self.verify_m21_step_model_capability(cancelled)?;
+    ) -> Result<StepXdeImportEvidence, WorkerError> {
+        self.verify_m21_step_xde_capability(cancelled)?;
         let response = self.request_with_cancellation(
             &format!(
-                "INSPECT_STEP_PART_M21_V1 {source_sha256} {}",
+                "INSPECT_STEP_XDE_M21_V1 {source_sha256} {}",
+                hex_encode(path.to_string_lossy().as_bytes())
+            ),
+            cancelled,
+        )?;
+        let fields = response.split_whitespace().collect::<Vec<_>>();
+        if matches!(fields.first(), Some(&"ERR") | Some(&"ERR_DETAIL")) {
+            return match parse_error_response(&response, &fields) {
+                WorkerError::Protocol(response) => self.fail_protocol(response),
+                error => Err(error),
+            };
+        }
+        if fields.len() != 4
+            || fields[0] != "OK_M21_STEP_XDE_V2"
+            || fields[1] != source_sha256
+            || !is_sha256_digest(fields[2])
+        {
+            return self.fail_protocol(response);
+        }
+        let encoded = hex_decode_utf8(fields[3]).ok_or_else(|| {
+            WorkerError::Protocol("STEP XDE evidence is not valid hexadecimal UTF-8".to_owned())
+        })?;
+        if sha256_hex(encoded.as_bytes()) != fields[2] {
+            return Err(WorkerError::Transport(
+                "STEP XDE evidence digest does not match the worker receipt".to_owned(),
+            ));
+        }
+        let evidence: StepXdeWorkerEvidence = serde_json::from_str(&encoded)
+            .map_err(|error| WorkerError::Protocol(error.to_string()))?;
+        if evidence.source_sha256 != source_sha256
+            || evidence
+                .parts
+                .iter()
+                .any(|part| parse_import_body_kind(&part.body_kind).is_none())
+        {
+            return self.fail_protocol(response);
+        }
+        let source_sha256 = decode_sha256(source_sha256)
+            .ok_or_else(|| WorkerError::Protocol("invalid STEP source SHA-256".to_owned()))?;
+        let source_unit = match evidence.source_unit.as_str() {
+            "millimetre" => ImportLengthUnit::Millimetre,
+            "centimetre" => ImportLengthUnit::Centimetre,
+            "metre" => ImportLengthUnit::Metre,
+            "inch" => ImportLengthUnit::Inch,
+            "foot" => ImportLengthUnit::Foot,
+            _ => return self.fail_protocol(response),
+        };
+        let parts = evidence
+            .parts
+            .into_iter()
+            .map(|part| StepXdePartEvidence {
+                index: part.index,
+                name: part.name,
+                name_from_source: part.name_from_source,
+                color: part.color,
+                exact: StepImportEvidence {
+                    source_unit,
+                    result_fingerprint: part.result_fingerprint,
+                    body_kind: parse_import_body_kind(&part.body_kind)
+                        .expect("worker body kind was validated"),
+                    solid_count: part.solid_count,
+                    topology_counts: part.topology_counts,
+                    area_mm2: part.area_mm2,
+                    volume_mm3: part.volume_mm3,
+                    bounds_mm: part.bounds_mm,
+                    backend: part.backend,
+                    tolerance: part.tolerance,
+                },
+            })
+            .collect();
+        let nodes = evidence
+            .nodes
+            .into_iter()
+            .map(|node| {
+                let transform = Transform::from_matrix(node.transform)
+                    .ok()
+                    .filter(|transform| transform.rigid_inverse().is_some())?;
+                Some(StepXdeNodeEvidence {
+                    id: node.id,
+                    parent_id: node.parent_id,
+                    part_index: node.part_index,
+                    name: node.name,
+                    name_from_source: node.name_from_source,
+                    color: node.color,
+                    transform,
+                })
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| WorkerError::Protocol("STEP XDE transform is not rigid".to_owned()))?;
+        Ok(StepXdeImportEvidence {
+            source_sha256,
+            source_byte_len: evidence.source_byte_len,
+            parts,
+            nodes,
+        })
+    }
+
+    fn inspect_iges_xde_request_with_cancellation(
+        &mut self,
+        path: &Path,
+        source_sha256: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<IgesXdeImportEvidence, WorkerError> {
+        self.verify_m21_iges_capability(cancelled)?;
+        let response = self.request_with_cancellation(
+            &format!(
+                "INSPECT_IGES_XDE_M21_V1 {source_sha256} {}",
+                hex_encode(path.to_string_lossy().as_bytes())
+            ),
+            cancelled,
+        )?;
+        let fields = response.split_whitespace().collect::<Vec<_>>();
+        if matches!(fields.first(), Some(&"ERR") | Some(&"ERR_DETAIL")) {
+            return match parse_error_response(&response, &fields) {
+                WorkerError::Protocol(response) => self.fail_protocol(response),
+                error => Err(error),
+            };
+        }
+        if fields.len() != 4
+            || fields[0] != "OK_M21_IGES_XDE_V2"
+            || fields[1] != source_sha256
+            || !is_sha256_digest(fields[2])
+        {
+            return self.fail_protocol(response);
+        }
+        let encoded = hex_decode_utf8(fields[3]).ok_or_else(|| {
+            WorkerError::Protocol("IGES XDE evidence is not valid hexadecimal UTF-8".to_owned())
+        })?;
+        if sha256_hex(encoded.as_bytes()) != fields[2] {
+            return Err(WorkerError::Transport(
+                "IGES XDE evidence digest does not match the worker receipt".to_owned(),
+            ));
+        }
+        let evidence: StepXdeWorkerEvidence = serde_json::from_str(&encoded)
+            .map_err(|error| WorkerError::Protocol(error.to_string()))?;
+        if evidence.source_sha256 != source_sha256
+            || evidence
+                .parts
+                .iter()
+                .any(|part| parse_import_body_kind(&part.body_kind).is_none())
+        {
+            return self.fail_protocol(response);
+        }
+        let source_sha256 = decode_sha256(source_sha256)
+            .ok_or_else(|| WorkerError::Protocol("invalid IGES source SHA-256".to_owned()))?;
+        let source_unit = match evidence.source_unit.as_str() {
+            "millimetre" => ImportLengthUnit::Millimetre,
+            "centimetre" => ImportLengthUnit::Centimetre,
+            "metre" => ImportLengthUnit::Metre,
+            "inch" => ImportLengthUnit::Inch,
+            "foot" => ImportLengthUnit::Foot,
+            _ => return self.fail_protocol(response),
+        };
+        let parts = evidence
+            .parts
+            .into_iter()
+            .map(|part| IgesXdePartEvidence {
+                index: part.index,
+                name: part.name,
+                name_from_source: part.name_from_source,
+                color: part.color,
+                exact: StepImportEvidence {
+                    source_unit,
+                    result_fingerprint: part.result_fingerprint,
+                    body_kind: parse_import_body_kind(&part.body_kind)
+                        .expect("worker body kind was validated"),
+                    solid_count: part.solid_count,
+                    topology_counts: part.topology_counts,
+                    area_mm2: part.area_mm2,
+                    volume_mm3: part.volume_mm3,
+                    bounds_mm: part.bounds_mm,
+                    backend: part.backend,
+                    tolerance: part.tolerance,
+                },
+            })
+            .collect();
+        let nodes = evidence
+            .nodes
+            .into_iter()
+            .map(|node| {
+                if node.parent_id.is_some() {
+                    return None;
+                }
+                let part_index = node.part_index?;
+                let transform = Transform::from_matrix(node.transform)
+                    .ok()
+                    .filter(|transform| *transform == Transform::identity())?;
+                Some(IgesXdeNodeEvidence {
+                    id: node.id,
+                    part_index,
+                    name: node.name,
+                    name_from_source: node.name_from_source,
+                    color: node.color,
+                    transform,
+                })
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| {
+                WorkerError::Protocol(
+                    "IGES XDE evidence is not a flat identity-root model".to_owned(),
+                )
+            })?;
+        Ok(IgesXdeImportEvidence {
+            source_sha256,
+            source_byte_len: evidence.source_byte_len,
+            parts,
+            nodes,
+        })
+    }
+
+    fn inspect_step_part_request_with_cancellation(
+        &mut self,
+        path: &Path,
+        source_sha256: &str,
+        part_index: Option<u32>,
+        cancelled: &AtomicBool,
+    ) -> Result<StepImportEvidence, WorkerError> {
+        let (operation, response_schema, suffix) = if let Some(index) = part_index {
+            self.verify_m21_step_xde_capability(cancelled)?;
+            (
+                "INSPECT_STEP_XDE_PART_M21_V1",
+                "OK_M21_STEP_XDE_PART_V2",
+                format!(" {index}"),
+            )
+        } else {
+            self.verify_m21_step_model_capability(cancelled)?;
+            (
+                "INSPECT_STEP_PART_M21_V1",
+                "OK_M21_STEP_PART_V4",
+                String::new(),
+            )
+        };
+        let response = self.request_with_cancellation(
+            &format!(
+                "{operation} {source_sha256} {}{suffix}",
                 hex_encode(path.to_string_lossy().as_bytes())
             ),
             cancelled,
@@ -2530,27 +3331,29 @@ impl ExactWorkerClient {
                 .map(f64::from_bits)
         };
         let evidence = (|| {
-            if fields.len() != 18
-                || fields[0] != "OK_M21_STEP_PART_V3"
+            if fields.len() != 20
+                || fields[0] != response_schema
                 || fields[1] != source_sha256
                 || !is_fnv1a64_digest(fields[2])
             {
                 return None;
             }
-            let solid_count = fields[3].parse::<u32>().ok()?;
-            let volume_mm3 = parse_bits(4)?;
+            let body_kind = parse_import_body_kind(fields[3])?;
+            let solid_count = fields[4].parse::<u32>().ok()?;
+            let area_mm2 = parse_bits(5)?;
+            let volume_mm3 = parse_bits(6)?;
             let bounds_mm = [
-                [parse_bits(5)?, parse_bits(6)?, parse_bits(7)?],
-                [parse_bits(8)?, parse_bits(9)?, parse_bits(10)?],
+                [parse_bits(7)?, parse_bits(8)?, parse_bits(9)?],
+                [parse_bits(10)?, parse_bits(11)?, parse_bits(12)?],
             ];
             let topology_counts = [
-                fields[11].parse::<u32>().ok()?,
-                fields[12].parse::<u32>().ok()?,
                 fields[13].parse::<u32>().ok()?,
                 fields[14].parse::<u32>().ok()?,
+                fields[15].parse::<u32>().ok()?,
+                fields[16].parse::<u32>().ok()?,
                 solid_count,
             ];
-            let source_unit = match hex_decode_utf8(fields[15])?.as_str() {
+            let source_unit = match hex_decode_utf8(fields[17])?.as_str() {
                 "millimetre" => ImportLengthUnit::Millimetre,
                 "centimetre" => ImportLengthUnit::Centimetre,
                 "metre" => ImportLengthUnit::Metre,
@@ -2561,12 +3364,14 @@ impl ExactWorkerClient {
             Some(StepImportEvidence {
                 source_unit,
                 result_fingerprint: fields[2].to_owned(),
+                body_kind,
                 solid_count,
                 topology_counts,
+                area_mm2,
                 volume_mm3,
                 bounds_mm,
-                backend: hex_decode_utf8(fields[16])?,
-                tolerance: hex_decode_utf8(fields[17])?,
+                backend: hex_decode_utf8(fields[18])?,
+                tolerance: hex_decode_utf8(fields[19])?,
             })
         })();
         match evidence {
@@ -2579,12 +3384,26 @@ impl ExactWorkerClient {
         &mut self,
         path: &Path,
         source_sha256: &str,
+        part_index: Option<u32>,
         cancelled: &AtomicBool,
     ) -> Result<StepImportEvidence, WorkerError> {
         self.verify_m21_iges_capability(cancelled)?;
+        let (operation, response_schema, suffix) = if let Some(index) = part_index {
+            (
+                "INSPECT_IGES_XDE_PART_M21_V1",
+                "OK_M21_IGES_XDE_PART_V2",
+                format!(" {index}"),
+            )
+        } else {
+            (
+                "INSPECT_IGES_PART_M21_V1",
+                "OK_M21_IGES_PART_V2",
+                String::new(),
+            )
+        };
         let response = self.request_with_cancellation(
             &format!(
-                "INSPECT_IGES_PART_M21_V1 {source_sha256} {}",
+                "{operation} {source_sha256} {}{suffix}",
                 hex_encode(path.to_string_lossy().as_bytes())
             ),
             cancelled,
@@ -2603,15 +3422,16 @@ impl ExactWorkerClient {
                 .map(f64::from_bits)
         };
         let evidence = (|| {
-            if fields.len() != 18
-                || fields[0] != "OK_M21_IGES_PART_V1"
+            if fields.len() != 20
+                || fields[0] != response_schema
                 || fields[1] != source_sha256
                 || !is_fnv1a64_digest(fields[2])
             {
                 return None;
             }
-            let solid_count = fields[3].parse::<u32>().ok()?;
-            let source_unit = match hex_decode_utf8(fields[15])?.as_str() {
+            let body_kind = parse_import_body_kind(fields[3])?;
+            let solid_count = fields[4].parse::<u32>().ok()?;
+            let source_unit = match hex_decode_utf8(fields[17])?.as_str() {
                 "millimetre" => ImportLengthUnit::Millimetre,
                 "centimetre" => ImportLengthUnit::Centimetre,
                 "metre" => ImportLengthUnit::Metre,
@@ -2622,21 +3442,23 @@ impl ExactWorkerClient {
             Some(StepImportEvidence {
                 source_unit,
                 result_fingerprint: fields[2].to_owned(),
+                body_kind,
                 solid_count,
                 topology_counts: [
-                    fields[11].parse::<u32>().ok()?,
-                    fields[12].parse::<u32>().ok()?,
                     fields[13].parse::<u32>().ok()?,
                     fields[14].parse::<u32>().ok()?,
+                    fields[15].parse::<u32>().ok()?,
+                    fields[16].parse::<u32>().ok()?,
                     solid_count,
                 ],
-                volume_mm3: parse_bits(4)?,
+                area_mm2: parse_bits(5)?,
+                volume_mm3: parse_bits(6)?,
                 bounds_mm: [
-                    [parse_bits(5)?, parse_bits(6)?, parse_bits(7)?],
-                    [parse_bits(8)?, parse_bits(9)?, parse_bits(10)?],
+                    [parse_bits(7)?, parse_bits(8)?, parse_bits(9)?],
+                    [parse_bits(10)?, parse_bits(11)?, parse_bits(12)?],
                 ],
-                backend: hex_decode_utf8(fields[16])?,
-                tolerance: hex_decode_utf8(fields[17])?,
+                backend: hex_decode_utf8(fields[18])?,
+                tolerance: hex_decode_utf8(fields[19])?,
             })
         })();
         match evidence {
@@ -2651,12 +3473,26 @@ impl ExactWorkerClient {
         source_sha256: &str,
         result_fingerprint: &str,
         output_path: &Path,
+        part_index: Option<u32>,
         cancelled: &AtomicBool,
     ) -> Result<StepImportMesh, WorkerError> {
         self.verify_m21_iges_capability(cancelled)?;
+        let (operation, response_schema, suffix) = if let Some(index) = part_index {
+            (
+                "TESSELLATE_IGES_XDE_PART_M21_V1",
+                "OK_M21_IGES_XDE_MESH_V1",
+                format!(" {index}"),
+            )
+        } else {
+            (
+                "TESSELLATE_IGES_PART_M21_V1",
+                "OK_M21_IGES_MESH_V1",
+                String::new(),
+            )
+        };
         let response = self.request_with_cancellation(
             &format!(
-                "TESSELLATE_IGES_PART_M21_V1 {source_sha256} {} {}",
+                "{operation} {source_sha256} {}{suffix} {}",
                 hex_encode(path.to_string_lossy().as_bytes()),
                 hex_encode(output_path.to_string_lossy().as_bytes())
             ),
@@ -2670,7 +3506,7 @@ impl ExactWorkerClient {
             };
         }
         if fields.len() != 7
-            || fields[0] != "OK_M21_IGES_MESH_V1"
+            || fields[0] != response_schema
             || fields[1] != source_sha256
             || fields[2] != result_fingerprint
             || !is_sha256_digest(fields[5])
@@ -2711,7 +3547,7 @@ impl ExactWorkerClient {
         self.verify_m21_iges_capability(cancelled)?;
         let response = self.request_with_cancellation(
             &format!(
-                "CONVERT_STEP_TO_IGES_M21_V1 {source_sha256} {} {}",
+                "CONVERT_STEP_XDE_TO_IGES_M21_V1 {source_sha256} {} {}",
                 hex_encode(source_path.to_string_lossy().as_bytes()),
                 hex_encode(output_path.to_string_lossy().as_bytes()),
             ),
@@ -2735,18 +3571,74 @@ impl ExactWorkerClient {
         }
     }
 
+    fn export_step_xde_part_request_with_cancellation(
+        &mut self,
+        source_path: &Path,
+        source_sha256: &str,
+        part_index: u32,
+        result_fingerprint: &str,
+        output_path: &Path,
+        cancelled: &AtomicBool,
+    ) -> Result<(), WorkerError> {
+        self.verify_m21_step_xde_capability(cancelled)?;
+        let response = self.request_with_cancellation(
+            &format!(
+                "EXPORT_STEP_XDE_PART_M21_V1 {source_sha256} {} {part_index} {result_fingerprint} {}",
+                hex_encode(source_path.to_string_lossy().as_bytes()),
+                hex_encode(output_path.to_string_lossy().as_bytes()),
+            ),
+            cancelled,
+        )?;
+        let fields = response.split_whitespace().collect::<Vec<_>>();
+        if matches!(fields.first(), Some(&"ERR") | Some(&"ERR_DETAIL")) {
+            return match parse_error_response(&response, &fields) {
+                WorkerError::Protocol(response) => self.fail_protocol(response),
+                error => Err(error),
+            };
+        }
+        if fields.len() != 4
+            || fields[0] != "OK_M21_STEP_XDE_EXPORT_V1"
+            || fields[1] != source_sha256
+            || fields[2] != result_fingerprint
+            || !is_sha256_digest(fields[3])
+        {
+            return self.fail_protocol(response);
+        }
+        let bytes = std::fs::read(output_path)
+            .map_err(|error| WorkerError::Transport(error.to_string()))?;
+        if sha256_hex(&bytes) != fields[3] {
+            return self.fail_protocol("worker STEP XDE part output hash mismatch".to_owned());
+        }
+        Ok(())
+    }
+
     fn tessellate_step_part_request_with_cancellation(
         &mut self,
         path: &Path,
         source_sha256: &str,
         result_fingerprint: &str,
         output_path: &Path,
+        part_index: Option<u32>,
         cancelled: &AtomicBool,
     ) -> Result<StepImportMesh, WorkerError> {
-        self.verify_m21_step_model_capability(cancelled)?;
+        let (operation, response_schema, suffix) = if let Some(index) = part_index {
+            self.verify_m21_step_xde_capability(cancelled)?;
+            (
+                "TESSELLATE_STEP_XDE_PART_M21_V1",
+                "OK_M21_STEP_XDE_MESH_V1",
+                format!(" {index}"),
+            )
+        } else {
+            self.verify_m21_step_model_capability(cancelled)?;
+            (
+                "TESSELLATE_STEP_PART_M21_V1",
+                "OK_M21_STEP_MESH_V1",
+                String::new(),
+            )
+        };
         let response = self.request_with_cancellation(
             &format!(
-                "TESSELLATE_STEP_PART_M21_V1 {source_sha256} {} {}",
+                "{operation} {source_sha256} {}{suffix} {}",
                 hex_encode(path.to_string_lossy().as_bytes()),
                 hex_encode(output_path.to_string_lossy().as_bytes())
             ),
@@ -2760,7 +3652,7 @@ impl ExactWorkerClient {
             };
         }
         if fields.len() != 7
-            || fields[0] != "OK_M21_STEP_MESH_V1"
+            || fields[0] != response_schema
             || fields[1] != source_sha256
             || fields[2] != result_fingerprint
             || !is_sha256_digest(fields[5])
@@ -3183,6 +4075,90 @@ impl ExactWorkerSupervisor {
         Ok(client)
     }
 
+    pub fn inspect_step_xde_import_with_cancellation(
+        &mut self,
+        path: &Path,
+        source_sha256: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<StepXdeImportEvidence, WorkerError> {
+        let source_byte_len = std::fs::metadata(path)
+            .map_err(|error| WorkerError::Transport(error.to_string()))?
+            .len();
+        if source_byte_len > MAX_STEP_SOURCE_BYTES {
+            return Err(WorkerError::Transport(
+                "STEP source exceeds the bounded 32 MiB envelope".to_owned(),
+            ));
+        }
+        self.client.ensure_not_cancelled(cancelled)?;
+        let evidence = match self.client.inspect_step_xde_request_with_cancellation(
+            path,
+            source_sha256,
+            cancelled,
+        ) {
+            Ok(evidence) => evidence,
+            Err(error) if error.permits_restart() => {
+                self.client = Self::spawn_verified_client(
+                    &self.executable,
+                    &self.executable_sha256,
+                    cancelled,
+                )?;
+                self.client.inspect_step_xde_request_with_cancellation(
+                    path,
+                    source_sha256,
+                    cancelled,
+                )?
+            }
+            Err(error) => return Err(error),
+        };
+        if evidence.source_byte_len != source_byte_len {
+            return Err(WorkerError::Transport(
+                "STEP XDE evidence byte length does not match the sealed source".to_owned(),
+            ));
+        }
+        Ok(evidence)
+    }
+
+    pub fn inspect_step_xde_part_with_cancellation(
+        &mut self,
+        path: &Path,
+        source_sha256: &str,
+        part_index: u32,
+        cancelled: &AtomicBool,
+    ) -> Result<StepImportEvidence, WorkerError> {
+        if std::fs::metadata(path)
+            .map_err(|error| WorkerError::Transport(error.to_string()))?
+            .len()
+            > MAX_STEP_SOURCE_BYTES
+        {
+            return Err(WorkerError::Transport(
+                "STEP source exceeds the bounded 32 MiB envelope".to_owned(),
+            ));
+        }
+        self.client.ensure_not_cancelled(cancelled)?;
+        match self.client.inspect_step_part_request_with_cancellation(
+            path,
+            source_sha256,
+            Some(part_index),
+            cancelled,
+        ) {
+            Ok(evidence) => Ok(evidence),
+            Err(error) if error.permits_restart() => {
+                self.client = Self::spawn_verified_client(
+                    &self.executable,
+                    &self.executable_sha256,
+                    cancelled,
+                )?;
+                self.client.inspect_step_part_request_with_cancellation(
+                    path,
+                    source_sha256,
+                    Some(part_index),
+                    cancelled,
+                )
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     pub fn inspect_step_import_with_cancellation(
         &mut self,
         path: &Path,
@@ -3202,6 +4178,7 @@ impl ExactWorkerSupervisor {
         match self.client.inspect_step_part_request_with_cancellation(
             path,
             source_sha256,
+            None,
             cancelled,
         ) {
             Ok(evidence) => Ok(evidence),
@@ -3214,6 +4191,91 @@ impl ExactWorkerSupervisor {
                 self.client.inspect_step_part_request_with_cancellation(
                     path,
                     source_sha256,
+                    None,
+                    cancelled,
+                )
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    pub fn inspect_iges_xde_import_with_cancellation(
+        &mut self,
+        path: &Path,
+        source_sha256: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<IgesXdeImportEvidence, WorkerError> {
+        let source_byte_len = std::fs::metadata(path)
+            .map_err(|error| WorkerError::Transport(error.to_string()))?
+            .len();
+        if source_byte_len > MAX_STEP_SOURCE_BYTES {
+            return Err(WorkerError::Transport(
+                "IGES source exceeds the bounded 32 MiB envelope".to_owned(),
+            ));
+        }
+        self.client.ensure_not_cancelled(cancelled)?;
+        let evidence = match self.client.inspect_iges_xde_request_with_cancellation(
+            path,
+            source_sha256,
+            cancelled,
+        ) {
+            Ok(evidence) => evidence,
+            Err(error) if error.permits_restart() => {
+                self.client = Self::spawn_verified_client(
+                    &self.executable,
+                    &self.executable_sha256,
+                    cancelled,
+                )?;
+                self.client.inspect_iges_xde_request_with_cancellation(
+                    path,
+                    source_sha256,
+                    cancelled,
+                )?
+            }
+            Err(error) => return Err(error),
+        };
+        if evidence.source_byte_len != source_byte_len {
+            return Err(WorkerError::Transport(
+                "IGES XDE evidence byte length does not match the sealed source".to_owned(),
+            ));
+        }
+        Ok(evidence)
+    }
+
+    pub fn inspect_iges_xde_part_with_cancellation(
+        &mut self,
+        path: &Path,
+        source_sha256: &str,
+        part_index: u32,
+        cancelled: &AtomicBool,
+    ) -> Result<StepImportEvidence, WorkerError> {
+        if std::fs::metadata(path)
+            .map_err(|error| WorkerError::Transport(error.to_string()))?
+            .len()
+            > MAX_STEP_SOURCE_BYTES
+        {
+            return Err(WorkerError::Transport(
+                "IGES source exceeds the bounded 32 MiB envelope".to_owned(),
+            ));
+        }
+        self.client.ensure_not_cancelled(cancelled)?;
+        match self.client.inspect_iges_part_request_with_cancellation(
+            path,
+            source_sha256,
+            Some(part_index),
+            cancelled,
+        ) {
+            Ok(evidence) => Ok(evidence),
+            Err(error) if error.permits_restart() => {
+                self.client = Self::spawn_verified_client(
+                    &self.executable,
+                    &self.executable_sha256,
+                    cancelled,
+                )?;
+                self.client.inspect_iges_part_request_with_cancellation(
+                    path,
+                    source_sha256,
+                    Some(part_index),
                     cancelled,
                 )
             }
@@ -3239,6 +4301,7 @@ impl ExactWorkerSupervisor {
         let evidence = match self.client.inspect_iges_part_request_with_cancellation(
             path,
             source_sha256,
+            None,
             cancelled,
         ) {
             Ok(evidence) => evidence,
@@ -3251,6 +4314,7 @@ impl ExactWorkerSupervisor {
                 self.client.inspect_iges_part_request_with_cancellation(
                     path,
                     source_sha256,
+                    None,
                     cancelled,
                 )?
             }
@@ -3263,13 +4327,62 @@ impl ExactWorkerSupervisor {
             source_byte_len,
             source_unit: evidence.source_unit,
             result_fingerprint: evidence.result_fingerprint,
+            body_kind: evidence.body_kind,
             solid_count: evidence.solid_count,
             topology_counts: evidence.topology_counts,
+            area_mm2: evidence.area_mm2,
             volume_mm3: evidence.volume_mm3,
             bounds_mm: evidence.bounds_mm,
             backend: evidence.backend,
             tolerance: evidence.tolerance,
         })
+    }
+
+    pub fn tessellate_iges_xde_part_with_cancellation(
+        &mut self,
+        path: &Path,
+        source_sha256: &str,
+        result_fingerprint: &str,
+        output_path: &Path,
+        part_index: u32,
+        cancelled: &AtomicBool,
+    ) -> Result<StepImportMesh, WorkerError> {
+        if std::fs::metadata(path)
+            .map_err(|error| WorkerError::Transport(error.to_string()))?
+            .len()
+            > MAX_STEP_SOURCE_BYTES
+        {
+            return Err(WorkerError::Transport(
+                "IGES source exceeds the bounded 32 MiB envelope".to_owned(),
+            ));
+        }
+        self.client.ensure_not_cancelled(cancelled)?;
+        match self.client.tessellate_iges_part_request_with_cancellation(
+            path,
+            source_sha256,
+            result_fingerprint,
+            output_path,
+            Some(part_index),
+            cancelled,
+        ) {
+            Ok(mesh) => Ok(mesh),
+            Err(error) if error.permits_restart() => {
+                self.client = Self::spawn_verified_client(
+                    &self.executable,
+                    &self.executable_sha256,
+                    cancelled,
+                )?;
+                self.client.tessellate_iges_part_request_with_cancellation(
+                    path,
+                    source_sha256,
+                    result_fingerprint,
+                    output_path,
+                    Some(part_index),
+                    cancelled,
+                )
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub fn tessellate_iges_import_with_cancellation(
@@ -3295,6 +4408,7 @@ impl ExactWorkerSupervisor {
             source_sha256,
             result_fingerprint,
             output_path,
+            None,
             cancelled,
         ) {
             Ok(mesh) => Ok(mesh),
@@ -3309,6 +4423,7 @@ impl ExactWorkerSupervisor {
                     source_sha256,
                     result_fingerprint,
                     output_path,
+                    None,
                     cancelled,
                 )
             }
@@ -3355,6 +4470,53 @@ impl ExactWorkerSupervisor {
         }
     }
 
+    pub fn tessellate_step_xde_part_with_cancellation(
+        &mut self,
+        path: &Path,
+        source_sha256: &str,
+        result_fingerprint: &str,
+        output_path: &Path,
+        part_index: u32,
+        cancelled: &AtomicBool,
+    ) -> Result<StepImportMesh, WorkerError> {
+        if std::fs::metadata(path)
+            .map_err(|error| WorkerError::Transport(error.to_string()))?
+            .len()
+            > MAX_STEP_SOURCE_BYTES
+        {
+            return Err(WorkerError::Transport(
+                "STEP source exceeds the bounded 32 MiB envelope".to_owned(),
+            ));
+        }
+        self.client.ensure_not_cancelled(cancelled)?;
+        match self.client.tessellate_step_part_request_with_cancellation(
+            path,
+            source_sha256,
+            result_fingerprint,
+            output_path,
+            Some(part_index),
+            cancelled,
+        ) {
+            Ok(mesh) => Ok(mesh),
+            Err(error) if error.permits_restart() => {
+                self.client = Self::spawn_verified_client(
+                    &self.executable,
+                    &self.executable_sha256,
+                    cancelled,
+                )?;
+                self.client.tessellate_step_part_request_with_cancellation(
+                    path,
+                    source_sha256,
+                    result_fingerprint,
+                    output_path,
+                    Some(part_index),
+                    cancelled,
+                )
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     /// Ask the isolated worker for a bounded display mesh of an imported STEP
     /// part, bound to the result fingerprint the document already committed to.
     pub fn tessellate_step_import_with_cancellation(
@@ -3380,6 +4542,7 @@ impl ExactWorkerSupervisor {
             source_sha256,
             result_fingerprint,
             output_path,
+            None,
             cancelled,
         ) {
             Ok(mesh) => Ok(mesh),
@@ -3394,6 +4557,7 @@ impl ExactWorkerSupervisor {
                     source_sha256,
                     result_fingerprint,
                     output_path,
+                    None,
                     cancelled,
                 )
             }
@@ -3579,6 +4743,267 @@ impl ExactWorkerSupervisor {
         .map_err(Into::into)
     }
 
+    pub fn simulate_cam(
+        &mut self,
+        snapshot: &Snapshot,
+        plan: &CamPlan,
+        toolpath: &CamToolpath,
+        fixtures: &[CamFixture],
+        cancelled: &AtomicBool,
+    ) -> Result<CamSimulationEvidence, WorkerError> {
+        toolpath
+            .validate(snapshot, plan)
+            .map_err(|error| WorkerError::Protocol(error.to_string()))?;
+        if fixtures.len() > MAX_CAM_SIMULATION_FIXTURES
+            || toolpath.motions.len() > MAX_CAM_SIMULATION_MOTIONS
+            || toolpath
+                .motions
+                .len()
+                .checked_mul(fixtures.len().saturating_mul(2).saturating_add(2))
+                .is_none_or(|checks| checks > MAX_CAM_SIMULATION_PAIR_CHECKS)
+        {
+            return Err(WorkerError::Protocol(
+                "CAM simulation exceeds its bounded resource envelope".to_owned(),
+            ));
+        }
+        let mut fixture_ids = BTreeSet::new();
+        for fixture in fixtures {
+            fixture
+                .validate()
+                .map_err(|error| WorkerError::Protocol(error.to_string()))?;
+            if !fixture_ids.insert(fixture.id) {
+                return Err(WorkerError::Protocol(
+                    "CAM fixture identifiers must be unique".to_owned(),
+                ));
+            }
+        }
+        let graph = ExactBRepGraph::from_snapshot(
+            snapshot,
+            plan.target().definition_id,
+            plan.target().feature_id,
+        )
+        .map_err(|error| WorkerError::Protocol(error.to_string()))?;
+        if graph.graph_digest != plan.target().exact_graph_digest
+            || graph
+                .nodes
+                .iter()
+                .any(|node| matches!(node.operation, ExactBRepOperation::ImportedExact { .. }))
+        {
+            return Err(WorkerError::Protocol(
+                "CAM simulation target is stale or requires unavailable imported sources"
+                    .to_owned(),
+            ));
+        }
+        let setup = plan.setup();
+        let z_axis = [
+            setup.x_axis[1] * setup.y_axis[2] - setup.x_axis[2] * setup.y_axis[1],
+            setup.x_axis[2] * setup.y_axis[0] - setup.x_axis[0] * setup.y_axis[2],
+            setup.x_axis[0] * setup.y_axis[1] - setup.x_axis[1] * setup.y_axis[0],
+        ];
+        let request = CamSimulationWireRequest {
+            schema: CAM_SIMULATION_SCHEMA_V1.to_owned(),
+            plan_digest: plan.stable_digest(),
+            toolpath_digest: toolpath.toolpath_digest.clone(),
+            target_exact_graph_digest: graph.graph_digest.clone(),
+            stock_bounds_mm: [plan.stock().minimum_mm, plan.stock().maximum_mm],
+            setup_to_world: [
+                setup.x_axis[0],
+                setup.y_axis[0],
+                z_axis[0],
+                setup.origin_mm[0],
+                setup.x_axis[1],
+                setup.y_axis[1],
+                z_axis[1],
+                setup.origin_mm[1],
+                setup.x_axis[2],
+                setup.y_axis[2],
+                z_axis[2],
+                setup.origin_mm[2],
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+            ],
+            cutter_radius_mm: plan.tool().diameter_mm * 0.5,
+            cutter_length_mm: plan.tool().flute_length_mm,
+            tool_length_mm: plan.tool().overall_length_mm,
+            holder_radius_mm: plan.tool().holder_diameter_mm * 0.5,
+            holder_offset_mm: plan.tool().overall_length_mm,
+            holder_length_mm: plan.tool().holder_length_mm,
+            motions: toolpath
+                .motions
+                .iter()
+                .map(|motion| {
+                    let (path_kind, start_mm, end_mm, center_mm, clockwise) = match motion.path {
+                        CamMotionPath::Line { start_mm, end_mm } => {
+                            (0, start_mm, end_mm, [0.0; 3], false)
+                        }
+                        CamMotionPath::Arc {
+                            start_mm,
+                            end_mm,
+                            center_mm,
+                            clockwise,
+                        } => (1, start_mm, end_mm, center_mm, clockwise),
+                    };
+                    CamSimulationWireMotion {
+                        kind: match motion.kind {
+                            CamMotionKind::Rapid => 0,
+                            CamMotionKind::Plunge => 1,
+                            CamMotionKind::Cut => 2,
+                            CamMotionKind::Retract => 3,
+                        },
+                        path_kind,
+                        start_mm,
+                        end_mm,
+                        center_mm,
+                        clockwise,
+                    }
+                })
+                .collect(),
+            fixtures: fixtures
+                .iter()
+                .map(|fixture| CamSimulationWireFixture {
+                    id: fixture.id,
+                    bounds_mm: [fixture.minimum_mm, fixture.maximum_mm],
+                })
+                .collect(),
+        };
+        self.client.ensure_not_cancelled(cancelled)?;
+        let evidence = match self
+            .client
+            .simulate_cam_with_cancellation(&graph, &request, cancelled)
+        {
+            Ok(evidence) => evidence,
+            Err(error) if error.permits_restart() => {
+                self.client = Self::spawn_verified_client(
+                    &self.executable,
+                    &self.executable_sha256,
+                    cancelled,
+                )?;
+                self.client
+                    .simulate_cam_with_cancellation(&graph, &request, cancelled)?
+            }
+            Err(error) => return Err(error),
+        };
+        validate_cam_simulation_wire_evidence(&request, &evidence)?;
+        let mut evidence = cam_simulation_evidence(evidence)?;
+        evidence.result_fingerprint = evidence.stable_fingerprint();
+        Ok(evidence)
+    }
+
+    pub fn evaluate_exact_brep_graph_volume_mesh(
+        &mut self,
+        graph: &ExactBRepGraph,
+        options: ExactVolumeMeshWireOptions,
+    ) -> Result<ExactBRepVolumeMeshPackage, WorkerError> {
+        self.evaluate_exact_brep_graph_volume_mesh_with_cancellation(
+            graph,
+            options,
+            &NEVER_CANCELLED,
+        )
+    }
+
+    pub fn evaluate_exact_brep_graph_volume_mesh_with_cancellation(
+        &mut self,
+        graph: &ExactBRepGraph,
+        options: ExactVolumeMeshWireOptions,
+        cancelled: &AtomicBool,
+    ) -> Result<ExactBRepVolumeMeshPackage, WorkerError> {
+        self.client.ensure_not_cancelled(cancelled)?;
+        let source = self.evaluate_exact_brep_graph_with_imported_sources_and_cancellation(
+            graph,
+            &[],
+            cancelled,
+        )?;
+        let output_file = tempfile::Builder::new()
+            .prefix(".ketchup-brep-volume-mesh-")
+            .suffix(".json")
+            .tempfile()
+            .map_err(|error| WorkerError::Transport(error.to_string()))?;
+        let mesh = match self.client.volume_mesh_exact_brep_graph_with_cancellation(
+            graph,
+            &source.identity.result_fingerprint,
+            options,
+            output_file.path(),
+            &[],
+            cancelled,
+        ) {
+            Ok(mesh) => mesh,
+            Err(error) if error.permits_restart() => {
+                self.client = Self::spawn_verified_client(
+                    &self.executable,
+                    &self.executable_sha256,
+                    cancelled,
+                )?;
+                self.client.volume_mesh_exact_brep_graph_with_cancellation(
+                    graph,
+                    &source.identity.result_fingerprint,
+                    options,
+                    output_file.path(),
+                    &[],
+                    cancelled,
+                )?
+            }
+            Err(error) => return Err(error),
+        };
+        self.client.ensure_not_cancelled(cancelled)?;
+        let vertex_count = mesh.vertices_mm.len();
+        let source_volume_scale = source.volume_mm3.abs().max(1.0);
+        if mesh.schema != EXACT_VOLUME_MESH_WIRE_SCHEMA_V1
+            || mesh.graph_digest != graph.graph_digest
+            || mesh.source_result_fingerprint != source.identity.result_fingerprint
+            || mesh.vertices_mm.len() < 4
+            || mesh
+                .vertices_mm
+                .iter()
+                .flatten()
+                .any(|value| !value.is_finite())
+            || mesh.tetrahedra.is_empty()
+            || mesh.tetrahedra.len() > options.max_tetrahedra as usize
+            || mesh.tetrahedra.iter().any(|tetrahedron| {
+                tetrahedron
+                    .iter()
+                    .any(|index| *index as usize >= vertex_count)
+                    || {
+                        let mut unique = *tetrahedron;
+                        unique.sort_unstable();
+                        unique.windows(2).any(|pair| pair[0] == pair[1])
+                    }
+            })
+            || mesh.boundary_triangles.is_empty()
+            || mesh.boundary_triangles.iter().any(|triangle| {
+                triangle.face_ordinal >= source.topology_counts[2]
+                    || triangle
+                        .vertex_indices
+                        .iter()
+                        .any(|index| *index as usize >= vertex_count)
+            })
+            || !mesh.exact_volume_mm3.is_finite()
+            || (mesh.exact_volume_mm3 - source.volume_mm3).abs() > source_volume_scale * 1.0e-10
+            || !mesh.tetrahedral_volume_mm3.is_finite()
+            || mesh.tetrahedral_volume_mm3 <= 0.0
+            || !mesh.relative_volume_error.is_finite()
+            || mesh.relative_volume_error > options.max_relative_volume_error
+            || !mesh.minimum_signed_volume_mm3.is_finite()
+            || mesh.minimum_signed_volume_mm3 <= 0.0
+            || !mesh.minimum_quality.is_finite()
+            || mesh.minimum_quality < options.min_tetrahedron_quality
+            || !mesh.maximum_edge_ratio.is_finite()
+            || mesh.maximum_edge_ratio < 1.0
+            || mesh.request_digest.is_empty()
+            || mesh.mesh_fingerprint.is_empty()
+        {
+            return Err(WorkerError::Protocol(
+                "exact volume mesh does not satisfy its graph-bound request".to_owned(),
+            ));
+        }
+        Ok(ExactBRepVolumeMeshPackage {
+            source,
+            options,
+            mesh,
+        })
+    }
+
     pub fn evaluate_exact_brep_graph(
         &mut self,
         graph: &ExactBRepGraph,
@@ -3761,6 +5186,29 @@ impl ExactWorkerSupervisor {
                         result.wire_count,
                     )
                 }
+        } else if graph.terminal_is_surface() {
+            let bounds_mm = [
+                [
+                    result.bounds_mm[0],
+                    result.bounds_mm[1],
+                    result.bounds_mm[2],
+                ],
+                [
+                    result.bounds_mm[3],
+                    result.bounds_mm[4],
+                    result.bounds_mm[5],
+                ],
+            ];
+            result.volume_mm3.is_finite()
+                && result.volume_mm3 == 0.0
+                && result.area_mm2.is_finite()
+                && result.area_mm2 > 0.0
+                && result.topology_counts[0] > 0
+                && result.topology_counts[1] > 0
+                && result.topology_counts[2] > 0
+                && result.topology_counts[4] == 0
+                && bounds_mm.iter().flatten().all(|value| value.is_finite())
+                && (0..3).all(|axis| bounds_mm[0][axis] <= bounds_mm[1][axis])
         } else {
             result.volume_mm3.is_finite()
                 && result.volume_mm3 > 0.0
@@ -4104,6 +5552,34 @@ impl ExactWorkerSupervisor {
         path: &Path,
         imported_source_blobs: &BTreeMap<String, Vec<u8>>,
     ) -> Result<(), M6EvaluationError> {
+        let scene = snapshot.scene_query();
+        let mut matched = Vec::with_capacity(occurrences.len());
+        for (package, transform) in occurrences {
+            let occurrence = scene
+                .iter()
+                .find(|occurrence| {
+                    occurrence.visible
+                        && occurrence.definition_id == package.definition_id()
+                        && occurrence.transform == *transform
+                })
+                .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+            matched.push((package.clone(), occurrence.clone()));
+        }
+        self.export_current_model_step_scene_with_imported_sources(
+            snapshot,
+            &matched,
+            path,
+            imported_source_blobs,
+        )
+    }
+
+    pub fn export_current_model_step_scene_with_imported_sources(
+        &mut self,
+        snapshot: &Snapshot,
+        occurrences: &[(ExactBodyPackage, SceneOccurrence)],
+        path: &Path,
+        imported_source_blobs: &BTreeMap<String, Vec<u8>>,
+    ) -> Result<(), M6EvaluationError> {
         if occurrences.is_empty() {
             return Err(ExactProductError::EmptyModelExport.into());
         }
@@ -4158,13 +5634,25 @@ impl ExactWorkerSupervisor {
             .tempdir_in(parent)
             .map_err(|error| WorkerError::Transport(error.to_string()))?;
         let mut sources = Vec::with_capacity(occurrences.len());
+        let mut part_indices = BTreeMap::new();
         let mut manifest = StepAssemblyManifest {
+            schema: "ketchup.step-xde-assembly.v2".to_owned(),
             document_id: snapshot.document_id().0,
             source_revision: snapshot.revision_id(),
             source_digest: snapshot.canonical_digest(),
             parts: Vec::with_capacity(occurrences.len()),
+            nodes: Vec::new(),
         };
-        for (index, (package, transform)) in occurrences.iter().enumerate() {
+        for (index, (package, _)) in occurrences.iter().enumerate() {
+            let package_key = package.result_key();
+            let geometry_key = (
+                package_key.definition_id.0,
+                package_key.producer_feature_id.0,
+                package_key.result_fingerprint.clone(),
+            );
+            if part_indices.contains_key(&geometry_key) {
+                continue;
+            }
             let source = directory.path().join(format!("part-{index}.step"));
             let result = match package {
                 ExactBodyPackage::Rectangle(expected) => {
@@ -4209,8 +5697,22 @@ impl ExactWorkerSupervisor {
                         imported_source_blobs,
                     ),
                 ExactBodyPackage::Imported(expected) => {
-                    std::fs::write(&source, &expected.source_bytes)
-                        .map_err(|error| WorkerError::Transport(error.to_string()))
+                    if let Some(part_index) = expected.source_part_index {
+                        let original = directory.path().join(format!("imported-{index}.step"));
+                        std::fs::write(&original, &expected.source_bytes)
+                            .map_err(|error| WorkerError::Transport(error.to_string()))?;
+                        self.client.export_step_xde_part_request_with_cancellation(
+                            &original,
+                            &sha256_hex(&expected.source_bytes),
+                            part_index,
+                            &expected.identity.result_fingerprint,
+                            &source,
+                            &NEVER_CANCELLED,
+                        )
+                    } else {
+                        std::fs::write(&source, &expected.source_bytes)
+                            .map_err(|error| WorkerError::Transport(error.to_string()))
+                    }
                 }
             };
             if let Err(error) = result {
@@ -4264,8 +5766,23 @@ impl ExactWorkerSupervisor {
                             )?;
                         }
                         ExactBodyPackage::Imported(expected) => {
-                            std::fs::write(&source, &expected.source_bytes)
-                                .map_err(|error| WorkerError::Transport(error.to_string()))?;
+                            if let Some(part_index) = expected.source_part_index {
+                                let original =
+                                    directory.path().join(format!("imported-{index}.step"));
+                                std::fs::write(&original, &expected.source_bytes)
+                                    .map_err(|error| WorkerError::Transport(error.to_string()))?;
+                                self.client.export_step_xde_part_request_with_cancellation(
+                                    &original,
+                                    &sha256_hex(&expected.source_bytes),
+                                    part_index,
+                                    &expected.identity.result_fingerprint,
+                                    &source,
+                                    &NEVER_CANCELLED,
+                                )?;
+                            } else {
+                                std::fs::write(&source, &expected.source_bytes)
+                                    .map_err(|error| WorkerError::Transport(error.to_string()))?;
+                            }
                         }
                     }
                 } else {
@@ -4280,20 +5797,29 @@ impl ExactWorkerSupervisor {
                 .inspect_step_part_request_with_cancellation(
                     &source,
                     &source_sha256,
+                    None,
                     &NEVER_CANCELLED,
                 )?
                 .result_fingerprint;
+            let definition = snapshot
+                .definition(package_key.definition_id)
+                .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+            let part_index = manifest.parts.len() as u32;
             manifest.parts.push(StepAssemblyPart {
                 document_id: snapshot.document_id().0,
                 source_revision: snapshot.revision_id(),
                 source_digest: snapshot.canonical_digest(),
-                expected_result_fingerprint: package.result_key().result_fingerprint,
+                definition_id: package_key.definition_id.0,
+                producer_feature_id: package_key.producer_feature_id.0,
+                name: definition.name().to_owned(),
+                expected_result_fingerprint: package_key.result_fingerprint,
                 imported_result_fingerprint,
                 source_sha256,
-                transform_bits: transform.matrix().map(f64::to_bits),
             });
             sources.push(source);
+            part_indices.insert(geometry_key, part_index);
         }
+        manifest.nodes = build_step_assembly_nodes(snapshot, occurrences, &part_indices)?;
         let temporary = tempfile::Builder::new()
             .prefix(".ketchup-step-")
             .suffix(".tmp")
@@ -4370,6 +5896,239 @@ impl ExactWorkerSupervisor {
         self.client.ensure_not_cancelled(cancelled)?;
         Ok(package)
     }
+}
+
+fn push_step_assembly_node(
+    nodes: &mut Vec<StepAssemblyNode>,
+    keys: &mut BTreeMap<String, u32>,
+    key: String,
+    parent_id: Option<u32>,
+    part_index: Option<u32>,
+    name: String,
+    color: Option<[u8; 3]>,
+    transform: Transform,
+) -> Result<u32, ExactProductError> {
+    if let Some(id) = keys.get(&key) {
+        return Ok(*id);
+    }
+    if nodes.len() >= 1_024 || name.is_empty() || name.len() > 4_096 {
+        return Err(ExactProductError::ExportResourceLimit);
+    }
+    let id = nodes.len() as u32;
+    nodes.push(StepAssemblyNode {
+        id,
+        parent_id,
+        part_index,
+        name,
+        color,
+        transform_bits: transform.matrix().map(f64::to_bits),
+    });
+    keys.insert(key, id);
+    Ok(id)
+}
+
+fn ensure_step_global_group(
+    snapshot: &Snapshot,
+    group_id: GroupId,
+    nodes: &mut Vec<StepAssemblyNode>,
+    keys: &mut BTreeMap<String, u32>,
+) -> Result<u32, ExactProductError> {
+    let key = format!("group:{}", group_id.0);
+    if let Some(id) = keys.get(&key) {
+        return Ok(*id);
+    }
+    let group = snapshot
+        .group(group_id)
+        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+    let parent = group
+        .parent()
+        .map(|parent| ensure_step_global_group(snapshot, parent, nodes, keys))
+        .transpose()?;
+    push_step_assembly_node(
+        nodes,
+        keys,
+        key,
+        parent,
+        None,
+        group.name().to_owned(),
+        None,
+        group.transform(),
+    )
+}
+
+fn build_step_assembly_nodes(
+    snapshot: &Snapshot,
+    occurrences: &[(ExactBodyPackage, SceneOccurrence)],
+    part_indices: &BTreeMap<(u64, u64, String), u32>,
+) -> Result<Vec<StepAssemblyNode>, ExactProductError> {
+    let mut path_body_counts = BTreeMap::new();
+    let mut nested_roots = BTreeMap::new();
+    for (_, occurrence) in occurrences {
+        *path_body_counts
+            .entry(occurrence.instance_path.clone())
+            .or_insert(0usize) += 1;
+        if !occurrence.instance_path.steps().is_empty() {
+            nested_roots.insert(occurrence.instance_path.root_occurrence().0, true);
+        }
+    }
+
+    let mut nodes = Vec::new();
+    let mut keys = BTreeMap::new();
+    for (package, occurrence) in occurrences {
+        let result_key = package.result_key();
+        let part_index = *part_indices
+            .get(&(
+                result_key.definition_id.0,
+                result_key.producer_feature_id.0,
+                result_key.result_fingerprint,
+            ))
+            .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+        let root_id = occurrence.instance_path.root_occurrence();
+        let root = snapshot
+            .occurrence(root_id)
+            .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+        let mut parent = root
+            .parent()
+            .map(|group| ensure_step_global_group(snapshot, group, &mut nodes, &mut keys))
+            .transpose()?;
+        let root_key = format!("occurrence:{}", root_id.0);
+        let root_is_assembly = nested_roots.contains_key(&root_id.0)
+            || path_body_counts
+                .get(&ketchup_core::document::InstancePath::root(root_id))
+                .copied()
+                .unwrap_or(0)
+                > 1;
+        if occurrence.instance_path.is_root() && !root_is_assembly {
+            push_step_assembly_node(
+                &mut nodes,
+                &mut keys,
+                root_key,
+                parent,
+                Some(part_index),
+                root.name().to_owned(),
+                occurrence.color,
+                root.transform(),
+            )?;
+            continue;
+        }
+        parent = Some(push_step_assembly_node(
+            &mut nodes,
+            &mut keys,
+            root_key.clone(),
+            parent,
+            None,
+            root.name().to_owned(),
+            root.color(),
+            root.transform(),
+        )?);
+        if occurrence.instance_path.is_root() {
+            push_step_assembly_node(
+                &mut nodes,
+                &mut keys,
+                format!("{root_key}/body:{}", package.producer_feature_id().0),
+                parent,
+                Some(part_index),
+                format!(
+                    "{} body {}",
+                    occurrence.definition_name,
+                    package.producer_feature_id().0
+                ),
+                occurrence.color,
+                Transform::identity(),
+            )?;
+            continue;
+        }
+
+        let mut owner_definition_id = root.definition_id();
+        let mut path_key = root_key;
+        for (position, step) in occurrence.instance_path.steps().iter().enumerate() {
+            let terminal = position + 1 == occurrence.instance_path.steps().len();
+            match step {
+                InstancePathStep::Group(local_id) => {
+                    path_key.push_str(&format!("/group:{}", local_id.0));
+                    let local = snapshot
+                        .local_group(LocalGroupKey {
+                            definition_id: owner_definition_id,
+                            local_id: *local_id,
+                        })
+                        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+                    parent = Some(push_step_assembly_node(
+                        &mut nodes,
+                        &mut keys,
+                        path_key.clone(),
+                        parent,
+                        None,
+                        local.name().to_owned(),
+                        None,
+                        local.transform(),
+                    )?);
+                }
+                InstancePathStep::Occurrence(local_id) => {
+                    path_key.push_str(&format!("/occurrence:{}", local_id.0));
+                    let local = snapshot
+                        .local_occurrence(LocalOccurrenceKey {
+                            definition_id: owner_definition_id,
+                            local_id: *local_id,
+                        })
+                        .ok_or(ExactProductError::InvalidWorkerEvidence)?;
+                    let multiple_bodies = path_body_counts
+                        .get(&occurrence.instance_path)
+                        .copied()
+                        .unwrap_or(0)
+                        > 1;
+                    if terminal && !multiple_bodies {
+                        push_step_assembly_node(
+                            &mut nodes,
+                            &mut keys,
+                            path_key.clone(),
+                            parent,
+                            Some(part_index),
+                            local.name().to_owned(),
+                            occurrence.color,
+                            local.transform(),
+                        )?;
+                    } else {
+                        parent = Some(push_step_assembly_node(
+                            &mut nodes,
+                            &mut keys,
+                            path_key.clone(),
+                            parent,
+                            None,
+                            local.name().to_owned(),
+                            local.color(),
+                            local.transform(),
+                        )?);
+                    }
+                    owner_definition_id = local.definition_id();
+                }
+            }
+        }
+        if path_body_counts
+            .get(&occurrence.instance_path)
+            .copied()
+            .unwrap_or(0)
+            > 1
+        {
+            push_step_assembly_node(
+                &mut nodes,
+                &mut keys,
+                format!("{path_key}/body:{}", package.producer_feature_id().0),
+                parent,
+                Some(part_index),
+                format!(
+                    "{} body {}",
+                    occurrence.definition_name,
+                    package.producer_feature_id().0
+                ),
+                occurrence.color,
+                Transform::identity(),
+            )?;
+        }
+    }
+    if nodes.is_empty() {
+        return Err(ExactProductError::EmptyModelExport);
+    }
+    Ok(nodes)
 }
 
 fn validate_m6_worker_result(
@@ -6480,6 +8239,138 @@ fn is_geometry_error_code(code: &str) -> bool {
     .any(|candidate| candidate.as_str() == code)
 }
 
+fn validate_cam_simulation_wire_evidence(
+    request: &CamSimulationWireRequest,
+    evidence: &CamSimulationWireEvidence,
+) -> Result<(), WorkerError> {
+    let volumes = [
+        evidence.stock_before_mm3,
+        evidence.stock_after_mm3,
+        evidence.removed_stock_mm3,
+        evidence.residual_stock_mm3,
+        evidence.gouge_mm3,
+    ];
+    let expected_stock = (request.stock_bounds_mm[1][0] - request.stock_bounds_mm[0][0])
+        * (request.stock_bounds_mm[1][1] - request.stock_bounds_mm[0][1])
+        * (request.stock_bounds_mm[1][2] - request.stock_bounds_mm[0][2]);
+    if evidence.schema != CAM_SIMULATION_SCHEMA_V1
+        || evidence.plan_digest != request.plan_digest
+        || evidence.toolpath_digest != request.toolpath_digest
+        || evidence.target_exact_graph_digest != request.target_exact_graph_digest
+        || evidence.motion_count != request.motions.len()
+        || evidence.cutting_motion_count
+            != request
+                .motions
+                .iter()
+                .filter(|motion| matches!(motion.kind, 1 | 2))
+                .count()
+        || evidence.fixture_count != request.fixtures.len()
+        || volumes
+            .into_iter()
+            .any(|value| !value.is_finite() || value < 0.0)
+        || (evidence.stock_before_mm3 - expected_stock).abs() > expected_stock.max(1.0) * 1.0e-8
+        || (evidence.stock_before_mm3 - evidence.stock_after_mm3 - evidence.removed_stock_mm3).abs()
+            > evidence.stock_before_mm3.max(1.0) * 1.0e-8
+        || evidence.backend.is_empty()
+        || evidence.tolerance.is_empty()
+        || !evidence.result_fingerprint.is_empty()
+    {
+        return Err(WorkerError::Protocol(
+            "CAM simulation evidence does not match its sealed request".to_owned(),
+        ));
+    }
+    let fixture_ids = request
+        .fixtures
+        .iter()
+        .map(|fixture| fixture.id)
+        .collect::<BTreeSet<_>>();
+    let mut collision_keys = BTreeSet::new();
+    for collision in &evidence.collisions {
+        let valid_target = match (collision.target, collision.fixture_id) {
+            (0, None) => true,
+            (1, Some(id)) => fixture_ids.contains(&id),
+            _ => false,
+        };
+        if collision.motion_index >= request.motions.len()
+            || collision.motion_kind != request.motions[collision.motion_index].kind
+            || collision.participant > 1
+            || !valid_target
+            || !collision.common_volume_mm3.is_finite()
+            || collision.common_volume_mm3 < 0.0
+            || !collision.contact_area_mm2.is_finite()
+            || collision.contact_area_mm2 < 0.0
+            || !collision.distance_mm.is_finite()
+            || collision.distance_mm < 0.0
+            || collision.common_volume_mm3 == 0.0
+                && collision.contact_area_mm2 == 0.0
+                && collision.distance_mm > 1.0e-7
+            || !collision_keys.insert((
+                collision.motion_index,
+                collision.participant,
+                collision.target,
+                collision.fixture_id,
+            ))
+        {
+            return Err(WorkerError::Protocol(
+                "CAM collision evidence is incomplete or duplicated".to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn cam_simulation_evidence(
+    evidence: CamSimulationWireEvidence,
+) -> Result<CamSimulationEvidence, WorkerError> {
+    let collisions = evidence
+        .collisions
+        .into_iter()
+        .map(|collision| {
+            Ok(CamCollisionEvidence {
+                motion_index: collision.motion_index,
+                motion_kind: match collision.motion_kind {
+                    0 => CamMotionKind::Rapid,
+                    1 => CamMotionKind::Plunge,
+                    2 => CamMotionKind::Cut,
+                    3 => CamMotionKind::Retract,
+                    _ => return Err(WorkerError::Protocol("unknown CAM motion kind".into())),
+                },
+                participant: match collision.participant {
+                    0 => CamCollisionParticipant::Cutter,
+                    1 => CamCollisionParticipant::Holder,
+                    _ => return Err(WorkerError::Protocol("unknown CAM participant".into())),
+                },
+                target: match (collision.target, collision.fixture_id) {
+                    (0, None) => CamCollisionTarget::Stock,
+                    (1, Some(id)) => CamCollisionTarget::Fixture(id),
+                    _ => return Err(WorkerError::Protocol("unknown CAM collision target".into())),
+                },
+                common_volume_mm3: collision.common_volume_mm3,
+                contact_area_mm2: collision.contact_area_mm2,
+                distance_mm: collision.distance_mm,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(CamSimulationEvidence {
+        schema: evidence.schema,
+        plan_digest: evidence.plan_digest,
+        toolpath_digest: evidence.toolpath_digest,
+        target_exact_graph_digest: evidence.target_exact_graph_digest,
+        motion_count: evidence.motion_count,
+        cutting_motion_count: evidence.cutting_motion_count,
+        fixture_count: evidence.fixture_count,
+        stock_before_mm3: evidence.stock_before_mm3,
+        stock_after_mm3: evidence.stock_after_mm3,
+        removed_stock_mm3: evidence.removed_stock_mm3,
+        residual_stock_mm3: evidence.residual_stock_mm3,
+        gouge_mm3: evidence.gouge_mm3,
+        collisions,
+        backend: evidence.backend,
+        tolerance: evidence.tolerance,
+        result_fingerprint: evidence.result_fingerprint,
+    })
+}
+
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -6643,6 +8534,14 @@ fn decode_sha256(value: &str) -> Option<[u8; 32]> {
     Some(digest)
 }
 
+fn parse_import_body_kind(value: &str) -> Option<BodyKind> {
+    match value {
+        "solid" => Some(BodyKind::Solid),
+        "surface" => Some(BodyKind::Surface),
+        _ => None,
+    }
+}
+
 fn hex_decode_utf8(value: &str) -> Option<String> {
     if value.is_empty() || !value.len().is_multiple_of(2) {
         return None;
@@ -6712,15 +8611,28 @@ fn parse_exact_brep_graph_result(
                             | "OK_BREP_GRAPH_V12"
                             | "OK_BREP_GRAPH_V13"
                             | "OK_BREP_GRAPH_V14"
+                            | "OK_BREP_GRAPH_V15"
+                            | "OK_BREP_GRAPH_V16"
+                            | "OK_BREP_GRAPH_V17"
+                            | "OK_BREP_GRAPH_V18"
+                            | "OK_BREP_GRAPH_V19"
+                            | "OK_BREP_GRAPH_V20"
+                            | "OK_BREP_GRAPH_V21"
+                            | "OK_BREP_GRAPH_V22"
+                            | "OK_BREP_GRAPH_V23"
                     ) =>
             {
                 (Some(16), 1, None, None)
             }
-            (Some(protocol @ ("OK_BREP_GRAPH_V13" | "OK_BREP_GRAPH_V14")), 23)
-                if expected_protocol == protocol =>
-            {
-                (Some(16), 1, Some(22), None)
-            }
+            (
+                Some(
+                    protocol @ ("OK_BREP_GRAPH_V13" | "OK_BREP_GRAPH_V14" | "OK_BREP_GRAPH_V15"
+                    | "OK_BREP_GRAPH_V16" | "OK_BREP_GRAPH_V17" | "OK_BREP_GRAPH_V18"
+                    | "OK_BREP_GRAPH_V19" | "OK_BREP_GRAPH_V20" | "OK_BREP_GRAPH_V21"
+                    | "OK_BREP_GRAPH_V22" | "OK_BREP_GRAPH_V23"),
+                ),
+                23,
+            ) if expected_protocol == protocol => (Some(16), 1, Some(22), None),
             (Some(protocol), 24)
                 if protocol == expected_protocol
                     && matches!(
@@ -6732,6 +8644,15 @@ fn parse_exact_brep_graph_result(
                             | "OK_BREP_GRAPH_V12"
                             | "OK_BREP_GRAPH_V13"
                             | "OK_BREP_GRAPH_V14"
+                            | "OK_BREP_GRAPH_V15"
+                            | "OK_BREP_GRAPH_V16"
+                            | "OK_BREP_GRAPH_V17"
+                            | "OK_BREP_GRAPH_V18"
+                            | "OK_BREP_GRAPH_V19"
+                            | "OK_BREP_GRAPH_V20"
+                            | "OK_BREP_GRAPH_V21"
+                            | "OK_BREP_GRAPH_V22"
+                            | "OK_BREP_GRAPH_V23"
                     ) =>
             {
                 (Some(16), 1, Some(22), Some(23))
@@ -7970,6 +9891,64 @@ mod tests {
             Err(WorkerError::Spawn(message))
                 if message == "exact worker executable is not a bounded file"
         ));
+    }
+
+    #[test]
+    fn cam_simulation_oracle_rejects_tampered_and_incomplete_worker_evidence() {
+        let request = CamSimulationWireRequest {
+            schema: CAM_SIMULATION_SCHEMA_V1.to_owned(),
+            plan_digest: "a".repeat(64),
+            toolpath_digest: "b".repeat(64),
+            target_exact_graph_digest: "c".repeat(64),
+            stock_bounds_mm: [[0.0; 3], [1.0; 3]],
+            setup_to_world: [
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+            cutter_radius_mm: 0.5,
+            cutter_length_mm: 1.0,
+            tool_length_mm: 2.0,
+            holder_radius_mm: 1.0,
+            holder_offset_mm: 2.0,
+            holder_length_mm: 1.0,
+            motions: vec![CamSimulationWireMotion {
+                kind: 2,
+                path_kind: 0,
+                start_mm: [0.0; 3],
+                end_mm: [1.0, 0.0, 0.0],
+                center_mm: [0.0; 3],
+                clockwise: false,
+            }],
+            fixtures: vec![],
+        };
+        let valid = CamSimulationWireEvidence {
+            schema: CAM_SIMULATION_SCHEMA_V1.to_owned(),
+            plan_digest: request.plan_digest.clone(),
+            toolpath_digest: request.toolpath_digest.clone(),
+            target_exact_graph_digest: request.target_exact_graph_digest.clone(),
+            motion_count: 1,
+            cutting_motion_count: 1,
+            fixture_count: 0,
+            stock_before_mm3: 1.0,
+            stock_after_mm3: 0.5,
+            removed_stock_mm3: 0.5,
+            residual_stock_mm3: 0.2,
+            gouge_mm3: 0.0,
+            collisions: vec![],
+            backend: "occt-test".into(),
+            tolerance: "bounded-test".into(),
+            result_fingerprint: String::new(),
+        };
+        assert!(validate_cam_simulation_wire_evidence(&request, &valid).is_ok());
+
+        let mut tampered = valid.clone();
+        tampered.removed_stock_mm3 = 0.4;
+        assert!(validate_cam_simulation_wire_evidence(&request, &tampered).is_err());
+        let mut incomplete = valid.clone();
+        incomplete.motion_count = 0;
+        assert!(validate_cam_simulation_wire_evidence(&request, &incomplete).is_err());
+        let mut forged_fingerprint = valid;
+        forged_fingerprint.result_fingerprint = "d".repeat(64);
+        assert!(validate_cam_simulation_wire_evidence(&request, &forged_fingerprint).is_err());
     }
 
     fn valid_exact_brep_graph_response(protocol: &str) -> String {

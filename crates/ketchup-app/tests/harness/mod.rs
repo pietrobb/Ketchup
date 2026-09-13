@@ -20,7 +20,8 @@ use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use ketchup_app::dialogs::ScriptedFileDialogs;
 use ketchup_app::{AppCommand, AssistantTransport, AssistantTransportResponse, KetchupApp};
 use ketchup_core::assistant_sidecar::{
-    AssistantApiDiagnostics, AssistantCadEditProgram, AssistantChatResult, AssistantHandshake,
+    AssistantApiDiagnostics, AssistantCadEditProgram, AssistantChatResult,
+    AssistantFeaReviewRequest, AssistantHandshake,
 };
 use ketchup_interaction::{LocaleCatalog, Vec3};
 use ketchup_scheduler::assistant::AssistantCancellation;
@@ -37,6 +38,7 @@ const SCREEN: Vec2 = Vec2::new(1600.0, 1000.0);
 pub struct ScriptedAssistantTransport {
     responses: Mutex<VecDeque<(String, AssistantChatResult)>>,
     cad_edit_programs: Mutex<VecDeque<(String, AssistantCadEditProgram)>>,
+    fea_reviews: Mutex<VecDeque<(String, AssistantFeaReviewRequest)>>,
     diagnostics: Mutex<VecDeque<AssistantApiDiagnostics>>,
     request_ids: Mutex<Vec<String>>,
     contexts: Mutex<Vec<serde_json::Value>>,
@@ -50,6 +52,7 @@ impl ScriptedAssistantTransport {
         Self {
             responses: Mutex::new(responses.into_iter().collect()),
             cad_edit_programs: Mutex::new(VecDeque::new()),
+            fea_reviews: Mutex::new(VecDeque::new()),
             diagnostics: Mutex::new(VecDeque::new()),
             request_ids: Mutex::new(Vec::new()),
             contexts: Mutex::new(Vec::new()),
@@ -77,6 +80,13 @@ impl ScriptedAssistantTransport {
             .lock()
             .unwrap()
             .push_back((message.into(), program));
+    }
+
+    pub fn queue_fea_review(&self, message: impl Into<String>, request: AssistantFeaReviewRequest) {
+        self.fea_reviews
+            .lock()
+            .unwrap()
+            .push_back((message.into(), request));
     }
 
     pub fn remaining_responses(&self) -> usize {
@@ -153,9 +163,17 @@ impl AssistantTransport for ScriptedAssistantTransport {
                 .position(|(expected, _)| expected == message)
                 .and_then(|index| programs.remove(index).map(|(_, program)| program))
         };
+        let fea_review = {
+            let mut requests = self.fea_reviews.lock().unwrap();
+            requests
+                .iter()
+                .position(|(expected, _)| expected == message)
+                .and_then(|index| requests.remove(index).map(|(_, request)| request))
+        };
         Ok(AssistantTransportResponse {
             result,
             cad_edit_program,
+            fea_review,
             diagnostics: self.diagnostics.lock().unwrap().pop_front(),
         })
     }

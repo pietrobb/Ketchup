@@ -104,6 +104,7 @@ fn import_evidence(source_sha256: &str, output: &ExactOpOutput) -> StepImportEvi
     StepImportEvidence {
         source_unit: ImportLengthUnit::Millimetre,
         result_fingerprint: format!("fnv1a64:{hash:016x}"),
+        body_kind: ketchup_core::document::BodyKind::Solid,
         solid_count: topology.solid_count,
         topology_counts: [
             topology.vertex_count,
@@ -112,6 +113,7 @@ fn import_evidence(source_sha256: &str, output: &ExactOpOutput) -> StepImportEvi
             topology.shell_count,
             topology.solid_count,
         ],
+        area_mm2: topology.faces.iter().map(|face| face.area_mm2).sum(),
         volume_mm3: topology.volume_mm3,
         bounds_mm: [
             [

@@ -18,7 +18,6 @@ use std::{
     time::Duration,
 };
 
-const REQUESTER: &str = "Supervisor";
 const MAX_CONSENT_BYTES: usize = 512;
 const IO_DEADLINE: Duration = Duration::from_secs(2);
 const DECISION_DEADLINE: Duration = Duration::from_secs(60);
@@ -63,7 +62,6 @@ enum ConsentDecision {
 struct AttachRequest {
     version: u32,
     action: String,
-    requester: String,
     nonce: String,
 }
 
@@ -450,7 +448,6 @@ fn read_request(stream: &mut TcpStream) -> io::Result<AttachRequest> {
                 serde_json::from_slice(&bytes).map_err(|_| io::ErrorKind::InvalidData)?;
             if request.version != 1
                 || !matches!(request.action.as_str(), "list" | "attach")
-                || request.requester != REQUESTER
                 || !valid_nonce(&request.nonce)
             {
                 return Err(io::ErrorKind::InvalidData.into());

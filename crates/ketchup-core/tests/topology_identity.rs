@@ -17,7 +17,7 @@ use ketchup_core::topology::{
     TopologicalReferenceError, TopologicalReferenceQuarantineReason,
     TopologicalReferenceResolution, TopologicalReferenceStability,
     canonical_topological_lineage_digest, publish_generated_topological_references,
-    resolve_topological_reference,
+    resolve_topological_reference, topological_edge_provenance_tokens,
 };
 use std::sync::Arc;
 
@@ -126,6 +126,23 @@ fn opaque_tokens_are_length_delimited_and_cannot_alias_at_separator_boundaries()
     assert!(left.has_valid_lineage());
     assert!(right.has_valid_lineage());
     assert_ne!(left.lineage_digest, right.lineage_digest);
+}
+
+#[test]
+fn edge_provenance_is_order_independent_and_rejects_incomplete_or_duplicate_boundaries() {
+    let east = ("extrusion.side(profile_edge=east)", "profile.edge.east");
+    let top = ("extrusion.top", "profile.face");
+    let canonical = topological_edge_provenance_tokens(&[east, top]).unwrap();
+
+    assert_eq!(
+        topological_edge_provenance_tokens(&[top, east]),
+        Some(canonical.clone())
+    );
+    assert!(canonical.0.starts_with("topology-source-boundary/"));
+    assert!(canonical.1.starts_with("topology-result-edge/"));
+    assert_eq!(topological_edge_provenance_tokens(&[]), None);
+    assert_eq!(topological_edge_provenance_tokens(&[("", "source")]), None);
+    assert_eq!(topological_edge_provenance_tokens(&[top, top]), None);
 }
 
 #[test]
@@ -338,8 +355,10 @@ fn imported_exact_publication_is_source_bound_best_effort_and_backend_guarded() 
     let evidence = StepImportEvidence {
         source_unit: ImportLengthUnit::Millimetre,
         result_fingerprint: "import-result-a".into(),
+        body_kind: ketchup_core::document::BodyKind::Solid,
         solid_count: 1,
         topology_counts: [4, 6, 4, 1, 1],
+        area_mm2: 6.0,
         volume_mm3: 1.0,
         bounds_mm: [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
         backend: "occt-import.v1".into(),
@@ -427,8 +446,10 @@ fn serialized_reference_survives_recompute_undo_redo_and_byte_stable_save_open()
     let evidence = StepImportEvidence {
         source_unit: ImportLengthUnit::Millimetre,
         result_fingerprint: "persistent-import-result".into(),
+        body_kind: ketchup_core::document::BodyKind::Solid,
         solid_count: 1,
         topology_counts: [4, 6, 4, 1, 1],
+        area_mm2: 6.0,
         volume_mm3: 1.0,
         bounds_mm: [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
         backend: "occt-import.v1".into(),
@@ -626,6 +647,7 @@ fn topology_driven_finish_features_are_canonical_fail_closed_and_losslessly_pers
                 target: PRODUCER,
                 removed_faces: vec![face.clone()],
                 thickness: Dimension::from_decimal("2.5").unwrap(),
+                direction: ketchup_core::document::ShellDirection::Inward,
             },
         }]))
         .unwrap();
@@ -654,6 +676,9 @@ fn topology_driven_finish_features_are_canonical_fail_closed_and_losslessly_pers
                 edges: vec![edge.clone()],
                 kind: EdgeFinishKind::Fillet,
                 amount: Dimension::from_decimal("1.25").unwrap(),
+                fillet_radius_stations: Vec::new(),
+                chamfer_mode: ketchup_core::document::ChamferMode::Symmetric,
+                chamfer_edge_sides: Vec::new(),
             },
         }]))
         .unwrap();
@@ -687,6 +712,7 @@ fn topology_driven_finish_features_are_canonical_fail_closed_and_losslessly_pers
                     target: PRODUCER,
                     removed_faces: vec![wrong_kind],
                     thickness: Dimension::from_decimal("2.5").unwrap(),
+                    direction: ketchup_core::document::ShellDirection::Inward,
                 },
             }]))
             .is_err()
@@ -713,6 +739,7 @@ fn topology_driven_finish_features_are_canonical_fail_closed_and_losslessly_pers
                     target: PRODUCER,
                     removed_faces: vec![cross_document],
                     thickness: Dimension::from_decimal("2.5").unwrap(),
+                    direction: ketchup_core::document::ShellDirection::Inward,
                 },
             }]))
             .is_err()

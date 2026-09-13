@@ -277,7 +277,7 @@ fn write_coupling_authoring_fixture(path: &Path) {
     std::fs::write(path, persistence::save(&document.current())).unwrap();
 }
 
-fn write_collision_drag_fixture(path: &Path) {
+fn write_drag_fixture(path: &Path, mover_transform: Transform, joint_kind: AssemblyJointKind) {
     let definition = DefinitionId(1);
     let profile = FeatureId(1);
     let extrusion = FeatureId(2);
@@ -321,24 +321,41 @@ fn write_collision_drag_fixture(path: &Path) {
                 id: mover,
                 definition_id: definition,
                 name: "Mover".into(),
-                transform: Transform::from_translation(-10.0, 0.0, 0.0).unwrap(),
+                transform: mover_transform,
                 parent: None,
                 tag: None,
                 visible: true,
             },
             CanonicalCommand::CreateAssemblyJoint(AssemblyJoint::new(
-                joint,
-                obstacle,
-                mover,
-                AssemblyJointKind::Prismatic {
-                    axis: AssemblyJointAxis::new([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
-                    limits: Some(AssemblyJointLimits::new(0.0, 20.0)),
-                    position_mm: 0.0,
-                },
+                joint, obstacle, mover, joint_kind,
             )),
         ]))
         .unwrap();
     std::fs::write(path, persistence::save(&document.current())).unwrap();
+}
+
+fn write_collision_drag_fixture(path: &Path) {
+    write_drag_fixture(
+        path,
+        Transform::from_translation(-10.0, 0.0, 0.0).unwrap(),
+        AssemblyJointKind::Prismatic {
+            axis: AssemblyJointAxis::new([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+            limits: Some(AssemblyJointLimits::new(0.0, 20.0)),
+            position_mm: 0.0,
+        },
+    );
+}
+
+fn write_rotational_drag_fixture(path: &Path) {
+    write_drag_fixture(
+        path,
+        Transform::from_translation(-10.0, 0.0, 0.0).unwrap(),
+        AssemblyJointKind::Revolute {
+            axis: AssemblyJointAxis::new([0.0, 0.0, 1.0], [0.0, 0.0, 0.0]),
+            limits: Some(AssemblyJointLimits::new(0.0, 360.0)),
+            position_degrees: 0.0,
+        },
+    );
 }
 
 #[test]
@@ -1264,6 +1281,57 @@ fn mechanism_drag_collision_preview_blocks_or_allows_contact_through_accesskit()
 }
 
 #[test]
+fn rotational_drag_uncertainty_is_visible_and_cannot_be_overridden_as_known_contact() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("rotational-drag-source.ketchup");
+    write_rotational_drag_fixture(&source);
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_open(&source)
+        .always_discard();
+    let mut shell = Shell::with_dialogs(dialogs);
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    open_assembly_editor(&mut shell);
+    shell
+        .app_mut()
+        .headless_set_assembly_drag_collision_policy(true, true);
+    shell
+        .app_mut()
+        .headless_set_assembly_drag(101, 180.0, false);
+    shell.settle();
+    let baseline = (
+        shell.app().document_revision(),
+        shell.app().canonical_digest(),
+        shell.app().undo_step_count(),
+    );
+
+    shell.click_button_label(&shell.catalog().text("assembly-preview-drag"));
+    assert!(shell.app().assembly_preview_pending());
+    assert!(shell.has_visible_label(&shell.catalog().format(
+        "assembly-drag-clearance-unresolved",
+        &BTreeMap::from([
+            ("first", "10".to_owned()),
+            ("second", "11".to_owned()),
+            ("start", "0".to_owned()),
+            ("end", "0.03125".to_owned()),
+        ]),
+    )));
+    assert!(!shell.has_visible_label(&shell.catalog().text("assembly-drag-clearance-safe")));
+
+    shell.click_button_label(&shell.catalog().text("assembly-confirm-preview"));
+    assert!(shell.app().assembly_preview_pending());
+    assert_eq!(
+        (
+            shell.app().document_revision(),
+            shell.app().canonical_digest(),
+            shell.app().undo_step_count(),
+        ),
+        baseline
+    );
+    shell.click_button_label(&shell.catalog().text("assembly-cancel-preview"));
+    assert!(!shell.app().assembly_preview_pending());
+}
+
+#[test]
 fn mechanism_drag_is_previewed_clamped_coupled_and_reopened_through_accesskit() {
     let directory = tempfile::tempdir().unwrap();
     let source = directory.path().join("drag-source.ketchup");
@@ -2035,17 +2103,32 @@ fn selection_drawing_rejects_drift_and_non_rigid_sources_then_round_trips_exactl
     assert_eq!(shell.app().undo_step_count(), before_commit.2 + 1);
 
     let sheet_id = DrawingSheetId(1);
-    let occurrence_ids = occurrences.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+    let instance_paths = occurrences
+        .iter()
+        .map(|(id, _)| ketchup_core::document::InstancePath::root(*id))
+        .collect::<Vec<_>>();
+    let snapshot = shell.app().document_snapshot();
+    let sheet = snapshot.drawing_sheet(sheet_id).unwrap();
     assert_eq!(
-        shell
-            .app()
-            .document_snapshot()
-            .drawing_sheet(sheet_id)
-            .unwrap()
-            .source(),
-        &DrawingSource::RigidAssembly {
-            occurrence_ids: occurrence_ids.clone(),
+        sheet.source(),
+        &DrawingSource::RigidAssemblyInstances {
+            instance_paths: instance_paths.clone(),
         }
+    );
+    assert_eq!(sheet.bom_balloons().len(), 3);
+    assert!(
+        sheet
+            .bom_balloons()
+            .iter()
+            .all(|balloon| balloon.position() == 1)
+    );
+    assert_eq!(
+        sheet
+            .bom_balloons()
+            .iter()
+            .map(|balloon| balloon.instance_path().clone())
+            .collect::<Vec<_>>(),
+        instance_paths
     );
     let exact_fingerprint = shell
         .app()
@@ -2078,7 +2161,7 @@ fn selection_drawing_rejects_drift_and_non_rigid_sources_then_round_trips_exactl
             .drawing_sheet(sheet_id)
             .unwrap()
             .source(),
-        &DrawingSource::RigidAssembly { occurrence_ids }
+        &DrawingSource::RigidAssemblyInstances { instance_paths }
     );
     shell.click_menu_command("menu-file", AppCommand::New);
     shell.click_menu_command("menu-file", AppCommand::Open);

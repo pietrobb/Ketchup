@@ -76,6 +76,7 @@ pub struct DocumentSession {
     settings: SessionSettings,
     path: Option<PathBuf>,
     recovery: Option<RecoveryState>,
+    file_identity: Option<persistence::FileIdentity>,
     saved_digest: Option<String>,
     exact_results: ExactResultRegistry,
     topology_results: ExactResultRegistry,
@@ -93,6 +94,7 @@ impl DocumentSession {
             settings,
             path: None,
             recovery: None,
+            file_identity: None,
             saved_digest: None,
             exact_results: ExactResultRegistry::default(),
             topology_results: ExactResultRegistry::default(),
@@ -103,7 +105,7 @@ impl DocumentSession {
         let requested_path = path.as_ref();
         let loaded = persistence::load_file_with_source(requested_path)
             .map_err(|error| SessionError::Persistence(error.to_string()))?;
-        let (outcome, source_path, _) = loaded.into_parts();
+        let (outcome, source_path, source_bytes) = loaded.into_parts();
         let (document, container_data) = outcome
             .into_editable_with_container()
             .map_err(|_| SessionError::ReviewOnly)?;
@@ -117,6 +119,9 @@ impl DocumentSession {
             container_data,
             settings,
             path: recovery.is_none().then(|| requested_path.to_owned()),
+            file_identity: recovery
+                .is_none()
+                .then(|| persistence::FileIdentity::from_bytes(&source_bytes)),
             recovery,
             saved_digest,
             exact_results: ExactResultRegistry::default(),
@@ -147,31 +152,52 @@ impl DocumentSession {
         options: SaveOptions,
         preserve_history: bool,
     ) -> Result<(), SessionError> {
-        if options.overwrite {
-            if preserve_history {
-                persistence::save_atomic_document_store_with_container(
-                    path,
-                    &self.document,
-                    &self.container_data,
-                )
-            } else {
-                persistence::save_atomic_document_store_current_snapshot_with_container(
-                    path,
-                    &self.document,
-                    &self.container_data,
-                )
-            }
-            .map_err(|error| SessionError::Persistence(error.to_string()))?;
+        let saved_bytes = if preserve_history {
+            persistence::save_document_store(&self.document, &self.container_data)
         } else {
-            let bytes = if preserve_history {
-                persistence::save_document_store(&self.document, &self.container_data)
-            } else {
-                persistence::save_document_store_current_snapshot(
+            persistence::save_document_store_current_snapshot(&self.document, &self.container_data)
+        }
+        .map_err(|error| SessionError::Persistence(error.to_string()))?;
+        let saved_identity = persistence::FileIdentity::from_bytes(&saved_bytes);
+        let expected_identity = (self.path.as_deref() == Some(path))
+            .then_some(self.file_identity)
+            .flatten();
+        if options.overwrite {
+            let result = match (preserve_history, expected_identity) {
+                (true, Some(expected)) => {
+                    persistence::save_atomic_document_store_with_container_if_unchanged(
+                        path,
+                        &self.document,
+                        &self.container_data,
+                        expected,
+                    )
+                    .map(|_| ())
+                }
+                (false, Some(expected)) => {
+                    persistence::save_atomic_document_store_current_snapshot_with_container_if_unchanged(
+                        path,
+                        &self.document,
+                        &self.container_data,
+                        expected,
+                    )
+                    .map(|_| ())
+                }
+                (true, None) => persistence::save_atomic_document_store_with_container(
+                    path,
                     &self.document,
                     &self.container_data,
-                )
-            }
-            .map_err(|error| SessionError::Persistence(error.to_string()))?;
+                ),
+                (false, None) => {
+                    persistence::save_atomic_document_store_current_snapshot_with_container(
+                        path,
+                        &self.document,
+                        &self.container_data,
+                    )
+                }
+            };
+            result.map_err(|error| SessionError::Persistence(error.to_string()))?;
+        } else {
+            let bytes = saved_bytes;
             persistence::load(&bytes)
                 .map_err(|error| SessionError::Persistence(error.to_string()))?;
             let parent = path
@@ -191,8 +217,21 @@ impl DocumentSession {
         if !preserve_history {
             self.document.discard_history_before_current();
         }
+        let previous_path = self.path.clone();
+        let recovery_requested = self
+            .recovery
+            .as_ref()
+            .map(|recovery| recovery.requested_path.clone());
+        let _ = persistence::clear_work_recovery(path);
+        if let Some(previous_path) = previous_path {
+            let _ = persistence::clear_work_recovery(&previous_path);
+        }
+        if let Some(recovery_requested) = recovery_requested {
+            let _ = persistence::clear_work_recovery(&recovery_requested);
+        }
         self.path = Some(path.to_owned());
         self.recovery = None;
+        self.file_identity = Some(saved_identity);
         self.saved_digest = Some(self.document.history_digest());
         Ok(())
     }
@@ -207,6 +246,24 @@ impl DocumentSession {
     }
     pub fn recovery_state(&self) -> Option<&RecoveryState> {
         self.recovery.as_ref()
+    }
+    pub fn write_work_recovery_checkpoint(&self) -> Result<bool, SessionError> {
+        let (Some(path), Some(identity)) = (self.path.as_deref(), self.file_identity) else {
+            return Ok(false);
+        };
+        if !self.is_modified() {
+            persistence::clear_work_recovery(path)
+                .map_err(|error| SessionError::Persistence(error.to_string()))?;
+            return Ok(false);
+        }
+        persistence::save_work_recovery_document_store_with_container(
+            path,
+            &self.document,
+            &self.container_data,
+            identity,
+        )
+        .map_err(|error| SessionError::Persistence(error.to_string()))?;
+        Ok(true)
     }
     pub fn is_modified(&self) -> bool {
         self.recovery.is_some()
@@ -262,6 +319,7 @@ impl DocumentSession {
             .commit_verified_proposal(proposal)
             .map_err(SessionError::Commit)?;
         self.rebind();
+        let _ = self.write_work_recovery_checkpoint();
         Ok(committed)
     }
     /// One bounded program is one Undo step. Created IDs can be obtained by snapshot diff.
@@ -293,11 +351,13 @@ impl DocumentSession {
     pub fn undo(&mut self) -> Result<Snapshot, SessionError> {
         self.document.undo().ok_or(SessionError::NoUndo)?;
         self.rebind();
+        let _ = self.write_work_recovery_checkpoint();
         Ok(self.snapshot())
     }
     pub fn redo(&mut self) -> Result<Snapshot, SessionError> {
         self.document.redo().ok_or(SessionError::NoRedo)?;
         self.rebind();
+        let _ = self.write_work_recovery_checkpoint();
         Ok(self.snapshot())
     }
     pub fn start_exact_evaluation_task(&mut self) -> ExactEvaluationTask {

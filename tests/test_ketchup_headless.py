@@ -116,6 +116,169 @@ class ClientTests(unittest.TestCase):
         with self.assertRaises(SessionClosedError):
             doc.undo()
 
+    def test_surface_helpers_emit_only_typed_append_feature_operations(self):
+        process = FakeProcess()
+        doc = self.session(process).new_document()
+        calls = [
+            (lambda: doc.planar_surface(2, "Planar", 11), {
+                "type": "surface_body",
+                "source": {"type": "planar", "profile_feature_id": 11},
+            }),
+            (lambda: doc.loft_surface(
+                2,
+                "Loft",
+                [{"profile_feature_id": 11, "elevation_mm": 0},
+                 {"profile_feature_id": 12, "elevation_mm": 20}],
+                continuity="tangent",
+            ), {
+                "type": "surface_body",
+                "source": {
+                    "type": "loft",
+                    "sections": [{"profile_feature_id": 11, "elevation_mm": 0},
+                                 {"profile_feature_id": 12, "elevation_mm": 20}],
+                    "continuity": "tangent",
+                },
+            }),
+            (lambda: doc.trim_surface(2, "Trim", 21, 22), {
+                "type": "surface_trim", "target_feature_id": 21,
+                "cutter_feature_id": 22,
+            }),
+            (lambda: doc.extend_surface(2, "Extend", 23, 2.5), {
+                "type": "surface_extend", "target_feature_id": 23,
+                "distance_mm": 2.5,
+            }),
+            (lambda: doc.knit_surfaces(
+                2, "Knit", [24, 25], tolerance_mm=0.001, make_solid=True
+            ), {
+                "type": "surface_knit", "surface_feature_ids": [24, 25],
+                "tolerance_mm": 0.001, "make_solid": True,
+            }),
+            (lambda: doc.thicken_surface(
+                2, "Thicken", 26, 1.5, direction="symmetric"
+            ), {
+                "type": "surface_thicken", "target_feature_id": 26,
+                "thickness_mm": 1.5, "direction": "symmetric",
+            }),
+        ]
+        for call, expected_feature in calls:
+            call()
+            request = process.requests[-1]
+            self.assertEqual(request["method"], "apply")
+            operation, = request["params"]["program"]["operations"]
+            self.assertEqual(operation["operation"], "append_feature")
+            self.assertEqual(operation["definition_id"], 2)
+            self.assertEqual(operation["feature"], expected_feature)
+
+    def test_cam_setup_helper_emits_one_typed_guarded_assistant_operation(self):
+        process = FakeProcess()
+        doc = self.session(process).new_document()
+        doc.cam_setup(
+            7, "Reviewed top setup", 2, 33,
+            stock_minimum_mm=(-2, -2, -1), stock_maximum_mm=(52, 32, 12),
+            tool_number=1, tool_kind="flat_end_mill", tool_diameter_mm=6,
+            flute_length_mm=18, overall_length_mm=50, holder_diameter_mm=20,
+            holder_length_mm=35, spindle_rpm=12000, feed_mm_per_min=900,
+            plunge_mm_per_min=250, safe_height_mm=8, maximum_stepdown_mm=2,
+            stepover_ratio=0.45, radial_allowance_mm=0.2, axial_allowance_mm=0.1,
+        )
+        request = process.requests[-1]
+        self.assertEqual(request["method"], "apply")
+        self.assertEqual(request["params"]["expected_revision"], 1)
+        operation, = request["params"]["program"]["operations"]
+        self.assertEqual(operation["operation"], "upsert_cam_plan")
+        self.assertEqual(operation["target_feature_id"], 33)
+        self.assertEqual(operation["work_offset"], "g54")
+        self.assertEqual(operation["x_axis"], [1, 0, 0])
+        self.assertEqual(operation["spindle_rpm"], 12000)
+
+    def test_cam_review_and_confirmed_no_clobber_export_are_guarded(self):
+        process = FakeProcess()
+        doc = self.session(process).new_document()
+        operation = {
+            "type": "face", "id": 1, "minimum_mm": [1, 1],
+            "maximum_mm": [19, 9], "target_z_mm": 5,
+        }
+        doc.cam_preview(7, [operation], fixtures=[], dialect="controller_neutral_json")
+        preview = process.requests[-1]
+        self.assertEqual(preview["method"], "cam_preview")
+        self.assertEqual(preview["params"]["expected_revision"], 1)
+        self.assertEqual(preview["params"]["operations"], [operation])
+        self.assertEqual(preview["params"]["dialect"], "controller_neutral_json")
+
+        doc.cam_export("cam-review-token", "program.json", confirmed=True)
+        export = process.requests[-1]
+        self.assertEqual(export["method"], "cam_export")
+        self.assertEqual(export["params"]["expected_digest"], "1")
+        self.assertTrue(export["params"]["confirmed"])
+        self.assertNotIn("overwrite", export["params"])
+
+        with self.assertRaises(ValueError):
+            doc.cam_preview(7, [], dialect="iso_metric_gcode")
+        with self.assertRaises(ValueError):
+            doc.cam_export("", "program.nc", confirmed=True)
+
+    def test_fea_review_helper_emits_guarded_bounded_confirmed_study(self):
+        process = FakeProcess()
+        doc = self.session(process).new_document()
+        levels = [
+            {"surface_deflection_mm": 0.5, "angular_deflection_rad": 0.5,
+             "max_tetrahedra": 128, "max_relative_volume_error": 0.05,
+             "min_tetrahedron_quality": 1.0e-5},
+            {"surface_deflection_mm": 0.2, "angular_deflection_rad": 0.2,
+             "max_tetrahedra": 256, "max_relative_volume_error": 0.02,
+             "min_tetrahedron_quality": 1.0e-5},
+        ]
+        doc.fea_review(
+            2, 33, 7, "pressure-case",
+            material={"id": 1, "youngs_modulus_mpa": 200000,
+                      "poisson_ratio": 0.3, "yield_strength_mpa": 250},
+            constrained_face_ordinals=[0],
+            face_tractions=[{"face_ordinal": 1,
+                             "traction_local_n_per_mm2": [0, 0, -1]}],
+            mesh_levels=levels, confirmed=True,
+        )
+        request = process.requests[-1]
+        self.assertEqual(request["method"], "fea_review")
+        self.assertEqual(request["params"]["expected_revision"], 1)
+        self.assertEqual(request["params"]["mesh_levels"], levels)
+        self.assertEqual(request["params"]["solve_settings"]["maximum_nodes"], 256)
+        self.assertTrue(request["params"]["confirmed"])
+        with self.assertRaises(ValueError):
+            doc.fea_review(
+                2, 33, 7, "pressure-case", material={},
+                constrained_face_ordinals=[0], face_tractions=[{}],
+                mesh_levels=levels[:1], confirmed=True,
+            )
+
+    def test_local_pdm_helpers_are_guarded_and_keep_confirmation_explicit(self):
+        process = FakeProcess()
+        doc = self.session(process).new_document()
+        dependencies = [{"logical_path": "supplier/bearing.step",
+                         "source_path": "bearing.step"}]
+        doc.pdm_release(
+            "local-pdm", dependencies=dependencies, actor="designer",
+            created_unix_ms=1_700_000_000_000, note="reviewed root", confirmed=True,
+        )
+        request = process.requests[-1]
+        self.assertEqual(request["method"], "pdm_release_create")
+        self.assertEqual(request["params"]["expected_revision"], 1)
+        self.assertEqual(request["params"]["dependencies"], dependencies)
+        self.assertIsNone(request["params"]["parent_release_id"])
+        self.assertTrue(request["params"]["confirmed"])
+
+        doc.pdm_open_release("local-pdm", "a" * 64)
+        self.assertEqual(process.requests[-1]["method"], "pdm_release_open")
+        doc.pdm_catalog("local-pdm")
+        self.assertEqual(process.requests[-1]["method"], "pdm_catalog")
+        doc.pdm_compare("local-pdm", "a" * 64, "b" * 64)
+        self.assertEqual(process.requests[-1]["method"], "pdm_compare")
+        self.assertEqual(process.requests[-1]["params"]["expected_digest"], "1")
+
+        with self.assertRaises(ValueError):
+            doc.pdm_release("local-pdm", actor="", created_unix_ms=1, confirmed=True)
+        with self.assertRaises(ValueError):
+            doc.pdm_compare("local-pdm", "", "b" * 64)
+
     def test_set_color_uses_shared_apply_and_refreshes_guards(self):
         process = FakeProcess()
         doc = self.session(process).new_document()

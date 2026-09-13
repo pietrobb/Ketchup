@@ -1,12 +1,15 @@
 use crate::document::{
-    BooleanOperation, DefinitionId, EdgeFinishKind, FeatureDependencyGraph, FeatureId, FeatureKind,
-    LoftSection, ProfileSegment, Snapshot, SpatialPathSegment, Transform, solved_sketch_sweep_path,
+    BodyKind, BooleanOperation, ChamferMode, DefinitionId, EdgeFinishKind, FeatureDependencyGraph,
+    FeatureId, FeatureKind, LoftContinuity, LoftSection, ProfileSegment, ShellDirection, Snapshot,
+    SpatialPathSegment, SurfaceBodySpec, Transform, WeldmentJointPolicy, WeldmentJointPrimary,
+    solved_sketch_sweep_path,
 };
 use crate::exact_product::{
     EXACT_MIN_LENGTH_MM, ExactCircleProfile, ExactPlanarOffsetRegion,
     MAX_EXACT_PLANAR_OFFSET_LENGTH_MM, accepts_planar_circle_offset_geometry,
     accepts_planar_offset_geometry, exact_planar_offset_profile_from_segments,
 };
+use crate::sheet_metal::SheetMetalEdge;
 use crate::sketch::{
     FeatureDirection, FeatureExtent, FeatureExtentEnd, SketchRegionId, SolvedSketchRegion,
     SolvedSketchRegionEdge, SolvedSketchRegionProfile, WorkplaneFrame,
@@ -26,6 +29,15 @@ pub const EXACT_BREP_GRAPH_SCHEMA_V11: &str = "ketchup.exact-brep-graph.v11";
 pub const EXACT_BREP_GRAPH_SCHEMA_V12: &str = "ketchup.exact-brep-graph.v12";
 pub const EXACT_BREP_GRAPH_SCHEMA_V13: &str = "ketchup.exact-brep-graph.v13";
 pub const EXACT_BREP_GRAPH_SCHEMA_V14: &str = "ketchup.exact-brep-graph.v14";
+pub const EXACT_BREP_GRAPH_SCHEMA_V15: &str = "ketchup.exact-brep-graph.v15";
+pub const EXACT_BREP_GRAPH_SCHEMA_V16: &str = "ketchup.exact-brep-graph.v16";
+pub const EXACT_BREP_GRAPH_SCHEMA_V17: &str = "ketchup.exact-brep-graph.v17";
+pub const EXACT_BREP_GRAPH_SCHEMA_V18: &str = "ketchup.exact-brep-graph.v18";
+pub const EXACT_BREP_GRAPH_SCHEMA_V19: &str = "ketchup.exact-brep-graph.v19";
+pub const EXACT_BREP_GRAPH_SCHEMA_V20: &str = "ketchup.exact-brep-graph.v20";
+pub const EXACT_BREP_GRAPH_SCHEMA_V21: &str = "ketchup.exact-brep-graph.v21";
+pub const EXACT_BREP_GRAPH_SCHEMA_V22: &str = "ketchup.exact-brep-graph.v22";
+pub const EXACT_BREP_GRAPH_SCHEMA_V23: &str = "ketchup.exact-brep-graph.v23";
 pub const MAX_EXACT_BREP_GRAPH_PROFILES: usize = 1_024;
 pub const MAX_EXACT_BREP_GRAPH_NODES: usize = 1_024;
 pub const MAX_EXACT_BREP_GRAPH_SEGMENTS: usize = 16_384;
@@ -90,6 +102,20 @@ pub enum ExactBRepBooleanOperation {
     Split,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExactBRepWeldmentJointPolicy {
+    Butt,
+    Miter,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExactBRepWeldmentJointPrimary {
+    First,
+    Second,
+}
+
 impl From<BooleanOperation> for ExactBRepBooleanOperation {
     fn from(operation: BooleanOperation) -> Self {
         match operation {
@@ -136,6 +162,13 @@ impl ExactBRepTopologySelector {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExactBRepFilletRadiusStation {
+    pub position_bits: u64,
+    pub radius_bits: u64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExactBRepEdgeFinishKind {
     Fillet,
@@ -147,6 +180,45 @@ impl From<EdgeFinishKind> for ExactBRepEdgeFinishKind {
         match kind {
             EdgeFinishKind::Fillet => Self::Fillet,
             EdgeFinishKind::Chamfer => Self::Chamfer,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ExactBRepChamferMode {
+    #[default]
+    Symmetric,
+    TwoDistance {
+        second_distance_bits: u64,
+    },
+    DistanceAngle {
+        angle_degrees_bits: u64,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExactBRepChamferEdgeSide {
+    pub edge: ExactBRepTopologySelector,
+    pub side_face: ExactBRepTopologySelector,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExactBRepShellDirection {
+    #[default]
+    Inward,
+    Outward,
+    Symmetric,
+}
+
+impl From<ShellDirection> for ExactBRepShellDirection {
+    fn from(direction: ShellDirection) -> Self {
+        match direction {
+            ShellDirection::Inward => Self::Inward,
+            ShellDirection::Outward => Self::Outward,
+            ShellDirection::Symmetric => Self::Symmetric,
         }
     }
 }
@@ -214,6 +286,25 @@ pub struct ExactBRepProfile {
     pub geometry: ExactBRepPlanarGeometry,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExactBRepLoftContinuity {
+    #[default]
+    Position,
+    Tangent,
+    Curvature,
+}
+
+impl From<LoftContinuity> for ExactBRepLoftContinuity {
+    fn from(value: LoftContinuity) -> Self {
+        match value {
+            LoftContinuity::Position => Self::Position,
+            LoftContinuity::Tangent => Self::Tangent,
+            LoftContinuity::Curvature => Self::Curvature,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExactBRepLoftSection {
@@ -250,6 +341,35 @@ pub struct ExactBRepSpatialPath {
     pub segments: Vec<ExactBRepSpatialPathSegment>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExactBRepSheetMetalEdge {
+    MinX,
+    MaxX,
+    MinY,
+    MaxY,
+}
+
+impl From<SheetMetalEdge> for ExactBRepSheetMetalEdge {
+    fn from(edge: SheetMetalEdge) -> Self {
+        match edge {
+            SheetMetalEdge::MinX => Self::MinX,
+            SheetMetalEdge::MaxX => Self::MaxX,
+            SheetMetalEdge::MinY => Self::MinY,
+            SheetMetalEdge::MaxY => Self::MaxY,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExactBRepSheetMetalFlange {
+    pub edge: ExactBRepSheetMetalEdge,
+    pub length_bits: u64,
+    pub angle_degrees_bits: u64,
+    pub inner_radius_bits: u64,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExactBRepOperation {
@@ -274,12 +394,20 @@ pub enum ExactBRepOperation {
         target: ExactBRepNodeId,
         removed_faces: Vec<ExactBRepTopologySelector>,
         thickness_bits: u64,
+        #[serde(default)]
+        direction: ExactBRepShellDirection,
     },
     EdgeFinish {
         target: ExactBRepNodeId,
         edges: Vec<ExactBRepTopologySelector>,
         kind: ExactBRepEdgeFinishKind,
         amount_bits: u64,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        fillet_radius_stations: Vec<ExactBRepFilletRadiusStation>,
+        #[serde(default)]
+        chamfer_mode: ExactBRepChamferMode,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        chamfer_edge_sides: Vec<ExactBRepChamferEdgeSide>,
     },
     FaceOffset {
         target: ExactBRepNodeId,
@@ -296,6 +424,34 @@ pub enum ExactBRepOperation {
         profile: ExactBRepProfileId,
         distance_bits: u64,
     },
+    PlanarSurface {
+        profile: ExactBRepProfileId,
+    },
+    LoftSurface {
+        sections: Vec<ExactBRepLoftSection>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        guide: Option<ExactBRepSpatialPath>,
+        #[serde(default)]
+        continuity: ExactBRepLoftContinuity,
+    },
+    SurfaceTrim {
+        target: ExactBRepNodeId,
+        cutter: ExactBRepNodeId,
+    },
+    SurfaceExtend {
+        target: ExactBRepNodeId,
+        distance_bits: u64,
+    },
+    SurfaceKnit {
+        surfaces: Vec<ExactBRepNodeId>,
+        tolerance_bits: u64,
+        make_solid: bool,
+    },
+    SurfaceThicken {
+        target: ExactBRepNodeId,
+        thickness_bits: u64,
+        direction: ExactBRepShellDirection,
+    },
     Sweep {
         profile: ExactBRepProfileId,
         path: ExactBRepProfileId,
@@ -308,8 +464,28 @@ pub enum ExactBRepOperation {
         profile: ExactBRepProfileId,
         path: ExactBRepSpatialPath,
     },
+    WeldmentJoint {
+        first: ExactBRepNodeId,
+        second: ExactBRepNodeId,
+        joint_point_bits: [u64; 3],
+        first_direction_bits: [u64; 3],
+        second_direction_bits: [u64; 3],
+        policy: ExactBRepWeldmentJointPolicy,
+        primary: ExactBRepWeldmentJointPrimary,
+    },
     Loft {
         sections: Vec<ExactBRepLoftSection>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        guide: Option<ExactBRepSpatialPath>,
+        #[serde(default)]
+        continuity: ExactBRepLoftContinuity,
+    },
+    SheetMetal {
+        width_bits: u64,
+        depth_bits: u64,
+        thickness_bits: u64,
+        k_factor_bits: u64,
+        flanges: Vec<ExactBRepSheetMetalFlange>,
     },
     ImportedExact {
         source_sha256: [u8; 32],
@@ -329,15 +505,26 @@ impl ExactBRepOperation {
             | Self::Shell { target, .. }
             | Self::EdgeFinish { target, .. }
             | Self::FaceOffset { target, .. }
+            | Self::SurfaceExtend { target, .. }
+            | Self::SurfaceThicken { target, .. }
             | Self::RigidTransform { target, .. } => vec![*target],
-            Self::Boolean { target, tool, .. } => vec![*target, *tool],
+            Self::Boolean { target, tool, .. }
+            | Self::SurfaceTrim {
+                target,
+                cutter: tool,
+            } => vec![*target, *tool],
+            Self::WeldmentJoint { first, second, .. } => vec![*first, *second],
+            Self::SurfaceKnit { surfaces, .. } => surfaces.clone(),
             Self::Extrude { .. }
             | Self::Revolve { .. }
             | Self::PlanarOffset { .. }
+            | Self::PlanarSurface { .. }
+            | Self::LoftSurface { .. }
             | Self::Sweep { .. }
             | Self::SketchSweep { .. }
             | Self::SpatialSweep { .. }
             | Self::Loft { .. }
+            | Self::SheetMetal { .. }
             | Self::ImportedExact { .. } => Vec::new(),
         }
     }
@@ -347,16 +534,25 @@ impl ExactBRepOperation {
             Self::Extrude { profile, .. }
             | Self::ProfileCut { profile, .. }
             | Self::Revolve { profile, .. }
-            | Self::PlanarOffset { profile, .. } => vec![*profile],
+            | Self::PlanarOffset { profile, .. }
+            | Self::PlanarSurface { profile } => vec![*profile],
             Self::Sweep { profile, path } | Self::SketchSweep { profile, path } => {
                 vec![*profile, *path]
             }
             Self::SpatialSweep { profile, .. } => vec![*profile],
-            Self::Loft { sections } => sections.iter().map(|section| section.profile).collect(),
+            Self::Loft { sections, .. } | Self::LoftSurface { sections, .. } => {
+                sections.iter().map(|section| section.profile).collect()
+            }
             Self::Boolean { .. }
+            | Self::SurfaceTrim { .. }
+            | Self::SurfaceExtend { .. }
+            | Self::SurfaceKnit { .. }
+            | Self::SurfaceThicken { .. }
+            | Self::WeldmentJoint { .. }
             | Self::Shell { .. }
             | Self::EdgeFinish { .. }
             | Self::FaceOffset { .. }
+            | Self::SheetMetal { .. }
             | Self::ImportedExact { .. }
             | Self::RigidTransform { .. } => Vec::new(),
         }
@@ -430,6 +626,60 @@ impl ExactBRepGraph {
         let schema = if compiler
             .nodes
             .iter()
+            .any(|node| operation_requires_v23(&node.operation))
+        {
+            EXACT_BREP_GRAPH_SCHEMA_V23
+        } else if compiler
+            .nodes
+            .iter()
+            .any(|node| operation_requires_v22(&node.operation))
+        {
+            EXACT_BREP_GRAPH_SCHEMA_V22
+        } else if compiler
+            .nodes
+            .iter()
+            .any(|node| operation_requires_v21(&node.operation))
+        {
+            EXACT_BREP_GRAPH_SCHEMA_V21
+        } else if compiler
+            .nodes
+            .iter()
+            .any(|node| operation_requires_v20(&node.operation))
+        {
+            EXACT_BREP_GRAPH_SCHEMA_V20
+        } else if compiler
+            .nodes
+            .iter()
+            .any(|node| operation_requires_v19(&node.operation))
+        {
+            EXACT_BREP_GRAPH_SCHEMA_V19
+        } else if compiler
+            .nodes
+            .iter()
+            .any(|node| operation_requires_v18(&node.operation))
+        {
+            EXACT_BREP_GRAPH_SCHEMA_V18
+        } else if compiler
+            .nodes
+            .iter()
+            .any(|node| operation_requires_v17(&node.operation))
+        {
+            EXACT_BREP_GRAPH_SCHEMA_V17
+        } else if compiler
+            .nodes
+            .iter()
+            .any(|node| operation_requires_v16(&node.operation))
+        {
+            EXACT_BREP_GRAPH_SCHEMA_V16
+        } else if compiler
+            .nodes
+            .iter()
+            .any(|node| operation_requires_v15(&node.operation))
+        {
+            EXACT_BREP_GRAPH_SCHEMA_V15
+        } else if compiler
+            .nodes
+            .iter()
             .any(|node| operation_requires_v14(&node.operation, &compiler.profiles))
         {
             EXACT_BREP_GRAPH_SCHEMA_V14
@@ -485,6 +735,32 @@ impl ExactBRepGraph {
     }
 
     #[must_use]
+    pub fn terminal_body_kind(&self) -> BodyKind {
+        match self.nodes.last().map(|node| &node.operation) {
+            Some(ExactBRepOperation::SurfaceKnit { make_solid, .. }) => {
+                if *make_solid {
+                    BodyKind::Solid
+                } else {
+                    BodyKind::Surface
+                }
+            }
+            Some(
+                ExactBRepOperation::PlanarOffset { .. }
+                | ExactBRepOperation::PlanarSurface { .. }
+                | ExactBRepOperation::LoftSurface { .. }
+                | ExactBRepOperation::SurfaceTrim { .. }
+                | ExactBRepOperation::SurfaceExtend { .. },
+            ) => BodyKind::Surface,
+            _ => BodyKind::Solid,
+        }
+    }
+
+    #[must_use]
+    pub fn terminal_is_surface(&self) -> bool {
+        self.terminal_body_kind() == BodyKind::Surface
+    }
+
+    #[must_use]
     pub fn terminal_is_planar_offset(&self) -> bool {
         matches!(
             self.nodes.last().map(|node| &node.operation),
@@ -516,12 +792,13 @@ impl ExactBRepGraph {
         if self.validate().is_err() {
             return false;
         }
-        let Some(ExactBRepOperation::PlanarOffset {
-            profile,
-            distance_bits,
-        }) = self.nodes.last().map(|node| &node.operation)
-        else {
-            return false;
+        let (profile, distance_mm) = match self.nodes.last().map(|node| &node.operation) {
+            Some(ExactBRepOperation::PlanarOffset {
+                profile,
+                distance_bits,
+            }) => (profile, f64::from_bits(*distance_bits)),
+            Some(ExactBRepOperation::PlanarSurface { profile }) => (profile, 0.0),
+            _ => return false,
         };
         let Some(profile) = self.profiles.get(profile.0 as usize) else {
             return false;
@@ -554,7 +831,6 @@ impl ExactBRepGraph {
         } else {
             bounds_mm
         };
-        let distance_mm = f64::from_bits(*distance_bits);
         match &profile.geometry {
             ExactBRepPlanarGeometry::Circle {
                 center_bits,
@@ -607,8 +883,10 @@ impl ExactBRepGraph {
         &self,
         vertices_mm: &[[f64; 3]],
     ) -> Option<[[f64; 3]; 2]> {
-        let ExactBRepOperation::PlanarOffset { profile, .. } = &self.nodes.last()?.operation else {
-            return None;
+        let profile = match &self.nodes.last()?.operation {
+            ExactBRepOperation::PlanarOffset { profile, .. }
+            | ExactBRepOperation::PlanarSurface { profile } => profile,
+            _ => return None,
         };
         let frame = self
             .profiles
@@ -703,6 +981,15 @@ impl ExactBRepGraph {
                 | EXACT_BREP_GRAPH_SCHEMA_V12
                 | EXACT_BREP_GRAPH_SCHEMA_V13
                 | EXACT_BREP_GRAPH_SCHEMA_V14
+                | EXACT_BREP_GRAPH_SCHEMA_V15
+                | EXACT_BREP_GRAPH_SCHEMA_V16
+                | EXACT_BREP_GRAPH_SCHEMA_V17
+                | EXACT_BREP_GRAPH_SCHEMA_V18
+                | EXACT_BREP_GRAPH_SCHEMA_V19
+                | EXACT_BREP_GRAPH_SCHEMA_V20
+                | EXACT_BREP_GRAPH_SCHEMA_V21
+                | EXACT_BREP_GRAPH_SCHEMA_V22
+                | EXACT_BREP_GRAPH_SCHEMA_V23
         ) || self.document_id == 0
             || self.definition_id == 0
             || self.producer_feature_id == 0
@@ -733,13 +1020,21 @@ impl ExactBRepGraph {
         let mut imported_source_bytes = 0_u64;
         for (index, node) in self.nodes.iter().enumerate() {
             let id = ExactBRepNodeId(index as u32);
-            if let ExactBRepOperation::SpatialSweep { path, .. } = &node.operation {
-                segment_count = segment_count
-                    .checked_add(path.segments.len())
-                    .ok_or(ExactBRepGraphError::ResourceLimit)?;
-                if segment_count > MAX_EXACT_BREP_GRAPH_SEGMENTS {
-                    return Err(ExactBRepGraphError::ResourceLimit);
+            let spatial_segment_count = match &node.operation {
+                ExactBRepOperation::SpatialSweep { path, .. } => path.segments.len(),
+                ExactBRepOperation::Loft {
+                    guide: Some(path), ..
                 }
+                | ExactBRepOperation::LoftSurface {
+                    guide: Some(path), ..
+                } => path.segments.len(),
+                _ => 0,
+            };
+            segment_count = segment_count
+                .checked_add(spatial_segment_count)
+                .ok_or(ExactBRepGraphError::ResourceLimit)?;
+            if segment_count > MAX_EXACT_BREP_GRAPH_SEGMENTS {
+                return Err(ExactBRepGraphError::ResourceLimit);
             }
             if let ExactBRepOperation::ImportedExact {
                 source_byte_len, ..
@@ -781,6 +1076,15 @@ impl ExactBRepGraph {
                         | EXACT_BREP_GRAPH_SCHEMA_V12
                         | EXACT_BREP_GRAPH_SCHEMA_V13
                         | EXACT_BREP_GRAPH_SCHEMA_V14
+                        | EXACT_BREP_GRAPH_SCHEMA_V15
+                        | EXACT_BREP_GRAPH_SCHEMA_V16
+                        | EXACT_BREP_GRAPH_SCHEMA_V17
+                        | EXACT_BREP_GRAPH_SCHEMA_V18
+                        | EXACT_BREP_GRAPH_SCHEMA_V19
+                        | EXACT_BREP_GRAPH_SCHEMA_V20
+                        | EXACT_BREP_GRAPH_SCHEMA_V21
+                        | EXACT_BREP_GRAPH_SCHEMA_V22
+                        | EXACT_BREP_GRAPH_SCHEMA_V23
                 ) && operation_requires_v9(&node.operation, &self.profiles))
                 || (!matches!(
                     self.schema.as_str(),
@@ -789,6 +1093,15 @@ impl ExactBRepGraph {
                         | EXACT_BREP_GRAPH_SCHEMA_V12
                         | EXACT_BREP_GRAPH_SCHEMA_V13
                         | EXACT_BREP_GRAPH_SCHEMA_V14
+                        | EXACT_BREP_GRAPH_SCHEMA_V15
+                        | EXACT_BREP_GRAPH_SCHEMA_V16
+                        | EXACT_BREP_GRAPH_SCHEMA_V17
+                        | EXACT_BREP_GRAPH_SCHEMA_V18
+                        | EXACT_BREP_GRAPH_SCHEMA_V19
+                        | EXACT_BREP_GRAPH_SCHEMA_V20
+                        | EXACT_BREP_GRAPH_SCHEMA_V21
+                        | EXACT_BREP_GRAPH_SCHEMA_V22
+                        | EXACT_BREP_GRAPH_SCHEMA_V23
                 ) && operation_requires_v10(&node.operation, &self.profiles))
                 || (!matches!(
                     self.schema.as_str(),
@@ -796,19 +1109,127 @@ impl ExactBRepGraph {
                         | EXACT_BREP_GRAPH_SCHEMA_V12
                         | EXACT_BREP_GRAPH_SCHEMA_V13
                         | EXACT_BREP_GRAPH_SCHEMA_V14
+                        | EXACT_BREP_GRAPH_SCHEMA_V15
+                        | EXACT_BREP_GRAPH_SCHEMA_V16
+                        | EXACT_BREP_GRAPH_SCHEMA_V17
+                        | EXACT_BREP_GRAPH_SCHEMA_V18
+                        | EXACT_BREP_GRAPH_SCHEMA_V19
+                        | EXACT_BREP_GRAPH_SCHEMA_V20
+                        | EXACT_BREP_GRAPH_SCHEMA_V21
+                        | EXACT_BREP_GRAPH_SCHEMA_V22
+                        | EXACT_BREP_GRAPH_SCHEMA_V23
                 ) && operation_requires_v11(&node.operation, &self.profiles))
                 || (!matches!(
                     self.schema.as_str(),
                     EXACT_BREP_GRAPH_SCHEMA_V12
                         | EXACT_BREP_GRAPH_SCHEMA_V13
                         | EXACT_BREP_GRAPH_SCHEMA_V14
+                        | EXACT_BREP_GRAPH_SCHEMA_V15
+                        | EXACT_BREP_GRAPH_SCHEMA_V16
+                        | EXACT_BREP_GRAPH_SCHEMA_V17
+                        | EXACT_BREP_GRAPH_SCHEMA_V18
+                        | EXACT_BREP_GRAPH_SCHEMA_V19
+                        | EXACT_BREP_GRAPH_SCHEMA_V20
+                        | EXACT_BREP_GRAPH_SCHEMA_V21
+                        | EXACT_BREP_GRAPH_SCHEMA_V22
+                        | EXACT_BREP_GRAPH_SCHEMA_V23
                 ) && operation_requires_v12(&node.operation))
                 || (!matches!(
                     self.schema.as_str(),
-                    EXACT_BREP_GRAPH_SCHEMA_V13 | EXACT_BREP_GRAPH_SCHEMA_V14
+                    EXACT_BREP_GRAPH_SCHEMA_V13
+                        | EXACT_BREP_GRAPH_SCHEMA_V14
+                        | EXACT_BREP_GRAPH_SCHEMA_V15
+                        | EXACT_BREP_GRAPH_SCHEMA_V16
+                        | EXACT_BREP_GRAPH_SCHEMA_V17
+                        | EXACT_BREP_GRAPH_SCHEMA_V18
+                        | EXACT_BREP_GRAPH_SCHEMA_V19
+                        | EXACT_BREP_GRAPH_SCHEMA_V20
+                        | EXACT_BREP_GRAPH_SCHEMA_V21
+                        | EXACT_BREP_GRAPH_SCHEMA_V22
+                        | EXACT_BREP_GRAPH_SCHEMA_V23
                 ) && operation_requires_v13(&node.operation))
-                || (self.schema != EXACT_BREP_GRAPH_SCHEMA_V14
-                    && operation_requires_v14(&node.operation, &self.profiles))
+                || (!matches!(
+                    self.schema.as_str(),
+                    EXACT_BREP_GRAPH_SCHEMA_V14
+                        | EXACT_BREP_GRAPH_SCHEMA_V15
+                        | EXACT_BREP_GRAPH_SCHEMA_V16
+                        | EXACT_BREP_GRAPH_SCHEMA_V17
+                        | EXACT_BREP_GRAPH_SCHEMA_V18
+                        | EXACT_BREP_GRAPH_SCHEMA_V19
+                        | EXACT_BREP_GRAPH_SCHEMA_V20
+                        | EXACT_BREP_GRAPH_SCHEMA_V21
+                        | EXACT_BREP_GRAPH_SCHEMA_V22
+                        | EXACT_BREP_GRAPH_SCHEMA_V23
+                ) && operation_requires_v14(&node.operation, &self.profiles))
+                || (!matches!(
+                    self.schema.as_str(),
+                    EXACT_BREP_GRAPH_SCHEMA_V15
+                        | EXACT_BREP_GRAPH_SCHEMA_V16
+                        | EXACT_BREP_GRAPH_SCHEMA_V17
+                        | EXACT_BREP_GRAPH_SCHEMA_V18
+                        | EXACT_BREP_GRAPH_SCHEMA_V19
+                        | EXACT_BREP_GRAPH_SCHEMA_V20
+                        | EXACT_BREP_GRAPH_SCHEMA_V21
+                        | EXACT_BREP_GRAPH_SCHEMA_V22
+                        | EXACT_BREP_GRAPH_SCHEMA_V23
+                ) && operation_requires_v15(&node.operation))
+                || (!matches!(
+                    self.schema.as_str(),
+                    EXACT_BREP_GRAPH_SCHEMA_V16
+                        | EXACT_BREP_GRAPH_SCHEMA_V17
+                        | EXACT_BREP_GRAPH_SCHEMA_V18
+                        | EXACT_BREP_GRAPH_SCHEMA_V19
+                        | EXACT_BREP_GRAPH_SCHEMA_V20
+                        | EXACT_BREP_GRAPH_SCHEMA_V21
+                        | EXACT_BREP_GRAPH_SCHEMA_V22
+                        | EXACT_BREP_GRAPH_SCHEMA_V23
+                ) && operation_requires_v16(&node.operation))
+                || (!matches!(
+                    self.schema.as_str(),
+                    EXACT_BREP_GRAPH_SCHEMA_V17
+                        | EXACT_BREP_GRAPH_SCHEMA_V18
+                        | EXACT_BREP_GRAPH_SCHEMA_V19
+                        | EXACT_BREP_GRAPH_SCHEMA_V20
+                        | EXACT_BREP_GRAPH_SCHEMA_V21
+                        | EXACT_BREP_GRAPH_SCHEMA_V22
+                        | EXACT_BREP_GRAPH_SCHEMA_V23
+                ) && operation_requires_v17(&node.operation))
+                || (!matches!(
+                    self.schema.as_str(),
+                    EXACT_BREP_GRAPH_SCHEMA_V18
+                        | EXACT_BREP_GRAPH_SCHEMA_V19
+                        | EXACT_BREP_GRAPH_SCHEMA_V20
+                        | EXACT_BREP_GRAPH_SCHEMA_V21
+                        | EXACT_BREP_GRAPH_SCHEMA_V22
+                        | EXACT_BREP_GRAPH_SCHEMA_V23
+                ) && operation_requires_v18(&node.operation))
+                || (!matches!(
+                    self.schema.as_str(),
+                    EXACT_BREP_GRAPH_SCHEMA_V19
+                        | EXACT_BREP_GRAPH_SCHEMA_V20
+                        | EXACT_BREP_GRAPH_SCHEMA_V21
+                        | EXACT_BREP_GRAPH_SCHEMA_V22
+                        | EXACT_BREP_GRAPH_SCHEMA_V23
+                ) && operation_requires_v19(&node.operation))
+                || (!matches!(
+                    self.schema.as_str(),
+                    EXACT_BREP_GRAPH_SCHEMA_V20
+                        | EXACT_BREP_GRAPH_SCHEMA_V21
+                        | EXACT_BREP_GRAPH_SCHEMA_V22
+                        | EXACT_BREP_GRAPH_SCHEMA_V23
+                ) && operation_requires_v20(&node.operation))
+                || (!matches!(
+                    self.schema.as_str(),
+                    EXACT_BREP_GRAPH_SCHEMA_V21
+                        | EXACT_BREP_GRAPH_SCHEMA_V22
+                        | EXACT_BREP_GRAPH_SCHEMA_V23
+                ) && operation_requires_v21(&node.operation))
+                || (!matches!(
+                    self.schema.as_str(),
+                    EXACT_BREP_GRAPH_SCHEMA_V22 | EXACT_BREP_GRAPH_SCHEMA_V23
+                ) && operation_requires_v22(&node.operation))
+                || (self.schema != EXACT_BREP_GRAPH_SCHEMA_V23
+                    && operation_requires_v23(&node.operation))
                 || !valid_operation(
                     &node.operation,
                     self.document_id,
@@ -920,10 +1341,25 @@ impl<'a> GraphCompiler<'a> {
                 | FeatureKind::TopologyShell { target, .. }
                 | FeatureKind::TopologyEdgeFinish { target, .. }
                 | FeatureKind::TopologyFaceOffset { target, .. }
+                | FeatureKind::SurfaceExtend { target, .. }
+                | FeatureKind::SurfaceThicken { target, .. }
                 | FeatureKind::RigidTransform { target, .. } => pending.push((*target, false)),
-                FeatureKind::Boolean { target, tool, .. } => {
+                FeatureKind::Boolean { target, tool, .. }
+                | FeatureKind::SurfaceTrim {
+                    target,
+                    cutter: tool,
+                } => {
                     pending.push((*tool, false));
                     pending.push((*target, false));
+                }
+                FeatureKind::SurfaceKnit { surfaces, .. } => {
+                    for surface in surfaces.iter().rev() {
+                        pending.push((*surface, false));
+                    }
+                }
+                FeatureKind::WeldmentJoint(spec) => {
+                    pending.push((spec.second_member, false));
+                    pending.push((spec.first_member, false));
                 }
                 _ => {}
             }
@@ -1060,25 +1496,78 @@ impl<'a> GraphCompiler<'a> {
                 target,
                 removed_faces,
                 thickness,
+                direction,
             } => ExactBRepOperation::Shell {
                 target: self.body_id(*target)?,
-                removed_faces: topology_selectors(
-                    removed_faces,
-                    TopologicalElementKind::Face,
-                    *target,
-                )?,
+                removed_faces: if removed_faces.is_empty() {
+                    Vec::new()
+                } else {
+                    topology_selectors(removed_faces, TopologicalElementKind::Face, *target)?
+                },
                 thickness_bits: positive_distance(thickness.millimetres())?,
+                direction: (*direction).into(),
             },
             FeatureKind::TopologyEdgeFinish {
                 target,
                 edges,
                 kind,
                 amount,
+                fillet_radius_stations,
+                chamfer_mode,
+                chamfer_edge_sides,
             } => ExactBRepOperation::EdgeFinish {
                 target: self.body_id(*target)?,
                 edges: topology_selectors(edges, TopologicalElementKind::Edge, *target)?,
                 kind: (*kind).into(),
                 amount_bits: positive_distance(amount.millimetres())?,
+                fillet_radius_stations: fillet_radius_stations
+                    .iter()
+                    .map(|station| {
+                        Ok(ExactBRepFilletRadiusStation {
+                            position_bits: station.position.to_bits(),
+                            radius_bits: positive_distance(station.radius.millimetres())?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ExactBRepGraphError>>()?,
+                chamfer_mode: match chamfer_mode {
+                    ChamferMode::Symmetric => ExactBRepChamferMode::Symmetric,
+                    ChamferMode::TwoDistance { second_distance } => {
+                        ExactBRepChamferMode::TwoDistance {
+                            second_distance_bits: positive_distance(second_distance.millimetres())?,
+                        }
+                    }
+                    ChamferMode::DistanceAngle { angle_degrees } => {
+                        if !angle_degrees.is_finite()
+                            || *angle_degrees <= 0.1
+                            || *angle_degrees >= 89.9
+                        {
+                            return Err(ExactBRepGraphError::InvalidParameter);
+                        }
+                        ExactBRepChamferMode::DistanceAngle {
+                            angle_degrees_bits: angle_degrees.to_bits(),
+                        }
+                    }
+                },
+                chamfer_edge_sides: chamfer_edge_sides
+                    .iter()
+                    .map(|selection| {
+                        let edge = topology_selectors(
+                            std::slice::from_ref(&selection.edge),
+                            TopologicalElementKind::Edge,
+                            *target,
+                        )?
+                        .pop()
+                        .ok_or(ExactBRepGraphError::InvalidTopologySelector)?;
+                        let side_face = topology_selectors(
+                            std::slice::from_ref(&selection.side_face),
+                            TopologicalElementKind::Face,
+                            *target,
+                        )?
+                        .pop()
+                        .ok_or(ExactBRepGraphError::InvalidTopologySelector)?;
+                        Ok(ExactBRepChamferEdgeSide { edge, side_face })
+                    })
+                    .collect::<Result<Vec<_>, ExactBRepGraphError>>()?,
             },
             FeatureKind::TopologyFaceOffset {
                 target,
@@ -1156,6 +1645,61 @@ impl<'a> GraphCompiler<'a> {
                     distance_bits: planar_offset_distance(distance.millimetres())?,
                 }
             }
+            FeatureKind::SurfaceBody(SurfaceBodySpec::Planar { profile }) => {
+                let compiled_profile = match self
+                    .snapshot
+                    .feature(*profile)
+                    .map(|feature| feature.kind())
+                {
+                    Some(FeatureKind::Sketch(sketch)) => {
+                        let regions = sketch
+                            .solved_regions()
+                            .map_err(|_| ExactBRepGraphError::UnsupportedProfile(*profile))?;
+                        let [region] = regions.as_slice() else {
+                            return Err(ExactBRepGraphError::UnsupportedProfile(*profile));
+                        };
+                        self.compile_sketch_profile(
+                            *profile,
+                            region.id,
+                            FeatureDirection::AlongNormal,
+                        )?
+                        .0
+                    }
+                    _ => self.compile_profile(*profile, None, identity_frame())?,
+                };
+                ExactBRepOperation::PlanarSurface {
+                    profile: compiled_profile,
+                }
+            }
+            FeatureKind::SurfaceTrim { target, cutter } => ExactBRepOperation::SurfaceTrim {
+                target: self.body_id(*target)?,
+                cutter: self.body_id(*cutter)?,
+            },
+            FeatureKind::SurfaceExtend { target, distance } => ExactBRepOperation::SurfaceExtend {
+                target: self.body_id(*target)?,
+                distance_bits: positive_distance(distance.millimetres())?,
+            },
+            FeatureKind::SurfaceKnit {
+                surfaces,
+                tolerance,
+                make_solid,
+            } => ExactBRepOperation::SurfaceKnit {
+                surfaces: surfaces
+                    .iter()
+                    .map(|surface| self.body_id(*surface))
+                    .collect::<Result<_, _>>()?,
+                tolerance_bits: tolerance.millimetres().to_bits(),
+                make_solid: *make_solid,
+            },
+            FeatureKind::SurfaceThicken {
+                target,
+                thickness,
+                direction,
+            } => ExactBRepOperation::SurfaceThicken {
+                target: self.body_id(*target)?,
+                thickness_bits: positive_distance(thickness.millimetres())?,
+                direction: (*direction).into(),
+            },
             FeatureKind::Sweep { profile, path } => {
                 let compiled_profile = match self
                     .snapshot
@@ -1169,9 +1713,6 @@ impl<'a> GraphCompiler<'a> {
                         let [region] = regions.as_slice() else {
                             return Err(ExactBRepGraphError::UnsupportedProfile(*profile));
                         };
-                        if !region.holes.is_empty() {
-                            return Err(ExactBRepGraphError::UnsupportedProfile(*profile));
-                        }
                         self.compile_sketch_profile(
                             *profile,
                             region.id,
@@ -1198,8 +1739,169 @@ impl<'a> GraphCompiler<'a> {
                     },
                 }
             }
-            FeatureKind::Loft { sections } => ExactBRepOperation::Loft {
+            FeatureKind::WeldmentMember(spec) => {
+                let compiled_profile = match self
+                    .snapshot
+                    .feature(spec.profile)
+                    .map(|feature| feature.kind())
+                {
+                    Some(FeatureKind::Sketch(sketch)) => {
+                        let regions = sketch
+                            .solved_regions()
+                            .map_err(|_| ExactBRepGraphError::UnsupportedProfile(spec.profile))?;
+                        let [region] = regions.as_slice() else {
+                            return Err(ExactBRepGraphError::UnsupportedProfile(spec.profile));
+                        };
+                        self.compile_sketch_profile(
+                            spec.profile,
+                            region.id,
+                            FeatureDirection::AlongNormal,
+                        )?
+                        .0
+                    }
+                    _ => self.compile_profile(spec.profile, None, identity_frame())?,
+                };
+                let profile = self.compile_oriented_profile(
+                    compiled_profile,
+                    feature_id,
+                    spec.orientation_degrees,
+                )?;
+                let Some(FeatureKind::SpatialPath { segments }) = self
+                    .snapshot
+                    .feature(spec.path)
+                    .map(|feature| feature.kind())
+                else {
+                    return Err(ExactBRepGraphError::UnsupportedFeature(spec.path));
+                };
+                ExactBRepOperation::SpatialSweep {
+                    profile,
+                    path: spatial_path(spec.path, segments)?,
+                }
+            }
+            FeatureKind::WeldmentJoint(spec) => {
+                let member_line = |member_id: FeatureId| {
+                    let Some(FeatureKind::WeldmentMember(member)) = self
+                        .snapshot
+                        .feature(member_id)
+                        .map(|feature| feature.kind())
+                    else {
+                        return Err(ExactBRepGraphError::UnsupportedFeature(member_id));
+                    };
+                    let Some(FeatureKind::SpatialPath { segments }) = self
+                        .snapshot
+                        .feature(member.path)
+                        .map(|feature| feature.kind())
+                    else {
+                        return Err(ExactBRepGraphError::UnsupportedFeature(member.path));
+                    };
+                    let [SpatialPathSegment::Line { start_mm, end_mm }] = segments.as_slice()
+                    else {
+                        return Err(ExactBRepGraphError::InvalidParameter);
+                    };
+                    Ok((*start_mm, *end_mm))
+                };
+                let (first_start, first_end) = member_line(spec.first_member)?;
+                let (second_start, second_end) = member_line(spec.second_member)?;
+                let distance = |left: [f64; 3], right: [f64; 3]| {
+                    ((left[0] - right[0]).powi(2)
+                        + (left[1] - right[1]).powi(2)
+                        + (left[2] - right[2]).powi(2))
+                    .sqrt()
+                };
+                let endpoint_pairs = [
+                    (first_start, first_end, second_start, second_end),
+                    (first_start, first_end, second_end, second_start),
+                    (first_end, first_start, second_start, second_end),
+                    (first_end, first_start, second_end, second_start),
+                ];
+                let Some((joint, first_far, _, second_far)) =
+                    endpoint_pairs
+                        .into_iter()
+                        .find(|(first_joint, _, second_joint, _)| {
+                            distance(*first_joint, *second_joint) <= SKETCH_SWEEP_FRAME_EPSILON_MM
+                        })
+                else {
+                    return Err(ExactBRepGraphError::InvalidParameter);
+                };
+                let direction = |far: [f64; 3]| {
+                    let length = distance(joint, far);
+                    [
+                        (far[0] - joint[0]) / length,
+                        (far[1] - joint[1]) / length,
+                        (far[2] - joint[2]) / length,
+                    ]
+                };
+                ExactBRepOperation::WeldmentJoint {
+                    first: self.body_id(spec.first_member)?,
+                    second: self.body_id(spec.second_member)?,
+                    joint_point_bits: joint.map(f64::to_bits),
+                    first_direction_bits: direction(first_far).map(f64::to_bits),
+                    second_direction_bits: direction(second_far).map(f64::to_bits),
+                    policy: match spec.policy {
+                        WeldmentJointPolicy::Butt => ExactBRepWeldmentJointPolicy::Butt,
+                        WeldmentJointPolicy::Miter => ExactBRepWeldmentJointPolicy::Miter,
+                    },
+                    primary: match spec.primary {
+                        WeldmentJointPrimary::First => ExactBRepWeldmentJointPrimary::First,
+                        WeldmentJointPrimary::Second => ExactBRepWeldmentJointPrimary::Second,
+                    },
+                }
+            }
+            FeatureKind::Loft {
+                sections,
+                guide,
+                continuity,
+            } => ExactBRepOperation::Loft {
                 sections: self.compile_loft_sections(sections)?,
+                guide: guide
+                    .map(
+                        |guide| match self.snapshot.feature(guide).map(|feature| feature.kind()) {
+                            Some(FeatureKind::SpatialPath { segments }) => {
+                                spatial_path(guide, segments)
+                            }
+                            _ => Err(ExactBRepGraphError::UnsupportedFeature(guide)),
+                        },
+                    )
+                    .transpose()?,
+                continuity: (*continuity).into(),
+            },
+            FeatureKind::SurfaceBody(SurfaceBodySpec::Loft {
+                sections,
+                guide,
+                continuity,
+            }) => ExactBRepOperation::LoftSurface {
+                sections: self.compile_loft_sections(sections)?,
+                guide: guide
+                    .map(
+                        |guide| match self.snapshot.feature(guide).map(|feature| feature.kind()) {
+                            Some(FeatureKind::SpatialPath { segments }) => {
+                                spatial_path(guide, segments)
+                            }
+                            _ => Err(ExactBRepGraphError::UnsupportedFeature(guide)),
+                        },
+                    )
+                    .transpose()?,
+                continuity: (*continuity).into(),
+            },
+            FeatureKind::SheetMetal(spec) => ExactBRepOperation::SheetMetal {
+                width_bits: positive_distance(spec.width.millimetres())?,
+                depth_bits: positive_distance(spec.depth.millimetres())?,
+                thickness_bits: positive_distance(spec.thickness.millimetres())?,
+                k_factor_bits: canonical_bits(spec.k_factor),
+                flanges: spec
+                    .flanges
+                    .iter()
+                    .map(|flange| {
+                        Ok(ExactBRepSheetMetalFlange {
+                            edge: flange.edge.into(),
+                            length_bits: positive_distance(flange.length.millimetres())?,
+                            angle_degrees_bits: canonical_bits(flange.angle_degrees),
+                            inner_radius_bits: positive_distance(
+                                flange.inner_radius.millimetres(),
+                            )?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ExactBRepGraphError>>()?,
             },
             FeatureKind::ImportedExactBody(spec) => ExactBRepOperation::ImportedExact {
                 source_sha256: spec.source_sha256,
@@ -1538,6 +2240,138 @@ impl<'a> GraphCompiler<'a> {
         self.profile_ids.insert(key, id);
         Ok(id)
     }
+
+    fn compile_oriented_profile(
+        &mut self,
+        source: ExactBRepProfileId,
+        member_feature_id: FeatureId,
+        orientation_degrees: f64,
+    ) -> Result<ExactBRepProfileId, ExactBRepGraphError> {
+        if self.profiles.len() >= MAX_EXACT_BREP_GRAPH_PROFILES {
+            return Err(ExactBRepGraphError::ResourceLimit);
+        }
+        let mut profile = self
+            .profiles
+            .get(source.0 as usize)
+            .cloned()
+            .ok_or(ExactBRepGraphError::InvalidParameter)?;
+        let id = ExactBRepProfileId(
+            self.profiles
+                .len()
+                .try_into()
+                .map_err(|_| ExactBRepGraphError::ResourceLimit)?,
+        );
+        profile.id = id;
+        profile.source_feature_id = member_feature_id.0;
+        rotate_planar_geometry(&mut profile.geometry, orientation_degrees)?;
+        self.profiles.push(profile);
+        Ok(id)
+    }
+}
+
+fn rotate_planar_geometry(
+    geometry: &mut ExactBRepPlanarGeometry,
+    orientation_degrees: f64,
+) -> Result<(), ExactBRepGraphError> {
+    if !orientation_degrees.is_finite() || !(-180.0..180.0).contains(&orientation_degrees) {
+        return Err(ExactBRepGraphError::InvalidParameter);
+    }
+    let (sin, cos) = orientation_degrees.to_radians().sin_cos();
+    match geometry {
+        ExactBRepPlanarGeometry::Boundary { segments, .. } => {
+            for segment in segments {
+                rotate_planar_segment(segment, sin, cos)?;
+            }
+        }
+        ExactBRepPlanarGeometry::Circle { center_bits, .. } => {
+            rotate_planar_point(center_bits, sin, cos)?;
+        }
+        ExactBRepPlanarGeometry::Spline { control_point_bits } => {
+            for point in control_point_bits {
+                rotate_planar_point(point, sin, cos)?;
+            }
+        }
+        ExactBRepPlanarGeometry::Region { outer, holes } => {
+            rotate_planar_loop(outer, sin, cos)?;
+            for hole in holes {
+                rotate_planar_loop(hole, sin, cos)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn rotate_planar_loop(
+    profile: &mut ExactBRepPlanarLoop,
+    sin: f64,
+    cos: f64,
+) -> Result<(), ExactBRepGraphError> {
+    match profile {
+        ExactBRepPlanarLoop::Boundary { segments } => {
+            for segment in segments {
+                rotate_planar_segment(segment, sin, cos)?;
+            }
+        }
+        ExactBRepPlanarLoop::Circle { center_bits, .. } => {
+            rotate_planar_point(center_bits, sin, cos)?;
+        }
+    }
+    Ok(())
+}
+
+fn rotate_planar_segment(
+    segment: &mut ExactBRepPlanarSegment,
+    sin: f64,
+    cos: f64,
+) -> Result<(), ExactBRepGraphError> {
+    match segment {
+        ExactBRepPlanarSegment::Line {
+            start_bits,
+            end_bits,
+        } => {
+            rotate_planar_point(start_bits, sin, cos)?;
+            rotate_planar_point(end_bits, sin, cos)?;
+        }
+        ExactBRepPlanarSegment::CircularArc {
+            start_bits,
+            end_bits,
+            center_bits,
+            ..
+        } => {
+            rotate_planar_point(start_bits, sin, cos)?;
+            rotate_planar_point(end_bits, sin, cos)?;
+            rotate_planar_point(center_bits, sin, cos)?;
+        }
+        ExactBRepPlanarSegment::CubicBezier {
+            start_bits,
+            control_1_bits,
+            control_2_bits,
+            end_bits,
+        } => {
+            rotate_planar_point(start_bits, sin, cos)?;
+            rotate_planar_point(control_1_bits, sin, cos)?;
+            rotate_planar_point(control_2_bits, sin, cos)?;
+            rotate_planar_point(end_bits, sin, cos)?;
+        }
+    }
+    Ok(())
+}
+
+fn rotate_planar_point(
+    point_bits: &mut [u64; 2],
+    sin: f64,
+    cos: f64,
+) -> Result<(), ExactBRepGraphError> {
+    let [x, y] = point_bits.map(f64::from_bits);
+    let rotated = [x * cos - y * sin, x * sin + y * cos];
+    if rotated
+        .iter()
+        .any(|value| !value.is_finite() || value.abs() > MAX_ABS_MM)
+    {
+        return Err(ExactBRepGraphError::InvalidParameter);
+    }
+    *point_bits = rotated.map(canonical_bits);
+    Ok(())
 }
 
 fn topology_selectors(
@@ -2012,6 +2846,50 @@ fn operation_bounds(
         } => node_bounds[target.0 as usize]
             .map(|bounds| transform_bounds(bounds, matrix_bits.map(f64::from_bits)))
             .transpose(),
+        ExactBRepOperation::WeldmentJoint { first, second, .. } => Ok(node_bounds
+            [first.0 as usize]
+            .zip(node_bounds[second.0 as usize])
+            .map(|(first, second)| bounds_union(first, second))),
+        ExactBRepOperation::SurfaceTrim { target, cutter } => Ok(node_bounds[target.0 as usize]
+            .zip(node_bounds[cutter.0 as usize])
+            .and_then(|(target, cutter)| bounds_intersection(target, cutter))),
+        ExactBRepOperation::SurfaceExtend {
+            target,
+            distance_bits,
+        } => {
+            let Some(target_bounds) = node_bounds[target.0 as usize] else {
+                return Ok(None);
+            };
+            let distance = f64::from_bits(*distance_bits);
+            let expanded = [
+                [0, 1, 2].map(|axis| target_bounds[0][axis] - distance),
+                [0, 1, 2].map(|axis| target_bounds[1][axis] + distance),
+            ];
+            valid_bounds(expanded)
+                .then_some(Some(expanded))
+                .ok_or(ExactBRepGraphError::ResourceLimit)
+        }
+        ExactBRepOperation::SurfaceKnit { surfaces, .. } => Ok(surfaces
+            .iter()
+            .filter_map(|surface| node_bounds[surface.0 as usize])
+            .reduce(bounds_union)),
+        ExactBRepOperation::SurfaceThicken {
+            target,
+            thickness_bits,
+            ..
+        } => {
+            let Some(target_bounds) = node_bounds[target.0 as usize] else {
+                return Ok(None);
+            };
+            let thickness = f64::from_bits(*thickness_bits);
+            let expanded = [
+                [0, 1, 2].map(|axis| target_bounds[0][axis] - thickness),
+                [0, 1, 2].map(|axis| target_bounds[1][axis] + thickness),
+            ];
+            valid_bounds(expanded)
+                .then_some(Some(expanded))
+                .ok_or(ExactBRepGraphError::ResourceLimit)
+        }
         ExactBRepOperation::Boolean {
             operation,
             target,
@@ -2040,6 +2918,9 @@ fn operation_bounds(
             f64::from_bits(*distance_bits),
         )
         .map(Some),
+        ExactBRepOperation::PlanarSurface { profile } => {
+            planar_surface_bounds(&profiles[profile.0 as usize]).map(Some)
+        }
         ExactBRepOperation::Sweep { profile, path } => sweep_profile_bounds(
             &profiles[profile.0 as usize],
             &profiles[path.0 as usize],
@@ -2066,7 +2947,35 @@ fn operation_bounds(
             axis_end_bits.map(f64::from_bits),
         )
         .map(Some),
-        ExactBRepOperation::Loft { sections } => loft_bounds(sections, profiles).map(Some),
+        ExactBRepOperation::Loft { sections, .. }
+        | ExactBRepOperation::LoftSurface { sections, .. } => {
+            loft_bounds(sections, profiles).map(Some)
+        }
+        ExactBRepOperation::SheetMetal {
+            width_bits,
+            depth_bits,
+            thickness_bits,
+            flanges,
+            ..
+        } => {
+            let width = f64::from_bits(*width_bits);
+            let depth = f64::from_bits(*depth_bits);
+            let thickness = f64::from_bits(*thickness_bits);
+            let reach = flanges.iter().fold(0.0_f64, |reach, flange| {
+                reach.max(
+                    f64::from_bits(flange.length_bits)
+                        + f64::from_bits(flange.inner_radius_bits)
+                        + thickness,
+                )
+            });
+            let bounds = [
+                [-reach, -reach, -reach],
+                [width + reach, depth + reach, thickness + reach],
+            ];
+            valid_bounds(bounds)
+                .then_some(Some(bounds))
+                .ok_or(ExactBRepGraphError::ResourceLimit)
+        }
         ExactBRepOperation::ImportedExact { .. } => Ok(None),
     }
 }
@@ -2118,6 +3027,25 @@ fn revolve_profile_bounds(
         }),
     ];
     valid_bounds(bounds)
+        .then_some(bounds)
+        .ok_or(ExactBRepGraphError::InvalidParameter)
+}
+
+fn planar_surface_bounds(profile: &ExactBRepProfile) -> Result<[[f64; 3]; 2], ExactBRepGraphError> {
+    let planar = planar_geometry_bounds(&profile.geometry)?;
+    let frame = profile.frame_bits.map(f64::from_bits);
+    let mut bounds = [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]];
+    for x in [planar[0][0], planar[1][0]] {
+        for y in [planar[0][1], planar[1][1]] {
+            let point =
+                [0, 1, 2].map(|axis| frame[axis] + frame[3 + axis] * x + frame[6 + axis] * y);
+            for axis in 0..3 {
+                bounds[0][axis] = bounds[0][axis].min(point[axis]);
+                bounds[1][axis] = bounds[1][axis].max(point[axis]);
+            }
+        }
+    }
+    valid_surface_bounds(bounds)
         .then_some(bounds)
         .ok_or(ExactBRepGraphError::InvalidParameter)
 }
@@ -3082,6 +4010,18 @@ fn valid_bounds(bounds: [[f64; 3]; 2]) -> bool {
         && (0..3).all(|axis| bounds[0][axis] < bounds[1][axis])
 }
 
+fn valid_surface_bounds(bounds: [[f64; 3]; 2]) -> bool {
+    bounds
+        .iter()
+        .flatten()
+        .all(|value| value.is_finite() && value.abs() <= MAX_ABS_MM)
+        && (0..3).all(|axis| bounds[0][axis] <= bounds[1][axis])
+        && (0..3)
+            .filter(|axis| bounds[0][*axis] < bounds[1][*axis])
+            .count()
+            >= 2
+}
+
 fn canonical_bits(value: f64) -> u64 {
     if value == 0.0 {
         0.0_f64.to_bits()
@@ -3386,9 +4326,95 @@ fn operation_requires_v13(operation: &ExactBRepOperation) -> bool {
     matches!(operation, ExactBRepOperation::SketchSweep { .. })
 }
 
+fn operation_requires_v15(operation: &ExactBRepOperation) -> bool {
+    matches!(
+        operation,
+        ExactBRepOperation::Loft { guide: Some(_), .. }
+            | ExactBRepOperation::LoftSurface { guide: Some(_), .. }
+            | ExactBRepOperation::Loft {
+                continuity: ExactBRepLoftContinuity::Tangent | ExactBRepLoftContinuity::Curvature,
+                ..
+            }
+            | ExactBRepOperation::LoftSurface {
+                continuity: ExactBRepLoftContinuity::Tangent | ExactBRepLoftContinuity::Curvature,
+                ..
+            }
+    )
+}
+
+fn operation_requires_v23(operation: &ExactBRepOperation) -> bool {
+    matches!(operation, ExactBRepOperation::SurfaceThicken { .. })
+}
+
+fn operation_requires_v22(operation: &ExactBRepOperation) -> bool {
+    matches!(operation, ExactBRepOperation::SurfaceKnit { .. })
+}
+
+fn operation_requires_v21(operation: &ExactBRepOperation) -> bool {
+    matches!(
+        operation,
+        ExactBRepOperation::SurfaceTrim { .. } | ExactBRepOperation::SurfaceExtend { .. }
+    )
+}
+
+fn operation_requires_v20(operation: &ExactBRepOperation) -> bool {
+    matches!(
+        operation,
+        ExactBRepOperation::PlanarSurface { .. } | ExactBRepOperation::LoftSurface { .. }
+    )
+}
+
+fn operation_requires_v19(operation: &ExactBRepOperation) -> bool {
+    matches!(
+        operation,
+        ExactBRepOperation::SheetMetal { .. } | ExactBRepOperation::WeldmentJoint { .. }
+    )
+}
+
+fn operation_requires_v18(operation: &ExactBRepOperation) -> bool {
+    matches!(
+        operation,
+        ExactBRepOperation::EdgeFinish {
+            chamfer_mode: ExactBRepChamferMode::TwoDistance { .. }
+                | ExactBRepChamferMode::DistanceAngle { .. },
+            ..
+        }
+    )
+}
+
+fn operation_requires_v17(operation: &ExactBRepOperation) -> bool {
+    matches!(
+        operation,
+        ExactBRepOperation::EdgeFinish {
+            fillet_radius_stations,
+            ..
+        } if !fillet_radius_stations.is_empty()
+    )
+}
+
+fn operation_requires_v16(operation: &ExactBRepOperation) -> bool {
+    matches!(
+        operation,
+        ExactBRepOperation::Shell {
+            removed_faces,
+            direction: ExactBRepShellDirection::Outward | ExactBRepShellDirection::Symmetric,
+            ..
+        } if removed_faces.len() <= MAX_EXACT_BREP_TOPOLOGY_SELECTORS
+    ) || matches!(
+        operation,
+        ExactBRepOperation::Shell {
+            removed_faces,
+            direction: ExactBRepShellDirection::Inward,
+            ..
+        } if removed_faces.is_empty()
+    )
+}
+
 fn operation_requires_v14(operation: &ExactBRepOperation, profiles: &[ExactBRepProfile]) -> bool {
-    let ExactBRepOperation::Loft { sections } = operation else {
-        return false;
+    let sections = match operation {
+        ExactBRepOperation::Loft { sections, .. }
+        | ExactBRepOperation::LoftSurface { sections, .. } => sections,
+        _ => return false,
     };
     let mut has_spline = false;
     let mut has_planar = false;
@@ -3400,35 +4426,61 @@ fn operation_requires_v14(operation: &ExactBRepOperation, profiles: &[ExactBRepP
                     ExactBRepPlanarGeometry::Spline { .. } => has_spline = true,
                     _ => has_planar = true,
                 }
-                profile.frame_bits != identity_frame()
+                matches!(profile.geometry, ExactBRepPlanarGeometry::Region { .. })
+                    || profile.frame_bits != identity_frame()
             })
     }) || (has_spline && has_planar)
 }
 
 fn valid_operation_profiles(operation: &ExactBRepOperation, profiles: &[ExactBRepProfile]) -> bool {
     match operation {
-        ExactBRepOperation::Loft { sections } => sections.iter().all(|section| {
-            profiles
-                .get(section.profile.0 as usize)
-                .is_some_and(|profile| match &profile.geometry {
-                    ExactBRepPlanarGeometry::Spline { control_point_bits } => {
-                        (4..=MAX_EXACT_BREP_LOFT_CONTROL_POINTS)
-                            .contains(&control_point_bits.len())
-                    }
-                    ExactBRepPlanarGeometry::Boundary {
-                        closed: true,
-                        segments,
-                    } => (2..=MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS).contains(&segments.len()),
-                    ExactBRepPlanarGeometry::Circle { .. } => true,
-                    _ => false,
-                })
-        }),
+        ExactBRepOperation::Loft { sections, .. }
+        | ExactBRepOperation::LoftSurface { sections, .. } => {
+            let mut hole_count = None;
+            sections.iter().all(|section| {
+                profiles
+                    .get(section.profile.0 as usize)
+                    .is_some_and(|profile| {
+                        let current_hole_count = match &profile.geometry {
+                            ExactBRepPlanarGeometry::Spline { control_point_bits }
+                                if (4..=MAX_EXACT_BREP_LOFT_CONTROL_POINTS)
+                                    .contains(&control_point_bits.len()) => 0,
+                            ExactBRepPlanarGeometry::Boundary {
+                                closed: true,
+                                segments,
+                            } if (2..=MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS)
+                                .contains(&segments.len()) => 0,
+                            ExactBRepPlanarGeometry::Circle { .. } => 0,
+                            ExactBRepPlanarGeometry::Region { holes, .. } => holes.len(),
+                            _ => return false,
+                        };
+                        match hole_count {
+                            Some(expected) => expected == current_hole_count,
+                            None => {
+                                hole_count = Some(current_hole_count);
+                                true
+                            }
+                        }
+                    })
+            })
+        }
         ExactBRepOperation::PlanarOffset {
             profile,
             distance_bits,
         } => profiles.get(profile.0 as usize).is_some_and(|profile| {
             planar_offset_profile_bounds(profile, f64::from_bits(*distance_bits)).is_ok()
         }),
+        ExactBRepOperation::PlanarSurface { profile } => profiles.get(profile.0 as usize).is_some_and(
+            |profile| {
+                let supported = match &profile.geometry {
+                    ExactBRepPlanarGeometry::Boundary { closed: true, .. }
+                    | ExactBRepPlanarGeometry::Circle { .. } => true,
+                    ExactBRepPlanarGeometry::Region { holes, .. } => holes.is_empty(),
+                    _ => false,
+                };
+                supported && planar_surface_bounds(profile).is_ok()
+            },
+        ),
         ExactBRepOperation::Sweep { profile, path } => {
             profile != path
                 && matches!(
@@ -3497,6 +4549,21 @@ fn valid_operation(
         let value = f64::from_bits(bits);
         value.is_finite() && value.abs() > MIN_LENGTH_MM && value.abs() <= MAX_ABS_MM
     };
+    let is_surface_node = |id: ExactBRepNodeId| {
+        prior_nodes.get(id.0 as usize).is_some_and(|node| {
+            matches!(
+                node.operation,
+                ExactBRepOperation::PlanarSurface { .. }
+                    | ExactBRepOperation::LoftSurface { .. }
+                    | ExactBRepOperation::SurfaceTrim { .. }
+                    | ExactBRepOperation::SurfaceExtend { .. }
+                    | ExactBRepOperation::SurfaceKnit {
+                        make_solid: false,
+                        ..
+                    }
+            )
+        })
+    };
     match operation {
         ExactBRepOperation::Extrude {
             distance_bits,
@@ -3521,6 +4588,62 @@ fn valid_operation(
                     .is_none_or(|digest| !digest.is_empty() && digest.len() <= 256)
         }
         ExactBRepOperation::Boolean { target, tool, .. } => target != tool,
+        ExactBRepOperation::SurfaceTrim { target, cutter } => {
+            target != cutter && is_surface_node(*target) && is_surface_node(*cutter)
+        }
+        ExactBRepOperation::SurfaceExtend {
+            target,
+            distance_bits,
+        } => positive(*distance_bits) && is_surface_node(*target),
+        ExactBRepOperation::SurfaceKnit {
+            surfaces,
+            tolerance_bits,
+            ..
+        } => {
+            let tolerance = f64::from_bits(*tolerance_bits);
+            (2..=256).contains(&surfaces.len())
+                && surfaces.windows(2).all(|pair| pair[0] < pair[1])
+                && surfaces.iter().copied().all(is_surface_node)
+                && tolerance.is_finite()
+                && (1.0e-7..=10.0).contains(&tolerance)
+        }
+        ExactBRepOperation::SurfaceThicken {
+            target,
+            thickness_bits,
+            ..
+        } => positive(*thickness_bits) && is_surface_node(*target),
+        ExactBRepOperation::WeldmentJoint {
+            first,
+            second,
+            joint_point_bits,
+            first_direction_bits,
+            second_direction_bits,
+            ..
+        } => {
+            let point = joint_point_bits.map(f64::from_bits);
+            let first_direction = first_direction_bits.map(f64::from_bits);
+            let second_direction = second_direction_bits.map(f64::from_bits);
+            let length_squared = |direction: [f64; 3]| {
+                direction[0] * direction[0]
+                    + direction[1] * direction[1]
+                    + direction[2] * direction[2]
+            };
+            let direction_dot = first_direction[0] * second_direction[0]
+                + first_direction[1] * second_direction[1]
+                + first_direction[2] * second_direction[2];
+            first != second
+                && point
+                    .into_iter()
+                    .all(|value| value.is_finite() && value.abs() <= MAX_ABS_MM)
+                && first_direction
+                    .into_iter()
+                    .chain(second_direction)
+                    .all(|value| value.is_finite() && value.abs() <= 1.0)
+                && (length_squared(first_direction) - 1.0).abs() <= 1.0e-9
+                && (length_squared(second_direction) - 1.0).abs() <= 1.0e-9
+                && direction_dot.is_finite()
+                && direction_dot.abs() <= 0.996_194_698_091_745_5
+        }
         ExactBRepOperation::RigidTransform { matrix_bits, .. } => {
             let matrix = matrix_bits.map(f64::from_bits);
             Transform::from_matrix(matrix)
@@ -3535,24 +4658,94 @@ fn valid_operation(
             target,
             removed_faces,
             thickness_bits,
+            ..
         } => {
             positive(*thickness_bits)
-                && valid_topology_selectors(
-                    removed_faces,
-                    ExactBRepTopologyKind::Face,
-                    document_id,
-                    definition_id,
-                    *target,
-                    prior_nodes,
-                )
+                && ((removed_faces.is_empty() && prior_nodes.get(target.0 as usize).is_some())
+                    || valid_topology_selectors(
+                        removed_faces,
+                        ExactBRepTopologyKind::Face,
+                        document_id,
+                        definition_id,
+                        *target,
+                        prior_nodes,
+                    ))
         }
         ExactBRepOperation::EdgeFinish {
             target,
             edges,
+            kind,
             amount_bits,
-            ..
+            fillet_radius_stations,
+            chamfer_mode,
+            chamfer_edge_sides,
         } => {
+            let mut previous_position = 0.0;
+            let valid_stations = fillet_radius_stations.is_empty()
+                || (*kind == ExactBRepEdgeFinishKind::Fillet
+                    && fillet_radius_stations.len() <= 32
+                    && fillet_radius_stations
+                        .last()
+                        .is_some_and(|station| f64::from_bits(station.position_bits) == 1.0)
+                    && fillet_radius_stations.iter().all(|station| {
+                        let position = f64::from_bits(station.position_bits);
+                        let valid = position.is_finite()
+                            && position > previous_position
+                            && position <= 1.0
+                            && positive(station.radius_bits);
+                        previous_position = position;
+                        valid
+                    }));
+            let valid_chamfer_mode = match chamfer_mode {
+                ExactBRepChamferMode::Symmetric => chamfer_edge_sides.is_empty(),
+                ExactBRepChamferMode::TwoDistance {
+                    second_distance_bits,
+                } => {
+                    *kind == ExactBRepEdgeFinishKind::Chamfer
+                        && positive(*second_distance_bits)
+                        && !chamfer_edge_sides.is_empty()
+                }
+                ExactBRepChamferMode::DistanceAngle { angle_degrees_bits } => {
+                    let angle = f64::from_bits(*angle_degrees_bits);
+                    *kind == ExactBRepEdgeFinishKind::Chamfer
+                        && angle.is_finite()
+                        && angle > 0.1
+                        && angle < 89.9
+                        && !chamfer_edge_sides.is_empty()
+                }
+            };
+            let valid_edge_sides = chamfer_edge_sides.len() <= MAX_EXACT_BREP_TOPOLOGY_SELECTORS
+                && chamfer_edge_sides.iter().all(|selection| {
+                    valid_topology_selectors(
+                        std::slice::from_ref(&selection.edge),
+                        ExactBRepTopologyKind::Edge,
+                        document_id,
+                        definition_id,
+                        *target,
+                        prior_nodes,
+                    ) && valid_topology_selectors(
+                        std::slice::from_ref(&selection.side_face),
+                        ExactBRepTopologyKind::Face,
+                        document_id,
+                        definition_id,
+                        *target,
+                        prior_nodes,
+                    )
+                });
+            let paired_edges_match = chamfer_edge_sides.is_empty()
+                || (edges.len() == chamfer_edge_sides.len()
+                    && edges
+                        .iter()
+                        .zip(chamfer_edge_sides)
+                        .all(|(edge, selection)| edge == &selection.edge));
             positive(*amount_bits)
+                && valid_stations
+                && (*kind == ExactBRepEdgeFinishKind::Fillet || fillet_radius_stations.is_empty())
+                && (*kind == ExactBRepEdgeFinishKind::Chamfer
+                    || matches!(chamfer_mode, ExactBRepChamferMode::Symmetric))
+                && valid_chamfer_mode
+                && valid_edge_sides
+                && paired_edges_match
                 && valid_topology_selectors(
                     edges,
                     ExactBRepTopologyKind::Edge,
@@ -3598,11 +4791,23 @@ fn valid_operation(
         ExactBRepOperation::PlanarOffset { distance_bits, .. } => {
             planar_offset_distance(f64::from_bits(*distance_bits)).is_ok()
         }
+        ExactBRepOperation::PlanarSurface { .. } => true,
         ExactBRepOperation::Sweep { profile, path }
         | ExactBRepOperation::SketchSweep { profile, path } => profile != path,
         ExactBRepOperation::SpatialSweep { path, .. } => valid_spatial_path(path),
-        ExactBRepOperation::Loft { sections } => {
-            (2..=MAX_EXACT_BREP_LOFT_SECTIONS).contains(&sections.len())
+        ExactBRepOperation::Loft {
+            sections,
+            guide,
+            continuity,
+        }
+        | ExactBRepOperation::LoftSurface {
+            sections,
+            guide,
+            continuity,
+        } => {
+            guide.as_ref().is_none_or(valid_spatial_path)
+                && !(guide.is_some() && *continuity == ExactBRepLoftContinuity::Curvature)
+                && (2..=MAX_EXACT_BREP_LOFT_SECTIONS).contains(&sections.len())
                 && sections.windows(2).all(|pair| {
                     let lower = f64::from_bits(pair[0].elevation_bits);
                     let upper = f64::from_bits(pair[1].elevation_bits);
@@ -3612,6 +4817,42 @@ fn valid_operation(
                         && upper.abs() <= MAX_ABS_MM
                         && lower < upper
                         && pair[0].profile != pair[1].profile
+                })
+        }
+        ExactBRepOperation::SheetMetal {
+            width_bits,
+            depth_bits,
+            thickness_bits,
+            k_factor_bits,
+            flanges,
+        } => {
+            let width = f64::from_bits(*width_bits);
+            let depth = f64::from_bits(*depth_bits);
+            let thickness = f64::from_bits(*thickness_bits);
+            let k_factor = f64::from_bits(*k_factor_bits);
+            let edge_rank = |edge| match edge {
+                ExactBRepSheetMetalEdge::MinX => 0,
+                ExactBRepSheetMetalEdge::MaxX => 1,
+                ExactBRepSheetMetalEdge::MinY => 2,
+                ExactBRepSheetMetalEdge::MaxY => 3,
+            };
+            positive(*width_bits)
+                && positive(*depth_bits)
+                && positive(*thickness_bits)
+                && thickness < width.min(depth)
+                && k_factor.is_finite()
+                && (0.0..=1.0).contains(&k_factor)
+                && flanges.len() <= 4
+                && flanges
+                    .windows(2)
+                    .all(|pair| edge_rank(pair[0].edge) < edge_rank(pair[1].edge))
+                && flanges.iter().all(|flange| {
+                    let angle = f64::from_bits(flange.angle_degrees_bits);
+                    positive(flange.length_bits)
+                        && positive(flange.inner_radius_bits)
+                        && angle.is_finite()
+                        && (0.1..=179.9).contains(&angle.abs())
+                        && f64::from_bits(flange.inner_radius_bits) + thickness <= MAX_ABS_MM
                 })
         }
         ExactBRepOperation::ImportedExact {
@@ -3717,6 +4958,8 @@ mod tests {
                     elevation_bits: (index as f64).to_bits(),
                 })
                 .collect(),
+            guide: None,
+            continuity: ExactBRepLoftContinuity::Position,
         }
     }
 
@@ -3810,6 +5053,8 @@ mod tests {
                     elevation_bits: 10.0_f64.to_bits(),
                 },
             ],
+            guide: None,
+            continuity: ExactBRepLoftContinuity::Position,
         };
         let profiles = vec![
             profile(0, MAX_EXACT_BREP_LOFT_CONTROL_POINTS),

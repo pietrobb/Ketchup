@@ -2,7 +2,7 @@ use super::*;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
 use ketchup_core::assistant_sidecar::AssistantCadLoftSection;
-use ketchup_core::document::{ProposalGoal, SpatialPathSegment};
+use ketchup_core::document::{InstancePathStep, ProposalGoal, SpatialPathSegment};
 use ketchup_core::exact_brep_graph::EXACT_BREP_GRAPH_SCHEMA_V12;
 use ketchup_core::graph::{EvaluatorNodeKind, PortSpec};
 #[path = "planning_topology_tests.rs"]
@@ -694,6 +694,8 @@ fn cad_edit_append_loft_is_host_id_assigned_exact_and_one_step() {
                         elevation_mm: 35.0,
                     },
                 ],
+                guide_feature_id: None,
+                continuity: AssistantCadLoftContinuity::Position,
             },
         }],
     };
@@ -704,7 +706,7 @@ fn cad_edit_append_loft_is_host_id_assigned_exact_and_one_step() {
         [CanonicalCommand::CreateFeature {
             id: FeatureId(5),
             definition_id: INITIAL_BOX_DEFINITION,
-            kind: FeatureKind::Loft { sections },
+            kind: FeatureKind::Loft { sections, .. },
             ..
         }] if sections == &vec![
             LoftSection { profile: FeatureId(3), elevation_mm: 0.0 },
@@ -783,6 +785,7 @@ fn cad_edit_append_topology_shell_uses_host_face_reference_and_one_step() {
                 target_feature_id: 2,
                 removed_face_reference_ids: requested_reference_ids,
                 thickness_mm: 2.0,
+                direction: ketchup_core::assistant_sidecar::AssistantCadShellDirection::Inward,
             },
         }],
     };
@@ -797,6 +800,7 @@ fn cad_edit_append_topology_shell_uses_host_face_reference_and_one_step() {
                 target: FeatureId(2),
                 removed_faces,
                 thickness,
+                direction: ketchup_core::document::ShellDirection::Inward,
             },
             ..
         }] if removed_faces.len() == 2
@@ -877,6 +881,7 @@ fn cad_edit_fillet_edges_uses_host_references_and_one_step() {
                 edges,
                 kind: EdgeFinishKind::Fillet,
                 amount,
+                ..
             },
             ..
         }] if edges.len() == 2
@@ -957,6 +962,7 @@ fn cad_edit_chamfer_edges_uses_host_references_and_one_step() {
                 edges,
                 kind: EdgeFinishKind::Chamfer,
                 amount,
+                ..
             },
             ..
         }] if edges.len() == 2
@@ -1009,6 +1015,7 @@ fn cad_edit_append_topology_shell_rejects_unpublished_reference_without_mutation
                 target_feature_id: 2,
                 removed_face_reference_ids: vec!["f".repeat(64)],
                 thickness_mm: 2.0,
+                direction: ketchup_core::assistant_sidecar::AssistantCadShellDirection::Inward,
             },
         }],
     };
@@ -1035,6 +1042,7 @@ fn cad_edit_append_topology_fillet_rejects_unpublished_reference_without_mutatio
                 target_feature_id: 2,
                 edge_reference_ids: vec!["f".repeat(64)],
                 radius_mm: 2.0,
+                radius_stations: Vec::new(),
             },
         }],
     };
@@ -1061,6 +1069,8 @@ fn cad_edit_append_topology_chamfer_rejects_unpublished_reference_without_mutati
                 target_feature_id: 2,
                 edge_reference_ids: vec!["f".repeat(64)],
                 distance_mm: 2.0,
+                mode: Default::default(),
+                side_face_reference_ids: Vec::new(),
             },
         }],
     };
@@ -1431,6 +1441,8 @@ fn cad_edit_append_loft_rejects_unsupported_inputs_without_mutation() {
                         elevation_mm: 35.0,
                     },
                 ],
+                guide_feature_id: None,
+                continuity: AssistantCadLoftContinuity::Position,
             },
         }],
     };
@@ -2383,6 +2395,368 @@ fn blender_glb_file_command_exports_current_scene_with_loss_report() {
 }
 
 #[test]
+fn sheet_metal_manufacturing_export_requires_release_and_bound_overwrite_consent() {
+    use ketchup_core::sheet_metal::{SheetMetalEdge, SheetMetalFlange, SheetMetalSpec};
+
+    let directory = tempfile::tempdir().unwrap();
+    let flat_pattern = directory.path().join("bracket.dxf");
+    let bend_table = flat_pattern.with_extension("bends.csv");
+    let dialogs = dialogs::ScriptedFileDialogs::new()
+        .queue_export(&flat_pattern)
+        .queue_export(&flat_pattern)
+        .queue_export(&flat_pattern)
+        .queue_refused_high_risk()
+        .queue_high_risk_approval(301)
+        .queue_high_risk_approval(302)
+        .queue_high_risk_approval(303)
+        .queue_high_risk_approval(304);
+    let script = dialogs.clone();
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    let feature_id = FeatureId(80);
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(80),
+                name: "Sheet metal bracket".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: feature_id,
+                definition_id: DefinitionId(80),
+                name: "Opposite flanges".into(),
+                kind: FeatureKind::SheetMetal(SheetMetalSpec {
+                    width: Dimension::from_decimal("100").unwrap(),
+                    depth: Dimension::from_decimal("50").unwrap(),
+                    thickness: Dimension::from_decimal("2").unwrap(),
+                    k_factor: 0.4,
+                    flanges: vec![
+                        SheetMetalFlange {
+                            edge: SheetMetalEdge::MinX,
+                            length: Dimension::from_decimal("20").unwrap(),
+                            angle_degrees: 90.0,
+                            inner_radius: Dimension::from_decimal("3").unwrap(),
+                        },
+                        SheetMetalFlange {
+                            edge: SheetMetalEdge::MaxX,
+                            length: Dimension::from_decimal("30").unwrap(),
+                            angle_degrees: -45.0,
+                            inner_radius: Dimension::from_decimal("3").unwrap(),
+                        },
+                    ],
+                }),
+            },
+        ]))
+        .unwrap();
+    let revision = app.document.current().revision_id();
+    let digest = app.document.current().canonical_digest();
+    let undo_steps = app.undo_step_count();
+    let mut harness = Harness::builder()
+        .with_size(Vec2::new(1600.0, 1000.0))
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+    harness.run();
+    let file_menu = harness.state().catalog.text("menu-file");
+    let export = harness
+        .state()
+        .command_label(AppCommand::ExportSheetMetalManufacturing);
+
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, &file_menu)
+        .click();
+    harness.run();
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, &export)
+        .click();
+    harness.run();
+    assert!(!flat_pattern.exists());
+    assert!(!bend_table.exists());
+    assert!(harness.state().side_effect_receipts.is_empty());
+
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, &file_menu)
+        .click();
+    harness.run();
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, &export)
+        .click();
+    harness.run();
+    let initial_dxf = std::fs::read(&flat_pattern).unwrap();
+    let initial_bends = std::fs::read(&bend_table).unwrap();
+    assert!(
+        String::from_utf8_lossy(&initial_dxf).contains("ketchup.sheet-metal-flat-pattern-dxf.v1")
+    );
+    assert!(
+        String::from_utf8_lossy(&initial_bends).contains("ketchup.sheet-metal-bend-table-csv.v1")
+    );
+    assert_eq!(harness.state().side_effect_receipts.len(), 1);
+    assert_eq!(
+        harness.state().side_effect_receipts[0].operation(),
+        "release-sheet-metal-flat-pattern-and-bend-table"
+    );
+
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, &file_menu)
+        .click();
+    harness.run();
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, &export)
+        .click();
+    harness.run();
+    assert_eq!(std::fs::read(&flat_pattern).unwrap(), initial_dxf);
+    assert_eq!(std::fs::read(&bend_table).unwrap(), initial_bends);
+    assert_eq!(harness.state().side_effect_receipts.len(), 3);
+    assert_eq!(
+        harness.state().side_effect_receipts[1].scope().class(),
+        HighRiskClass::Overwrite
+    );
+    assert_eq!(
+        harness.state().side_effect_receipts[2].scope().class(),
+        HighRiskClass::Overwrite
+    );
+    assert_eq!(script.high_risk_prompts().len(), 5);
+    assert_eq!(harness.state().document.current().revision_id(), revision);
+    assert_eq!(
+        harness.state().document.current().canonical_digest(),
+        digest
+    );
+    assert_eq!(harness.state().undo_step_count(), undo_steps);
+}
+
+#[test]
+fn general_fabrication_file_command_exports_one_authoritative_mixed_nested_package() {
+    let build_app = |dialogs: dialogs::ScriptedFileDialogs| {
+        let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateOccurrence {
+                    id: OccurrenceId(2),
+                    definition_id: INITIAL_BOX_DEFINITION,
+                    name: "Second leaf".to_owned(),
+                    transform: Transform::from_translation(120.0, 0.0, 0.0).unwrap(),
+                    parent: None,
+                    tag: None,
+                    visible: true,
+                },
+                CanonicalCommand::CreateGroup {
+                    id: GroupId(100),
+                    name: "Two-part subassembly".to_owned(),
+                    transform: Transform::identity(),
+                    parent: None,
+                },
+                CanonicalCommand::SetOccurrenceParent {
+                    id: OccurrenceId(1),
+                    parent: Some(GroupId(100)),
+                },
+                CanonicalCommand::SetOccurrenceParent {
+                    id: OccurrenceId(2),
+                    parent: Some(GroupId(100)),
+                },
+            ]))
+            .unwrap();
+        let assembly = app
+            .document
+            .convert_group_to_component(GroupId(100), "Reusable two-part subassembly")
+            .unwrap();
+        let assembly_copy = OccurrenceId(assembly.component_occurrence_id.0 + 1);
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateOccurrence {
+                    id: assembly_copy,
+                    definition_id: assembly.component_definition_id,
+                    name: "Purchased subassembly copy".to_owned(),
+                    transform: Transform::from_translation(300.0, 0.0, 0.0).unwrap(),
+                    parent: None,
+                    tag: None,
+                    visible: true,
+                },
+                CanonicalCommand::UpsertClassificationDimension {
+                    id: ClassificationDimensionId(200),
+                    name: ketchup_core::fabrication::FABRICATION_ROLE_DIMENSION_V1.to_owned(),
+                    categories: vec![
+                        (
+                            ClassificationCategoryId(201),
+                            ketchup_core::fabrication::MANUFACTURED_ITEM_ROLE_V1.to_owned(),
+                        ),
+                        (
+                            ClassificationCategoryId(202),
+                            ketchup_core::fabrication::PURCHASED_ITEM_ROLE_V1.to_owned(),
+                        ),
+                    ],
+                },
+                CanonicalCommand::UpsertClassificationDimension {
+                    id: ClassificationDimensionId(210),
+                    name: ketchup_core::fabrication::MATERIAL_DIMENSION_V1.to_owned(),
+                    categories: vec![
+                        (
+                            ClassificationCategoryId(211),
+                            "ketchup.material.steel.s355.v1".to_owned(),
+                        ),
+                        (
+                            ClassificationCategoryId(212),
+                            "ketchup.material.bearing.6202.v1".to_owned(),
+                        ),
+                    ],
+                },
+                CanonicalCommand::SetOccurrenceClassification {
+                    occurrence_id: assembly.component_occurrence_id,
+                    dimension_id: ClassificationDimensionId(200),
+                    category_id: Some(ClassificationCategoryId(201)),
+                },
+                CanonicalCommand::SetOccurrenceClassification {
+                    occurrence_id: assembly.component_occurrence_id,
+                    dimension_id: ClassificationDimensionId(210),
+                    category_id: Some(ClassificationCategoryId(211)),
+                },
+            ]))
+            .unwrap();
+        let cad_edit_program = AssistantCadEditProgram {
+            operations: vec![
+                AssistantCadEditOperation::SetOccurrenceClassification {
+                    selector: AssistantCadEntitySelector::Occurrences {
+                        occurrence_ids: vec![assembly_copy.0],
+                    },
+                    dimension_id: 200,
+                    category_id: Some(202),
+                },
+                AssistantCadEditOperation::SetOccurrenceClassification {
+                    selector: AssistantCadEntitySelector::Occurrences {
+                        occurrence_ids: vec![assembly_copy.0],
+                    },
+                    dimension_id: 210,
+                    category_id: Some(212),
+                },
+            ],
+        };
+        app.assistant_pending_execution = Some(AssistantPendingExecution {
+            cad_edit_program: Some(cad_edit_program),
+            result: AssistantChatResult {
+                message: "Classified the purchased subassembly for review.".to_owned(),
+                model_intent: None,
+            },
+            message: "Classify the second subassembly as purchased bearing stock.".to_owned(),
+            replan_attempted: false,
+            document_id: app.document.current().document_id(),
+            revision_id: app.document.current().revision_id(),
+            canonical_digest: app.document.current().canonical_digest(),
+            source: "test assistant transport".to_owned(),
+        });
+        app.poll_assistant_chat(&egui::Context::default());
+        assert!(app.assistant_proposal.is_some());
+        assert!(app.confirm_assistant_proposal());
+        install_initial_graph_result(&mut app);
+        app
+    };
+
+    let refused_directory = tempfile::tempdir().unwrap();
+    let refused_path = refused_directory.path().join("mixed.csv");
+    let refused_dialogs = dialogs::ScriptedFileDialogs::new().queue_export(&refused_path);
+    let mut refused = Harness::builder()
+        .with_size(Vec2::new(1600.0, 1000.0))
+        .build_state(
+            |context, app: &mut KetchupApp| app.ui(context),
+            build_app(refused_dialogs),
+        );
+    refused.run();
+    let file_menu = refused.state().catalog.text("menu-file");
+    let export = refused
+        .state()
+        .command_label(AppCommand::ExportGeneralFabrication);
+    refused
+        .get_by_role_and_label(egui::accesskit::Role::Button, &file_menu)
+        .click();
+    refused.run();
+    refused
+        .get_by_role_and_label(egui::accesskit::Role::Button, &export)
+        .click();
+    refused.run();
+    assert!(!refused_path.exists());
+    assert!(!refused_path.with_extension("drawings.svg").exists());
+    assert!(refused.state().side_effect_receipts.is_empty());
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("mixed.csv");
+    let dialogs = dialogs::ScriptedFileDialogs::new()
+        .queue_export(&path)
+        .always_confirm_high_risk_as(85);
+    let script = dialogs.clone();
+    let app = build_app(dialogs);
+    let revision = app.document.current().revision_id();
+    let digest = app.document.current().canonical_digest();
+    let mut harness = Harness::builder()
+        .with_size(Vec2::new(1600.0, 1000.0))
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+    harness.run();
+    let file_menu = harness.state().catalog.text("menu-file");
+    let export = harness
+        .state()
+        .command_label(AppCommand::ExportGeneralFabrication);
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, &file_menu)
+        .click();
+    harness.run();
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, &export)
+        .click();
+    harness.run();
+
+    assert_eq!(harness.state().document.current().revision_id(), revision);
+    assert_eq!(
+        harness.state().document.current().canonical_digest(),
+        digest
+    );
+    assert!(path.exists(), "{}", harness.state().digest);
+    let bom = std::fs::read_to_string(&path).unwrap();
+    let drawings = std::fs::read_to_string(path.with_extension("drawings.svg")).unwrap();
+    assert!(bom.contains("ketchup.general-bom-export.v2"));
+    assert!(bom.contains("position=1;definition=1;kind=manufactured;quantity=2"));
+    assert!(bom.contains("material=ketchup.material.steel.s355.v1"));
+    assert!(bom.contains("position=2;definition=1;kind=purchased;quantity=2"));
+    assert!(bom.contains("material=ketchup.material.bearing.6202.v1"));
+    assert!(drawings.contains("ketchup.general-drawing-svg.v3"));
+    assert!(drawings.contains(
+        "position: 1, quantity: 2, kind: manufactured, material: ketchup.material.steel.s355.v1"
+    ));
+    assert!(drawings.contains(
+        "position: 2, quantity: 2, kind: purchased, material: ketchup.material.bearing.6202.v1"
+    ));
+    assert_eq!(script.export_requests()[0].extension, "csv");
+    let receipt = harness.state().last_side_effect_receipt().unwrap();
+    assert_eq!(
+        receipt.scope().class(),
+        HighRiskClass::ReleaseManufacturingExportWithWarnings
+    );
+    assert_eq!(
+        receipt.operation(),
+        "release-general-fabrication-bom-and-drawings"
+    );
+
+    assert!(
+        harness
+            .state_mut()
+            .export_current_general_fabrication_to(&path)
+    );
+    assert_eq!(harness.state().side_effect_receipts.len(), 3);
+    assert_eq!(
+        harness.state().side_effect_receipts[0].scope().class(),
+        HighRiskClass::ReleaseManufacturingExportWithWarnings
+    );
+    assert!(
+        harness.state().side_effect_receipts[1..]
+            .iter()
+            .all(|receipt| receipt.scope().class() == HighRiskClass::Overwrite)
+    );
+    assert_eq!(script.high_risk_prompts().len(), 4);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), bom);
+    assert_eq!(
+        std::fs::read_to_string(path.with_extension("drawings.svg")).unwrap(),
+        drawings
+    );
+    assert_eq!(harness.state().document.current().revision_id(), revision);
+    assert_eq!(
+        harness.state().document.current().canonical_digest(),
+        digest
+    );
+}
+
+#[test]
 fn hundegger_btlx_file_command_exports_validated_timber_with_support_report() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("single-timber.btlx");
@@ -2857,6 +3231,7 @@ fn only_successful_assistant_completion_enters_project_memory() {
     sender
         .send(Ok(AssistantTransportResponse {
             cad_edit_program: None,
+            fea_review: None,
             result: AssistantChatResult {
                 message: "The shelf spacing is 320 mm.".to_owned(),
                 model_intent: None,
@@ -3254,6 +3629,7 @@ fn assistant_model_change_requires_explicit_confirmation_after_validation() {
     sender
         .send(Ok(AssistantTransportResponse {
             cad_edit_program: None,
+            fea_review: None,
             result: AssistantChatResult {
                 message: "Moved it.".to_owned(),
                 model_intent: Some(AssistantModelIntent {
@@ -3407,6 +3783,7 @@ fn stale_assistant_model_result_is_reported_without_mutating_the_newer_document(
     sender
         .send(Ok(AssistantTransportResponse {
             cad_edit_program: None,
+            fea_review: None,
             result: AssistantChatResult {
                 message: "Moved it.".to_owned(),
                 model_intent: Some(AssistantModelIntent {
@@ -4300,7 +4677,7 @@ fn sketchup_scene_import_confirmation_rederives_the_exact_reviewed_plan_atomical
 #[test]
 fn exact_step_preview_plan_rejects_tamper_stale_and_replay_atomically() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../corpora/r0/step/self-authored-box.step");
+        .join("../../corpora/r0/step/independent-xde-assembly.step");
     let source = std::fs::read(&path).unwrap();
     let executable = exact_worker_executable();
     assert!(executable.is_file(), "{}", executable.display());
@@ -4332,7 +4709,7 @@ fn exact_step_preview_plan_rejects_tamper_stale_and_replay_atomically() {
     };
 
     let mut evidence_tamper = pending.clone();
-    evidence_tamper.plan.evidence.solid_count += 1;
+    evidence_tamper.plan.evidence.parts[0].exact.solid_count += 1;
     assert!(!app.import_step_from(&evidence_tamper));
     assert_unchanged(&app);
 
@@ -9329,8 +9706,10 @@ fn imported_exact_occurrences_route_through_solid_tool_preview_and_commit() {
         StepImportEvidence {
             source_unit: ImportLengthUnit::Millimetre,
             result_fingerprint: "target-exact-result".into(),
+            body_kind: ketchup_core::document::BodyKind::Solid,
             solid_count: 1,
             topology_counts: [8, 12, 6, 1, 1],
+            area_mm2: 1.0,
             volume_mm3: 1_000.0,
             bounds_mm: [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]],
             backend: "headless-imported-solid-tool.v1".into(),
@@ -9339,8 +9718,10 @@ fn imported_exact_occurrences_route_through_solid_tool_preview_and_commit() {
         StepImportEvidence {
             source_unit: ImportLengthUnit::Millimetre,
             result_fingerprint: "tool-exact-result".into(),
+            body_kind: ketchup_core::document::BodyKind::Solid,
             solid_count: 1,
             topology_counts: [8, 12, 6, 1, 1],
+            area_mm2: 1.0,
             volume_mm3: 432.0,
             bounds_mm: [[0.0, 0.0, 0.0], [6.0, 6.0, 12.0]],
             backend: "headless-imported-solid-tool.v1".into(),
@@ -9506,8 +9887,10 @@ fn mixed_extrusion_and_imported_exact_occurrences_route_through_solid_tools() {
     let evidence = StepImportEvidence {
         source_unit: ImportLengthUnit::Millimetre,
         result_fingerprint: "mixed-imported-exact-result".into(),
+        body_kind: ketchup_core::document::BodyKind::Solid,
         solid_count: 1,
         topology_counts: [8, 12, 6, 1, 1],
+        area_mm2: 1.0,
         volume_mm3: 12_000.0,
         bounds_mm: [[0.0, 0.0, 0.0], [20.0, 30.0, 20.0]],
         backend: "headless-mixed-solid-tool.v1".into(),
@@ -14718,8 +15101,6 @@ fn nested_and_mixed_selection_paths_are_preserved_and_diagnosed_without_mutation
 
     assert!(!app.prepare_assistant_assembly_joint_from_selection());
     assert!(app.action_digest().contains(&nested_diagnostic));
-    assert!(!app.preview_selection_drawing());
-    assert!(app.action_digest().contains(&nested_diagnostic));
     assert_eq!(app.document_revision(), revision);
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), undo_steps);
@@ -14757,6 +15138,255 @@ fn nested_and_mixed_selection_paths_are_preserved_and_diagnosed_without_mutation
     assert_eq!(app.document_revision(), revision);
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), undo_steps);
+}
+
+#[test]
+fn repeated_multi_level_instance_paths_keep_world_identity_while_root_only_operations_refuse_them()
+{
+    let mut app = KetchupApp::new();
+    assert!(app.create_box());
+    app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+    app.select_from_outliner(InstancePath::root(OccurrenceId(2)), true);
+    assert!(app.group_selected());
+    assert!(app.make_component());
+
+    let first_level_root = app.document.current().occurrences().next().unwrap().id();
+    assert!(app.copy_selected(Vec3::new(200.0, 0.0, 0.0)));
+    let first_level_roots = app
+        .document
+        .current()
+        .occurrences()
+        .map(|occurrence| occurrence.id())
+        .collect::<Vec<_>>();
+    assert_eq!(first_level_roots.len(), 2);
+    assert!(first_level_roots.contains(&first_level_root));
+
+    app.clear_selection();
+    app.select_from_outliner(InstancePath::root(first_level_roots[0]), false);
+    app.select_from_outliner(InstancePath::root(first_level_roots[1]), true);
+    assert!(app.group_selected());
+    assert!(app.make_component());
+    assert!(app.copy_selected(Vec3::new(500.0, -40.0, 25.0)));
+
+    let snapshot = app.document.current();
+    let top_level_roots = snapshot
+        .occurrences()
+        .map(|occurrence| occurrence.id())
+        .collect::<Vec<_>>();
+    assert_eq!(top_level_roots.len(), 2);
+    let leaves = snapshot
+        .scene_query()
+        .into_iter()
+        .filter(|item| {
+            item.instance_path
+                .steps()
+                .iter()
+                .filter(|step| matches!(step, InstancePathStep::Occurrence(_)))
+                .count()
+                == 2
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(leaves.len(), 8);
+    assert_eq!(
+        leaves
+            .iter()
+            .map(|item| item.instance_path.clone())
+            .collect::<BTreeSet<_>>()
+            .len(),
+        8
+    );
+
+    let by_root = top_level_roots
+        .iter()
+        .map(|root| {
+            let entries = leaves
+                .iter()
+                .filter(|item| item.instance_path.root_occurrence() == *root)
+                .map(|item| (item.instance_path.steps().to_vec(), item.transform.matrix()))
+                .collect::<BTreeMap<_, _>>();
+            (*root, entries)
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(by_root[&top_level_roots[0]].len(), 4);
+    assert_eq!(by_root[&top_level_roots[1]].len(), 4);
+    for (suffix, first) in &by_root[&top_level_roots[0]] {
+        let second = by_root[&top_level_roots[1]][suffix];
+        assert_eq!(second[3], first[3] + 500.0);
+        assert_eq!(second[7], first[7] - 40.0);
+        assert_eq!(second[11], first[11] + 25.0);
+    }
+
+    drop(snapshot);
+    let nested_paths = BTreeSet::from([
+        leaves[0].instance_path.clone(),
+        leaves
+            .iter()
+            .find(|item| {
+                item.instance_path.root_occurrence() != leaves[0].instance_path.root_occurrence()
+                    && item.instance_path.steps() == leaves[0].instance_path.steps()
+            })
+            .unwrap()
+            .instance_path
+            .clone(),
+    ]);
+    app.clear_selection();
+    app.selection.occurrences = nested_paths.clone();
+    let revision = app.document_revision();
+    let digest = app.canonical_digest();
+    let undo_steps = app.undo_step_count();
+
+    assert_eq!(
+        app.selected_root_occurrence_ids(),
+        Err(RootOccurrenceSelectionError::Nested {
+            paths: nested_paths
+        })
+    );
+    assert!(!app.prepare_assistant_assembly_joint_from_selection());
+    assert!(!app.preview_selection_drawing());
+    assert_eq!(app.document_revision(), revision);
+    assert_eq!(app.canonical_digest(), digest);
+    assert_eq!(app.undo_step_count(), undo_steps);
+}
+
+#[test]
+fn grounded_repeated_nested_instances_create_associative_drawing_with_roundtrip_and_undo() {
+    let mut app = KetchupApp::new();
+    assert!(app.create_box());
+    app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+    app.select_from_outliner(InstancePath::root(OccurrenceId(2)), true);
+    assert!(app.group_selected());
+    assert!(app.make_component());
+    assert!(app.copy_selected(Vec3::new(40.0, 0.0, 0.0)));
+
+    let first_level_roots = app
+        .document
+        .current()
+        .occurrences()
+        .map(|occurrence| occurrence.id())
+        .collect::<Vec<_>>();
+    app.clear_selection();
+    app.select_from_outliner(InstancePath::root(first_level_roots[0]), false);
+    app.select_from_outliner(InstancePath::root(first_level_roots[1]), true);
+    assert!(app.group_selected());
+    assert!(app.make_component());
+    assert!(app.copy_selected(Vec3::new(80.0, -20.0, 10.0)));
+
+    let top_level_roots = app
+        .document
+        .current()
+        .occurrences()
+        .map(|occurrence| occurrence.id())
+        .collect::<Vec<_>>();
+    for root in &top_level_roots {
+        app.clear_selection();
+        app.select_from_outliner(InstancePath::root(*root), false);
+        assert!(app.set_selected_occurrence_grounded(true));
+    }
+
+    assert!(app.headless_install_exact_package((*current_box_package(&app)).clone().into()));
+    let leaves = app
+        .document
+        .current()
+        .scene_query()
+        .into_iter()
+        .filter(|item| {
+            item.instance_path
+                .steps()
+                .iter()
+                .filter(|step| matches!(step, InstancePathStep::Occurrence(_)))
+                .count()
+                == 2
+        })
+        .collect::<Vec<_>>();
+    let first = leaves[0].instance_path.clone();
+    let second = leaves
+        .iter()
+        .find(|item| {
+            item.instance_path.root_occurrence() != first.root_occurrence()
+                && item.instance_path.steps() == first.steps()
+        })
+        .unwrap()
+        .instance_path
+        .clone();
+    let mut instance_paths = vec![first, second];
+    instance_paths.sort();
+
+    let stale_path = instance_paths[0]
+        .clone()
+        .with_step(InstancePathStep::Occurrence(
+            ketchup_core::document::LocalOccurrenceId(u64::MAX),
+        ));
+    app.clear_selection();
+    app.selection.occurrences.insert(stale_path);
+    let stale_revision = app.document_revision();
+    let stale_digest = app.canonical_digest();
+    let stale_undo_steps = app.undo_step_count();
+    assert!(!app.preview_selection_drawing());
+    assert_eq!(app.document_revision(), stale_revision);
+    assert_eq!(app.canonical_digest(), stale_digest);
+    assert_eq!(app.undo_step_count(), stale_undo_steps);
+
+    app.clear_selection();
+    app.selection.occurrences = instance_paths.iter().cloned().collect();
+    let revision = app.document_revision();
+    let digest = app.canonical_digest();
+    let undo_steps = app.undo_step_count();
+    let prepared = app.preview_selection_drawing();
+    assert!(prepared, "{}", app.action_digest());
+    assert!(app.assembly_preview_pending());
+    assert_eq!(app.document_revision(), revision);
+    assert_eq!(app.canonical_digest(), digest);
+    assert_eq!(app.undo_step_count(), undo_steps);
+    assert!(app.confirm_assembly_preview());
+    assert_eq!(app.document_revision(), revision + 1);
+    assert_eq!(app.undo_step_count(), undo_steps + 1);
+
+    let committed = app.document.current();
+    let sheet = committed.drawing_sheets().next().unwrap();
+    assert_eq!(
+        sheet.source(),
+        &ketchup_core::drawing::DrawingSource::RigidAssemblyInstances {
+            instance_paths: instance_paths.clone()
+        }
+    );
+    assert_eq!(sheet.bom_balloons().len(), 2);
+    assert!(
+        sheet
+            .bom_balloons()
+            .iter()
+            .all(|balloon| balloon.position() == 1)
+    );
+    assert_eq!(
+        sheet
+            .bom_balloons()
+            .iter()
+            .map(|balloon| balloon.instance_path().clone())
+            .collect::<Vec<_>>(),
+        instance_paths
+    );
+    let committed_digest = committed.canonical_digest();
+    let bytes = ketchup_core::persistence::save(&committed);
+    let reopened = ketchup_core::persistence::load(&bytes).unwrap();
+    assert_eq!(
+        reopened.source_schema(),
+        ketchup_core::persistence::CURRENT_SCHEMA
+    );
+    assert_eq!(reopened.snapshot().canonical_digest(), committed_digest);
+    assert_eq!(
+        reopened
+            .snapshot()
+            .drawing_sheets()
+            .next()
+            .unwrap()
+            .source(),
+        sheet.source()
+    );
+
+    drop(committed);
+    assert!(app.undo());
+    assert!(app.document.current().drawing_sheets().next().is_none());
+    assert!(app.redo());
+    assert_eq!(app.document.current().canonical_digest(), committed_digest);
 }
 
 #[test]

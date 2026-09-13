@@ -39,6 +39,68 @@ fn native_self_pair_has_positive_volume_and_zero_distance_without_trusting_finge
 }
 
 #[test]
+fn native_pair_reports_positive_face_area_but_not_edge_contact() {
+    let backend = ExactBackend::new();
+    let box_at = |origin_mm: Point3, size_mm: Size3| {
+        backend.make_box(BoxSpec { origin_mm, size_mm }).unwrap()
+    };
+    let support = box_at(
+        Point3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        Size3 {
+            x: 10.0,
+            y: 10.0,
+            z: 1.0,
+        },
+    );
+    let face_load = box_at(
+        Point3 {
+            x: 2.0,
+            y: 3.0,
+            z: 1.0,
+        },
+        Size3 {
+            x: 2.0,
+            y: 4.0,
+            z: 1.0,
+        },
+    );
+    let face = backend
+        .query_body_pair(&support.body, &face_load.body, 1e-7)
+        .unwrap();
+    assert_eq!(face.relation, ExactPairRelation::Touching);
+    assert_eq!(face.common_volume_mm3, 0.0);
+    assert!(
+        (face.common_contact_area_mm2 - 8.0).abs() < 1e-7,
+        "{face:?}"
+    );
+    assert_eq!(face.distance_mm, 0.0);
+
+    let edge_load = box_at(
+        Point3 {
+            x: 10.0,
+            y: 3.0,
+            z: 1.0,
+        },
+        Size3 {
+            x: 2.0,
+            y: 4.0,
+            z: 1.0,
+        },
+    );
+    let edge = backend
+        .query_body_pair(&support.body, &edge_load.body, 1e-7)
+        .unwrap();
+    assert_eq!(edge.relation, ExactPairRelation::Touching);
+    assert_eq!(edge.common_volume_mm3, 0.0);
+    assert_eq!(edge.common_contact_area_mm2, 0.0);
+    assert_eq!(edge.distance_mm, 0.0);
+}
+
+#[test]
 fn native_pair_common_distance_contact_containment_and_failure() {
     let backend = ExactBackend::new();
     let circle = |x, y| {

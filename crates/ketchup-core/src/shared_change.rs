@@ -385,11 +385,8 @@ pub fn project_occurrence_edit_impact(
 
     let impacted_drawings = source
         .drawing_sheets()
-        .filter_map(|sheet| {
-            let DrawingSource::RigidAssembly { occurrence_ids } = sheet.source() else {
-                return None;
-            };
-            occurrence_ids
+        .filter_map(|sheet| match sheet.source() {
+            DrawingSource::RigidAssembly { occurrence_ids } => occurrence_ids
                 .contains(&request.target_occurrence_id)
                 .then(|| {
                     (
@@ -401,7 +398,21 @@ pub fn project_occurrence_edit_impact(
                             .filter(|id| *id != request.target_occurrence_id)
                             .collect::<Vec<_>>(),
                     )
-                })
+                }),
+            DrawingSource::RigidAssemblyInstances { instance_paths } => instance_paths
+                .iter()
+                .any(|path| path.root_occurrence() == request.target_occurrence_id)
+                .then(|| {
+                    (
+                        sheet.clone(),
+                        instance_paths
+                            .iter()
+                            .map(InstancePath::root_occurrence)
+                            .collect::<Vec<_>>(),
+                        Vec::new(),
+                    )
+                }),
+            DrawingSource::Definition(_) => None,
         })
         .collect::<Vec<_>>();
     let mut dependency_commands = commands.clone();
@@ -1310,11 +1321,9 @@ where
     let mut expected_drawing_views = source
         .drawing_sheets()
         .filter(|sheet| {
-            matches!(
-                sheet.source(),
-                DrawingSource::RigidAssembly { occurrence_ids }
-                    if occurrence_ids.contains(&impact.selected_occurrence_id)
-            )
+            sheet
+                .source()
+                .references_root_occurrence(impact.selected_occurrence_id)
         })
         .flat_map(|sheet| {
             [
@@ -1659,6 +1668,7 @@ where
                 source_revision: impact.source_revision,
                 source_digest: impact.source_digest.clone(),
                 transforms,
+                instance_transforms: Vec::new(),
             });
         }
     }
@@ -1964,19 +1974,25 @@ where
         ));
     }
 
-    let [body_id] = impact.affected_body_ids.as_slice() else {
+    if impact.affected_body_ids.is_empty()
+        || impact
+            .affected_body_ids
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+    {
         return Err(SharedChangePropagationError::InvalidImpact(
-            "shared-definition change must affect exactly one body branch".to_owned(),
+            "shared-definition affected bodies are empty or non-canonical".to_owned(),
         ));
-    };
+    }
     let [job] = impact.exact_jobs.as_slice() else {
         return Err(SharedChangePropagationError::InvalidImpact(
-            "shared-definition change must schedule exactly one exact body job".to_owned(),
+            "shared-definition change must schedule exactly one terminal exact body job".to_owned(),
         ));
     };
-    if job.definition_id != impact.definition_id || job.body_id != *body_id {
+    let body_id = job.body_id;
+    if job.definition_id != impact.definition_id || !impact.affected_body_ids.contains(&body_id) {
         return Err(SharedChangePropagationError::InvalidImpact(
-            "shared-definition exact job does not match the affected body".to_owned(),
+            "shared-definition exact job is outside the affected body closure".to_owned(),
         ));
     }
 
@@ -2012,7 +2028,7 @@ where
     }
 
     let previous = exact_results
-        .get_body(&source, impact.definition_id, *body_id)
+        .get_body(&source, impact.definition_id, body_id)
         .map_err(|error| SharedChangePropagationError::ExactPublication(error.to_string()))?
         .ok_or_else(|| {
             SharedChangePropagationError::InvalidImpact(
@@ -2031,12 +2047,9 @@ where
             "shared-definition candidate digest changed".to_owned(),
         ));
     }
-    let request = ExactFeatureChainRequest::from_snapshot_for_body(
-        &candidate,
-        impact.definition_id,
-        *body_id,
-    )
-    .map_err(|error| SharedChangePropagationError::InvalidImpact(error.to_string()))?;
+    let request =
+        ExactFeatureChainRequest::from_snapshot_for_body(&candidate, impact.definition_id, body_id)
+            .map_err(|error| SharedChangePropagationError::InvalidImpact(error.to_string()))?;
     if request.producer_feature_id() != job.producer_feature_id
         || request.canonical_input_digest != job.canonical_input_digest
     {
@@ -2116,6 +2129,7 @@ where
                 source_revision: impact.source_revision,
                 source_digest: impact.source_digest.clone(),
                 transforms,
+                instance_transforms: Vec::new(),
             });
         }
     }
@@ -2138,7 +2152,7 @@ where
         .map_err(|error| SharedChangePropagationError::Dependency(error.to_string()))?;
     let final_results = ExactResultRegistry::carried_forward(&final_candidate, &staged_results);
     let final_package = final_results
-        .get_body(&final_candidate, impact.definition_id, *body_id)
+        .get_body(&final_candidate, impact.definition_id, body_id)
         .map_err(|error| SharedChangePropagationError::ExactPublication(error.to_string()))?
         .ok_or_else(|| {
             SharedChangePropagationError::ExactPublication(
@@ -2154,7 +2168,7 @@ where
         job.producer_feature_id,
     )?;
     let drawings = refresh_drawings(&final_candidate, &final_results, impact)?;
-    let exports = refresh_export_eligibility(&final_candidate, &final_results, impact, *body_id)?;
+    let exports = refresh_export_eligibility(&final_candidate, &final_results, impact, body_id)?;
 
     let mut lineage_digests = final_package
         .references()
@@ -2188,7 +2202,7 @@ where
         revision_id: revision.id(),
         canonical_digest: revision.snapshot().canonical_digest(),
         definition_id: impact.definition_id,
-        body_id: *body_id,
+        body_id,
         affected_feature_ids: impact.affected_feature_ids.clone(),
         unchanged_body_ids: impact.unchanged_body_ids.clone(),
         unchanged_definition_ids: impact.unchanged_definition_ids.clone(),
@@ -2989,11 +3003,10 @@ pub fn project_component_replacement_impact_for_principal(
 
     let mut drawing_views = Vec::new();
     for sheet in source.drawing_sheets() {
-        if matches!(
-            sheet.source(),
-            DrawingSource::RigidAssembly { occurrence_ids }
-                if occurrence_ids.contains(&request.selected_occurrence_id)
-        ) {
+        if sheet
+            .source()
+            .references_root_occurrence(request.selected_occurrence_id)
+        {
             let drawing = project_orthographic_drawing(&source, exact_results, sheet)
                 .map_err(|error| ComponentReplacementImpactError::Unsupported(error.to_string()))?;
             if !drawing.is_current(&source) {
@@ -3146,6 +3159,7 @@ pub fn project_component_replacement_impact_for_principal(
                 source_revision: source.revision_id(),
                 source_digest: source.canonical_digest(),
                 transforms,
+                instance_transforms: Vec::new(),
             });
         }
     }
@@ -3219,11 +3233,9 @@ pub fn project_component_replacement_impact_for_principal(
         }
     }
     for sheet in source.drawing_sheets().filter(|sheet| {
-        matches!(
-            sheet.source(),
-            DrawingSource::RigidAssembly { occurrence_ids }
-                if occurrence_ids.contains(&request.selected_occurrence_id)
-        )
+        sheet
+            .source()
+            .references_root_occurrence(request.selected_occurrence_id)
     }) {
         project_orthographic_drawing(&candidate, &candidate_results, sheet)
             .map_err(|error| ComponentReplacementImpactError::Unsupported(error.to_string()))?;
@@ -3446,11 +3458,9 @@ pub fn commit_component_replacement(
     let mut expected_drawing_views = source
         .drawing_sheets()
         .filter(|sheet| {
-            matches!(
-                sheet.source(),
-                DrawingSource::RigidAssembly { occurrence_ids }
-                    if occurrence_ids.contains(&impact.selected_occurrence_id)
-            )
+            sheet
+                .source()
+                .references_root_occurrence(impact.selected_occurrence_id)
         })
         .flat_map(|sheet| {
             [
@@ -4277,11 +4287,7 @@ pub fn project_occurrence_fork_impact(
     let affected_root = request.selected_occurrence_id;
     let mut drawing_views = Vec::new();
     for sheet in source.drawing_sheets() {
-        if matches!(
-            sheet.source(),
-            DrawingSource::RigidAssembly { occurrence_ids }
-                if occurrence_ids.contains(&affected_root)
-        ) {
+        if sheet.source().references_root_occurrence(affected_root) {
             for view in [
                 OrthographicViewKind::Front,
                 OrthographicViewKind::Top,
@@ -4379,36 +4385,44 @@ pub fn project_shared_change_impact(
         .feature_dependency_graph()
         .map_err(|_| SharedChangeImpactError::Cyclic)?;
 
-    let (definition_id, body_id, affected_feature_ids, unchanged_body_ids, proposal) =
-        match request.change {
-            SharedDefinitionChange::ExactParameterEdit(change) => {
-                let definition_id = change.definition_id;
-                let body_id = change.body_id;
-                let preview =
-                    prepare_dependency_staging_body_parameter_edit(document, change, principal)
-                        .map_err(|error| SharedChangeImpactError::Unsupported(error.to_string()))?;
-                (
-                    definition_id,
-                    body_id,
-                    preview.affected_feature_ids,
-                    preview.unchanged_body_ids,
-                    preview.proposal,
-                )
-            }
-            SharedDefinitionChange::BodyHistoryMutation(change) => {
-                let definition_id = change.definition_id;
-                let body_id = change.body_id;
-                let preview = prepare_body_history_mutation(document, change, principal)
+    let (
+        definition_id,
+        body_id,
+        affected_body_ids,
+        affected_feature_ids,
+        unchanged_body_ids,
+        proposal,
+    ) = match request.change {
+        SharedDefinitionChange::ExactParameterEdit(change) => {
+            let definition_id = change.definition_id;
+            let body_id = change.body_id;
+            let preview =
+                prepare_dependency_staging_body_parameter_edit(document, change, principal)
                     .map_err(|error| SharedChangeImpactError::Unsupported(error.to_string()))?;
-                (
-                    definition_id,
-                    body_id,
-                    preview.affected_feature_ids,
-                    preview.unchanged_body_ids,
-                    preview.proposal,
-                )
-            }
-        };
+            (
+                definition_id,
+                body_id,
+                preview.affected_body_ids,
+                preview.affected_feature_ids,
+                preview.unchanged_body_ids,
+                preview.proposal,
+            )
+        }
+        SharedDefinitionChange::BodyHistoryMutation(change) => {
+            let definition_id = change.definition_id;
+            let body_id = change.body_id;
+            let preview = prepare_body_history_mutation(document, change, principal)
+                .map_err(|error| SharedChangeImpactError::Unsupported(error.to_string()))?;
+            (
+                definition_id,
+                body_id,
+                vec![body_id],
+                preview.affected_feature_ids,
+                preview.unchanged_body_ids,
+                preview.proposal,
+            )
+        }
+    };
 
     let mut occurrences = source
         .scene_query()
@@ -4425,20 +4439,30 @@ pub fn project_shared_change_impact(
         return Err(SharedChangeImpactError::DefinitionNotReused(definition_id));
     }
 
-    let last_valid = current_body_result(exact_results, &source, definition_id, body_id)?;
     let candidate = document
         .preview_dependency_staging_batch(proposal.batch())
         .map_err(|error| SharedChangeImpactError::Unsupported(error.to_string()))?;
-    let exact_request =
-        ExactFeatureChainRequest::from_snapshot_for_body(&candidate, definition_id, body_id)
+    let terminal_requests =
+        ExactFeatureChainRequest::terminal_body_requests(&candidate, definition_id)
             .map_err(|error| map_exact_request_error(error, body_id))?;
-    let exact_jobs = vec![SharedChangeExactJob {
-        definition_id,
-        body_id,
-        producer_feature_id: exact_request.producer_feature_id(),
-        canonical_input_digest: exact_request.canonical_input_digest,
-        last_valid_result_fingerprint: last_valid.result_key().result_fingerprint,
-    }];
+    let exact_jobs = terminal_requests
+        .into_iter()
+        .filter(|(terminal_body_id, _)| affected_body_ids.contains(terminal_body_id))
+        .map(|(terminal_body_id, exact_request)| {
+            let last_valid =
+                current_body_result(exact_results, &source, definition_id, terminal_body_id)?;
+            Ok(SharedChangeExactJob {
+                definition_id,
+                body_id: terminal_body_id,
+                producer_feature_id: exact_request.producer_feature_id(),
+                canonical_input_digest: exact_request.canonical_input_digest,
+                last_valid_result_fingerprint: last_valid.result_key().result_fingerprint,
+            })
+        })
+        .collect::<Result<Vec<_>, SharedChangeImpactError>>()?;
+    if exact_jobs.is_empty() {
+        return Err(SharedChangeImpactError::Failed(body_id));
+    }
 
     let affected_roots = occurrences
         .iter()
@@ -4506,6 +4530,9 @@ pub fn project_shared_change_impact(
             DrawingSource::RigidAssembly { occurrence_ids } => occurrence_ids
                 .iter()
                 .any(|occurrence_id| affected_roots.contains(occurrence_id)),
+            DrawingSource::RigidAssemblyInstances { instance_paths } => instance_paths
+                .iter()
+                .any(|path| affected_roots.contains(&path.root_occurrence())),
         };
         if affected {
             for view in [
@@ -4548,7 +4575,7 @@ pub fn project_shared_change_impact(
         source_digest: source.canonical_digest(),
         candidate_digest: candidate.canonical_digest(),
         definition_id,
-        affected_body_ids: vec![body_id],
+        affected_body_ids,
         affected_feature_ids,
         unchanged_body_ids,
         unchanged_definition_ids: source

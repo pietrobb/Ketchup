@@ -2,9 +2,11 @@
 
 use crate::document::Snapshot;
 use crate::drawing::{
-    DRAWING_SHEET_LAYOUT_SCHEMA_V2, DrawingLinearDimensionLayout, DrawingSheetLayout,
-    DrawingViewPlacement, ORTHOGRAPHIC_LINEWORK_SCHEMA_V2, OrthographicDrawing, OrthographicView,
-    drawing_layout_digest, drawing_result_digest,
+    DRAWING_SHEET_LAYOUT_SCHEMA_V2, DrawingAngularDimensionLayout, DrawingBomBalloonLayout,
+    DrawingCircularDimensionLayout, DrawingDatumSymbolLayout, DrawingFeatureControlFrameLayout,
+    DrawingLinearDimensionLayout, DrawingSheetLayout, DrawingViewPlacement,
+    ORTHOGRAPHIC_LINEWORK_SCHEMA_V2, OrthographicDrawing, OrthographicView, drawing_layout_digest,
+    drawing_result_digest,
 };
 use std::fmt;
 
@@ -205,6 +207,12 @@ fn validate_contract<'a>(
                 drawing.layout.title_block_bounds_mm,
                 &drawing.layout.view_placements,
                 &drawing.layout.linear_dimensions,
+                &drawing.layout.angular_dimensions,
+                &drawing.layout.circular_dimensions,
+                &drawing.layout.datum_symbols,
+                &drawing.layout.feature_control_frames,
+                &drawing.layout.bom_balloons,
+                &drawing.layout.bom_rows,
                 &drawing.layout.notes,
             )
     {
@@ -286,7 +294,16 @@ fn validate_annotations(
     layout: &DrawingSheetLayout,
     page_size: [f64; 2],
 ) -> Result<(), DrawingExportError> {
-    if layout.linear_dimensions.len() + layout.notes.len() > MAX_EXPORT_TEXTS {
+    if layout.linear_dimensions.len()
+        + layout.angular_dimensions.len()
+        + layout.circular_dimensions.len()
+        + layout.datum_symbols.len()
+        + layout.feature_control_frames.len()
+        + layout.bom_balloons.len()
+        + layout.bom_rows.len()
+        + layout.notes.len()
+        > MAX_EXPORT_TEXTS
+    {
         return Err(DrawingExportError::ResourceLimit);
     }
     for dimension in &layout.linear_dimensions {
@@ -303,6 +320,117 @@ fn validate_annotations(
                 .flatten()
                 .chain(dimension.dimension_line_mm.iter())
                 .any(|point| !valid_point(*point) || !page_contains(page_size, *point))
+        {
+            return Err(DrawingExportError::InvalidDrawing);
+        }
+    }
+    for dimension in &layout.angular_dimensions {
+        if dimension.stable_dimension_id.is_empty()
+            || dimension.source_line_ids.iter().any(String::is_empty)
+            || !dimension.value_degrees.is_finite()
+            || !(0.0..180.0).contains(&dimension.value_degrees)
+            || !valid_text(&dimension.label)
+            || !valid_point(dimension.text_position_mm)
+            || !page_contains(page_size, dimension.text_position_mm)
+            || dimension.arc_points_mm.len() < 2
+            || dimension
+                .extension_lines_mm
+                .iter()
+                .flatten()
+                .chain(&dimension.arc_points_mm)
+                .any(|point| !valid_point(*point) || !page_contains(page_size, *point))
+        {
+            return Err(DrawingExportError::InvalidDrawing);
+        }
+    }
+    for dimension in &layout.circular_dimensions {
+        if dimension.stable_dimension_id.is_empty()
+            || dimension.source_circle_id.is_empty()
+            || !dimension.value_mm.is_finite()
+            || dimension.value_mm <= 0.0
+            || !valid_text(&dimension.label)
+            || !valid_point(dimension.text_position_mm)
+            || !page_contains(page_size, dimension.text_position_mm)
+            || dimension
+                .leader_line_mm
+                .iter()
+                .any(|point| !valid_point(*point) || !page_contains(page_size, *point))
+        {
+            return Err(DrawingExportError::InvalidDrawing);
+        }
+    }
+    for datum in &layout.datum_symbols {
+        if datum.stable_datum_id.is_empty()
+            || datum.source_line_id.is_empty()
+            || datum.label.is_empty()
+            || !valid_bounds(datum.frame_bounds_mm, page_size)
+            || !valid_point(datum.text_position_mm)
+            || datum
+                .leader_line_mm
+                .iter()
+                .chain(&datum.triangle_mm)
+                .any(|point| !valid_point(*point) || !page_contains(page_size, *point))
+        {
+            return Err(DrawingExportError::InvalidDrawing);
+        }
+    }
+    for frame in &layout.feature_control_frames {
+        if frame.stable_frame_id.is_empty()
+            || frame.source_line_id.is_empty()
+            || !frame.tolerance_mm.is_finite()
+            || frame.tolerance_mm <= 0.0
+            || !valid_text(&frame.label)
+            || !valid_bounds(frame.frame_bounds_mm, page_size)
+            || !valid_point(frame.text_position_mm)
+            || frame
+                .leader_line_mm
+                .iter()
+                .any(|point| !valid_point(*point) || !page_contains(page_size, *point))
+            || frame.separator_x_mm.iter().any(|x| {
+                !x.is_finite()
+                    || *x <= frame.frame_bounds_mm[0][0]
+                    || *x >= frame.frame_bounds_mm[1][0]
+            })
+        {
+            return Err(DrawingExportError::InvalidDrawing);
+        }
+    }
+    for balloon in &layout.bom_balloons {
+        let radius = balloon.circle_radius_mm;
+        let circle_bounds = [
+            [
+                balloon.circle_center_mm[0] - radius,
+                balloon.circle_center_mm[1] - radius,
+            ],
+            [
+                balloon.circle_center_mm[0] + radius,
+                balloon.circle_center_mm[1] + radius,
+            ],
+        ];
+        if balloon.stable_balloon_id.is_empty()
+            || balloon.instance_path.root_occurrence().0 == 0
+            || balloon.position == 0
+            || !valid_text(&balloon.label)
+            || !radius.is_finite()
+            || radius <= 0.0
+            || !valid_bounds(circle_bounds, page_size)
+            || !valid_point(balloon.text_position_mm)
+            || balloon
+                .leader_line_mm
+                .iter()
+                .any(|point| !valid_point(*point) || !page_contains(page_size, *point))
+        {
+            return Err(DrawingExportError::InvalidDrawing);
+        }
+    }
+    for row in &layout.bom_rows {
+        if row.position == 0
+            || row.definition_id.0 == 0
+            || row.quantity == 0
+            || !valid_text(&row.part_name)
+            || !valid_text(&row.label)
+            || !valid_point(row.text_position_mm)
+            || !page_contains(page_size, row.text_position_mm)
         {
             return Err(DrawingExportError::InvalidDrawing);
         }
@@ -341,6 +469,11 @@ fn collect_page_content(
             count.checked_add(view.visible_lines.len() + view.hidden_lines.len())
         })
         .and_then(|count| count.checked_add(drawing.layout.linear_dimensions.len() * 3 + 8))
+        .and_then(|count| count.checked_add(drawing.layout.angular_dimensions.len() * 18))
+        .and_then(|count| count.checked_add(drawing.layout.circular_dimensions.len()))
+        .and_then(|count| count.checked_add(drawing.layout.datum_symbols.len() * 8))
+        .and_then(|count| count.checked_add(drawing.layout.feature_control_frames.len() * 9))
+        .and_then(|count| count.checked_add(drawing.layout.bom_balloons.len() * 17))
         .ok_or(DrawingExportError::ResourceLimit)?;
     if line_count > MAX_EXPORT_LINES {
         return Err(DrawingExportError::ResourceLimit);
@@ -376,10 +509,42 @@ fn collect_page_content(
             }
         }
     }
-    let mut texts =
-        Vec::with_capacity(drawing.layout.linear_dimensions.len() + drawing.layout.notes.len() + 4);
+    let mut texts = Vec::with_capacity(
+        drawing.layout.linear_dimensions.len()
+            + drawing.layout.angular_dimensions.len()
+            + drawing.layout.circular_dimensions.len()
+            + drawing.layout.datum_symbols.len()
+            + drawing.layout.feature_control_frames.len()
+            + drawing.layout.bom_balloons.len()
+            + drawing.layout.bom_rows.len()
+            + drawing.layout.notes.len()
+            + 4,
+    );
     for dimension in &drawing.layout.linear_dimensions {
         push_dimension(&mut lines, &mut texts, dimension);
+    }
+    for dimension in &drawing.layout.angular_dimensions {
+        push_angular_dimension(&mut lines, &mut texts, dimension);
+    }
+    for dimension in &drawing.layout.circular_dimensions {
+        push_circular_dimension(&mut lines, &mut texts, dimension);
+    }
+    for datum in &drawing.layout.datum_symbols {
+        push_datum_symbol(&mut lines, &mut texts, datum);
+    }
+    for frame in &drawing.layout.feature_control_frames {
+        push_feature_control_frame(&mut lines, &mut texts, frame);
+    }
+    for balloon in &drawing.layout.bom_balloons {
+        push_bom_balloon(&mut lines, &mut texts, balloon);
+    }
+    for row in &drawing.layout.bom_rows {
+        texts.push(PageText {
+            id: format!("bom-row-{}", row.position),
+            position: row.text_position_mm,
+            value: row.label.clone(),
+            height_mm: 3.0,
+        });
     }
     for note in &drawing.layout.notes {
         texts.push(PageText {
@@ -444,6 +609,156 @@ fn push_dimension(
         id: dimension.stable_dimension_id.clone(),
         position: dimension.text_position_mm,
         value: dimension.label.clone(),
+        height_mm: 3.5,
+    });
+}
+
+fn push_angular_dimension(
+    lines: &mut Vec<PageLine>,
+    texts: &mut Vec<PageText>,
+    dimension: &DrawingAngularDimensionLayout,
+) {
+    for (index, segment) in dimension.extension_lines_mm.iter().enumerate() {
+        lines.push(PageLine {
+            id: format!("{}/extension-{index}", dimension.stable_dimension_id),
+            start: segment[0],
+            end: segment[1],
+            style: LineStyle::Dimension,
+        });
+    }
+    for (index, points) in dimension.arc_points_mm.windows(2).enumerate() {
+        lines.push(PageLine {
+            id: format!("{}/arc-{index}", dimension.stable_dimension_id),
+            start: points[0],
+            end: points[1],
+            style: LineStyle::Dimension,
+        });
+    }
+    texts.push(PageText {
+        id: dimension.stable_dimension_id.clone(),
+        position: dimension.text_position_mm,
+        value: dimension.label.clone(),
+        height_mm: 3.5,
+    });
+}
+
+fn push_circular_dimension(
+    lines: &mut Vec<PageLine>,
+    texts: &mut Vec<PageText>,
+    dimension: &DrawingCircularDimensionLayout,
+) {
+    lines.push(PageLine {
+        id: format!("{}/leader", dimension.stable_dimension_id),
+        start: dimension.leader_line_mm[0],
+        end: dimension.leader_line_mm[1],
+        style: LineStyle::Dimension,
+    });
+    texts.push(PageText {
+        id: dimension.stable_dimension_id.clone(),
+        position: dimension.text_position_mm,
+        value: dimension.label.clone(),
+        height_mm: 3.5,
+    });
+}
+
+fn push_datum_symbol(
+    lines: &mut Vec<PageLine>,
+    texts: &mut Vec<PageText>,
+    datum: &DrawingDatumSymbolLayout,
+) {
+    lines.push(PageLine {
+        id: format!("{}/leader", datum.stable_datum_id),
+        start: datum.leader_line_mm[0],
+        end: datum.leader_line_mm[1],
+        style: LineStyle::Dimension,
+    });
+    for (index, edge) in [[0, 1], [1, 2], [2, 0]].into_iter().enumerate() {
+        lines.push(PageLine {
+            id: format!("{}/triangle-{index}", datum.stable_datum_id),
+            start: datum.triangle_mm[edge[0]],
+            end: datum.triangle_mm[edge[1]],
+            style: LineStyle::Dimension,
+        });
+    }
+    push_rectangle(
+        lines,
+        &format!("{}/frame", datum.stable_datum_id),
+        datum.frame_bounds_mm,
+        LineStyle::Dimension,
+    );
+    texts.push(PageText {
+        id: datum.stable_datum_id.clone(),
+        position: datum.text_position_mm,
+        value: datum.label.clone(),
+        height_mm: 3.5,
+    });
+}
+
+fn push_feature_control_frame(
+    lines: &mut Vec<PageLine>,
+    texts: &mut Vec<PageText>,
+    frame: &DrawingFeatureControlFrameLayout,
+) {
+    lines.push(PageLine {
+        id: format!("{}/leader", frame.stable_frame_id),
+        start: frame.leader_line_mm[0],
+        end: frame.leader_line_mm[1],
+        style: LineStyle::Dimension,
+    });
+    push_rectangle(
+        lines,
+        &format!("{}/frame", frame.stable_frame_id),
+        frame.frame_bounds_mm,
+        LineStyle::Dimension,
+    );
+    for (index, x) in frame.separator_x_mm.iter().enumerate() {
+        lines.push(PageLine {
+            id: format!("{}/separator-{index}", frame.stable_frame_id),
+            start: [*x, frame.frame_bounds_mm[0][1]],
+            end: [*x, frame.frame_bounds_mm[1][1]],
+            style: LineStyle::Dimension,
+        });
+    }
+    texts.push(PageText {
+        id: frame.stable_frame_id.clone(),
+        position: frame.text_position_mm,
+        value: frame.label.clone(),
+        height_mm: 3.0,
+    });
+}
+
+fn push_bom_balloon(
+    lines: &mut Vec<PageLine>,
+    texts: &mut Vec<PageText>,
+    balloon: &DrawingBomBalloonLayout,
+) {
+    lines.push(PageLine {
+        id: format!("{}/leader", balloon.stable_balloon_id),
+        start: balloon.leader_line_mm[0],
+        end: balloon.leader_line_mm[1],
+        style: LineStyle::Dimension,
+    });
+    let points = (0..16)
+        .map(|index| {
+            let angle = std::f64::consts::TAU * f64::from(index) / 16.0;
+            [
+                balloon.circle_center_mm[0] + balloon.circle_radius_mm * angle.cos(),
+                balloon.circle_center_mm[1] + balloon.circle_radius_mm * angle.sin(),
+            ]
+        })
+        .collect::<Vec<_>>();
+    for index in 0..points.len() {
+        lines.push(PageLine {
+            id: format!("{}/circle-{index}", balloon.stable_balloon_id),
+            start: points[index],
+            end: points[(index + 1) % points.len()],
+            style: LineStyle::Dimension,
+        });
+    }
+    texts.push(PageText {
+        id: balloon.stable_balloon_id.clone(),
+        position: balloon.text_position_mm,
+        value: balloon.label.clone(),
         height_mm: 3.5,
     });
 }

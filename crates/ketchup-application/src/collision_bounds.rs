@@ -295,6 +295,7 @@ mod tests {
                 target: ExactBRepNodeId(0),
                 removed_faces: vec![],
                 thickness_bits: 1.0_f64.to_bits(),
+                direction: ketchup_core::exact_brep_graph::ExactBRepShellDirection::Inward,
             },
             ExactBRepOperation::PlanarOffset {
                 profile: ExactBRepProfileId(0),

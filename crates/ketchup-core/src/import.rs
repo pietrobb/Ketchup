@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
 use crate::document::{
-    CanonicalCommand, CommandBatch, DefinitionId, FeatureId, FeatureKind, GroupId,
-    IMPORTED_EXACT_BODY_SCHEMA_V1, ImportedExactBodySpec, MESH_BODY_SCHEMA_V1, MeshAuthority,
+    BodyKind, CanonicalCommand, CommandBatch, DefinitionId, FeatureId, FeatureKind, GroupId,
+    IMPORTED_EXACT_BODY_SCHEMA_V3, ImportedExactBodySpec, MESH_BODY_SCHEMA_V1, MeshAuthority,
     MeshBodySpec, OccurrenceId, Snapshot, Transform,
 };
 use crate::graph::sha256_bytes;
@@ -350,18 +350,49 @@ pub use iges::*;
 
 pub const STEP_PARSER_ID: &str = "ketchup-occt-step";
 pub const STEP_PARSER_VERSION: &str = "2";
+pub const STEP_XDE_PARSER_VERSION: &str = "3";
 pub const MAX_STEP_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct StepImportEvidence {
     pub source_unit: ImportLengthUnit,
     pub result_fingerprint: String,
+    pub body_kind: BodyKind,
     pub solid_count: u32,
     pub topology_counts: [u32; 5],
+    pub area_mm2: f64,
     pub volume_mm3: f64,
     pub bounds_mm: [[f64; 3]; 2],
     pub backend: String,
     pub tolerance: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct StepXdePartEvidence {
+    pub index: u32,
+    pub name: String,
+    pub name_from_source: bool,
+    pub color: Option<[u8; 3]>,
+    pub exact: StepImportEvidence,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct StepXdeNodeEvidence {
+    pub id: u32,
+    pub parent_id: Option<u32>,
+    pub part_index: Option<u32>,
+    pub name: String,
+    pub name_from_source: bool,
+    pub color: Option<[u8; 3]>,
+    pub transform: Transform,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct StepXdeImportEvidence {
+    pub source_sha256: [u8; 32],
+    pub source_byte_len: u64,
+    pub parts: Vec<StepXdePartEvidence>,
+    pub nodes: Vec<StepXdeNodeEvidence>,
 }
 
 /// Upper bound on a derived STEP display mesh.
@@ -528,28 +559,7 @@ pub fn plan_step_import(
     if source.len() as u64 > MAX_STEP_SOURCE_BYTES {
         return Err(StepImportPlanError::SourceTooLarge);
     }
-    let bounds_valid = evidence
-        .bounds_mm
-        .iter()
-        .flatten()
-        .all(|value| value.is_finite())
-        && (0..3).all(|axis| evidence.bounds_mm[0][axis] <= evidence.bounds_mm[1][axis]);
-    if evidence.result_fingerprint.is_empty()
-        || evidence.solid_count == 0
-        || evidence.solid_count > 1_024
-        || evidence.topology_counts.contains(&0)
-        || evidence.topology_counts[4] != evidence.solid_count
-        || evidence.topology_counts[..3]
-            .iter()
-            .map(|count| u64::from(*count))
-            .sum::<u64>()
-            > crate::topology::MAX_GENERATED_TOPOLOGICAL_REFERENCES
-        || !evidence.volume_mm3.is_finite()
-        || evidence.volume_mm3 <= 0.0
-        || !bounds_valid
-        || evidence.backend.is_empty()
-        || evidence.tolerance.is_empty()
-    {
+    if !exact_body_evidence_valid(evidence) {
         return Err(StepImportPlanError::InvalidWorkerEvidence);
     }
     let next_id = |ids: Vec<u64>| {
@@ -637,13 +647,16 @@ pub fn plan_step_import(
             definition_id,
             name: "Imported STEP exact body".to_owned(),
             kind: FeatureKind::ImportedExactBody(ImportedExactBodySpec {
-                schema: IMPORTED_EXACT_BODY_SCHEMA_V1.to_owned(),
+                schema: IMPORTED_EXACT_BODY_SCHEMA_V3.to_owned(),
                 import_id,
                 source_sha256: sha256_bytes(source),
                 source_byte_len: source.len() as u64,
+                source_part_index: None,
                 result_fingerprint: evidence.result_fingerprint.clone(),
+                body_kind: evidence.body_kind,
                 solid_count: evidence.solid_count,
                 topology_counts: Some(evidence.topology_counts),
+                area_mm2: evidence.area_mm2,
                 volume_mm3: evidence.volume_mm3,
                 bounds_mm: evidence.bounds_mm,
                 backend: evidence.backend.clone(),
@@ -661,6 +674,339 @@ pub fn plan_step_import(
         },
         CanonicalCommand::RecordImport(receipt),
     ]))
+}
+
+fn exact_body_evidence_valid(evidence: &StepImportEvidence) -> bool {
+    let bounds_valid = evidence
+        .bounds_mm
+        .iter()
+        .flatten()
+        .all(|value| value.is_finite())
+        && (0..3).all(|axis| evidence.bounds_mm[0][axis] <= evidence.bounds_mm[1][axis]);
+    let topology_valid = !evidence.topology_counts[..3].contains(&0)
+        && evidence.topology_counts[4] == evidence.solid_count
+        && evidence.topology_counts[..3]
+            .iter()
+            .map(|count| u64::from(*count))
+            .sum::<u64>()
+            <= crate::topology::MAX_GENERATED_TOPOLOGICAL_REFERENCES;
+    let measurements_valid = evidence.area_mm2.is_finite()
+        && evidence.area_mm2 > 0.0
+        && match evidence.body_kind {
+            BodyKind::Solid => {
+                (1..=1_024).contains(&evidence.solid_count)
+                    && evidence.topology_counts[3] > 0
+                    && evidence.volume_mm3.is_finite()
+                    && evidence.volume_mm3 > 0.0
+            }
+            BodyKind::Surface => {
+                evidence.solid_count == 0
+                    && evidence.volume_mm3.is_finite()
+                    && evidence.volume_mm3.abs() <= 1.0e-12
+            }
+        };
+    !evidence.result_fingerprint.is_empty()
+        && evidence.result_fingerprint.len() <= 128
+        && topology_valid
+        && measurements_valid
+        && bounds_valid
+        && !evidence.backend.is_empty()
+        && evidence.backend.len() <= MAX_IMPORT_TEXT_BYTES
+        && !evidence.tolerance.is_empty()
+        && evidence.tolerance.len() <= MAX_IMPORT_TEXT_BYTES
+}
+
+pub fn plan_step_xde_import(
+    snapshot: &Snapshot,
+    source: &[u8],
+    source_name: &str,
+    evidence: &StepXdeImportEvidence,
+) -> Result<CommandBatch, StepImportPlanError> {
+    if source.is_empty() {
+        return Err(StepImportPlanError::Empty);
+    }
+    if source.len() as u64 > MAX_STEP_SOURCE_BYTES {
+        return Err(StepImportPlanError::SourceTooLarge);
+    }
+    if evidence.source_sha256 != sha256_bytes(source)
+        || evidence.source_byte_len != source.len() as u64
+        || evidence.parts.is_empty()
+        || evidence.parts.len() > MAX_IMPORT_OUTPUTS
+        || evidence.nodes.is_empty()
+        || evidence.nodes.len() > MAX_IMPORT_OUTPUTS
+    {
+        return Err(StepImportPlanError::InvalidWorkerEvidence);
+    }
+    let source_unit = evidence.parts[0].exact.source_unit;
+    for (index, part) in evidence.parts.iter().enumerate() {
+        if part.index as usize != index
+            || validate_text(&part.name).is_err()
+            || !exact_body_evidence_valid(&part.exact)
+            || part.exact.source_unit != source_unit
+        {
+            return Err(StepImportPlanError::InvalidWorkerEvidence);
+        }
+    }
+    for (index, node) in evidence.nodes.iter().enumerate() {
+        if node.id as usize != index
+            || validate_text(&node.name).is_err()
+            || node
+                .parent_id
+                .is_some_and(|parent| parent as usize >= index)
+            || node
+                .part_index
+                .is_some_and(|part| part as usize >= evidence.parts.len())
+            || node
+                .parent_id
+                .is_some_and(|parent| evidence.nodes[parent as usize].part_index.is_some())
+        {
+            return Err(StepImportPlanError::InvalidWorkerEvidence);
+        }
+    }
+    if !evidence.nodes.iter().any(|node| node.parent_id.is_none())
+        || evidence.parts.iter().any(|part| {
+            !evidence
+                .nodes
+                .iter()
+                .any(|node| node.part_index == Some(part.index))
+        })
+    {
+        return Err(StepImportPlanError::InvalidWorkerEvidence);
+    }
+
+    let next_range = |maximum: u64, count: usize| {
+        let start = maximum
+            .checked_add(1)
+            .filter(|value| *value != 0)
+            .ok_or(StepImportPlanError::IdSpaceExhausted)?;
+        if count > 0 {
+            start
+                .checked_add(count as u64 - 1)
+                .ok_or(StepImportPlanError::IdSpaceExhausted)?;
+        }
+        Ok(start)
+    };
+    let definition_start = next_range(
+        snapshot
+            .definitions()
+            .map(|item| item.id().0)
+            .max()
+            .unwrap_or(0),
+        evidence.parts.len(),
+    )?;
+    let feature_start = next_range(
+        snapshot
+            .features()
+            .map(|item| item.id().0)
+            .max()
+            .unwrap_or(0),
+        evidence.parts.len(),
+    )?;
+    let group_count = evidence
+        .nodes
+        .iter()
+        .filter(|node| node.part_index.is_none())
+        .count();
+    let occurrence_count = evidence.nodes.len() - group_count;
+    let group_start = next_range(
+        snapshot.groups().map(|item| item.id().0).max().unwrap_or(0),
+        group_count,
+    )?;
+    let occurrence_start = next_range(
+        snapshot
+            .occurrences()
+            .map(|item| item.id().0)
+            .max()
+            .unwrap_or(0),
+        occurrence_count,
+    )?;
+    let import_id = snapshot
+        .next_import_id()
+        .map_err(|_| StepImportPlanError::IdSpaceExhausted)?;
+
+    let definitions = (0..evidence.parts.len())
+        .map(|index| DefinitionId(definition_start + index as u64))
+        .collect::<Vec<_>>();
+    let features = (0..evidence.parts.len())
+        .map(|index| FeatureId(feature_start + index as u64))
+        .collect::<Vec<_>>();
+    let mut commands = Vec::new();
+    let mut outputs = Vec::new();
+    for (part, (&definition_id, &feature_id)) in
+        evidence.parts.iter().zip(definitions.iter().zip(&features))
+    {
+        commands.push(CanonicalCommand::CreateDefinition {
+            id: definition_id,
+            name: part.name.clone(),
+        });
+        commands.push(CanonicalCommand::CreateFeature {
+            id: feature_id,
+            definition_id,
+            name: "Imported STEP XDE exact part".to_owned(),
+            kind: FeatureKind::ImportedExactBody(ImportedExactBodySpec {
+                schema: IMPORTED_EXACT_BODY_SCHEMA_V3.to_owned(),
+                import_id,
+                source_sha256: evidence.source_sha256,
+                source_byte_len: evidence.source_byte_len,
+                source_part_index: Some(part.index),
+                result_fingerprint: part.exact.result_fingerprint.clone(),
+                body_kind: part.exact.body_kind,
+                solid_count: part.exact.solid_count,
+                topology_counts: Some(part.exact.topology_counts),
+                area_mm2: part.exact.area_mm2,
+                volume_mm3: part.exact.volume_mm3,
+                bounds_mm: part.exact.bounds_mm,
+                backend: part.exact.backend.clone(),
+                tolerance: part.exact.tolerance.clone(),
+            }),
+        });
+        outputs.push(ImportOutputRef::Definition(definition_id));
+        outputs.push(ImportOutputRef::Feature(feature_id));
+    }
+
+    let mut groups = BTreeMap::new();
+    let mut next_group = group_start;
+    let mut next_occurrence = occurrence_start;
+    let mut assembly_color_flattened = 0_u32;
+    for node in &evidence.nodes {
+        let parent = node.parent_id.map(|id| groups[&id]);
+        if let Some(part_index) = node.part_index {
+            let occurrence_id = OccurrenceId(next_occurrence);
+            next_occurrence += 1;
+            commands.push(CanonicalCommand::CreateOccurrence {
+                id: occurrence_id,
+                definition_id: definitions[part_index as usize],
+                name: node.name.clone(),
+                transform: node.transform,
+                parent,
+                tag: None,
+                visible: true,
+            });
+            let mut color = node.color;
+            let mut ancestor = node.parent_id;
+            while color.is_none() {
+                let Some(parent_id) = ancestor else { break };
+                color = evidence.nodes[parent_id as usize].color;
+                ancestor = evidence.nodes[parent_id as usize].parent_id;
+            }
+            color = color.or(evidence.parts[part_index as usize].color);
+            if color.is_some() {
+                commands.push(CanonicalCommand::SetOccurrenceColor {
+                    id: occurrence_id,
+                    color,
+                });
+            }
+            outputs.push(ImportOutputRef::Occurrence(occurrence_id));
+        } else {
+            let group_id = GroupId(next_group);
+            next_group += 1;
+            if node.color.is_some() {
+                assembly_color_flattened += 1;
+            }
+            commands.push(CanonicalCommand::CreateGroup {
+                id: group_id,
+                name: node.name.clone(),
+                transform: node.transform,
+                parent,
+            });
+            groups.insert(node.id, group_id);
+            outputs.push(ImportOutputRef::Group(group_id));
+        }
+    }
+    outputs.sort_unstable();
+
+    let missing_names = evidence
+        .parts
+        .iter()
+        .filter(|part| !part.name_from_source)
+        .count()
+        + evidence
+            .nodes
+            .iter()
+            .filter(|node| !node.name_from_source)
+            .count();
+    let colored_nodes = evidence
+        .nodes
+        .iter()
+        .filter(|node| node.color.is_some())
+        .count();
+    let mut diagnostics = vec![
+        ImportDiagnostic::new(
+            ImportDiagnosticSeverity::Info,
+            "step_exact_brep_parts_preserved",
+            None,
+            evidence.parts.len() as u32,
+        ),
+        ImportDiagnostic::new(
+            ImportDiagnosticSeverity::Info,
+            "step_hierarchy_preserved",
+            None,
+            evidence.nodes.len() as u32,
+        ),
+    ]
+    .into_iter()
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(|_| StepImportPlanError::InvalidWorkerEvidence)?;
+    let mut add_diagnostic = |severity, code, count| {
+        diagnostics.push(
+            ImportDiagnostic::new(severity, code, None, count)
+                .map_err(|_| StepImportPlanError::InvalidWorkerEvidence)?,
+        );
+        Ok::<(), StepImportPlanError>(())
+    };
+    if colored_nodes > 0 {
+        add_diagnostic(
+            ImportDiagnosticSeverity::Info,
+            "step_color_metadata_preserved",
+            colored_nodes as u32,
+        )?;
+    } else {
+        add_diagnostic(
+            ImportDiagnosticSeverity::Warning,
+            "step_color_metadata_unavailable",
+            1,
+        )?;
+    }
+    if missing_names > 0 {
+        add_diagnostic(
+            ImportDiagnosticSeverity::Warning,
+            "step_name_metadata_unavailable",
+            missing_names as u32,
+        )?;
+    } else {
+        add_diagnostic(
+            ImportDiagnosticSeverity::Info,
+            "step_name_metadata_preserved",
+            (evidence.parts.len() + evidence.nodes.len()) as u32,
+        )?;
+    }
+    if assembly_color_flattened > 0 {
+        add_diagnostic(
+            ImportDiagnosticSeverity::Warning,
+            "step_assembly_color_inherited_by_leaf_instances",
+            assembly_color_flattened,
+        )?;
+    }
+    add_diagnostic(
+        ImportDiagnosticSeverity::Warning,
+        "step_parametric_reconstruction_unavailable",
+        evidence.parts.len() as u32,
+    )?;
+    diagnostics.sort_unstable();
+    let receipt = ImportReceipt::from_source_bytes(
+        import_id,
+        ImportFormat::Step,
+        source,
+        source_name,
+        ImportUnitDecision::new(source_unit, ImportUnitAuthority::FileDeclared),
+        STEP_PARSER_ID,
+        STEP_XDE_PARSER_VERSION,
+        diagnostics,
+        outputs,
+    )
+    .map_err(|_| StepImportPlanError::InvalidSourceIdentity)?;
+    commands.push(CanonicalCommand::RecordImport(receipt));
+    Ok(CommandBatch::new(commands))
 }
 
 fn validate_text(value: &str) -> Result<(), ImportContractError> {

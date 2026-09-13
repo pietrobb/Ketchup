@@ -39,6 +39,13 @@ pub(super) fn digest_snapshot(snapshot: &Snapshot) -> String {
     for clearance in snapshot.product.clearance_volumes.values() {
         digest.clearance_volume(clearance);
     }
+    if !snapshot.product.cam_plans.is_empty() {
+        digest.bytes(b"canonical-cam-plans.v1");
+        digest.u64(snapshot.product.cam_plans.len() as u64);
+        for plan in snapshot.product.cam_plans.values() {
+            digest.cam_plan(plan);
+        }
+    }
     digest.u64(snapshot.product.persistent_dimensions.len() as u64);
     for dimension in snapshot.product.persistent_dimensions.values() {
         digest.persistent_dimension(dimension);
@@ -154,6 +161,14 @@ pub(super) fn digest_snapshot(snapshot: &Snapshot) -> String {
     digest.u64(snapshot.product.local_occurrences.len() as u64);
     for occurrence in snapshot.product.local_occurrences.values() {
         digest.local_occurrence(occurrence);
+    }
+    if !snapshot.product.instance_transform_overrides.is_empty() {
+        digest.bytes(b"canonical-instance-transform-overrides.v1");
+        digest.u64(snapshot.product.instance_transform_overrides.len() as u64);
+        for (path, transform) in &snapshot.product.instance_transform_overrides {
+            digest.instance_path(path);
+            digest.transform(*transform);
+        }
     }
     digest.finish()
 }
@@ -349,6 +364,69 @@ impl StableDigest {
         }
     }
 
+    fn cam_plan(&mut self, plan: &crate::cam::CamPlan) {
+        self.u64(plan.id().0);
+        self.bytes(plan.name().as_bytes());
+        self.byte(match plan.units() {
+            crate::cam::CamUnits::Millimetres => 1,
+        });
+        self.u64(plan.target().definition_id.0);
+        self.u64(plan.target().feature_id.0);
+        self.bytes(plan.target().exact_graph_digest.as_bytes());
+        for value in plan
+            .stock()
+            .minimum_mm
+            .into_iter()
+            .chain(plan.stock().maximum_mm)
+        {
+            self.u64(value.to_bits());
+        }
+        self.u64(u64::from(plan.tool().number));
+        self.byte(match plan.tool().kind {
+            crate::cam::CamToolKind::FlatEndMill => 1,
+            crate::cam::CamToolKind::BallEndMill => 2,
+            crate::cam::CamToolKind::Drill => 3,
+        });
+        for value in [
+            plan.tool().diameter_mm,
+            plan.tool().flute_length_mm,
+            plan.tool().overall_length_mm,
+            plan.tool().holder_diameter_mm,
+            plan.tool().holder_length_mm,
+            plan.tool().feed_mm_per_min,
+            plan.tool().plunge_mm_per_min,
+        ] {
+            self.u64(value.to_bits());
+        }
+        self.u64(u64::from(plan.tool().spindle_rpm));
+        self.byte(match plan.setup().work_offset {
+            crate::cam::CamWorkOffset::G54 => 54,
+            crate::cam::CamWorkOffset::G55 => 55,
+            crate::cam::CamWorkOffset::G56 => 56,
+            crate::cam::CamWorkOffset::G57 => 57,
+            crate::cam::CamWorkOffset::G58 => 58,
+            crate::cam::CamWorkOffset::G59 => 59,
+        });
+        for value in plan
+            .setup()
+            .origin_mm
+            .into_iter()
+            .chain(plan.setup().x_axis)
+            .chain(plan.setup().y_axis)
+            .chain([plan.setup().safe_height_mm])
+        {
+            self.u64(value.to_bits());
+        }
+        for value in [
+            plan.cut_parameters().maximum_stepdown_mm,
+            plan.cut_parameters().stepover_ratio,
+            plan.cut_parameters().radial_allowance_mm,
+            plan.cut_parameters().axial_allowance_mm,
+        ] {
+            self.u64(value.to_bits());
+        }
+    }
+
     fn persistent_dimension(&mut self, dimension: &PersistentDimension) {
         self.u64(dimension.id.0);
         self.bytes(dimension.name.as_bytes());
@@ -473,6 +551,23 @@ impl StableDigest {
     fn transform(&mut self, transform: Transform) {
         for value in transform.matrix {
             self.u64(value.to_bits());
+        }
+    }
+
+    fn instance_path(&mut self, path: &InstancePath) {
+        self.u64(path.root_occurrence().0);
+        self.u64(path.steps().len() as u64);
+        for step in path.steps() {
+            match step {
+                InstancePathStep::Group(id) => {
+                    self.byte(1);
+                    self.u64(id.0);
+                }
+                InstancePathStep::Occurrence(id) => {
+                    self.byte(2);
+                    self.u64(id.0);
+                }
+            }
         }
     }
 
@@ -1108,13 +1203,109 @@ impl StableDigest {
                 self.u64(profile.0);
                 self.u64(path.0);
             }
-            FeatureKind::Loft { sections } => {
+            FeatureKind::WeldmentMember(spec) => {
+                self.byte(30);
+                self.u64(spec.profile.0);
+                self.u64(spec.path.0);
+                self.u64(spec.orientation_degrees.to_bits());
+            }
+            FeatureKind::WeldmentJoint(spec) => {
+                self.byte(31);
+                self.u64(spec.first_member.0);
+                self.u64(spec.second_member.0);
+                self.byte(match spec.policy {
+                    crate::document::WeldmentJointPolicy::Butt => 1,
+                    crate::document::WeldmentJointPolicy::Miter => 2,
+                });
+                self.byte(match spec.primary {
+                    crate::document::WeldmentJointPrimary::First => 1,
+                    crate::document::WeldmentJointPrimary::Second => 2,
+                });
+            }
+            FeatureKind::SurfaceBody(spec) => {
+                self.byte(32);
+                match spec {
+                    crate::document::SurfaceBodySpec::Planar { profile } => {
+                        self.byte(1);
+                        self.u64(profile.0);
+                    }
+                    crate::document::SurfaceBodySpec::Loft {
+                        sections,
+                        guide,
+                        continuity,
+                    } => {
+                        self.byte(2);
+                        self.u64(sections.len() as u64);
+                        for section in sections {
+                            self.u64(section.profile.0);
+                            self.u64(section.elevation_mm.to_bits());
+                        }
+                        self.u64(guide.map_or(0, |guide| guide.0));
+                        self.byte(match continuity {
+                            crate::document::LoftContinuity::Position => 1,
+                            crate::document::LoftContinuity::Tangent => 2,
+                            crate::document::LoftContinuity::Curvature => 3,
+                        });
+                    }
+                }
+            }
+            FeatureKind::SurfaceTrim { target, cutter } => {
+                self.byte(33);
+                self.u64(target.0);
+                self.u64(cutter.0);
+            }
+            FeatureKind::SurfaceExtend { target, distance } => {
+                self.byte(34);
+                self.u64(target.0);
+                self.bytes(distance.source_token.as_bytes());
+                self.u64(distance.millimetres.to_bits());
+            }
+            FeatureKind::SurfaceKnit {
+                surfaces,
+                tolerance,
+                make_solid,
+            } => {
+                self.byte(35);
+                self.u64(surfaces.len() as u64);
+                for surface in surfaces {
+                    self.u64(surface.0);
+                }
+                self.bytes(tolerance.source_token.as_bytes());
+                self.u64(tolerance.millimetres.to_bits());
+                self.byte(u8::from(*make_solid));
+            }
+            FeatureKind::SurfaceThicken {
+                target,
+                thickness,
+                direction,
+            } => {
+                self.byte(36);
+                self.u64(target.0);
+                self.bytes(thickness.source_token.as_bytes());
+                self.u64(thickness.millimetres.to_bits());
+                self.byte(match direction {
+                    ShellDirection::Inward => 1,
+                    ShellDirection::Outward => 2,
+                    ShellDirection::Symmetric => 3,
+                });
+            }
+            FeatureKind::Loft {
+                sections,
+                guide,
+                continuity,
+            } => {
                 self.byte(15);
                 self.u64(sections.len() as u64);
                 for section in sections {
                     self.u64(section.profile.0);
                     self.u64(section.elevation_mm.to_bits());
                 }
+                self.u64(guide.map_or(0, |guide| guide.0));
+                self.byte(match continuity {
+                    crate::document::LoftContinuity::Position => 1,
+                    crate::document::LoftContinuity::Tangent => 2,
+                    crate::document::LoftContinuity::Curvature => 3,
+                });
             }
             FeatureKind::Revolve {
                 profile,
@@ -1179,6 +1370,7 @@ impl StableDigest {
                 target,
                 removed_faces,
                 thickness,
+                direction,
             } => {
                 self.byte(21);
                 self.u64(target.0);
@@ -1188,12 +1380,20 @@ impl StableDigest {
                 }
                 self.bytes(thickness.source_token.as_bytes());
                 self.u64(thickness.millimetres.to_bits());
+                self.byte(match direction {
+                    ShellDirection::Inward => 1,
+                    ShellDirection::Outward => 2,
+                    ShellDirection::Symmetric => 3,
+                });
             }
             FeatureKind::TopologyEdgeFinish {
                 target,
                 edges,
                 kind,
                 amount,
+                fillet_radius_stations,
+                chamfer_mode,
+                chamfer_edge_sides,
             } => {
                 self.byte(22);
                 self.u64(target.0);
@@ -1207,6 +1407,29 @@ impl StableDigest {
                 });
                 self.bytes(amount.source_token.as_bytes());
                 self.u64(amount.millimetres.to_bits());
+                self.u64(fillet_radius_stations.len() as u64);
+                for station in fillet_radius_stations {
+                    self.u64(station.position.to_bits());
+                    self.bytes(station.radius.source_token.as_bytes());
+                    self.u64(station.radius.millimetres.to_bits());
+                }
+                match chamfer_mode {
+                    ChamferMode::Symmetric => self.byte(1),
+                    ChamferMode::TwoDistance { second_distance } => {
+                        self.byte(2);
+                        self.bytes(second_distance.source_token.as_bytes());
+                        self.u64(second_distance.millimetres.to_bits());
+                    }
+                    ChamferMode::DistanceAngle { angle_degrees } => {
+                        self.byte(3);
+                        self.u64(angle_degrees.to_bits());
+                    }
+                }
+                self.u64(chamfer_edge_sides.len() as u64);
+                for selection in chamfer_edge_sides {
+                    self.topological_reference(&selection.edge);
+                    self.topological_reference(&selection.side_face);
+                }
             }
             FeatureKind::TopologyFaceOffset {
                 target,
@@ -1226,12 +1449,41 @@ impl StableDigest {
                     self.u64(value.to_bits());
                 }
             }
+            FeatureKind::SheetMetal(spec) => {
+                self.byte(29);
+                for dimension in [&spec.width, &spec.depth, &spec.thickness] {
+                    self.bytes(dimension.source_token().as_bytes());
+                    self.u64(dimension.millimetres().to_bits());
+                }
+                self.u64(spec.k_factor.to_bits());
+                self.u64(spec.flanges.len() as u64);
+                for flange in &spec.flanges {
+                    self.byte(match flange.edge {
+                        crate::sheet_metal::SheetMetalEdge::MinX => 1,
+                        crate::sheet_metal::SheetMetalEdge::MaxX => 2,
+                        crate::sheet_metal::SheetMetalEdge::MinY => 3,
+                        crate::sheet_metal::SheetMetalEdge::MaxY => 4,
+                    });
+                    self.bytes(flange.length.source_token().as_bytes());
+                    self.u64(flange.length.millimetres().to_bits());
+                    self.u64(flange.angle_degrees.to_bits());
+                    self.bytes(flange.inner_radius.source_token().as_bytes());
+                    self.u64(flange.inner_radius.millimetres().to_bits());
+                }
+            }
             FeatureKind::ImportedExactBody(spec) => {
                 self.byte(16);
                 self.bytes(spec.schema.as_bytes());
                 self.u64(spec.import_id.0);
                 self.bytes(&spec.source_sha256);
                 self.u64(spec.source_byte_len);
+                match spec.source_part_index {
+                    Some(index) => {
+                        self.byte(1);
+                        self.u64(u64::from(index));
+                    }
+                    None => self.byte(0),
+                }
                 self.bytes(spec.result_fingerprint.as_bytes());
                 self.u64(u64::from(spec.solid_count));
                 if let Some(topology_counts) = spec.topology_counts {
@@ -1239,6 +1491,13 @@ impl StableDigest {
                     for count in topology_counts {
                         self.u64(u64::from(count));
                     }
+                }
+                if spec.schema == IMPORTED_EXACT_BODY_SCHEMA_V3 {
+                    self.byte(match spec.body_kind {
+                        BodyKind::Solid => 1,
+                        BodyKind::Surface => 2,
+                    });
+                    self.u64(spec.area_mm2.to_bits());
                 }
                 self.u64(spec.volume_mm3.to_bits());
                 for coordinate in spec.bounds_mm.iter().flatten() {
@@ -1316,7 +1575,7 @@ impl StableDigest {
     fn assembly_mate(&mut self, mate: &AssemblyMate) {
         self.u64(mate.id().0);
         for endpoint in [mate.endpoint_a(), mate.endpoint_b()] {
-            self.u64(endpoint.occurrence_id().0);
+            self.instance_path(endpoint.instance_path());
             self.body_subshape_reference(endpoint.reference());
             match endpoint.attachment() {
                 crate::assembly::AssemblyMateAttachment::ReferenceOnly(_) => self.byte(1),
@@ -1382,8 +1641,8 @@ impl StableDigest {
     fn assembly_joint(&mut self, joint: &AssemblyJoint) {
         self.bytes(joint.schema().as_bytes());
         self.u64(joint.id().0);
-        self.u64(joint.parent_occurrence_id().0);
-        self.u64(joint.child_occurrence_id().0);
+        self.instance_path(joint.parent_instance_path());
+        self.instance_path(joint.child_instance_path());
         self.assembly_joint_kind(joint.kind());
     }
 
@@ -1623,6 +1882,13 @@ impl StableDigest {
                     self.u64(id.0);
                 }
             }
+            DrawingSource::RigidAssemblyInstances { instance_paths } => {
+                self.byte(3);
+                self.u64(instance_paths.len() as u64);
+                for path in instance_paths {
+                    self.instance_path(path);
+                }
+            }
         }
         let page = sheet.page();
         self.bytes(page.size().stable_name().as_bytes());
@@ -1662,6 +1928,120 @@ impl StableDigest {
                     self.u64(upper_bits);
                     self.u64(lower_bits);
                 }
+            }
+        }
+        self.u64(sheet.angular_dimensions().len() as u64);
+        for dimension in sheet.angular_dimensions() {
+            self.u64(dimension.id().0);
+            self.bytes(dimension.view_stable_name().as_bytes());
+            for source in dimension.source_line_ids() {
+                self.bytes(source.as_bytes());
+            }
+            self.u64(dimension.arc_radius_page_mm().to_bits());
+            match dimension.tolerance() {
+                DrawingDimensionTolerance::None => self.byte(0),
+                DrawingDimensionTolerance::Symmetric { deviation_bits } => {
+                    self.byte(1);
+                    self.u64(deviation_bits);
+                }
+                DrawingDimensionTolerance::Bilateral {
+                    upper_bits,
+                    lower_bits,
+                } => {
+                    self.byte(2);
+                    self.u64(upper_bits);
+                    self.u64(lower_bits);
+                }
+            }
+        }
+        self.u64(sheet.circular_dimensions().len() as u64);
+        for dimension in sheet.circular_dimensions() {
+            self.u64(dimension.id().0);
+            self.bytes(dimension.view_stable_name().as_bytes());
+            self.bytes(dimension.source_circle_id().as_bytes());
+            self.byte(match dimension.kind() {
+                DrawingCircularDimensionKind::Radius => 1,
+                DrawingCircularDimensionKind::Diameter => 2,
+            });
+            self.u64(dimension.leader_angle_degrees().to_bits());
+            self.u64(dimension.offset_page_mm().to_bits());
+            match dimension.tolerance() {
+                DrawingDimensionTolerance::None => self.byte(0),
+                DrawingDimensionTolerance::Symmetric { deviation_bits } => {
+                    self.byte(1);
+                    self.u64(deviation_bits);
+                }
+                DrawingDimensionTolerance::Bilateral {
+                    upper_bits,
+                    lower_bits,
+                } => {
+                    self.byte(2);
+                    self.u64(upper_bits);
+                    self.u64(lower_bits);
+                }
+            }
+        }
+        self.u64(sheet.datum_symbols().len() as u64);
+        for datum in sheet.datum_symbols() {
+            self.u64(datum.id().0);
+            self.bytes(datum.view_stable_name().as_bytes());
+            self.bytes(datum.source_line_id().as_bytes());
+            self.bytes(datum.label().as_bytes());
+            for coordinate in datum.offset_page_mm() {
+                self.u64(coordinate.to_bits());
+            }
+        }
+        self.u64(sheet.feature_control_frames().len() as u64);
+        for frame in sheet.feature_control_frames() {
+            self.u64(frame.id().0);
+            self.bytes(frame.view_stable_name().as_bytes());
+            self.bytes(frame.source_line_id().as_bytes());
+            self.byte(match frame.characteristic() {
+                DrawingGeometricCharacteristic::Straightness => 1,
+                DrawingGeometricCharacteristic::Flatness => 2,
+                DrawingGeometricCharacteristic::Circularity => 3,
+                DrawingGeometricCharacteristic::Cylindricity => 4,
+                DrawingGeometricCharacteristic::ProfileOfLine => 5,
+                DrawingGeometricCharacteristic::ProfileOfSurface => 6,
+                DrawingGeometricCharacteristic::Angularity => 7,
+                DrawingGeometricCharacteristic::Perpendicularity => 8,
+                DrawingGeometricCharacteristic::Parallelism => 9,
+                DrawingGeometricCharacteristic::Position => 10,
+                DrawingGeometricCharacteristic::Concentricity => 11,
+                DrawingGeometricCharacteristic::Symmetry => 12,
+                DrawingGeometricCharacteristic::CircularRunout => 13,
+                DrawingGeometricCharacteristic::TotalRunout => 14,
+            });
+            self.u64(frame.tolerance_mm().to_bits());
+            self.byte(u8::from(frame.diameter_zone()));
+            self.byte(match frame.material_condition() {
+                DrawingMaterialCondition::None => 0,
+                DrawingMaterialCondition::MaximumMaterial => 1,
+                DrawingMaterialCondition::LeastMaterial => 2,
+                DrawingMaterialCondition::RegardlessOfFeatureSize => 3,
+            });
+            self.u64(frame.datum_references().len() as u64);
+            for reference in frame.datum_references() {
+                self.bytes(reference.label().as_bytes());
+                self.byte(match reference.material_condition() {
+                    DrawingMaterialCondition::None => 0,
+                    DrawingMaterialCondition::MaximumMaterial => 1,
+                    DrawingMaterialCondition::LeastMaterial => 2,
+                    DrawingMaterialCondition::RegardlessOfFeatureSize => 3,
+                });
+            }
+            for coordinate in frame.offset_page_mm() {
+                self.u64(coordinate.to_bits());
+            }
+        }
+        self.u64(sheet.bom_balloons().len() as u64);
+        for balloon in sheet.bom_balloons() {
+            self.u64(balloon.id().0);
+            self.bytes(balloon.view_stable_name().as_bytes());
+            self.instance_path(balloon.instance_path());
+            self.u64(u64::from(balloon.position()));
+            for coordinate in balloon.offset_page_mm() {
+                self.u64(coordinate.to_bits());
             }
         }
         self.u64(sheet.notes().len() as u64);
@@ -1784,6 +2164,16 @@ impl StableDigest {
                 if let Some(clearance) = product.clearance_volumes.get(&id) {
                     self.byte(1);
                     self.clearance_volume(clearance);
+                } else {
+                    self.byte(0);
+                }
+            }
+            AuthoritativeDependency::CamPlan(id) => {
+                self.byte(39);
+                self.u64(id.0);
+                if let Some(plan) = product.cam_plans.get(&id) {
+                    self.byte(1);
+                    self.cam_plan(plan);
                 } else {
                     self.byte(0);
                 }
@@ -2067,7 +2457,17 @@ impl StableDigest {
                         FeatureKind::Sweep { profile, path } if profile == id || path == id => {
                             Some(feature.id)
                         }
-                        FeatureKind::Loft { ref sections }
+                        FeatureKind::WeldmentMember(ref spec)
+                            if spec.profile == id || spec.path == id =>
+                        {
+                            Some(feature.id)
+                        }
+                        FeatureKind::WeldmentJoint(ref spec)
+                            if spec.first_member == id || spec.second_member == id =>
+                        {
+                            Some(feature.id)
+                        }
+                        FeatureKind::Loft { ref sections, .. }
                             if sections.iter().any(|section| section.profile == id) =>
                         {
                             Some(feature.id)
@@ -2565,6 +2965,7 @@ impl StableDigest {
                 source_revision,
                 source_digest,
                 transforms,
+                instance_transforms,
             } => {
                 self.byte(54);
                 self.u64(*source_revision);
@@ -2572,6 +2973,11 @@ impl StableDigest {
                 self.u64(transforms.len() as u64);
                 for (id, transform) in transforms {
                     self.u64(id.0);
+                    self.transform(*transform);
+                }
+                self.u64(instance_transforms.len() as u64);
+                for (path, transform) in instance_transforms {
+                    self.instance_path(path);
                     self.transform(*transform);
                 }
             }
@@ -2892,6 +3298,14 @@ impl StableDigest {
             }
             CanonicalCommand::DeleteClearanceVolume { id } => {
                 self.byte(48);
+                self.u64(id.0);
+            }
+            CanonicalCommand::UpsertCamPlan(plan) => {
+                self.byte(112);
+                self.cam_plan(plan);
+            }
+            CanonicalCommand::DeleteCamPlan { id } => {
+                self.byte(113);
                 self.u64(id.0);
             }
             CanonicalCommand::UpsertPersistentDimension(dimension) => {

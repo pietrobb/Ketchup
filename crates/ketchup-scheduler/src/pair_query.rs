@@ -122,7 +122,7 @@ impl ExactWorkerSupervisor {
         }
         let result = (|| {
             self.client
-                .verify_p5_capability("EXACT_PAIR_V1", cancelled)?;
+                .verify_p5_capability("EXACT_PAIR_V2", cancelled)?;
             pair_ack(
                 &self
                     .client
@@ -152,7 +152,7 @@ impl ExactWorkerSupervisor {
             let mut results = Vec::with_capacity(candidates.len());
             for candidate in candidates {
                 let mut request = format!(
-                    "PAIR_QUERY_V1 {} {} {:016x}",
+                    "PAIR_QUERY_V2 {} {} {:016x}",
                     indices[&candidate.left_graph],
                     indices[&candidate.right_graph],
                     contact_tolerance_mm.to_bits()
@@ -325,7 +325,7 @@ fn parse_pair_result(
         return Err(parse_error_response(response, &fields));
     }
     let invalid = || WorkerError::Protocol(response.to_owned());
-    if fields.len() != 4 || fields[0] != "OK_PAIR_QUERY_V1" || fields[1] != digest {
+    if fields.len() != 5 || fields[0] != "OK_PAIR_QUERY_V2" || fields[1] != digest {
         return Err(invalid());
     }
     let decode = |value: &str| -> Result<f64, WorkerError> {
@@ -339,7 +339,8 @@ fn parse_pair_result(
         Ok(value)
     };
     let common_volume_mm3 = decode(fields[2])?;
-    let distance_mm = decode(fields[3])?;
+    let common_contact_area_mm2 = decode(fields[3])?;
+    let distance_mm = decode(fields[4])?;
     if common_volume_mm3 > 0.0 && distance_mm != 0.0 {
         return Err(invalid());
     }
@@ -352,6 +353,7 @@ fn parse_pair_result(
             ExactPairRelation::Separated
         },
         common_volume_mm3,
+        common_contact_area_mm2,
         distance_mm,
     })
 }
@@ -454,10 +456,10 @@ mod tests {
     fn pair_protocol_never_converts_errors_or_invalid_evidence_to_separated() {
         for response in [
             "ERR invalid_result",
-            "OK_PAIR_QUERY_V1 wrong 0000000000000000 0000000000000000",
-            "OK_PAIR_QUERY_V1 id 7ff8000000000000 0000000000000000",
-            "OK_PAIR_QUERY_V1 id 3ff0000000000000 3ff0000000000000",
-            "OK_PAIR_QUERY_V1 id 0000000000000000 bff0000000000000",
+            "OK_PAIR_QUERY_V2 wrong 0000000000000000 0000000000000000",
+            "OK_PAIR_QUERY_V2 id 7ff8000000000000 0000000000000000",
+            "OK_PAIR_QUERY_V2 id 3ff0000000000000 3ff0000000000000",
+            "OK_PAIR_QUERY_V2 id 0000000000000000 bff0000000000000",
         ] {
             assert!(
                 parse_pair_result(response, "id", 1e-7).is_err(),

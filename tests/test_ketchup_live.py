@@ -147,7 +147,7 @@ def test_discovery_lists_only_nonce_verified_live_registry_entries(tmp_path):
                 value = json.loads(request)
                 assert value["version"] == 1
                 assert value["action"] == "list"
-                assert value["requester"] == "Supervisor"
+                assert set(value) == {"version", "action", "nonce"}
                 assert len(value["nonce"]) == 64
                 response = {"version": 1, "nonce": value["nonce"], "status": "available",
                             "instance_id": instance_id, "document": "part.ketchup"}
@@ -194,7 +194,7 @@ def test_attach_revalidates_instance_and_uses_credential_only_internally(tmp_pat
                     value = json.loads(request)
                     requests.append(value)
                     assert value == {"version": 1, "action": action,
-                                     "requester": "Supervisor", "nonce": value["nonce"]}
+                                     "nonce": value["nonce"]}
                     assert len(value["nonce"]) == 64
                     if action == "list":
                         response_value = {"version": 1, "nonce": value["nonce"],

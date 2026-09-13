@@ -2392,8 +2392,9 @@ fn assistant_static_load_report_filtered(
 
 pub use crate::collision::{
     CollisionScope, FabricationCollisionValidation, assistant_validation_context,
-    assistant_validation_context_with_worker, fabrication_collision_validation_with_worker,
-    scoped_collision_report_with_worker,
+    assistant_validation_context_with_worker,
+    assistant_validation_context_with_worker_cancellation,
+    fabrication_collision_validation_with_worker, scoped_collision_report_with_worker,
 };
 
 pub(crate) fn assistant_validation_context_base(
@@ -2401,6 +2402,7 @@ pub(crate) fn assistant_validation_context_base(
     exact_results: &ExactResultRegistry,
     selection: &AssistantValidationSelection,
     collision: serde_json::Value,
+    exact_gravity_contacts: &[GravitySupportContact],
 ) -> serde_json::Value {
     let tolerance = TolerancePolicy::default();
     let needs_participant_projection = selection.requested.iter().any(|id| *id != "collision");
@@ -2614,7 +2616,8 @@ pub(crate) fn assistant_validation_context_base(
         .then(|| declared_gravity.map_or(CANONICAL_GRAVITY_M_S2, |gravity| gravity.vector_m_s2))
         .and_then(|vector_m_s2| {
             GravitySupportInput::new(gravity_participants.clone(), vector_m_s2).ok()
-        });
+        })
+        .map(|input| input.with_exact_contacts(exact_gravity_contacts.to_vec()));
     // Collision coverage and BRep evidence are independent of the bounded
     // envelope participants used by the remaining structural validators.
     let gravity_report = selection

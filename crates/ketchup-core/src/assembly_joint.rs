@@ -1,5 +1,5 @@
 use crate::document::{
-    CanonicalCommand, CommandBatch, DocumentStore, GroupId, OccurrenceId, Proposal,
+    CanonicalCommand, CommandBatch, DocumentStore, InstancePath, OccurrenceId, Proposal,
     ProposalPrepareError, Snapshot, Transform,
 };
 use crate::mechanical_coupling::{AssemblyMotionCoupling, AssemblyMotionCouplingId};
@@ -283,8 +283,8 @@ impl AssemblyJointKind {
 pub struct AssemblyJoint {
     pub(crate) schema: String,
     pub(crate) id: AssemblyJointId,
-    pub(crate) parent_occurrence_id: OccurrenceId,
-    pub(crate) child_occurrence_id: OccurrenceId,
+    pub(crate) parent_instance_path: InstancePath,
+    pub(crate) child_instance_path: InstancePath,
     pub(crate) kind: AssemblyJointKind,
 }
 
@@ -296,11 +296,26 @@ impl AssemblyJoint {
         child_occurrence_id: OccurrenceId,
         kind: AssemblyJointKind,
     ) -> Self {
+        Self::new_at_paths(
+            id,
+            InstancePath::root(parent_occurrence_id),
+            InstancePath::root(child_occurrence_id),
+            kind,
+        )
+    }
+
+    #[must_use]
+    pub fn new_at_paths(
+        id: AssemblyJointId,
+        parent_instance_path: InstancePath,
+        child_instance_path: InstancePath,
+        kind: AssemblyJointKind,
+    ) -> Self {
         Self {
             schema: ASSEMBLY_JOINT_SCHEMA_V1.to_owned(),
             id,
-            parent_occurrence_id,
-            child_occurrence_id,
+            parent_instance_path,
+            child_instance_path,
             kind,
         }
     }
@@ -317,12 +332,22 @@ impl AssemblyJoint {
 
     #[must_use]
     pub const fn parent_occurrence_id(&self) -> OccurrenceId {
-        self.parent_occurrence_id
+        self.parent_instance_path.root_occurrence()
+    }
+
+    #[must_use]
+    pub const fn parent_instance_path(&self) -> &InstancePath {
+        &self.parent_instance_path
     }
 
     #[must_use]
     pub const fn child_occurrence_id(&self) -> OccurrenceId {
-        self.child_occurrence_id
+        self.child_instance_path.root_occurrence()
+    }
+
+    #[must_use]
+    pub const fn child_instance_path(&self) -> &InstancePath {
+        &self.child_instance_path
     }
 
     #[must_use]
@@ -334,9 +359,9 @@ impl AssemblyJoint {
     pub fn has_valid_shape(&self) -> bool {
         self.schema == ASSEMBLY_JOINT_SCHEMA_V1
             && self.id.0 != 0
-            && self.parent_occurrence_id.0 != 0
-            && self.child_occurrence_id.0 != 0
-            && self.parent_occurrence_id != self.child_occurrence_id
+            && self.parent_instance_path.root_occurrence().0 != 0
+            && self.child_instance_path.root_occurrence().0 != 0
+            && self.parent_instance_path != self.child_instance_path
             && self.kind.is_valid()
     }
 }
@@ -456,6 +481,7 @@ pub struct AssemblyMotionPath {
     study_id: AssemblyMotionStudyId,
     sample_intervals: u32,
     samples: Vec<AssemblyMotionSample>,
+    angular_motion_intervals: Vec<bool>,
 }
 
 impl AssemblyMotionPath {
@@ -573,6 +599,30 @@ impl AssemblyMotionContact {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AssemblyMotionUnresolvedInterval {
+    pair: AssemblyMotionCollisionPair,
+    progress_start: f64,
+    progress_end: f64,
+}
+
+impl AssemblyMotionUnresolvedInterval {
+    #[must_use]
+    pub const fn pair(self) -> AssemblyMotionCollisionPair {
+        self.pair
+    }
+
+    #[must_use]
+    pub const fn progress_start(self) -> f64 {
+        self.progress_start
+    }
+
+    #[must_use]
+    pub const fn progress_end(self) -> f64 {
+        self.progress_end
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct AssemblyMotionClearanceAnalysis {
     source_revision: u64,
@@ -580,6 +630,7 @@ pub struct AssemblyMotionClearanceAnalysis {
     minimum_clearance_mm: f64,
     minimum_clearance: AssemblyMotionContact,
     first_contact: Option<AssemblyMotionContact>,
+    unresolved_intervals: Vec<AssemblyMotionUnresolvedInterval>,
 }
 
 impl AssemblyMotionClearanceAnalysis {
@@ -606,6 +657,16 @@ impl AssemblyMotionClearanceAnalysis {
     #[must_use]
     pub const fn first_contact(&self) -> Option<AssemblyMotionContact> {
         self.first_contact
+    }
+
+    #[must_use]
+    pub fn unresolved_intervals(&self) -> &[AssemblyMotionUnresolvedInterval] {
+        &self.unresolved_intervals
+    }
+
+    #[must_use]
+    pub const fn is_conclusive(&self) -> bool {
+        self.unresolved_intervals.is_empty()
     }
 }
 
@@ -638,7 +699,7 @@ impl AssemblyMotionClearancePreview {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AssemblyKinematicPose {
-    occurrence_id: OccurrenceId,
+    instance_path: InstancePath,
     local_transform: Transform,
     world_transform: Transform,
 }
@@ -646,7 +707,12 @@ pub struct AssemblyKinematicPose {
 impl AssemblyKinematicPose {
     #[must_use]
     pub const fn occurrence_id(&self) -> OccurrenceId {
-        self.occurrence_id
+        self.instance_path.root_occurrence()
+    }
+
+    #[must_use]
+    pub const fn instance_path(&self) -> &InstancePath {
+        &self.instance_path
     }
 
     #[must_use]
@@ -745,8 +811,13 @@ impl AssemblyKinematicSolution {
 
     #[must_use]
     pub fn pose(&self, occurrence_id: OccurrenceId) -> Option<&AssemblyKinematicPose> {
+        self.pose_at_path(&InstancePath::root(occurrence_id))
+    }
+
+    #[must_use]
+    pub fn pose_at_path(&self, instance_path: &InstancePath) -> Option<&AssemblyKinematicPose> {
         self.poses
-            .binary_search_by_key(&occurrence_id, AssemblyKinematicPose::occurrence_id)
+            .binary_search_by(|pose| pose.instance_path().cmp(instance_path))
             .ok()
             .map(|index| &self.poses[index])
     }
@@ -777,9 +848,12 @@ impl AssemblyKinematicSolution {
         let required_transform_ids = changed_joint_positions
             .iter()
             .filter_map(|(id, _)| {
-                current
-                    .assembly_joint(*id)
-                    .map(AssemblyJoint::child_occurrence_id)
+                current.assembly_joint(*id).and_then(|joint| {
+                    joint
+                        .child_instance_path()
+                        .is_root()
+                        .then_some(joint.child_occurrence_id())
+                })
             })
             .collect::<BTreeSet<_>>();
         let mut commands = changed_joint_positions
@@ -794,6 +868,7 @@ impl AssemblyKinematicSolution {
         let transforms = self
             .poses
             .iter()
+            .filter(|pose| pose.instance_path().is_root())
             .filter_map(|pose| {
                 current
                     .occurrence(pose.occurrence_id())
@@ -815,11 +890,26 @@ impl AssemblyKinematicSolution {
                 *id,
             ));
         }
-        if !transforms.is_empty() {
+        let instance_transforms = self
+            .poses
+            .iter()
+            .filter(|pose| !pose.instance_path().is_root())
+            .filter_map(|pose| {
+                current
+                    .resolve_instance_path(pose.instance_path())
+                    .ok()
+                    .filter(|resolved| {
+                        !transforms_equivalent(resolved.local_transform, pose.local_transform())
+                    })
+                    .map(|_| (pose.instance_path().clone(), pose.local_transform()))
+            })
+            .collect::<Vec<_>>();
+        if !transforms.is_empty() || !instance_transforms.is_empty() {
             commands.push(CanonicalCommand::ApplyAssemblySolve {
                 source_revision: self.source_revision,
                 source_digest: self.source_digest.clone(),
                 transforms,
+                instance_transforms,
             });
         }
         if commands.is_empty() {
@@ -1011,6 +1101,7 @@ pub enum AssemblyKinematicPublishError {
     Stale,
     NotMotionStudySolution,
     NoCanonicalChanges,
+    NestedInstanceTransformRequired(InstancePath),
     GroundedOccurrenceWouldMove(OccurrenceId),
     ProposalPreparation(ProposalPrepareError),
 }
@@ -1025,6 +1116,10 @@ impl fmt::Display for AssemblyKinematicPublishError {
             Self::NoCanonicalChanges => {
                 formatter.write_str("assembly kinematic solution has no canonical changes")
             }
+            Self::NestedInstanceTransformRequired(path) => write!(
+                formatter,
+                "assembly kinematic solution requires an unsupported nested instance transform at {path:?}"
+            ),
             Self::GroundedOccurrenceWouldMove(id) => write!(
                 formatter,
                 "assembly kinematic solution would move grounded occurrence {}",
@@ -1101,13 +1196,43 @@ pub fn sample_assembly_motion_study(
         })
         .collect::<Result<Vec<_>, AssemblyKinematicSolveError>>()?;
 
+    let angular_motion_intervals = angular_motion_intervals(snapshot, &samples);
     Ok(AssemblyMotionPath {
         source_revision: snapshot.revision_id(),
         source_digest: snapshot.canonical_digest(),
         study_id,
         sample_intervals,
         samples,
+        angular_motion_intervals,
     })
+}
+
+fn angular_motion_intervals(snapshot: &Snapshot, samples: &[AssemblyMotionSample]) -> Vec<bool> {
+    samples
+        .windows(2)
+        .map(|interval| {
+            let end_positions = interval[1]
+                .solution()
+                .driven_joint_positions()
+                .iter()
+                .copied()
+                .collect::<BTreeMap<_, _>>();
+            interval[0].solution().driven_joint_positions().iter().any(
+                |(joint_id, start_position)| {
+                    end_positions.get(joint_id).is_some_and(|end_position| {
+                        !coupled_positions_equal(*start_position, *end_position)
+                            && snapshot.assembly_joint(*joint_id).is_some_and(|joint| {
+                                matches!(
+                                    joint.kind(),
+                                    AssemblyJointKind::Revolute { .. }
+                                        | AssemblyJointKind::Helical { .. }
+                                )
+                            })
+                    })
+                },
+            )
+        })
+        .collect()
 }
 
 pub fn preview_assembly_motion_study_clearance(
@@ -1185,6 +1310,7 @@ pub fn analyze_assembly_motion_clearance(
         progress_end: 0.0,
     };
     let mut first_contact = None;
+    let mut unresolved_intervals = Vec::new();
     let mut consider_minimum = |location: AssemblyMotionContact, clearance_mm: f64| {
         if clearance_mm < minimum_clearance_mm {
             minimum_clearance_mm = clearance_mm;
@@ -1240,46 +1366,49 @@ pub fn analyze_assembly_motion_clearance(
                     .pose(bodies[second].occurrence_id())
                     .expect("sampled bounds validated this pose");
 
-                let (clearance_mm, minimum_t, contact_t, conservative_interval) =
-                    if same_linear_transform(
+                let interval_is_conclusive = !path.angular_motion_intervals[interval]
+                    && same_linear_transform(
                         first_start_pose.world_transform(),
                         first_end_pose.world_transform(),
-                    ) && same_linear_transform(
+                    )
+                    && same_linear_transform(
                         second_start_pose.world_transform(),
                         second_end_pose.world_transform(),
-                    ) {
-                        let (clearance_mm, minimum_t, contact_t) =
-                            continuous_translational_aabb_clearance(
-                                sampled_bounds[interval][first],
-                                sampled_bounds[interval + 1][first],
-                                sampled_bounds[interval][second],
-                                sampled_bounds[interval + 1][second],
-                                contact_tolerance_mm,
-                            )?;
-                        (clearance_mm, minimum_t, contact_t, false)
-                    } else {
-                        let first_swept = union_aabb(
-                            sampled_bounds[interval][first],
-                            sampled_bounds[interval + 1][first],
-                        )?;
-                        let second_swept = union_aabb(
-                            sampled_bounds[interval][second],
-                            sampled_bounds[interval + 1][second],
-                        )?;
-                        let clearance_mm = aabb_clearance(first_swept, second_swept)?;
-                        (
-                            clearance_mm,
-                            0.0,
-                            (clearance_mm <= contact_tolerance_mm).then_some(0.0),
-                            true,
-                        )
-                    };
+                    );
+                let (clearance_mm, minimum_t, contact_t) = if interval_is_conclusive {
+                    continuous_translational_aabb_clearance(
+                        sampled_bounds[interval][first],
+                        sampled_bounds[interval + 1][first],
+                        sampled_bounds[interval][second],
+                        sampled_bounds[interval + 1][second],
+                        contact_tolerance_mm,
+                    )?
+                } else {
+                    unresolved_intervals.push(AssemblyMotionUnresolvedInterval {
+                        pair,
+                        progress_start: start_progress,
+                        progress_end: end_progress,
+                    });
+                    let endpoint_clearance = aabb_clearance(
+                        sampled_bounds[interval + 1][first],
+                        sampled_bounds[interval + 1][second],
+                    )?;
+                    (
+                        0.0,
+                        0.0,
+                        (endpoint_clearance <= contact_tolerance_mm).then_some(1.0),
+                    )
+                };
                 let minimum_progress = start_progress + (end_progress - start_progress) * minimum_t;
                 consider_minimum(
                     AssemblyMotionContact {
                         pair,
                         progress_start: minimum_progress,
-                        progress_end: minimum_progress,
+                        progress_end: if interval_is_conclusive {
+                            minimum_progress
+                        } else {
+                            end_progress
+                        },
                     },
                     clearance_mm,
                 );
@@ -1289,11 +1418,7 @@ pub fn analyze_assembly_motion_clearance(
                     let candidate = AssemblyMotionContact {
                         pair,
                         progress_start: contact_progress,
-                        progress_end: if conservative_interval {
-                            end_progress
-                        } else {
-                            contact_progress
-                        },
+                        progress_end: contact_progress,
                     };
                     if interval_first_contact.is_none_or(|current| {
                         candidate.progress_start() < current.progress_start()
@@ -1316,6 +1441,7 @@ pub fn analyze_assembly_motion_clearance(
         minimum_clearance_mm,
         minimum_clearance,
         first_contact,
+        unresolved_intervals,
     })
 }
 
@@ -1456,12 +1582,14 @@ pub fn preview_assembly_joint_drag_clearance(
         })
         .collect::<Result<Vec<_>, AssemblyKinematicSolveError>>()
         .map_err(AssemblyMotionSamplingError::from)?;
+    let angular_motion_intervals = angular_motion_intervals(snapshot, &samples);
     let path = AssemblyMotionPath {
         source_revision: snapshot.revision_id(),
         source_digest: snapshot.canonical_digest(),
         study_id: AssemblyMotionStudyId(0),
         sample_intervals,
         samples,
+        angular_motion_intervals,
     };
     let clearance = analyze_assembly_motion_clearance(&path, bodies, contact_tolerance_mm)?;
     Ok(AssemblyJointDragClearancePreview { drag, clearance })
@@ -1508,15 +1636,20 @@ fn solve_assembly_joint_kinematics_internal(
     let remaining_dof_joint_ids =
         remaining_dof_joint_ids(snapshot, position_overrides.keys().copied().collect());
     let mut source_world = BTreeMap::new();
-    let mut occurrence_parents = BTreeMap::<OccurrenceId, Option<GroupId>>::new();
-    for occurrence in snapshot.occurrences() {
-        let world = snapshot
-            .world_transform_for_occurrence(occurrence.id())
-            .ok_or(AssemblyKinematicSolveError::MissingOccurrence(
-                occurrence.id(),
-            ))?;
-        source_world.insert(occurrence.id(), world);
-        occurrence_parents.insert(occurrence.id(), occurrence.parent());
+    let mut source_parent_world = BTreeMap::new();
+    for occurrence in snapshot.scene_query() {
+        let resolved = snapshot
+            .resolve_instance_path(&occurrence.instance_path)
+            .map_err(|_| {
+                AssemblyKinematicSolveError::MissingOccurrence(
+                    occurrence.instance_path.root_occurrence(),
+                )
+            })?;
+        source_parent_world.insert(
+            occurrence.instance_path.clone(),
+            resolved.parent_world_transform,
+        );
+        source_world.insert(occurrence.instance_path, occurrence.transform);
     }
 
     let joints = snapshot.assembly_joints().collect::<Vec<_>>();
@@ -1547,14 +1680,14 @@ fn solve_assembly_joint_kinematics_internal(
         .iter()
         .filter_map(|(id, driver)| (driver.count > 1).then_some(*id))
         .collect();
-    let child_ids = joints
+    let child_paths = joints
         .iter()
-        .map(|joint| joint.child_occurrence_id())
+        .map(|joint| joint.child_instance_path().clone())
         .collect::<BTreeSet<_>>();
     let mut solved_world = source_world
         .iter()
-        .filter(|(id, _)| !child_ids.contains(id))
-        .map(|(id, transform)| (*id, *transform))
+        .filter(|(path, _)| !child_paths.contains(*path))
+        .map(|(path, transform)| (path.clone(), *transform))
         .collect::<BTreeMap<_, _>>();
     let mut pending = joints;
 
@@ -1562,22 +1695,20 @@ fn solve_assembly_joint_kinematics_internal(
         let mut advanced = false;
         let mut deferred = Vec::new();
         for joint in pending {
-            let parent_id = joint.parent_occurrence_id();
-            let child_id = joint.child_occurrence_id();
-            let Some(parent_solved_world) = solved_world.get(&parent_id).copied() else {
+            let parent_path = joint.parent_instance_path();
+            let child_path = joint.child_instance_path();
+            let Some(parent_solved_world) = solved_world.get(parent_path).copied() else {
                 deferred.push(joint);
                 continue;
             };
-            let parent_source_world = source_world
-                .get(&parent_id)
-                .copied()
-                .ok_or(AssemblyKinematicSolveError::MissingOccurrence(parent_id))?;
-            let child_source_world = source_world
-                .get(&child_id)
-                .copied()
-                .ok_or(AssemblyKinematicSolveError::MissingOccurrence(child_id))?;
+            let parent_source_world = source_world.get(parent_path).copied().ok_or(
+                AssemblyKinematicSolveError::MissingOccurrence(parent_path.root_occurrence()),
+            )?;
+            let child_source_world = source_world.get(child_path).copied().ok_or(
+                AssemblyKinematicSolveError::MissingOccurrence(child_path.root_occurrence()),
+            )?;
             let inverse_parent = invert_affine_transform(parent_source_world).ok_or(
-                AssemblyKinematicSolveError::NonInvertibleTransform(parent_id),
+                AssemblyKinematicSolveError::NonInvertibleTransform(parent_path.root_occurrence()),
             )?;
             let target_kind = kind_overrides.get(&joint.id()).copied().unwrap_or_else(|| {
                 position_overrides
@@ -1597,7 +1728,16 @@ fn solve_assembly_joint_kinematics_internal(
                 .compose(delta_motion)
                 .compose(inverse_parent)
                 .compose(child_source_world);
-            solved_world.insert(child_id, world);
+            let inverse_child_source = invert_affine_transform(child_source_world).ok_or(
+                AssemblyKinematicSolveError::NonInvertibleTransform(child_path.root_occurrence()),
+            )?;
+            let subtree_delta = world.compose(inverse_child_source);
+            let moved_subtree = source_world
+                .iter()
+                .filter(|(path, _)| child_path.is_prefix_of(path))
+                .map(|(path, source)| (path.clone(), subtree_delta.compose(*source)))
+                .collect::<Vec<_>>();
+            solved_world.extend(moved_subtree);
             advanced = true;
         }
         if !advanced {
@@ -1607,24 +1747,30 @@ fn solve_assembly_joint_kinematics_internal(
     }
 
     let mut poses = Vec::with_capacity(source_world.len());
-    for (occurrence_id, world_transform) in solved_world {
-        let local_transform = match occurrence_parents[&occurrence_id] {
-            Some(group_id) => {
-                let group_world = snapshot.world_transform_for_group(group_id).ok_or(
-                    AssemblyKinematicSolveError::MissingOccurrence(occurrence_id),
-                )?;
-                invert_affine_transform(group_world)
-                    .ok_or(AssemblyKinematicSolveError::NonInvertibleTransform(
-                        occurrence_id,
-                    ))?
-                    .compose(world_transform)
-            }
-            None => world_transform,
-        };
+    for (instance_path, world_transform) in &solved_world {
+        let mut parent_world = source_parent_world[instance_path];
+        if let Some((ancestor_path, ancestor_world)) = solved_world
+            .iter()
+            .filter(|(path, _)| *path != instance_path && path.is_prefix_of(instance_path))
+            .max_by_key(|(path, _)| path.steps().len())
+        {
+            let source_ancestor = source_world[ancestor_path];
+            let inverse_source_ancestor = invert_affine_transform(source_ancestor).ok_or(
+                AssemblyKinematicSolveError::NonInvertibleTransform(
+                    ancestor_path.root_occurrence(),
+                ),
+            )?;
+            parent_world = ancestor_world
+                .compose(inverse_source_ancestor)
+                .compose(parent_world);
+        }
+        let inverse_parent = invert_affine_transform(parent_world).ok_or(
+            AssemblyKinematicSolveError::NonInvertibleTransform(instance_path.root_occurrence()),
+        )?;
         poses.push(AssemblyKinematicPose {
-            occurrence_id,
-            local_transform,
-            world_transform,
+            instance_path: instance_path.clone(),
+            local_transform: inverse_parent.compose(*world_transform),
+            world_transform: *world_transform,
         });
     }
 
@@ -2099,12 +2245,6 @@ fn transform_aabb(
             .map(|point| point[axis])
             .fold(f64::NEG_INFINITY, f64::max)
     });
-    Aabb::new(min, max).map_err(|_| AssemblyMotionClearanceError::NumericalFailure)
-}
-
-fn union_aabb(left: Aabb, right: Aabb) -> Result<Aabb, AssemblyMotionClearanceError> {
-    let min = std::array::from_fn(|axis| left.min()[axis].min(right.min()[axis]));
-    let max = std::array::from_fn(|axis| left.max()[axis].max(right.max()[axis]));
     Aabb::new(min, max).map_err(|_| AssemblyMotionClearanceError::NumericalFailure)
 }
 

@@ -60,6 +60,7 @@ def tool_context():
             "occurrences": [
                 {
                     "occurrence_id": 7,
+                    "instance_path": {"root_occurrence_id": 7, "steps": []},
                     "definition_id": 2,
                     "name": "Bottle",
                     "visible": True,
@@ -68,6 +69,7 @@ def tool_context():
                 },
                 {
                     "occurrence_id": 8,
+                    "instance_path": {"root_occurrence_id": 8, "steps": []},
                     "definition_id": 3,
                     "name": "Cap",
                     "visible": True,
@@ -78,6 +80,133 @@ def tool_context():
         }
     )
     return context
+
+
+def test_python_sdk_validates_mixed_fabrication_classification_program():
+    program = {
+        "operations": [
+            {
+                "operation": "upsert_classification_dimension",
+                "dimension_id": 200,
+                "name": "ketchup.fabrication.role.v1",
+                "categories": [
+                    {"id": 201, "name": "manufactured-item"},
+                    {"id": 202, "name": "purchased-item"},
+                ],
+            },
+            {
+                "operation": "upsert_classification_dimension",
+                "dimension_id": 210,
+                "name": "ketchup.material.v1",
+                "categories": [
+                    {"id": 211, "name": "ketchup.material.steel.s355.v1"},
+                    {"id": 212, "name": "ketchup.material.bearing.6202.v1"},
+                ],
+            },
+            {
+                "operation": "set_occurrence_classification",
+                "selector": {"type": "occurrences", "occurrence_ids": [3]},
+                "dimension_id": 200,
+                "category_id": 202,
+            },
+            {
+                "operation": "set_occurrence_classification",
+                "selector": {"type": "occurrences", "occurrence_ids": [3]},
+                "dimension_id": 210,
+                "category_id": 212,
+            },
+        ]
+    }
+
+    assert assistant._validate_cad_edit_program(program) == program
+    parsed = assistant._parse_assistant_result(
+        json.dumps(
+            {
+                "message": "Classified the purchased subassembly.",
+                "model_intent": None,
+                "cad_edit_program": program,
+            }
+        )
+    )
+    assert parsed["cad_edit_program"] == program
+
+    invalid = json.loads(json.dumps(program))
+    invalid["operations"][0]["categories"][1]["id"] = 201
+    with pytest.raises(assistant.ProtocolError):
+        assistant._validate_cad_edit_program(invalid)
+
+
+def test_provider_accepts_only_complete_bounded_typed_cam_setup():
+    operation = {
+        "operation": "upsert_cam_plan", "plan_id": 7, "name": "Reviewed top setup",
+        "target_definition_id": 2, "target_feature_id": 33,
+        "stock_minimum_mm": [-2, -2, -1], "stock_maximum_mm": [52, 32, 12],
+        "tool_number": 1, "tool_kind": "flat_end_mill", "tool_diameter_mm": 6,
+        "flute_length_mm": 18, "overall_length_mm": 50, "holder_diameter_mm": 20,
+        "holder_length_mm": 35, "spindle_rpm": 12000, "feed_mm_per_min": 900,
+        "plunge_mm_per_min": 250, "work_offset": "g54", "origin_mm": [0, 0, 12],
+        "x_axis": [1, 0, 0], "y_axis": [0, 1, 0], "safe_height_mm": 8,
+        "maximum_stepdown_mm": 2, "stepover_ratio": 0.45,
+        "radial_allowance_mm": 0.2, "axial_allowance_mm": 0.1,
+    }
+    program = {"operations": [operation]}
+    assert assistant._validate_cad_edit_program(program) == program
+    for mutate in (
+        lambda value: value.update(tool_kind="lathe"),
+        lambda value: value.update(x_axis=[0, 0, 0]),
+        lambda value: value.update(stepover_ratio=float("nan")),
+        lambda value: value.update(unreviewed_payload=True),
+    ):
+        invalid = json.loads(json.dumps(program))
+        mutate(invalid["operations"][0])
+        with pytest.raises(assistant.ProtocolError):
+            assistant._validate_cad_edit_program(invalid)
+
+
+def test_provider_accepts_only_complete_bounded_typed_fea_review():
+    request = {
+        "definition_id": 2,
+        "feature_id": 33,
+        "occurrence_id": 4,
+        "case_id": "bracket-static",
+        "youngs_modulus_mpa": 210000,
+        "poisson_ratio": 0.3,
+        "yield_strength_mpa": 355,
+        "constrained_face_ordinals": [0, 2],
+        "loaded_face_ordinal": 1,
+        "traction_local_n_per_mm2": [0, 0, -1.5],
+        "coarse_deflection_mm": 0.3,
+        "fine_deflection_mm": 0.12,
+    }
+    assert assistant._validate_fea_review(request) == request
+    parsed = assistant._parse_assistant_result(json.dumps({
+        "message": "Review this setup and confirm the solve.",
+        "model_intent": None,
+        "cad_edit_program": None,
+        "fea_review": request,
+    }))
+    assert parsed["fea_review"] == request
+
+    for mutate in (
+        lambda value: value.update(poisson_ratio=0.5),
+        lambda value: value.update(constrained_face_ordinals=[0, 0]),
+        lambda value: value.update(loaded_face_ordinal=0),
+        lambda value: value.update(traction_local_n_per_mm2=[0, 0, 0]),
+        lambda value: value.update(fine_deflection_mm=0.4),
+        lambda value: value.update(unreviewed_payload=True),
+    ):
+        invalid = json.loads(json.dumps(request))
+        mutate(invalid)
+        with pytest.raises(assistant.ProtocolError):
+            assistant._validate_fea_review(invalid)
+
+    with pytest.raises(assistant.ProtocolError):
+        assistant._parse_assistant_result(json.dumps({
+            "message": "Invalid mixed action.",
+            "model_intent": None,
+            "cad_edit_program": {"operations": []},
+            "fea_review": request,
+        }))
 
 
 def test_public_sidecar_exposes_host_collision_report_for_direct_non_mutating_answer():
@@ -110,7 +239,7 @@ def test_public_sidecar_exposes_host_collision_report_for_direct_non_mutating_an
     }
     calls = []
 
-    def sender(provider, model, message, history):
+    def sender(provider, model, message, history, document_context):
         calls.append(message)
         assert '"code": "collision.detected"' in message
         assert '"left_occurrence_id": 7' in message
@@ -173,7 +302,7 @@ def test_public_sidecar_exposes_host_gravity_support_report_for_direct_answer():
     }
     calls = []
 
-    def sender(provider, model, message, history):
+    def sender(provider, model, message, history, document_context):
         calls.append(message)
         assert '"code": "gravity.unsupported"' in message
         assert '"name": "Floating shelf"' in message
@@ -221,7 +350,7 @@ def test_public_providers_receive_authoritative_fail_closed_validator_selection(
     }
     calls = []
 
-    def sender(actual_provider, model, message, history):
+    def sender(actual_provider, model, message, history, document_context):
         calls.append((actual_provider, message))
         assert actual_provider == provider
         assert '"requested": ["collision"]' in message
@@ -254,7 +383,7 @@ def test_public_providers_receive_authoritative_fail_closed_validator_selection(
 def test_public_sidecar_conversation_uses_bounded_context_and_no_tools():
     calls = []
 
-    def sender(provider, model, message, history):
+    def sender(provider, model, message, history, document_context):
         calls.append((provider, model, message, history))
         return json.dumps({"message": "I can prepare a proposal.", "model_intent": None})
 
@@ -287,7 +416,7 @@ def test_project_memory_is_bounded_scope_checked_and_tamper_evident():
     context = project_context(7, ((4, "Remember shelf spacing", "The shelf spacing is 320 mm."),))
     calls = []
     sidecar = assistant.PublicAssistantSidecar(
-        lambda provider, model, message, history: calls.append(message)
+        lambda provider, model, message, history, document_context: calls.append(message)
         or json.dumps({"message": "I remember 320 mm.", "model_intent": None})
     )
     sidecar.handle(hello())
@@ -406,6 +535,110 @@ def test_cross_language_cad_contract_corpus_passes_public_parser_fail_closed():
         "maximum_deviation_mm",
     ):
         assert contract_term in assistant.SYSTEM_PROMPT
+
+
+def test_public_sidecar_validates_nested_assembly_joint_motion_and_drawing_programs():
+    parent = {
+        "root_occurrence_id": 7,
+        "steps": [
+            {"owner_definition_id": 20, "kind": "group", "local_id": 1},
+            {"owner_definition_id": 20, "kind": "occurrence", "local_id": 2},
+        ],
+    }
+    child = json.loads(json.dumps(parent))
+    child["steps"][-1]["local_id"] = 3
+    twin_child = json.loads(json.dumps(child))
+    twin_child["root_occurrence_id"] = 8
+    joint = {
+        "operations": [{
+            "operation": "create_assembly_joint",
+            "parent_instance_path": parent,
+            "child_instance_path": child,
+            "kind": {
+                "type": "prismatic",
+                "axis": {"direction_in_parent": [1, 0, 0], "pivot_in_parent_mm": [0, 0, 0]},
+                "limits": {"min": 0, "max": 20},
+                "position_mm": 0,
+            },
+        }],
+    }
+    motion = {"operations": [{"operation": "set_assembly_joint_position", "joint_id": 1, "position": 10}]}
+    drawing = {"operations": [{"operation": "create_drawing", "name": "Nested slider", "instance_paths": [child, twin_child]}]}
+    for program in (joint, motion, drawing):
+        assert assistant._validate_cad_edit_program(program) == program
+
+    duplicate_drawing = json.loads(json.dumps(drawing))
+    duplicate_drawing["operations"][0]["instance_paths"].append(child)
+    with pytest.raises(assistant.ProtocolError):
+        assistant._validate_cad_edit_program(duplicate_drawing)
+    mixed_motion = json.loads(json.dumps(motion))
+    mixed_motion["operations"].append(drawing["operations"][0])
+    with pytest.raises(assistant.ProtocolError):
+        assistant._validate_cad_edit_program(mixed_motion)
+    assert "set_assembly_joint_position" in assistant.SYSTEM_PROMPT
+    assert "exact rigid-source preflight" in assistant.SYSTEM_PROMPT
+
+
+def test_public_sidecar_accepts_typed_weldment_and_parameter_program():
+    first = {"operation_index": 0, "output": "body_feature"}
+    second = {"operation_index": 1, "output": "body_feature"}
+    program = {
+        "operations": [
+            {
+                "operation": "append_feature",
+                "definition_id": 80,
+                "name": "First member",
+                "feature": {
+                    "type": "weldment_member",
+                    "profile_feature_id": 80,
+                    "path_feature_id": 81,
+                    "orientation_degrees": 0,
+                },
+            },
+            {
+                "operation": "append_feature",
+                "definition_id": 80,
+                "name": "Second member",
+                "feature": {
+                    "type": "weldment_member",
+                    "profile_feature_id": 80,
+                    "path_feature_id": 82,
+                    "orientation_degrees": 0,
+                },
+            },
+            {
+                "operation": "append_feature",
+                "definition_id": 80,
+                "name": "Miter joint",
+                "feature": {
+                    "type": "weldment_joint",
+                    "first_member_id": first,
+                    "second_member_id": second,
+                    "policy": "miter",
+                    "primary": "first",
+                },
+            },
+            {
+                "operation": "set_feature_parameter",
+                "feature_id": 80,
+                "parameter_path": "bounds.width",
+                "value_type": "length",
+                "value": 6,
+            },
+        ]
+    }
+    assert assistant._validate_cad_edit_program(program) == program
+    assert "weldment_member" in assistant.SYSTEM_PROMPT
+    assert "set_feature_parameter" in assistant.SYSTEM_PROMPT
+
+    same_member = json.loads(json.dumps(program))
+    same_member["operations"][2]["feature"]["second_member_id"] = first
+    with pytest.raises(assistant.ProtocolError):
+        assistant._validate_cad_edit_program(same_member)
+    wrong_type = json.loads(json.dumps(program))
+    wrong_type["operations"][3]["value_type"] = "distance"
+    with pytest.raises(assistant.ProtocolError):
+        assistant._validate_cad_edit_program(wrong_type)
 
 
 def test_public_sidecar_parses_strict_bounded_cad_edit_program():
@@ -969,6 +1202,49 @@ def test_cad_append_planar_offset_matches_rust_boundaries_and_strict_fields():
             )
 
 
+def test_cad_append_sheet_metal_matches_canonical_manufacturing_boundaries():
+    feature = {
+        "type": "sheet_metal",
+        "width_mm": 100,
+        "depth_mm": 50,
+        "thickness_mm": 2,
+        "k_factor": 0.4,
+        "flanges": [
+            {"edge": "min_x", "length_mm": 20, "angle_degrees": 90, "inner_radius_mm": 3},
+            {"edge": "max_x", "length_mm": 30, "angle_degrees": -45, "inner_radius_mm": 3},
+        ],
+    }
+    operation = {
+        "operation": "append_feature",
+        "definition_id": 2,
+        "name": "Manufactured bracket",
+        "feature": feature,
+    }
+    assert assistant._validate_cad_edit_program({"operations": [operation]}) == {
+        "operations": [operation]
+    }
+    assert "canonical unique boundary edges" in assistant.SYSTEM_PROMPT
+
+    invalid_features = [
+        {**feature, "thickness_mm": 50},
+        {**feature, "thickness_mm": True},
+        {**feature, "k_factor": 1.01},
+        {**feature, "width_mm": float("nan")},
+        {**feature, "flanges": [{**feature["flanges"][0], "angle_degrees": 180}]},
+        {**feature, "flanges": [{**feature["flanges"][0], "inner_radius_mm": 100_000}]},
+        {**feature, "flanges": list(reversed(feature["flanges"]))},
+        {**feature, "flanges": [feature["flanges"][0], {**feature["flanges"][1], "edge": "min_y"}]},
+        {**feature, "flanges": [feature["flanges"][0], feature["flanges"][0]]},
+        {**feature, "flanges": [{**feature["flanges"][0], "edge": "north"}]},
+        {**feature, "output_feature_id": 99},
+    ]
+    for invalid_feature in invalid_features:
+        with pytest.raises(assistant.ProtocolError):
+            assistant._validate_cad_edit_program(
+                {"operations": [{**operation, "feature": invalid_feature}]}
+            )
+
+
 def test_cad_append_sweep_matches_rust_boundaries_and_strict_fields():
     feature = {
         "type": "sweep",
@@ -1060,6 +1336,126 @@ def test_cad_append_loft_matches_rust_boundaries_and_strict_fields():
         with pytest.raises(assistant.ProtocolError):
             assistant._validate_cad_edit_program(
                 {"operations": [{**operation, "feature": invalid_feature}]}
+            )
+
+
+def test_public_surface_features_are_typed_chained_and_strict():
+    body = lambda operation_index: {
+        "operation_index": operation_index,
+        "output": "body_feature",
+    }
+    append = lambda name, feature: {
+        "operation": "append_feature",
+        "definition_id": 2,
+        "name": name,
+        "feature": feature,
+    }
+    program = {
+        "operations": [
+            append("Surface A", {
+                "type": "surface_body",
+                "source": {"type": "planar", "profile_feature_id": 11},
+            }),
+            append("Surface B", {
+                "type": "surface_body",
+                "source": {"type": "planar", "profile_feature_id": 12},
+            }),
+            append("Trimmed", {
+                "type": "surface_trim",
+                "target_feature_id": body(0),
+                "cutter_feature_id": body(1),
+            }),
+            append("Extended", {
+                "type": "surface_extend",
+                "target_feature_id": body(2),
+                "distance_mm": 2,
+            }),
+            append("Knitted", {
+                "type": "surface_knit",
+                "surface_feature_ids": [body(3), body(1)],
+                "tolerance_mm": 0.001,
+                "make_solid": False,
+            }),
+            append("Thickened", {
+                "type": "surface_thicken",
+                "target_feature_id": body(4),
+                "thickness_mm": 1.5,
+                "direction": "symmetric",
+            }),
+        ]
+    }
+    assert assistant._validate_cad_edit_program(program) == program
+    loft = append("Loft surface", {
+        "type": "surface_body",
+        "source": {
+            "type": "loft",
+            "sections": [
+                {"profile_feature_id": 11, "elevation_mm": 0},
+                {"profile_feature_id": 12, "elevation_mm": 20},
+            ],
+            "continuity": "tangent",
+        },
+    })
+    assert assistant._validate_cad_edit_program({"operations": [loft]}) == {
+        "operations": [loft]
+    }
+    assert "Surface features are generic" in assistant.SYSTEM_PROMPT
+
+    invalid_features = [
+        {
+            "type": "surface_body",
+            "source": {"type": "planar", "profile_feature_id": 0},
+        },
+        {
+            "type": "surface_body",
+            "source": {**loft["feature"]["source"], "continuity": "curvature",
+                       "guide_feature_id": 9},
+        },
+        {
+            "type": "surface_trim",
+            "target_feature_id": 11,
+            "cutter_feature_id": 11,
+        },
+        {
+            "type": "surface_extend",
+            "target_feature_id": 11,
+            "distance_mm": 0,
+        },
+        {
+            "type": "surface_knit",
+            "surface_feature_ids": [11, 11],
+            "tolerance_mm": 0.001,
+            "make_solid": False,
+        },
+        {
+            "type": "surface_knit",
+            "surface_feature_ids": [11, 12],
+            "tolerance_mm": 0,
+            "make_solid": False,
+        },
+        {
+            "type": "surface_knit",
+            "surface_feature_ids": [11, 12],
+            "tolerance_mm": 0.001,
+            "make_solid": "false",
+        },
+        {
+            "type": "surface_thicken",
+            "target_feature_id": 11,
+            "thickness_mm": 0,
+            "direction": "inward",
+        },
+        {
+            "type": "surface_thicken",
+            "target_feature_id": 11,
+            "thickness_mm": 1,
+            "direction": "both",
+        },
+    ]
+    for feature in invalid_features:
+        with pytest.raises(assistant.ProtocolError):
+            assistant._validate_cad_edit_program(
+                {"operations": [append("Rejected surface", feature)]}
             )
 
 
@@ -1682,6 +2078,7 @@ def test_inspect_document_is_revision_bound_bounded_and_fail_closed():
         "scope": "selection",
         "complete": True,
         "occurrence_ids": [7],
+        "instance_paths": [{"root_occurrence_id": 7, "steps": []}],
         "occurrences": [context["occurrences"][0]],
     }
     explicit = assistant._inspect_document(
@@ -1701,10 +2098,128 @@ def test_inspect_document_is_revision_bound_bounded_and_fail_closed():
             assistant._inspect_document(context, arguments)
 
     truncated = {**context, "occurrences_complete": False, "occurrences": []}
-    with pytest.raises(assistant.ProtocolError, match="absent from the bounded"):
+    with pytest.raises(assistant.ProtocolError, match="absent from the revision-bound catalog"):
         assistant._inspect_document(
             truncated, {"scope": "occurrences", "occurrence_ids": [7]}
         )
+
+
+def test_complete_local_catalog_pages_and_targets_occurrence_101_without_prompt_growth():
+    context = tool_context()
+    records = []
+    for occurrence_id in range(1, 102):
+        records.append(
+            {
+                "occurrence_id": occurrence_id,
+                "instance_path": {"root_occurrence_id": occurrence_id, "steps": []},
+                "definition_id": occurrence_id,
+                "name": f"Part {occurrence_id}",
+                "visible": True,
+                "copyable": True,
+                "bounds_mm": None,
+            }
+        )
+    context[assistant.LOCAL_INSPECTION_CATALOG] = {
+        "document_id": context["document_id"],
+        "revision": context["revision"],
+        "canonical_digest": context["canonical_digest"],
+        "selection": [{"root_occurrence_id": 101, "steps": []}],
+        "occurrences": records,
+    }
+
+    page = assistant._list_occurrences(context, {"cursor": 96, "limit": 10})
+    assert page["total_count"] == 101
+    assert page["next_cursor"] is None
+    assert page["complete"] is True
+    assert [record["occurrence_id"] for record in page["occurrences"]] == [97, 98, 99, 100, 101]
+    selected = assistant._inspect_document(
+        context, {"scope": "selection", "occurrence_ids": [], "instance_paths": []}
+    )
+    assert selected["occurrence_ids"] == [101]
+    assert selected["occurrences"][0]["name"] == "Part 101"
+    targeted = assistant._inspect_document(
+        context,
+        {"scope": "occurrences", "occurrence_ids": [101], "instance_paths": []},
+    )
+    assert targeted["occurrences"] == selected["occurrences"]
+
+
+def test_nested_selection_uses_exact_instance_path_and_stale_catalog_fails_closed():
+    context = tool_context()
+    nested_path = {
+        "root_occurrence_id": 7,
+        "steps": [
+            {
+                "owner_definition_id": 2,
+                "kind": "occurrence",
+                "local_id": 1,
+            }
+        ],
+    }
+    nested = {
+        "occurrence_id": 7,
+        "instance_path": nested_path,
+        "definition_id": 9,
+        "name": "Nested bolt",
+        "visible": True,
+        "copyable": False,
+        "bounds_mm": {"min": [100, 0, 0], "max": [110, 10, 10]},
+    }
+    context[assistant.LOCAL_INSPECTION_CATALOG] = {
+        "document_id": context["document_id"],
+        "revision": context["revision"],
+        "canonical_digest": context["canonical_digest"],
+        "selection": [nested_path],
+        "occurrences": [*context["occurrences"], nested],
+    }
+    selected = assistant._inspect_document(
+        context, {"scope": "selection", "occurrence_ids": [], "instance_paths": []}
+    )
+    assert selected["instance_paths"] == [nested_path]
+    assert selected["occurrences"][0]["name"] == "Nested bolt"
+    root = assistant._inspect_document(
+        context,
+        {"scope": "occurrences", "occurrence_ids": [7], "instance_paths": []},
+    )
+    assert root["occurrences"][0]["name"] == "Bottle"
+    exact = assistant._inspect_document(
+        context,
+        {"scope": "instances", "occurrence_ids": [], "instance_paths": [nested_path]},
+    )
+    assert exact["occurrences"][0]["name"] == "Nested bolt"
+
+    context[assistant.LOCAL_INSPECTION_CATALOG]["revision"] += 1
+    with pytest.raises(assistant.ProtocolError, match="catalog is stale"):
+        assistant._list_occurrences(context, {"cursor": 0, "limit": 1})
+
+
+def test_sidecar_keeps_local_inspection_catalog_out_of_provider_message_and_history():
+    context = tool_context()
+    context[assistant.LOCAL_INSPECTION_CATALOG] = {
+        "document_id": context["document_id"],
+        "revision": context["revision"],
+        "canonical_digest": context["canonical_digest"],
+        "selection": [],
+        "occurrences": context["occurrences"],
+    }
+    calls = []
+
+    def sender(provider, model, message, history, document_context):
+        calls.append((message, history, document_context))
+        assert assistant.LOCAL_INSPECTION_CATALOG not in message
+        assert assistant.LOCAL_INSPECTION_CATALOG in document_context
+        return json.dumps({"message": "ok", "model_intent": None})
+
+    sidecar = assistant.PublicAssistantSidecar(sender)
+    sidecar.handle(hello())
+    first = sidecar.handle(
+        {"type": "chat", "request_id": "r1", "message": "inspect", "context": context}
+    )
+    assert first["message"] == "ok"
+    sidecar.handle(
+        {"type": "chat", "request_id": "r2", "message": "again", "context": context}
+    )
+    assert assistant.LOCAL_INSPECTION_CATALOG not in json.dumps(calls[1][1])
 
 
 def test_measure_bounds_returns_revision_bound_dimensions_and_clearance_fail_closed():
@@ -2242,6 +2757,7 @@ def test_provider_payloads_expose_only_the_read_only_inspection_tools(monkeypatc
     assert assistant.send_public_request("openai-api", "gpt-5.2", "hello", ()) == "GPT answer"
     for _, payload, _ in requests:
         assert [tool["name"] for tool in payload["tools"]] == [
+            "list_occurrences",
             "inspect_document",
             "measure_bounds",
             "plan_placement",

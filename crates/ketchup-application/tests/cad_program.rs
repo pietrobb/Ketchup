@@ -2,19 +2,29 @@ use std::collections::BTreeSet;
 
 use ketchup_application::model_query::{EntityKind, ModelQuery};
 use ketchup_application::plan_assistant_cad_edit_program as plan;
+use ketchup_core::assembly::{
+    AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind, PlanarFaceAttachment,
+};
 use ketchup_core::assistant_sidecar::*;
 use ketchup_core::document::{
-    CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, Dimension, DocumentStore,
-    FeatureId, FeatureKind, OccurrenceId, SpatialPathSegment, Transform,
+    BodyKind, CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, Dimension,
+    DocumentStore, FeatureId, FeatureKind, GroupId, InstancePath, InstancePathStep, OccurrenceId,
+    Snapshot, SpatialPathSegment, SurfaceBodySpec, Transform,
 };
+use ketchup_core::drawing::{DrawingSource, project_orthographic_drawing};
+use ketchup_core::drawing_export::export_drawing;
 use ketchup_core::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V14, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry,
 };
-use ketchup_core::exact_product::ExactResultRegistry;
-use ketchup_core::persistence::{ContainerData, LoadOutcome, load, save_document_store};
+use ketchup_core::exact_product::{
+    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactResultRegistry,
+    build_box_render_package, canonical_reference_lineage_digest,
+};
+use ketchup_core::persistence::{ContainerData, LoadOutcome, load, save, save_document_store};
 use ketchup_core::sketch::{
     PrincipalPlane, SketchEntity, SketchEntityId, SketchSpec, WorkplaneSpec,
 };
+use std::sync::Arc;
 
 fn part() -> AssistantCadEditOperation {
     AssistantCadEditOperation::CreatePart {
@@ -69,6 +79,105 @@ fn seeded() -> DocumentStore {
     document
 }
 
+fn cam_setup_operation(definition_id: u64, feature_id: u64) -> AssistantCadEditOperation {
+    AssistantCadEditOperation::UpsertCamPlan {
+        plan_id: 1,
+        name: "Reviewed top setup".into(),
+        target_definition_id: definition_id,
+        target_feature_id: feature_id,
+        stock_minimum_mm: [-15.0, -15.0, -1.0],
+        stock_maximum_mm: [15.0, 15.0, 31.0],
+        tool_number: 1,
+        tool_kind: AssistantCamToolKind::FlatEndMill,
+        tool_diameter_mm: 6.0,
+        flute_length_mm: 18.0,
+        overall_length_mm: 50.0,
+        holder_diameter_mm: 20.0,
+        holder_length_mm: 35.0,
+        spindle_rpm: 12_000,
+        feed_mm_per_min: 900.0,
+        plunge_mm_per_min: 250.0,
+        work_offset: AssistantCamWorkOffset::G54,
+        origin_mm: [0.0, 0.0, 31.0],
+        x_axis: [1.0, 0.0, 0.0],
+        y_axis: [0.0, 1.0, 0.0],
+        safe_height_mm: 5.0,
+        maximum_stepdown_mm: 2.0,
+        stepover_ratio: 0.45,
+        radial_allowance_mm: 0.2,
+        axial_allowance_mm: 0.1,
+    }
+}
+
+fn assistant_instance_path(snapshot: &Snapshot, path: &InstancePath) -> AssistantInstancePath {
+    let mut prefix = InstancePath::root(path.root_occurrence());
+    let mut owner_definition_id = snapshot
+        .occurrence(path.root_occurrence())
+        .unwrap()
+        .definition_id();
+    let mut steps = Vec::new();
+    for step in path.steps() {
+        steps.push(match *step {
+            InstancePathStep::Group(local_id) => AssistantInstancePathStep::Group {
+                owner_definition_id: owner_definition_id.0,
+                local_id: local_id.0,
+            },
+            InstancePathStep::Occurrence(local_id) => AssistantInstancePathStep::Occurrence {
+                owner_definition_id: owner_definition_id.0,
+                local_id: local_id.0,
+            },
+        });
+        prefix = prefix.with_step(*step);
+        owner_definition_id = snapshot
+            .resolve_instance_path(&prefix)
+            .unwrap()
+            .definition_id;
+    }
+    AssistantInstancePath {
+        root_occurrence_id: path.root_occurrence().0,
+        steps,
+    }
+}
+
+fn exact_box_package(
+    snapshot: &Snapshot,
+    definition_id: DefinitionId,
+    feature_id: FeatureId,
+) -> Arc<ExactBodyPackage> {
+    let request = ExactFeatureChainRequest::from_snapshot(snapshot, definition_id).unwrap();
+    let evidence = [
+        ExactFaceRole::Top,
+        ExactFaceRole::Bottom,
+        ExactFaceRole::East,
+    ]
+    .map(|role| {
+        (
+            role,
+            canonical_reference_lineage_digest(
+                snapshot.document_id(),
+                feature_id,
+                role.semantic_role(),
+                role.source_element_id(),
+                role.expected_type(),
+            ),
+            format!("geometry:{role:?}:public-nested-assembly"),
+        )
+    });
+    Arc::new(
+        build_box_render_package(
+            &request,
+            "public-nested-assembly-input".into(),
+            "public-nested-assembly-result".into(),
+            "occt".into(),
+            "r0".into(),
+            [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]],
+            evidence,
+        )
+        .unwrap()
+        .into(),
+    )
+}
+
 #[test]
 fn serializable_create_program_plans_without_gui_and_commits_one_editable_revision() {
     let mut document = DocumentStore::new();
@@ -116,6 +225,384 @@ fn serializable_create_program_plans_without_gui_and_commits_one_editable_revisi
         document.current().canonical_digest(),
         committed.canonical_digest()
     );
+}
+
+#[test]
+fn public_nested_assembly_joint_motion_drawing_round_trip_is_branch_exact() {
+    const DEFINITION: DefinitionId = DefinitionId(100);
+    const PROFILE: FeatureId = FeatureId(100);
+    const EXTRUSION: FeatureId = FeatureId(101);
+    const COMPONENT_GROUP: GroupId = GroupId(110);
+    const INNER_GROUP: GroupId = GroupId(111);
+    const PARENT: OccurrenceId = OccurrenceId(100);
+    const CHILD: OccurrenceId = OccurrenceId(101);
+    const COPY: OccurrenceId = OccurrenceId(200);
+
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Nested mechanism part".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PROFILE,
+                definition_id: DEFINITION,
+                name: "Profile".into(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: EXTRUSION,
+                definition_id: DEFINITION,
+                name: "Exact mechanism body".into(),
+                kind: FeatureKind::Extrusion {
+                    profile: PROFILE,
+                    height: Dimension::from_decimal("10").unwrap(),
+                },
+            },
+            CanonicalCommand::CreateGroup {
+                id: COMPONENT_GROUP,
+                name: "Reusable mechanism".into(),
+                transform: Transform::from_translation(100.0, 0.0, 0.0).unwrap(),
+                parent: None,
+            },
+            CanonicalCommand::CreateGroup {
+                id: INNER_GROUP,
+                name: "Nested carriage".into(),
+                transform: Transform::from_translation(5.0, 0.0, 0.0).unwrap(),
+                parent: Some(COMPONENT_GROUP),
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: PARENT,
+                definition_id: DEFINITION,
+                name: "Nested rail".into(),
+                transform: Transform::identity(),
+                parent: Some(INNER_GROUP),
+                tag: None,
+                visible: true,
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: CHILD,
+                definition_id: DEFINITION,
+                name: "Nested slider".into(),
+                transform: Transform::from_translation(20.0, 0.0, 0.0).unwrap(),
+                parent: Some(INNER_GROUP),
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    let converted = document
+        .convert_group_to_component(COMPONENT_GROUP, "Reusable mechanism")
+        .unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateOccurrence {
+                id: COPY,
+                definition_id: converted.component_definition_id,
+                name: "Reusable mechanism copy".into(),
+                transform: Transform::from_translation(500.0, 0.0, 0.0).unwrap(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+
+    let snapshot = document.current();
+    let mut first_branch = snapshot
+        .scene_query()
+        .into_iter()
+        .filter(|item| {
+            item.instance_path.root_occurrence() == converted.component_occurrence_id
+                && !item.instance_path.is_root()
+        })
+        .collect::<Vec<_>>();
+    first_branch.sort_by(|left, right| {
+        left.transform.matrix()[3]
+            .partial_cmp(&right.transform.matrix()[3])
+            .unwrap()
+    });
+    assert_eq!(first_branch.len(), 2);
+    let parent_path = first_branch[0].instance_path.clone();
+    let child_path = first_branch[1].instance_path.clone();
+    assert_eq!(child_path.steps().len(), 2);
+    let child_world_before = first_branch[1].transform;
+    let twin_parent_path = snapshot
+        .scene_query()
+        .into_iter()
+        .find(|item| {
+            item.instance_path.root_occurrence() == COPY
+                && item.instance_path.steps() == parent_path.steps()
+        })
+        .unwrap()
+        .instance_path;
+    let twin_child = snapshot
+        .scene_query()
+        .into_iter()
+        .find(|item| {
+            item.instance_path.root_occurrence() == COPY
+                && item.instance_path.steps() == child_path.steps()
+        })
+        .unwrap();
+    let twin_child_path = twin_child.instance_path.clone();
+    let twin_world_before = twin_child.transform;
+    let reference_package = exact_box_package(&snapshot, DEFINITION, EXTRUSION);
+    let top = reference_package
+        .reference(ExactFaceRole::Top)
+        .unwrap()
+        .clone();
+    drop(snapshot);
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: converted.component_occurrence_id,
+                grounded: true,
+            },
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: COPY,
+                grounded: true,
+            },
+            CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
+                AssemblyMateId(1),
+                AssemblyMateEndpoint::resolved_planar_face_at_path(
+                    parent_path.clone(),
+                    PlanarFaceAttachment::new(top.clone(), [0.0; 3], [0.0, 0.0, 1.0]).unwrap(),
+                ),
+                AssemblyMateEndpoint::resolved_planar_face_at_path(
+                    twin_parent_path,
+                    PlanarFaceAttachment::new(top, [0.0; 3], [0.0, 0.0, 1.0]).unwrap(),
+                ),
+                AssemblyMateKind::CoincidentPlanar {
+                    offset_mm: 0.0,
+                    reversed: false,
+                },
+            )),
+        ]))
+        .unwrap();
+    document.discard_history_before_current();
+
+    let stable_before_invalid = (
+        document.current().revision_id(),
+        document.current().canonical_digest(),
+        document.visible_undo_steps(),
+    );
+    let mut wrong_path = assistant_instance_path(&document.current(), &child_path);
+    match &mut wrong_path.steps[0] {
+        AssistantInstancePathStep::Group {
+            owner_definition_id,
+            ..
+        }
+        | AssistantInstancePathStep::Occurrence {
+            owner_definition_id,
+            ..
+        } => *owner_definition_id += 1,
+    }
+    let invalid = program(vec![AssistantCadEditOperation::CreateAssemblyJoint {
+        parent_instance_path: assistant_instance_path(&document.current(), &parent_path),
+        child_instance_path: wrong_path,
+        kind: AssistantAssemblyJointKind::Fixed,
+    }]);
+    assert!(
+        plan(
+            &document,
+            &BTreeSet::new(),
+            &ExactResultRegistry::default(),
+            &invalid,
+        )
+        .is_err()
+    );
+    assert_eq!(
+        (
+            document.current().revision_id(),
+            document.current().canonical_digest(),
+            document.visible_undo_steps(),
+        ),
+        stable_before_invalid
+    );
+
+    let joint_program = program(vec![AssistantCadEditOperation::CreateAssemblyJoint {
+        parent_instance_path: assistant_instance_path(&document.current(), &parent_path),
+        child_instance_path: assistant_instance_path(&document.current(), &child_path),
+        kind: AssistantAssemblyJointKind::Prismatic {
+            axis: AssistantAssemblyJointAxis {
+                direction_in_parent: [1.0, 0.0, 0.0],
+                pivot_in_parent_mm: [0.0; 3],
+            },
+            limits: Some(AssistantAssemblyJointLimits {
+                min: 0.0,
+                max: 20.0,
+            }),
+            position_mm: 0.0,
+        },
+    }]);
+    let joint_program: AssistantCadEditProgram =
+        serde_json::from_slice(&serde_json::to_vec(&joint_program).unwrap()).unwrap();
+    let before_joint = document.current().canonical_digest();
+    let joint_batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &joint_program,
+    )
+    .unwrap();
+    assert_eq!(document.current().canonical_digest(), before_joint);
+    document.apply_batch(&joint_batch).unwrap();
+    assert_eq!(document.current().assembly_joints().count(), 1);
+    assert_eq!(
+        document
+            .current()
+            .assembly_joint(ketchup_core::assembly_joint::AssemblyJointId(1))
+            .unwrap()
+            .child_instance_path(),
+        &child_path
+    );
+
+    let motion_program = program(vec![AssistantCadEditOperation::SetAssemblyJointPosition {
+        joint_id: 1,
+        position: 10.0,
+    }]);
+    let motion_program: AssistantCadEditProgram =
+        serde_json::from_slice(&serde_json::to_vec(&motion_program).unwrap()).unwrap();
+    let before_motion = document.current().canonical_digest();
+    let motion_batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &motion_program,
+    )
+    .unwrap();
+    assert_eq!(document.current().canonical_digest(), before_motion);
+    document.apply_batch(&motion_batch).unwrap();
+    let moved_digest = document.current().canonical_digest();
+    assert_eq!(
+        document
+            .current()
+            .resolve_instance_path(&child_path)
+            .unwrap()
+            .world_transform
+            .matrix()[3],
+        child_world_before.matrix()[3] + 10.0
+    );
+    assert_eq!(
+        document
+            .current()
+            .resolve_instance_path(&twin_child_path)
+            .unwrap()
+            .world_transform,
+        twin_world_before
+    );
+    document.undo().unwrap();
+    assert_eq!(document.current().canonical_digest(), before_motion);
+    document.redo().unwrap();
+    assert_eq!(document.current().canonical_digest(), moved_digest);
+
+    let moved_snapshot = document.current();
+    let exact = ExactResultRegistry::accept(
+        &moved_snapshot,
+        [exact_box_package(&moved_snapshot, DEFINITION, EXTRUSION)],
+    )
+    .unwrap();
+    let mut drawing_paths = vec![child_path.clone(), twin_child_path.clone()];
+    drawing_paths.sort();
+    let drawing_program = program(vec![AssistantCadEditOperation::CreateDrawing {
+        name: "Nested slider drawing".into(),
+        instance_paths: drawing_paths
+            .iter()
+            .map(|path| assistant_instance_path(&moved_snapshot, path))
+            .collect(),
+    }]);
+    let drawing_program: AssistantCadEditProgram =
+        serde_json::from_slice(&serde_json::to_vec(&drawing_program).unwrap()).unwrap();
+    drop(moved_snapshot);
+    let before_drawing = document.current().canonical_digest();
+    let drawing_batch = plan(&document, &BTreeSet::new(), &exact, &drawing_program).unwrap();
+    assert_eq!(document.current().canonical_digest(), before_drawing);
+    document.apply_batch(&drawing_batch).unwrap();
+    let completed = document.current();
+    let completed_digest = completed.canonical_digest();
+    assert!(matches!(
+        completed
+            .drawing_sheets()
+            .next()
+            .unwrap()
+            .source(),
+        DrawingSource::RigidAssemblyInstances { instance_paths }
+            if instance_paths == &drawing_paths
+    ));
+    let drawing_sheet = completed.drawing_sheets().next().unwrap();
+    assert_eq!(drawing_sheet.page().scale().numerator(), 1);
+    assert_eq!(drawing_sheet.page().scale().denominator(), 5);
+    assert_eq!(drawing_sheet.bom_balloons().len(), 2);
+    assert!(
+        drawing_sheet
+            .bom_balloons()
+            .iter()
+            .all(|balloon| balloon.position() == 1)
+    );
+    assert_eq!(
+        drawing_sheet
+            .bom_balloons()
+            .iter()
+            .map(|balloon| balloon.instance_path().clone())
+            .collect::<Vec<_>>(),
+        drawing_paths
+    );
+    assert_eq!(completed.assembly_mates().count(), 1);
+    assert_eq!(completed.assembly_joints().count(), 1);
+    let rebuilt_exact = ExactResultRegistry::accept(
+        &completed,
+        [exact_box_package(&completed, DEFINITION, EXTRUSION)],
+    )
+    .unwrap();
+    let drawing = project_orthographic_drawing(&completed, &rebuilt_exact, drawing_sheet).unwrap();
+    let exported = export_drawing(&completed, &drawing).unwrap();
+    assert!(
+        std::str::from_utf8(exported.svg())
+            .unwrap()
+            .contains("QTY 2")
+    );
+    assert!(!exported.dxf().is_empty());
+    assert!(!exported.pdf().is_empty());
+
+    let reopened = load(&save(&completed)).unwrap().snapshot();
+    assert_eq!(reopened.canonical_digest(), completed_digest);
+    assert_eq!(
+        reopened
+            .resolve_instance_path(&child_path)
+            .unwrap()
+            .world_transform,
+        completed
+            .resolve_instance_path(&child_path)
+            .unwrap()
+            .world_transform
+    );
+    assert_eq!(reopened.assembly_mates().count(), 1);
+    assert_eq!(reopened.assembly_joints().count(), 1);
+    assert_eq!(reopened.drawing_sheets().count(), 1);
+    let reopened_exact = ExactResultRegistry::accept(
+        &reopened,
+        [exact_box_package(&reopened, DEFINITION, EXTRUSION)],
+    )
+    .unwrap();
+    let reopened_drawing = project_orthographic_drawing(
+        &reopened,
+        &reopened_exact,
+        reopened.drawing_sheets().next().unwrap(),
+    )
+    .unwrap();
+    let reopened_export = export_drawing(&reopened, &reopened_drawing).unwrap();
+    assert_eq!(reopened_export.svg(), exported.svg());
+    assert_eq!(reopened_export.dxf(), exported.dxf());
+    assert_eq!(reopened_export.pdf(), exported.pdf());
+
+    document.undo().unwrap();
+    assert_eq!(document.current().canonical_digest(), before_drawing);
+    document.redo().unwrap();
+    assert_eq!(document.current().canonical_digest(), completed_digest);
 }
 
 #[test]
@@ -522,6 +1009,8 @@ fn parametric_sketch_outputs_build_a_complex_loft_graph_without_manual_points() 
                         elevation_mm: 55.0,
                     },
                 ],
+                guide_feature_id: None,
+                continuity: AssistantCadLoftContinuity::Position,
             },
         },
     ]);
@@ -557,8 +1046,32 @@ fn parametric_sketch_outputs_build_a_complex_loft_graph_without_manual_points() 
             &holed,
         )
         .is_err(),
-        "Loft sections with holes must fail closed during public planning"
+        "Loft sections with mismatched hole counts must fail closed during public planning"
     );
+    for (operation_index, (outer_radius, hole_radius)) in [(2, (11.0, 3.0)), (3, (9.0, 2.0))] {
+        let AssistantCadEditOperation::CreateProgramSketch {
+            entities,
+            constraints,
+            ..
+        } = &mut holed.operations[operation_index]
+        else {
+            unreachable!("each Loft section is a program sketch")
+        };
+        *entities = vec![
+            AssistantSketchEntity::Circle {
+                id: 1,
+                center_mm: [0.0, 0.0],
+                radius_mm: outer_radius,
+            },
+            AssistantSketchEntity::Circle {
+                id: 2,
+                center_mm: [0.0, 0.0],
+                radius_mm: hole_radius,
+            },
+        ];
+        constraints.clear();
+    }
+    let input = holed;
     let batch = plan(
         &document,
         &BTreeSet::new(),
@@ -585,21 +1098,13 @@ fn parametric_sketch_outputs_build_a_complex_loft_graph_without_manual_points() 
     );
     assert!(matches!(
         graph.nodes[0].operation,
-        ExactBRepOperation::Loft { ref sections } if sections.len() == 3
+        ExactBRepOperation::Loft { ref sections, .. } if sections.len() == 3
     ));
     assert_eq!(graph.profiles.len(), 3);
-    assert!(matches!(
-        graph.profiles[0].geometry,
-        ExactBRepPlanarGeometry::Circle { .. }
-    ));
-    assert!(matches!(
-        &graph.profiles[1].geometry,
-        ExactBRepPlanarGeometry::Boundary { closed: true, segments } if segments.len() == 8
-    ));
-    assert!(matches!(
-        &graph.profiles[2].geometry,
-        ExactBRepPlanarGeometry::Boundary { closed: true, segments } if segments.len() == 4
-    ));
+    assert!(graph.profiles.iter().all(|profile| matches!(
+        &profile.geometry,
+        ExactBRepPlanarGeometry::Region { holes, .. } if holes.len() == 1
+    )));
 
     document.apply_batch(&batch).unwrap();
     let committed_digest = document.current().canonical_digest();
@@ -2283,6 +2788,7 @@ fn missing_topology_evidence_cannot_authorize_a_finish() {
             target_feature_id: 2,
             edge_reference_ids: vec!["a".repeat(64)],
             radius_mm: 1.0,
+            radius_stations: Vec::new(),
         },
     }]);
     let error = plan(
@@ -2428,6 +2934,11 @@ fn public_program_sweeps_a_general_sketch_profile_along_a_spatial_path_atomicall
                 start_mm: [-2.0, 2.0],
                 end_mm: [-2.0, -2.0],
             },
+            SketchEntity::Circle {
+                id: SketchEntityId(5),
+                center_mm: [0.0, 0.0],
+                radius_mm: 0.5,
+            },
         ],
         constraints: Vec::new(),
     };
@@ -2506,7 +3017,9 @@ fn public_program_sweeps_a_general_sketch_profile_along_a_spatial_path_atomicall
     ));
     assert!(matches!(
         &graph.profiles[0].geometry,
-        ExactBRepPlanarGeometry::Boundary { closed: true, segments } if segments.len() == 4
+        ExactBRepPlanarGeometry::Region { outer, holes }
+            if matches!(outer, ketchup_core::exact_brep_graph::ExactBRepPlanarLoop::Boundary { segments } if segments.len() == 4)
+                && holes.len() == 1
     ));
 
     document.apply_batch(&batch).unwrap();
@@ -2663,5 +3176,229 @@ fn public_program_sweeps_a_general_sketch_profile_along_a_spatial_path_atomicall
     assert_eq!(
         invalid.current().canonical_digest(),
         invalid_baseline.canonical_digest()
+    );
+}
+
+#[test]
+fn public_surface_program_is_typed_atomic_and_refuses_solid_surface_targets() {
+    let definition = DefinitionId(1);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Public surfaces".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(1),
+                definition_id: definition,
+                name: "Outer profile".into(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.0, 10.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(2),
+                definition_id: definition,
+                name: "Cutter profile".into(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[5.0, -5.0], [15.0, -5.0], [15.0, 15.0], [5.0, 15.0]],
+                },
+            },
+        ]))
+        .unwrap();
+    let baseline = document.current();
+    let earlier_body = |operation_index| {
+        AssistantCadFeatureReference::ProgramOutput(AssistantCadProgramFeatureReference {
+            operation_index,
+            output: AssistantCadProgramFeatureOutput::BodyFeature,
+        })
+    };
+    let input = program(vec![
+        AssistantCadEditOperation::AppendFeature {
+            definition_id: definition.0,
+            name: "Planar surface A".into(),
+            feature: AssistantCadBodyFeature::SurfaceBody {
+                source: AssistantCadSurfaceBodySource::Planar {
+                    profile_feature_id: FeatureId(1).0.into(),
+                },
+            },
+        },
+        AssistantCadEditOperation::AppendFeature {
+            definition_id: definition.0,
+            name: "Planar surface B".into(),
+            feature: AssistantCadBodyFeature::SurfaceBody {
+                source: AssistantCadSurfaceBodySource::Planar {
+                    profile_feature_id: FeatureId(2).0.into(),
+                },
+            },
+        },
+        AssistantCadEditOperation::AppendFeature {
+            definition_id: definition.0,
+            name: "Trimmed surface".into(),
+            feature: AssistantCadBodyFeature::SurfaceTrim {
+                target_feature_id: earlier_body(0),
+                cutter_feature_id: earlier_body(1),
+            },
+        },
+        AssistantCadEditOperation::AppendFeature {
+            definition_id: definition.0,
+            name: "Extended surface".into(),
+            feature: AssistantCadBodyFeature::SurfaceExtend {
+                target_feature_id: earlier_body(2),
+                distance_mm: 2.0,
+            },
+        },
+        AssistantCadEditOperation::AppendFeature {
+            definition_id: definition.0,
+            name: "Knitted surface".into(),
+            feature: AssistantCadBodyFeature::SurfaceKnit {
+                surface_feature_ids: vec![earlier_body(3), earlier_body(1)],
+                tolerance_mm: 0.001,
+                make_solid: false,
+            },
+        },
+        AssistantCadEditOperation::AppendFeature {
+            definition_id: definition.0,
+            name: "Thickened solid".into(),
+            feature: AssistantCadBodyFeature::SurfaceThicken {
+                target_feature_id: earlier_body(4),
+                thickness_mm: 1.5,
+                direction: AssistantCadShellDirection::Symmetric,
+            },
+        },
+    ]);
+
+    assert_eq!(input.validate(), Ok(()));
+    let batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &input,
+    )
+    .unwrap();
+    let preview = document.preview_batch(&batch).unwrap();
+    assert!(matches!(
+        preview.feature(FeatureId(3)).unwrap().kind(),
+        FeatureKind::SurfaceBody(SurfaceBodySpec::Planar {
+            profile: FeatureId(1)
+        })
+    ));
+    assert!(matches!(
+        preview.feature(FeatureId(5)).unwrap().kind(),
+        FeatureKind::SurfaceTrim {
+            target: FeatureId(3),
+            cutter: FeatureId(4)
+        }
+    ));
+    assert!(matches!(
+        preview.feature(FeatureId(7)).unwrap().kind(),
+        FeatureKind::SurfaceKnit { surfaces, make_solid: false, .. }
+            if surfaces == &[FeatureId(4), FeatureId(6)]
+    ));
+    assert_eq!(
+        preview.feature(FeatureId(8)).unwrap().kind().body_kind(),
+        Some(BodyKind::Solid)
+    );
+    assert_eq!(
+        document.current().canonical_digest(),
+        baseline.canonical_digest()
+    );
+    document.apply_batch(&batch).unwrap();
+    assert_eq!(document.visible_undo_steps(), 2);
+
+    let committed = document.current();
+    let invalid = program(vec![AssistantCadEditOperation::AppendFeature {
+        definition_id: definition.0,
+        name: "Invalid solid extension".into(),
+        feature: AssistantCadBodyFeature::SurfaceExtend {
+            target_feature_id: FeatureId(8).0.into(),
+            distance_mm: 1.0,
+        },
+    }]);
+    assert!(
+        plan(
+            &document,
+            &BTreeSet::new(),
+            &ExactResultRegistry::default(),
+            &invalid,
+        )
+        .is_err()
+    );
+    assert_eq!(
+        document.current().canonical_digest(),
+        committed.canonical_digest()
+    );
+    document.undo().unwrap();
+    assert_eq!(
+        document.current().canonical_digest(),
+        baseline.canonical_digest()
+    );
+}
+
+#[test]
+fn public_assistant_cam_setup_is_exact_bound_atomic_undoable_and_fail_closed() {
+    let mut document = seeded();
+    let snapshot = document.current();
+    let target = snapshot
+        .features()
+        .find(|feature| feature.kind().body_kind() == Some(BodyKind::Solid))
+        .unwrap();
+    let definition_id = target.definition_id().0;
+    let feature_id = target.id().0;
+    let before_digest = snapshot.canonical_digest();
+    let before_undo = document.visible_undo_steps();
+    let input = program(vec![cam_setup_operation(definition_id, feature_id)]);
+
+    assert_eq!(input.validate(), Ok(()));
+    let batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &input,
+    )
+    .unwrap();
+    assert_eq!(document.current().canonical_digest(), before_digest);
+    document.apply_batch(&batch).unwrap();
+    assert_eq!(document.visible_undo_steps(), before_undo + 1);
+    let committed = document.current();
+    let cam = committed
+        .cam_plan(ketchup_core::cam::CamPlanId(1))
+        .expect("Assistant setup must publish one canonical CAM plan")
+        .clone();
+    assert_eq!(cam.name(), "Reviewed top setup");
+    assert_eq!(cam.target().definition_id.0, definition_id);
+    assert_eq!(cam.target().feature_id.0, feature_id);
+    assert_eq!(cam.tool().spindle_rpm, 12_000);
+    assert_eq!(
+        cam.setup().work_offset,
+        ketchup_core::cam::CamWorkOffset::G54
+    );
+
+    assert_eq!(document.undo().unwrap().canonical_digest(), before_digest);
+    assert!(
+        document
+            .current()
+            .cam_plan(ketchup_core::cam::CamPlanId(1))
+            .is_none()
+    );
+    document.redo().unwrap();
+
+    let mut invalid = cam_setup_operation(definition_id, feature_id);
+    if let AssistantCadEditOperation::UpsertCamPlan { stepover_ratio, .. } = &mut invalid {
+        *stepover_ratio = 1.2;
+    }
+    assert!(
+        plan(
+            &document,
+            &BTreeSet::new(),
+            &ExactResultRegistry::default(),
+            &program(vec![invalid]),
+        )
+        .is_err()
+    );
+    assert_eq!(
+        document.current().cam_plan(ketchup_core::cam::CamPlanId(1)),
+        Some(&cam)
     );
 }

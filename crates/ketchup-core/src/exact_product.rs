@@ -10,21 +10,24 @@ use crate::document::{
     MeshAuthority, MeshBodySpec, ProfileSegment, Snapshot, Transform,
 };
 use crate::exact_brep_graph::{
-    ExactBRepGraph, ExactBRepGraphError, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
-    MAX_EXACT_BREP_COORDINATE_MM, MAX_EXACT_BREP_LOFT_CONTROL_POINTS, MAX_EXACT_BREP_REGION_HOLES,
-    MAX_EXACT_BREP_REGION_SEGMENTS, MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
-    MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
+    ExactBRepGraph, ExactBRepGraphError, ExactBRepOperation, ExactBRepPlanarLoop,
+    ExactBRepPlanarSegment, MAX_EXACT_BREP_COORDINATE_MM, MAX_EXACT_BREP_LOFT_CONTROL_POINTS,
+    MAX_EXACT_BREP_REGION_HOLES, MAX_EXACT_BREP_REGION_SEGMENTS,
+    MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM, MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
 };
-use crate::graph::DerivedIdentity;
+use crate::graph::{DerivedIdentity, sha256_hex};
 use crate::import::StepImportMesh;
 use crate::sketch::{
     FeatureDirection, SolvedSketchRegion, SolvedSketchRegionEdge, SolvedSketchRegionProfile,
     WorkplaneSpec, WorkplaneSupport, WorkplaneSupportHealth,
 };
 use crate::topology::{
-    TopologicalElementKind, TopologicalElementRef, TopologicalReferenceResolution,
-    publish_generated_topological_references, publish_imported_topological_references,
+    TopologicalElementKind, TopologicalElementRef, TopologicalReferenceError,
+    TopologicalReferenceResolution, TopologicalReferenceStability,
+    canonical_topological_lineage_digest, publish_generated_topological_references,
+    publish_imported_topological_references,
     resolve_topological_reference as resolve_role_neutral_topological_reference,
+    topological_edge_provenance_tokens,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -610,10 +613,15 @@ impl BodySubshapeRef {
             && self.document_id.0 == graph.document_id
             && self.definition_id.0 == graph.definition_id
             && self.producer_feature_id.0 == graph.producer_feature_id
-            && graph
+            && (graph
                 .profiles
                 .iter()
                 .any(|profile| profile.source_feature_id == self.profile_feature_id.0)
+                || (self.profile_feature_id == self.producer_feature_id
+                    && graph.nodes.iter().any(|node| {
+                        node.source_feature_id == graph.producer_feature_id
+                            && matches!(node.operation, ExactBRepOperation::SheetMetal { .. })
+                    })))
             && self.canonical_input_digest == graph.canonical_input_digest
             && self.evaluator == EXACT_BREP_GRAPH_EVALUATOR_V1
             && !self.exact_input_digest.is_empty()
@@ -725,6 +733,7 @@ pub struct ImportedExactPackage {
     pub identity: BodyResultIdentity,
     pub source_sha256: [u8; 32],
     pub source_bytes: Vec<u8>,
+    pub source_part_index: Option<u32>,
     pub solid_count: u32,
     pub topology_counts: Option<[u32; 5]>,
     pub volume_mm3: f64,
@@ -796,6 +805,111 @@ pub struct ExactBRepGraphWorkerEvidence {
     pub edges: Vec<ExactBRepGraphEdgeEvidence>,
 }
 
+fn edge_geometry_fingerprint(edge: &ExactBRepGraphEdgeEvidence) -> String {
+    let mut geometry = b"ketchup.topological-edge-geometry.v1".to_vec();
+    geometry.extend_from_slice(&(edge.curve_kind.len() as u64).to_le_bytes());
+    geometry.extend_from_slice(edge.curve_kind.as_bytes());
+    geometry.extend_from_slice(&edge.length_mm.to_bits().to_le_bytes());
+    for value in edge
+        .centroid_mm
+        .into_iter()
+        .chain(edge.bounds_mm.into_iter().flatten())
+    {
+        geometry.extend_from_slice(&value.to_bits().to_le_bytes());
+    }
+    geometry.push(u8::from(edge.closed));
+    geometry.push(u8::from(edge.circle_radius_mm.is_some()));
+    if let Some(value) = edge.circle_radius_mm {
+        geometry.extend_from_slice(&value.to_bits().to_le_bytes());
+    }
+    for vector in [edge.axis_origin_mm, edge.unit_axis_direction] {
+        geometry.push(u8::from(vector.is_some()));
+        if let Some(vector) = vector {
+            for value in vector {
+                geometry.extend_from_slice(&value.to_bits().to_le_bytes());
+            }
+        }
+    }
+    sha256_hex(&geometry)
+}
+
+fn publish_graph_topological_references(
+    identity: &BodyResultIdentity,
+    topology_counts: [u32; 5],
+    faces: &[ExactBRepGraphFaceEvidence],
+    edges: &[ExactBRepGraphEdgeEvidence],
+) -> Result<Vec<TopologicalElementRef>, TopologicalReferenceError> {
+    let mut references = publish_generated_topological_references(identity, topology_counts)?;
+    let mut face_provenance = BTreeMap::<u32, Vec<(&str, &str)>>::new();
+    for face in faces {
+        face_provenance
+            .entry(face.face_ordinal)
+            .or_default()
+            .push((&face.semantic_role, &face.source_element_id));
+    }
+
+    for (ordinal, reference) in references
+        .iter_mut()
+        .filter(|reference| reference.kind == TopologicalElementKind::Face)
+        .enumerate()
+    {
+        let Some([face]) = face_provenance.get(&(ordinal as u32)).map(Vec::as_slice) else {
+            continue;
+        };
+        let Some(evidence) = faces.iter().find(|candidate| {
+            candidate.face_ordinal == ordinal as u32
+                && candidate.semantic_role == face.0
+                && candidate.source_element_id == face.1
+        }) else {
+            continue;
+        };
+        if face.0.is_empty() || face.1.is_empty() {
+            continue;
+        }
+        reference.source_element_id = face.1.to_owned();
+        reference.producer_element_id = face.0.to_owned();
+        reference.stability = TopologicalReferenceStability::Guaranteed;
+        reference.corroborating_geometry_fingerprint =
+            evidence.corroborating_geometry_fingerprint.clone();
+        reference.lineage_digest = canonical_topological_lineage_digest(reference);
+    }
+
+    for (ordinal, reference) in references
+        .iter_mut()
+        .filter(|reference| reference.kind == TopologicalElementKind::Edge)
+        .enumerate()
+    {
+        let Some(edge) = edges
+            .iter()
+            .find(|candidate| candidate.edge_ordinal == ordinal as u32)
+        else {
+            continue;
+        };
+        let adjacent_faces = edge
+            .adjacent_face_ordinals
+            .iter()
+            .map(|face_ordinal| {
+                let [face] = face_provenance.get(face_ordinal)?.as_slice() else {
+                    return None;
+                };
+                Some(*face)
+            })
+            .collect::<Option<Vec<_>>>();
+        let Some((source_element_id, producer_element_id)) = adjacent_faces
+            .as_deref()
+            .and_then(topological_edge_provenance_tokens)
+        else {
+            continue;
+        };
+        reference.source_element_id = source_element_id;
+        reference.producer_element_id = producer_element_id;
+        reference.stability = TopologicalReferenceStability::Guaranteed;
+        reference.corroborating_geometry_fingerprint = edge_geometry_fingerprint(edge);
+        reference.lineage_digest = canonical_topological_lineage_digest(reference);
+    }
+    Ok(references)
+}
+
 fn is_finite_unit_vector(vector: [f64; 3]) -> bool {
     vector.into_iter().all(f64::is_finite)
         && (vector.into_iter().map(|value| value * value).sum::<f64>() - 1.0).abs() <= 1.0e-12
@@ -821,6 +935,23 @@ impl ExactBRepGraphPackage {
                     evidence.topology_counts,
                     evidence.wire_count,
                 )
+        } else if graph.terminal_is_surface() {
+            evidence.volume_mm3.is_finite()
+                && evidence.volume_mm3 == 0.0
+                && evidence.area_mm2.is_finite()
+                && evidence.area_mm2 > 0.0
+                && evidence.topology_counts[..3].iter().all(|count| *count > 0)
+                && evidence.topology_counts[4] == 0
+                && evidence
+                    .bounds_mm
+                    .iter()
+                    .flatten()
+                    .all(|value| value.is_finite())
+                && (0..3).all(|axis| evidence.bounds_mm[0][axis] <= evidence.bounds_mm[1][axis])
+                && (0..3)
+                    .filter(|axis| evidence.bounds_mm[0][*axis] < evidence.bounds_mm[1][*axis])
+                    .count()
+                    >= 2
         } else {
             evidence.volume_mm3.is_finite()
                 && evidence.volume_mm3 > 0.0
@@ -851,7 +982,7 @@ impl ExactBRepGraphPackage {
         {
             return Err(ExactProductError::InvalidWorkerEvidence);
         }
-        if graph.terminal_is_planar_offset() {
+        if graph.terminal_is_surface() {
             let mesh_area_mm2 = mesh.triangles.iter().fold(0.0, |area, triangle| {
                 let [a, b, c] = triangle
                     .vertex_indices
@@ -895,9 +1026,6 @@ impl ExactBRepGraphPackage {
             backend: evidence.backend,
             tolerance: evidence.tolerance,
         };
-        let topological_references =
-            publish_generated_topological_references(&identity, evidence.topology_counts)
-                .map_err(|_| ExactProductError::InvalidWorkerEvidence)?;
         let mut edge_ordinals = BTreeSet::new();
         for edge in &evidence.edges {
             let finite_bounds = edge
@@ -1012,6 +1140,13 @@ impl ExactBRepGraphPackage {
             }
             references.push(reference);
         }
+        let topological_references = publish_graph_topological_references(
+            &identity,
+            evidence.topology_counts,
+            &evidence.faces,
+            &evidence.edges,
+        )
+        .map_err(|_| ExactProductError::InvalidWorkerEvidence)?;
         Ok(Self {
             identity,
             graph: Box::new(graph.clone()),
@@ -1364,6 +1499,7 @@ impl ImportedExactPackage {
             identity,
             source_sha256,
             source_bytes,
+            source_part_index: spec.source_part_index,
             solid_count: spec.solid_count,
             topology_counts: spec.topology_counts,
             volume_mm3: spec.volume_mm3,
@@ -1394,6 +1530,7 @@ impl ImportedExactPackage {
                         feature.definition_id() == self.identity.definition_id
                             && spec.source_sha256 == self.source_sha256
                             && spec.source_byte_len == self.source_bytes.len() as u64
+                            && spec.source_part_index == self.source_part_index
                             && spec.result_fingerprint == self.identity.result_fingerprint
                             && spec.solid_count == self.solid_count
                             && spec.topology_counts == self.topology_counts
@@ -1621,6 +1758,14 @@ impl ExactBodyPackage {
             Self::Graph(package) => &package.topological_references,
             Self::Imported(package) => &package.topological_references,
             Self::Rectangle(_) | Self::Revolve(_) => &[],
+        }
+    }
+
+    #[must_use]
+    pub fn edge_evidence(&self) -> &[ExactBRepGraphEdgeEvidence] {
+        match self {
+            Self::Graph(package) => &package.edge_evidence,
+            Self::Rectangle(_) | Self::Revolve(_) | Self::Imported(_) => &[],
         }
     }
 
@@ -7918,7 +8063,7 @@ impl ExactLoftRequest {
             .iter()
             .filter_map(|feature_id| {
                 let feature = snapshot.feature(*feature_id)?;
-                let FeatureKind::Loft { sections } = feature.kind() else {
+                let FeatureKind::Loft { sections, .. } = feature.kind() else {
                     return None;
                 };
                 Some((*feature_id, sections))

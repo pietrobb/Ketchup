@@ -2,12 +2,15 @@
 
 mod append_feature;
 pub mod batch_task;
+pub mod cam_workflow;
 mod collision;
 mod creation;
 pub mod diagnostics;
 pub mod evaluation;
+pub mod fea_workflow;
 pub mod mesh_conversion;
 pub mod model_query;
+pub mod pdm_workflow;
 mod planner;
 mod sketch;
 pub mod topology;

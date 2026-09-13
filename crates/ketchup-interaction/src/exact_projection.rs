@@ -986,8 +986,10 @@ mod tests {
         let evidence = StepImportEvidence {
             source_unit: ImportLengthUnit::Millimetre,
             result_fingerprint: "headless-selection-result".into(),
+            body_kind: ketchup_core::document::BodyKind::Solid,
             solid_count: 1,
             topology_counts: [4, 6, 4, 1, 1],
+            area_mm2: 6.0,
             volume_mm3: 1.0,
             bounds_mm: [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
             backend: "occt-headless-selection.v1".into(),

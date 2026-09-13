@@ -32,6 +32,7 @@ mod ffi {
         status: u8,
         diagnostic: String,
         common_volume_mm3: f64,
+        common_contact_area_mm2: f64,
         distance_mm: f64,
     }
 
@@ -141,11 +142,19 @@ mod ffi {
         face_ordinal: u32,
     }
 
+    struct NativeVolumeMeshTetrahedron {
+        first: u32,
+        second: u32,
+        third: u32,
+        fourth: u32,
+    }
+
     unsafe extern "C++" {
         include!("ketchup_exact.hxx");
 
         type NativeOperationResult;
         type NativeMeshResult;
+        type NativeVolumeMeshResult;
 
         fn make_box_native(
             origin_x: f64,
@@ -171,6 +180,29 @@ mod ffi {
             segments: &[f64],
             distance: f64,
         ) -> UniquePtr<NativeOperationResult>;
+        fn planar_surface_profile_native(segments: &[f64]) -> UniquePtr<NativeOperationResult>;
+        fn trim_surface_native(
+            target: &NativeOperationResult,
+            cutter: &NativeOperationResult,
+        ) -> UniquePtr<NativeOperationResult>;
+        fn extend_planar_surface_native(
+            target: &NativeOperationResult,
+            distance: f64,
+        ) -> UniquePtr<NativeOperationResult>;
+        fn combine_surfaces_native(
+            base: &NativeOperationResult,
+            added: &NativeOperationResult,
+        ) -> UniquePtr<NativeOperationResult>;
+        fn knit_surface_compound_native(
+            surfaces: &NativeOperationResult,
+            tolerance: f64,
+            make_solid: bool,
+        ) -> UniquePtr<NativeOperationResult>;
+        fn thicken_surface_native(
+            surface: &NativeOperationResult,
+            thickness: f64,
+            direction: u8,
+        ) -> UniquePtr<NativeOperationResult>;
         fn offset_planar_region_native(
             segments: &[f64],
             loop_segment_counts: &[u32],
@@ -187,7 +219,12 @@ mod ffi {
             profile_segments: &[f64],
             path_segments: &[f64],
         ) -> UniquePtr<NativeOperationResult>;
-        fn loft_framed_profiles_native(values: &[f64]) -> UniquePtr<NativeOperationResult>;
+        fn loft_framed_profiles_native(
+            values: &[f64],
+            guide_segments: &[f64],
+            continuity: u8,
+            make_solid: bool,
+        ) -> UniquePtr<NativeOperationResult>;
         fn loft_spline_native(values: &[f64]) -> UniquePtr<NativeOperationResult>;
         fn loft_planar_profiles_native(
             segments: &[f64],
@@ -200,6 +237,7 @@ mod ffi {
             radius: f64,
             height: f64,
         ) -> UniquePtr<NativeOperationResult>;
+        fn sweep_axial_tool_native(values: &[f64]) -> UniquePtr<NativeOperationResult>;
         fn extrude_mixed_profile_native(
             segments: &[f64],
             height: f64,
@@ -255,6 +293,7 @@ mod ffi {
             body: &NativeOperationResult,
             face_ordinals: &[u32],
             thickness: f64,
+            direction: u8,
         ) -> UniquePtr<NativeOperationResult>;
         fn offset_body_face_native(
             body: &NativeOperationResult,
@@ -264,8 +303,12 @@ mod ffi {
         fn finish_body_native(
             body: &NativeOperationResult,
             edge_ordinals: &[u32],
+            face_ordinals: &[u32],
             amount: f64,
             fillet: bool,
+            fillet_radius_stations: &[f64],
+            chamfer_mode: u8,
+            chamfer_secondary: f64,
         ) -> UniquePtr<NativeOperationResult>;
         fn cut_box_native(
             base: &NativeOperationResult,
@@ -365,8 +408,20 @@ mod ffi {
             path: &str,
             solid_ordinal: u32,
         ) -> UniquePtr<NativeOperationResult>;
+        fn import_step_xde_part_native(
+            path: &str,
+            part_index: u32,
+        ) -> UniquePtr<NativeOperationResult>;
+        fn step_xde_manifest_native(path: &str) -> String;
+        fn export_step_xde_assembly_native(manifest: &str, path: &str) -> String;
         fn step_length_unit_native(path: &str) -> String;
         fn import_iges_native(path: &str) -> UniquePtr<NativeOperationResult>;
+        fn import_iges_xde_part_native(
+            path: &str,
+            part_index: u32,
+        ) -> UniquePtr<NativeOperationResult>;
+        fn iges_xde_manifest_native(path: &str) -> String;
+        fn export_iges_xde_assembly_native(manifest: &str, path: &str) -> String;
         fn iges_length_unit_native(path: &str) -> String;
         fn transform_body_native(
             body: &NativeOperationResult,
@@ -375,6 +430,18 @@ mod ffi {
         fn combine_bodies_native(
             base: &NativeOperationResult,
             added: &NativeOperationResult,
+        ) -> UniquePtr<NativeOperationResult>;
+        fn trim_body_by_plane_native(
+            body: &NativeOperationResult,
+            origin_x: f64,
+            origin_y: f64,
+            origin_z: f64,
+            normal_x: f64,
+            normal_y: f64,
+            normal_z: f64,
+            keep_x: f64,
+            keep_y: f64,
+            keep_z: f64,
         ) -> UniquePtr<NativeOperationResult>;
         fn query_body_pair_native(
             left: &NativeOperationResult,
@@ -398,6 +465,21 @@ mod ffi {
         fn mesh_diagnostic(self: &NativeMeshResult) -> String;
         fn mesh_vertices(self: &NativeMeshResult) -> Vec<NativeMeshVertex>;
         fn mesh_triangles(self: &NativeMeshResult) -> Vec<NativeMeshTriangle>;
+
+        fn volume_mesh_body_native(
+            body: &NativeOperationResult,
+            deflection: f64,
+            angular_deflection: f64,
+            max_tetrahedra: u32,
+        ) -> UniquePtr<NativeVolumeMeshResult>;
+        fn volume_mesh_status_code(self: &NativeVolumeMeshResult) -> u8;
+        fn volume_mesh_diagnostic(self: &NativeVolumeMeshResult) -> String;
+        fn volume_mesh_vertices(self: &NativeVolumeMeshResult) -> Vec<NativeMeshVertex>;
+        fn volume_mesh_tetrahedra(
+            self: &NativeVolumeMeshResult,
+        ) -> Vec<NativeVolumeMeshTetrahedron>;
+        fn volume_mesh_boundary_triangles(self: &NativeVolumeMeshResult)
+        -> Vec<NativeMeshTriangle>;
 
         fn status_code(self: &NativeOperationResult) -> u8;
         fn diagnostic(self: &NativeOperationResult) -> String;
@@ -502,11 +584,40 @@ pub struct FramedLoftSpec {
     pub sections: Vec<FramedLoftSection>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum LoftSurfaceContinuity {
+    #[default]
+    Position,
+    Tangent,
+    Curvature,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CircleExtrudeSpec {
     pub center_mm: [f64; 2],
     pub radius_mm: f64,
     pub height_mm: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AxialToolMotion {
+    Line {
+        start_mm: [f64; 3],
+        end_mm: [f64; 3],
+    },
+    Arc {
+        start_mm: [f64; 3],
+        end_mm: [f64; 3],
+        center_mm: [f64; 3],
+        clockwise: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AxialToolSweepSpec {
+    pub motion: AxialToolMotion,
+    pub radius_mm: f64,
+    pub axial_length_mm: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1440,6 +1551,19 @@ pub enum EdgeFinish {
     Chamfer,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AdvancedChamferMode {
+    TwoDistance { second_distance_mm: f64 },
+    DistanceAngle { angle_degrees: f64 },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ShellDirection {
+    Inward,
+    Outward,
+    Symmetric,
+}
+
 pub type BottleEdgeFinish = EdgeFinish;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1676,6 +1800,39 @@ pub struct ExactTessellation {
     pub triangles: Vec<ExactMeshTriangle>,
 }
 
+pub const EXACT_VOLUME_MESH_SCHEMA: &str = "ketchup.exact-volume-mesh.v1";
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExactVolumeMeshOptions {
+    pub surface_deflection_mm: f64,
+    pub angular_deflection_rad: f64,
+    pub max_tetrahedra: u32,
+    pub max_relative_volume_error: f64,
+    pub min_tetrahedron_quality: f64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExactVolumeMeshTetrahedron {
+    pub vertex_indices: [u32; 4],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExactVolumeMesh {
+    pub schema: &'static str,
+    pub source_result_fingerprint: String,
+    pub request_digest: String,
+    pub mesh_fingerprint: String,
+    pub vertices_mm: Vec<[f64; 3]>,
+    pub tetrahedra: Vec<ExactVolumeMeshTetrahedron>,
+    pub boundary_triangles: Vec<ExactMeshTriangle>,
+    pub exact_volume_mm3: f64,
+    pub tetrahedral_volume_mm3: f64,
+    pub relative_volume_error: f64,
+    pub minimum_signed_volume_mm3: f64,
+    pub minimum_quality: f64,
+    pub maximum_edge_ratio: f64,
+}
+
 /// Solid-set relation computed from OCCT BRep common volume and distance.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExactPairRelation {
@@ -1691,6 +1848,8 @@ pub enum ExactPairRelation {
 pub struct ExactPairQueryResult {
     pub relation: ExactPairRelation,
     pub common_volume_mm3: f64,
+    /// Area of zero-volume common faces; positive only for face contact.
+    pub common_contact_area_mm2: f64,
     /// Minimum solid-set distance; zero for penetrating/contained bodies.
     pub distance_mm: f64,
 }
@@ -1744,6 +1903,227 @@ pub enum ExactBodyBooleanOperation {
     Split,
 }
 
+pub const MAX_STEP_XDE_NODES: usize = 1_024;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StepXdePart {
+    pub index: u32,
+    pub name: String,
+    pub name_from_source: bool,
+    pub color: Option<[u8; 3]>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct StepXdeNode {
+    pub id: u32,
+    pub parent_id: Option<u32>,
+    pub part_index: Option<u32>,
+    pub name: String,
+    pub name_from_source: bool,
+    pub color: Option<[u8; 3]>,
+    pub transform: [f64; 16],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct StepXdeManifest {
+    pub parts: Vec<StepXdePart>,
+    pub nodes: Vec<StepXdeNode>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StepXdeExportPart {
+    pub path: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct StepXdeExportNode {
+    pub parent_id: Option<u32>,
+    pub part_index: Option<u32>,
+    pub name: String,
+    pub color: Option<[u8; 3]>,
+    pub transform: [f64; 16],
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StepXdeManifestError {
+    InvalidPath,
+    Reader(String),
+    Malformed,
+    OutOfEnvelope,
+}
+
+impl std::fmt::Display for StepXdeManifestError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidPath => formatter.write_str("STEP XDE path must not be empty"),
+            Self::Reader(diagnostic) => formatter.write_str(diagnostic),
+            Self::Malformed => formatter.write_str("STEP XDE manifest is malformed"),
+            Self::OutOfEnvelope => {
+                formatter.write_str("STEP XDE manifest exceeds the bounded envelope")
+            }
+        }
+    }
+}
+
+impl std::error::Error for StepXdeManifestError {}
+
+fn decode_manifest_hex(value: &str) -> Option<Vec<u8>> {
+    if !value.len().is_multiple_of(2) {
+        return None;
+    }
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let high = (pair[0] as char).to_digit(16)?;
+            let low = (pair[1] as char).to_digit(16)?;
+            Some(((high << 4) | low) as u8)
+        })
+        .collect()
+}
+
+fn parse_manifest_text(value: &str) -> Option<String> {
+    let bytes = decode_manifest_hex(value)?;
+    let text = String::from_utf8(bytes).ok()?;
+    (!text.is_empty() && text.len() <= 1_024 && !text.chars().any(char::is_control)).then_some(text)
+}
+
+fn parse_manifest_color(value: &str) -> Option<Option<[u8; 3]>> {
+    if value == "-" {
+        return Some(None);
+    }
+    let bytes = decode_manifest_hex(value)?;
+    (bytes.len() == 3).then(|| Some([bytes[0], bytes[1], bytes[2]]))
+}
+
+fn transform_is_rigid(matrix: &[f64; 16]) -> bool {
+    if matrix.iter().any(|value| !value.is_finite())
+        || matrix[12] != 0.0
+        || matrix[13] != 0.0
+        || matrix[14] != 0.0
+        || matrix[15] != 1.0
+    {
+        return false;
+    }
+    let dot = |left: usize, right: usize| {
+        matrix[left] * matrix[right]
+            + matrix[4 + left] * matrix[4 + right]
+            + matrix[8 + left] * matrix[8 + right]
+    };
+    (dot(0, 0) - 1.0).abs() <= 1.0e-10
+        && (dot(1, 1) - 1.0).abs() <= 1.0e-10
+        && (dot(2, 2) - 1.0).abs() <= 1.0e-10
+        && dot(0, 1).abs() <= 1.0e-10
+        && dot(0, 2).abs() <= 1.0e-10
+        && dot(1, 2).abs() <= 1.0e-10
+}
+
+fn parse_step_xde_manifest(raw: &str) -> Result<StepXdeManifest, StepXdeManifestError> {
+    if let Some(diagnostic) = raw.strip_prefix("ERR\t") {
+        let text = String::from_utf8(
+            decode_manifest_hex(diagnostic).ok_or(StepXdeManifestError::Malformed)?,
+        )
+        .map_err(|_| StepXdeManifestError::Malformed)?;
+        return Err(StepXdeManifestError::Reader(text));
+    }
+    let mut lines = raw.lines();
+    if lines.next() != Some("KETCHUP_STEP_XDE_V1") {
+        return Err(StepXdeManifestError::Malformed);
+    }
+    let mut parts = Vec::new();
+    let mut nodes = Vec::new();
+    for line in lines {
+        let fields = line.split('\t').collect::<Vec<_>>();
+        match fields.first().copied() {
+            Some("P") if fields.len() == 5 => {
+                if parts.len() >= MAX_STEP_XDE_NODES {
+                    return Err(StepXdeManifestError::OutOfEnvelope);
+                }
+                let index = fields[1]
+                    .parse::<u32>()
+                    .map_err(|_| StepXdeManifestError::Malformed)?;
+                if index as usize != parts.len() {
+                    return Err(StepXdeManifestError::Malformed);
+                }
+                parts.push(StepXdePart {
+                    index,
+                    name: parse_manifest_text(fields[2]).ok_or(StepXdeManifestError::Malformed)?,
+                    name_from_source: match fields[3] {
+                        "0" => false,
+                        "1" => true,
+                        _ => return Err(StepXdeManifestError::Malformed),
+                    },
+                    color: parse_manifest_color(fields[4])
+                        .ok_or(StepXdeManifestError::Malformed)?,
+                });
+            }
+            Some("N") if fields.len() == 23 => {
+                if nodes.len() >= MAX_STEP_XDE_NODES {
+                    return Err(StepXdeManifestError::OutOfEnvelope);
+                }
+                let id = fields[1]
+                    .parse::<u32>()
+                    .map_err(|_| StepXdeManifestError::Malformed)?;
+                if id as usize != nodes.len() {
+                    return Err(StepXdeManifestError::Malformed);
+                }
+                let parent = fields[2]
+                    .parse::<i32>()
+                    .map_err(|_| StepXdeManifestError::Malformed)?;
+                let parent_id = match parent {
+                    -1 => None,
+                    value if value >= 0 && (value as u32) < id => Some(value as u32),
+                    _ => return Err(StepXdeManifestError::Malformed),
+                };
+                let part = fields[3]
+                    .parse::<i32>()
+                    .map_err(|_| StepXdeManifestError::Malformed)?;
+                let part_index = match part {
+                    -1 => None,
+                    value if value >= 0 && (value as usize) < parts.len() => Some(value as u32),
+                    _ => return Err(StepXdeManifestError::Malformed),
+                };
+                let mut transform = [0.0; 16];
+                for (target, field) in transform.iter_mut().zip(&fields[7..]) {
+                    *target = f64::from_bits(
+                        u64::from_str_radix(field, 16)
+                            .map_err(|_| StepXdeManifestError::Malformed)?,
+                    );
+                }
+                if !transform_is_rigid(&transform) {
+                    return Err(StepXdeManifestError::Malformed);
+                }
+                nodes.push(StepXdeNode {
+                    id,
+                    parent_id,
+                    part_index,
+                    name: parse_manifest_text(fields[4]).ok_or(StepXdeManifestError::Malformed)?,
+                    name_from_source: match fields[5] {
+                        "0" => false,
+                        "1" => true,
+                        _ => return Err(StepXdeManifestError::Malformed),
+                    },
+                    color: parse_manifest_color(fields[6])
+                        .ok_or(StepXdeManifestError::Malformed)?,
+                    transform,
+                });
+            }
+            _ => return Err(StepXdeManifestError::Malformed),
+        }
+    }
+    if parts.is_empty()
+        || nodes.is_empty()
+        || !nodes.iter().any(|node| node.parent_id.is_none())
+        || parts
+            .iter()
+            .any(|part| !nodes.iter().any(|node| node.part_index == Some(part.index)))
+    {
+        return Err(StepXdeManifestError::Malformed);
+    }
+    Ok(StepXdeManifest { parts, nodes })
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ExactBackend;
 
@@ -1767,7 +2147,7 @@ impl ExactBackend {
             spec.size_mm.y,
             spec.size_mm.z,
         );
-        collect_output(native, "box", &input, HistoryConfidence::None)
+        collect_output(native, "box", &input, HistoryConfidence::Complete)
     }
 
     pub fn extrude_rectangle(
@@ -1854,6 +2234,231 @@ impl ExactBackend {
             "offset_rectangle",
             &input,
             HistoryConfidence::Complete,
+        )
+    }
+
+    pub fn planar_surface_profile(
+        &self,
+        profile: &PlanarProfileLoop,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let operation = "planar_surface_profile";
+        let input = format!("{operation}:{profile:?}");
+        let PlanarProfileLoop::Segments(segments) = profile else {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidProfile,
+                operation,
+                &input,
+                "Planar surface currently requires a bounded segmented loop".to_owned(),
+            ));
+        };
+        validate_mixed_profile(segments, operation, &input)?;
+        let flattened = flatten_planar_segments(segments);
+        collect_output(
+            ffi::planar_surface_profile_native(&flattened),
+            operation,
+            &input,
+            HistoryConfidence::Complete,
+        )
+    }
+
+    pub fn trim_surface(
+        &self,
+        target: &ExactBody,
+        cutter: &ExactBody,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let operation = "trim_surface";
+        let input = format!(
+            "{operation}:{}:{}",
+            target.result_fingerprint, cutter.result_fingerprint
+        );
+        if target.topology.solid_count != 0
+            || cutter.topology.solid_count != 0
+            || target.topology.face_count == 0
+            || cutter.topology.face_count == 0
+        {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidParameter,
+                operation,
+                &input,
+                "Surface trim requires non-solid target and cutter surfaces".to_owned(),
+            ));
+        }
+        let native_target = target.native.as_ref().ok_or_else(|| GeometryError {
+            code: GeometryErrorCode::NullResult,
+            diagnostic: "Surface trim target lost its owned native shape".to_owned(),
+            operation,
+            input_digest: stable_digest(&input),
+            backend_fingerprint: BACKEND_FINGERPRINT,
+        })?;
+        let native_cutter = cutter.native.as_ref().ok_or_else(|| GeometryError {
+            code: GeometryErrorCode::NullResult,
+            diagnostic: "Surface trim cutter lost its owned native shape".to_owned(),
+            operation,
+            input_digest: stable_digest(&input),
+            backend_fingerprint: BACKEND_FINGERPRINT,
+        })?;
+        collect_output(
+            ffi::trim_surface_native(native_target, native_cutter),
+            operation,
+            &input,
+            HistoryConfidence::Partial,
+        )
+    }
+
+    pub fn extend_planar_surface(
+        &self,
+        target: &ExactBody,
+        distance_mm: f64,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let operation = "extend_planar_surface";
+        let input = format!(
+            "{operation}:{}:{:016x}",
+            target.result_fingerprint,
+            distance_mm.to_bits()
+        );
+        validate_length(distance_mm, "distance_mm", operation, &input)?;
+        if target.topology.solid_count != 0
+            || target.topology.face_count != 1
+            || target.topology.wire_count != 1
+        {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidParameter,
+                operation,
+                &input,
+                "Surface extend requires one simply bounded non-solid face".to_owned(),
+            ));
+        }
+        let native_target = target.native.as_ref().ok_or_else(|| GeometryError {
+            code: GeometryErrorCode::NullResult,
+            diagnostic: "Surface extend target lost its owned native shape".to_owned(),
+            operation,
+            input_digest: stable_digest(&input),
+            backend_fingerprint: BACKEND_FINGERPRINT,
+        })?;
+        collect_output(
+            ffi::extend_planar_surface_native(native_target, distance_mm),
+            operation,
+            &input,
+            HistoryConfidence::Partial,
+        )
+    }
+
+    pub fn knit_surfaces(
+        &self,
+        surfaces: &[&ExactBody],
+        tolerance_mm: f64,
+        make_solid: bool,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let operation = "knit_surfaces";
+        let input = format!(
+            "{operation}:{make_solid}:{:016x}:{}",
+            tolerance_mm.to_bits(),
+            surfaces
+                .iter()
+                .map(|surface| surface.result_fingerprint.as_str())
+                .collect::<Vec<_>>()
+                .join(":")
+        );
+        if !(2..=256).contains(&surfaces.len())
+            || !tolerance_mm.is_finite()
+            || !(1.0e-7..=10.0).contains(&tolerance_mm)
+            || surfaces.iter().any(|surface| {
+                surface.topology.solid_count != 0 || surface.topology.face_count == 0
+            })
+            || surfaces.iter().enumerate().any(|(index, surface)| {
+                surfaces[..index]
+                    .iter()
+                    .any(|other| other.result_fingerprint == surface.result_fingerprint)
+            })
+        {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidParameter,
+                operation,
+                &input,
+                "Surface knit requires 2..256 distinct non-solid surfaces and a tolerance from 1e-7 to 10 mm".to_owned(),
+            ));
+        }
+        let missing_native = || GeometryError {
+            code: GeometryErrorCode::NullResult,
+            diagnostic: "Surface knit input lost its owned native shape".to_owned(),
+            operation,
+            input_digest: stable_digest(&input),
+            backend_fingerprint: BACKEND_FINGERPRINT,
+        };
+        let first = surfaces[0].native.as_ref().ok_or_else(missing_native)?;
+        let second = surfaces[1].native.as_ref().ok_or_else(missing_native)?;
+        let mut compound = collect_output(
+            ffi::combine_surfaces_native(first, second),
+            operation,
+            &input,
+            HistoryConfidence::None,
+        )?;
+        for surface in &surfaces[2..] {
+            let added = surface.native.as_ref().ok_or_else(missing_native)?;
+            let next = {
+                let base = compound.body.native.as_ref().ok_or_else(missing_native)?;
+                collect_output(
+                    ffi::combine_surfaces_native(base, added),
+                    operation,
+                    &input,
+                    HistoryConfidence::None,
+                )?
+            };
+            compound = next;
+        }
+        let native_compound = compound.body.native.as_ref().ok_or_else(missing_native)?;
+        collect_output(
+            ffi::knit_surface_compound_native(native_compound, tolerance_mm, make_solid),
+            operation,
+            &input,
+            HistoryConfidence::Partial,
+        )
+    }
+
+    pub fn thicken_surface(
+        &self,
+        surface: &ExactBody,
+        thickness_mm: f64,
+        direction: ShellDirection,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let operation = "thicken_surface";
+        let input = format!(
+            "{operation}:{}:{:016x}:{direction:?}",
+            surface.result_fingerprint,
+            thickness_mm.to_bits()
+        );
+        validate_length(thickness_mm, "thickness_mm", operation, &input)?;
+        if surface.topology.solid_count != 0
+            || surface.topology.face_count == 0
+            || surface.topology.face_count > 256
+        {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidParameter,
+                operation,
+                &input,
+                "Surface thicken requires a valid non-solid face-bearing body".to_owned(),
+            ));
+        }
+        let native_surface = surface.native.as_ref().ok_or_else(|| GeometryError {
+            code: GeometryErrorCode::NullResult,
+            diagnostic: "Surface thicken target lost its owned native shape".to_owned(),
+            operation,
+            input_digest: stable_digest(&input),
+            backend_fingerprint: BACKEND_FINGERPRINT,
+        })?;
+        collect_output(
+            ffi::thicken_surface_native(
+                native_surface,
+                thickness_mm,
+                match direction {
+                    ShellDirection::Inward => 0,
+                    ShellDirection::Outward => 1,
+                    ShellDirection::Symmetric => 2,
+                },
+            ),
+            operation,
+            &input,
+            HistoryConfidence::Partial,
         )
     }
 
@@ -2467,7 +3072,53 @@ impl ExactBackend {
         &self,
         spec: &FramedLoftSpec,
     ) -> Result<ExactOpOutput, GeometryError> {
-        let operation = "loft_framed_profiles";
+        self.loft_framed_profiles_with_controls(spec, None, LoftSurfaceContinuity::Position)
+    }
+
+    pub fn loft_framed_profiles_with_controls(
+        &self,
+        spec: &FramedLoftSpec,
+        guide: Option<&[SpatialProfileSegment]>,
+        continuity: LoftSurfaceContinuity,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        self.loft_framed_profiles_with_body_kind(spec, guide, continuity, true)
+    }
+
+    pub fn loft_framed_surface(
+        &self,
+        spec: &FramedLoftSpec,
+        guide: Option<&[SpatialProfileSegment]>,
+        continuity: LoftSurfaceContinuity,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        self.loft_framed_profiles_with_body_kind(spec, guide, continuity, false)
+    }
+
+    fn loft_framed_profiles_with_body_kind(
+        &self,
+        spec: &FramedLoftSpec,
+        guide: Option<&[SpatialProfileSegment]>,
+        continuity: LoftSurfaceContinuity,
+        make_solid: bool,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let operation = if make_solid {
+            "loft_framed_profiles"
+        } else {
+            "loft_framed_surface"
+        };
+        if guide.is_some() && continuity == LoftSurfaceContinuity::Curvature {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidParameter,
+                operation,
+                operation,
+                "Guided Loft does not support curvature continuity".to_owned(),
+            ));
+        }
+        let guide_values = if let Some(guide) = guide {
+            validate_spatial_sweep_path(guide, operation, operation)?;
+            flatten_spatial_segments(guide)
+        } else {
+            Vec::new()
+        };
         let mut values = vec![spec.sections.len() as f64];
         if !(2..=16).contains(&spec.sections.len()) {
             return Err(parameter_error(
@@ -2570,15 +3221,24 @@ impl ExactBackend {
             values.extend(section.frame);
             values.extend(payload);
         }
+        let continuity_code = match continuity {
+            LoftSurfaceContinuity::Position => 0,
+            LoftSurfaceContinuity::Tangent => 1,
+            LoftSurfaceContinuity::Curvature => 2,
+        };
         let input = format!(
-            "{operation}:{:?}",
+            "{operation}:{:?}:{:?}:{continuity_code}:{make_solid}",
             values
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            guide_values
                 .iter()
                 .map(|value| value.to_bits())
                 .collect::<Vec<_>>()
         );
         collect_output(
-            ffi::loft_framed_profiles_native(&values),
+            ffi::loft_framed_profiles_native(&values, &guide_values, continuity_code, make_solid),
             operation,
             &input,
             HistoryConfidence::Partial,
@@ -2738,6 +3398,90 @@ impl ExactBackend {
         collect_output(
             native,
             "extrude_circle",
+            &input,
+            HistoryConfidence::Complete,
+        )
+    }
+
+    pub fn sweep_axial_tool(
+        &self,
+        spec: AxialToolSweepSpec,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let operation = "sweep_axial_tool";
+        let input = format!("{operation}:{spec:?}");
+        validate_length(spec.radius_mm, "radius_mm", operation, &input)?;
+        validate_length(spec.axial_length_mm, "axial_length_mm", operation, &input)?;
+        let values = match spec.motion {
+            AxialToolMotion::Line { start_mm, end_mm } => {
+                for (index, value) in start_mm.into_iter().chain(end_mm).enumerate() {
+                    validate_coordinate(value, &format!("point_{index}"), operation, &input)?;
+                }
+                vec![
+                    0.0,
+                    start_mm[0],
+                    start_mm[1],
+                    start_mm[2],
+                    end_mm[0],
+                    end_mm[1],
+                    end_mm[2],
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    spec.radius_mm,
+                    spec.axial_length_mm,
+                ]
+            }
+            AxialToolMotion::Arc {
+                start_mm,
+                end_mm,
+                center_mm,
+                clockwise,
+            } => {
+                for (index, value) in start_mm
+                    .into_iter()
+                    .chain(end_mm)
+                    .chain(center_mm)
+                    .enumerate()
+                {
+                    validate_coordinate(value, &format!("point_{index}"), operation, &input)?;
+                }
+                let start_radius = (start_mm[0] - center_mm[0]).hypot(start_mm[1] - center_mm[1]);
+                let end_radius = (end_mm[0] - center_mm[0]).hypot(end_mm[1] - center_mm[1]);
+                if (start_mm[2] - end_mm[2]).abs() > 1.0e-9
+                    || (start_mm[2] - center_mm[2]).abs() > 1.0e-9
+                    || start_radius <= 1.0e-9
+                    || (start_radius - end_radius).abs() > 1.0e-7
+                    || start_mm == end_mm
+                {
+                    return Err(parameter_error(
+                        GeometryErrorCode::InvalidParameter,
+                        operation,
+                        &input,
+                        "Axial tool arc must be planar, non-closed, concentric, and non-degenerate"
+                            .to_owned(),
+                    ));
+                }
+                vec![
+                    1.0,
+                    start_mm[0],
+                    start_mm[1],
+                    start_mm[2],
+                    end_mm[0],
+                    end_mm[1],
+                    end_mm[2],
+                    center_mm[0],
+                    center_mm[1],
+                    center_mm[2],
+                    f64::from(clockwise),
+                    spec.radius_mm,
+                    spec.axial_length_mm,
+                ]
+            }
+        };
+        collect_output(
+            ffi::sweep_axial_tool_native(&values),
+            operation,
             &input,
             HistoryConfidence::Complete,
         )
@@ -3001,14 +3745,23 @@ impl ExactBackend {
         face_ordinals: &[u32],
         thickness_mm: f64,
     ) -> Result<ExactOpOutput, GeometryError> {
+        self.shell_body_with_direction(body, face_ordinals, thickness_mm, ShellDirection::Inward)
+    }
+
+    pub fn shell_body_with_direction(
+        &self,
+        body: &ExactBody,
+        face_ordinals: &[u32],
+        thickness_mm: f64,
+        direction: ShellDirection,
+    ) -> Result<ExactOpOutput, GeometryError> {
         let input = format!(
-            "shell_body:{}:{face_ordinals:?}:{:016x}",
+            "shell_body:{}:{face_ordinals:?}:{:016x}:{direction:?}",
             body.result_fingerprint,
             thickness_mm.to_bits()
         );
         validate_length(thickness_mm, "thickness_mm", "shell_body", &input)?;
-        if face_ordinals.is_empty()
-            || face_ordinals.len() > 64
+        if face_ordinals.len() > 64
             || face_ordinals.windows(2).any(|pair| pair[0] >= pair[1])
             || face_ordinals
                 .iter()
@@ -3018,7 +3771,7 @@ impl ExactBackend {
                 GeometryErrorCode::InvalidParameter,
                 "shell_body",
                 &input,
-                "Shell faces must be a non-empty canonical in-range selection".to_owned(),
+                "Shell faces must be a canonical in-range selection".to_owned(),
             ));
         }
         let native = body.native.as_ref().ok_or_else(|| GeometryError {
@@ -3029,7 +3782,16 @@ impl ExactBackend {
             backend_fingerprint: BACKEND_FINGERPRINT,
         })?;
         collect_output(
-            ffi::shell_body_native(native, face_ordinals, thickness_mm),
+            ffi::shell_body_native(
+                native,
+                face_ordinals,
+                thickness_mm,
+                match direction {
+                    ShellDirection::Inward => 0,
+                    ShellDirection::Outward => 1,
+                    ShellDirection::Symmetric => 2,
+                },
+            ),
             "shell_body",
             &input,
             HistoryConfidence::Partial,
@@ -3078,12 +3840,48 @@ impl ExactBackend {
         finish: EdgeFinish,
         amount_mm: f64,
     ) -> Result<ExactOpOutput, GeometryError> {
+        self.finish_body_with_radius_stations(body, edge_ordinals, finish, amount_mm, &[])
+    }
+
+    pub fn finish_body_with_radius_stations(
+        &self,
+        body: &ExactBody,
+        edge_ordinals: &[u32],
+        finish: EdgeFinish,
+        amount_mm: f64,
+        fillet_radius_stations: &[[f64; 2]],
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let station_bits = fillet_radius_stations
+            .iter()
+            .map(|station| station.map(f64::to_bits))
+            .collect::<Vec<_>>();
         let input = format!(
-            "finish_body:{}:{edge_ordinals:?}:{finish:?}:{:016x}",
+            "finish_body:{}:{edge_ordinals:?}:{finish:?}:{:016x}:{station_bits:?}",
             body.result_fingerprint,
             amount_mm.to_bits()
         );
         validate_length(amount_mm, "amount_mm", "finish_body", &input)?;
+        let mut previous_position = 0.0;
+        if fillet_radius_stations.len() > 32
+            || (finish != EdgeFinish::Fillet && !fillet_radius_stations.is_empty())
+            || (!fillet_radius_stations.is_empty()
+                && fillet_radius_stations.last().map(|station| station[0]) != Some(1.0))
+            || fillet_radius_stations.iter().any(|station| {
+                let valid = station[0].is_finite()
+                    && station[0] > previous_position
+                    && station[0] <= 1.0
+                    && validate_length(station[1], "radius", "finish_body", &input).is_ok();
+                previous_position = station[0];
+                !valid
+            })
+        {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidParameter,
+                "finish_body",
+                &input,
+                "Variable fillet stations are invalid or non-canonical".to_owned(),
+            ));
+        }
         if edge_ordinals.is_empty()
             || edge_ordinals.len() > 64
             || edge_ordinals.windows(2).any(|pair| pair[0] >= pair[1])
@@ -3105,14 +3903,110 @@ impl ExactBackend {
             input_digest: stable_digest(&input),
             backend_fingerprint: BACKEND_FINGERPRINT,
         })?;
+        let flattened_stations = fillet_radius_stations
+            .iter()
+            .flat_map(|station| *station)
+            .collect::<Vec<_>>();
         collect_output(
             ffi::finish_body_native(
                 native,
                 edge_ordinals,
+                &[],
                 amount_mm,
                 finish == EdgeFinish::Fillet,
+                &flattened_stations,
+                0,
+                0.0,
             ),
             "finish_body",
+            &input,
+            HistoryConfidence::Partial,
+        )
+    }
+
+    pub fn finish_body_advanced_chamfer(
+        &self,
+        body: &ExactBody,
+        edge_ordinals: &[u32],
+        face_ordinals: &[u32],
+        amount_mm: f64,
+        mode: AdvancedChamferMode,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let (mode_code, secondary) = match mode {
+            AdvancedChamferMode::TwoDistance { second_distance_mm } => (1, second_distance_mm),
+            AdvancedChamferMode::DistanceAngle { angle_degrees } => (2, angle_degrees),
+        };
+        let input = format!(
+            "finish_body_advanced_chamfer:{}:{edge_ordinals:?}:{face_ordinals:?}:{:016x}:{mode_code}:{:016x}",
+            body.result_fingerprint,
+            amount_mm.to_bits(),
+            secondary.to_bits()
+        );
+        validate_length(
+            amount_mm,
+            "amount_mm",
+            "finish_body_advanced_chamfer",
+            &input,
+        )?;
+        let valid_secondary = match mode {
+            AdvancedChamferMode::TwoDistance { second_distance_mm } => validate_length(
+                second_distance_mm,
+                "second_distance_mm",
+                "finish_body_advanced_chamfer",
+                &input,
+            )
+            .is_ok(),
+            AdvancedChamferMode::DistanceAngle { angle_degrees } => {
+                angle_degrees.is_finite() && angle_degrees > 0.1 && angle_degrees < 89.9
+            }
+        };
+        if edge_ordinals.is_empty()
+            || edge_ordinals.len() > 64
+            || edge_ordinals.len() != face_ordinals.len()
+            || edge_ordinals.windows(2).any(|pair| pair[0] >= pair[1])
+            || edge_ordinals
+                .iter()
+                .any(|ordinal| *ordinal >= body.topology.edge_count)
+            || face_ordinals
+                .iter()
+                .any(|ordinal| *ordinal >= body.topology.face_count)
+            || edge_ordinals
+                .iter()
+                .zip(face_ordinals)
+                .any(|(edge_ordinal, face_ordinal)| {
+                    !body.topology.edges.iter().any(|edge| {
+                        edge.ordinal == *edge_ordinal
+                            && edge.adjacent_face_ordinals.contains(face_ordinal)
+                    })
+                })
+            || !valid_secondary
+        {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidParameter,
+                "finish_body_advanced_chamfer",
+                &input,
+                "Advanced chamfer edge/face pairs or parameters are invalid".to_owned(),
+            ));
+        }
+        let native = body.native.as_ref().ok_or_else(|| GeometryError {
+            code: GeometryErrorCode::NullResult,
+            diagnostic: "Exact body lost its owned native shape".to_owned(),
+            operation: "finish_body_advanced_chamfer",
+            input_digest: stable_digest(&input),
+            backend_fingerprint: BACKEND_FINGERPRINT,
+        })?;
+        collect_output(
+            ffi::finish_body_native(
+                native,
+                edge_ordinals,
+                face_ordinals,
+                amount_mm,
+                false,
+                &[],
+                mode_code,
+                secondary,
+            ),
+            "finish_body_advanced_chamfer",
             &input,
             HistoryConfidence::Partial,
         )
@@ -3167,6 +4061,180 @@ impl ExactBackend {
         )
     }
 
+    pub fn import_step_xde_part(
+        &self,
+        path: &str,
+        part_index: u32,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let input = format!("import_step_xde_part:{path}:{part_index}");
+        if path.trim().is_empty() || part_index as usize >= MAX_STEP_XDE_NODES {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidParameter,
+                "import_step_xde_part",
+                &input,
+                "STEP XDE path or part index is invalid".to_owned(),
+            ));
+        }
+        collect_output(
+            ffi::import_step_xde_part_native(path, part_index),
+            "import_step_xde_part",
+            &input,
+            HistoryConfidence::None,
+        )
+    }
+
+    pub fn step_xde_manifest(&self, path: &str) -> Result<StepXdeManifest, StepXdeManifestError> {
+        if path.trim().is_empty() {
+            return Err(StepXdeManifestError::InvalidPath);
+        }
+        parse_step_xde_manifest(&ffi::step_xde_manifest_native(path))
+    }
+
+    pub fn export_step_xde_assembly(
+        &self,
+        parts: &[StepXdeExportPart],
+        nodes: &[StepXdeExportNode],
+        path: &str,
+    ) -> Result<(), GeometryError> {
+        self.export_xde_assembly(parts, nodes, path, false)
+    }
+
+    pub fn export_iges_xde_assembly(
+        &self,
+        parts: &[StepXdeExportPart],
+        nodes: &[StepXdeExportNode],
+        path: &str,
+    ) -> Result<(), GeometryError> {
+        self.export_xde_assembly(parts, nodes, path, true)
+    }
+
+    fn export_xde_assembly(
+        &self,
+        parts: &[StepXdeExportPart],
+        nodes: &[StepXdeExportNode],
+        path: &str,
+        iges: bool,
+    ) -> Result<(), GeometryError> {
+        let operation = if iges {
+            "export_iges_xde_assembly"
+        } else {
+            "export_step_xde_assembly"
+        };
+        let input = format!("{operation}:{}:{}:{path}", parts.len(), nodes.len());
+        let invalid = || {
+            parameter_error(
+                GeometryErrorCode::InvalidParameter,
+                operation,
+                &input,
+                "XDE assembly manifest is malformed or outside the bounded envelope".to_owned(),
+            )
+        };
+        if path.trim().is_empty()
+            || parts.is_empty()
+            || parts.len() > MAX_STEP_XDE_NODES
+            || nodes.is_empty()
+            || nodes.len() > MAX_STEP_XDE_NODES
+            || parts.iter().any(|part| {
+                part.path.trim().is_empty()
+                    || part.name.is_empty()
+                    || part.name.len() > 4_096
+                    || part.name.chars().any(char::is_control)
+            })
+        {
+            return Err(invalid());
+        }
+        let mut used_parts = vec![false; parts.len()];
+        for (index, node) in nodes.iter().enumerate() {
+            if node.name.is_empty()
+                || node.name.len() > 4_096
+                || node.name.chars().any(char::is_control)
+                || node
+                    .parent_id
+                    .is_some_and(|parent| parent as usize >= index)
+                || node
+                    .part_index
+                    .is_some_and(|part| part as usize >= parts.len())
+                || node
+                    .parent_id
+                    .is_some_and(|parent| nodes[parent as usize].part_index.is_some())
+                || !transform_is_rigid(&node.transform)
+            {
+                return Err(invalid());
+            }
+            if let Some(part) = node.part_index {
+                used_parts[part as usize] = true;
+            }
+            let mut depth = 0usize;
+            let mut parent = node.parent_id;
+            while let Some(parent_id) = parent {
+                depth += 1;
+                if depth > 64 {
+                    return Err(invalid());
+                }
+                parent = nodes[parent_id as usize].parent_id;
+            }
+        }
+        if used_parts.iter().any(|used| !used) {
+            return Err(invalid());
+        }
+        let encode = |value: &str| {
+            const DIGITS: &[u8; 16] = b"0123456789abcdef";
+            let mut output = String::with_capacity(value.len() * 2);
+            for byte in value.as_bytes() {
+                output.push(DIGITS[(byte >> 4) as usize] as char);
+                output.push(DIGITS[(byte & 0x0f) as usize] as char);
+            }
+            output
+        };
+        let mut manifest = String::from("KETCHUP_STEP_XDE_EXPORT_V1\n");
+        for part in parts {
+            use std::fmt::Write as _;
+            writeln!(
+                manifest,
+                "P\t{}\t{}",
+                encode(&part.path),
+                encode(&part.name)
+            )
+            .expect("writing to String cannot fail");
+        }
+        for node in nodes {
+            use std::fmt::Write as _;
+            let parent = node.parent_id.map_or(-1_i64, i64::from);
+            let part = node.part_index.map_or(-1_i64, i64::from);
+            let color = node.color.map_or_else(
+                || "-".to_owned(),
+                |[red, green, blue]| format!("{red:02x}{green:02x}{blue:02x}"),
+            );
+            write!(
+                manifest,
+                "N\t{parent}\t{part}\t{}\t{color}",
+                encode(&node.name)
+            )
+            .expect("writing to String cannot fail");
+            for value in node.transform {
+                write!(manifest, "\t{:016x}", value.to_bits())
+                    .expect("writing to String cannot fail");
+            }
+            manifest.push('\n');
+        }
+        let diagnostic = if iges {
+            ffi::export_iges_xde_assembly_native(&manifest, path)
+        } else {
+            ffi::export_step_xde_assembly_native(&manifest, path)
+        };
+        if diagnostic.is_empty() {
+            Ok(())
+        } else {
+            Err(GeometryError {
+                code: GeometryErrorCode::BackendException,
+                diagnostic,
+                operation,
+                input_digest: stable_digest(&input),
+                backend_fingerprint: BACKEND_FINGERPRINT,
+            })
+        }
+    }
+
     #[must_use]
     pub fn step_length_unit_name(&self, path: &str) -> Option<String> {
         let unit = ffi::step_length_unit_native(path);
@@ -3189,6 +4257,35 @@ impl ExactBackend {
             &input,
             HistoryConfidence::None,
         )
+    }
+
+    pub fn import_iges_xde_part(
+        &self,
+        path: &str,
+        part_index: u32,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let input = format!("import_iges_xde_part:{path}:{part_index}");
+        if path.trim().is_empty() || part_index as usize >= MAX_STEP_XDE_NODES {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidParameter,
+                "import_iges_xde_part",
+                &input,
+                "IGES XDE path or part index is invalid".to_owned(),
+            ));
+        }
+        collect_output(
+            ffi::import_iges_xde_part_native(path, part_index),
+            "import_iges_xde_part",
+            &input,
+            HistoryConfidence::None,
+        )
+    }
+
+    pub fn iges_xde_manifest(&self, path: &str) -> Result<StepXdeManifest, StepXdeManifestError> {
+        if path.trim().is_empty() {
+            return Err(StepXdeManifestError::InvalidPath);
+        }
+        parse_step_xde_manifest(&ffi::iges_xde_manifest_native(path))
     }
 
     #[must_use]
@@ -3262,6 +4359,57 @@ impl ExactBackend {
         )
     }
 
+    pub fn trim_body_by_plane(
+        &self,
+        body: &ExactBody,
+        origin_mm: [f64; 3],
+        normal: [f64; 3],
+        keep_point_mm: [f64; 3],
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let input = format!(
+            "trim_body_by_plane:{}:{origin_mm:?}:{normal:?}:{keep_point_mm:?}",
+            body.result_fingerprint
+        );
+        if origin_mm
+            .into_iter()
+            .chain(normal)
+            .chain(keep_point_mm)
+            .any(|value| !value.is_finite())
+            || normal.iter().map(|value| value * value).sum::<f64>() <= 1.0e-18
+        {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidParameter,
+                "trim_body_by_plane",
+                &input,
+                "Plane trim requires finite points and a non-degenerate normal".to_owned(),
+            ));
+        }
+        let native = body.native.as_ref().ok_or_else(|| GeometryError {
+            code: GeometryErrorCode::NullResult,
+            diagnostic: "Plane trim body lost its owned native shape".to_owned(),
+            operation: "trim_body_by_plane",
+            input_digest: stable_digest(&input),
+            backend_fingerprint: BACKEND_FINGERPRINT,
+        })?;
+        collect_output(
+            ffi::trim_body_by_plane_native(
+                native,
+                origin_mm[0],
+                origin_mm[1],
+                origin_mm[2],
+                normal[0],
+                normal[1],
+                normal[2],
+                keep_point_mm[0],
+                keep_point_mm[1],
+                keep_point_mm[2],
+            ),
+            "trim_body_by_plane",
+            &input,
+            HistoryConfidence::Partial,
+        )
+    }
+
     /// Read-only narrow phase. Empty common results are valid; backend failures
     /// are always errors. Contact tolerance is in mm and never suppresses positive volume.
     pub fn query_body_pair(
@@ -3306,6 +4454,8 @@ impl ExactBackend {
         }
         if !result.common_volume_mm3.is_finite()
             || result.common_volume_mm3 < 0.0
+            || !result.common_contact_area_mm2.is_finite()
+            || result.common_contact_area_mm2 < 0.0
             || !result.distance_mm.is_finite()
             || result.distance_mm < 0.0
         {
@@ -3323,6 +4473,7 @@ impl ExactBackend {
                 ExactPairRelation::Separated
             },
             common_volume_mm3: result.common_volume_mm3,
+            common_contact_area_mm2: result.common_contact_area_mm2,
             distance_mm: result.distance_mm,
         })
     }
@@ -3509,6 +4660,309 @@ impl ExactBackend {
         Ok(ExactTessellation {
             vertices_mm,
             triangles,
+        })
+    }
+
+    /// Build a bounded tetrahedral mesh from one exact solid.
+    ///
+    /// The native mesher cones an OCCT face tessellation to a verified interior
+    /// point. It therefore accepts only solids whose complete tessellated
+    /// boundary is visible from that point and fails closed for unsupported
+    /// non-star-shaped domains. The returned mesh is additionally checked for
+    /// manifold connectivity, positive Jacobians, quality and volume error.
+    pub fn volume_mesh_body(
+        &self,
+        body: &ExactBody,
+        options: ExactVolumeMeshOptions,
+    ) -> Result<ExactVolumeMesh, GeometryError> {
+        let input = format!(
+            "volume_mesh_body:{}:{:016x}:{:016x}:{}:{:016x}:{:016x}",
+            body.result_fingerprint,
+            options.surface_deflection_mm.to_bits(),
+            options.angular_deflection_rad.to_bits(),
+            options.max_tetrahedra,
+            options.max_relative_volume_error.to_bits(),
+            options.min_tetrahedron_quality.to_bits(),
+        );
+        let input_digest = stable_digest(&input);
+        let invalid_options = !options.surface_deflection_mm.is_finite()
+            || options.surface_deflection_mm <= 0.0
+            || options.surface_deflection_mm > MAX_LENGTH_MM
+            || !options.angular_deflection_rad.is_finite()
+            || options.angular_deflection_rad <= 0.0
+            || options.angular_deflection_rad > std::f64::consts::PI
+            || !(4..=65_536).contains(&options.max_tetrahedra)
+            || !options.max_relative_volume_error.is_finite()
+            || !(1.0e-12..=0.25).contains(&options.max_relative_volume_error)
+            || !options.min_tetrahedron_quality.is_finite()
+            || !(0.0..=1.0).contains(&options.min_tetrahedron_quality);
+        if invalid_options {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidParameter,
+                "volume_mesh_body",
+                &input,
+                "Volume-mesh options are non-finite or outside bounded ranges".to_owned(),
+            ));
+        }
+        if body.topology.solid_count != 1 || body.topology.volume_mm3 <= 0.0 {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidShape,
+                "volume_mesh_body",
+                &input,
+                "Volume meshing requires exactly one closed exact solid".to_owned(),
+            ));
+        }
+        let native = body.native.as_ref().ok_or_else(|| GeometryError {
+            code: GeometryErrorCode::NullResult,
+            diagnostic: "Exact body lost its owned native shape".to_owned(),
+            operation: "volume_mesh_body",
+            input_digest: input_digest.clone(),
+            backend_fingerprint: BACKEND_FINGERPRINT,
+        })?;
+        let mesh = ffi::volume_mesh_body_native(
+            native,
+            options.surface_deflection_mm,
+            options.angular_deflection_rad,
+            options.max_tetrahedra,
+        );
+        let mesh = mesh.as_ref().ok_or_else(|| GeometryError {
+            code: GeometryErrorCode::NullResult,
+            diagnostic: "Native facade returned no volume-mesh object".to_owned(),
+            operation: "volume_mesh_body",
+            input_digest: input_digest.clone(),
+            backend_fingerprint: BACKEND_FINGERPRINT,
+        })?;
+        if mesh.volume_mesh_status_code() != 0 {
+            return Err(GeometryError {
+                code: native_status(mesh.volume_mesh_status_code()),
+                diagnostic: mesh.volume_mesh_diagnostic(),
+                operation: "volume_mesh_body",
+                input_digest,
+                backend_fingerprint: BACKEND_FINGERPRINT,
+            });
+        }
+
+        let vertices_mm = mesh
+            .volume_mesh_vertices()
+            .into_iter()
+            .map(|vertex| [vertex.x_mm, vertex.y_mm, vertex.z_mm])
+            .collect::<Vec<_>>();
+        let tetrahedra = mesh
+            .volume_mesh_tetrahedra()
+            .into_iter()
+            .map(|tetrahedron| ExactVolumeMeshTetrahedron {
+                vertex_indices: [
+                    tetrahedron.first,
+                    tetrahedron.second,
+                    tetrahedron.third,
+                    tetrahedron.fourth,
+                ],
+            })
+            .collect::<Vec<_>>();
+        let boundary_triangles = mesh
+            .volume_mesh_boundary_triangles()
+            .into_iter()
+            .map(|triangle| ExactMeshTriangle {
+                vertex_indices: [triangle.first, triangle.second, triangle.third],
+                face_ordinal: triangle.face_ordinal,
+            })
+            .collect::<Vec<_>>();
+        let vertex_count = vertices_mm.len();
+        if vertices_mm.len() < 4
+            || tetrahedra.is_empty()
+            || tetrahedra.len() > options.max_tetrahedra as usize
+            || boundary_triangles.is_empty()
+            || vertices_mm
+                .iter()
+                .flatten()
+                .any(|coordinate| !coordinate.is_finite())
+            || tetrahedra.iter().any(|tetrahedron| {
+                tetrahedron
+                    .vertex_indices
+                    .iter()
+                    .any(|index| *index as usize >= vertex_count)
+                    || {
+                        let mut unique = tetrahedron.vertex_indices;
+                        unique.sort_unstable();
+                        unique.windows(2).any(|pair| pair[0] == pair[1])
+                    }
+            })
+            || boundary_triangles.iter().any(|triangle| {
+                triangle.face_ordinal >= body.topology.face_count
+                    || triangle
+                        .vertex_indices
+                        .iter()
+                        .any(|index| *index as usize >= vertex_count)
+            })
+        {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidShape,
+                "volume_mesh_body",
+                &input,
+                "Native volume mesh is not a bounded well-formed indexed mesh".to_owned(),
+            ));
+        }
+
+        let mut face_uses = std::collections::BTreeMap::<[u32; 3], u32>::new();
+        let mut tetrahedral_volume_mm3 = 0.0;
+        let mut minimum_signed_volume_mm3 = f64::INFINITY;
+        let mut minimum_quality = f64::INFINITY;
+        let mut maximum_edge_ratio = 0.0_f64;
+        for tetrahedron in &tetrahedra {
+            let indices = tetrahedron.vertex_indices;
+            for face in [
+                [indices[0], indices[1], indices[2]],
+                [indices[0], indices[1], indices[3]],
+                [indices[0], indices[2], indices[3]],
+                [indices[1], indices[2], indices[3]],
+            ] {
+                let mut key = face;
+                key.sort_unstable();
+                *face_uses.entry(key).or_default() += 1;
+            }
+            let points = indices.map(|index| vertices_mm[index as usize]);
+            let ab = subtract3(points[1], points[0]);
+            let ac = subtract3(points[2], points[0]);
+            let ad = subtract3(points[3], points[0]);
+            let signed_volume_mm3 = dot3(ab, cross3(ac, ad)) / 6.0;
+            if !signed_volume_mm3.is_finite() || signed_volume_mm3 <= 1.0e-15 {
+                return Err(parameter_error(
+                    GeometryErrorCode::InvalidShape,
+                    "volume_mesh_body",
+                    &input,
+                    "Volume mesh contains an inverted or degenerate tetrahedron".to_owned(),
+                ));
+            }
+            let edge_squared = [
+                squared_distance3(points[0], points[1]),
+                squared_distance3(points[0], points[2]),
+                squared_distance3(points[0], points[3]),
+                squared_distance3(points[1], points[2]),
+                squared_distance3(points[1], points[3]),
+                squared_distance3(points[2], points[3]),
+            ];
+            let minimum_edge_squared = edge_squared.iter().copied().fold(f64::INFINITY, f64::min);
+            let maximum_edge_squared = edge_squared.iter().copied().fold(0.0_f64, f64::max);
+            let quality =
+                12.0 * (3.0 * signed_volume_mm3).powf(2.0 / 3.0) / edge_squared.iter().sum::<f64>();
+            if !quality.is_finite()
+                || quality < options.min_tetrahedron_quality
+                || minimum_edge_squared <= 0.0
+            {
+                return Err(parameter_error(
+                    GeometryErrorCode::InvalidShape,
+                    "volume_mesh_body",
+                    &input,
+                    "Volume mesh violates the requested tetrahedron quality bound".to_owned(),
+                ));
+            }
+            tetrahedral_volume_mm3 += signed_volume_mm3;
+            minimum_signed_volume_mm3 = minimum_signed_volume_mm3.min(signed_volume_mm3);
+            minimum_quality = minimum_quality.min(quality);
+            maximum_edge_ratio =
+                maximum_edge_ratio.max((maximum_edge_squared / minimum_edge_squared).sqrt());
+        }
+
+        let expected_boundary = face_uses
+            .iter()
+            .filter_map(|(face, count)| (*count == 1).then_some(*face))
+            .collect::<std::collections::BTreeSet<_>>();
+        if face_uses.values().any(|count| *count > 2) {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidShape,
+                "volume_mesh_body",
+                &input,
+                "Volume mesh contains non-manifold tetrahedral faces".to_owned(),
+            ));
+        }
+        let actual_boundary = boundary_triangles
+            .iter()
+            .map(|triangle| {
+                let mut face = triangle.vertex_indices;
+                face.sort_unstable();
+                face
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        if actual_boundary.len() != boundary_triangles.len() || actual_boundary != expected_boundary
+        {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidShape,
+                "volume_mesh_body",
+                &input,
+                "Boundary provenance does not match the tetrahedral boundary".to_owned(),
+            ));
+        }
+        let mut boundary_edges = std::collections::BTreeMap::<[u32; 2], u32>::new();
+        for triangle in &boundary_triangles {
+            let indices = triangle.vertex_indices;
+            for mut edge in [
+                [indices[0], indices[1]],
+                [indices[1], indices[2]],
+                [indices[2], indices[0]],
+            ] {
+                edge.sort_unstable();
+                *boundary_edges.entry(edge).or_default() += 1;
+            }
+        }
+        if boundary_edges.values().any(|count| *count != 2) {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidShape,
+                "volume_mesh_body",
+                &input,
+                "Tetrahedral boundary is open or non-manifold".to_owned(),
+            ));
+        }
+
+        let exact_volume_mm3 = body.topology.volume_mm3;
+        let relative_volume_error =
+            (tetrahedral_volume_mm3 - exact_volume_mm3).abs() / exact_volume_mm3;
+        if !relative_volume_error.is_finite()
+            || relative_volume_error > options.max_relative_volume_error
+        {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidShape,
+                "volume_mesh_body",
+                &input,
+                format!(
+                    "Tetrahedral volume relative error {relative_volume_error:.6e} exceeds {:.6e}",
+                    options.max_relative_volume_error
+                ),
+            ));
+        }
+
+        let mut fingerprint_input = format!(
+            "{EXACT_VOLUME_MESH_SCHEMA}:{}:{input_digest}",
+            body.result_fingerprint
+        );
+        for vertex in &vertices_mm {
+            for coordinate in vertex {
+                fingerprint_input.push_str(&format!(":{:016x}", coordinate.to_bits()));
+            }
+        }
+        for tetrahedron in &tetrahedra {
+            fingerprint_input.push_str(&format!(":{:?}", tetrahedron.vertex_indices));
+        }
+        for triangle in &boundary_triangles {
+            fingerprint_input.push_str(&format!(
+                ":{:?}:{}",
+                triangle.vertex_indices, triangle.face_ordinal
+            ));
+        }
+        let mesh_fingerprint = stable_digest(&fingerprint_input);
+        Ok(ExactVolumeMesh {
+            schema: EXACT_VOLUME_MESH_SCHEMA,
+            source_result_fingerprint: body.result_fingerprint.clone(),
+            request_digest: input_digest,
+            mesh_fingerprint,
+            vertices_mm,
+            tetrahedra,
+            boundary_triangles,
+            exact_volume_mm3,
+            tetrahedral_volume_mm3,
+            relative_volume_error,
+            minimum_signed_volume_mm3,
+            minimum_quality,
+            maximum_edge_ratio,
         })
     }
 
@@ -8291,6 +9745,27 @@ fn box_input(label: &str, spec: BoxSpec) -> String {
     )
 }
 
+fn subtract3(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
+    [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
+}
+
+fn dot3(left: [f64; 3], right: [f64; 3]) -> f64 {
+    left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
+}
+
+fn cross3(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
+    [
+        left[1] * right[2] - left[2] * right[1],
+        left[2] * right[0] - left[0] * right[2],
+        left[0] * right[1] - left[1] * right[0],
+    ]
+}
+
+fn squared_distance3(left: [f64; 3], right: [f64; 3]) -> f64 {
+    let delta = subtract3(left, right);
+    dot3(delta, delta)
+}
+
 fn stable_digest(value: &str) -> String {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     for byte in value.bytes() {
@@ -8523,6 +9998,823 @@ mod tests {
             (actual - expected).abs() <= 1.0e-6,
             "{actual} != {expected}"
         );
+    }
+
+    #[test]
+    fn axial_tool_sweeps_are_continuous_exact_solids_for_line_arc_and_plunge() {
+        let backend = ExactBackend::new();
+        let line = backend
+            .sweep_axial_tool(AxialToolSweepSpec {
+                motion: AxialToolMotion::Line {
+                    start_mm: [0.0, 0.0, 1.0],
+                    end_mm: [10.0, 0.0, 1.0],
+                },
+                radius_mm: 2.0,
+                axial_length_mm: 5.0,
+            })
+            .unwrap();
+        assert_eq!(line.body.topology.solid_count, 1);
+        assert_close(
+            line.body.topology.volume_mm3,
+            (40.0 + 4.0 * std::f64::consts::PI) * 5.0,
+        );
+        assert_close(line.body.topology.bounds_mm.min.x, -2.0);
+        assert_close(line.body.topology.bounds_mm.max.x, 12.0);
+
+        let plunge = backend
+            .sweep_axial_tool(AxialToolSweepSpec {
+                motion: AxialToolMotion::Line {
+                    start_mm: [3.0, 4.0, -5.0],
+                    end_mm: [3.0, 4.0, 0.0],
+                },
+                radius_mm: 2.0,
+                axial_length_mm: 10.0,
+            })
+            .unwrap();
+        assert_close(
+            plunge.body.topology.volume_mm3,
+            4.0 * std::f64::consts::PI * 15.0,
+        );
+        assert_close(plunge.body.topology.bounds_mm.min.z, -5.0);
+        assert_close(plunge.body.topology.bounds_mm.max.z, 10.0);
+
+        let arc = backend
+            .sweep_axial_tool(AxialToolSweepSpec {
+                motion: AxialToolMotion::Arc {
+                    start_mm: [10.0, 0.0, 2.0],
+                    end_mm: [0.0, 10.0, 2.0],
+                    center_mm: [0.0, 0.0, 2.0],
+                    clockwise: false,
+                },
+                radius_mm: 2.0,
+                axial_length_mm: 5.0,
+            })
+            .unwrap();
+        assert_eq!(arc.body.topology.solid_count, 1);
+        assert_close(
+            arc.body.topology.volume_mm3,
+            24.0 * std::f64::consts::PI * 5.0,
+        );
+        assert_eq!(
+            backend
+                .sweep_axial_tool(AxialToolSweepSpec {
+                    motion: AxialToolMotion::Line {
+                        start_mm: [0.0, 0.0, 0.0],
+                        end_mm: [1.0, 0.0, 1.0],
+                    },
+                    radius_mm: 1.0,
+                    axial_length_mm: 5.0,
+                })
+                .unwrap_err()
+                .code,
+            GeometryErrorCode::InvalidParameter
+        );
+    }
+
+    fn planar_rectangle(min: [f64; 2], max: [f64; 2]) -> PlanarProfileLoop {
+        PlanarProfileLoop::Segments(vec![
+            PlanarProfileSegment::Line {
+                start_mm: min,
+                end_mm: [max[0], min[1]],
+            },
+            PlanarProfileSegment::Line {
+                start_mm: [max[0], min[1]],
+                end_mm: max,
+            },
+            PlanarProfileSegment::Line {
+                start_mm: max,
+                end_mm: [min[0], max[1]],
+            },
+            PlanarProfileSegment::Line {
+                start_mm: [min[0], max[1]],
+                end_mm: min,
+            },
+        ])
+    }
+
+    #[test]
+    fn surface_knit_joins_connected_faces_with_explicit_tolerance() {
+        let backend = ExactBackend::new();
+        let left = backend
+            .planar_surface_profile(&planar_rectangle([0.0, 0.0], [10.0, 10.0]))
+            .unwrap();
+        let right = backend
+            .planar_surface_profile(&planar_rectangle([10.0, 0.0], [20.0, 10.0]))
+            .unwrap();
+        let near = backend
+            .planar_surface_profile(&planar_rectangle([10.0005, 0.0], [20.0005, 10.0]))
+            .unwrap();
+
+        let knitted = backend
+            .knit_surfaces(&[&left.body, &right.body], 1.0e-7, false)
+            .unwrap();
+        assert_eq!(knitted.body.topology.solid_count, 0);
+        assert_eq!(knitted.body.topology.shell_count, 1);
+        assert_eq!(knitted.body.topology.face_count, 2);
+        assert_close(
+            knitted
+                .body
+                .topology
+                .faces
+                .iter()
+                .map(|face| face.area_mm2)
+                .sum(),
+            200.0,
+        );
+        assert!(
+            knitted
+                .topology_history
+                .iter()
+                .all(|entry| { entry.semantic_role.as_deref() == Some("surface_knit.face") })
+        );
+
+        let tolerance_join = backend
+            .knit_surfaces(&[&left.body, &near.body], 0.001, false)
+            .unwrap();
+        assert_eq!(tolerance_join.body.topology.shell_count, 1);
+        assert!(
+            backend
+                .knit_surfaces(&[&left.body, &near.body], 0.0001, false)
+                .is_err()
+        );
+        assert!(
+            backend
+                .knit_surfaces(&[&left.body, &right.body], 1.0e-7, true)
+                .is_err()
+        );
+        assert_eq!(
+            backend
+                .knit_surfaces(&[&left.body, &left.body], 1.0e-7, false)
+                .unwrap_err()
+                .code,
+            GeometryErrorCode::InvalidParameter
+        );
+    }
+
+    #[test]
+    fn surface_thicken_creates_one_exact_solid_with_explicit_side_policy() {
+        let backend = ExactBackend::new();
+        let surface = backend
+            .planar_surface_profile(&planar_rectangle([0.0, 0.0], [10.0, 20.0]))
+            .unwrap();
+
+        let inward = backend
+            .thicken_surface(&surface.body, 2.0, ShellDirection::Inward)
+            .unwrap();
+        let outward = backend
+            .thicken_surface(&surface.body, 2.0, ShellDirection::Outward)
+            .unwrap();
+        let symmetric = backend
+            .thicken_surface(&surface.body, 2.0, ShellDirection::Symmetric)
+            .unwrap();
+        for result in [&inward, &outward, &symmetric] {
+            assert_eq!(result.body.topology.solid_count, 1);
+            assert_close(result.body.topology.volume_mm3, 400.0);
+            assert!(
+                result.topology_history.iter().all(|entry| {
+                    entry.semantic_role.as_deref() == Some("surface_thicken.face")
+                })
+            );
+        }
+        assert_close(inward.body.topology.bounds_mm.min.z, -2.0);
+        assert_close(inward.body.topology.bounds_mm.max.z, 0.0);
+        assert_close(outward.body.topology.bounds_mm.min.z, 0.0);
+        assert_close(outward.body.topology.bounds_mm.max.z, 2.0);
+        assert_close(symmetric.body.topology.bounds_mm.min.z, -1.0);
+        assert_close(symmetric.body.topology.bounds_mm.max.z, 1.0);
+    }
+
+    #[test]
+    fn surface_thicken_handles_curved_loft_and_rejects_collapsed_offset() {
+        let backend = ExactBackend::new();
+        let frame = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let circle = || {
+            FramedLoftProfile::Planar(PlanarProfileLoop::Circle {
+                center_mm: [0.0, 0.0],
+                radius_mm: 10.0,
+            })
+        };
+        let surface = backend
+            .loft_framed_surface(
+                &FramedLoftSpec {
+                    sections: vec![
+                        FramedLoftSection {
+                            elevation_mm: 0.0,
+                            frame,
+                            profile: circle(),
+                        },
+                        FramedLoftSection {
+                            elevation_mm: 20.0,
+                            frame,
+                            profile: circle(),
+                        },
+                    ],
+                },
+                None,
+                LoftSurfaceContinuity::Position,
+            )
+            .unwrap();
+        assert_eq!(surface.body.topology.solid_count, 0);
+
+        let thickened = backend
+            .thicken_surface(&surface.body, 2.0, ShellDirection::Outward)
+            .unwrap();
+        assert_eq!(thickened.body.topology.solid_count, 1);
+        assert!(
+            (thickened.body.topology.volume_mm3 - 880.0 * std::f64::consts::PI).abs() <= 1.0e-5
+        );
+        assert!(
+            backend
+                .thicken_surface(&surface.body, 20.0, ShellDirection::Inward)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn surface_thicken_rejects_zero_thickness_and_solid_inputs() {
+        let backend = ExactBackend::new();
+        let surface = backend
+            .planar_surface_profile(&planar_rectangle([0.0, 0.0], [10.0, 20.0]))
+            .unwrap();
+        let solid = backend
+            .extrude_rectangle(RectangleExtrudeSpec {
+                width_mm: 10.0,
+                depth_mm: 20.0,
+                height_mm: 5.0,
+            })
+            .unwrap();
+
+        assert_eq!(
+            backend
+                .thicken_surface(&surface.body, 0.0, ShellDirection::Outward)
+                .unwrap_err()
+                .code,
+            GeometryErrorCode::InvalidParameter
+        );
+        assert_eq!(
+            backend
+                .thicken_surface(&solid.body, 2.0, ShellDirection::Outward)
+                .unwrap_err()
+                .code,
+            GeometryErrorCode::InvalidParameter
+        );
+    }
+
+    #[test]
+    fn surface_knit_creates_a_solid_only_from_a_closed_watertight_shell() {
+        let backend = ExactBackend::new();
+        let bottom = backend
+            .planar_surface_profile(&planar_rectangle([0.0, 0.0], [10.0, 20.0]))
+            .unwrap();
+        let top = backend
+            .transform_body(
+                &bottom.body,
+                &[
+                    1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 30.0, 0.0, 0.0, 0.0, 1.0,
+                ],
+            )
+            .unwrap();
+        let xz = backend
+            .planar_surface_profile(&planar_rectangle([0.0, 0.0], [10.0, 30.0]))
+            .unwrap();
+        let front = backend
+            .transform_body(
+                &xz.body,
+                &[
+                    1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+                ],
+            )
+            .unwrap();
+        let back = backend
+            .transform_body(
+                &xz.body,
+                &[
+                    1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 20.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                    1.0,
+                ],
+            )
+            .unwrap();
+        let yz = backend
+            .planar_surface_profile(&planar_rectangle([0.0, 0.0], [20.0, 30.0]))
+            .unwrap();
+        let left = backend
+            .transform_body(
+                &yz.body,
+                &[
+                    0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+                ],
+            )
+            .unwrap();
+        let right = backend
+            .transform_body(
+                &yz.body,
+                &[
+                    0.0, 0.0, 1.0, 10.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+                ],
+            )
+            .unwrap();
+        let surfaces = [
+            &bottom.body,
+            &top.body,
+            &front.body,
+            &back.body,
+            &left.body,
+            &right.body,
+        ];
+
+        let shell = backend.knit_surfaces(&surfaces, 1.0e-7, false).unwrap();
+        assert_eq!(shell.body.topology.solid_count, 0);
+        assert_eq!(shell.body.topology.shell_count, 1);
+        assert_eq!(shell.body.topology.face_count, 6);
+        assert_close(shell.body.topology.volume_mm3, 0.0);
+        assert_close(
+            shell
+                .body
+                .topology
+                .faces
+                .iter()
+                .map(|face| face.area_mm2)
+                .sum(),
+            2_200.0,
+        );
+
+        let solid = backend.knit_surfaces(&surfaces, 1.0e-7, true).unwrap();
+        assert_eq!(solid.body.topology.solid_count, 1);
+        assert_eq!(solid.body.topology.shell_count, 1);
+        assert_eq!(solid.body.topology.face_count, 6);
+        assert_close(solid.body.topology.volume_mm3, 6_000.0);
+
+        assert!(backend.knit_surfaces(&surfaces[..5], 1.0e-7, true).is_err());
+    }
+
+    #[test]
+    fn planar_surface_trim_and_extend_are_exact_non_solid_changes() {
+        let backend = ExactBackend::new();
+        let target = backend
+            .planar_surface_profile(&planar_rectangle([0.0, 0.0], [40.0, 25.0]))
+            .unwrap();
+        let cutter = backend
+            .planar_surface_profile(&planar_rectangle([10.0, 5.0], [30.0, 20.0]))
+            .unwrap();
+
+        let trimmed = backend.trim_surface(&target.body, &cutter.body).unwrap();
+        assert_eq!(trimmed.body.topology.face_count, 1);
+        assert_eq!(trimmed.body.topology.wire_count, 1);
+        assert_eq!(trimmed.body.topology.solid_count, 0);
+        assert_close(trimmed.body.topology.volume_mm3, 0.0);
+        assert_close(trimmed.body.topology.faces[0].area_mm2, 300.0);
+        assert!(
+            trimmed
+                .topology_history
+                .iter()
+                .any(|entry| entry.semantic_role.as_deref() == Some("surface_trim.face"))
+        );
+
+        let extended = backend.extend_planar_surface(&target.body, 5.0).unwrap();
+        assert_eq!(extended.body.topology.face_count, 1);
+        assert_eq!(extended.body.topology.wire_count, 1);
+        assert_eq!(extended.body.topology.solid_count, 0);
+        assert_close(extended.body.topology.volume_mm3, 0.0);
+        assert_close(extended.body.topology.faces[0].area_mm2, 1_750.0);
+        assert!(
+            extended
+                .topology_history
+                .iter()
+                .any(|entry| entry.semantic_role.as_deref() == Some("surface_extend.face"))
+        );
+    }
+
+    #[test]
+    fn surface_trim_and_extend_fail_closed_on_invalid_or_unchanged_inputs() {
+        let backend = ExactBackend::new();
+        let target = backend
+            .planar_surface_profile(&planar_rectangle([0.0, 0.0], [40.0, 25.0]))
+            .unwrap();
+        let disjoint = backend
+            .planar_surface_profile(&planar_rectangle([50.0, 50.0], [60.0, 60.0]))
+            .unwrap();
+        let containing = backend
+            .planar_surface_profile(&planar_rectangle([-5.0, -5.0], [45.0, 30.0]))
+            .unwrap();
+        let ambiguous = backend
+            .planar_surface_profile(&PlanarProfileLoop::Segments(vec![
+                PlanarProfileSegment::Line {
+                    start_mm: [0.0, -10.0],
+                    end_mm: [40.0, -10.0],
+                },
+                PlanarProfileSegment::Line {
+                    start_mm: [40.0, -10.0],
+                    end_mm: [40.0, 5.0],
+                },
+                PlanarProfileSegment::Line {
+                    start_mm: [40.0, 5.0],
+                    end_mm: [30.0, 5.0],
+                },
+                PlanarProfileSegment::Line {
+                    start_mm: [30.0, 5.0],
+                    end_mm: [30.0, 0.0],
+                },
+                PlanarProfileSegment::Line {
+                    start_mm: [30.0, 0.0],
+                    end_mm: [10.0, 0.0],
+                },
+                PlanarProfileSegment::Line {
+                    start_mm: [10.0, 0.0],
+                    end_mm: [10.0, 5.0],
+                },
+                PlanarProfileSegment::Line {
+                    start_mm: [10.0, 5.0],
+                    end_mm: [0.0, 5.0],
+                },
+                PlanarProfileSegment::Line {
+                    start_mm: [0.0, 5.0],
+                    end_mm: [0.0, -10.0],
+                },
+            ]))
+            .unwrap();
+        let solid = backend
+            .extrude_rectangle(RectangleExtrudeSpec {
+                width_mm: 10.0,
+                depth_mm: 10.0,
+                height_mm: 10.0,
+            })
+            .unwrap();
+
+        assert!(backend.trim_surface(&target.body, &disjoint.body).is_err());
+        assert!(
+            backend
+                .trim_surface(&target.body, &containing.body)
+                .is_err()
+        );
+        assert!(backend.trim_surface(&target.body, &ambiguous.body).is_err());
+        assert_eq!(
+            backend
+                .trim_surface(&solid.body, &target.body)
+                .unwrap_err()
+                .code,
+            GeometryErrorCode::InvalidParameter
+        );
+        assert_eq!(
+            backend
+                .extend_planar_surface(&target.body, 0.0)
+                .unwrap_err()
+                .code,
+            GeometryErrorCode::InvalidParameter
+        );
+        assert_eq!(
+            backend
+                .extend_planar_surface(&solid.body, 5.0)
+                .unwrap_err()
+                .code,
+            GeometryErrorCode::InvalidParameter
+        );
+    }
+
+    #[test]
+    fn planar_surface_profile_is_one_exact_face_and_not_a_solid() {
+        let profile = PlanarProfileLoop::Segments(vec![
+            PlanarProfileSegment::Line {
+                start_mm: [0.0, 0.0],
+                end_mm: [40.0, 0.0],
+            },
+            PlanarProfileSegment::Line {
+                start_mm: [40.0, 0.0],
+                end_mm: [40.0, 25.0],
+            },
+            PlanarProfileSegment::Line {
+                start_mm: [40.0, 25.0],
+                end_mm: [0.0, 25.0],
+            },
+            PlanarProfileSegment::Line {
+                start_mm: [0.0, 25.0],
+                end_mm: [0.0, 0.0],
+            },
+        ]);
+        let output = ExactBackend::new()
+            .planar_surface_profile(&profile)
+            .unwrap();
+
+        assert_eq!(output.body.topology.face_count, 1);
+        assert_eq!(output.body.topology.solid_count, 0);
+        assert_close(output.body.topology.volume_mm3, 0.0);
+        assert_close(output.body.topology.faces[0].area_mm2, 1_000.0);
+        assert_eq!(output.topology_history.len(), 1);
+        assert_eq!(
+            output.topology_history[0].semantic_role.as_deref(),
+            Some("planar_surface.face")
+        );
+    }
+
+    #[test]
+    fn step_xde_manifest_reads_a_real_independent_step_part_and_refuses_bad_indices() {
+        let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        let path = repository.join("corpora/r0/step/self-authored-box.step");
+        let backend = ExactBackend::new();
+        let manifest = backend.step_xde_manifest(path.to_str().unwrap()).unwrap();
+
+        assert_eq!(manifest.parts.len(), 1);
+        assert_eq!(manifest.nodes.len(), 1);
+        assert_eq!(manifest.nodes[0].part_index, Some(0));
+        assert_eq!(manifest.nodes[0].parent_id, None);
+        assert!(transform_is_rigid(&manifest.nodes[0].transform));
+        let part = backend
+            .import_step_xde_part(path.to_str().unwrap(), 0)
+            .unwrap();
+        let whole = backend.import_step(path.to_str().unwrap()).unwrap();
+        assert_close(
+            part.body.topology.volume_mm3,
+            whole.body.topology.volume_mm3,
+        );
+        assert_eq!(
+            backend
+                .import_step_xde_part(path.to_str().unwrap(), 1)
+                .unwrap_err()
+                .code,
+            GeometryErrorCode::InvalidParameter
+        );
+    }
+
+    #[test]
+    fn step_xde_manifest_preserves_real_nested_repeated_assembly_metadata_and_parts() {
+        let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        let path = repository.join("corpora/r0/step/independent-xde-assembly.step");
+        let backend = ExactBackend::new();
+        let manifest = backend.step_xde_manifest(path.to_str().unwrap()).unwrap();
+
+        assert_eq!(manifest.parts.len(), 2);
+        assert_eq!(manifest.nodes.len(), 5);
+        assert!(manifest.parts.iter().all(|part| part.name_from_source));
+        assert!(manifest.nodes.iter().all(|node| node.name_from_source));
+        let root = manifest
+            .nodes
+            .iter()
+            .find(|node| node.name == "Fixture root assembly")
+            .unwrap();
+        let carriage = manifest
+            .nodes
+            .iter()
+            .find(|node| node.name == "Carriage nested instance")
+            .unwrap();
+        let left = manifest
+            .nodes
+            .iter()
+            .find(|node| node.name == "Bracket left instance")
+            .unwrap();
+        let right = manifest
+            .nodes
+            .iter()
+            .find(|node| node.name == "Bracket right instance")
+            .unwrap();
+        let pin = manifest
+            .nodes
+            .iter()
+            .find(|node| node.name == "Pin root instance")
+            .unwrap();
+        assert_eq!(root.parent_id, None);
+        assert_eq!(root.part_index, None);
+        assert_eq!(carriage.parent_id, Some(root.id));
+        assert_eq!(carriage.part_index, None);
+        assert_eq!(left.parent_id, Some(carriage.id));
+        assert_eq!(right.parent_id, Some(carriage.id));
+        assert_eq!(left.part_index, right.part_index);
+        assert_eq!(pin.parent_id, Some(root.id));
+        assert_ne!(pin.part_index, left.part_index);
+        assert_eq!(left.color, Some([255, 0, 0]));
+        assert_eq!(right.color, Some([0, 255, 0]));
+        assert_eq!(pin.color, Some([0, 0, 255]));
+        assert_close(carriage.transform[7], 50.0);
+        assert_close(right.transform[3], 40.0);
+        assert_close(pin.transform[3], 20.0);
+        assert_close(pin.transform[7], 10.0);
+        assert_close(pin.transform[11], 5.0);
+        assert!(
+            manifest
+                .nodes
+                .iter()
+                .all(|node| transform_is_rigid(&node.transform))
+        );
+
+        let bracket = backend
+            .import_step_xde_part(path.to_str().unwrap(), left.part_index.unwrap())
+            .unwrap();
+        let pin_body = backend
+            .import_step_xde_part(path.to_str().unwrap(), pin.part_index.unwrap())
+            .unwrap();
+        assert_close(bracket.body.topology.volume_mm3, 6_000.0);
+        assert_close(
+            pin_body.body.topology.volume_mm3,
+            std::f64::consts::PI * 375.0,
+        );
+    }
+
+    #[test]
+    fn iges_xde_roundtrip_reports_actual_assembly_names_colors_and_transforms() {
+        let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        let box_part = repository.join("corpora/r0/step/self-authored-box.step");
+        let output = std::env::temp_dir().join(format!(
+            "ketchup-iges-xde-roundtrip-{}.iges",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&output);
+        let backend = ExactBackend::new();
+        let parts = vec![StepXdeExportPart {
+            path: box_part.to_string_lossy().into_owned(),
+            name: "Shared box".to_owned(),
+        }];
+        let transform = |x: f64, y: f64, z: f64| {
+            [
+                1.0, 0.0, 0.0, x, 0.0, 1.0, 0.0, y, 0.0, 0.0, 1.0, z, 0.0, 0.0, 0.0, 1.0,
+            ]
+        };
+        let nodes = vec![
+            StepXdeExportNode {
+                parent_id: None,
+                part_index: None,
+                name: "Root assembly".to_owned(),
+                color: None,
+                transform: transform(0.0, 0.0, 0.0),
+            },
+            StepXdeExportNode {
+                parent_id: Some(0),
+                part_index: None,
+                name: "Nested assembly".to_owned(),
+                color: None,
+                transform: transform(0.0, 50.0, 0.0),
+            },
+            StepXdeExportNode {
+                parent_id: Some(1),
+                part_index: Some(0),
+                name: "Box left".to_owned(),
+                color: Some([255, 0, 0]),
+                transform: transform(0.0, 0.0, 0.0),
+            },
+            StepXdeExportNode {
+                parent_id: Some(1),
+                part_index: Some(0),
+                name: "Box right".to_owned(),
+                color: Some([0, 255, 0]),
+                transform: transform(40.0, 0.0, 0.0),
+            },
+            StepXdeExportNode {
+                parent_id: Some(0),
+                part_index: Some(0),
+                name: "Box third".to_owned(),
+                color: Some([0, 0, 255]),
+                transform: transform(20.0, 10.0, 5.0),
+            },
+        ];
+
+        backend
+            .export_iges_xde_assembly(&parts, &nodes, output.to_str().unwrap())
+            .unwrap();
+        let manifest = backend.iges_xde_manifest(output.to_str().unwrap()).unwrap();
+        assert_eq!(manifest.parts.len(), 3, "{manifest:#?}");
+        assert_eq!(manifest.nodes.len(), 3, "{manifest:#?}");
+        assert!(manifest.nodes.iter().all(|node| node.parent_id.is_none()));
+        assert_eq!(
+            manifest
+                .nodes
+                .iter()
+                .filter_map(|node| node.color)
+                .collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from([[255, 0, 0], [0, 255, 0], [0, 0, 255]])
+        );
+        assert!(
+            manifest
+                .nodes
+                .iter()
+                .all(|node| node.transform == transform(0.0, 0.0, 0.0))
+        );
+        assert_eq!(
+            manifest
+                .nodes
+                .iter()
+                .map(|node| node.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Box left", "Box right", "Box third"]
+        );
+        let bodies = (0..manifest.parts.len())
+            .map(|index| {
+                backend
+                    .import_iges_xde_part(output.to_str().unwrap(), index as u32)
+                    .unwrap()
+                    .body
+            })
+            .collect::<Vec<_>>();
+        assert!(bodies.iter().all(|body| body.topology.volume_mm3 > 0.0));
+        assert_close(
+            bodies[1].topology.bounds_mm.min.x - bodies[0].topology.bounds_mm.min.x,
+            40.0,
+        );
+        assert_close(
+            bodies[1].topology.bounds_mm.min.y - bodies[0].topology.bounds_mm.min.y,
+            0.0,
+        );
+        assert_close(
+            bodies[2].topology.bounds_mm.min.x - bodies[0].topology.bounds_mm.min.x,
+            20.0,
+        );
+        assert_close(
+            bodies[2].topology.bounds_mm.min.y - bodies[0].topology.bounds_mm.min.y,
+            -40.0,
+        );
+        assert_close(
+            bodies[2].topology.bounds_mm.min.z - bodies[0].topology.bounds_mm.min.z,
+            5.0,
+        );
+        std::fs::remove_file(output).unwrap();
+    }
+
+    #[test]
+    fn step_xde_manifest_parser_rejects_non_rigid_and_forward_parent_payloads() {
+        let identity = [
+            1.0_f64, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+        let fields = identity
+            .iter()
+            .map(|value| format!("{:016x}", value.to_bits()))
+            .collect::<Vec<_>>()
+            .join("\t");
+        let valid = format!(
+            "KETCHUP_STEP_XDE_V1\nP\t0\t50617274\t1\t-\nN\t0\t-1\t0\t496e7374616e6365\t1\tff0000\t{fields}\n"
+        );
+        assert!(parse_step_xde_manifest(&valid).is_ok());
+        assert_eq!(
+            parse_step_xde_manifest(&valid.replacen("N\t0\t-1", "N\t0\t0", 1)),
+            Err(StepXdeManifestError::Malformed)
+        );
+        let scaled = valid.replacen("3ff0000000000000", "4000000000000000", 1);
+        assert_eq!(
+            parse_step_xde_manifest(&scaled),
+            Err(StepXdeManifestError::Malformed)
+        );
+    }
+
+    #[test]
+    fn step_xde_export_rejects_invalid_hierarchy_transform_and_unused_parts_before_writing() {
+        let backend = ExactBackend::new();
+        let output = std::env::temp_dir().join(format!(
+            "ketchup-xde-invalid-{}-must-not-exist.step",
+            std::process::id()
+        ));
+        assert!(!output.exists());
+        let parts = vec![StepXdeExportPart {
+            path: "part.step".to_owned(),
+            name: "Part".to_owned(),
+        }];
+        let identity = [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+        let node = StepXdeExportNode {
+            parent_id: None,
+            part_index: Some(0),
+            name: "Instance".to_owned(),
+            color: None,
+            transform: identity,
+        };
+        let mut forward_parent = node.clone();
+        forward_parent.parent_id = Some(0);
+        assert_eq!(
+            backend
+                .export_step_xde_assembly(&parts, &[forward_parent], output.to_str().unwrap(),)
+                .unwrap_err()
+                .code,
+            GeometryErrorCode::InvalidParameter
+        );
+        let mut scaled = node.clone();
+        scaled.transform[0] = 2.0;
+        assert_eq!(
+            backend
+                .export_step_xde_assembly(&parts, &[scaled], output.to_str().unwrap())
+                .unwrap_err()
+                .code,
+            GeometryErrorCode::InvalidParameter
+        );
+        let mut unused_parts = parts.clone();
+        unused_parts.push(StepXdeExportPart {
+            path: "unused.step".to_owned(),
+            name: "Unused".to_owned(),
+        });
+        assert_eq!(
+            backend
+                .export_step_xde_assembly(&unused_parts, &[node], output.to_str().unwrap())
+                .unwrap_err()
+                .code,
+            GeometryErrorCode::InvalidParameter
+        );
+        assert!(!output.exists());
     }
 
     #[test]

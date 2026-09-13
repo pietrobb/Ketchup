@@ -1,13 +1,14 @@
 use ketchup_exact::{
-    BottleEdgeFinish, BoxSpec, CircleExtrudeSpec, CutMode, CylinderToolSpec, ExactBackend,
-    ExactOpOutput, GeometryErrorCode, MAX_PLANAR_REGION_HOLES, PlanarLoftSection, PlanarLoftSpec,
-    PlanarProfileLoop, PlanarProfileSegment, Point3, RectangleExtrudeSpec, RectangleOffsetSpec,
-    RectangleSweepSpec, ReferenceResolution, Size3, SplineLoftSection, SplineLoftSpec,
-    capture_box_shell_references, capture_circle_extrusion_references,
-    capture_circular_through_cut_references, capture_general_revolve_references,
-    capture_mixed_profile_extrusion_references, capture_planar_offset_reference,
-    capture_rectangular_split_references, capture_rectangular_sweep_references,
-    capture_spline_loft_references, resolve_subshape_reference,
+    AdvancedChamferMode, BottleEdgeFinish, BoxSpec, CircleExtrudeSpec, CutMode, CylinderToolSpec,
+    ExactBackend, ExactOpOutput, ExactVolumeMeshOptions, GeometryErrorCode,
+    MAX_PLANAR_REGION_HOLES, PlanarLoftSection, PlanarLoftSpec, PlanarProfileLoop,
+    PlanarProfileSegment, Point3, RectangleExtrudeSpec, RectangleOffsetSpec, RectangleSweepSpec,
+    ReferenceResolution, Size3, SplineLoftSection, SplineLoftSpec, capture_box_shell_references,
+    capture_circle_extrusion_references, capture_circular_through_cut_references,
+    capture_general_revolve_references, capture_mixed_profile_extrusion_references,
+    capture_planar_offset_reference, capture_rectangular_split_references,
+    capture_rectangular_sweep_references, capture_spline_loft_references,
+    resolve_subshape_reference,
 };
 
 const COORDINATE_LIMIT_MM: f64 = 1_000_000.0;
@@ -104,6 +105,52 @@ fn boxes_may_touch_positive_and_negative_coordinate_limits() {
     assert_valid(&negative);
     assert_close(positive.body.topology.bounds_mm.max.x, COORDINATE_LIMIT_MM);
     assert_close(negative.body.topology.bounds_mm.min.x, -COORDINATE_LIMIT_MM);
+}
+
+#[test]
+fn primitive_box_publishes_complete_unique_face_lineage() {
+    let output = ExactBackend::new()
+        .make_box(BoxSpec {
+            origin_mm: Point3::ORIGIN,
+            size_mm: Size3 {
+                x: 37.0,
+                y: 23.0,
+                z: 19.0,
+            },
+        })
+        .unwrap();
+    let roles = output
+        .topology_history
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .output_face_ordinal
+                .map(|_| entry.semantic_role.as_deref())
+        })
+        .flatten()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert_eq!(
+        output.history_confidence,
+        ketchup_exact::HistoryConfidence::Complete
+    );
+    assert_eq!(roles.len(), 6);
+    assert_eq!(
+        roles,
+        std::collections::BTreeSet::from([
+            "box.face.back",
+            "box.face.bottom",
+            "box.face.front",
+            "box.face.left",
+            "box.face.right",
+            "box.face.top",
+        ])
+    );
+    assert!(output.topology_history.iter().all(|entry| {
+        entry.output_face_ordinal.is_some()
+            && entry.semantic_role.as_deref() == Some(entry.source_element_id.as_str())
+            && entry.relation == "generated"
+    }));
 }
 
 #[test]
@@ -2200,7 +2247,7 @@ fn topology_selected_shell_fillet_and_chamfer_apply_to_an_existing_exact_body() 
     );
     assert!(shell.topology_history.iter().any(|entry| {
         entry.source_element_id == format!("generated-result/face/{removed_face}")
-            && entry.relation.starts_with("shell_selected_")
+            && entry.relation.starts_with("shell_inward_selected_")
     }));
 
     let selected_edge = base
@@ -2250,6 +2297,112 @@ fn topology_selected_shell_fillet_and_chamfer_apply_to_an_existing_exact_body() 
             .code,
         GeometryErrorCode::InvalidParameter
     );
+}
+
+#[test]
+fn advanced_chamfer_uses_paired_side_faces_and_rejects_non_adjacent_faces() {
+    let backend = ExactBackend::new();
+    let base = backend
+        .extrude_rectangle(RectangleExtrudeSpec {
+            width_mm: 37.0,
+            depth_mm: 23.0,
+            height_mm: 19.0,
+        })
+        .unwrap();
+    let selected_edge = base
+        .body
+        .topology
+        .edges
+        .iter()
+        .find(|edge| edge.adjacent_face_ordinals.len() == 2)
+        .unwrap();
+    let first_face = selected_edge.adjacent_face_ordinals[0];
+    let second_face = selected_edge.adjacent_face_ordinals[1];
+    let non_adjacent_face = base
+        .body
+        .topology
+        .faces
+        .iter()
+        .map(|face| face.ordinal)
+        .find(|ordinal| !selected_edge.adjacent_face_ordinals.contains(ordinal))
+        .unwrap();
+
+    let two_distance = backend
+        .finish_body_advanced_chamfer(
+            &base.body,
+            &[selected_edge.ordinal],
+            &[first_face],
+            0.75,
+            AdvancedChamferMode::TwoDistance {
+                second_distance_mm: 1.5,
+            },
+        )
+        .unwrap();
+    let repeated = backend
+        .finish_body_advanced_chamfer(
+            &base.body,
+            &[selected_edge.ordinal],
+            &[first_face],
+            0.75,
+            AdvancedChamferMode::TwoDistance {
+                second_distance_mm: 1.5,
+            },
+        )
+        .unwrap();
+    let reversed_side = backend
+        .finish_body_advanced_chamfer(
+            &base.body,
+            &[selected_edge.ordinal],
+            &[second_face],
+            0.75,
+            AdvancedChamferMode::TwoDistance {
+                second_distance_mm: 1.5,
+            },
+        )
+        .unwrap();
+    let distance_angle = backend
+        .finish_body_advanced_chamfer(
+            &base.body,
+            &[selected_edge.ordinal],
+            &[first_face],
+            0.75,
+            AdvancedChamferMode::DistanceAngle {
+                angle_degrees: 30.0,
+            },
+        )
+        .unwrap();
+
+    for output in [&two_distance, &reversed_side, &distance_angle] {
+        assert_valid(output);
+        assert!(output.body.topology.volume_mm3 < base.body.topology.volume_mm3);
+    }
+    assert_eq!(two_distance.input_digest, repeated.input_digest);
+    assert_eq!(
+        two_distance.body.result_fingerprint,
+        repeated.body.result_fingerprint
+    );
+    assert_ne!(
+        two_distance.body.result_fingerprint,
+        reversed_side.body.result_fingerprint
+    );
+    assert_ne!(
+        two_distance.body.result_fingerprint,
+        distance_angle.body.result_fingerprint
+    );
+
+    let error = backend
+        .finish_body_advanced_chamfer(
+            &base.body,
+            &[selected_edge.ordinal],
+            &[non_adjacent_face],
+            0.75,
+            AdvancedChamferMode::TwoDistance {
+                second_distance_mm: 1.5,
+            },
+        )
+        .unwrap_err();
+    assert_eq!(error.code, GeometryErrorCode::InvalidParameter);
+    assert_close(base.body.topology.volume_mm3, 37.0 * 23.0 * 19.0);
 }
 
 #[test]
@@ -2942,5 +3095,163 @@ fn cubic_sweep_is_deterministic_and_rejects_degenerate_or_backtracking_handles()
         &backend
             .sweep_planar_profile(&profile, &maximum_cubic_path)
             .unwrap(),
+    );
+}
+
+fn volume_mesh_options(max_tetrahedra: u32) -> ExactVolumeMeshOptions {
+    ExactVolumeMeshOptions {
+        surface_deflection_mm: 0.25,
+        angular_deflection_rad: 0.25,
+        max_tetrahedra,
+        max_relative_volume_error: 0.03,
+        min_tetrahedron_quality: 1.0e-5,
+    }
+}
+
+#[test]
+fn exact_box_volume_mesh_is_manifold_positive_and_analytic() {
+    let backend = ExactBackend::new();
+    let body = backend
+        .make_box(BoxSpec {
+            origin_mm: Point3 {
+                x: -10.0,
+                y: 3.0,
+                z: 7.0,
+            },
+            size_mm: Size3 {
+                x: 20.0,
+                y: 10.0,
+                z: 5.0,
+            },
+        })
+        .unwrap();
+    let mesh = backend
+        .volume_mesh_body(&body.body, volume_mesh_options(64))
+        .unwrap();
+    let repeated = backend
+        .volume_mesh_body(&body.body, volume_mesh_options(64))
+        .unwrap();
+
+    assert_eq!(mesh.tetrahedra.len(), 12);
+    assert_eq!(mesh.boundary_triangles.len(), 12);
+    assert_eq!(mesh.vertices_mm.len(), 9);
+    assert_close(mesh.exact_volume_mm3, 1_000.0);
+    assert_close(mesh.tetrahedral_volume_mm3, 1_000.0);
+    assert!(mesh.relative_volume_error <= 1.0e-12);
+    assert!(mesh.minimum_signed_volume_mm3 > 0.0);
+    assert!(mesh.minimum_quality >= 1.0e-5);
+    assert_eq!(mesh.mesh_fingerprint, repeated.mesh_fingerprint);
+    assert_eq!(mesh.tetrahedra, repeated.tetrahedra);
+    assert_eq!(mesh.boundary_triangles, repeated.boundary_triangles);
+}
+
+#[test]
+fn exact_cylinder_volume_mesh_reports_bounded_geometric_error() {
+    let backend = ExactBackend::new();
+    let body = backend
+        .extrude_circle(CircleExtrudeSpec {
+            center_mm: [4.0, -3.0],
+            radius_mm: 10.0,
+            height_mm: 20.0,
+        })
+        .unwrap();
+    let coarse = backend
+        .volume_mesh_body(&body.body, volume_mesh_options(2_048))
+        .unwrap();
+    let mut refined_options = volume_mesh_options(4_096);
+    refined_options.surface_deflection_mm = 0.08;
+    refined_options.angular_deflection_rad = 0.08;
+    let refined = backend
+        .volume_mesh_body(&body.body, refined_options)
+        .unwrap();
+
+    assert!(coarse.tetrahedra.len() > 12);
+    assert!(refined.tetrahedra.len() > coarse.tetrahedra.len());
+    assert!(refined.relative_volume_error < coarse.relative_volume_error);
+    assert!(refined.relative_volume_error <= refined_options.max_relative_volume_error);
+    assert_close(refined.exact_volume_mm3, 2_000.0 * std::f64::consts::PI);
+    assert!(
+        refined
+            .boundary_triangles
+            .iter()
+            .all(|triangle| triangle.face_ordinal < body.body.topology.face_count)
+    );
+}
+
+#[test]
+fn exact_volume_mesh_fails_closed_for_budget_surface_and_through_hole() {
+    let backend = ExactBackend::new();
+    let base = backend
+        .make_box(BoxSpec {
+            origin_mm: Point3::ORIGIN,
+            size_mm: Size3 {
+                x: 20.0,
+                y: 20.0,
+                z: 10.0,
+            },
+        })
+        .unwrap();
+    assert_eq!(
+        backend
+            .volume_mesh_body(&base.body, volume_mesh_options(4))
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::InvalidShape
+    );
+
+    let surface = backend
+        .planar_surface_profile(&PlanarProfileLoop::Segments(vec![
+            PlanarProfileSegment::Line {
+                start_mm: [0.0, 0.0],
+                end_mm: [10.0, 0.0],
+            },
+            PlanarProfileSegment::Line {
+                start_mm: [10.0, 0.0],
+                end_mm: [10.0, 10.0],
+            },
+            PlanarProfileSegment::Line {
+                start_mm: [10.0, 10.0],
+                end_mm: [0.0, 10.0],
+            },
+            PlanarProfileSegment::Line {
+                start_mm: [0.0, 10.0],
+                end_mm: [0.0, 0.0],
+            },
+        ]))
+        .unwrap();
+    assert_eq!(
+        backend
+            .volume_mesh_body(&surface.body, volume_mesh_options(64))
+            .unwrap_err()
+            .code,
+        GeometryErrorCode::InvalidShape
+    );
+
+    let through_hole = backend
+        .cut_box(
+            &base.body,
+            BoxSpec {
+                origin_mm: Point3 {
+                    x: 7.0,
+                    y: 7.0,
+                    z: -1.0,
+                },
+                size_mm: Size3 {
+                    x: 6.0,
+                    y: 6.0,
+                    z: 12.0,
+                },
+            },
+            CutMode::ThroughAll,
+        )
+        .unwrap();
+    let error = backend
+        .volume_mesh_body(&through_hole.body, volume_mesh_options(512))
+        .unwrap_err();
+    assert_eq!(error.code, GeometryErrorCode::InvalidShape);
+    assert!(
+        error.diagnostic.contains("visibility-safe")
+            || error.diagnostic.contains("Boundary provenance")
+            || error.diagnostic.contains("volume relative error")
     );
 }

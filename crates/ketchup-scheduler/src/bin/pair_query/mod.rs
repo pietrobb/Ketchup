@@ -17,8 +17,8 @@ pub(super) struct PairQuerySession {
 impl PairQuerySession {
     pub(super) fn handle(&mut self, backend: &ExactBackend, request: &str) -> Option<String> {
         let fields = request.split_whitespace().collect::<Vec<_>>();
-        if fields.as_slice() == ["CAPS", "EXACT_PAIR_V1"] {
-            return Some("CAPS EXACT_PAIR_V1".to_owned());
+        if fields.as_slice() == ["CAPS", "EXACT_PAIR_V2"] {
+            return Some("CAPS EXACT_PAIR_V2".to_owned());
         }
         if !fields
             .first()
@@ -105,7 +105,7 @@ impl PairQuerySession {
                 self.bodies.push((graph.graph_digest, output.body));
                 format!("OK_PAIR_LOAD_V1 {slot} {digest}")
             }
-            ["PAIR_QUERY_V1", left, right, tolerance, matrices @ ..]
+            ["PAIR_QUERY_V2", left, right, tolerance, matrices @ ..]
                 if self.active
                     && matrices.len() == 32
                     && self.queries < MAX_EXACT_PAIR_CANDIDATES =>
@@ -154,9 +154,10 @@ impl PairQuerySession {
                     Ok(result) => {
                         self.queries += 1;
                         format!(
-                            "OK_PAIR_QUERY_V1 {} {:016x} {:016x}",
+                            "OK_PAIR_QUERY_V2 {} {:016x} {:016x} {:016x}",
                             sha256_hex(request.as_bytes()),
                             result.common_volume_mm3.to_bits(),
+                            result.common_contact_area_mm2.to_bits(),
                             result.distance_mm.to_bits()
                         )
                     }

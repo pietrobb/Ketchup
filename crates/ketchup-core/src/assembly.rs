@@ -1,6 +1,6 @@
 use crate::document::{
-    CanonicalCommand, CommandBatch, DocumentId, DocumentStore, OccurrenceId, Proposal,
-    ProposalPrepareError, Snapshot, Transform,
+    CanonicalCommand, CommandBatch, DocumentId, DocumentStore, InstancePath, OccurrenceId,
+    Proposal, ProposalPrepareError, Snapshot, Transform,
 };
 use crate::exact_product::{BodySubshapeRef, ExactReferenceResolution, ExactResultRegistry};
 use std::collections::{BTreeMap, BTreeSet};
@@ -269,7 +269,7 @@ impl AssemblyMateAttachment {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AssemblyMateEndpoint {
-    pub(crate) occurrence_id: OccurrenceId,
+    pub(crate) instance_path: InstancePath,
     pub(crate) attachment: AssemblyMateAttachment,
     pub(crate) health: AssemblyReferenceHealth,
 }
@@ -277,8 +277,13 @@ pub struct AssemblyMateEndpoint {
 impl AssemblyMateEndpoint {
     #[must_use]
     pub fn resolved(occurrence_id: OccurrenceId, reference: BodySubshapeRef) -> Self {
+        Self::resolved_at_path(InstancePath::root(occurrence_id), reference)
+    }
+
+    #[must_use]
+    pub fn resolved_at_path(instance_path: InstancePath, reference: BodySubshapeRef) -> Self {
         Self {
-            occurrence_id,
+            instance_path,
             attachment: AssemblyMateAttachment::ReferenceOnly(reference),
             health: AssemblyReferenceHealth::Resolved,
         }
@@ -289,8 +294,16 @@ impl AssemblyMateEndpoint {
         occurrence_id: OccurrenceId,
         attachment: PlanarFaceAttachment,
     ) -> Self {
+        Self::resolved_planar_face_at_path(InstancePath::root(occurrence_id), attachment)
+    }
+
+    #[must_use]
+    pub fn resolved_planar_face_at_path(
+        instance_path: InstancePath,
+        attachment: PlanarFaceAttachment,
+    ) -> Self {
         Self {
-            occurrence_id,
+            instance_path,
             attachment: AssemblyMateAttachment::PlanarFace(attachment),
             health: AssemblyReferenceHealth::Resolved,
         }
@@ -298,8 +311,16 @@ impl AssemblyMateEndpoint {
 
     #[must_use]
     pub fn resolved_axial(occurrence_id: OccurrenceId, attachment: AxialAttachment) -> Self {
+        Self::resolved_axial_at_path(InstancePath::root(occurrence_id), attachment)
+    }
+
+    #[must_use]
+    pub fn resolved_axial_at_path(
+        instance_path: InstancePath,
+        attachment: AxialAttachment,
+    ) -> Self {
         Self {
-            occurrence_id,
+            instance_path,
             attachment: AssemblyMateAttachment::Axial(attachment),
             health: AssemblyReferenceHealth::Resolved,
         }
@@ -307,8 +328,13 @@ impl AssemblyMateEndpoint {
 
     #[must_use]
     pub fn broken(occurrence_id: OccurrenceId, reference: BodySubshapeRef) -> Self {
+        Self::broken_at_path(InstancePath::root(occurrence_id), reference)
+    }
+
+    #[must_use]
+    pub fn broken_at_path(instance_path: InstancePath, reference: BodySubshapeRef) -> Self {
         Self {
-            occurrence_id,
+            instance_path,
             attachment: AssemblyMateAttachment::ReferenceOnly(reference),
             health: AssemblyReferenceHealth::Broken,
         }
@@ -320,8 +346,21 @@ impl AssemblyMateEndpoint {
         reference: BodySubshapeRef,
         candidate_count: u32,
     ) -> Self {
+        Self::ambiguous_at_path(
+            InstancePath::root(occurrence_id),
+            reference,
+            candidate_count,
+        )
+    }
+
+    #[must_use]
+    pub fn ambiguous_at_path(
+        instance_path: InstancePath,
+        reference: BodySubshapeRef,
+        candidate_count: u32,
+    ) -> Self {
         Self {
-            occurrence_id,
+            instance_path,
             attachment: AssemblyMateAttachment::ReferenceOnly(reference),
             health: AssemblyReferenceHealth::Ambiguous { candidate_count },
         }
@@ -329,8 +368,13 @@ impl AssemblyMateEndpoint {
 
     #[must_use]
     pub fn lost(occurrence_id: OccurrenceId, reference: BodySubshapeRef) -> Self {
+        Self::lost_at_path(InstancePath::root(occurrence_id), reference)
+    }
+
+    #[must_use]
+    pub fn lost_at_path(instance_path: InstancePath, reference: BodySubshapeRef) -> Self {
         Self {
-            occurrence_id,
+            instance_path,
             attachment: AssemblyMateAttachment::ReferenceOnly(reference),
             health: AssemblyReferenceHealth::Lost,
         }
@@ -338,7 +382,12 @@ impl AssemblyMateEndpoint {
 
     #[must_use]
     pub const fn occurrence_id(&self) -> OccurrenceId {
-        self.occurrence_id
+        self.instance_path.root_occurrence()
+    }
+
+    #[must_use]
+    pub const fn instance_path(&self) -> &InstancePath {
+        &self.instance_path
     }
 
     #[must_use]
@@ -502,7 +551,7 @@ pub enum AssemblySolveStatus {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AssemblySolvedOccurrence {
-    occurrence_id: OccurrenceId,
+    instance_path: InstancePath,
     transform: Transform,
     remaining_dof: u8,
     grounded: bool,
@@ -511,7 +560,12 @@ pub struct AssemblySolvedOccurrence {
 impl AssemblySolvedOccurrence {
     #[must_use]
     pub const fn occurrence_id(&self) -> OccurrenceId {
-        self.occurrence_id
+        self.instance_path.root_occurrence()
+    }
+
+    #[must_use]
+    pub const fn instance_path(&self) -> &InstancePath {
+        &self.instance_path
     }
 
     #[must_use]
@@ -599,8 +653,13 @@ impl AssemblySolveResult {
 
     #[must_use]
     pub fn occurrence(&self, id: OccurrenceId) -> Option<&AssemblySolvedOccurrence> {
+        self.occurrence_at_path(&InstancePath::root(id))
+    }
+
+    #[must_use]
+    pub fn occurrence_at_path(&self, path: &InstancePath) -> Option<&AssemblySolvedOccurrence> {
         self.occurrences
-            .binary_search_by_key(&id, AssemblySolvedOccurrence::occurrence_id)
+            .binary_search_by(|occurrence| occurrence.instance_path().cmp(path))
             .ok()
             .map(|index| &self.occurrences[index])
     }
@@ -631,38 +690,38 @@ impl AssemblySolveResult {
         ) {
             return Err(AssemblySolvePublishError::SolveNotConverged(self.status));
         }
-        let commands = self
+        let transforms = self
             .occurrences
             .iter()
-            .filter(|solved| !solved.grounded)
+            .filter(|solved| !solved.grounded && solved.instance_path().is_root())
             .filter_map(|solved| {
                 current
-                    .occurrence(solved.occurrence_id)
+                    .occurrence(solved.occurrence_id())
                     .filter(|occurrence| occurrence.transform() != solved.transform)
-                    .map(|_| CanonicalCommand::SetOccurrenceTransform {
-                        id: solved.occurrence_id,
-                        transform: solved.transform,
-                    })
+                    .map(|_| (solved.occurrence_id(), solved.transform))
             })
             .collect::<Vec<_>>();
-        if commands.is_empty() {
+        let instance_transforms = self
+            .occurrences
+            .iter()
+            .filter(|solved| !solved.grounded && !solved.instance_path().is_root())
+            .filter_map(|solved| {
+                current
+                    .resolve_instance_path(solved.instance_path())
+                    .ok()
+                    .filter(|resolved| resolved.local_transform != solved.transform())
+                    .map(|_| (solved.instance_path().clone(), solved.transform))
+            })
+            .collect::<Vec<_>>();
+        if transforms.is_empty() && instance_transforms.is_empty() {
             return Err(AssemblySolvePublishError::NoTransformChanges);
         }
         Ok(CommandBatch::new(vec![
             CanonicalCommand::ApplyAssemblySolve {
                 source_revision: self.source_revision,
                 source_digest: self.source_digest.clone(),
-                transforms: commands
-                    .into_iter()
-                    .map(|command| match command {
-                        CanonicalCommand::SetOccurrenceTransform { id, transform } => {
-                            (id, transform)
-                        }
-                        _ => {
-                            unreachable!("assembly publication only contains occurrence transforms")
-                        }
-                    })
-                    .collect(),
+                transforms,
+                instance_transforms,
             },
         ]))
     }
@@ -723,6 +782,7 @@ impl std::error::Error for AssemblySolveError {}
 pub enum AssemblySolvePublishError {
     Stale,
     SolveNotConverged(AssemblySolveStatus),
+    NestedInstanceTransformRequired(InstancePath),
     NoTransformChanges,
     ProposalPreparation(ProposalPrepareError),
 }
@@ -737,6 +797,10 @@ impl fmt::Display for AssemblySolvePublishError {
                     "assembly solve result is not publishable: {status:?}"
                 )
             }
+            Self::NestedInstanceTransformRequired(path) => write!(
+                formatter,
+                "assembly solve requires an unsupported nested instance transform at {path:?}"
+            ),
             Self::NoTransformChanges => {
                 formatter.write_str("assembly solve produced no canonical transform changes")
             }
@@ -847,6 +911,7 @@ impl AssemblyRecomputeResult {
                 source_revision: self.source_revision,
                 source_digest: self.source_digest.clone(),
                 transforms: self.transforms.clone(),
+                instance_transforms: Vec::new(),
             });
         }
         Ok(CommandBatch::new(commands))
@@ -952,11 +1017,17 @@ fn recompute_rigid_assembly_selection(
                         .axial_attachment(source, &reference)
                         .cloned()
                         .map(|attachment| {
-                            AssemblyMateEndpoint::resolved_axial(value.occurrence_id(), attachment)
+                            AssemblyMateEndpoint::resolved_axial_at_path(
+                                value.instance_path().clone(),
+                                attachment,
+                            )
                         })
                         .unwrap_or_else(|| {
                             status = AssemblyRecomputeStatus::Broken;
-                            AssemblyMateEndpoint::broken(value.occurrence_id(), *reference)
+                            AssemblyMateEndpoint::broken_at_path(
+                                value.instance_path().clone(),
+                                *reference,
+                            )
                         }),
                     AssemblyMateKind::CoincidentPlanar { .. }
                     | AssemblyMateKind::Distance { .. }
@@ -964,22 +1035,25 @@ fn recompute_rigid_assembly_selection(
                         .planar_face_attachment(source, &reference)
                         .cloned()
                         .map(|attachment| {
-                            AssemblyMateEndpoint::resolved_planar_face(
-                                value.occurrence_id(),
+                            AssemblyMateEndpoint::resolved_planar_face_at_path(
+                                value.instance_path().clone(),
                                 attachment,
                             )
                         })
                         .unwrap_or_else(|| {
                             status = AssemblyRecomputeStatus::Broken;
-                            AssemblyMateEndpoint::broken(value.occurrence_id(), *reference)
+                            AssemblyMateEndpoint::broken_at_path(
+                                value.instance_path().clone(),
+                                *reference,
+                            )
                         }),
                 },
                 ExactReferenceResolution::Ambiguous { candidate_count } => {
                     if status != AssemblyRecomputeStatus::Broken {
                         status = AssemblyRecomputeStatus::Ambiguous;
                     }
-                    AssemblyMateEndpoint::ambiguous(
-                        value.occurrence_id(),
+                    AssemblyMateEndpoint::ambiguous_at_path(
+                        value.instance_path().clone(),
                         value.reference().clone(),
                         u32::try_from(candidate_count).unwrap_or(u32::MAX),
                     )
@@ -991,11 +1065,17 @@ fn recompute_rigid_assembly_selection(
                     ) {
                         status = AssemblyRecomputeStatus::Lost;
                     }
-                    AssemblyMateEndpoint::lost(value.occurrence_id(), value.reference().clone())
+                    AssemblyMateEndpoint::lost_at_path(
+                        value.instance_path().clone(),
+                        value.reference().clone(),
+                    )
                 }
                 ExactReferenceResolution::Quarantined { .. } => {
                     status = AssemblyRecomputeStatus::Broken;
-                    AssemblyMateEndpoint::broken(value.occurrence_id(), value.reference().clone())
+                    AssemblyMateEndpoint::broken_at_path(
+                        value.instance_path().clone(),
+                        value.reference().clone(),
+                    )
                 }
             };
             AssemblyMate::new(
@@ -1159,13 +1239,26 @@ impl RigidPose {
 
 #[derive(Clone)]
 struct SolverState {
-    local_poses: BTreeMap<OccurrenceId, RigidPose>,
-    parent_poses: BTreeMap<OccurrenceId, RigidPose>,
+    local_poses: BTreeMap<InstancePath, RigidPose>,
+    parent_poses: BTreeMap<InstancePath, RigidPose>,
+    source_world_poses: BTreeMap<InstancePath, RigidPose>,
 }
 
 impl SolverState {
-    fn world_pose(&self, id: OccurrenceId) -> RigidPose {
-        self.parent_poses[&id].compose(self.local_poses[&id])
+    fn world_pose(&self, path: &InstancePath) -> RigidPose {
+        let mut parent_pose = self.parent_poses[path];
+        if let Some((ancestor_path, _)) = self
+            .local_poses
+            .iter()
+            .filter(|(candidate, _)| *candidate != path && candidate.is_prefix_of(path))
+            .max_by_key(|(candidate, _)| candidate.steps().len())
+        {
+            let ancestor_delta = self
+                .world_pose(ancestor_path)
+                .compose(self.source_world_poses[ancestor_path].inverse());
+            parent_pose = ancestor_delta.compose(parent_pose);
+        }
+        parent_pose.compose(self.local_poses[path])
     }
 }
 
@@ -1179,20 +1272,34 @@ pub fn solve_rigid_assembly(
     let mut state = SolverState {
         local_poses: BTreeMap::new(),
         parent_poses: BTreeMap::new(),
+        source_world_poses: BTreeMap::new(),
     };
-    for occurrence in snapshot.occurrences() {
-        let local = RigidPose::from_transform(occurrence.transform())
-            .ok_or(AssemblySolveError::InvalidRigidTransform(occurrence.id()))?;
-        let world = RigidPose::from_transform(
-            snapshot
-                .world_transform_for_occurrence(occurrence.id())
-                .ok_or(AssemblySolveError::InvalidRigidTransform(occurrence.id()))?,
-        )
-        .ok_or(AssemblySolveError::InvalidRigidTransform(occurrence.id()))?;
-        state.local_poses.insert(occurrence.id(), local);
+    for occurrence in snapshot.scene_query() {
+        let resolved = snapshot
+            .resolve_instance_path(&occurrence.instance_path)
+            .map_err(|_| {
+                AssemblySolveError::InvalidRigidTransform(
+                    occurrence.instance_path.root_occurrence(),
+                )
+            })?;
+        let local = RigidPose::from_transform(resolved.local_transform).ok_or(
+            AssemblySolveError::InvalidRigidTransform(occurrence.instance_path.root_occurrence()),
+        )?;
+        let parent = RigidPose::from_transform(resolved.parent_world_transform).ok_or(
+            AssemblySolveError::InvalidRigidTransform(occurrence.instance_path.root_occurrence()),
+        )?;
+        let world = RigidPose::from_transform(resolved.world_transform).ok_or(
+            AssemblySolveError::InvalidRigidTransform(occurrence.instance_path.root_occurrence()),
+        )?;
+        state
+            .local_poses
+            .insert(occurrence.instance_path.clone(), local);
         state
             .parent_poses
-            .insert(occurrence.id(), world.compose(local.inverse()));
+            .insert(occurrence.instance_path.clone(), parent);
+        state
+            .source_world_poses
+            .insert(occurrence.instance_path, world);
     }
     let mut mates = snapshot.assembly_mates().collect::<Vec<_>>();
     mates.sort_by_key(|mate| mate_sort_key(mate));
@@ -1206,10 +1313,11 @@ pub fn solve_rigid_assembly(
             .zip(endpoint_local_frame(mate.endpoint_b(), mate.kind()))
             .ok_or(AssemblySolveError::UnsupportedReference(mate.id()))?;
     }
-    let variables = snapshot
-        .occurrences()
-        .filter(|occurrence| !snapshot.occurrence_is_grounded(occurrence.id()))
-        .map(|occurrence| occurrence.id())
+    let variables = state
+        .local_poses
+        .keys()
+        .filter(|path| !snapshot.occurrence_is_grounded(path.root_occurrence()))
+        .cloned()
         .collect::<Vec<_>>();
 
     let mut numerical_failure = false;
@@ -1253,11 +1361,11 @@ pub fn solve_rigid_assembly(
                 usize::from(RIGID_BODY_DEGREES_OF_FREEDOM) - matrix_rank(&local_jacobian, 1.0e-8);
             (local_remaining == 1
                 && occurrence_has_bounded_axial_symmetry(
-                    *occurrence_id,
+                    occurrence_id,
                     &mates,
                     &redundant_mate_ids,
                 ))
-            .then_some(*occurrence_id)
+            .then_some(occurrence_id.clone())
         })
         .collect::<BTreeSet<_>>();
     let remaining_dof = raw_remaining_dof.saturating_sub(rotationally_symmetric_occurrences.len());
@@ -1272,12 +1380,12 @@ pub fn solve_rigid_assembly(
     };
 
     let mut occurrences = Vec::new();
-    for occurrence in snapshot.occurrences() {
-        let grounded = snapshot.occurrence_is_grounded(occurrence.id());
+    for instance_path in state.local_poses.keys() {
+        let grounded = snapshot.occurrence_is_grounded(instance_path.root_occurrence());
         let remaining = if grounded {
             0
         } else {
-            let Some(variable_index) = variables.iter().position(|id| *id == occurrence.id())
+            let Some(variable_index) = variables.iter().position(|path| path == instance_path)
             else {
                 return Err(AssemblySolveError::NumericalFailure);
             };
@@ -1288,12 +1396,12 @@ pub fn solve_rigid_assembly(
             let raw_remaining = (usize::from(RIGID_BODY_DEGREES_OF_FREEDOM)
                 - matrix_rank(&local_jacobian, 1.0e-8)) as u8;
             raw_remaining.saturating_sub(u8::from(
-                rotationally_symmetric_occurrences.contains(&occurrence.id()),
+                rotationally_symmetric_occurrences.contains(instance_path),
             ))
         };
         occurrences.push(AssemblySolvedOccurrence {
-            occurrence_id: occurrence.id(),
-            transform: state.local_poses[&occurrence.id()].to_transform()?,
+            instance_path: instance_path.clone(),
+            transform: state.local_poses[instance_path].to_transform()?,
             remaining_dof: remaining,
             grounded,
         });
@@ -1384,8 +1492,8 @@ fn residuals(state: &SolverState, mates: &[&AssemblyMate]) -> Result<Vec<f64>, A
 }
 
 fn mate_residual(state: &SolverState, mate: &AssemblyMate) -> Result<Vec<f64>, AssemblySolveError> {
-    let a_pose = state.world_pose(mate.endpoint_a().occurrence_id());
-    let b_pose = state.world_pose(mate.endpoint_b().occurrence_id());
+    let a_pose = state.world_pose(mate.endpoint_a().instance_path());
+    let b_pose = state.world_pose(mate.endpoint_b().instance_path());
     let (a_origin, a_axis) = endpoint_world_frame(a_pose, mate.endpoint_a(), mate.kind())
         .ok_or(AssemblySolveError::UnsupportedReference(mate.id()))?;
     let (b_origin, b_axis) = endpoint_world_frame(b_pose, mate.endpoint_b(), mate.kind())
@@ -1428,7 +1536,7 @@ fn mate_residual(state: &SolverState, mate: &AssemblyMate) -> Result<Vec<f64>, A
 fn numerical_jacobian(
     state: &SolverState,
     mates: &[&AssemblyMate],
-    variables: &[OccurrenceId],
+    variables: &[InstancePath],
     baseline: &[f64],
     policy: AssemblySolverPolicy,
 ) -> Result<Vec<Vec<f64>>, AssemblySolveError> {
@@ -1567,7 +1675,7 @@ fn select_columns(matrix: &[Vec<f64>], columns: &[usize]) -> Vec<Vec<f64>> {
 }
 
 fn occurrence_has_bounded_axial_symmetry(
-    occurrence_id: OccurrenceId,
+    instance_path: &InstancePath,
     mates: &[&AssemblyMate],
     redundant_mate_ids: &[AssemblyMateId],
 ) -> bool {
@@ -1577,9 +1685,9 @@ fn occurrence_has_bounded_axial_symmetry(
         if redundant_mate_ids.contains(&mate.id()) {
             continue;
         }
-        let endpoint = if mate.endpoint_a().occurrence_id() == occurrence_id {
+        let endpoint = if mate.endpoint_a().instance_path() == instance_path {
             Some(mate.endpoint_a())
-        } else if mate.endpoint_b().occurrence_id() == occurrence_id {
+        } else if mate.endpoint_b().instance_path() == instance_path {
             Some(mate.endpoint_b())
         } else {
             None
@@ -1606,7 +1714,7 @@ fn occurrence_has_bounded_axial_symmetry(
 fn redundant_mates(
     state: &SolverState,
     mates: &[&AssemblyMate],
-    variables: &[OccurrenceId],
+    variables: &[InstancePath],
     policy: AssemblySolverPolicy,
 ) -> Result<Vec<AssemblyMateId>, AssemblySolveError> {
     let mut redundant = Vec::new();

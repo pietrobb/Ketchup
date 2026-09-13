@@ -36,6 +36,11 @@ impl InstancePath {
     pub fn is_root(&self) -> bool {
         self.steps.is_empty()
     }
+
+    #[must_use]
+    pub fn is_prefix_of(&self, other: &Self) -> bool {
+        self.root == other.root && other.steps.starts_with(&self.steps)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

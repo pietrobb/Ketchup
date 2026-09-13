@@ -178,7 +178,15 @@ impl ExactRevolveRequest {
                 | FeatureKind::Boolean { .. }
                 | FeatureKind::PlanarOffset { .. }
                 | FeatureKind::Sweep { .. }
+                | FeatureKind::WeldmentMember(_)
+                | FeatureKind::WeldmentJoint(_)
+                | FeatureKind::SurfaceBody(_)
+                | FeatureKind::SurfaceTrim { .. }
+                | FeatureKind::SurfaceExtend { .. }
+                | FeatureKind::SurfaceKnit { .. }
+                | FeatureKind::SurfaceThicken { .. }
                 | FeatureKind::Loft { .. }
+                | FeatureKind::SheetMetal(_)
                 | FeatureKind::ImportedExactBody(_)
                 | FeatureKind::RigidTransform { .. }
                 | FeatureKind::MeshBody(_) => {

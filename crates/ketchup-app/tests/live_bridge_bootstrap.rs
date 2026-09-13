@@ -320,7 +320,6 @@ fn request_broker(address: std::net::SocketAddr, action: &str, nonce: &str) -> s
     let request = serde_json::json!({
         "version": 1,
         "action": action,
-        "requester": "Supervisor",
         "nonce": nonce,
     });
     let mut bytes = serde_json::to_vec(&request).unwrap();
@@ -351,6 +350,29 @@ fn wait_for_consent(shell: &mut Shell) {
         std::thread::sleep(Duration::from_millis(10));
     }
     panic!("consent request did not reach the target window");
+}
+
+#[test]
+fn failed_optional_broker_leaves_manual_cad_available_without_ai_authority() {
+    let mut shell = Shell::new();
+    let before_revision = shell.app().document_revision();
+    let before_occurrences = shell.app().occurrence_count();
+    let result = shell.app_mut().enable_live_consent_broker_in(
+        &eframe::egui::Context::default(),
+        std::path::Path::new("relative-discovery-root"),
+    );
+
+    assert!(result.is_err());
+    assert!(shell.app().live_consent_address().is_none());
+    assert!(shell.app().live_consent_instance_id().is_none());
+    assert!(!shell.app().live_consent_pending());
+    assert!(!shell.app().live_consent_attached());
+    assert!(shell.app().live_bridge_credentials().is_none());
+
+    assert!(shell.app_mut().create_box());
+    assert!(shell.app().document_revision() > before_revision);
+    assert_eq!(shell.app().occurrence_count(), before_occurrences + 1);
+    assert!(shell.app().live_bridge_credentials().is_none());
 }
 
 #[test]
@@ -415,7 +437,7 @@ fn consent_broker_accepts_a_request_arriving_after_the_connection() {
     // Let the nonblocking listener accept before any request bytes arrive.
     std::thread::sleep(Duration::from_millis(100));
     let request = serde_json::json!({
-        "version": 1, "action": "list", "requester": "Supervisor", "nonce": "7".repeat(64)
+        "version": 1, "action": "list", "nonce": "7".repeat(64)
     });
     writeln!(stream, "{request}").unwrap();
     let mut response = String::new();
@@ -425,6 +447,49 @@ fn consent_broker_accepts_a_request_arriving_after_the_connection() {
     assert_eq!(response["nonce"], "7".repeat(64));
     assert_eq!(shell.app().live_bridge_stamp(), before);
     assert!(!shell.app().live_consent_attached());
+}
+
+#[test]
+fn claimed_requester_identity_is_rejected_and_the_ui_discloses_unverified_origin() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut shell = Shell::new();
+    let address = shell
+        .app_mut()
+        .enable_live_consent_broker_in(&eframe::egui::Context::default(), directory.path())
+        .unwrap();
+    shell.step();
+
+    let mut spoofed = TcpStream::connect(address).unwrap();
+    spoofed
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    writeln!(
+        spoofed,
+        "{}",
+        serde_json::json!({
+            "version": 1,
+            "action": "attach",
+            "requester": "Supervisor",
+            "nonce": "8".repeat(64),
+        })
+    )
+    .unwrap();
+    let mut response = String::new();
+    spoofed.read_to_string(&mut response).unwrap();
+    shell.step();
+    assert!(response.is_empty());
+    assert!(!shell.app().live_consent_pending());
+    assert!(shell.app().live_bridge_credentials().is_none());
+
+    let nonce = "9".repeat(64);
+    let client = std::thread::spawn(move || request_consent(address, &nonce));
+    wait_for_consent(&mut shell);
+    let description = shell.catalog().text("live-consent-description");
+    assert!(description.contains("unauthenticated local process"));
+    assert!(description.contains("identity and publisher cannot be verified"));
+    assert!(shell.has_visible_label(&description));
+    shell.click_button_label(&shell.catalog().text("live-consent-reject"));
+    assert_eq!(client.join().unwrap()["status"], "rejected");
 }
 
 #[test]

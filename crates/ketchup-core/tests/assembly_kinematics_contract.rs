@@ -148,6 +148,7 @@ fn atomic_position_batch(
             source_revision: source.revision_id(),
             source_digest: source.canonical_digest(),
             transforms: vec![(child_id, solution.pose(child_id).unwrap().local_transform())],
+            instance_transforms: Vec::new(),
         },
     ])
 }
@@ -433,6 +434,7 @@ fn position_geometry_atomicity_rejects_noop_duplicate_and_relabel_bypasses() {
                 source_revision: source.revision_id(),
                 source_digest: source.canonical_digest(),
                 transforms: vec![(THIRD, current_transform)],
+                instance_transforms: Vec::new(),
             },
         ]),
         {
@@ -501,6 +503,7 @@ fn matching_solve_allows_joint_kind_change_without_geometry_drift() {
                 source_revision: source.revision_id(),
                 source_digest: source.canonical_digest(),
                 transforms: vec![(THIRD, expected)],
+                instance_transforms: Vec::new(),
             },
         ]))
         .unwrap();
@@ -792,6 +795,145 @@ fn crossing_motion_document() -> DocumentStore {
         ]))
         .unwrap();
     document
+}
+
+fn rotational_crossing_document(target_degrees: f64) -> DocumentStore {
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Rotational crossing".into(),
+            },
+            occurrence(FIRST, "Obstacle", 0.0),
+            occurrence(SECOND, "Rotating arm", 0.0),
+            CanonicalCommand::CreateAssemblyJoint(AssemblyJoint::new(
+                REVOLUTE_JOINT,
+                FIRST,
+                SECOND,
+                AssemblyJointKind::Revolute {
+                    axis: axis_z(),
+                    limits: Some(AssemblyJointLimits::new(0.0, target_degrees)),
+                    position_degrees: 0.0,
+                },
+            )),
+            CanonicalCommand::CreateAssemblyMotionStudy(AssemblyMotionStudy::new(
+                STUDY,
+                "Rotate through obstacle",
+                vec![AssemblyMotionDriver::new(REVOLUTE_JOINT, target_degrees)],
+            )),
+        ]))
+        .unwrap();
+    document
+}
+
+#[test]
+fn rotational_clearance_never_claims_clearance_from_clear_endpoints() {
+    let document = rotational_crossing_document(180.0);
+    let before = store_stamp(&document);
+    let obstacle = Aabb::bounded_volume([-0.5, 9.5, -0.5], [0.5, 10.5, 0.5]).unwrap();
+    let arm = Aabb::bounded_volume([9.0, -0.5, -0.5], [11.0, 0.5, 0.5]).unwrap();
+    let bodies = [
+        AssemblyMotionCollisionBody::new(FIRST, obstacle),
+        AssemblyMotionCollisionBody::new(SECOND, arm),
+    ];
+
+    let endpoint_only =
+        preview_assembly_motion_study_clearance(&document.current(), STUDY, 1, &bodies, 0.0)
+            .unwrap();
+    assert_eq!(endpoint_only.clearance().minimum_clearance_mm(), 0.0);
+    assert_eq!(endpoint_only.clearance().first_contact(), None);
+    assert!(!endpoint_only.clearance().is_conclusive());
+    let unresolved = endpoint_only.clearance().unresolved_intervals();
+    assert_eq!(unresolved.len(), 1);
+    assert_eq!(
+        unresolved[0].pair(),
+        AssemblyMotionCollisionPair::new(FIRST, SECOND).unwrap()
+    );
+    assert_eq!(unresolved[0].progress_start(), 0.0);
+    assert_eq!(unresolved[0].progress_end(), 1.0);
+
+    let midpoint_sampled =
+        preview_assembly_motion_study_clearance(&document.current(), STUDY, 2, &bodies, 0.0)
+            .unwrap();
+    assert_eq!(
+        midpoint_sampled
+            .clearance()
+            .first_contact()
+            .unwrap()
+            .progress_start(),
+        0.5
+    );
+    assert!(!midpoint_sampled.clearance().is_conclusive());
+    assert_eq!(store_stamp(&document), before);
+}
+
+#[test]
+fn full_rotation_with_identical_endpoint_transforms_remains_unresolved() {
+    let document = rotational_crossing_document(360.0);
+    let obstacle = Aabb::bounded_volume([-0.5, 9.5, -0.5], [0.5, 10.5, 0.5]).unwrap();
+    let arm = Aabb::bounded_volume([9.0, -0.5, -0.5], [11.0, 0.5, 0.5]).unwrap();
+    let preview = preview_assembly_motion_study_clearance(
+        &document.current(),
+        STUDY,
+        1,
+        &[
+            AssemblyMotionCollisionBody::new(FIRST, obstacle),
+            AssemblyMotionCollisionBody::new(SECOND, arm),
+        ],
+        0.0,
+    )
+    .unwrap();
+
+    assert!(!preview.clearance().is_conclusive());
+    assert_eq!(preview.clearance().minimum_clearance_mm(), 0.0);
+    assert_eq!(preview.clearance().unresolved_intervals().len(), 1);
+}
+
+#[test]
+fn combined_rotational_and_prismatic_motion_keeps_clearance_unresolved() {
+    const COMBINED_STUDY: AssemblyMotionStudyId = AssemblyMotionStudyId(41);
+    let mut document = rotational_crossing_document(180.0);
+    let axis_x = AssemblyJointAxis::new([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            occurrence(THIRD, "Slider", 30.0),
+            CanonicalCommand::CreateAssemblyJoint(AssemblyJoint::new(
+                PRISMATIC_JOINT,
+                FIRST,
+                THIRD,
+                AssemblyJointKind::Prismatic {
+                    axis: axis_x,
+                    limits: Some(AssemblyJointLimits::new(0.0, 20.0)),
+                    position_mm: 0.0,
+                },
+            )),
+            CanonicalCommand::CreateAssemblyMotionStudy(AssemblyMotionStudy::new(
+                COMBINED_STUDY,
+                "Rotate and slide",
+                vec![
+                    AssemblyMotionDriver::new(REVOLUTE_JOINT, 180.0),
+                    AssemblyMotionDriver::new(PRISMATIC_JOINT, 20.0),
+                ],
+            )),
+        ]))
+        .unwrap();
+    let unit = Aabb::bounded_volume([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]).unwrap();
+    let preview = preview_assembly_motion_study_clearance(
+        &document.current(),
+        COMBINED_STUDY,
+        1,
+        &[
+            AssemblyMotionCollisionBody::new(SECOND, unit),
+            AssemblyMotionCollisionBody::new(THIRD, unit),
+        ],
+        0.0,
+    )
+    .unwrap();
+
+    assert!(!preview.clearance().is_conclusive());
+    assert_eq!(preview.clearance().minimum_clearance_mm(), 0.0);
+    assert_eq!(preview.clearance().unresolved_intervals().len(), 1);
 }
 
 #[test]
@@ -1292,6 +1434,7 @@ fn fixed_revolute_prismatic_chain_propagates_parent_before_child_deterministical
         source_revision,
         source_digest,
         transforms,
+        instance_transforms,
     } = child_only_commands.pop().unwrap()
     else {
         panic!("motion-study publication must end with the assembly solve");
@@ -1300,10 +1443,12 @@ fn fixed_revolute_prismatic_chain_propagates_parent_before_child_deterministical
         transforms.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
         vec![THIRD, FOURTH]
     );
+    assert!(instance_transforms.is_empty());
     child_only_commands.push(CanonicalCommand::ApplyAssemblySolve {
         source_revision,
         source_digest,
         transforms: vec![transforms[0]],
+        instance_transforms,
     });
     let before_invalid = store_stamp(&document);
     assert!(matches!(
@@ -1488,6 +1633,254 @@ fn nested_group_child_is_returned_in_group_local_coordinates() {
     assert_transform_near(
         child.local_transform(),
         Transform::from_translation(15.0, 0.0, 0.0).unwrap(),
+    );
+}
+
+#[test]
+fn repeated_component_joint_targets_only_one_full_instance_path_and_persists() {
+    const COMPONENT_GROUP: GroupId = GroupId(72);
+    const PARENT: OccurrenceId = OccurrenceId(72);
+    const CHILD: OccurrenceId = OccurrenceId(73);
+    const COPY: OccurrenceId = OccurrenceId(75);
+    const NESTED_JOINT: AssemblyJointId = AssemblyJointId(75);
+
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Repeated component part".into(),
+            },
+            CanonicalCommand::CreateGroup {
+                id: COMPONENT_GROUP,
+                name: "Reusable subassembly".into(),
+                transform: Transform::from_translation(100.0, 0.0, 0.0).unwrap(),
+                parent: None,
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: PARENT,
+                definition_id: DEFINITION,
+                name: "Nested parent".into(),
+                transform: Transform::identity(),
+                parent: Some(COMPONENT_GROUP),
+                tag: None,
+                visible: true,
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: CHILD,
+                definition_id: DEFINITION,
+                name: "Nested child".into(),
+                transform: Transform::from_translation(20.0, 0.0, 0.0).unwrap(),
+                parent: Some(COMPONENT_GROUP),
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    let converted = document
+        .convert_group_to_component(COMPONENT_GROUP, "Reusable subassembly")
+        .unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateOccurrence {
+                id: COPY,
+                definition_id: converted.component_definition_id,
+                name: "Reusable subassembly copy".into(),
+                transform: Transform::from_translation(500.0, 0.0, 0.0).unwrap(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+
+    let snapshot = document.current();
+    let mut first_branch = snapshot
+        .scene_query()
+        .into_iter()
+        .filter(|item| {
+            item.instance_path.root_occurrence() == converted.component_occurrence_id
+                && !item.instance_path.is_root()
+        })
+        .collect::<Vec<_>>();
+    first_branch.sort_by(|left, right| {
+        left.transform.matrix()[3]
+            .partial_cmp(&right.transform.matrix()[3])
+            .unwrap()
+    });
+    assert_eq!(first_branch.len(), 2);
+    let parent_path = first_branch[0].instance_path.clone();
+    let child_path = first_branch[1].instance_path.clone();
+    let child_source_world = first_branch[1].transform;
+    let twin = snapshot
+        .scene_query()
+        .into_iter()
+        .find(|item| {
+            item.instance_path.root_occurrence() == COPY
+                && item.instance_path.steps() == child_path.steps()
+        })
+        .unwrap();
+    let twin_path = twin.instance_path.clone();
+    let twin_source_world = twin.transform;
+    assert_ne!(child_path, twin_path);
+    assert_eq!(child_path.steps(), twin_path.steps());
+    drop(snapshot);
+
+    let before_joint = document.current().canonical_digest();
+    let joint = AssemblyJoint::new_at_paths(
+        NESTED_JOINT,
+        parent_path.clone(),
+        child_path.clone(),
+        AssemblyJointKind::Prismatic {
+            axis: AssemblyJointAxis::new([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+            limits: Some(AssemblyJointLimits::new(0.0, 20.0)),
+            position_mm: 0.0,
+        },
+    );
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateAssemblyJoint(joint.clone()),
+            CanonicalCommand::CreateAssemblyMotionStudy(AssemblyMotionStudy::new(
+                STUDY,
+                "nested component motion",
+                vec![AssemblyMotionDriver::new(NESTED_JOINT, 10.0)],
+            )),
+        ]))
+        .unwrap();
+    let committed_digest = document.current().canonical_digest();
+    assert_ne!(committed_digest, before_joint);
+    assert_eq!(
+        document
+            .current()
+            .assembly_joint(NESTED_JOINT)
+            .unwrap()
+            .child_instance_path(),
+        &child_path
+    );
+
+    let solution = solve_assembly_motion_study(&document.current(), STUDY).unwrap();
+    let moved = solution.pose_at_path(&child_path).unwrap();
+    let untouched_twin = solution.pose_at_path(&twin_path).unwrap();
+    assert_eq!(
+        moved.world_transform().matrix()[3],
+        child_source_world.matrix()[3] + 10.0
+    );
+    assert_eq!(
+        untouched_twin.world_transform(),
+        twin_source_world,
+        "the same local occurrence ID in another component instance must not move"
+    );
+    assert!(
+        solution
+            .pose(child_path.root_occurrence())
+            .unwrap()
+            .instance_path()
+            .is_root()
+    );
+    let stale_path = child_path.with_step(*child_path.steps().last().unwrap());
+    let before_stale_publication = store_stamp(&document);
+    assert!(matches!(
+        document.apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::ApplyAssemblySolve {
+                source_revision: document.current().revision_id(),
+                source_digest: document.current().canonical_digest(),
+                transforms: Vec::new(),
+                instance_transforms: vec![(stale_path, moved.local_transform())],
+            },
+        ])),
+        Err(CanonicalError::InvalidInstancePath)
+    ));
+    assert_eq!(store_stamp(&document), before_stale_publication);
+
+    let proposal = solution.prepare_publication(&document).unwrap();
+    let before_commit = store_stamp(&document);
+    let nested_publication = proposal
+        .batch()
+        .commands()
+        .iter()
+        .find_map(|command| match command {
+            CanonicalCommand::ApplyAssemblySolve {
+                transforms,
+                instance_transforms,
+                ..
+            } => Some((transforms, instance_transforms)),
+            _ => None,
+        })
+        .unwrap();
+    assert!(nested_publication.0.is_empty());
+    assert_eq!(
+        nested_publication.1,
+        &vec![(child_path.clone(), moved.local_transform())]
+    );
+    assert_eq!(store_stamp(&document), before_commit);
+
+    document.commit_proposal(&proposal).unwrap();
+    let published = document.current();
+    let published_digest = published.canonical_digest();
+    assert_ne!(published_digest, committed_digest);
+    assert_eq!(document.visible_undo_steps(), before_commit.undo_steps + 1);
+    assert_transform_near(
+        published
+            .resolve_instance_path(&child_path)
+            .unwrap()
+            .world_transform,
+        moved.world_transform(),
+    );
+    assert_transform_near(
+        published
+            .resolve_instance_path(&twin_path)
+            .unwrap()
+            .world_transform,
+        twin_source_world,
+    );
+    assert_transform_near(
+        published
+            .scene_query()
+            .into_iter()
+            .find(|item| item.instance_path == child_path)
+            .unwrap()
+            .transform,
+        moved.world_transform(),
+    );
+
+    let reopened = persistence::load(&persistence::save(&published)).unwrap();
+    assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
+    assert_eq!(reopened.snapshot().canonical_digest(), published_digest);
+    let reopened_snapshot = reopened.snapshot();
+    let reopened_joint = reopened_snapshot.assembly_joint(NESTED_JOINT).unwrap();
+    assert_eq!(reopened_joint.child_instance_path(), &child_path);
+    assert_eq!(reopened_joint.kind().position(), Some(10.0));
+    assert_transform_near(
+        reopened_snapshot
+            .resolve_instance_path(&child_path)
+            .unwrap()
+            .world_transform,
+        moved.world_transform(),
+    );
+    assert_eq!(
+        solve_assembly_motion_study(&reopened.snapshot(), STUDY)
+            .unwrap()
+            .publication_batch(&reopened.snapshot()),
+        Err(AssemblyKinematicPublishError::NoCanonicalChanges)
+    );
+
+    let undone = document.undo().unwrap();
+    assert_eq!(undone.canonical_digest(), committed_digest);
+    assert_transform_near(
+        undone
+            .resolve_instance_path(&child_path)
+            .unwrap()
+            .world_transform,
+        child_source_world,
+    );
+    let redone = document.redo().unwrap();
+    assert_eq!(redone.canonical_digest(), published_digest);
+    assert_transform_near(
+        redone
+            .resolve_instance_path(&child_path)
+            .unwrap()
+            .world_transform,
+        moved.world_transform(),
     );
 }
 
@@ -2556,10 +2949,10 @@ fn helical_joint_solves_samples_publishes_and_persists_losslessly() {
     let bytes = persistence::save(&document.current());
     let mut mislabeled_legacy = bytes.clone();
     mislabeled_legacy[10..12].copy_from_slice(&63_u16.to_le_bytes());
-    assert!(matches!(
-        persistence::load(&mislabeled_legacy),
-        Err(persistence::PersistenceError::InvalidAssemblyJoint)
-    ));
+    assert!(
+        persistence::load(&mislabeled_legacy).is_err(),
+        "current helical data mislabeled as schema 63 must fail closed"
+    );
     let reopened = persistence::load(&bytes).unwrap();
     assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
     assert_eq!(reopened.snapshot().canonical_digest(), committed.digest);

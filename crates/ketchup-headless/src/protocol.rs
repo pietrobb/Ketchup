@@ -1,6 +1,16 @@
+use ketchup_application::cam_workflow::{
+    CamReviewError, CamReviewRequest, CamReviewSummary, CamReviewWorkflow,
+};
 use ketchup_application::evaluation::{
     EvaluationReport, EvidenceStatus, ExactEvaluationProgress, ExactEvaluationTask, ExactSource,
-    ProducerKey,
+    ProducerKey, exact_worker_candidates,
+};
+use ketchup_application::fea_workflow::{
+    ExactFeaFaceTraction, ExactFeaSetup, ExactVolumeMeshWireOptions, FeaReviewError,
+    FeaReviewSummary, FeaReviewWorkflow, FeaStudyRequest,
+};
+use ketchup_application::pdm_workflow::{
+    LocalPdmWorkflow, PdmCreateReleaseRequest, PdmSourceIdentity, PdmWorkflowError,
 };
 mod model_tools;
 use ketchup_application::batch_task::{
@@ -12,16 +22,27 @@ use ketchup_application::{
     AssistantValidationSelection, DocumentSession, SaveOptions, SessionError, SessionSettings,
 };
 use ketchup_core::assistant_sidecar::AssistantCadEditProgram;
+use ketchup_core::cam::{
+    CamFixture, CamOperation, CamPath2d, CamPathSegment2d, CamPlanId, CamPostprocessorDialect,
+};
 use ketchup_core::document::{
-    CanonicalCommand, CommandBatch, DefinitionId, FeatureId, OccurrenceId, Snapshot,
+    CanonicalCommand, CommandBatch, DefinitionId, FeatureId, InstancePath, OccurrenceId, Snapshot,
 };
 use ketchup_core::exact_product::{ExactBodyPackage, ExactResultRegistry};
+use ketchup_core::fea::{FeaMaterial, FeaSolveSettings};
+use ketchup_core::local_pdm::{
+    DependencyChangeKind, LocalPdmError, ReleaseAudit, ReleaseCatalogEntry, ReleaseComparison,
+    ReleaseConflictVerdict, ReleaseDependencyInput, ReleaseManifest, ReleaseRelationship,
+    VerifiedRelease,
+};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::{
     collections::{BTreeSet, VecDeque, hash_map::RandomState},
     hash::BuildHasher,
     io::{self, BufRead, Write},
+    path::{Path, PathBuf},
+    sync::atomic::AtomicBool,
     time::Instant,
 };
 
@@ -44,6 +65,13 @@ const METHODS: &[&str] = &[
     "batch_job_step",
     "batch_job_cancel",
     "apply",
+    "cam_preview",
+    "cam_export",
+    "fea_review",
+    "pdm_release_create",
+    "pdm_release_open",
+    "pdm_catalog",
+    "pdm_compare",
     "evaluate",
     "verify_job_start",
     "verify_job_status",
@@ -74,6 +102,79 @@ impl Error {
         Self::new("invalid_params", message)
     }
 }
+impl From<CamReviewError> for Error {
+    fn from(error: CamReviewError) -> Self {
+        let code = match &error {
+            CamReviewError::PlanMissing => "cam_plan_missing",
+            CamReviewError::WorkerUnavailable => "exact_worker_unavailable",
+            CamReviewError::Planning(_) => "cam_planning_rejected",
+            CamReviewError::Simulation(_) => "cam_simulation_rejected",
+            CamReviewError::Postprocessing(_) => "cam_postprocessing_rejected",
+            CamReviewError::ReviewLimit => "cam_review_limit",
+            CamReviewError::InvalidToken => "cam_review_token_invalid",
+            CamReviewError::StaleReview => "stale_state",
+            CamReviewError::SubstitutedEvidence => "cam_review_substituted",
+            CamReviewError::ConfirmationRequired => "confirmation_required",
+            CamReviewError::InvalidPath => "invalid_path",
+            CamReviewError::FileExists => "file_exists",
+            CamReviewError::Write(_) => "io_error",
+        };
+        Self::new(code, error.to_string())
+    }
+}
+
+impl From<FeaReviewError> for Error {
+    fn from(error: FeaReviewError) -> Self {
+        let code = match &error {
+            FeaReviewError::ConfirmationRequired => "confirmation_required",
+            FeaReviewError::WorkerUnavailable => "exact_worker_unavailable",
+            FeaReviewError::InvalidRefinementLevels => "fea_refinement_invalid",
+            FeaReviewError::InvalidTarget(_) => "fea_target_rejected",
+            FeaReviewError::Meshing(_) => "fea_meshing_rejected",
+            FeaReviewError::Setup(_) => "fea_setup_rejected",
+            FeaReviewError::Solve(_) => "fea_solve_rejected",
+        };
+        Self::new(code, error.to_string())
+    }
+}
+
+impl From<PdmWorkflowError> for Error {
+    fn from(error: PdmWorkflowError) -> Self {
+        let code = match &error {
+            PdmWorkflowError::ConfirmationRequired => "confirmation_required",
+            PdmWorkflowError::Cancelled => "cancelled",
+            PdmWorkflowError::StaleState => "stale_state",
+            PdmWorkflowError::Core(error) => match error {
+                LocalPdmError::Io(_) | LocalPdmError::Json(_) | LocalPdmError::Persistence(_) => {
+                    "pdm_io_error"
+                }
+                LocalPdmError::StaleSnapshot => "stale_state",
+                LocalPdmError::InvalidAudit => "pdm_audit_invalid",
+                LocalPdmError::TooManyDependencies | LocalPdmError::DependencyTooLarge => {
+                    "pdm_dependency_limit"
+                }
+                LocalPdmError::TooManyReleases | LocalPdmError::LineageTooDeep => "pdm_limit",
+                LocalPdmError::ParentDocumentMismatch => "pdm_parent_document_mismatch",
+                LocalPdmError::NoChangesAgainstParent => "pdm_no_changes",
+                LocalPdmError::InvalidLogicalPath | LocalPdmError::DuplicateLogicalPath => {
+                    "pdm_dependency_invalid"
+                }
+                LocalPdmError::InvalidReleaseId
+                | LocalPdmError::ManifestTooLarge
+                | LocalPdmError::InvalidManifest
+                | LocalPdmError::ManifestIdentityMismatch => "pdm_manifest_invalid",
+                LocalPdmError::ReleaseAlreadyExists => "pdm_release_exists",
+                LocalPdmError::MissingRelease { .. } => "pdm_release_missing",
+                LocalPdmError::MissingObject { .. }
+                | LocalPdmError::ObjectTampered { .. }
+                | LocalPdmError::ObjectConflict { .. }
+                | LocalPdmError::DocumentIdentityMismatch => "pdm_verification_failed",
+            },
+        };
+        Self::new(code, error.to_string())
+    }
+}
+
 impl From<SessionError> for Error {
     fn from(error: SessionError) -> Self {
         if let SessionError::Planning(diagnostic) = error {
@@ -110,6 +211,193 @@ struct Request {
     id: Value,
     method: String,
     params: Value,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum CamOperationInput {
+    Face {
+        id: u64,
+        minimum_mm: [f64; 2],
+        maximum_mm: [f64; 2],
+        target_z_mm: f64,
+    },
+    Pocket {
+        id: u64,
+        minimum_mm: [f64; 2],
+        maximum_mm: [f64; 2],
+        top_z_mm: f64,
+        bottom_z_mm: f64,
+    },
+    Contour {
+        id: u64,
+        center_path: CamPathInput,
+        top_z_mm: f64,
+        bottom_z_mm: f64,
+        applied_radial_allowance_mm: f64,
+    },
+    Drill {
+        id: u64,
+        points_mm: Vec<[f64; 2]>,
+        top_z_mm: f64,
+        bottom_z_mm: f64,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CamPathInput {
+    start_mm: [f64; 2],
+    segments: Vec<CamPathSegmentInput>,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum CamPathSegmentInput {
+    Line {
+        to_mm: [f64; 2],
+    },
+    Arc {
+        to_mm: [f64; 2],
+        center_mm: [f64; 2],
+        clockwise: bool,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CamFixtureInput {
+    id: u64,
+    minimum_mm: [f64; 3],
+    maximum_mm: [f64; 3],
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FeaReviewInput {
+    definition_id: u64,
+    feature_id: u64,
+    occurrence_id: u64,
+    case_id: String,
+    material: FeaMaterialInput,
+    constrained_face_ordinals: Vec<u32>,
+    face_tractions: Vec<FeaFaceTractionInput>,
+    mesh_levels: Vec<ExactVolumeMeshWireOptions>,
+    solve_settings: FeaSolveSettingsInput,
+    confirmed: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FeaMaterialInput {
+    id: u64,
+    youngs_modulus_mpa: f64,
+    poisson_ratio: f64,
+    yield_strength_mpa: Option<f64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FeaFaceTractionInput {
+    face_ordinal: u32,
+    traction_local_n_per_mm2: [f64; 3],
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FeaSolveSettingsInput {
+    maximum_nodes: usize,
+    relative_pivot_tolerance: f64,
+    maximum_small_deformation_ratio: f64,
+    convergence_relative_tolerance: f64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PdmDependencyInput {
+    logical_path: String,
+    source_path: PathBuf,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PdmAuditInput {
+    actor: String,
+    created_unix_ms: u64,
+    note: String,
+}
+
+impl From<CamOperationInput> for CamOperation {
+    fn from(operation: CamOperationInput) -> Self {
+        match operation {
+            CamOperationInput::Face {
+                id,
+                minimum_mm,
+                maximum_mm,
+                target_z_mm,
+            } => Self::Face {
+                id,
+                minimum_mm,
+                maximum_mm,
+                target_z_mm,
+            },
+            CamOperationInput::Pocket {
+                id,
+                minimum_mm,
+                maximum_mm,
+                top_z_mm,
+                bottom_z_mm,
+            } => Self::Pocket {
+                id,
+                minimum_mm,
+                maximum_mm,
+                top_z_mm,
+                bottom_z_mm,
+            },
+            CamOperationInput::Contour {
+                id,
+                center_path,
+                top_z_mm,
+                bottom_z_mm,
+                applied_radial_allowance_mm,
+            } => Self::Contour {
+                id,
+                center_path: CamPath2d {
+                    start_mm: center_path.start_mm,
+                    segments: center_path
+                        .segments
+                        .into_iter()
+                        .map(|segment| match segment {
+                            CamPathSegmentInput::Line { to_mm } => CamPathSegment2d::Line { to_mm },
+                            CamPathSegmentInput::Arc {
+                                to_mm,
+                                center_mm,
+                                clockwise,
+                            } => CamPathSegment2d::Arc {
+                                to_mm,
+                                center_mm,
+                                clockwise,
+                            },
+                        })
+                        .collect(),
+                },
+                top_z_mm,
+                bottom_z_mm,
+                applied_radial_allowance_mm,
+            },
+            CamOperationInput::Drill {
+                id,
+                points_mm,
+                top_z_mm,
+                bottom_z_mm,
+            } => Self::Drill {
+                id,
+                points_mm,
+                top_z_mm,
+                bottom_z_mm,
+            },
+        }
+    }
 }
 
 struct BatchJob {
@@ -155,10 +443,18 @@ pub struct Server {
     verify_jobs: VecDeque<VerifyJob>,
     verify_job_key: RandomState,
     next_verify_job: u64,
+    cam_reviews: CamReviewWorkflow,
+    fea_reviews: FeaReviewWorkflow,
+    pdm: LocalPdmWorkflow,
     compact_result: bool,
 }
 impl Server {
     pub fn new(settings: SessionSettings) -> Self {
+        let worker_path = settings.exact_worker_path.clone().or_else(|| {
+            exact_worker_candidates()
+                .into_iter()
+                .find(|path| path.is_file())
+        });
         Self {
             session: DocumentSession::new(settings.clone()),
             settings,
@@ -170,6 +466,9 @@ impl Server {
             verify_jobs: VecDeque::new(),
             verify_job_key: RandomState::new(),
             next_verify_job: 1,
+            cam_reviews: CamReviewWorkflow::new(worker_path.clone()),
+            fea_reviews: FeaReviewWorkflow::new(worker_path),
+            pdm: LocalPdmWorkflow::new(),
             compact_result: false,
         }
     }
@@ -188,6 +487,7 @@ impl Server {
         self.verify_jobs.clear();
         self.verify_job_key = RandomState::new();
         self.next_verify_job = 1;
+        self.cam_reviews.revoke();
     }
 
     fn start_verify_job(
@@ -412,6 +712,36 @@ impl Server {
             "new" => (&["discard_unsaved"], true),
             "open" => (&["path", "discard_unsaved"], true),
             "apply" => (&["program", "selection"], true),
+            "cam_preview" => (&["plan_id", "operations", "fixtures", "dialect"], true),
+            "cam_export" => (&["review_token", "path", "confirmed"], true),
+            "fea_review" => (
+                &[
+                    "definition_id",
+                    "feature_id",
+                    "occurrence_id",
+                    "case_id",
+                    "material",
+                    "constrained_face_ordinals",
+                    "face_tractions",
+                    "mesh_levels",
+                    "solve_settings",
+                    "confirmed",
+                ],
+                true,
+            ),
+            "pdm_release_create" => (
+                &[
+                    "repository",
+                    "parent_release_id",
+                    "dependencies",
+                    "audit",
+                    "confirmed",
+                ],
+                true,
+            ),
+            "pdm_release_open" => (&["repository", "release_id"], true),
+            "pdm_catalog" => (&["repository"], true),
+            "pdm_compare" => (&["repository", "left_release_id", "right_release_id"], true),
             "evaluate" => (&["timeout_ms"], false),
             "run_validators" => (&["ids"], false),
             "set_grounded" => (&["occurrence_ids", "grounded"], true),
@@ -436,7 +766,7 @@ impl Server {
         }
         match method {
             "capabilities" => Ok(
-                json!({"methods":METHODS.iter().map(|name| json!({"name":name,"mutates":matches!(*name,"new"|"open"|"apply"|"batch_job_step"|"set_grounded"|"undo"|"redo"|"save")})).collect::<Vec<_>>(),
+                json!({"methods":METHODS.iter().map(|name| json!({"name":name,"mutates":matches!(*name,"new"|"open"|"apply"|"batch_job_step"|"set_grounded"|"undo"|"redo"|"save"|"cam_export"|"pdm_release_create")})).collect::<Vec<_>>(),
                 "cad_program_schema":serde_json::from_str::<Value>(include_str!(concat!(env!("OUT_DIR"),"/cad-program-schema.json"))).expect("build-generated schema"),
                 "bounds":{"max_line_bytes":MAX_LINE_BYTES,"max_output_bytes":MAX_LINE_BYTES,"max_selection":100,"max_operations":64,"max_batch_jobs":MAX_BATCH_JOBS,"max_verify_jobs":MAX_VERIFY_JOBS,"evaluation_timeout_ms":{"default":30000,"min":1,"max":300000}},
                 "mutation_preconditions":["expected_revision","expected_digest"],"units":"mm","transform":"row-major 4x4 local occurrence transform","transactions":"one apply = one atomic CAD program; newly allocated Definition, Sketch and body references use zero-based earlier operation_index plus a typed output, never guessed IDs","protocol":PROTOCOL}),
@@ -488,6 +818,86 @@ impl Server {
                     created(&before, &self.session.snapshot())
                 };
                 Ok(result)
+            }
+            "cam_preview" => {
+                let request = cam_review_request(p)?;
+                let snapshot = self.session.snapshot();
+                let cancelled = AtomicBool::new(false);
+                let review = self.cam_reviews.preview(&snapshot, request, &cancelled)?;
+                Ok(cam_review_value(&review))
+            }
+            "cam_export" => {
+                let snapshot = self.session.snapshot();
+                let token = string(p, "review_token")?;
+                let path = Path::new(string(p, "path")?);
+                let confirmed = boolean(p, "confirmed", false)?;
+                let cancelled = AtomicBool::new(false);
+                let review = self
+                    .cam_reviews
+                    .export(&snapshot, token, path, confirmed, &cancelled)?;
+                Ok(json!({"exported":true,"path":path,"review":cam_review_value(&review)}))
+            }
+            "fea_review" => {
+                let (request, confirmed) = fea_review_request(p)?;
+                let snapshot = self.session.snapshot();
+                let cancelled = AtomicBool::new(false);
+                let review = self
+                    .fea_reviews
+                    .review(&snapshot, &request, confirmed, &cancelled)?;
+                Ok(fea_review_value(&review))
+            }
+            "pdm_release_create" => {
+                let snapshot = self.session.snapshot();
+                let source = PdmSourceIdentity::observed(&snapshot);
+                let request = pdm_create_request(p)?;
+                let manifest = self.pdm.create(
+                    &snapshot,
+                    &source,
+                    &request,
+                    boolean(p, "confirmed", false)?,
+                    &AtomicBool::new(false),
+                )?;
+                Ok(
+                    json!({"created":true,"manifest":pdm_manifest_value(&manifest),"document_mutated":false}),
+                )
+            }
+            "pdm_release_open" => {
+                let snapshot = self.session.snapshot();
+                let source = PdmSourceIdentity::observed(&snapshot);
+                let release = self.pdm.open(
+                    &snapshot,
+                    &source,
+                    string(p, "repository")?,
+                    string(p, "release_id")?,
+                    &AtomicBool::new(false),
+                )?;
+                Ok(pdm_verified_release_value(&release, &snapshot))
+            }
+            "pdm_catalog" => {
+                let snapshot = self.session.snapshot();
+                let source = PdmSourceIdentity::observed(&snapshot);
+                let catalog = self.pdm.catalog(
+                    &snapshot,
+                    &source,
+                    string(p, "repository")?,
+                    &AtomicBool::new(false),
+                )?;
+                Ok(
+                    json!({"releases":catalog.iter().map(pdm_catalog_entry_value).collect::<Vec<_>>(),"document_mutated":false}),
+                )
+            }
+            "pdm_compare" => {
+                let snapshot = self.session.snapshot();
+                let source = PdmSourceIdentity::observed(&snapshot);
+                let comparison = self.pdm.compare(
+                    &snapshot,
+                    &source,
+                    string(p, "repository")?,
+                    string(p, "left_release_id")?,
+                    string(p, "right_release_id")?,
+                    &AtomicBool::new(false),
+                )?;
+                Ok(pdm_comparison_value(&comparison))
             }
             "set_grounded" => {
                 let selected = ids(p, "occurrence_ids", false)?;
@@ -648,6 +1058,283 @@ fn ids(p: &Map<String, Value>, key: &str, empty: bool) -> Result<Vec<u64>> {
     }
     Ok(ids)
 }
+fn cam_review_request(p: &Map<String, Value>) -> Result<CamReviewRequest> {
+    let operations: Vec<CamOperationInput> = serde_json::from_value(
+        p.get("operations")
+            .cloned()
+            .ok_or_else(|| Error::invalid("missing operations"))?,
+    )
+    .map_err(|error| Error::invalid(error.to_string()))?;
+    let fixtures: Vec<CamFixtureInput> = serde_json::from_value(
+        p.get("fixtures")
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new())),
+    )
+    .map_err(|error| Error::invalid(error.to_string()))?;
+    let dialect = match string(p, "dialect")? {
+        "iso_metric_gcode" => CamPostprocessorDialect::IsoMetricGCode,
+        "controller_neutral_json" => CamPostprocessorDialect::ControllerNeutralJson,
+        _ => return Err(Error::invalid("unsupported CAM postprocessor dialect")),
+    };
+    Ok(CamReviewRequest {
+        plan_id: CamPlanId(uint(p, "plan_id")?),
+        operations: operations.into_iter().map(Into::into).collect(),
+        fixtures: fixtures
+            .into_iter()
+            .map(|fixture| CamFixture {
+                id: fixture.id,
+                minimum_mm: fixture.minimum_mm,
+                maximum_mm: fixture.maximum_mm,
+            })
+            .collect(),
+        dialect,
+    })
+}
+
+fn fea_review_request(p: &Map<String, Value>) -> Result<(FeaStudyRequest, bool)> {
+    let mut payload = Map::new();
+    for field in [
+        "definition_id",
+        "feature_id",
+        "occurrence_id",
+        "case_id",
+        "material",
+        "constrained_face_ordinals",
+        "face_tractions",
+        "mesh_levels",
+        "solve_settings",
+        "confirmed",
+    ] {
+        payload.insert(
+            field.to_owned(),
+            p.get(field)
+                .cloned()
+                .ok_or_else(|| Error::invalid(format!("missing {field}")))?,
+        );
+    }
+    let input: FeaReviewInput = serde_json::from_value(Value::Object(payload))
+        .map_err(|error| Error::invalid(error.to_string()))?;
+    if input.definition_id == 0
+        || input.feature_id == 0
+        || input.occurrence_id == 0
+        || input.material.id == 0
+        || input.case_id.trim().is_empty()
+        || input.case_id.len() > 128
+    {
+        return Err(Error::invalid(
+            "FEA target, material and case IDs must be bounded and nonzero",
+        ));
+    }
+    Ok((
+        FeaStudyRequest {
+            definition_id: DefinitionId(input.definition_id),
+            feature_id: FeatureId(input.feature_id),
+            setup: ExactFeaSetup {
+                case_id: input.case_id,
+                instance_path: InstancePath::root(OccurrenceId(input.occurrence_id)),
+                material: FeaMaterial {
+                    id: input.material.id,
+                    youngs_modulus_mpa: input.material.youngs_modulus_mpa,
+                    poisson_ratio: input.material.poisson_ratio,
+                    yield_strength_mpa: input.material.yield_strength_mpa,
+                },
+                constrained_face_ordinals: input.constrained_face_ordinals,
+                face_tractions: input
+                    .face_tractions
+                    .into_iter()
+                    .map(|traction| ExactFeaFaceTraction {
+                        face_ordinal: traction.face_ordinal,
+                        traction_local_n_per_mm2: traction.traction_local_n_per_mm2,
+                    })
+                    .collect(),
+            },
+            mesh_levels: input.mesh_levels,
+            solve_settings: FeaSolveSettings {
+                maximum_nodes: input.solve_settings.maximum_nodes,
+                relative_pivot_tolerance: input.solve_settings.relative_pivot_tolerance,
+                maximum_small_deformation_ratio: input
+                    .solve_settings
+                    .maximum_small_deformation_ratio,
+                convergence_relative_tolerance: input.solve_settings.convergence_relative_tolerance,
+            },
+        },
+        input.confirmed,
+    ))
+}
+
+fn fea_review_value(review: &FeaReviewSummary) -> Value {
+    json!({
+        "review_digest":review.review_digest,
+        "source":{"document_id":review.document_id,"revision":review.revision,"canonical_digest":review.canonical_digest},
+        "graph_digest":review.graph_digest,
+        "case_id":review.case_id,
+        "units":review.units,
+        "solver_version":review.solver_version,
+        "levels":review.levels.iter().map(|level| json!({
+            "node_count":level.node_count,
+            "element_count":level.element_count,
+            "mesh_fingerprint":level.mesh_fingerprint,
+            "relative_volume_error":level.relative_volume_error,
+            "minimum_quality":level.minimum_quality,
+            "maximum_edge_ratio":level.maximum_edge_ratio,
+            "maximum_displacement_mm":level.maximum_displacement_mm,
+            "maximum_von_mises_stress_mpa":level.maximum_von_mises_stress_mpa,
+            "maximum_free_dof_residual_n":level.maximum_free_dof_residual_n,
+            "force_balance_n":level.force_balance_n,
+            "within_declared_limits":level.within_declared_limits,
+        })).collect::<Vec<_>>(),
+        "convergence":{
+            "final_displacement_relative_change":review.final_displacement_relative_change,
+            "final_energy_relative_change":review.final_energy_relative_change,
+            "required_relative_tolerance":review.required_relative_tolerance,
+            "converged":review.converged,
+        },
+        "all_levels_within_declared_limits":review.all_levels_within_declared_limits,
+        "excluded_physics":review.excluded_physics,
+        "document_mutated":false,
+    })
+}
+
+fn pdm_create_request(p: &Map<String, Value>) -> Result<PdmCreateReleaseRequest> {
+    let dependencies: Vec<PdmDependencyInput> = serde_json::from_value(
+        p.get("dependencies")
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new())),
+    )
+    .map_err(|error| Error::invalid(error.to_string()))?;
+    let audit: PdmAuditInput = serde_json::from_value(
+        p.get("audit")
+            .cloned()
+            .ok_or_else(|| Error::invalid("missing audit"))?,
+    )
+    .map_err(|error| Error::invalid(error.to_string()))?;
+    let parent_release_id = match p.get("parent_release_id") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value)) if !value.is_empty() => Some(value.clone()),
+        _ => {
+            return Err(Error::invalid(
+                "parent_release_id must be null or nonempty string",
+            ));
+        }
+    };
+    Ok(PdmCreateReleaseRequest {
+        repository: PathBuf::from(string(p, "repository")?),
+        parent_release_id,
+        dependencies: dependencies
+            .into_iter()
+            .map(|dependency| {
+                ReleaseDependencyInput::new(dependency.logical_path, dependency.source_path)
+            })
+            .collect(),
+        audit: ReleaseAudit::new(audit.actor, audit.created_unix_ms, audit.note),
+    })
+}
+
+fn pdm_manifest_value(manifest: &ReleaseManifest) -> Value {
+    json!({
+        "schema":manifest.schema,
+        "release_id":manifest.release_id,
+        "parent_release_id":manifest.parent_release_id,
+        "document":{
+            "document_id":manifest.document.document_id,
+            "revision":manifest.document.revision,
+            "canonical_digest":manifest.document.canonical_digest,
+            "units":manifest.document.units,
+            "object":{"sha256":manifest.document.object.sha256,"byte_len":manifest.document.object.byte_len},
+        },
+        "dependencies":manifest.dependencies.iter().map(|dependency| json!({
+            "logical_path":dependency.logical_path,
+            "object":{"sha256":dependency.object.sha256,"byte_len":dependency.object.byte_len},
+        })).collect::<Vec<_>>(),
+        "audit":{"actor":manifest.audit.actor,"created_unix_ms":manifest.audit.created_unix_ms,"note":manifest.audit.note},
+    })
+}
+
+fn pdm_verified_release_value(release: &VerifiedRelease, current: &Snapshot) -> Value {
+    json!({
+        "verified":true,
+        "manifest":pdm_manifest_value(&release.manifest),
+        "dependency_objects":release.dependency_objects.iter().map(|(logical_path, path)| json!({
+            "logical_path":logical_path,"verified_object_path":path,
+        })).collect::<Vec<_>>(),
+        "matches_current_document":release.snapshot.document_id() == current.document_id()
+            && release.snapshot.revision_id() == current.revision_id()
+            && release.snapshot.canonical_digest() == current.canonical_digest(),
+        "document_mutated":false,
+    })
+}
+
+fn pdm_catalog_entry_value(entry: &ReleaseCatalogEntry) -> Value {
+    json!({
+        "release_id":entry.release_id,
+        "parent_release_id":entry.parent_release_id,
+        "document_id":entry.document_id,
+        "revision":entry.revision,
+        "canonical_digest":entry.canonical_digest,
+        "dependency_count":entry.dependency_count,
+        "audit":{"actor":entry.audit.actor,"created_unix_ms":entry.audit.created_unix_ms,"note":entry.audit.note},
+    })
+}
+
+fn pdm_comparison_value(comparison: &ReleaseComparison) -> Value {
+    let (relationship, common_ancestor) = match &comparison.relationship {
+        ReleaseRelationship::Same => ("same", None),
+        ReleaseRelationship::LeftAncestor => ("left_ancestor", None),
+        ReleaseRelationship::RightAncestor => ("right_ancestor", None),
+        ReleaseRelationship::Diverged { common_ancestor } => {
+            ("diverged", Some(common_ancestor.as_str()))
+        }
+        ReleaseRelationship::Unrelated => ("unrelated", None),
+    };
+    let verdict = match comparison.conflict_verdict {
+        ReleaseConflictVerdict::AlreadyCurrent => "already_current",
+        ReleaseConflictVerdict::FastForward => "fast_forward",
+        ReleaseConflictVerdict::IncomingBehind => "incoming_behind",
+        ReleaseConflictVerdict::DivergedConflict => "diverged_conflict",
+        ReleaseConflictVerdict::UnrelatedConflict => "unrelated_conflict",
+    };
+    json!({
+        "left_release_id":comparison.left_release_id,
+        "right_release_id":comparison.right_release_id,
+        "relationship":relationship,
+        "common_ancestor":common_ancestor,
+        "conflict_verdict":verdict,
+        "document_changed":comparison.document_changed,
+        "dependency_changes":comparison.dependency_changes.iter().map(|change| json!({
+            "logical_path":change.logical_path,
+            "kind":match change.kind {
+                DependencyChangeKind::Added => "added",
+                DependencyChangeKind::Removed => "removed",
+                DependencyChangeKind::Modified => "modified",
+            },
+        })).collect::<Vec<_>>(),
+        "document_mutated":false,
+    })
+}
+
+fn cam_review_value(review: &CamReviewSummary) -> Value {
+    json!({
+        "review_token":review.token,
+        "source":{"document_id":review.document_id.0,"revision":review.revision,"canonical_digest":review.canonical_digest},
+        "plan_digest":review.plan_digest,
+        "toolpath_digest":review.toolpath_digest,
+        "simulation_fingerprint":review.simulation_fingerprint,
+        "content_digest":review.content_digest,
+        "dialect":match review.dialect { CamPostprocessorDialect::IsoMetricGCode => "iso_metric_gcode", CamPostprocessorDialect::ControllerNeutralJson => "controller_neutral_json" },
+        "units":review.units,
+        "work_offset":review.work_offset,
+        "tool_number":review.tool_number,
+        "spindle_rpm":review.spindle_rpm,
+        "cutting_feed_mm_per_min":review.cutting_feed_mm_per_min,
+        "plunge_feed_mm_per_min":review.plunge_feed_mm_per_min,
+        "safe_retract_z_mm":review.safe_retract_z_mm,
+        "motion_count":review.motion_count,
+        "removed_stock_mm3":review.removed_stock_mm3,
+        "residual_stock_mm3":review.residual_stock_mm3,
+        "gouge_mm3":review.gouge_mm3,
+    })
+}
+
 fn created(before: &Snapshot, after: &Snapshot) -> Value {
     json!({"definition_ids":after.definitions().filter(|d|before.definition(d.id()).is_none()).map(|d|d.id().0).collect::<Vec<_>>(),
         "occurrence_ids":after.occurrences().filter(|o|before.occurrence(o.id()).is_none()).map(|o|o.id().0).collect::<Vec<_>>(),
@@ -899,7 +1586,7 @@ mod tests {
             caps["result"]["cad_program_schema"]["$defs"]["AssistantCadEditOperation"]["oneOf"]
                 .as_array()
                 .unwrap();
-        assert_eq!(variants.len(), 25);
+        assert_eq!(variants.len(), 30);
         for operation in [
             "append_feature",
             "create_program_sketch",
@@ -913,6 +1600,7 @@ mod tests {
             "create_thread",
             "fillet_edges",
             "chamfer_edges",
+            "upsert_cam_plan",
         ] {
             assert!(
                 variants
@@ -1254,6 +1942,510 @@ mod tests {
         assert_eq!(responses[3]["result"]["response"], "compact");
         assert_eq!(responses[3]["result"]["state"], loaded);
         assert_eq!(responses[4]["result"]["state"], loaded);
+    }
+
+    #[test]
+    fn reviewed_cam_export_is_exact_guarded_confirmed_and_no_clobber() {
+        use ketchup_core::cam::{
+            CamCutParameters, CamPlan, CamSetup, CamStock, CamTool, CamToolKind, CamWorkOffset,
+        };
+        use ketchup_core::document::{Dimension, FeatureKind};
+
+        let worker_path = exact_worker_candidates()
+            .into_iter()
+            .find(|path| path.is_file())
+            .expect("build ketchup-exact-worker before the headless CAM integration test");
+        let mut server = Server::new(SessionSettings {
+            exact_worker_path: Some(worker_path),
+            ..SessionSettings::default()
+        });
+        let definition = DefinitionId(95);
+        let profile = FeatureId(950);
+        let solid = FeatureId(951);
+        let seed = server
+            .session
+            .plan_commands(CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: definition,
+                    name: "CAM target".into(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: profile,
+                    definition_id: definition,
+                    name: "20x10 profile".into(),
+                    kind: FeatureKind::Profile {
+                        points_mm: vec![[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.0, 10.0]],
+                    },
+                },
+                CanonicalCommand::CreateFeature {
+                    id: solid,
+                    definition_id: definition,
+                    name: "20x10x5 target".into(),
+                    kind: FeatureKind::Extrusion {
+                        profile,
+                        height: Dimension::new("5", 5.0).unwrap(),
+                    },
+                },
+            ]))
+            .unwrap();
+        server.session.apply_proposal(&seed).unwrap();
+        let plan = CamPlan::new(
+            &server.session.snapshot(),
+            CamPlanId(95),
+            "Reviewed facing",
+            CamStock {
+                minimum_mm: [0.0, 0.0, 0.0],
+                maximum_mm: [20.0, 10.0, 7.0],
+            },
+            CamTool {
+                number: 1,
+                kind: CamToolKind::FlatEndMill,
+                diameter_mm: 2.0,
+                flute_length_mm: 5.0,
+                overall_length_mm: 10.0,
+                holder_diameter_mm: 6.0,
+                holder_length_mm: 10.0,
+                spindle_rpm: 10_000,
+                feed_mm_per_min: 600.0,
+                plunge_mm_per_min: 200.0,
+            },
+            CamSetup {
+                work_offset: CamWorkOffset::G54,
+                origin_mm: [0.0, 0.0, 0.0],
+                x_axis: [1.0, 0.0, 0.0],
+                y_axis: [0.0, 1.0, 0.0],
+                safe_height_mm: 10.0,
+            },
+            CamCutParameters {
+                maximum_stepdown_mm: 2.0,
+                stepover_ratio: 0.5,
+                radial_allowance_mm: 0.0,
+                axial_allowance_mm: 0.0,
+            },
+            definition,
+            solid,
+        )
+        .unwrap();
+        let proposal = server
+            .session
+            .plan_commands(CommandBatch::new(vec![CanonicalCommand::UpsertCamPlan(
+                plan,
+            )]))
+            .unwrap();
+        server.session.apply_proposal(&proposal).unwrap();
+        let state = server.state();
+        let preview_params = || {
+            json!({
+                "expected_revision":state["revision"],
+                "expected_digest":state["canonical_digest"],
+                "plan_id":95,
+                "operations":[{"type":"face","id":1,"minimum_mm":[1.0,1.0],"maximum_mm":[19.0,9.0],"target_z_mm":5.0}],
+                "fixtures":[],
+                "dialect":"iso_metric_gcode"
+            })
+        };
+        let preview = request(&mut server, "cam_preview", preview_params());
+        assert!(preview.get("error").is_none(), "{preview}");
+        assert_eq!(preview["result"]["units"], "mm");
+        assert_eq!(preview["result"]["work_offset"], "G54");
+        assert_eq!(preview["result"]["tool_number"], 1);
+        assert!((preview["result"]["removed_stock_mm3"].as_f64().unwrap() - 400.0).abs() < 1.0e-5);
+        assert!(preview["result"]["residual_stock_mm3"].as_f64().unwrap() < 1.0e-5);
+        assert!(preview["result"]["gouge_mm3"].as_f64().unwrap() < 1.0e-5);
+        let token = preview["result"]["review_token"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("reviewed.nc");
+
+        let cancelled = request(
+            &mut server,
+            "cam_export",
+            json!({"expected_revision":state["revision"],"expected_digest":state["canonical_digest"],
+                "review_token":token,"path":path,"confirmed":false}),
+        );
+        assert_eq!(cancelled["error"]["code"], "confirmation_required");
+        assert!(!path.exists());
+        assert_eq!(server.state(), state);
+
+        let exported = request(
+            &mut server,
+            "cam_export",
+            json!({"expected_revision":state["revision"],"expected_digest":state["canonical_digest"],
+                "review_token":token,"path":path,"confirmed":true}),
+        );
+        assert_eq!(exported["result"]["exported"], true, "{exported}");
+        let artifact = std::fs::read_to_string(&path).unwrap();
+        assert!(artifact.starts_with("%\n;KETCHUP_CAM_POSTPROCESSOR_V1\n"));
+        assert!(artifact.contains("\nG21\nG90\nG17\nG54\nT1 M6\nS10000 M3\n"));
+        assert_eq!(server.state(), state);
+
+        let second = request(&mut server, "cam_preview", preview_params());
+        let second_token = second["result"]["review_token"].as_str().unwrap();
+        let refused = request(
+            &mut server,
+            "cam_export",
+            json!({"expected_revision":state["revision"],"expected_digest":state["canonical_digest"],
+                "review_token":second_token,"path":path,"confirmed":true}),
+        );
+        assert_eq!(refused["error"]["code"], "file_exists");
+
+        let collision = request(
+            &mut server,
+            "cam_preview",
+            json!({
+                "expected_revision":state["revision"],"expected_digest":state["canonical_digest"],
+                "plan_id":95,
+                "operations":[{"type":"face","id":1,"minimum_mm":[1.0,1.0],"maximum_mm":[19.0,9.0],"target_z_mm":5.0}],
+                "fixtures":[{"id":1,"minimum_mm":[-0.5,-0.5,9.0],"maximum_mm":[0.5,0.5,12.0]}],
+                "dialect":"iso_metric_gcode"
+            }),
+        );
+        assert_eq!(collision["error"]["code"], "cam_postprocessing_rejected");
+        let gouge = request(
+            &mut server,
+            "cam_preview",
+            json!({
+                "expected_revision":state["revision"],"expected_digest":state["canonical_digest"],
+                "plan_id":95,
+                "operations":[{"type":"pocket","id":2,"minimum_mm":[2.0,2.0],"maximum_mm":[18.0,8.0],"top_z_mm":5.0,"bottom_z_mm":1.0}],
+                "fixtures":[],"dialect":"iso_metric_gcode"
+            }),
+        );
+        assert_eq!(gouge["error"]["code"], "cam_postprocessing_rejected");
+        let malformed = request(
+            &mut server,
+            "cam_preview",
+            json!({
+                "expected_revision":state["revision"],"expected_digest":state["canonical_digest"],
+                "plan_id":95,
+                "operations":[{"type":"face","id":1,"minimum_mm":[1.0,1.0],"maximum_mm":[19.0,9.0],"target_z_mm":5.0,"unknown":true}],
+                "fixtures":[],"dialect":"iso_metric_gcode"
+            }),
+        );
+        assert_eq!(malformed["error"]["code"], "invalid_params");
+        assert_eq!(server.state(), state);
+
+        let third = request(&mut server, "cam_preview", preview_params());
+        let third_token = third["result"]["review_token"].as_str().unwrap().to_owned();
+        let mutation = server
+            .session
+            .plan_commands(CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(96),
+                    name: "stale review mutation".into(),
+                },
+            ]))
+            .unwrap();
+        server.session.apply_proposal(&mutation).unwrap();
+        let current = server.state();
+        let stale = request(
+            &mut server,
+            "cam_export",
+            json!({"expected_revision":current["revision"],"expected_digest":current["canonical_digest"],
+                "review_token":third_token,"path":directory.path().join("stale.nc"),"confirmed":true}),
+        );
+        assert_eq!(stale["error"]["code"], "stale_state");
+        assert!(!directory.path().join("stale.nc").exists());
+    }
+
+    #[test]
+    fn exact_fea_review_refines_solves_and_preserves_document_state() {
+        use ketchup_core::document::{Dimension, FeatureKind, ProfileSegment, Transform};
+
+        let worker_path = exact_worker_candidates()
+            .into_iter()
+            .find(|path| path.is_file())
+            .expect("build ketchup-exact-worker before the headless FEA integration test");
+        let mut server = Server::new(SessionSettings {
+            exact_worker_path: Some(worker_path),
+            ..SessionSettings::default()
+        });
+        let definition = DefinitionId(71);
+        let profile = FeatureId(72);
+        let solid = FeatureId(73);
+        let occurrence = OccurrenceId(74);
+        let seed = server
+            .session
+            .plan_commands(CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: definition,
+                    name: "FEA cylinder".into(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: profile,
+                    definition_id: definition,
+                    name: "Circular section".into(),
+                    kind: FeatureKind::SegmentProfile {
+                        segments: vec![
+                            ProfileSegment::CircularArc {
+                                start_mm: [10.0, 0.0],
+                                end_mm: [-10.0, 0.0],
+                                center_mm: [0.0, 0.0],
+                                clockwise: false,
+                            },
+                            ProfileSegment::CircularArc {
+                                start_mm: [-10.0, 0.0],
+                                end_mm: [10.0, 0.0],
+                                center_mm: [0.0, 0.0],
+                                clockwise: false,
+                            },
+                        ],
+                        closed: true,
+                    },
+                },
+                CanonicalCommand::CreateFeature {
+                    id: solid,
+                    definition_id: definition,
+                    name: "Cylinder".into(),
+                    kind: FeatureKind::Extrusion {
+                        profile,
+                        height: Dimension::new("20", 20.0).unwrap(),
+                    },
+                },
+                CanonicalCommand::CreateOccurrence {
+                    id: occurrence,
+                    definition_id: definition,
+                    name: "Cylinder instance".into(),
+                    transform: Transform::identity(),
+                    parent: None,
+                    tag: None,
+                    visible: true,
+                },
+            ]))
+            .unwrap();
+        server.session.apply_proposal(&seed).unwrap();
+        let evaluated = request(&mut server, "evaluate", json!({"timeout_ms":30000}));
+        assert_eq!(evaluated["result"]["complete"], true, "{evaluated}");
+        let faces = request(
+            &mut server,
+            "query",
+            json!({"kind":"faces","limit":20,"definition_id":definition.0}),
+        );
+        let items = faces["result"]["items"].as_array().unwrap();
+        let bottom = items
+            .iter()
+            .min_by(|left, right| {
+                left["geometry"]["centroid_mm"][2]
+                    .as_f64()
+                    .unwrap()
+                    .total_cmp(&right["geometry"]["centroid_mm"][2].as_f64().unwrap())
+            })
+            .unwrap()["ordinal"]
+            .as_u64()
+            .unwrap();
+        let top = items
+            .iter()
+            .max_by(|left, right| {
+                left["geometry"]["centroid_mm"][2]
+                    .as_f64()
+                    .unwrap()
+                    .total_cmp(&right["geometry"]["centroid_mm"][2].as_f64().unwrap())
+            })
+            .unwrap()["ordinal"]
+            .as_u64()
+            .unwrap();
+        assert_ne!(bottom, top);
+        let state = server.state();
+        let params = |confirmed| {
+            json!({
+                "expected_revision":state["revision"],
+                "expected_digest":state["canonical_digest"],
+                "definition_id":definition.0,
+                "feature_id":solid.0,
+                "occurrence_id":occurrence.0,
+                "case_id":"cylinder-pressure",
+                "material":{"id":1,"youngs_modulus_mpa":200000.0,"poisson_ratio":0.3,"yield_strength_mpa":250.0},
+                "constrained_face_ordinals":[bottom],
+                "face_tractions":[{"face_ordinal":top,"traction_local_n_per_mm2":[0.0,0.0,-0.01]}],
+                "mesh_levels":[
+                    {"surface_deflection_mm":0.3,"angular_deflection_rad":0.3,"max_tetrahedra":512,"max_relative_volume_error":0.05,"min_tetrahedron_quality":0.000001},
+                    {"surface_deflection_mm":0.12,"angular_deflection_rad":0.12,"max_tetrahedra":1024,"max_relative_volume_error":0.02,"min_tetrahedron_quality":0.000001}
+                ],
+                "solve_settings":{"maximum_nodes":256,"relative_pivot_tolerance":1.0e-12,"maximum_small_deformation_ratio":0.05,"convergence_relative_tolerance":0.5},
+                "confirmed":confirmed
+            })
+        };
+        let refused = request(&mut server, "fea_review", params(false));
+        assert_eq!(refused["error"]["code"], "confirmation_required");
+        assert_eq!(server.state(), state);
+
+        let reviewed = request(&mut server, "fea_review", params(true));
+        assert!(reviewed.get("error").is_none(), "{reviewed}");
+        assert_eq!(reviewed["result"]["units"], "mm,N,MPa");
+        assert_eq!(reviewed["result"]["levels"].as_array().unwrap().len(), 2);
+        assert_eq!(reviewed["result"]["convergence"]["converged"], true);
+        assert_eq!(reviewed["result"]["document_mutated"], false);
+        assert_eq!(server.state(), state);
+        assert!(reviewed["result"]["review_digest"].as_str().unwrap().len() == 64);
+
+        let stale = request(
+            &mut server,
+            "fea_review",
+            json!({"expected_revision":999,"expected_digest":"stale"}),
+        );
+        assert_eq!(stale["error"]["code"], "stale_state");
+        assert_eq!(server.state(), state);
+    }
+
+    #[test]
+    fn local_pdm_release_lineage_is_guarded_verified_and_non_mutating() {
+        use ketchup_core::document::{Dimension, FeatureKind};
+
+        let directory = tempfile::tempdir().unwrap();
+        let repository = directory.path().join("repository");
+        let dependency = directory.path().join("bearing.step");
+        std::fs::write(&dependency, b"ISO-10303-21; bearing v1").unwrap();
+        let mut server = Server::new(SessionSettings::default());
+        let definition = DefinitionId(301);
+        let profile = FeatureId(302);
+        let solid = FeatureId(303);
+        let seed = server
+            .session
+            .plan_commands(CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: definition,
+                    name: "Released bracket".into(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: profile,
+                    definition_id: definition,
+                    name: "80x40 profile".into(),
+                    kind: FeatureKind::Profile {
+                        points_mm: vec![[0.0, 0.0], [80.0, 0.0], [80.0, 40.0], [0.0, 40.0]],
+                    },
+                },
+                CanonicalCommand::CreateFeature {
+                    id: solid,
+                    definition_id: definition,
+                    name: "80x40x12 bracket".into(),
+                    kind: FeatureKind::Extrusion {
+                        profile,
+                        height: Dimension::new("12", 12.0).unwrap(),
+                    },
+                },
+            ]))
+            .unwrap();
+        server.session.apply_proposal(&seed).unwrap();
+        let root_state = server.state();
+        let root_params = |confirmed| {
+            json!({
+                "expected_revision":root_state["revision"],
+                "expected_digest":root_state["canonical_digest"],
+                "repository":repository,
+                "parent_release_id":null,
+                "dependencies":[{"logical_path":"supplier/bearing.step","source_path":dependency}],
+                "audit":{"actor":"designer","created_unix_ms":1700000000000_u64,"note":"reviewed root"},
+                "confirmed":confirmed,
+            })
+        };
+        let cancelled = request(&mut server, "pdm_release_create", root_params(false));
+        assert_eq!(cancelled["error"]["code"], "confirmation_required");
+        assert!(!repository.exists());
+        assert_eq!(server.state(), root_state);
+
+        let root = request(&mut server, "pdm_release_create", root_params(true));
+        assert!(root.get("error").is_none(), "{root}");
+        let root_id = root["result"]["manifest"]["release_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(root_id.len(), 64);
+        assert_eq!(root["result"]["document_mutated"], false);
+        assert_eq!(server.state(), root_state);
+
+        let mutation = server
+            .session
+            .plan_commands(CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(304),
+                    name: "Manufacturing notes".into(),
+                },
+            ]))
+            .unwrap();
+        server.session.apply_proposal(&mutation).unwrap();
+        std::fs::write(&dependency, b"ISO-10303-21; bearing v2").unwrap();
+        let child_state = server.state();
+        let child = request(
+            &mut server,
+            "pdm_release_create",
+            json!({
+                "expected_revision":child_state["revision"],
+                "expected_digest":child_state["canonical_digest"],
+                "repository":repository,
+                "parent_release_id":root_id,
+                "dependencies":[{"logical_path":"supplier/bearing.step","source_path":dependency}],
+                "audit":{"actor":"reviewer","created_unix_ms":1700000001000_u64,"note":"machining release"},
+                "confirmed":true,
+            }),
+        );
+        assert!(child.get("error").is_none(), "{child}");
+        let child_id = child["result"]["manifest"]["release_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(server.state(), child_state);
+
+        let catalog = request(
+            &mut server,
+            "pdm_catalog",
+            json!({"expected_revision":child_state["revision"],"expected_digest":child_state["canonical_digest"],"repository":repository}),
+        );
+        assert_eq!(catalog["result"]["releases"].as_array().unwrap().len(), 2);
+        assert_eq!(server.state(), child_state);
+        let comparison = request(
+            &mut server,
+            "pdm_compare",
+            json!({"expected_revision":child_state["revision"],"expected_digest":child_state["canonical_digest"],
+                "repository":repository,"left_release_id":root_id,"right_release_id":child_id}),
+        );
+        assert_eq!(comparison["result"]["conflict_verdict"], "fast_forward");
+        assert_eq!(
+            comparison["result"]["dependency_changes"][0]["kind"],
+            "modified"
+        );
+        assert_eq!(comparison["result"]["document_changed"], true);
+        assert_eq!(server.state(), child_state);
+
+        let opened = request(
+            &mut server,
+            "pdm_release_open",
+            json!({"expected_revision":child_state["revision"],"expected_digest":child_state["canonical_digest"],
+                "repository":repository,"release_id":child_id}),
+        );
+        assert_eq!(opened["result"]["verified"], true, "{opened}");
+        assert_eq!(opened["result"]["matches_current_document"], true);
+        assert_eq!(server.state(), child_state);
+
+        let stale = request(
+            &mut server,
+            "pdm_catalog",
+            json!({"expected_revision":0,"expected_digest":"stale","repository":repository}),
+        );
+        assert_eq!(stale["error"]["code"], "stale_state");
+        let malformed = request(
+            &mut server,
+            "pdm_compare",
+            json!({"expected_revision":child_state["revision"],"expected_digest":child_state["canonical_digest"],
+                "repository":repository,"left_release_id":root_id,"right_release_id":child_id,"unknown":true}),
+        );
+        assert_eq!(malformed["error"]["code"], "invalid_params");
+
+        let manifest_path =
+            ketchup_core::local_pdm::release_manifest_path(&repository, &child_id).unwrap();
+        let tampered = std::fs::read_to_string(&manifest_path)
+            .unwrap()
+            .replace("reviewer", "intruder");
+        std::fs::write(&manifest_path, tampered).unwrap();
+        let rejected = request(
+            &mut server,
+            "pdm_release_open",
+            json!({"expected_revision":child_state["revision"],"expected_digest":child_state["canonical_digest"],
+                "repository":repository,"release_id":child_id}),
+        );
+        assert_eq!(rejected["error"]["code"], "pdm_manifest_invalid");
+        assert_eq!(server.state(), child_state);
     }
 
     #[test]

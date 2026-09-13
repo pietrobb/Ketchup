@@ -122,6 +122,63 @@ fn headless_open_exposes_recovery_and_requires_an_explicit_save_target() {
 }
 
 #[test]
+fn headless_protocol_recovers_unsaved_work_after_process_loss() {
+    let directory = tempfile::tempdir().unwrap();
+    let primary = directory.path().join("crashed.ketchup");
+    let recovered_copy = directory.path().join("recovered.ketchup");
+    let work_recovery = ketchup_core::persistence::work_recovery_path(&primary);
+    let mut crashed = Client::new();
+    let (entities, constraints) = polygon(&[[0.0, 0.0], [20.0, 0.0], [20.0, 20.0], [0.0, 20.0]]);
+    let created = crashed.call(
+        "apply",
+        json!({"program":{"operations":[{
+            "operation":"create_part","name":"Recoverable part","workplane":frame([0.0,0.0,0.0]),
+            "entities":entities,"constraints":constraints,"feature":{"type":"extrusion","distance_mm":10.0},"translation_mm":[0.0,0.0,0.0]
+        }]}}),
+        true,
+    );
+    let occurrence = created["created"]["occurrence_ids"][0].as_u64().unwrap();
+    crashed.call("save", json!({"path":primary,"overwrite":false}), true);
+    let clean_bytes = std::fs::read(&primary).unwrap();
+    crashed.call(
+        "set_grounded",
+        json!({"occurrence_ids":[occurrence],"grounded":true}),
+        true,
+    );
+    let dirty_digest = crashed.state["canonical_digest"].clone();
+    let dirty_undo_steps = crashed.state["undo_steps"].clone();
+    assert!(work_recovery.is_file());
+    drop(crashed);
+
+    let mut recovered = Client::new();
+    let opened = recovered.call("open", json!({"path":primary}), true);
+    assert_eq!(opened["state"]["canonical_digest"], dirty_digest);
+    assert_eq!(opened["state"]["undo_steps"], dirty_undo_steps);
+    assert!(opened["path"].is_null(), "{opened}");
+    assert_eq!(opened["modified"], true);
+    assert_eq!(
+        opened["recovery"]["source_path"],
+        work_recovery.to_string_lossy().as_ref()
+    );
+    assert_eq!(opened["recovery"]["save_as_required"], true);
+    assert_eq!(std::fs::read(&primary).unwrap(), clean_bytes);
+
+    let saved = recovered.call(
+        "save",
+        json!({"path":recovered_copy,"overwrite":false}),
+        true,
+    );
+    assert_eq!(saved["modified"], false);
+    assert!(!work_recovery.exists());
+    assert_eq!(std::fs::read(&primary).unwrap(), clean_bytes);
+    drop(recovered);
+
+    let mut reopened = Client::new();
+    reopened.call("open", json!({"path":recovered_copy}), true);
+    assert_eq!(reopened.state["canonical_digest"], dirty_digest);
+}
+
+#[test]
 fn native_headless_translated_rotated_frame_wedge_pocket_roundtrips() {
     let mut client = Client::new();
     let capabilities = client.call("capabilities", json!({}), false);

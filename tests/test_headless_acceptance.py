@@ -145,7 +145,9 @@ def gravity_current(doc, expected_state, unsupported_id=None):
     assert gravity["issues_complete"] is True and gravity["checked_occurrence_count"] == 2
     assert gravity["gravity_axis"] == "-Z"
     assert "only explicitly grounded participants seed support propagation" in gravity["assumptions"]
-    assert any("OBB-SAT" in text for text in gravity["assumptions"])
+    assert any("native BRep face intersection" in text and
+               "OBB-only contact remains unresolved" in text
+               for text in gravity["assumptions"])
     # floor_z_mm is legacy report metadata, NOT a synthetic supporting solid.
     count = 0 if unsupported_id is None else 1
     assert gravity["unsupported_count"] == report["issue_count"] == count
@@ -208,6 +210,17 @@ def test_from_empty_hole_support_and_fresh_process_roundtrip(native_paths, tmp_p
         assert supported["revision"] != floating_eval["revision"]
         assert supported["grounded_occurrence_ids"] == [foundation_id]
         assert_translation(supported, second_id, [0, 0, 20])
+        evaluate_current(doc, expected)
+        gravity_current(doc, "passed")
+
+        # Exact negative control: the same bottom face over the through-hole has
+        # no positive BRep contact area even though both OBB envelopes touch.
+        doc.move([second_id], [110, 70, 0])
+        assert_translation(doc.state, second_id, [110, 70, 20])
+        evaluate_current(doc, expected)
+        gravity_current(doc, "failed", second_id)
+        doc.move([second_id], [-110, -70, 0])
+        assert_translation(doc.state, second_id, [0, 0, 20])
         evaluate_current(doc, expected)
         gravity_current(doc, "passed")
 

@@ -138,6 +138,7 @@ pub struct BodyParameterEditPreview {
     pub source_revision: u64,
     pub source_digest: String,
     pub body_id: BodyId,
+    pub affected_body_ids: Vec<BodyId>,
     pub affected_feature_ids: Vec<FeatureId>,
     pub unchanged_body_ids: Vec<BodyId>,
     pub proposal: Proposal,
@@ -329,6 +330,7 @@ fn prepare_body_parameter_edit_with_validation(
     }
 
     let affected = graph.dependent_closure(roots);
+    let mut affected_body_ids = BTreeSet::new();
     for feature_id in &affected {
         let feature = snapshot
             .feature(*feature_id)
@@ -342,14 +344,7 @@ fn prepare_body_parameter_edit_with_validation(
         let ownership = definition
             .feature_body_ownership(*feature_id)
             .ok_or(BodyParameterEditError::FeatureNotFound(*feature_id))?;
-        if let Some(output_body_id) = ownership.output_body_id()
-            && output_body_id != request.body_id
-        {
-            return Err(BodyParameterEditError::CrossBodyAffected(
-                *feature_id,
-                output_body_id,
-            ));
-        }
+        affected_body_ids.extend(ownership.output_body_id());
     }
 
     let context = ProposalContext {
@@ -371,10 +366,11 @@ fn prepare_body_parameter_edit_with_validation(
         source_revision: snapshot.revision_id(),
         source_digest: snapshot.canonical_digest(),
         body_id: request.body_id,
+        affected_body_ids: affected_body_ids.iter().copied().collect(),
         affected_feature_ids: affected.into_iter().collect(),
         unchanged_body_ids: definition
             .bodies()
-            .filter_map(|body| (body.id() != request.body_id).then_some(body.id()))
+            .filter_map(|body| (!affected_body_ids.contains(&body.id())).then_some(body.id()))
             .collect(),
         proposal,
     })
@@ -464,6 +460,7 @@ pub fn prepare_body_profile_translation(
             ExactParameterEditTarget::FeatureDimension(request.profile_id),
         ));
     }
+    let mut affected_body_ids = BTreeSet::new();
     for feature_id in &affected {
         let feature = snapshot
             .feature(*feature_id)
@@ -477,14 +474,7 @@ pub fn prepare_body_profile_translation(
         let ownership = definition
             .feature_body_ownership(*feature_id)
             .ok_or(BodyParameterEditError::FeatureNotFound(*feature_id))?;
-        if let Some(output_body_id) = ownership.output_body_id()
-            && output_body_id != request.body_id
-        {
-            return Err(BodyParameterEditError::CrossBodyAffected(
-                *feature_id,
-                output_body_id,
-            ));
-        }
+        affected_body_ids.extend(ownership.output_body_id());
     }
 
     let proposal = document
@@ -518,10 +508,11 @@ pub fn prepare_body_profile_translation(
         source_revision: snapshot.revision_id(),
         source_digest: snapshot.canonical_digest(),
         body_id: request.body_id,
+        affected_body_ids: affected_body_ids.iter().copied().collect(),
         affected_feature_ids: affected.into_iter().collect(),
         unchanged_body_ids: definition
             .bodies()
-            .filter_map(|body| (body.id() != request.body_id).then_some(body.id()))
+            .filter_map(|body| (!affected_body_ids.contains(&body.id())).then_some(body.id()))
             .collect(),
         proposal,
     })

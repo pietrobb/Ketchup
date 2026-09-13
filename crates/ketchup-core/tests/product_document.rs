@@ -9,8 +9,8 @@ use ketchup_core::document::{
     DimensionPresentation, DimensionReferenceHealth, DocumentStore, EvaluationIdentity, FeatureId,
     FeatureKind, FeatureParameterBinding, FeatureParameterFreshness, FeatureParameterStaleReason,
     FeatureParameterTarget, GroupId, InstancePath, InstancePathStep, LocalGroupId, LocalGroupKey,
-    LocalOccurrenceId, LocalOccurrenceKey, LoftSection, MappingResolution, NodeId, OccurrenceId,
-    ParameterPath, ParameterPathError, ParameterValueType, PersistentDimension,
+    LocalOccurrenceId, LocalOccurrenceKey, LoftContinuity, LoftSection, MappingResolution, NodeId,
+    OccurrenceId, ParameterPath, ParameterPathError, ParameterValueType, PersistentDimension,
     PersistentDimensionId, PersistentDimensionTarget, PortSpec, ProfileSegment, RuleOutput,
     SceneQueryContext, SceneQueryError, SlotPath, SlotSegment, Snapshot, SolidToolPlan,
     SpatialPathSegment, TagId, Transform, UnresolvedMappingReason, WorldEntityPath,
@@ -4212,6 +4212,8 @@ fn bounded_spline_profile_loft_is_validated_undoable_visible_and_persistent() {
                             elevation_mm: 80.0,
                         },
                     ],
+                    guide: None,
+                    continuity: LoftContinuity::Position,
                 },
             },
             CanonicalCommand::CreateOccurrence {
@@ -4264,7 +4266,7 @@ fn bounded_spline_profile_loft_is_validated_undoable_visible_and_persistent() {
     ));
     assert!(matches!(
         unique.feature(*unique_loft).unwrap().kind(),
-        FeatureKind::Loft { sections }
+        FeatureKind::Loft { sections, .. }
             if sections[0].profile == *unique_lower
                 && sections[0].elevation_mm == 0.0
                 && sections[1].profile == *unique_upper
@@ -4278,7 +4280,7 @@ fn bounded_spline_profile_loft_is_validated_undoable_visible_and_persistent() {
     assert!(reopened.migration_losses().is_empty());
     assert!(matches!(
         reopened.snapshot().feature(*unique_loft).unwrap().kind(),
-        FeatureKind::Loft { sections }
+        FeatureKind::Loft { sections, .. }
             if sections[0].profile == *unique_lower
                 && sections[1].profile == *unique_upper
     ));
@@ -4301,6 +4303,8 @@ fn bounded_spline_profile_loft_is_validated_undoable_visible_and_persistent() {
                         elevation_mm: 0.0,
                     },
                 ],
+                guide: None,
+                continuity: LoftContinuity::Position,
             },
         }]))
         .err()

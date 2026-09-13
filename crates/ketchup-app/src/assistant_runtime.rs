@@ -86,6 +86,7 @@ impl AssistantTransport for ProcessAssistantTransport {
             .map(|exchange| AssistantTransportResponse {
                 result: exchange.result,
                 cad_edit_program: exchange.cad_edit_program,
+                fea_review: exchange.fea_review,
                 diagnostics: exchange.diagnostics,
             })
             .map_err(|error| error.to_string());

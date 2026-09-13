@@ -8,18 +8,34 @@ use crate::transforms::{
     rotation_in_parent_space, translated_transform, world_axis_rotation_transform,
     world_plane_mirror_transform,
 };
+use ketchup_core::assembly_joint::{
+    AssemblyJoint, AssemblyJointAxis, AssemblyJointId, AssemblyJointKind, AssemblyJointLimits,
+    preview_assembly_joint_drag,
+};
 use ketchup_core::assistant_sidecar::{
+    AssistantAssemblyJointAxis, AssistantAssemblyJointKind, AssistantAssemblyJointLimits,
     AssistantAxisSpec, AssistantCadBodyFeature, AssistantCadDeletePolicy,
     AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
-    AssistantCadFeatureReference, AssistantCadPartFeature, AssistantCadProgramFeatureOutput,
-    AssistantCadProgramFeatureReference, AssistantInstancePath, AssistantInstancePathStep,
-    AssistantRejectionDiagnostic, AssistantRejectionPhase, validated_spatial_path_segments,
+    AssistantCadFeatureReference, AssistantCadParameterValueType, AssistantCadPartFeature,
+    AssistantCadProgramFeatureOutput, AssistantCadProgramFeatureReference,
+    AssistantCadSurfaceBodySource, AssistantCamToolKind, AssistantCamWorkOffset,
+    AssistantInstancePath, AssistantInstancePathStep, AssistantRejectionDiagnostic,
+    AssistantRejectionPhase, validated_spatial_path_segments,
+};
+use ketchup_core::cam::{
+    CamCutParameters, CamPlan, CamPlanId, CamSetup, CamStock, CamTool, CamToolKind, CamWorkOffset,
 };
 use ketchup_core::document::{
     CanonicalCommand, CanonicalError, ClassificationCategoryId, ClassificationDimensionId,
-    CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind, InstancePath,
-    InstancePathStep, LocalGroupId, LocalOccurrenceId, NodeId, OccurrenceId, ProfileSegment,
-    Snapshot, SpatialPathSegment, Transform,
+    CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
+    FeatureParameterTarget, InstancePath, InstancePathStep, LocalGroupId, LocalOccurrenceId,
+    NodeId, OccurrenceId, ParameterPath, ParameterValueType, ProfileSegment, Snapshot,
+    SpatialPathSegment, Transform,
+};
+use ketchup_core::drawing::{
+    DrawingBomBalloon, DrawingBomBalloonId, DrawingError, DrawingMargins, DrawingPageOrientation,
+    DrawingPageSize, DrawingPageTemplate, DrawingScale, DrawingSheet, DrawingSheetId,
+    DrawingSource, DrawingTitleBlock, OrthographicViewKind, project_orthographic_drawing,
 };
 use ketchup_core::exact_brep_graph::ExactBRepGraph;
 use ketchup_core::exact_product::{
@@ -161,6 +177,51 @@ fn resolve_assistant_instance_path(
     }
     snapshot.resolve_instance_path(&resolved).ok()?;
     Some(resolved)
+}
+
+fn assembly_joint_axis(axis: AssistantAssemblyJointAxis) -> AssemblyJointAxis {
+    AssemblyJointAxis::new(axis.direction_in_parent, axis.pivot_in_parent_mm)
+}
+
+fn assembly_joint_limits(
+    limits: Option<AssistantAssemblyJointLimits>,
+) -> Option<AssemblyJointLimits> {
+    limits.map(|limits| AssemblyJointLimits::new(limits.min, limits.max))
+}
+
+fn assembly_joint_kind(kind: AssistantAssemblyJointKind) -> AssemblyJointKind {
+    match kind {
+        AssistantAssemblyJointKind::Fixed => AssemblyJointKind::Fixed,
+        AssistantAssemblyJointKind::Revolute {
+            axis,
+            limits,
+            position_degrees,
+        } => AssemblyJointKind::Revolute {
+            axis: assembly_joint_axis(axis),
+            limits: assembly_joint_limits(limits),
+            position_degrees,
+        },
+        AssistantAssemblyJointKind::Prismatic {
+            axis,
+            limits,
+            position_mm,
+        } => AssemblyJointKind::Prismatic {
+            axis: assembly_joint_axis(axis),
+            limits: assembly_joint_limits(limits),
+            position_mm,
+        },
+        AssistantAssemblyJointKind::Helical {
+            axis,
+            limits,
+            lead_mm_per_revolution,
+            position_degrees,
+        } => AssemblyJointKind::Helical {
+            axis: assembly_joint_axis(axis),
+            limits: assembly_joint_limits(limits),
+            lead_mm_per_revolution,
+            position_degrees,
+        },
+    }
 }
 
 fn transform_axis_to_world(
@@ -453,7 +514,44 @@ fn resolve_program_feature_references(
         *target_feature_id = target.into();
         *tool_feature_id = tool.into();
     }
-    if let AssistantCadBodyFeature::Loft { sections } = &mut feature {
+    if let AssistantCadBodyFeature::WeldmentJoint {
+        first_member_id,
+        second_member_id,
+        ..
+    } = &mut feature
+    {
+        let first = resolve_program_feature_reference(
+            *first_member_id,
+            original_snapshot,
+            operation_outputs,
+            AssistantCadProgramFeatureOutput::BodyFeature,
+            operation,
+        )?;
+        let second = resolve_program_feature_reference(
+            *second_member_id,
+            original_snapshot,
+            operation_outputs,
+            AssistantCadProgramFeatureOutput::BodyFeature,
+            operation,
+        )?;
+        if first == second {
+            return Err(assistant_planning_rejection(
+                "planning.cad_feature_inputs_identical",
+                operation,
+                &format!("feature:{first}"),
+                "The resolved weldment joint inputs refer to the same member.",
+                "Use two distinct existing or earlier program weldment members.",
+            ));
+        }
+        *first_member_id = first.into();
+        *second_member_id = second.into();
+    }
+    if let AssistantCadBodyFeature::Loft {
+        sections,
+        guide_feature_id,
+        ..
+    } = &mut feature
+    {
         for section in sections {
             section.profile_feature_id = resolve_program_feature_reference(
                 section.profile_feature_id,
@@ -464,6 +562,108 @@ fn resolve_program_feature_references(
             )?
             .into();
         }
+        if let Some(guide) = guide_feature_id {
+            *guide = resolve_program_feature_reference(
+                *guide,
+                original_snapshot,
+                operation_outputs,
+                AssistantCadProgramFeatureOutput::ConstructionFeature,
+                operation,
+            )?
+            .into();
+        }
+    }
+    match &mut feature {
+        AssistantCadBodyFeature::SurfaceBody { source } => match source {
+            AssistantCadSurfaceBodySource::Planar { profile_feature_id } => {
+                *profile_feature_id = resolve_program_feature_reference(
+                    *profile_feature_id,
+                    original_snapshot,
+                    operation_outputs,
+                    AssistantCadProgramFeatureOutput::SketchFeature,
+                    operation,
+                )?
+                .into();
+            }
+            AssistantCadSurfaceBodySource::Loft {
+                sections,
+                guide_feature_id,
+                ..
+            } => {
+                for section in sections {
+                    section.profile_feature_id = resolve_program_feature_reference(
+                        section.profile_feature_id,
+                        original_snapshot,
+                        operation_outputs,
+                        AssistantCadProgramFeatureOutput::SketchFeature,
+                        operation,
+                    )?
+                    .into();
+                }
+                if let Some(guide) = guide_feature_id {
+                    *guide = resolve_program_feature_reference(
+                        *guide,
+                        original_snapshot,
+                        operation_outputs,
+                        AssistantCadProgramFeatureOutput::ConstructionFeature,
+                        operation,
+                    )?
+                    .into();
+                }
+            }
+        },
+        AssistantCadBodyFeature::SurfaceTrim {
+            target_feature_id,
+            cutter_feature_id,
+        } => {
+            *target_feature_id = resolve_program_feature_reference(
+                *target_feature_id,
+                original_snapshot,
+                operation_outputs,
+                AssistantCadProgramFeatureOutput::BodyFeature,
+                operation,
+            )?
+            .into();
+            *cutter_feature_id = resolve_program_feature_reference(
+                *cutter_feature_id,
+                original_snapshot,
+                operation_outputs,
+                AssistantCadProgramFeatureOutput::BodyFeature,
+                operation,
+            )?
+            .into();
+        }
+        AssistantCadBodyFeature::SurfaceExtend {
+            target_feature_id, ..
+        }
+        | AssistantCadBodyFeature::SurfaceThicken {
+            target_feature_id, ..
+        } => {
+            *target_feature_id = resolve_program_feature_reference(
+                *target_feature_id,
+                original_snapshot,
+                operation_outputs,
+                AssistantCadProgramFeatureOutput::BodyFeature,
+                operation,
+            )?
+            .into();
+        }
+        AssistantCadBodyFeature::SurfaceKnit {
+            surface_feature_ids,
+            ..
+        } => {
+            for reference in surface_feature_ids {
+                *reference = resolve_program_feature_reference(
+                    *reference,
+                    original_snapshot,
+                    operation_outputs,
+                    AssistantCadProgramFeatureOutput::BodyFeature,
+                    operation,
+                )?
+                .into();
+            }
+        }
+        _ => {}
     }
     Ok(feature)
 }
@@ -664,6 +864,18 @@ pub fn plan_assistant_cad_edit_program(
         .max()
         .unwrap_or(0)
         .checked_add(1);
+    let mut next_assembly_joint = snapshot
+        .assembly_joints()
+        .map(|joint| joint.id().0)
+        .max()
+        .unwrap_or(0)
+        .checked_add(1);
+    let mut next_drawing_sheet = snapshot
+        .drawing_sheets()
+        .map(|sheet| sheet.id().0)
+        .max()
+        .unwrap_or(0)
+        .checked_add(1);
 
     let mut working_colors = snapshot
         .occurrences()
@@ -690,6 +902,13 @@ pub fn plan_assistant_cad_edit_program(
             AssistantCadEditOperation::AppendFeature { .. } => "append_feature",
             AssistantCadEditOperation::AppendProgramPocket { .. } => "append_program_pocket",
             AssistantCadEditOperation::SetDimension { .. } => "set_dimension",
+            AssistantCadEditOperation::SetFeatureParameter { .. } => "set_feature_parameter",
+            AssistantCadEditOperation::CreateAssemblyJoint { .. } => "create_assembly_joint",
+            AssistantCadEditOperation::SetAssemblyJointPosition { .. } => {
+                "set_assembly_joint_position"
+            }
+            AssistantCadEditOperation::CreateDrawing { .. } => "create_drawing",
+            AssistantCadEditOperation::UpsertCamPlan { .. } => "upsert_cam_plan",
             AssistantCadEditOperation::Delete { .. } => "delete_occurrence",
             AssistantCadEditOperation::Transform { .. } => "transform_occurrence",
             AssistantCadEditOperation::SetColor { .. } => "set_color",
@@ -764,6 +983,7 @@ pub fn plan_assistant_cad_edit_program(
                     target_feature_id: *target_feature_id,
                     edge_reference_ids: edge_reference_ids.clone(),
                     radius_mm: *radius_mm,
+                    radius_stations: Vec::new(),
                 },
             }),
             AssistantCadEditOperation::ChamferEdges {
@@ -779,6 +999,8 @@ pub fn plan_assistant_cad_edit_program(
                     target_feature_id: *target_feature_id,
                     edge_reference_ids: edge_reference_ids.clone(),
                     distance_mm: *distance_mm,
+                    mode: Default::default(),
+                    side_face_reference_ids: Vec::new(),
                 },
             }),
             _ => None,
@@ -800,6 +1022,11 @@ pub fn plan_assistant_cad_edit_program(
             | AssistantCadEditOperation::AppendFeature { .. }
             | AssistantCadEditOperation::AppendProgramPocket { .. }
             | AssistantCadEditOperation::SetDimension { .. }
+            | AssistantCadEditOperation::SetFeatureParameter { .. }
+            | AssistantCadEditOperation::CreateAssemblyJoint { .. }
+            | AssistantCadEditOperation::SetAssemblyJointPosition { .. }
+            | AssistantCadEditOperation::CreateDrawing { .. }
+            | AssistantCadEditOperation::UpsertCamPlan { .. }
             | AssistantCadEditOperation::UpsertClassificationDimension { .. }
             | AssistantCadEditOperation::CreateEvaluatorInput { .. } => None,
             AssistantCadEditOperation::Delete { selector, .. }
@@ -1437,6 +1664,337 @@ pub fn plan_assistant_cad_edit_program(
                         dimension,
                     }
                 });
+            }
+            AssistantCadEditOperation::SetFeatureParameter {
+                feature_id,
+                parameter_path,
+                value_type,
+                value,
+            } => {
+                let feature_id = FeatureId(*feature_id);
+                let path = ParameterPath::new(parameter_path.clone()).map_err(|error| {
+                    assistant_planning_rejection(
+                        "planning.cad_parameter_path_invalid",
+                        operation_name,
+                        &format!("feature:{}", feature_id.0),
+                        error.to_string(),
+                        "Copy one current parameter path and value type exactly from feature inspection.",
+                    )
+                })?;
+                let dimension = Dimension::new(value.to_string(), *value).map_err(|error| {
+                    assistant_canonical_rejection(
+                        error,
+                        operation_name,
+                        &format!("feature:{}", feature_id.0),
+                    )
+                })?;
+                commands.push(CanonicalCommand::SetFeatureParameter {
+                    target: FeatureParameterTarget {
+                        feature_id,
+                        path,
+                        value_type: match value_type {
+                            AssistantCadParameterValueType::Length => ParameterValueType::Length,
+                            AssistantCadParameterValueType::Angle => ParameterValueType::Angle,
+                            AssistantCadParameterValueType::Scalar => ParameterValueType::Scalar,
+                        },
+                    },
+                    dimension,
+                });
+            }
+            AssistantCadEditOperation::CreateAssemblyJoint {
+                parent_instance_path,
+                child_instance_path,
+                kind,
+            } => {
+                let parent_instance_path =
+                    resolve_assistant_instance_path(parent_instance_path, &snapshot).ok_or_else(
+                        || {
+                            assistant_canonical_rejection(
+                                CanonicalError::InvalidInstancePath,
+                                operation_name,
+                                "parent_instance_path",
+                            )
+                        },
+                    )?;
+                let child_instance_path =
+                    resolve_assistant_instance_path(child_instance_path, &snapshot).ok_or_else(
+                        || {
+                            assistant_canonical_rejection(
+                                CanonicalError::InvalidInstancePath,
+                                operation_name,
+                                "child_instance_path",
+                            )
+                        },
+                    )?;
+                let id = next_assembly_joint.map(AssemblyJointId).ok_or_else(|| {
+                    assistant_canonical_rejection(
+                        CanonicalError::IdExhausted,
+                        operation_name,
+                        &document_target,
+                    )
+                })?;
+                next_assembly_joint = id.0.checked_add(1);
+                commands.push(CanonicalCommand::CreateAssemblyJoint(
+                    AssemblyJoint::new_at_paths(
+                        id,
+                        parent_instance_path,
+                        child_instance_path,
+                        assembly_joint_kind(*kind),
+                    ),
+                ));
+            }
+            AssistantCadEditOperation::SetAssemblyJointPosition { joint_id, position } => {
+                let joint_id = AssemblyJointId(*joint_id);
+                if snapshot.assembly_joint(joint_id).is_none() {
+                    return Err(assistant_planning_rejection(
+                        "planning.assembly_joint_not_found",
+                        operation_name,
+                        &format!("assembly_joint:{}", joint_id.0),
+                        "The requested assembly joint does not exist in the current document.",
+                        "Inspect the current assembly joints and retry with an existing ID.",
+                    ));
+                }
+                let preview = preview_assembly_joint_drag(&snapshot, joint_id, *position, false)
+                    .map_err(|error| {
+                        assistant_planning_rejection(
+                            "planning.assembly_motion_unsolved",
+                            operation_name,
+                            &format!("assembly_joint:{}", joint_id.0),
+                            error.to_string(),
+                            "Use a position within the joint limits and a solvable assembly state.",
+                        )
+                    })?;
+                let publication =
+                    preview
+                        .solution()
+                        .publication_batch(&snapshot)
+                        .map_err(|error| {
+                            assistant_planning_rejection(
+                                "planning.assembly_motion_unpublishable",
+                                operation_name,
+                                &format!("assembly_joint:{}", joint_id.0),
+                                error.to_string(),
+                                "Refresh the document state and retry the motion edit.",
+                            )
+                        })?;
+                commands.extend(publication.commands().iter().cloned());
+            }
+            AssistantCadEditOperation::CreateDrawing {
+                name,
+                instance_paths,
+            } => {
+                let mut resolved_paths = instance_paths
+                    .iter()
+                    .map(|path| {
+                        resolve_assistant_instance_path(path, &snapshot).ok_or_else(|| {
+                            assistant_canonical_rejection(
+                                CanonicalError::InvalidInstancePath,
+                                operation_name,
+                                "instance_paths",
+                            )
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                resolved_paths.sort();
+                let id = next_drawing_sheet.map(DrawingSheetId).ok_or_else(|| {
+                    assistant_canonical_rejection(
+                        CanonicalError::IdExhausted,
+                        operation_name,
+                        &document_target,
+                    )
+                })?;
+                next_drawing_sheet = id.0.checked_add(1);
+                let mut positions = BTreeMap::<DefinitionId, u32>::new();
+                let mut next_position = 1_u32;
+                let balloons = resolved_paths
+                    .iter()
+                    .enumerate()
+                    .map(|(index, path)| {
+                        let resolved = snapshot.resolve_instance_path(path).map_err(|_| {
+                            assistant_canonical_rejection(
+                                CanonicalError::InvalidInstancePath,
+                                operation_name,
+                                "instance_paths",
+                            )
+                        })?;
+                        let position =
+                            *positions.entry(resolved.definition_id).or_insert_with(|| {
+                                let assigned = next_position;
+                                next_position += 1;
+                                assigned
+                            });
+                        DrawingBomBalloon::new(
+                            DrawingBomBalloonId(index as u64 + 1),
+                            OrthographicViewKind::Front,
+                            path.clone(),
+                            position,
+                            [8.0, 8.0],
+                        )
+                        .map_err(|error| {
+                            assistant_planning_rejection(
+                                "planning.drawing_invalid",
+                                operation_name,
+                                &format!("drawing_sheet:{}", id.0),
+                                error.to_string(),
+                                "Use current unique assembly instance paths.",
+                            )
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let source = DrawingSource::RigidAssemblyInstances {
+                    instance_paths: resolved_paths,
+                };
+                let title_block =
+                    DrawingTitleBlock::new(name.clone(), "", "", "").map_err(|error| {
+                        assistant_planning_rejection(
+                            "planning.drawing_invalid",
+                            operation_name,
+                            &format!("drawing_sheet:{}", id.0),
+                            error.to_string(),
+                            "Use a non-empty name and current unique assembly instance paths.",
+                        )
+                    })?;
+                let mut fitted_sheet = None;
+                let mut layout_overflow = None;
+                for denominator in [
+                    1, 2, 5, 10, 20, 50, 100, 200, 500, 1_000, 10_000, 100_000, 1_000_000,
+                ] {
+                    let page = DrawingPageTemplate::new(
+                        DrawingPageSize::A3,
+                        DrawingPageOrientation::Landscape,
+                        DrawingScale::new(1, denominator).expect("bounded drawing scale is valid"),
+                        DrawingMargins::default(),
+                    )
+                    .expect("standard A3 drawing page is valid");
+                    let candidate = DrawingSheet::with_contract(
+                        id,
+                        name.clone(),
+                        source.clone(),
+                        page,
+                        title_block.clone(),
+                    )
+                    .and_then(|sheet| sheet.with_bom_balloons(balloons.clone()))
+                    .map_err(|error| {
+                        assistant_planning_rejection(
+                            "planning.drawing_invalid",
+                            operation_name,
+                            &format!("drawing_sheet:{}", id.0),
+                            error.to_string(),
+                            "Use a non-empty name and current unique assembly instance paths.",
+                        )
+                    })?;
+                    match project_orthographic_drawing(&snapshot, topology_results, &candidate) {
+                        Ok(_) => {
+                            fitted_sheet = Some(candidate);
+                            break;
+                        }
+                        Err(error @ DrawingError::LayoutOverflow) => layout_overflow = Some(error),
+                        Err(error) => {
+                            return Err(assistant_planning_rejection(
+                                "planning.drawing_projection_failed",
+                                operation_name,
+                                &format!("drawing_sheet:{}", id.0),
+                                error.to_string(),
+                                "Use current exact assembly instances with a fully constrained rigid mate graph.",
+                            ));
+                        }
+                    }
+                }
+                let sheet = fitted_sheet.ok_or_else(|| {
+                    assistant_planning_rejection(
+                        "planning.drawing_projection_failed",
+                        operation_name,
+                        &format!("drawing_sheet:{}", id.0),
+                        layout_overflow
+                            .unwrap_or(DrawingError::LayoutOverflow)
+                            .to_string(),
+                        "Use a larger sheet or reduce the assembly extent.",
+                    )
+                })?;
+                commands.push(CanonicalCommand::CreateDrawingSheet(sheet));
+            }
+            AssistantCadEditOperation::UpsertCamPlan {
+                plan_id,
+                name,
+                target_definition_id,
+                target_feature_id,
+                stock_minimum_mm,
+                stock_maximum_mm,
+                tool_number,
+                tool_kind,
+                tool_diameter_mm,
+                flute_length_mm,
+                overall_length_mm,
+                holder_diameter_mm,
+                holder_length_mm,
+                spindle_rpm,
+                feed_mm_per_min,
+                plunge_mm_per_min,
+                work_offset,
+                origin_mm,
+                x_axis,
+                y_axis,
+                safe_height_mm,
+                maximum_stepdown_mm,
+                stepover_ratio,
+                radial_allowance_mm,
+                axial_allowance_mm,
+            } => {
+                let plan = CamPlan::new(
+                    &snapshot,
+                    CamPlanId(*plan_id),
+                    name.clone(),
+                    CamStock {
+                        minimum_mm: *stock_minimum_mm,
+                        maximum_mm: *stock_maximum_mm,
+                    },
+                    CamTool {
+                        number: *tool_number,
+                        kind: match tool_kind {
+                            AssistantCamToolKind::FlatEndMill => CamToolKind::FlatEndMill,
+                            AssistantCamToolKind::BallEndMill => CamToolKind::BallEndMill,
+                            AssistantCamToolKind::Drill => CamToolKind::Drill,
+                        },
+                        diameter_mm: *tool_diameter_mm,
+                        flute_length_mm: *flute_length_mm,
+                        overall_length_mm: *overall_length_mm,
+                        holder_diameter_mm: *holder_diameter_mm,
+                        holder_length_mm: *holder_length_mm,
+                        spindle_rpm: *spindle_rpm,
+                        feed_mm_per_min: *feed_mm_per_min,
+                        plunge_mm_per_min: *plunge_mm_per_min,
+                    },
+                    CamSetup {
+                        work_offset: match work_offset {
+                            AssistantCamWorkOffset::G54 => CamWorkOffset::G54,
+                            AssistantCamWorkOffset::G55 => CamWorkOffset::G55,
+                            AssistantCamWorkOffset::G56 => CamWorkOffset::G56,
+                            AssistantCamWorkOffset::G57 => CamWorkOffset::G57,
+                            AssistantCamWorkOffset::G58 => CamWorkOffset::G58,
+                            AssistantCamWorkOffset::G59 => CamWorkOffset::G59,
+                        },
+                        origin_mm: *origin_mm,
+                        x_axis: *x_axis,
+                        y_axis: *y_axis,
+                        safe_height_mm: *safe_height_mm,
+                    },
+                    CamCutParameters {
+                        maximum_stepdown_mm: *maximum_stepdown_mm,
+                        stepover_ratio: *stepover_ratio,
+                        radial_allowance_mm: *radial_allowance_mm,
+                        axial_allowance_mm: *axial_allowance_mm,
+                    },
+                    DefinitionId(*target_definition_id),
+                    FeatureId(*target_feature_id),
+                )
+                .map_err(|error| {
+                    assistant_canonical_rejection(
+                        CanonicalError::Cam(error),
+                        operation_name,
+                        &format!("cam_plan:{plan_id}"),
+                    )
+                })?;
+                commands.push(CanonicalCommand::UpsertCamPlan(plan));
             }
             AssistantCadEditOperation::Delete {
                 dependency_policy, ..

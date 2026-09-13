@@ -1,5 +1,6 @@
 use ketchup_application::validation::{
     CollisionScope, assistant_validation_context, assistant_validation_context_with_worker,
+    assistant_validation_context_with_worker_cancellation,
     fabrication_collision_validation_with_worker, scoped_collision_report_with_worker,
 };
 use ketchup_application::{AssistantValidationSelection, DocumentSession, SessionSettings};
@@ -307,6 +308,28 @@ fn scoped_collision_cancel_is_explicit_and_incomplete() {
     assert_eq!(report["complete"], false, "{report}");
     assert_eq!(
         report["not_evaluated"][0]["reason"],
+        "exact_collision_cancelled"
+    );
+}
+
+#[test]
+fn full_assistant_validation_cancellation_is_explicit_and_incomplete() {
+    let mut document = DocumentStore::new();
+    add(&mut document, 1, rectangle(), 0.0);
+    let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let report = assistant_validation_context_with_worker_cancellation(
+        &document.current(),
+        &ExactResultRegistry::default(),
+        &selection(),
+        &ContainerData::default(),
+        None,
+        Duration::from_secs(120),
+        cancelled,
+    );
+    assert_eq!(report["state"], "not_evaluated", "{report}");
+    assert_eq!(report["complete"], false, "{report}");
+    assert_eq!(
+        report["collision"]["not_evaluated"][0]["reason"],
         "exact_collision_cancelled"
     );
 }

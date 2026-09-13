@@ -1,8 +1,12 @@
-use crate::document::{ProfileSegment, SpatialPathSegment, is_valid_spatial_sweep_path};
+use crate::document::{
+    Dimension, ProfileSegment, SpatialPathSegment, WeldmentJointPolicy, WeldmentJointPrimary,
+    is_valid_spatial_sweep_path,
+};
 use crate::exact_product::EXACT_MIN_LENGTH_MM;
 use crate::exact_revolve::{
     controlled_bottle_profile, finish_amount_is_conservative, inner_shell_profile,
 };
+use crate::sheet_metal::{SheetMetalEdge, SheetMetalFlange, SheetMetalSpec};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -152,14 +156,14 @@ pub struct AssistantCadRotation {
     pub angle_degrees: f64,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AssistantInstancePath {
     pub root_occurrence_id: u64,
     pub steps: Vec<AssistantInstancePathStep>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AssistantInstancePathStep {
     Group {
@@ -169,6 +173,45 @@ pub enum AssistantInstancePathStep {
     Occurrence {
         owner_definition_id: u64,
         local_id: u64,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantAssemblyJointAxis {
+    pub direction_in_parent: [f64; 3],
+    pub pivot_in_parent_mm: [f64; 3],
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantAssemblyJointLimits {
+    pub min: f64,
+    pub max: f64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AssistantAssemblyJointKind {
+    Fixed,
+    Revolute {
+        axis: AssistantAssemblyJointAxis,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limits: Option<AssistantAssemblyJointLimits>,
+        position_degrees: f64,
+    },
+    Prismatic {
+        axis: AssistantAssemblyJointAxis,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limits: Option<AssistantAssemblyJointLimits>,
+        position_mm: f64,
+    },
+    Helical {
+        axis: AssistantAssemblyJointAxis,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limits: Option<AssistantAssemblyJointLimits>,
+        lead_mm_per_revolution: f64,
+        position_degrees: f64,
     },
 }
 
@@ -799,11 +842,147 @@ pub enum AssistantCadBooleanOperation {
     Intersect,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantCadLoftContinuity {
+    Position,
+    Tangent,
+    Curvature,
+}
+
+#[allow(clippy::derivable_impls)]
+impl Default for AssistantCadLoftContinuity {
+    fn default() -> Self {
+        Self::Position
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantCadShellDirection {
+    Inward,
+    Outward,
+    Symmetric,
+}
+
+#[allow(clippy::derivable_impls)]
+impl Default for AssistantCadShellDirection {
+    fn default() -> Self {
+        Self::Inward
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AssistantCadLoftSection {
     pub profile_feature_id: AssistantCadFeatureReference,
     pub elevation_mm: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AssistantCadSurfaceBodySource {
+    Planar {
+        profile_feature_id: AssistantCadFeatureReference,
+    },
+    Loft {
+        sections: Vec<AssistantCadLoftSection>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        guide_feature_id: Option<AssistantCadFeatureReference>,
+        #[serde(default)]
+        continuity: AssistantCadLoftContinuity,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AssistantCadChamferMode {
+    Symmetric,
+    TwoDistance { second_distance_mm: f64 },
+    DistanceAngle { angle_degrees: f64 },
+}
+
+#[allow(clippy::derivable_impls)]
+impl Default for AssistantCadChamferMode {
+    fn default() -> Self {
+        Self::Symmetric
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantCadFilletRadiusStation {
+    pub position: f64,
+    pub radius_mm: f64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantCadSheetMetalEdge {
+    MinX,
+    MaxX,
+    MinY,
+    MaxY,
+}
+
+impl From<AssistantCadSheetMetalEdge> for SheetMetalEdge {
+    fn from(value: AssistantCadSheetMetalEdge) -> Self {
+        match value {
+            AssistantCadSheetMetalEdge::MinX => Self::MinX,
+            AssistantCadSheetMetalEdge::MaxX => Self::MaxX,
+            AssistantCadSheetMetalEdge::MinY => Self::MinY,
+            AssistantCadSheetMetalEdge::MaxY => Self::MaxY,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantCadSheetMetalFlange {
+    pub edge: AssistantCadSheetMetalEdge,
+    pub length_mm: f64,
+    pub angle_degrees: f64,
+    pub inner_radius_mm: f64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantCadWeldmentJointPolicy {
+    Butt,
+    Miter,
+}
+
+impl From<AssistantCadWeldmentJointPolicy> for WeldmentJointPolicy {
+    fn from(value: AssistantCadWeldmentJointPolicy) -> Self {
+        match value {
+            AssistantCadWeldmentJointPolicy::Butt => Self::Butt,
+            AssistantCadWeldmentJointPolicy::Miter => Self::Miter,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantCadWeldmentJointPrimary {
+    First,
+    Second,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantCadParameterValueType {
+    Length,
+    Angle,
+    Scalar,
+}
+
+impl From<AssistantCadWeldmentJointPrimary> for WeldmentJointPrimary {
+    fn from(value: AssistantCadWeldmentJointPrimary) -> Self {
+        match value {
+            AssistantCadWeldmentJointPrimary::First => Self::First,
+            AssistantCadWeldmentJointPrimary::Second => Self::Second,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -827,27 +1006,115 @@ pub enum AssistantCadBodyFeature {
         profile_feature_id: u64,
         path_feature_id: u64,
     },
+    WeldmentMember {
+        profile_feature_id: u64,
+        path_feature_id: u64,
+        orientation_degrees: f64,
+    },
+    WeldmentJoint {
+        first_member_id: AssistantCadFeatureReference,
+        second_member_id: AssistantCadFeatureReference,
+        policy: AssistantCadWeldmentJointPolicy,
+        primary: AssistantCadWeldmentJointPrimary,
+    },
     Loft {
         sections: Vec<AssistantCadLoftSection>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        guide_feature_id: Option<AssistantCadFeatureReference>,
+        #[serde(default)]
+        continuity: AssistantCadLoftContinuity,
+    },
+    SurfaceBody {
+        source: AssistantCadSurfaceBodySource,
+    },
+    SurfaceTrim {
+        target_feature_id: AssistantCadFeatureReference,
+        cutter_feature_id: AssistantCadFeatureReference,
+    },
+    SurfaceExtend {
+        target_feature_id: AssistantCadFeatureReference,
+        distance_mm: f64,
+    },
+    SurfaceKnit {
+        surface_feature_ids: Vec<AssistantCadFeatureReference>,
+        tolerance_mm: f64,
+        make_solid: bool,
+    },
+    SurfaceThicken {
+        target_feature_id: AssistantCadFeatureReference,
+        thickness_mm: f64,
+        direction: AssistantCadShellDirection,
+    },
+    SheetMetal {
+        width_mm: f64,
+        depth_mm: f64,
+        thickness_mm: f64,
+        k_factor: f64,
+        flanges: Vec<AssistantCadSheetMetalFlange>,
     },
     TopologyShell {
         target_feature_id: u64,
+        #[serde(default)]
         removed_face_reference_ids: Vec<String>,
         thickness_mm: f64,
+        #[serde(default)]
+        direction: AssistantCadShellDirection,
     },
     TopologyFillet {
         target_feature_id: u64,
         edge_reference_ids: Vec<String>,
         radius_mm: f64,
+        #[serde(default)]
+        radius_stations: Vec<AssistantCadFilletRadiusStation>,
     },
     TopologyChamfer {
         target_feature_id: u64,
         edge_reference_ids: Vec<String>,
         distance_mm: f64,
+        #[serde(default)]
+        mode: AssistantCadChamferMode,
+        #[serde(default)]
+        side_face_reference_ids: Vec<String>,
     },
 }
 
 impl AssistantCadBodyFeature {
+    #[must_use]
+    pub fn sheet_metal_spec(&self) -> Option<SheetMetalSpec> {
+        let Self::SheetMetal {
+            width_mm,
+            depth_mm,
+            thickness_mm,
+            k_factor,
+            flanges,
+        } = self
+        else {
+            return None;
+        };
+        Some(SheetMetalSpec {
+            width: Dimension::new(width_mm.to_string(), *width_mm).ok()?,
+            depth: Dimension::new(depth_mm.to_string(), *depth_mm).ok()?,
+            thickness: Dimension::new(thickness_mm.to_string(), *thickness_mm).ok()?,
+            k_factor: *k_factor,
+            flanges: flanges
+                .iter()
+                .map(|flange| {
+                    Some(SheetMetalFlange {
+                        edge: flange.edge.into(),
+                        length: Dimension::new(flange.length_mm.to_string(), flange.length_mm)
+                            .ok()?,
+                        angle_degrees: flange.angle_degrees,
+                        inner_radius: Dimension::new(
+                            flange.inner_radius_mm.to_string(),
+                            flange.inner_radius_mm,
+                        )
+                        .ok()?,
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?,
+        })
+    }
+
     fn validate(&self) -> Result<(), String> {
         match self {
             Self::Boolean {
@@ -896,32 +1163,149 @@ impl AssistantCadBodyFeature {
                 Ok(())
             }
             Self::Sweep { .. } => Err("assistant CAD body feature is invalid".to_owned()),
-            Self::Loft { sections }
-                if (2..=16).contains(&sections.len())
-                    && sections.iter().all(|section| {
-                        section.profile_feature_id.validate().is_ok()
-                            && section.elevation_mm.is_finite()
-                            && section.elevation_mm.abs() <= MAX_ASSISTANT_ABS_MM
-                    })
-                    && sections
-                        .iter()
-                        .map(|section| section.profile_feature_id)
-                        .collect::<BTreeSet<_>>()
-                        .len()
-                        == sections.len()
-                    && sections
-                        .windows(2)
-                        .all(|pair| pair[0].elevation_mm < pair[1].elevation_mm) =>
+            Self::WeldmentMember {
+                profile_feature_id,
+                path_feature_id,
+                orientation_degrees,
+            } if *profile_feature_id != 0
+                && *path_feature_id != 0
+                && profile_feature_id != path_feature_id
+                && orientation_degrees.is_finite()
+                && (-180.0..180.0).contains(orientation_degrees) =>
+            {
+                Ok(())
+            }
+            Self::WeldmentMember { .. } => {
+                Err("assistant CAD weldment member is invalid".to_owned())
+            }
+            Self::WeldmentJoint {
+                first_member_id,
+                second_member_id,
+                ..
+            } if first_member_id.validate().is_ok()
+                && second_member_id.validate().is_ok()
+                && first_member_id != second_member_id =>
+            {
+                Ok(())
+            }
+            Self::WeldmentJoint { .. } => Err("assistant CAD weldment joint is invalid".to_owned()),
+            Self::Loft {
+                sections,
+                guide_feature_id,
+                continuity,
+            } if (2..=16).contains(&sections.len())
+                && guide_feature_id.is_none_or(|guide| guide.validate().is_ok())
+                && !(guide_feature_id.is_some()
+                    && *continuity == AssistantCadLoftContinuity::Curvature)
+                && sections.iter().all(|section| {
+                    section.profile_feature_id.validate().is_ok()
+                        && section.elevation_mm.is_finite()
+                        && section.elevation_mm.abs() <= MAX_ASSISTANT_ABS_MM
+                })
+                && sections
+                    .iter()
+                    .map(|section| section.profile_feature_id)
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    == sections.len()
+                && sections
+                    .windows(2)
+                    .all(|pair| pair[0].elevation_mm < pair[1].elevation_mm) =>
             {
                 Ok(())
             }
             Self::Loft { .. } => Err("assistant CAD body feature is invalid".to_owned()),
+            Self::SurfaceBody {
+                source: AssistantCadSurfaceBodySource::Planar { profile_feature_id },
+            } if profile_feature_id.validate().is_ok() => Ok(()),
+            Self::SurfaceBody {
+                source:
+                    AssistantCadSurfaceBodySource::Loft {
+                        sections,
+                        guide_feature_id,
+                        continuity,
+                    },
+            } if (2..=16).contains(&sections.len())
+                && guide_feature_id.is_none_or(|guide| guide.validate().is_ok())
+                && !(guide_feature_id.is_some()
+                    && *continuity == AssistantCadLoftContinuity::Curvature)
+                && sections.iter().all(|section| {
+                    section.profile_feature_id.validate().is_ok()
+                        && section.elevation_mm.is_finite()
+                        && section.elevation_mm.abs() <= MAX_ASSISTANT_ABS_MM
+                })
+                && sections
+                    .iter()
+                    .map(|section| section.profile_feature_id)
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    == sections.len()
+                && sections
+                    .windows(2)
+                    .all(|pair| pair[0].elevation_mm < pair[1].elevation_mm) =>
+            {
+                Ok(())
+            }
+            Self::SurfaceBody { .. } => Err("assistant CAD body feature is invalid".to_owned()),
+            Self::SurfaceTrim {
+                target_feature_id,
+                cutter_feature_id,
+            } if target_feature_id.validate().is_ok()
+                && cutter_feature_id.validate().is_ok()
+                && target_feature_id != cutter_feature_id =>
+            {
+                Ok(())
+            }
+            Self::SurfaceTrim { .. } => Err("assistant CAD body feature is invalid".to_owned()),
+            Self::SurfaceExtend {
+                target_feature_id,
+                distance_mm,
+            } if target_feature_id.validate().is_ok()
+                && distance_mm.is_finite()
+                && (EXACT_MIN_LENGTH_MM..=MAX_ASSISTANT_ABS_MM).contains(distance_mm) =>
+            {
+                Ok(())
+            }
+            Self::SurfaceExtend { .. } => Err("assistant CAD body feature is invalid".to_owned()),
+            Self::SurfaceKnit {
+                surface_feature_ids,
+                tolerance_mm,
+                ..
+            } if (2..=256).contains(&surface_feature_ids.len())
+                && surface_feature_ids
+                    .iter()
+                    .all(|reference| reference.validate().is_ok())
+                && surface_feature_ids.iter().collect::<BTreeSet<_>>().len()
+                    == surface_feature_ids.len()
+                && tolerance_mm.is_finite()
+                && (1.0e-7..=10.0).contains(tolerance_mm) =>
+            {
+                Ok(())
+            }
+            Self::SurfaceKnit { .. } => Err("assistant CAD body feature is invalid".to_owned()),
+            Self::SurfaceThicken {
+                target_feature_id,
+                thickness_mm,
+                ..
+            } if target_feature_id.validate().is_ok()
+                && thickness_mm.is_finite()
+                && (EXACT_MIN_LENGTH_MM..=100_000.0).contains(thickness_mm) =>
+            {
+                Ok(())
+            }
+            Self::SurfaceThicken { .. } => Err("assistant CAD body feature is invalid".to_owned()),
+            Self::SheetMetal { .. } => self
+                .sheet_metal_spec()
+                .filter(|spec| spec.validate().is_ok())
+                .map(|_| ())
+                .ok_or_else(|| "assistant CAD sheet-metal feature is invalid".to_owned()),
             Self::TopologyShell {
                 target_feature_id,
                 removed_face_reference_ids,
                 thickness_mm,
+                ..
             } if *target_feature_id != 0
-                && (1..=64).contains(&removed_face_reference_ids.len())
+                && removed_face_reference_ids.len() <= 64
                 && removed_face_reference_ids.iter().all(|reference_id| {
                     reference_id.len() == 64
                         && reference_id.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -941,6 +1325,7 @@ impl AssistantCadBodyFeature {
                 target_feature_id,
                 edge_reference_ids,
                 radius_mm,
+                radius_stations,
             } if *target_feature_id != 0
                 && (1..=64).contains(&edge_reference_ids.len())
                 && edge_reference_ids.iter().all(|reference_id| {
@@ -950,7 +1335,22 @@ impl AssistantCadBodyFeature {
                 && edge_reference_ids.iter().collect::<BTreeSet<_>>().len()
                     == edge_reference_ids.len()
                 && radius_mm.is_finite()
-                && (0.01..=100_000.0).contains(radius_mm) =>
+                && (0.01..=100_000.0).contains(radius_mm)
+                && radius_stations.len() <= 32
+                && (radius_stations.is_empty()
+                    || radius_stations
+                        .last()
+                        .is_some_and(|station| station.position == 1.0))
+                && radius_stations.iter().all(|station| {
+                    station.position.is_finite()
+                        && station.position > 0.0
+                        && station.position <= 1.0
+                        && station.radius_mm.is_finite()
+                        && (0.01..=100_000.0).contains(&station.radius_mm)
+                })
+                && radius_stations
+                    .windows(2)
+                    .all(|pair| pair[0].position < pair[1].position) =>
             {
                 Ok(())
             }
@@ -959,6 +1359,8 @@ impl AssistantCadBodyFeature {
                 target_feature_id,
                 edge_reference_ids,
                 distance_mm,
+                mode,
+                side_face_reference_ids,
             } if *target_feature_id != 0
                 && (1..=64).contains(&edge_reference_ids.len())
                 && edge_reference_ids.iter().all(|reference_id| {
@@ -968,7 +1370,29 @@ impl AssistantCadBodyFeature {
                 && edge_reference_ids.iter().collect::<BTreeSet<_>>().len()
                     == edge_reference_ids.len()
                 && distance_mm.is_finite()
-                && (0.01..=100_000.0).contains(distance_mm) =>
+                && (0.01..=100_000.0).contains(distance_mm)
+                && match mode {
+                    AssistantCadChamferMode::Symmetric => side_face_reference_ids.is_empty(),
+                    AssistantCadChamferMode::TwoDistance { second_distance_mm } => {
+                        second_distance_mm.is_finite()
+                            && (0.01..=100_000.0).contains(second_distance_mm)
+                            && side_face_reference_ids.len() == edge_reference_ids.len()
+                            && side_face_reference_ids.iter().all(|reference_id| {
+                                reference_id.len() == 64
+                                    && reference_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+                            })
+                    }
+                    AssistantCadChamferMode::DistanceAngle { angle_degrees } => {
+                        angle_degrees.is_finite()
+                            && *angle_degrees > 0.1
+                            && *angle_degrees < 89.9
+                            && side_face_reference_ids.len() == edge_reference_ids.len()
+                            && side_face_reference_ids.iter().all(|reference_id| {
+                                reference_id.len() == 64
+                                    && reference_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+                            })
+                    }
+                } =>
             {
                 Ok(())
             }
@@ -1002,7 +1426,27 @@ impl AssistantCadBodyFeature {
                 validate_reference(*target_feature_id)?;
                 validate_reference(*tool_feature_id)?;
             }
-            Self::Loft { sections } => {
+            Self::WeldmentJoint {
+                first_member_id,
+                second_member_id,
+                ..
+            } => {
+                validate_reference(*first_member_id)?;
+                validate_reference(*second_member_id)?;
+            }
+            Self::Loft {
+                sections,
+                guide_feature_id,
+                ..
+            }
+            | Self::SurfaceBody {
+                source:
+                    AssistantCadSurfaceBodySource::Loft {
+                        sections,
+                        guide_feature_id,
+                        ..
+                    },
+            } => {
                 for section in sections {
                     if let AssistantCadFeatureReference::ProgramOutput(reference) =
                         section.profile_feature_id
@@ -1013,6 +1457,47 @@ impl AssistantCadBodyFeature {
                             AssistantCadProgramFeatureOutput::SketchFeature,
                         )?;
                     }
+                }
+                if let Some(AssistantCadFeatureReference::ProgramOutput(reference)) =
+                    guide_feature_id
+                {
+                    reference.validate_for(
+                        operation_index,
+                        operations,
+                        AssistantCadProgramFeatureOutput::ConstructionFeature,
+                    )?;
+                }
+            }
+            Self::SurfaceBody {
+                source: AssistantCadSurfaceBodySource::Planar { profile_feature_id },
+            } => {
+                if let AssistantCadFeatureReference::ProgramOutput(reference) = profile_feature_id {
+                    reference.validate_for(
+                        operation_index,
+                        operations,
+                        AssistantCadProgramFeatureOutput::SketchFeature,
+                    )?;
+                }
+            }
+            Self::SurfaceTrim {
+                target_feature_id,
+                cutter_feature_id,
+            } => {
+                validate_reference(*target_feature_id)?;
+                validate_reference(*cutter_feature_id)?;
+            }
+            Self::SurfaceExtend {
+                target_feature_id, ..
+            }
+            | Self::SurfaceThicken {
+                target_feature_id, ..
+            } => validate_reference(*target_feature_id)?,
+            Self::SurfaceKnit {
+                surface_feature_ids,
+                ..
+            } => {
+                for reference in surface_feature_ids {
+                    validate_reference(*reference)?;
                 }
             }
             _ => {}
@@ -1189,6 +1674,84 @@ pub struct AssistantCadClassificationCategory {
     pub name: String,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantCamToolKind {
+    FlatEndMill,
+    BallEndMill,
+    Drill,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantCamWorkOffset {
+    G54,
+    G55,
+    G56,
+    G57,
+    G58,
+    G59,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantFeaReviewRequest {
+    pub definition_id: u64,
+    pub feature_id: u64,
+    pub occurrence_id: u64,
+    pub case_id: String,
+    pub youngs_modulus_mpa: f64,
+    pub poisson_ratio: f64,
+    pub yield_strength_mpa: f64,
+    pub constrained_face_ordinals: Vec<u32>,
+    pub loaded_face_ordinal: u32,
+    pub traction_local_n_per_mm2: [f64; 3],
+    pub coarse_deflection_mm: f64,
+    pub fine_deflection_mm: f64,
+}
+
+impl AssistantFeaReviewRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        let unique_constraints = self
+            .constrained_face_ordinals
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        if self.definition_id == 0
+            || self.feature_id == 0
+            || self.occurrence_id == 0
+            || self.case_id.trim().is_empty()
+            || self.case_id.len() > MAX_ASSISTANT_NAME_BYTES
+            || self.case_id.chars().any(char::is_control)
+            || !self.youngs_modulus_mpa.is_finite()
+            || self.youngs_modulus_mpa <= 0.0
+            || self.youngs_modulus_mpa > 1.0e9
+            || !self.poisson_ratio.is_finite()
+            || !(-1.0..0.5).contains(&self.poisson_ratio)
+            || !self.yield_strength_mpa.is_finite()
+            || self.yield_strength_mpa <= 0.0
+            || self.yield_strength_mpa > 1.0e9
+            || self.constrained_face_ordinals.is_empty()
+            || self.constrained_face_ordinals.len() > 64
+            || unique_constraints.len() != self.constrained_face_ordinals.len()
+            || unique_constraints.contains(&self.loaded_face_ordinal)
+            || !self
+                .traction_local_n_per_mm2
+                .iter()
+                .all(|value| value.is_finite() && value.abs() <= 1.0e6)
+            || !assistant_cad_vector_is_nonzero(self.traction_local_n_per_mm2)
+            || !self.coarse_deflection_mm.is_finite()
+            || !self.fine_deflection_mm.is_finite()
+            || self.fine_deflection_mm <= 0.0
+            || self.coarse_deflection_mm <= self.fine_deflection_mm
+            || self.coarse_deflection_mm > MAX_ASSISTANT_ABS_MM
+        {
+            return Err("assistant FEA review request is invalid".to_owned());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AssistantCadEditOperation {
@@ -1278,6 +1841,52 @@ pub enum AssistantCadEditOperation {
         constraint_id: Option<u64>,
         value_mm: f64,
     },
+    SetFeatureParameter {
+        feature_id: u64,
+        parameter_path: String,
+        value_type: AssistantCadParameterValueType,
+        value: f64,
+    },
+    CreateAssemblyJoint {
+        parent_instance_path: AssistantInstancePath,
+        child_instance_path: AssistantInstancePath,
+        kind: AssistantAssemblyJointKind,
+    },
+    SetAssemblyJointPosition {
+        joint_id: u64,
+        position: f64,
+    },
+    CreateDrawing {
+        name: String,
+        instance_paths: Vec<AssistantInstancePath>,
+    },
+    UpsertCamPlan {
+        plan_id: u64,
+        name: String,
+        target_definition_id: u64,
+        target_feature_id: u64,
+        stock_minimum_mm: [f64; 3],
+        stock_maximum_mm: [f64; 3],
+        tool_number: u32,
+        tool_kind: AssistantCamToolKind,
+        tool_diameter_mm: f64,
+        flute_length_mm: f64,
+        overall_length_mm: f64,
+        holder_diameter_mm: f64,
+        holder_length_mm: f64,
+        spindle_rpm: u32,
+        feed_mm_per_min: f64,
+        plunge_mm_per_min: f64,
+        work_offset: AssistantCamWorkOffset,
+        origin_mm: [f64; 3],
+        x_axis: [f64; 3],
+        y_axis: [f64; 3],
+        safe_height_mm: f64,
+        maximum_stepdown_mm: f64,
+        stepover_ratio: f64,
+        radial_allowance_mm: f64,
+        axial_allowance_mm: f64,
+    },
     Delete {
         selector: AssistantCadEntitySelector,
         dependency_policy: AssistantCadDeletePolicy,
@@ -1348,6 +1957,100 @@ fn assistant_cad_vectors_are_perpendicular(left: [f64; 3], right: [f64; 3]) -> b
         .map(|(left, right)| left * right)
         .sum::<f64>();
     dot.is_finite() && dot.abs() <= 1.0e-9 * (left_length_squared * right_length_squared).sqrt()
+}
+
+impl AssistantInstancePath {
+    fn validate(&self) -> Result<(), String> {
+        if self.root_occurrence_id == 0
+            || self.steps.len() > MAX_ASSISTANT_INSTANCE_PATH_STEPS
+            || self.steps.iter().any(|step| match step {
+                AssistantInstancePathStep::Group {
+                    owner_definition_id,
+                    local_id,
+                }
+                | AssistantInstancePathStep::Occurrence {
+                    owner_definition_id,
+                    local_id,
+                } => *owner_definition_id == 0 || *local_id == 0,
+            })
+        {
+            return Err("assistant instance path is invalid".to_owned());
+        }
+        Ok(())
+    }
+}
+
+impl AssistantAssemblyJointAxis {
+    fn validate(self) -> Result<(), String> {
+        if !assistant_cad_vector_is_bounded(self.direction_in_parent)
+            || !assistant_cad_vector_is_nonzero(self.direction_in_parent)
+            || !assistant_cad_vector_is_bounded(self.pivot_in_parent_mm)
+        {
+            return Err("assistant assembly joint axis is invalid".to_owned());
+        }
+        Ok(())
+    }
+}
+
+impl AssistantAssemblyJointLimits {
+    fn validate(self, position: f64) -> Result<(), String> {
+        if !self.min.is_finite()
+            || !self.max.is_finite()
+            || self.min > self.max
+            || self.min.abs() > MAX_ASSISTANT_ABS_MM
+            || self.max.abs() > MAX_ASSISTANT_ABS_MM
+            || position < self.min
+            || position > self.max
+        {
+            return Err("assistant assembly joint limits are invalid".to_owned());
+        }
+        Ok(())
+    }
+}
+
+impl AssistantAssemblyJointKind {
+    fn validate(self) -> Result<(), String> {
+        let validate_motion = |axis: AssistantAssemblyJointAxis,
+                               limits: Option<AssistantAssemblyJointLimits>,
+                               position: f64| {
+            axis.validate()?;
+            if !position.is_finite() || position.abs() > MAX_ASSISTANT_ABS_MM {
+                return Err("assistant assembly joint position is invalid".to_owned());
+            }
+            if let Some(limits) = limits {
+                limits.validate(position)?;
+            }
+            Ok(())
+        };
+        match self {
+            Self::Fixed => Ok(()),
+            Self::Revolute {
+                axis,
+                limits,
+                position_degrees,
+            } => validate_motion(axis, limits, position_degrees),
+            Self::Prismatic {
+                axis,
+                limits,
+                position_mm,
+            } => validate_motion(axis, limits, position_mm),
+            Self::Helical {
+                axis,
+                limits,
+                lead_mm_per_revolution,
+                position_degrees,
+            } => {
+                validate_motion(axis, limits, position_degrees)?;
+                if !lead_mm_per_revolution.is_finite()
+                    || lead_mm_per_revolution <= 0.0
+                    || lead_mm_per_revolution > MAX_ASSISTANT_ABS_MM
+                {
+                    return Err("assistant assembly helical joint is invalid".to_owned());
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 impl AssistantCadEntitySelector {
@@ -1951,6 +2654,11 @@ impl AssistantCadEditProgram {
                 | AssistantCadEditOperation::ChamferEdges { .. }
                 | AssistantCadEditOperation::AppendProgramPocket { .. }
                 | AssistantCadEditOperation::SetDimension { .. }
+                | AssistantCadEditOperation::SetFeatureParameter { .. }
+                | AssistantCadEditOperation::CreateAssemblyJoint { .. }
+                | AssistantCadEditOperation::SetAssemblyJointPosition { .. }
+                | AssistantCadEditOperation::CreateDrawing { .. }
+                | AssistantCadEditOperation::UpsertCamPlan { .. }
                 | AssistantCadEditOperation::UpsertClassificationDimension { .. }
                 | AssistantCadEditOperation::CreateEvaluatorInput { .. } => 0,
                 AssistantCadEditOperation::CreatePart { .. }
@@ -2161,6 +2869,7 @@ impl AssistantCadEditProgram {
                         target_feature_id: *target_feature_id,
                         edge_reference_ids: edge_reference_ids.clone(),
                         radius_mm: *radius_mm,
+                        radius_stations: Vec::new(),
                     }
                     .validate()?;
                     0
@@ -2183,6 +2892,8 @@ impl AssistantCadEditProgram {
                         target_feature_id: *target_feature_id,
                         edge_reference_ids: edge_reference_ids.clone(),
                         distance_mm: *distance_mm,
+                        mode: AssistantCadChamferMode::Symmetric,
+                        side_face_reference_ids: Vec::new(),
                     }
                     .validate()?;
                     0
@@ -2249,6 +2960,132 @@ impl AssistantCadEditProgram {
                         || *value_mm > MAX_ASSISTANT_ABS_MM
                     {
                         return Err("assistant CAD dimension edit is invalid".to_owned());
+                    }
+                    0
+                }
+                AssistantCadEditOperation::SetFeatureParameter {
+                    feature_id,
+                    parameter_path,
+                    value_type,
+                    value,
+                } => {
+                    if *feature_id == 0
+                        || parameter_path.trim().is_empty()
+                        || parameter_path.len() > MAX_ASSISTANT_NAME_BYTES
+                        || parameter_path.chars().any(char::is_control)
+                        || !value.is_finite()
+                        || value.abs() > MAX_ASSISTANT_ABS_MM
+                        || (*value_type == AssistantCadParameterValueType::Length && *value <= 0.0)
+                    {
+                        return Err("assistant CAD feature parameter edit is invalid".to_owned());
+                    }
+                    0
+                }
+                AssistantCadEditOperation::CreateAssemblyJoint {
+                    parent_instance_path,
+                    child_instance_path,
+                    kind,
+                } => {
+                    parent_instance_path.validate()?;
+                    child_instance_path.validate()?;
+                    kind.validate()?;
+                    if parent_instance_path == child_instance_path {
+                        return Err("assistant assembly joint endpoints are invalid".to_owned());
+                    }
+                    0
+                }
+                AssistantCadEditOperation::SetAssemblyJointPosition { joint_id, position } => {
+                    if *joint_id == 0
+                        || !position.is_finite()
+                        || position.abs() > MAX_ASSISTANT_ABS_MM
+                        || self.operations.len() != 1
+                    {
+                        return Err("assistant assembly joint edit is invalid".to_owned());
+                    }
+                    0
+                }
+                AssistantCadEditOperation::CreateDrawing {
+                    name,
+                    instance_paths,
+                } => {
+                    let unique = instance_paths.iter().collect::<BTreeSet<_>>();
+                    if name.trim().is_empty()
+                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.chars().any(char::is_control)
+                        || instance_paths.is_empty()
+                        || instance_paths.len() > MAX_ASSISTANT_CAD_SELECTOR_TARGETS
+                        || unique.len() != instance_paths.len()
+                    {
+                        return Err("assistant drawing creation is invalid".to_owned());
+                    }
+                    for path in instance_paths {
+                        path.validate()?;
+                    }
+                    0
+                }
+                AssistantCadEditOperation::UpsertCamPlan {
+                    plan_id,
+                    name,
+                    target_definition_id,
+                    target_feature_id,
+                    stock_minimum_mm,
+                    stock_maximum_mm,
+                    tool_number,
+                    tool_diameter_mm,
+                    flute_length_mm,
+                    overall_length_mm,
+                    holder_diameter_mm,
+                    holder_length_mm,
+                    spindle_rpm,
+                    feed_mm_per_min,
+                    plunge_mm_per_min,
+                    origin_mm,
+                    x_axis,
+                    y_axis,
+                    safe_height_mm,
+                    maximum_stepdown_mm,
+                    stepover_ratio,
+                    radial_allowance_mm,
+                    axial_allowance_mm,
+                    ..
+                } => {
+                    let positive = [
+                        *tool_diameter_mm,
+                        *flute_length_mm,
+                        *overall_length_mm,
+                        *holder_diameter_mm,
+                        *holder_length_mm,
+                        *feed_mm_per_min,
+                        *plunge_mm_per_min,
+                        *maximum_stepdown_mm,
+                    ];
+                    let signed = [
+                        *safe_height_mm,
+                        *stepover_ratio,
+                        *radial_allowance_mm,
+                        *axial_allowance_mm,
+                    ];
+                    if *plan_id == 0
+                        || *target_definition_id == 0
+                        || *target_feature_id == 0
+                        || *tool_number == 0
+                        || *spindle_rpm == 0
+                        || name.trim().is_empty()
+                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.chars().any(char::is_control)
+                        || !assistant_cad_vector_is_bounded(*stock_minimum_mm)
+                        || !assistant_cad_vector_is_bounded(*stock_maximum_mm)
+                        || !assistant_cad_vector_is_bounded(*origin_mm)
+                        || !assistant_cad_vector_is_bounded(*x_axis)
+                        || !assistant_cad_vector_is_bounded(*y_axis)
+                        || !assistant_cad_vector_is_nonzero(*x_axis)
+                        || !assistant_cad_vector_is_nonzero(*y_axis)
+                        || positive
+                            .iter()
+                            .any(|value| !value.is_finite() || *value <= 0.0)
+                        || signed.iter().any(|value| !value.is_finite())
+                    {
+                        return Err("assistant CAM plan is invalid".to_owned());
                     }
                     0
                 }

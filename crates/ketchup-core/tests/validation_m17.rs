@@ -1,8 +1,8 @@
 use ketchup_core::document::{
     BooleanOperation, CanonicalCommand, ClassificationCategoryId, ClassificationDimensionId,
-    CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind, InstancePath,
-    MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, NodeId, OccurrenceId, ProfileSegment,
-    Snapshot, Transform,
+    CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind, GroupId,
+    InstancePath, MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, NodeId, OccurrenceId,
+    ProfileSegment, Snapshot, Transform,
 };
 use ketchup_core::exact_brep_graph::ExactBRepGraph;
 use ketchup_core::exact_product::{
@@ -17,9 +17,11 @@ use ketchup_core::exact_validation::{
 };
 use ketchup_core::fabrication::{
     BTLX_2_3_1_SCHEMA_SHA256, BTLX_2_3_1_SCHEMA_URL, BTLX_2_3_1_VERSION, BtlxExportOptions,
-    BtlxProfileProcessingRequest, FABRICATION_ROLE_DIMENSION_V1, GeneralFabricationError,
-    GeneralFabricationProjection, GeneralMachiningGeometry, GeneralManufacturingKind,
-    ProjectionStatus, TIMBER_MATERIAL_V1, TIMBER_MEMBER_ROLE_V1, project_general_fabrication,
+    BtlxProfileProcessingRequest, FABRICATION_ROLE_DIMENSION_V1, GENERAL_BOM_EXPORT_V2,
+    GeneralBomItemKind, GeneralFabricationError, GeneralFabricationProjection,
+    GeneralMachiningGeometry, GeneralManufacturingKind, MANUFACTURED_ITEM_ROLE_V1,
+    MATERIAL_DIMENSION_V1, PURCHASED_ITEM_ROLE_V1, ProjectionStatus, TIMBER_MATERIAL_V1,
+    TIMBER_MEMBER_ROLE_V1, project_general_fabrication,
 };
 use ketchup_core::graph::{DerivedIdentity, PortSpec, RuleOutput, SlotPath, SlotSegment};
 use ketchup_core::import::{StepImportMesh, StepMeshTriangle};
@@ -41,6 +43,8 @@ const EXACT_PROFILE: FeatureId = FeatureId(11);
 const EXACT_BODY: FeatureId = FeatureId(12);
 const EXACT_LEFT: OccurrenceId = OccurrenceId(13);
 const EXACT_RIGHT: OccurrenceId = OccurrenceId(14);
+const EXACT_THIRD: OccurrenceId = OccurrenceId(15);
+const NESTED_GROUP: GroupId = GroupId(30);
 const MESH_DEFINITION: DefinitionId = DefinitionId(20);
 const MESH_BODY: FeatureId = FeatureId(21);
 const MESH_CLEAR: OccurrenceId = OccurrenceId(22);
@@ -62,6 +66,11 @@ const ROLE_CATEGORY_SUBJECT: ClassificationCategoryId = ClassificationCategoryId
 const ROLE_CATEGORY_SUPPORT: ClassificationCategoryId = ClassificationCategoryId(902);
 const FABRICATION_ROLE_DIMENSION: ClassificationDimensionId = ClassificationDimensionId(920);
 const TIMBER_MEMBER_CATEGORY: ClassificationCategoryId = ClassificationCategoryId(921);
+const MANUFACTURED_ITEM_CATEGORY: ClassificationCategoryId = ClassificationCategoryId(922);
+const PURCHASED_ITEM_CATEGORY: ClassificationCategoryId = ClassificationCategoryId(923);
+const MATERIAL_DIMENSION: ClassificationDimensionId = ClassificationDimensionId(940);
+const STEEL_MATERIAL_CATEGORY: ClassificationCategoryId = ClassificationCategoryId(941);
+const BEARING_MATERIAL_CATEGORY: ClassificationCategoryId = ClassificationCategoryId(942);
 
 #[test]
 fn validator_roles_are_explicit_name_invariant_and_deterministic() {
@@ -379,7 +388,7 @@ fn general_fabrication_regenerates_deterministically_and_exports_fail_closed() {
     assert!(
         String::from_utf8(projection.drawing_svg(&snapshot).unwrap())
             .unwrap()
-            .contains("ketchup.general-drawing-svg.v2")
+            .contains("ketchup.general-drawing-svg.v3")
     );
     assert!(
         String::from_utf8(projection.manufacturing_export(&snapshot).unwrap())
@@ -485,6 +494,7 @@ fn btlx_2_3_1_straight_timber_export_is_pinned_deterministic_and_fail_closed() {
     let document = straight_timber_document();
     let snapshot = document.current();
     let projection = exact_document_fabrication_projection(&document).unwrap();
+    assert!(projection.weldment.is_none());
     let export = projection.btlx_2_3_1_export(&snapshot).unwrap();
     assert_eq!(
         export,
@@ -681,6 +691,429 @@ fn general_fabrication_requires_explicit_unambiguous_timber_marking() {
         exact_document_fabrication_projection(&ambiguous_dimension),
         Err(GeneralFabricationError::FabricationRoleDimensionAmbiguous)
     );
+
+    let mut ambiguous_material = exact_only_document();
+    ambiguous_material
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpsertClassificationDimension {
+                id: MATERIAL_DIMENSION,
+                name: MATERIAL_DIMENSION_V1.to_owned(),
+                categories: vec![(
+                    STEEL_MATERIAL_CATEGORY,
+                    "ketchup.material.steel.s355.v1".to_owned(),
+                )],
+            },
+            CanonicalCommand::UpsertClassificationDimension {
+                id: ClassificationDimensionId(950),
+                name: MATERIAL_DIMENSION_V1.to_owned(),
+                categories: vec![(
+                    ClassificationCategoryId(951),
+                    "ketchup.material.aluminium.6082.v1".to_owned(),
+                )],
+            },
+        ]))
+        .unwrap();
+    assert_eq!(
+        exact_document_fabrication_projection(&ambiguous_material),
+        Err(GeneralFabricationError::MaterialDimensionAmbiguous)
+    );
+}
+
+#[test]
+fn mixed_mechanical_bom_keeps_make_buy_materials_positions_and_timber_export_boundary() {
+    let mut document = exact_only_document();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            occurrence(EXACT_THIRD, EXACT_DEFINITION, 40.0),
+            CanonicalCommand::UpsertClassificationDimension {
+                id: FABRICATION_ROLE_DIMENSION,
+                name: FABRICATION_ROLE_DIMENSION_V1.to_owned(),
+                categories: vec![
+                    (TIMBER_MEMBER_CATEGORY, TIMBER_MEMBER_ROLE_V1.to_owned()),
+                    (
+                        MANUFACTURED_ITEM_CATEGORY,
+                        MANUFACTURED_ITEM_ROLE_V1.to_owned(),
+                    ),
+                    (PURCHASED_ITEM_CATEGORY, PURCHASED_ITEM_ROLE_V1.to_owned()),
+                ],
+            },
+            CanonicalCommand::UpsertClassificationDimension {
+                id: MATERIAL_DIMENSION,
+                name: MATERIAL_DIMENSION_V1.to_owned(),
+                categories: vec![
+                    (
+                        STEEL_MATERIAL_CATEGORY,
+                        "ketchup.material.steel.s355.v1".to_owned(),
+                    ),
+                    (
+                        BEARING_MATERIAL_CATEGORY,
+                        "ketchup.material.bearing.6202.v1".to_owned(),
+                    ),
+                ],
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: EXACT_LEFT,
+                dimension_id: FABRICATION_ROLE_DIMENSION,
+                category_id: Some(TIMBER_MEMBER_CATEGORY),
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: EXACT_RIGHT,
+                dimension_id: FABRICATION_ROLE_DIMENSION,
+                category_id: Some(PURCHASED_ITEM_CATEGORY),
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: EXACT_THIRD,
+                dimension_id: FABRICATION_ROLE_DIMENSION,
+                category_id: Some(MANUFACTURED_ITEM_CATEGORY),
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: EXACT_RIGHT,
+                dimension_id: MATERIAL_DIMENSION,
+                category_id: Some(BEARING_MATERIAL_CATEGORY),
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: EXACT_THIRD,
+                dimension_id: MATERIAL_DIMENSION,
+                category_id: Some(STEEL_MATERIAL_CATEGORY),
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    let package = exact_package(&snapshot);
+    let registry =
+        ExactResultRegistry::accept(&snapshot, [Arc::new(ExactBodyPackage::from(package))])
+            .unwrap();
+    let tolerance = TolerancePolicy::default();
+    let left = GeneralBodyParticipant::accept(
+        &snapshot,
+        &registry,
+        InstancePath::root(EXACT_LEFT),
+        tolerance,
+    )
+    .unwrap();
+    let right = GeneralBodyParticipant::accept(
+        &snapshot,
+        &registry,
+        InstancePath::root(EXACT_RIGHT),
+        tolerance,
+    )
+    .unwrap();
+    let third = GeneralBodyParticipant::accept(
+        &snapshot,
+        &registry,
+        InstancePath::root(EXACT_THIRD),
+        tolerance,
+    )
+    .unwrap();
+    let cases = vec![
+        GeneralClearanceCase::new(left, right.clone(), 10.0).unwrap(),
+        GeneralClearanceCase::new(right, third, 10.0).unwrap(),
+    ];
+    let report = general_report(&snapshot, &cases, tolerance);
+
+    let projection =
+        project_general_fabrication(&snapshot, &registry, &cases, &report, tolerance).unwrap();
+    assert_eq!(projection.bom.rows.len(), 3);
+    assert_eq!(projection.bom.rows[0].position, 1);
+    assert_eq!(projection.bom.rows[0].item_kind, GeneralBomItemKind::Timber);
+    assert_eq!(projection.bom.rows[0].material_key, TIMBER_MATERIAL_V1);
+    assert_eq!(
+        projection.bom.rows[0].instances,
+        vec![InstancePath::root(EXACT_LEFT)]
+    );
+    assert_eq!(projection.bom.rows[1].position, 2);
+    assert_eq!(
+        projection.bom.rows[1].item_kind,
+        GeneralBomItemKind::Manufactured
+    );
+    assert_eq!(
+        projection.bom.rows[1].material_key,
+        "ketchup.material.steel.s355.v1"
+    );
+    assert_eq!(
+        projection.bom.rows[1].instances,
+        vec![InstancePath::root(EXACT_THIRD)]
+    );
+    assert_eq!(projection.bom.rows[2].position, 3);
+    assert_eq!(
+        projection.bom.rows[2].item_kind,
+        GeneralBomItemKind::Purchased
+    );
+    assert_eq!(
+        projection.bom.rows[2].material_key,
+        "ketchup.material.bearing.6202.v1"
+    );
+    assert_eq!(
+        projection.bom.rows[2].instances,
+        vec![InstancePath::root(EXACT_RIGHT)]
+    );
+    assert_eq!(
+        projection.drawings.drawings.len(),
+        projection.bom.rows.len()
+    );
+    assert_eq!(
+        projection
+            .drawings
+            .drawings
+            .iter()
+            .map(|drawing| drawing.machining_operations.len())
+            .collect::<Vec<_>>(),
+        vec![1, 0, 0]
+    );
+    assert_eq!(projection.manufacturing.operations.len(), 1);
+    assert!(projection.manufacturing.unresolved_sources.is_empty());
+    let export = String::from_utf8(projection.bom_export(&snapshot).unwrap()).unwrap();
+    assert!(export.starts_with(GENERAL_BOM_EXPORT_V2));
+    assert!(export.contains("position=1;definition=10;kind=manufactured-timber;quantity=1"));
+    assert!(export.contains("position=2;definition=10;kind=manufactured;quantity=1"));
+    assert!(export.contains("position=3;definition=10;kind=purchased;quantity=1"));
+    let btlx = String::from_utf8(projection.btlx_2_3_1_export(&snapshot).unwrap()).unwrap();
+    assert_eq!(btlx.matches("<Part ").count(), 1);
+
+    let mut tampered = projection;
+    tampered.bom.rows[0].item_kind = GeneralBomItemKind::Purchased;
+    assert_eq!(
+        tampered.bom_export(&snapshot),
+        Err(GeneralFabricationError::ExportBlocked)
+    );
+}
+
+#[test]
+fn nested_repeated_assemblies_roll_up_leaf_quantities_and_inherit_root_bom_metadata() {
+    let mut document = exact_only_document();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateGroup {
+                id: NESTED_GROUP,
+                name: "Two-part subassembly".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+            },
+            CanonicalCommand::SetOccurrenceParent {
+                id: EXACT_LEFT,
+                parent: Some(NESTED_GROUP),
+            },
+            CanonicalCommand::SetOccurrenceParent {
+                id: EXACT_RIGHT,
+                parent: Some(NESTED_GROUP),
+            },
+        ]))
+        .unwrap();
+    let assembly = document
+        .convert_group_to_component(NESTED_GROUP, "Reusable two-part subassembly")
+        .unwrap();
+    let assembly_copy = OccurrenceId(assembly.component_occurrence_id.0 + 1);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateOccurrence {
+                id: assembly_copy,
+                definition_id: assembly.component_definition_id,
+                name: "Purchased subassembly copy".to_owned(),
+                transform: Transform::from_translation(100.0, 0.0, 0.0).unwrap(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+            CanonicalCommand::UpsertClassificationDimension {
+                id: FABRICATION_ROLE_DIMENSION,
+                name: FABRICATION_ROLE_DIMENSION_V1.to_owned(),
+                categories: vec![
+                    (TIMBER_MEMBER_CATEGORY, TIMBER_MEMBER_ROLE_V1.to_owned()),
+                    (
+                        MANUFACTURED_ITEM_CATEGORY,
+                        MANUFACTURED_ITEM_ROLE_V1.to_owned(),
+                    ),
+                    (PURCHASED_ITEM_CATEGORY, PURCHASED_ITEM_ROLE_V1.to_owned()),
+                ],
+            },
+            CanonicalCommand::UpsertClassificationDimension {
+                id: MATERIAL_DIMENSION,
+                name: MATERIAL_DIMENSION_V1.to_owned(),
+                categories: vec![
+                    (
+                        STEEL_MATERIAL_CATEGORY,
+                        "ketchup.material.steel.s355.v1".to_owned(),
+                    ),
+                    (
+                        BEARING_MATERIAL_CATEGORY,
+                        "ketchup.material.bearing.6202.v1".to_owned(),
+                    ),
+                ],
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: assembly.component_occurrence_id,
+                dimension_id: FABRICATION_ROLE_DIMENSION,
+                category_id: Some(MANUFACTURED_ITEM_CATEGORY),
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: assembly.component_occurrence_id,
+                dimension_id: MATERIAL_DIMENSION,
+                category_id: Some(STEEL_MATERIAL_CATEGORY),
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: assembly_copy,
+                dimension_id: FABRICATION_ROLE_DIMENSION,
+                category_id: Some(PURCHASED_ITEM_CATEGORY),
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: assembly_copy,
+                dimension_id: MATERIAL_DIMENSION,
+                category_id: Some(BEARING_MATERIAL_CATEGORY),
+            },
+        ]))
+        .unwrap();
+
+    let snapshot = document.current();
+    let package = exact_package(&snapshot);
+    let registry =
+        ExactResultRegistry::accept(&snapshot, [Arc::new(ExactBodyPackage::from(package))])
+            .unwrap();
+    let tolerance = TolerancePolicy::default();
+    let mut participants = snapshot
+        .scene_query()
+        .into_iter()
+        .filter(|occurrence| occurrence.definition_id == EXACT_DEFINITION)
+        .map(|occurrence| {
+            GeneralBodyParticipant::accept(
+                &snapshot,
+                &registry,
+                occurrence.instance_path,
+                tolerance,
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    participants.sort_by(|left, right| left.instance_path().cmp(right.instance_path()));
+    assert_eq!(participants.len(), 4);
+    let cases = vec![
+        GeneralClearanceCase::new(participants[0].clone(), participants[1].clone(), 10.0).unwrap(),
+        GeneralClearanceCase::new(participants[1].clone(), participants[2].clone(), 70.0).unwrap(),
+        GeneralClearanceCase::new(participants[2].clone(), participants[3].clone(), 10.0).unwrap(),
+    ];
+    let report = general_report(&snapshot, &cases, tolerance);
+    assert_eq!(report.state, ValidationState::Passed);
+
+    let projection =
+        project_general_fabrication(&snapshot, &registry, &cases, &report, tolerance).unwrap();
+    assert_eq!(projection.bom.rows.len(), 2);
+    assert_eq!(projection.bom.rows[0].position, 1);
+    assert_eq!(
+        projection.bom.rows[0].item_kind,
+        GeneralBomItemKind::Manufactured
+    );
+    assert_eq!(
+        projection.bom.rows[0].material_key,
+        "ketchup.material.steel.s355.v1"
+    );
+    assert_eq!(projection.bom.rows[0].quantity, 2);
+    assert!(projection.bom.rows[0].instances.iter().all(|path| {
+        path.root_occurrence() == assembly.component_occurrence_id && !path.is_root()
+    }));
+    assert_eq!(projection.bom.rows[1].position, 2);
+    assert_eq!(
+        projection.bom.rows[1].item_kind,
+        GeneralBomItemKind::Purchased
+    );
+    assert_eq!(
+        projection.bom.rows[1].material_key,
+        "ketchup.material.bearing.6202.v1"
+    );
+    assert_eq!(projection.bom.rows[1].quantity, 2);
+    assert!(
+        projection.bom.rows[1]
+            .instances
+            .iter()
+            .all(|path| path.root_occurrence() == assembly_copy && !path.is_root())
+    );
+    assert!(projection.manufacturing.operations.is_empty());
+    assert_eq!(projection.drawings.drawings.len(), 2);
+    assert!(
+        projection
+            .drawings
+            .drawings
+            .iter()
+            .all(|drawing| drawing.machining_operations.is_empty())
+    );
+    let bom_export = projection.bom_export(&snapshot).unwrap();
+    let export = String::from_utf8(bom_export.clone()).unwrap();
+    assert!(export.contains("position=1;definition=10;kind=manufactured;quantity=2"));
+    assert!(export.contains("position=2;definition=10;kind=purchased;quantity=2"));
+    let drawing_export = projection.drawing_svg(&snapshot).unwrap();
+    let drawing = String::from_utf8(drawing_export.clone()).unwrap();
+    assert!(drawing.contains("ketchup.general-drawing-svg.v3"));
+    assert!(drawing.contains(
+        "position: 1, quantity: 2, kind: manufactured, material: ketchup.material.steel.s355.v1"
+    ));
+    assert!(drawing.contains(
+        "position: 2, quantity: 2, kind: purchased, material: ketchup.material.bearing.6202.v1"
+    ));
+    for (row, drawing) in projection
+        .bom
+        .rows
+        .iter()
+        .zip(&projection.drawings.drawings)
+    {
+        assert_eq!(drawing.bom_row_id, row.stable_row_id);
+        assert_eq!(drawing.position, row.position);
+        assert_eq!(drawing.item_kind, row.item_kind);
+        assert_eq!(drawing.material_key, row.material_key);
+        assert_eq!(drawing.quantity, row.quantity);
+        assert_eq!(drawing.instances, row.instances);
+    }
+
+    let mut tampered_drawing = projection.clone();
+    tampered_drawing.drawings.drawings[0].quantity += 1;
+    assert_eq!(
+        tampered_drawing.drawing_svg(&snapshot),
+        Err(GeneralFabricationError::ExportBlocked)
+    );
+    let mut mismatched_bom = projection.clone();
+    mismatched_bom.bom.rows.swap(0, 1);
+    assert_eq!(
+        mismatched_bom.drawing_svg(&snapshot),
+        Err(GeneralFabricationError::ExportBlocked)
+    );
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: assembly.component_occurrence_id,
+                dimension_id: MATERIAL_DIMENSION,
+                category_id: Some(BEARING_MATERIAL_CATEGORY),
+            },
+        ]))
+        .unwrap();
+    let changed = document.current();
+    assert_eq!(
+        projection.bom_export(&changed),
+        Err(GeneralFabricationError::ExportBlocked)
+    );
+    assert_eq!(
+        projection.drawing_svg(&changed),
+        Err(GeneralFabricationError::ExportBlocked)
+    );
+    let undone = document.undo().unwrap();
+    assert_eq!(projection.bom_export(&undone).unwrap(), bom_export);
+    assert_eq!(projection.drawing_svg(&undone).unwrap(), drawing_export);
+    let redone = document.redo().unwrap();
+    assert_eq!(
+        projection.drawing_svg(&redone),
+        Err(GeneralFabricationError::ExportBlocked)
+    );
+    let restored = document.undo().unwrap();
+    let reopened = persistence::load(&persistence::save(&restored)).unwrap();
+    assert_eq!(
+        projection.bom_export(&reopened.snapshot()).unwrap(),
+        bom_export
+    );
+    assert_eq!(
+        projection.drawing_svg(&reopened.snapshot()).unwrap(),
+        drawing_export
+    );
+    assert_eq!(
+        projection.btlx_2_3_1_export(&snapshot),
+        Err(GeneralFabricationError::ExportBlocked)
+    );
 }
 
 #[test]
@@ -822,7 +1255,7 @@ fn exact_profile_cut_projects_btl_ready_timber_stock_and_circular_drilling() {
         projection.manufacturing.operations
     );
     let drawing = String::from_utf8(projection.drawing_svg(&snapshot).unwrap()).unwrap();
-    assert!(drawing.contains("ketchup.general-drawing-svg.v2"));
+    assert!(drawing.contains("ketchup.general-drawing-svg.v3"));
     assert!(drawing.contains(&format!(
         "manufacturing={}",
         projection.manufacturing.envelope.result_digest

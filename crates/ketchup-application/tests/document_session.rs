@@ -9,7 +9,7 @@ use ketchup_core::{
     assistant_sidecar::*,
     document::*,
     exact_product::{ExactBodyPackage, ExactResultRegistry},
-    persistence::ContainerData,
+    persistence::{self, ContainerData},
 };
 use std::{collections::BTreeSet, time::Duration};
 #[test]
@@ -251,6 +251,113 @@ fn recovered_session_requires_explicit_save_as_and_exposes_the_actual_source() {
             .snapshot()
             .canonical_digest(),
         expected
+    );
+}
+
+#[test]
+fn unsaved_session_edit_recovers_with_history_and_requires_save_as() {
+    let directory = tempfile::tempdir().unwrap();
+    let primary = directory.path().join("crashed.ketchup");
+    let recovered_copy = directory.path().join("recovered-work.ketchup");
+    let mut author = DocumentSession::default();
+    author
+        .apply_cad_program(&program(), &BTreeSet::new())
+        .unwrap();
+    author.save(&primary, SaveOptions::default()).unwrap();
+    let clean_digest = author.snapshot().canonical_digest();
+
+    let mut crashed = DocumentSession::open(&primary, SessionSettings::default()).unwrap();
+    crashed.set_grounded(OccurrenceId(1), true).unwrap();
+    let dirty_digest = crashed.snapshot().canonical_digest();
+    let dirty_undo_steps = crashed.visible_undo_steps();
+    assert_ne!(dirty_digest, clean_digest);
+    assert!(persistence::work_recovery_path(&primary).is_file());
+    crashed.undo().unwrap();
+    assert!(!persistence::work_recovery_path(&primary).exists());
+    crashed.redo().unwrap();
+    assert!(persistence::work_recovery_path(&primary).is_file());
+    drop(crashed);
+
+    let mut recovered = DocumentSession::open(&primary, SessionSettings::default()).unwrap();
+    assert_eq!(recovered.snapshot().canonical_digest(), dirty_digest);
+    assert_eq!(recovered.visible_undo_steps(), dirty_undo_steps);
+    assert_eq!(recovered.path(), None);
+    assert!(recovered.is_modified());
+    assert_eq!(
+        recovered.recovery_state().unwrap().source_path(),
+        persistence::work_recovery_path(&primary)
+    );
+    assert_eq!(
+        persistence::load(&std::fs::read(&primary).unwrap())
+            .unwrap()
+            .snapshot()
+            .canonical_digest(),
+        clean_digest
+    );
+
+    recovered
+        .save(&recovered_copy, SaveOptions::default())
+        .unwrap();
+    assert!(!persistence::work_recovery_path(&primary).exists());
+    assert!(!recovered.is_modified());
+    assert_eq!(recovered.path(), Some(recovered_copy.as_path()));
+    assert_eq!(
+        DocumentSession::open(&recovered_copy, SessionSettings::default())
+            .unwrap()
+            .snapshot()
+            .canonical_digest(),
+        dirty_digest
+    );
+}
+
+#[test]
+fn stale_session_save_is_rejected_but_save_as_preserves_both_versions() {
+    let directory = tempfile::tempdir().unwrap();
+    let shared = directory.path().join("shared.ketchup");
+    let alternate = directory.path().join("second-copy.ketchup");
+    let mut author = DocumentSession::default();
+    author
+        .apply_cad_program(&program(), &BTreeSet::new())
+        .unwrap();
+    author.save(&shared, SaveOptions::default()).unwrap();
+
+    let mut first = DocumentSession::open(&shared, SessionSettings::default()).unwrap();
+    let mut second = DocumentSession::open(&shared, SessionSettings::default()).unwrap();
+    first.set_grounded(OccurrenceId(1), true).unwrap();
+    first
+        .save(&shared, SaveOptions { overwrite: true })
+        .unwrap();
+    let first_bytes = std::fs::read(&shared).unwrap();
+    let first_digest = first.snapshot().canonical_digest();
+
+    second.set_grounded(OccurrenceId(1), true).unwrap();
+    second.set_grounded(OccurrenceId(1), false).unwrap();
+    let second_digest = second.snapshot().canonical_digest();
+    let second_undo = second.visible_undo_steps();
+    let error = second
+        .save(&shared, SaveOptions { overwrite: true })
+        .unwrap_err();
+    assert!(error.to_string().contains("changed outside this session"));
+    assert_eq!(std::fs::read(&shared).unwrap(), first_bytes);
+    assert_eq!(second.snapshot().canonical_digest(), second_digest);
+    assert_eq!(second.visible_undo_steps(), second_undo);
+    assert!(second.is_modified());
+
+    second.save(&alternate, SaveOptions::default()).unwrap();
+    assert!(!second.is_modified());
+    assert_eq!(
+        DocumentSession::open(&shared, SessionSettings::default())
+            .unwrap()
+            .snapshot()
+            .canonical_digest(),
+        first_digest
+    );
+    assert_eq!(
+        DocumentSession::open(&alternate, SessionSettings::default())
+            .unwrap()
+            .snapshot()
+            .canonical_digest(),
+        second_digest
     );
 }
 
@@ -803,6 +910,7 @@ fn real_worker_query_selects_two_upper_circular_edges_for_one_fillet_operation()
             kind: EdgeFinishKind::Fillet,
             edges,
             amount,
+            ..
         } if edges.len() == 2 && amount.millimetres() == 1.0
     ));
     let report = session.evaluate().unwrap();

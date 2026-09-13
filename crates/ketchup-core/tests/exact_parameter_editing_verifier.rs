@@ -288,35 +288,42 @@ fn stale_duplicate_cross_definition_and_unsupported_targets_are_atomic() {
 }
 
 #[test]
-fn cross_body_dependent_rejection_preserves_last_valid_outputs() {
-    let document = seed(true);
+fn cross_body_dependent_preview_and_commit_are_dependency_closed() {
+    let mut document = seed(true);
     let before = stamp(&document);
     let base_before = document.current().feature(BASE_EXTRUSION).unwrap().clone();
-    let tool_before = document.current().feature(TOOL_EXTRUSION).unwrap().clone();
     let union_before = document.current().feature(UNION).unwrap().clone();
 
-    assert_eq!(
-        prepare_body_parameter_edit(
-            &document,
-            BodyParameterEditRequest {
-                definition_id: PART,
-                body_id: BodyId(2),
-                edits: vec![edit(TOOL_EXTRUSION, "15")],
-            },
-            ProposalPrincipal::LocalAssistant,
-        ),
-        Err(BodyParameterEditError::CrossBodyAffected(UNION, BodyId(1)))
-    );
+    let preview = prepare_body_parameter_edit(
+        &document,
+        BodyParameterEditRequest {
+            definition_id: PART,
+            body_id: BodyId(2),
+            edits: vec![edit(TOOL_EXTRUSION, "15")],
+        },
+        ProposalPrincipal::LocalAssistant,
+    )
+    .unwrap();
+    assert_eq!(preview.affected_body_ids, vec![BodyId(1), BodyId(2)]);
+    assert_eq!(preview.affected_feature_ids, vec![TOOL_EXTRUSION, UNION]);
+    assert!(preview.unchanged_body_ids.is_empty());
     assert_eq!(stamp(&document), before);
+
+    let revision = document.commit_proposal(&preview.proposal).unwrap();
+    assert_eq!(
+        revision.dirty_features(),
+        &BTreeSet::from([TOOL_EXTRUSION, UNION])
+    );
     assert_eq!(
         document.current().feature(BASE_EXTRUSION),
         Some(&base_before)
     );
-    assert_eq!(
-        document.current().feature(TOOL_EXTRUSION),
-        Some(&tool_before)
-    );
     assert_eq!(document.current().feature(UNION), Some(&union_before));
+    assert!(matches!(
+        document.current().feature(TOOL_EXTRUSION).unwrap().kind(),
+        FeatureKind::Extrusion { height, .. } if height.millimetres() == 15.0
+    ));
+    assert_eq!(document.undo().unwrap().canonical_digest(), before.1);
 }
 
 const PAD_PLANE: FeatureId = FeatureId(50);

@@ -730,6 +730,7 @@ fn face_supported_pocket_and_topology_history_make_unique_losslessly() {
                     target: POCKET,
                     removed_faces: vec![shell_face.clone()],
                     thickness: Dimension::from_decimal("2").unwrap(),
+                    direction: ketchup_core::document::ShellDirection::Inward,
                 },
             },
             CanonicalCommand::CreateFeature {
@@ -741,6 +742,9 @@ fn face_supported_pocket_and_topology_history_make_unique_losslessly() {
                     edges: vec![finish_edge.clone()],
                     kind: EdgeFinishKind::Fillet,
                     amount: Dimension::from_decimal("1").unwrap(),
+                    fillet_radius_stations: Vec::new(),
+                    chamfer_mode: ketchup_core::document::ChamferMode::Symmetric,
+                    chamfer_edge_sides: Vec::new(),
                 },
             },
             CanonicalCommand::CreateFeature {

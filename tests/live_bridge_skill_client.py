@@ -21,10 +21,12 @@ async def scenario():
     # No arbitrary exception text/tracebacks may escape the outer entry point.
     assert sys.version_info >= (3, 11), "Python 3.11+ required"
     attachment = json.loads(sys.stdin.readline(32769))
-    assert set(attachment) == {"address", "token", "program"}
+    assert set(attachment) == {"address", "token", "program", "persistence_path"}
     token = attachment.pop("token")
     address = attachment.pop("address")
     program = attachment.pop("program")
+    persistence_path = Path(attachment.pop("persistence_path"))
+    assert persistence_path.is_absolute() and not persistence_path.exists()
     assert isinstance(token, str) and len(token) == 64
     assert isinstance(address, str) and address.startswith("127.0.0.1:")
     root = Path(__file__).resolve().parents[1]
@@ -189,11 +191,21 @@ async def scenario():
     redone = success(await edit("redo", state["stamp"], state["result"]["selection"]))
     checkpoint("redone", redone["stamp"])
 
+    saved = success(await call("KetchupLiveFile", action="save_as", handle=handle,
+                               expected=redone["stamp"], path=str(persistence_path)))
+    assert saved["stamp"] == redone["stamp"] and persistence_path.is_file()
+    checkpoint("saved", saved["stamp"])
+    opened = success(await call("KetchupLiveFile", action="open", handle=handle,
+                                expected=saved["stamp"], path=str(persistence_path)))
+    assert opened["stamp"]["canonical_digest"] == saved["stamp"]["canonical_digest"]
+    assert opened["stamp"]["revision"] == saved["stamp"]["revision"]
+    checkpoint("reopened", opened["stamp"])
+
     rejected(await call("KetchupLiveView", action="image", handle=handle,
-                        expected=redone["stamp"], image_path=str(image_path)), ("image_timeout", "stale_image"))  # Exact publication can invalidate before timeout.
+                        expected=opened["stamp"], image_path=str(image_path)), ("image_timeout", "stale_image"))  # Exact publication can invalidate before timeout.
     state = await inspect()
     assert state["result"]["image"] == "cad_viewport_png_thumbnail"
-    assert state["stamp"] == redone["stamp"] and not image_path.exists()
+    assert state["stamp"] == opened["stamp"] and not image_path.exists()
     checkpoint("image_renderer_unavailable", state["stamp"])
 
     plan.active = True  # Disconnect is cleanup, not ownership of the GUI.

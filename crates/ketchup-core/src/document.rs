@@ -8,8 +8,11 @@ use crate::assembly_joint::{
     joint_motion_states_equal, solve_assembly_joint_kinematics_with_kind_overrides,
     transforms_equivalent,
 };
+use crate::cam::{CamError, CamPlan, CamPlanId};
 use crate::drawing::{
-    DrawingDimensionTolerance, DrawingError, DrawingSheet, DrawingSheetId, DrawingSource,
+    DrawingCircularDimensionKind, DrawingDimensionTolerance, DrawingError,
+    DrawingGeometricCharacteristic, DrawingMaterialCondition, DrawingSheet, DrawingSheetId,
+    DrawingSource,
 };
 use crate::exact_brep_graph::{
     ExactBRepGraph, MAX_EXACT_BREP_GRAPH_NODES, MAX_EXACT_BREP_GRAPH_PROFILES,
@@ -47,6 +50,7 @@ use crate::mechanical_coupling::{
     CoupledJointKind,
 };
 use crate::prismatic::{CanonicalJoint, JointId, PrismaticError};
+use crate::sheet_metal::{SheetMetalError, SheetMetalSpec};
 use crate::sketch::{
     FeatureExtent, FeatureExtentEnd, PadPocketOperation, PadSpec, PocketSpec, PrincipalPlane,
     SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity, SketchError,
@@ -227,6 +231,27 @@ pub enum BottleControlDimension {
 pub enum EdgeFinishKind {
     Fillet,
     Chamfer,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ChamferMode {
+    Symmetric,
+    TwoDistance { second_distance: Dimension },
+    DistanceAngle { angle_degrees: f64 },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChamferEdgeSide {
+    pub edge: TopologicalElementRef,
+    pub side_face: TopologicalElementRef,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ShellDirection {
+    #[default]
+    Inward,
+    Outward,
+    Symmetric,
 }
 
 pub type BottleEdgeFinishKind = EdgeFinishKind;
@@ -420,6 +445,8 @@ pub enum BooleanOperation {
 
 pub const MESH_BODY_SCHEMA_V1: &str = "ketchup.mesh-body.v1";
 pub const IMPORTED_EXACT_BODY_SCHEMA_V1: &str = "ketchup.imported-exact-body.v1";
+pub const IMPORTED_EXACT_BODY_SCHEMA_V2: &str = "ketchup.imported-exact-body.v2";
+pub const IMPORTED_EXACT_BODY_SCHEMA_V3: &str = "ketchup.imported-exact-body.v3";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExactReferenceConversionConsequence {
@@ -459,9 +486,12 @@ pub struct ImportedExactBodySpec {
     pub import_id: ImportId,
     pub source_sha256: [u8; 32],
     pub source_byte_len: u64,
+    pub source_part_index: Option<u32>,
     pub result_fingerprint: String,
+    pub body_kind: BodyKind,
     pub solid_count: u32,
     pub topology_counts: Option<[u32; 5]>,
+    pub area_mm2: f64,
     pub volume_mm3: f64,
     pub bounds_mm: [[f64; 3]; 2],
     pub backend: String,
@@ -582,10 +612,68 @@ impl SpatialPathSegment {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LoftContinuity {
+    Position,
+    Tangent,
+    Curvature,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct LoftSection {
     pub profile: FeatureId,
     pub elevation_mm: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FilletRadiusStation {
+    pub position: f64,
+    pub radius: Dimension,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SurfaceBodySpec {
+    Planar {
+        profile: FeatureId,
+    },
+    Loft {
+        sections: Vec<LoftSection>,
+        guide: Option<FeatureId>,
+        continuity: LoftContinuity,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BodyKind {
+    Solid,
+    Surface,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WeldmentMemberSpec {
+    pub profile: FeatureId,
+    pub path: FeatureId,
+    pub orientation_degrees: f64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WeldmentJointPolicy {
+    Butt,
+    Miter,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WeldmentJointPrimary {
+    First,
+    Second,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WeldmentJointSpec {
+    pub first_member: FeatureId,
+    pub second_member: FeatureId,
+    pub policy: WeldmentJointPolicy,
+    pub primary: WeldmentJointPrimary,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -650,12 +738,16 @@ pub enum FeatureKind {
         target: FeatureId,
         removed_faces: Vec<TopologicalElementRef>,
         thickness: Dimension,
+        direction: ShellDirection,
     },
     TopologyEdgeFinish {
         target: FeatureId,
         edges: Vec<TopologicalElementRef>,
         kind: EdgeFinishKind,
         amount: Dimension,
+        fillet_radius_stations: Vec<FilletRadiusStation>,
+        chamfer_mode: ChamferMode,
+        chamfer_edge_sides: Vec<ChamferEdgeSide>,
     },
     TopologyFaceOffset {
         target: FeatureId,
@@ -684,9 +776,33 @@ pub enum FeatureKind {
         profile: FeatureId,
         path: FeatureId,
     },
+    WeldmentMember(WeldmentMemberSpec),
+    WeldmentJoint(WeldmentJointSpec),
+    SurfaceBody(SurfaceBodySpec),
+    SurfaceTrim {
+        target: FeatureId,
+        cutter: FeatureId,
+    },
+    SurfaceExtend {
+        target: FeatureId,
+        distance: Dimension,
+    },
+    SurfaceKnit {
+        surfaces: Vec<FeatureId>,
+        tolerance: Dimension,
+        make_solid: bool,
+    },
+    SurfaceThicken {
+        target: FeatureId,
+        thickness: Dimension,
+        direction: ShellDirection,
+    },
     Loft {
         sections: Vec<LoftSection>,
+        guide: Option<FeatureId>,
+        continuity: LoftContinuity,
     },
+    SheetMetal(SheetMetalSpec),
     ImportedExactBody(ImportedExactBodySpec),
     RigidTransform {
         target: FeatureId,
@@ -884,19 +1000,88 @@ impl FeatureKind {
                 }
                 push_parameter_descriptor(&mut descriptors, "angle", ParameterValueType::Angle);
             }
-            Self::Shell { .. } | Self::TopologyShell { .. } => {
+            Self::Shell { .. } | Self::TopologyShell { .. } | Self::SurfaceThicken { .. } => {
                 push_parameter_descriptor(&mut descriptors, "thickness", ParameterValueType::Length)
             }
-            Self::BottleEdgeFinish { .. } | Self::TopologyEdgeFinish { .. } => {
+            Self::BottleEdgeFinish { .. } => {
                 push_parameter_descriptor(&mut descriptors, "amount", ParameterValueType::Length);
             }
-            Self::TopologyFaceOffset { .. } | Self::PlanarOffset { .. } => {
+            Self::TopologyEdgeFinish {
+                fillet_radius_stations,
+                chamfer_mode,
+                ..
+            } => {
+                push_parameter_descriptor(&mut descriptors, "amount", ParameterValueType::Length);
+                match chamfer_mode {
+                    ChamferMode::TwoDistance { .. } => push_parameter_descriptor(
+                        &mut descriptors,
+                        "chamfer_second_distance",
+                        ParameterValueType::Length,
+                    ),
+                    ChamferMode::DistanceAngle { .. } => push_parameter_descriptor(
+                        &mut descriptors,
+                        "chamfer_angle",
+                        ParameterValueType::Angle,
+                    ),
+                    ChamferMode::Symmetric => {}
+                }
+                for (index, _) in fillet_radius_stations.iter().enumerate() {
+                    push_parameter_descriptor(
+                        &mut descriptors,
+                        format!("fillet_radius_stations.{index}.radius"),
+                        ParameterValueType::Length,
+                    );
+                }
+            }
+            Self::TopologyFaceOffset { .. }
+            | Self::PlanarOffset { .. }
+            | Self::SurfaceExtend { .. } => {
                 push_parameter_descriptor(&mut descriptors, "distance", ParameterValueType::Length);
             }
             Self::Pocket { .. } => {
                 push_parameter_descriptor(&mut descriptors, "depth", ParameterValueType::Length)
             }
-            Self::Loft { sections } => {
+            Self::SurfaceKnit { .. } => {
+                push_parameter_descriptor(&mut descriptors, "tolerance", ParameterValueType::Length)
+            }
+            Self::WeldmentMember(_) => push_parameter_descriptor(
+                &mut descriptors,
+                "orientation",
+                ParameterValueType::Angle,
+            ),
+            Self::WeldmentJoint(_) => {}
+            Self::SheetMetal(spec) => {
+                for path in ["width", "depth", "thickness", "k_factor"] {
+                    push_parameter_descriptor(
+                        &mut descriptors,
+                        path,
+                        if path == "k_factor" {
+                            ParameterValueType::Scalar
+                        } else {
+                            ParameterValueType::Length
+                        },
+                    );
+                }
+                for (index, _) in spec.flanges.iter().enumerate() {
+                    push_parameter_descriptor(
+                        &mut descriptors,
+                        format!("flanges.{index}.length"),
+                        ParameterValueType::Length,
+                    );
+                    push_parameter_descriptor(
+                        &mut descriptors,
+                        format!("flanges.{index}.angle"),
+                        ParameterValueType::Angle,
+                    );
+                    push_parameter_descriptor(
+                        &mut descriptors,
+                        format!("flanges.{index}.inner_radius"),
+                        ParameterValueType::Length,
+                    );
+                }
+            }
+            Self::Loft { sections, .. }
+            | Self::SurfaceBody(SurfaceBodySpec::Loft { sections, .. }) => {
                 for (index, _) in sections.iter().enumerate() {
                     push_parameter_descriptor(
                         &mut descriptors,
@@ -913,6 +1098,8 @@ impl FeatureKind {
             | Self::ConstructionAxis { .. }
             | Self::ConstructionPlane { .. }
             | Self::ImportedExactBody(_)
+            | Self::SurfaceBody(SurfaceBodySpec::Planar { .. })
+            | Self::SurfaceTrim { .. }
             | Self::RigidTransform { .. }
             | Self::MeshBody(_)
             | Self::Workplane(_) => {}
@@ -952,6 +1139,7 @@ impl FeatureKind {
                 .collect(),
             Self::Profile { .. }
             | Self::SegmentProfile { .. }
+            | Self::SheetMetal(_)
             | Self::SpatialPath { .. }
             | Self::ConstructionPoint { .. }
             | Self::ConstructionAxis { .. }
@@ -977,7 +1165,28 @@ impl FeatureKind {
             } => [*target, *profile].into_iter().collect(),
             Self::Boolean { target, tool, .. } => [*target, *tool].into_iter().collect(),
             Self::Sweep { profile, path } => [*profile, *path].into_iter().collect(),
-            Self::Loft { sections } => sections.iter().map(|section| section.profile).collect(),
+            Self::WeldmentMember(spec) => [spec.profile, spec.path].into_iter().collect(),
+            Self::WeldmentJoint(spec) => [spec.first_member, spec.second_member]
+                .into_iter()
+                .collect(),
+            Self::Loft {
+                sections, guide, ..
+            }
+            | Self::SurfaceBody(SurfaceBodySpec::Loft {
+                sections, guide, ..
+            }) => sections
+                .iter()
+                .map(|section| section.profile)
+                .chain(*guide)
+                .collect(),
+            Self::SurfaceBody(SurfaceBodySpec::Planar { profile }) => {
+                [*profile].into_iter().collect()
+            }
+            Self::SurfaceTrim { target, cutter } => [*target, *cutter].into_iter().collect(),
+            Self::SurfaceExtend { target, .. } | Self::SurfaceThicken { target, .. } => {
+                [*target].into_iter().collect()
+            }
+            Self::SurfaceKnit { surfaces, .. } => surfaces.iter().copied().collect(),
         }
     }
 
@@ -999,27 +1208,44 @@ impl FeatureKind {
     }
 
     #[must_use]
-    pub const fn produces_body(&self) -> bool {
-        matches!(
-            self,
+    pub const fn body_kind(&self) -> Option<BodyKind> {
+        match self {
+            Self::SurfaceBody(_) | Self::SurfaceTrim { .. } | Self::SurfaceExtend { .. } => {
+                Some(BodyKind::Surface)
+            }
+            Self::SurfaceKnit { make_solid, .. } => Some(if *make_solid {
+                BodyKind::Solid
+            } else {
+                BodyKind::Surface
+            }),
+            Self::SurfaceThicken { .. } => Some(BodyKind::Solid),
             Self::Extrusion { .. }
-                | Self::Pad(_)
-                | Self::SketchPocket(_)
-                | Self::Revolve { .. }
-                | Self::Shell { .. }
-                | Self::BottleEdgeFinish { .. }
-                | Self::TopologyShell { .. }
-                | Self::TopologyEdgeFinish { .. }
-                | Self::TopologyFaceOffset { .. }
-                | Self::ThroughCut { .. }
-                | Self::Pocket { .. }
-                | Self::Boolean { .. }
-                | Self::Sweep { .. }
-                | Self::Loft { .. }
-                | Self::ImportedExactBody(_)
-                | Self::RigidTransform { .. }
-                | Self::MeshBody(_)
-        )
+            | Self::Pad(_)
+            | Self::SketchPocket(_)
+            | Self::Revolve { .. }
+            | Self::Shell { .. }
+            | Self::BottleEdgeFinish { .. }
+            | Self::TopologyShell { .. }
+            | Self::TopologyEdgeFinish { .. }
+            | Self::TopologyFaceOffset { .. }
+            | Self::ThroughCut { .. }
+            | Self::Pocket { .. }
+            | Self::Boolean { .. }
+            | Self::Sweep { .. }
+            | Self::WeldmentMember(_)
+            | Self::WeldmentJoint(_)
+            | Self::Loft { .. }
+            | Self::SheetMetal(_)
+            | Self::RigidTransform { .. }
+            | Self::MeshBody(_) => Some(BodyKind::Solid),
+            Self::ImportedExactBody(spec) => Some(spec.body_kind),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn produces_body(&self) -> bool {
+        self.body_kind().is_some()
     }
 
     #[must_use]
@@ -1682,6 +1908,7 @@ pub(crate) struct ProductModel {
     pub(crate) joints: BTreeMap<JointId, Arc<CanonicalJoint>>,
     pub(crate) spaces: BTreeMap<SpaceId, Arc<CanonicalSpace>>,
     pub(crate) clearance_volumes: BTreeMap<ClearanceVolumeId, Arc<CanonicalClearanceVolume>>,
+    pub(crate) cam_plans: BTreeMap<CamPlanId, Arc<CamPlan>>,
     pub(crate) exact_reference_evidence: BTreeMap<String, Arc<BodySubshapeRef>>,
     pub(crate) persistent_dimensions: BTreeMap<PersistentDimensionId, Arc<PersistentDimension>>,
     pub(crate) tags: BTreeMap<TagId, Arc<Tag>>,
@@ -1707,6 +1934,7 @@ pub(crate) struct ProductModel {
     pub(crate) groups: BTreeMap<GroupId, Arc<Group>>,
     pub(crate) local_occurrences: BTreeMap<LocalOccurrenceKey, Arc<LocalOccurrence>>,
     pub(crate) local_groups: BTreeMap<LocalGroupKey, Arc<LocalGroup>>,
+    pub(crate) instance_transform_overrides: BTreeMap<InstancePath, Transform>,
     pub(crate) canonical_digest: DigestCache,
 }
 
@@ -1738,6 +1966,7 @@ impl Default for ProductModel {
             joints: BTreeMap::new(),
             spaces: BTreeMap::new(),
             clearance_volumes: BTreeMap::new(),
+            cam_plans: BTreeMap::new(),
             exact_reference_evidence: BTreeMap::new(),
             persistent_dimensions: BTreeMap::new(),
             tags: BTreeMap::new(),
@@ -1760,6 +1989,7 @@ impl Default for ProductModel {
             groups: BTreeMap::new(),
             local_occurrences: BTreeMap::new(),
             local_groups: BTreeMap::new(),
+            instance_transform_overrides: BTreeMap::new(),
             canonical_digest: DigestCache::default(),
         }
     }
@@ -2140,6 +2370,10 @@ pub enum CanonicalCommand {
     DeleteClearanceVolume {
         id: ClearanceVolumeId,
     },
+    UpsertCamPlan(CamPlan),
+    DeleteCamPlan {
+        id: CamPlanId,
+    },
     UpsertPersistentDimension(PersistentDimension),
     DeletePersistentDimension {
         id: PersistentDimensionId,
@@ -2352,6 +2586,7 @@ pub enum CanonicalCommand {
         source_revision: u64,
         source_digest: String,
         transforms: Vec<(OccurrenceId, Transform)>,
+        instance_transforms: Vec<(InstancePath, Transform)>,
     },
     GuardAssemblyRecompute {
         source_revision: u64,
@@ -2555,6 +2790,7 @@ pub enum AuthoritativeDependency {
     Joint(JointId),
     Space(SpaceId),
     ClearanceVolume(ClearanceVolumeId),
+    CamPlan(CamPlanId),
     PersistentDimension(PersistentDimensionId),
     Tag(TagId),
     ClassificationDimension(ClassificationDimensionId),
@@ -3047,6 +3283,8 @@ impl CommandBatch {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedInstance {
     pub definition_id: DefinitionId,
+    pub local_transform: Transform,
+    pub parent_world_transform: Transform,
     pub world_transform: Transform,
 }
 
@@ -3197,6 +3435,15 @@ impl Snapshot {
 
     pub fn clearance_volumes(&self) -> impl Iterator<Item = &CanonicalClearanceVolume> {
         self.product.clearance_volumes.values().map(Arc::as_ref)
+    }
+
+    pub fn cam_plans(&self) -> impl Iterator<Item = &CamPlan> {
+        self.product.cam_plans.values().map(Arc::as_ref)
+    }
+
+    #[must_use]
+    pub fn cam_plan(&self, id: CamPlanId) -> Option<&CamPlan> {
+        self.product.cam_plans.get(&id).map(Arc::as_ref)
     }
 
     #[must_use]
@@ -3768,9 +4015,15 @@ impl Snapshot {
             .occurrence(path.root_occurrence())
             .ok_or(CanonicalError::InvalidInstancePath)?;
         let mut definition_id = root.definition_id;
-        let mut transform = self
-            .world_transform_for_occurrence(root.id)
+        let mut local_transform = root.transform;
+        let mut parent_world_transform = root
+            .parent
+            .map_or(Some(Transform::identity()), |parent| {
+                self.world_transform_for_group(parent)
+            })
             .ok_or(CanonicalError::InvalidInstancePath)?;
+        let mut transform = parent_world_transform.compose(local_transform);
+        let mut resolved_path = InstancePath::root(path.root_occurrence());
         let mut parent = None;
         for step in &path.steps {
             match *step {
@@ -3784,7 +4037,10 @@ impl Snapshot {
                     if group.parent != parent {
                         return Err(CanonicalError::InvalidInstancePath);
                     }
-                    transform = transform.compose(group.transform);
+                    resolved_path = resolved_path.with_step(*step);
+                    parent_world_transform = transform;
+                    local_transform = group.transform;
+                    transform = parent_world_transform.compose(local_transform);
                     parent = Some(local_id);
                 }
                 InstancePathStep::Occurrence(local_id) => {
@@ -3797,7 +4053,15 @@ impl Snapshot {
                     if occurrence.parent != parent {
                         return Err(CanonicalError::InvalidInstancePath);
                     }
-                    transform = transform.compose(occurrence.transform);
+                    resolved_path = resolved_path.with_step(*step);
+                    parent_world_transform = transform;
+                    local_transform = self
+                        .product
+                        .instance_transform_overrides
+                        .get(&resolved_path)
+                        .copied()
+                        .unwrap_or(occurrence.transform);
+                    transform = parent_world_transform.compose(local_transform);
                     definition_id = occurrence.definition_id;
                     parent = None;
                 }
@@ -3805,6 +4069,8 @@ impl Snapshot {
         }
         Ok(ResolvedInstance {
             definition_id,
+            local_transform,
+            parent_world_transform,
             world_transform: transform,
         })
     }
@@ -3964,7 +4230,13 @@ fn project_local_occurrences_bounded(
             world_transform = world_transform.compose(group.transform);
         }
         path = path.with_step(InstancePathStep::Occurrence(*local_id));
-        world_transform = world_transform.compose(local.transform);
+        world_transform = world_transform.compose(
+            product
+                .instance_transform_overrides
+                .get(&path)
+                .copied()
+                .unwrap_or(local.transform),
+        );
         let tag_visible = local
             .tag
             .and_then(|tag_id| product.tags.get(&tag_id))
@@ -5198,6 +5470,19 @@ impl DocumentStore {
                         return Err(CanonicalError::ClearanceVolumeNotFound(*id));
                     }
                 }
+                CanonicalCommand::UpsertCamPlan(plan) => {
+                    let candidate = Snapshot {
+                        revision_id: current.revision_id(),
+                        product: Arc::new(product.clone()),
+                    };
+                    plan.validate(&candidate).map_err(CanonicalError::Cam)?;
+                    product.cam_plans.insert(plan.id(), Arc::new(plan.clone()));
+                }
+                CanonicalCommand::DeleteCamPlan { id } => {
+                    if product.cam_plans.remove(id).is_none() {
+                        return Err(CanonicalError::CamPlanNotFound(*id));
+                    }
+                }
                 CanonicalCommand::UpsertPersistentDimension(dimension) => {
                     validate_persistent_dimension(dimension)?;
                     product
@@ -5816,11 +6101,20 @@ impl DocumentStore {
                         FeatureKind::TopologyShell {
                             target,
                             ref removed_faces,
+                            direction,
                             ..
                         } => FeatureKind::TopologyShell {
                             target,
                             removed_faces: removed_faces.clone(),
                             thickness: dimension.clone(),
+                            direction,
+                        },
+                        FeatureKind::SurfaceThicken {
+                            target, direction, ..
+                        } => FeatureKind::SurfaceThicken {
+                            target,
+                            thickness: dimension.clone(),
+                            direction,
                         },
                         FeatureKind::BottleEdgeFinish {
                             target,
@@ -5837,12 +6131,18 @@ impl DocumentStore {
                             target,
                             ref edges,
                             kind,
+                            ref fillet_radius_stations,
+                            ref chamfer_mode,
+                            ref chamfer_edge_sides,
                             ..
                         } => FeatureKind::TopologyEdgeFinish {
                             target,
                             edges: edges.clone(),
                             kind,
                             amount: dimension.clone(),
+                            fillet_radius_stations: fillet_radius_stations.clone(),
+                            chamfer_mode: chamfer_mode.clone(),
+                            chamfer_edge_sides: chamfer_edge_sides.clone(),
                         },
                         FeatureKind::Pocket {
                             target, profile, ..
@@ -6468,6 +6768,9 @@ impl DocumentStore {
                         .ok_or(CanonicalError::OccurrenceNotFound(*id))?;
                     product.grounded_occurrences.remove(id);
                     product
+                        .instance_transform_overrides
+                        .retain(|path, _| path.root_occurrence() != *id);
+                    product
                         .classification_assignments
                         .retain(|(occurrence_id, _), _| occurrence_id != id);
                 }
@@ -6513,14 +6816,18 @@ impl DocumentStore {
                     source_revision,
                     source_digest,
                     transforms,
+                    instance_transforms,
                 } => {
                     if current.revision_id() != *source_revision
                         || current.canonical_digest() != *source_digest
                     {
                         return Err(CanonicalError::StaleAssemblySolve);
                     }
-                    if transforms.is_empty()
+                    if (transforms.is_empty() && instance_transforms.is_empty())
                         || transforms.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+                        || instance_transforms
+                            .windows(2)
+                            .any(|pair| pair[0].0 >= pair[1].0)
                     {
                         return Err(CanonicalError::InvalidAssemblySolvePublication);
                     }
@@ -6540,6 +6847,18 @@ impl DocumentStore {
                                 ..existing.as_ref().clone()
                             }),
                         );
+                    }
+                    for (path, transform) in instance_transforms {
+                        validate_transform(*transform)?;
+                        if path.is_root()
+                            || !matches!(path.steps().last(), Some(InstancePathStep::Occurrence(_)))
+                            || resolve_product_instance_path(&product, path).is_none()
+                        {
+                            return Err(CanonicalError::InvalidInstancePath);
+                        }
+                        product
+                            .instance_transform_overrides
+                            .insert(path.clone(), *transform);
                     }
                 }
                 CanonicalCommand::SetOccurrenceGrounded { id, grounded } => {
@@ -8798,8 +9117,11 @@ pub enum CanonicalError {
     InvalidRevolve,
     InvalidPlanarOffset,
     InvalidSweep,
+    InvalidWeldmentMember,
+    InvalidWeldmentJoint,
     InvalidSplineProfile,
     InvalidLoft,
+    InvalidSheetMetal(SheetMetalError),
     ReservedNodeId,
     EmptyNodeName,
     DependenciesNotCanonical,
@@ -8895,6 +9217,8 @@ pub enum CanonicalError {
     SpaceNotFound(SpaceId),
     ClearanceVolumeAlreadyExists(ClearanceVolumeId),
     ClearanceVolumeNotFound(ClearanceVolumeId),
+    CamPlanNotFound(CamPlanId),
+    Cam(CamError),
     PersistentDimensionNotFound(PersistentDimensionId),
     PersistentDimensionAlreadyExists(PersistentDimensionId),
     TagAlreadyExists(TagId),
@@ -8933,8 +9257,11 @@ impl CanonicalError {
             Self::InvalidRevolve => "canonical.invalid_revolve",
             Self::InvalidPlanarOffset => "canonical.invalid_planar_offset",
             Self::InvalidSweep => "canonical.invalid_sweep",
+            Self::InvalidWeldmentMember => "canonical.invalid_weldment_member",
+            Self::InvalidWeldmentJoint => "canonical.invalid_weldment_joint",
             Self::InvalidSplineProfile => "canonical.invalid_spline_profile",
             Self::InvalidLoft => "canonical.invalid_loft",
+            Self::InvalidSheetMetal(_) => "canonical.invalid_sheet_metal",
             Self::ReservedNodeId => "canonical.reserved_node_id",
             Self::EmptyNodeName => "canonical.empty_node_name",
             Self::DependenciesNotCanonical => "canonical.dependencies_not_canonical",
@@ -9054,6 +9381,8 @@ impl CanonicalError {
             Self::SpaceNotFound(..) => "canonical.space_not_found",
             Self::ClearanceVolumeAlreadyExists(..) => "canonical.clearance_volume_already_exists",
             Self::ClearanceVolumeNotFound(..) => "canonical.clearance_volume_not_found",
+            Self::CamPlanNotFound(..) => "canonical.cam_plan_not_found",
+            Self::Cam(..) => "canonical.cam",
             Self::PersistentDimensionNotFound(..) => "canonical.persistent_dimension_not_found",
             Self::PersistentDimensionAlreadyExists(..) => {
                 "canonical.persistent_dimension_already_exists"
@@ -9113,12 +9442,19 @@ impl fmt::Display for CanonicalError {
             Self::InvalidSweep => {
                 formatter.write_str("sweep requires one bounded closed profile and a compatible non-degenerate open path")
             }
+            Self::InvalidWeldmentMember => formatter.write_str(
+                "weldment member requires a bounded closed profile, a canonical spatial path, and orientation in [-180, 180) degrees",
+            ),
+            Self::InvalidWeldmentJoint => formatter.write_str(
+                "weldment joint requires two distinct straight members meeting at one manufacturable nonparallel endpoint",
+            ),
             Self::InvalidSplineProfile => {
                 formatter.write_str("spline profile requires bounded canonical control points")
             }
             Self::InvalidLoft => {
                 formatter.write_str("loft requires ordered bounded closed-profile sections")
             }
+            Self::InvalidSheetMetal(error) => write!(formatter, "invalid sheet-metal feature: {error}"),
             Self::ReservedNodeId => formatter.write_str("node ID zero is reserved"),
             Self::EmptyNodeName => formatter.write_str("node name is empty"),
             Self::DependenciesNotCanonical => {
@@ -9364,6 +9700,10 @@ impl fmt::Display for CanonicalError {
             Self::ClearanceVolumeNotFound(id) => {
                 write!(formatter, "clearance volume {} does not exist", id.0)
             }
+            Self::CamPlanNotFound(id) => {
+                write!(formatter, "CAM plan {} does not exist", id.0)
+            }
+            Self::Cam(error) => write!(formatter, "invalid CAM plan: {error}"),
             Self::PersistentDimensionNotFound(id) => {
                 write!(formatter, "persistent dimension {} does not exist", id.0)
             }
@@ -9710,15 +10050,37 @@ fn feature_kind_parameter_value(kind: &FeatureKind, path: &str) -> Option<f64> {
             ["angle"] => Some(*angle_degrees),
             _ => None,
         },
-        FeatureKind::Shell { thickness, .. } | FeatureKind::TopologyShell { thickness, .. }
+        FeatureKind::Shell { thickness, .. }
+        | FeatureKind::TopologyShell { thickness, .. }
+        | FeatureKind::SurfaceThicken { thickness, .. }
             if path == "thickness" =>
         {
             Some(thickness.millimetres())
         }
-        FeatureKind::BottleEdgeFinish { amount, .. }
-        | FeatureKind::TopologyEdgeFinish { amount, .. }
-            if path == "amount" =>
-        {
+        FeatureKind::TopologyEdgeFinish {
+            amount,
+            fillet_radius_stations,
+            chamfer_mode,
+            ..
+        } => match parts.as_slice() {
+            ["amount"] => Some(amount.millimetres()),
+            ["chamfer_second_distance"] => match chamfer_mode {
+                ChamferMode::TwoDistance { second_distance } => Some(second_distance.millimetres()),
+                _ => None,
+            },
+            ["chamfer_angle"] => match chamfer_mode {
+                ChamferMode::DistanceAngle { angle_degrees } => Some(*angle_degrees),
+                _ => None,
+            },
+            ["fillet_radius_stations", index, "radius"] => Some(
+                fillet_radius_stations
+                    .get(index.parse::<usize>().ok()?)?
+                    .radius
+                    .millimetres(),
+            ),
+            _ => None,
+        },
+        FeatureKind::BottleEdgeFinish { amount, .. } if path == "amount" => {
             Some(amount.millimetres())
         }
         FeatureKind::TopologyFaceOffset { distance, .. }
@@ -9728,7 +10090,34 @@ fn feature_kind_parameter_value(kind: &FeatureKind, path: &str) -> Option<f64> {
             Some(distance.millimetres())
         }
         FeatureKind::Pocket { depth, .. } if path == "depth" => Some(depth.millimetres()),
-        FeatureKind::Loft { sections } => match parts.as_slice() {
+        FeatureKind::WeldmentMember(spec) if path == "orientation" => {
+            Some(spec.orientation_degrees)
+        }
+        FeatureKind::SheetMetal(spec) => match parts.as_slice() {
+            ["width"] => Some(spec.width.millimetres()),
+            ["depth"] => Some(spec.depth.millimetres()),
+            ["thickness"] => Some(spec.thickness.millimetres()),
+            ["k_factor"] => Some(spec.k_factor),
+            ["flanges", index, "length"] => Some(
+                spec.flanges
+                    .get(index.parse::<usize>().ok()?)?
+                    .length
+                    .millimetres(),
+            ),
+            ["flanges", index, "angle"] => Some(
+                spec.flanges
+                    .get(index.parse::<usize>().ok()?)?
+                    .angle_degrees,
+            ),
+            ["flanges", index, "inner_radius"] => Some(
+                spec.flanges
+                    .get(index.parse::<usize>().ok()?)?
+                    .inner_radius
+                    .millimetres(),
+            ),
+            _ => None,
+        },
+        FeatureKind::Loft { sections, .. } => match parts.as_slice() {
             ["sections", index, "elevation"] => {
                 Some(sections.get(index.parse::<usize>().ok()?)?.elevation_mm)
             }
@@ -10075,16 +10464,49 @@ fn set_feature_kind_parameter(
             }
             _ => false,
         },
-        FeatureKind::Shell { thickness, .. } | FeatureKind::TopologyShell { thickness, .. }
+        FeatureKind::Shell { thickness, .. }
+        | FeatureKind::TopologyShell { thickness, .. }
+        | FeatureKind::SurfaceThicken { thickness, .. }
             if path == "thickness" =>
         {
             *thickness = dimension.clone();
             true
         }
-        FeatureKind::BottleEdgeFinish { amount, .. }
-        | FeatureKind::TopologyEdgeFinish { amount, .. }
-            if path == "amount" =>
-        {
+        FeatureKind::TopologyEdgeFinish {
+            amount,
+            fillet_radius_stations,
+            chamfer_mode,
+            ..
+        } => match parts.as_slice() {
+            ["amount"] => {
+                *amount = dimension.clone();
+                true
+            }
+            ["chamfer_second_distance"] => {
+                if let ChamferMode::TwoDistance { second_distance } = chamfer_mode {
+                    *second_distance = dimension.clone();
+                    true
+                } else {
+                    false
+                }
+            }
+            ["chamfer_angle"] => {
+                if let ChamferMode::DistanceAngle { angle_degrees } = chamfer_mode {
+                    *angle_degrees = value;
+                    true
+                } else {
+                    false
+                }
+            }
+            ["fillet_radius_stations", index, "radius"] => fillet_radius_stations
+                .get_mut(index.parse::<usize>().ok().unwrap_or(usize::MAX))
+                .is_some_and(|station| {
+                    station.radius = dimension.clone();
+                    true
+                }),
+            _ => false,
+        },
+        FeatureKind::BottleEdgeFinish { amount, .. } if path == "amount" => {
             *amount = dimension.clone();
             true
         }
@@ -10095,11 +10517,59 @@ fn set_feature_kind_parameter(
             *distance = dimension.clone();
             true
         }
+        FeatureKind::SurfaceKnit { tolerance, .. } if path == "tolerance" => {
+            *tolerance = dimension.clone();
+            true
+        }
         FeatureKind::Pocket { depth, .. } if path == "depth" => {
             *depth = dimension.clone();
             true
         }
-        FeatureKind::Loft { sections } => match parts.as_slice() {
+        FeatureKind::WeldmentMember(spec) if path == "orientation" => {
+            spec.orientation_degrees = value;
+            true
+        }
+        FeatureKind::SheetMetal(spec) => match parts.as_slice() {
+            ["width"] => {
+                spec.width = dimension.clone();
+                true
+            }
+            ["depth"] => {
+                spec.depth = dimension.clone();
+                true
+            }
+            ["thickness"] => {
+                spec.thickness = dimension.clone();
+                true
+            }
+            ["k_factor"] => {
+                spec.k_factor = value;
+                true
+            }
+            ["flanges", index, "length"] => spec
+                .flanges
+                .get_mut(index.parse::<usize>().ok().unwrap_or(usize::MAX))
+                .is_some_and(|flange| {
+                    flange.length = dimension.clone();
+                    true
+                }),
+            ["flanges", index, "angle"] => spec
+                .flanges
+                .get_mut(index.parse::<usize>().ok().unwrap_or(usize::MAX))
+                .is_some_and(|flange| {
+                    flange.angle_degrees = value;
+                    true
+                }),
+            ["flanges", index, "inner_radius"] => spec
+                .flanges
+                .get_mut(index.parse::<usize>().ok().unwrap_or(usize::MAX))
+                .is_some_and(|flange| {
+                    flange.inner_radius = dimension.clone();
+                    true
+                }),
+            _ => false,
+        },
+        FeatureKind::Loft { sections, .. } => match parts.as_slice() {
             ["sections", index, "elevation"] => sections
                 .get_mut(index.parse::<usize>().ok().unwrap_or(usize::MAX))
                 .is_some_and(|section| {
@@ -10313,20 +10783,36 @@ fn validate_topological_feature_context(
     definition_id: DefinitionId,
     kind: &FeatureKind,
 ) -> Result<(), CanonicalError> {
-    let (target, references) = match kind {
+    let (target, references, chamfer_edge_sides) = match kind {
         FeatureKind::TopologyShell {
             target,
             removed_faces,
             ..
-        } => (*target, removed_faces.as_slice()),
-        FeatureKind::TopologyEdgeFinish { target, edges, .. } => (*target, edges.as_slice()),
+        } => (*target, removed_faces.as_slice(), None),
+        FeatureKind::TopologyEdgeFinish {
+            target,
+            edges,
+            chamfer_edge_sides,
+            ..
+        } => (
+            *target,
+            edges.as_slice(),
+            Some(chamfer_edge_sides.as_slice()),
+        ),
         _ => return Ok(()),
     };
-    if references.iter().any(|reference| {
+    let invalid_context = |reference: &TopologicalElementRef| {
         reference.document_id != document_id
             || reference.definition_id != definition_id
             || reference.producer_feature_id != target
-    }) {
+    };
+    if references.iter().any(invalid_context)
+        || chamfer_edge_sides.is_some_and(|selections| {
+            selections.iter().any(|selection| {
+                invalid_context(&selection.edge) || invalid_context(&selection.side_face)
+            })
+        })
+    {
         return Err(CanonicalError::InvalidTopologicalFeatureReference);
     }
     Ok(())
@@ -10388,11 +10874,15 @@ fn feature_kind_is_solid(kind: &FeatureKind) -> bool {
             | FeatureKind::TopologyShell { .. }
             | FeatureKind::TopologyEdgeFinish { .. }
             | FeatureKind::TopologyFaceOffset { .. }
+            | FeatureKind::SurfaceThicken { .. }
             | FeatureKind::ThroughCut { .. }
             | FeatureKind::Pocket { .. }
             | FeatureKind::Boolean { .. }
             | FeatureKind::Sweep { .. }
+            | FeatureKind::WeldmentMember(_)
+            | FeatureKind::WeldmentJoint(_)
             | FeatureKind::Loft { .. }
+            | FeatureKind::SheetMetal(_)
             | FeatureKind::ImportedExactBody(_)
             | FeatureKind::RigidTransform { .. }
             | FeatureKind::MeshBody(_)
@@ -10407,6 +10897,7 @@ fn primary_solid_dependency(kind: &FeatureKind) -> Option<FeatureId> {
         | FeatureKind::TopologyShell { target, .. }
         | FeatureKind::TopologyEdgeFinish { target, .. }
         | FeatureKind::TopologyFaceOffset { target, .. }
+        | FeatureKind::SurfaceThicken { target, .. }
         | FeatureKind::ThroughCut { target, .. }
         | FeatureKind::Pocket { target, .. }
         | FeatureKind::Boolean { target, .. }
@@ -10432,7 +10923,7 @@ fn inferred_feature_body_ownership(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    let output_body_id = if feature_kind_is_solid(kind) {
+    let output_body_id = if kind.produces_body() {
         primary_solid_dependency(kind)
             .and_then(|dependency| {
                 definition
@@ -10506,7 +10997,7 @@ fn validate_feature_body_ownership_change(
     }
     let inferred = inferred_feature_body_ownership(product, definition, &feature.kind)?;
     if ownership.input_body_ids != inferred.input_body_ids
-        || feature_kind_is_solid(&feature.kind) != ownership.output_body_id.is_some()
+        || feature.kind.produces_body() != ownership.output_body_id.is_some()
     {
         return Err(CanonicalError::InvalidBodyOwnership(feature.id));
     }
@@ -11118,12 +11609,106 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
             if thickness.millimetres <= 0.0 {
                 return Err(CanonicalError::DimensionOutsideEnvelope);
             }
-            validate_topological_feature_references(removed_faces, TopologicalElementKind::Face)
+            if removed_faces.is_empty() {
+                Ok(())
+            } else {
+                validate_topological_feature_references(removed_faces, TopologicalElementKind::Face)
+            }
         }
-        FeatureKind::TopologyEdgeFinish { edges, amount, .. } => {
+        FeatureKind::TopologyEdgeFinish {
+            edges,
+            kind,
+            amount,
+            fillet_radius_stations,
+            chamfer_mode,
+            chamfer_edge_sides,
+            ..
+        } => {
             Dimension::new(amount.source_token.clone(), amount.millimetres).map(|_| ())?;
-            if amount.millimetres <= 0.0 {
+            if !(EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM)
+                .contains(&amount.millimetres)
+            {
                 return Err(CanonicalError::DimensionOutsideEnvelope);
+            }
+            match kind {
+                EdgeFinishKind::Fillet
+                    if *chamfer_mode != ChamferMode::Symmetric
+                        || !chamfer_edge_sides.is_empty() =>
+                {
+                    return Err(CanonicalError::DimensionOutsideEnvelope);
+                }
+                EdgeFinishKind::Chamfer if !fillet_radius_stations.is_empty() => {
+                    return Err(CanonicalError::DimensionOutsideEnvelope);
+                }
+                EdgeFinishKind::Chamfer => match chamfer_mode {
+                    ChamferMode::Symmetric if !chamfer_edge_sides.is_empty() => {
+                        return Err(CanonicalError::InvalidTopologicalFeatureReference);
+                    }
+                    ChamferMode::TwoDistance { second_distance } => {
+                        Dimension::new(
+                            second_distance.source_token.clone(),
+                            second_distance.millimetres,
+                        )
+                        .map(|_| ())?;
+                        if !(EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM)
+                            .contains(&second_distance.millimetres)
+                        {
+                            return Err(CanonicalError::DimensionOutsideEnvelope);
+                        }
+                    }
+                    ChamferMode::DistanceAngle { angle_degrees }
+                        if !angle_degrees.is_finite()
+                            || *angle_degrees <= 0.1
+                            || *angle_degrees >= 89.9 =>
+                    {
+                        return Err(CanonicalError::DimensionOutsideEnvelope);
+                    }
+                    ChamferMode::Symmetric | ChamferMode::DistanceAngle { .. } => {}
+                },
+                EdgeFinishKind::Fillet => {}
+            }
+            if !matches!(chamfer_mode, ChamferMode::Symmetric) {
+                if chamfer_edge_sides.len() != edges.len()
+                    || chamfer_edge_sides
+                        .iter()
+                        .zip(edges)
+                        .any(|(selection, edge)| {
+                            selection.edge != *edge
+                                || selection.side_face.kind != TopologicalElementKind::Face
+                                || !selection.side_face.has_valid_lineage()
+                        })
+                {
+                    return Err(CanonicalError::InvalidTopologicalFeatureReference);
+                }
+            }
+            if !fillet_radius_stations.is_empty() {
+                if fillet_radius_stations.len() > 32
+                    || fillet_radius_stations
+                        .last()
+                        .is_none_or(|station| station.position != 1.0)
+                    || fillet_radius_stations
+                        .windows(2)
+                        .any(|pair| pair[0].position >= pair[1].position)
+                {
+                    return Err(CanonicalError::DimensionOutsideEnvelope);
+                }
+                let mut previous = 0.0;
+                for station in fillet_radius_stations {
+                    Dimension::new(
+                        station.radius.source_token.clone(),
+                        station.radius.millimetres,
+                    )
+                    .map(|_| ())?;
+                    if !station.position.is_finite()
+                        || station.position <= previous
+                        || station.position > 1.0
+                        || !(EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM)
+                            .contains(&station.radius.millimetres)
+                    {
+                        return Err(CanonicalError::DimensionOutsideEnvelope);
+                    }
+                    previous = station.position;
+                }
             }
             validate_topological_feature_references(edges, TopologicalElementKind::Edge)
         }
@@ -11178,14 +11763,77 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
             }
             Ok(())
         }
+        FeatureKind::SurfaceExtend { distance, .. } => {
+            Dimension::new(distance.source_token.clone(), distance.millimetres).map(|_| ())?;
+            if distance.millimetres < EXACT_MIN_LENGTH_MM {
+                return Err(CanonicalError::InvalidPlanarOffset);
+            }
+            Ok(())
+        }
+        FeatureKind::SurfaceTrim { target, cutter } => {
+            if target == cutter {
+                return Err(CanonicalError::InvalidFeatureOwnership(*target));
+            }
+            Ok(())
+        }
+        FeatureKind::SurfaceThicken { thickness, .. } => {
+            Dimension::new(thickness.source_token.clone(), thickness.millimetres).map(|_| ())?;
+            if !(EXACT_MIN_LENGTH_MM..=MAX_EXACT_PLANAR_OFFSET_LENGTH_MM)
+                .contains(&thickness.millimetres)
+            {
+                return Err(CanonicalError::DimensionOutsideEnvelope);
+            }
+            Ok(())
+        }
+        FeatureKind::SurfaceKnit {
+            surfaces,
+            tolerance,
+            ..
+        } => {
+            Dimension::new(tolerance.source_token.clone(), tolerance.millimetres).map(|_| ())?;
+            if !(2..=256).contains(&surfaces.len())
+                || !surfaces.windows(2).all(|pair| pair[0] < pair[1])
+                || !(1.0e-7..=10.0).contains(&tolerance.millimetres)
+            {
+                return Err(CanonicalError::InvalidFeatureMap);
+            }
+            Ok(())
+        }
         FeatureKind::Sweep { profile, path } => {
             if profile == path {
                 return Err(CanonicalError::InvalidSweep);
             }
             Ok(())
         }
-        FeatureKind::Loft { sections } => {
+        FeatureKind::WeldmentMember(spec) => {
+            if spec.profile == spec.path
+                || !spec.orientation_degrees.is_finite()
+                || !(-180.0..180.0).contains(&spec.orientation_degrees)
+            {
+                return Err(CanonicalError::InvalidWeldmentMember);
+            }
+            Ok(())
+        }
+        FeatureKind::WeldmentJoint(spec) => {
+            if spec.first_member == spec.second_member {
+                return Err(CanonicalError::InvalidWeldmentJoint);
+            }
+            Ok(())
+        }
+        FeatureKind::SheetMetal(spec) => spec.validate().map_err(CanonicalError::InvalidSheetMetal),
+        FeatureKind::SurfaceBody(SurfaceBodySpec::Planar { .. }) => Ok(()),
+        FeatureKind::Loft {
+            sections,
+            guide,
+            continuity,
+        }
+        | FeatureKind::SurfaceBody(SurfaceBodySpec::Loft {
+            sections,
+            guide,
+            continuity,
+        }) => {
             if !(2..=16).contains(&sections.len())
+                || (guide.is_some() && *continuity == LoftContinuity::Curvature)
                 || sections.windows(2).any(|pair| {
                     pair[0].elevation_mm >= pair[1].elevation_mm
                         || pair[0].profile == pair[1].profile
@@ -11216,17 +11864,42 @@ fn validate_imported_exact_body(spec: &ImportedExactBodySpec) -> Result<(), Cano
         .flatten()
         .all(|coordinate| coordinate.is_finite() && coordinate.abs() <= MAX_CANONICAL_ABS_MM)
         && (0..3).all(|axis| spec.bounds_mm[0][axis] <= spec.bounds_mm[1][axis]);
-    if spec.schema != IMPORTED_EXACT_BODY_SCHEMA_V1
+    let legacy_solid = matches!(
+        (spec.schema.as_str(), spec.source_part_index, spec.body_kind),
+        (IMPORTED_EXACT_BODY_SCHEMA_V1, None, BodyKind::Solid)
+            | (
+                IMPORTED_EXACT_BODY_SCHEMA_V2,
+                Some(0..=1_023),
+                BodyKind::Solid
+            )
+    );
+    let typed_body = spec.schema == IMPORTED_EXACT_BODY_SCHEMA_V3
+        && spec.source_part_index.is_none_or(|index| index <= 1_023);
+    let measurements_valid = match spec.body_kind {
+        BodyKind::Solid => {
+            (1..=1_024).contains(&spec.solid_count)
+                && spec.volume_mm3.is_finite()
+                && spec.volume_mm3 > 0.0
+                && (legacy_solid || (spec.area_mm2.is_finite() && spec.area_mm2 > 0.0))
+        }
+        BodyKind::Surface => {
+            typed_body
+                && spec.solid_count == 0
+                && spec.volume_mm3.is_finite()
+                && spec.volume_mm3.abs() <= 1.0e-12
+                && spec.area_mm2.is_finite()
+                && spec.area_mm2 > 0.0
+        }
+    };
+    if (!legacy_solid && !typed_body)
         || spec.import_id.0 == 0
         || spec.source_byte_len == 0
         || spec.source_byte_len > 32 * 1024 * 1024
         || spec.source_sha256.iter().all(|byte| *byte == 0)
         || spec.result_fingerprint.is_empty()
         || spec.result_fingerprint.len() > 128
-        || spec.solid_count == 0
-        || spec.solid_count > 1_024
         || spec.topology_counts.is_some_and(|counts| {
-            counts.contains(&0)
+            counts[..3].contains(&0)
                 || counts[4] != spec.solid_count
                 || counts[..3]
                     .iter()
@@ -11234,8 +11907,7 @@ fn validate_imported_exact_body(spec: &ImportedExactBodySpec) -> Result<(), Cano
                     .sum::<u64>()
                     > crate::topology::MAX_GENERATED_TOPOLOGICAL_REFERENCES
         })
-        || !spec.volume_mm3.is_finite()
-        || spec.volume_mm3 <= 0.0
+        || !measurements_valid
         || !bounds_valid
         || spec.backend.is_empty()
         || spec.backend.len() > 1_024
@@ -11747,16 +12419,15 @@ pub fn valid_sketch_sweep_profile(profile: &SketchSpec) -> bool {
     let [region] = regions.as_slice() else {
         return false;
     };
-    region.holes.is_empty()
-        && match &region.outer {
-            SolvedSketchRegionProfile::Polyline(points) => {
-                (3..=MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS).contains(&points.len())
-            }
-            SolvedSketchRegionProfile::Boundary(edges) => {
-                (2..=MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS).contains(&edges.len())
-            }
-            SolvedSketchRegionProfile::Circle { .. } => true,
+    match &region.outer {
+        SolvedSketchRegionProfile::Polyline(points) => {
+            (3..=MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS).contains(&points.len())
         }
+        SolvedSketchRegionProfile::Boundary(edges) => {
+            (2..=MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS).contains(&edges.len())
+        }
+        SolvedSketchRegionProfile::Circle { .. } => true,
+    }
 }
 
 pub fn valid_sketch_sweep_inputs(
@@ -12457,6 +13128,37 @@ fn remap_topological_reference(
     .map_err(|_| CanonicalError::InvalidFeatureMap)
 }
 
+fn remap_loft_sections(
+    sections: &[LoftSection],
+    mapping: &BTreeMap<FeatureId, FeatureId>,
+) -> Result<Vec<LoftSection>, CanonicalError> {
+    sections
+        .iter()
+        .map(|section| {
+            Ok(LoftSection {
+                profile: *mapping
+                    .get(&section.profile)
+                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                elevation_mm: section.elevation_mm,
+            })
+        })
+        .collect()
+}
+
+fn remap_optional_feature(
+    feature: Option<FeatureId>,
+    mapping: &BTreeMap<FeatureId, FeatureId>,
+) -> Result<Option<FeatureId>, CanonicalError> {
+    feature
+        .map(|feature| {
+            mapping
+                .get(&feature)
+                .copied()
+                .ok_or(CanonicalError::InvalidFeatureMap)
+        })
+        .transpose()
+}
+
 fn clone_definition_and_repoint(
     product: &mut ProductModel,
     plan: &CloneDefinitionPlan,
@@ -12649,6 +13351,7 @@ fn clone_definition_and_repoint(
                 target,
                 removed_faces,
                 thickness,
+                direction,
             } => FeatureKind::TopologyShell {
                 target: *mapping
                     .get(target)
@@ -12660,12 +13363,16 @@ fn clone_definition_and_repoint(
                     })
                     .collect::<Result<Vec<_>, _>>()?,
                 thickness: thickness.clone(),
+                direction: *direction,
             },
             FeatureKind::TopologyEdgeFinish {
                 target,
                 edges,
                 kind,
                 amount,
+                fillet_radius_stations,
+                chamfer_mode,
+                chamfer_edge_sides,
             } => FeatureKind::TopologyEdgeFinish {
                 target: *mapping
                     .get(target)
@@ -12678,6 +13385,25 @@ fn clone_definition_and_repoint(
                     .collect::<Result<Vec<_>, _>>()?,
                 kind: *kind,
                 amount: amount.clone(),
+                fillet_radius_stations: fillet_radius_stations.clone(),
+                chamfer_mode: chamfer_mode.clone(),
+                chamfer_edge_sides: chamfer_edge_sides
+                    .iter()
+                    .map(|selection| {
+                        Ok(ChamferEdgeSide {
+                            edge: remap_topological_reference(
+                                &selection.edge,
+                                new_definition_id,
+                                &mapping,
+                            )?,
+                            side_face: remap_topological_reference(
+                                &selection.side_face,
+                                new_definition_id,
+                                &mapping,
+                            )?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, CanonicalError>>()?,
             },
             FeatureKind::TopologyFaceOffset {
                 target,
@@ -12734,19 +13460,93 @@ fn clone_definition_and_repoint(
                     .ok_or(CanonicalError::InvalidFeatureMap)?,
                 path: *mapping.get(path).ok_or(CanonicalError::InvalidFeatureMap)?,
             },
-            FeatureKind::Loft { sections } => FeatureKind::Loft {
-                sections: sections
-                    .iter()
-                    .map(|section| {
-                        Ok(LoftSection {
-                            profile: *mapping
-                                .get(&section.profile)
-                                .ok_or(CanonicalError::InvalidFeatureMap)?,
-                            elevation_mm: section.elevation_mm,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, CanonicalError>>()?,
+            FeatureKind::WeldmentMember(spec) => FeatureKind::WeldmentMember(WeldmentMemberSpec {
+                profile: *mapping
+                    .get(&spec.profile)
+                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                path: *mapping
+                    .get(&spec.path)
+                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                orientation_degrees: spec.orientation_degrees,
+            }),
+            FeatureKind::WeldmentJoint(spec) => FeatureKind::WeldmentJoint(WeldmentJointSpec {
+                first_member: *mapping
+                    .get(&spec.first_member)
+                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                second_member: *mapping
+                    .get(&spec.second_member)
+                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                policy: spec.policy,
+                primary: spec.primary,
+            }),
+            FeatureKind::SurfaceBody(spec) => FeatureKind::SurfaceBody(match spec {
+                SurfaceBodySpec::Planar { profile } => SurfaceBodySpec::Planar {
+                    profile: *mapping
+                        .get(profile)
+                        .ok_or(CanonicalError::InvalidFeatureMap)?,
+                },
+                SurfaceBodySpec::Loft {
+                    sections,
+                    guide,
+                    continuity,
+                } => SurfaceBodySpec::Loft {
+                    sections: remap_loft_sections(sections, &mapping)?,
+                    guide: remap_optional_feature(*guide, &mapping)?,
+                    continuity: *continuity,
+                },
+            }),
+            FeatureKind::SurfaceTrim { target, cutter } => FeatureKind::SurfaceTrim {
+                target: *mapping
+                    .get(target)
+                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                cutter: *mapping
+                    .get(cutter)
+                    .ok_or(CanonicalError::InvalidFeatureMap)?,
             },
+            FeatureKind::SurfaceExtend { target, distance } => FeatureKind::SurfaceExtend {
+                target: *mapping
+                    .get(target)
+                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                distance: distance.clone(),
+            },
+            FeatureKind::SurfaceThicken {
+                target,
+                thickness,
+                direction,
+            } => FeatureKind::SurfaceThicken {
+                target: *mapping
+                    .get(target)
+                    .ok_or(CanonicalError::InvalidFeatureMap)?,
+                thickness: thickness.clone(),
+                direction: *direction,
+            },
+            FeatureKind::SurfaceKnit {
+                surfaces,
+                tolerance,
+                make_solid,
+            } => FeatureKind::SurfaceKnit {
+                surfaces: surfaces
+                    .iter()
+                    .map(|surface| {
+                        mapping
+                            .get(surface)
+                            .copied()
+                            .ok_or(CanonicalError::InvalidFeatureMap)
+                    })
+                    .collect::<Result<_, _>>()?,
+                tolerance: tolerance.clone(),
+                make_solid: *make_solid,
+            },
+            FeatureKind::Loft {
+                sections,
+                guide,
+                continuity,
+            } => FeatureKind::Loft {
+                sections: remap_loft_sections(sections, &mapping)?,
+                guide: remap_optional_feature(*guide, &mapping)?,
+                continuity: *continuity,
+            },
+            FeatureKind::SheetMetal(spec) => FeatureKind::SheetMetal(spec.clone()),
             FeatureKind::ImportedExactBody(spec) => FeatureKind::ImportedExactBody(spec.clone()),
             FeatureKind::RigidTransform { target, transform } => FeatureKind::RigidTransform {
                 target: *mapping
@@ -13129,7 +13929,11 @@ fn remap_exact_solid_tool_feature_kind(
             profile: mapped(profile)?,
             path: mapped(path)?,
         }),
-        FeatureKind::Loft { sections } => Ok(FeatureKind::Loft {
+        FeatureKind::Loft {
+            sections,
+            guide,
+            continuity,
+        } => Ok(FeatureKind::Loft {
             sections: sections
                 .iter()
                 .map(|section| {
@@ -13139,7 +13943,10 @@ fn remap_exact_solid_tool_feature_kind(
                     })
                 })
                 .collect::<Result<Vec<_>, CanonicalError>>()?,
+            guide: guide.map(|guide| mapped(&guide)).transpose()?,
+            continuity: *continuity,
         }),
+        FeatureKind::SheetMetal(spec) => Ok(FeatureKind::SheetMetal(spec.clone())),
         FeatureKind::ImportedExactBody(spec) => Ok(FeatureKind::ImportedExactBody(spec.clone())),
         FeatureKind::RigidTransform { target, transform } => Ok(FeatureKind::RigidTransform {
             target: mapped(target)?,
@@ -14035,6 +14842,25 @@ fn convert_group_to_component_model(
         .iter()
         .map(|id| LocalOccurrenceId(id.0))
         .collect::<Vec<_>>();
+    let inherited_classifications = product
+        .classification_dimensions
+        .keys()
+        .filter_map(|dimension_id| {
+            let category_id = product
+                .classification_assignments
+                .get(&(*occurrence_ids.first()?, *dimension_id))
+                .copied()?;
+            occurrence_ids
+                .iter()
+                .all(|occurrence_id| {
+                    product
+                        .classification_assignments
+                        .get(&(*occurrence_id, *dimension_id))
+                        == Some(&category_id)
+                })
+                .then_some((*dimension_id, category_id))
+        })
+        .collect::<Vec<_>>();
     product.definitions.insert(
         plan.new_definition_id,
         Arc::new(Definition {
@@ -14085,8 +14911,17 @@ fn convert_group_to_component_model(
             }),
         );
     }
+    let converted_occurrence_ids = occurrence_ids.iter().copied().collect::<BTreeSet<_>>();
     for id in occurrence_ids {
         product.occurrences.remove(&id);
+    }
+    product
+        .classification_assignments
+        .retain(|(occurrence_id, _), _| !converted_occurrence_ids.contains(occurrence_id));
+    for (dimension_id, category_id) in inherited_classifications {
+        product
+            .classification_assignments
+            .insert((plan.new_occurrence_id, dimension_id), category_id);
     }
     for id in groups {
         product.groups.remove(&id);
@@ -14402,6 +15237,41 @@ fn refresh_supported_planar_face_frames(
     Ok(())
 }
 
+fn resolve_product_instance_path(
+    product: &ProductModel,
+    path: &InstancePath,
+) -> Option<DefinitionId> {
+    let root = product.occurrences.get(&path.root_occurrence())?;
+    let mut definition_id = root.definition_id;
+    let mut parent = None;
+    for step in path.steps() {
+        match *step {
+            InstancePathStep::Group(local_id) => {
+                let group = product.local_groups.get(&LocalGroupKey {
+                    definition_id,
+                    local_id,
+                })?;
+                if group.parent != parent {
+                    return None;
+                }
+                parent = Some(local_id);
+            }
+            InstancePathStep::Occurrence(local_id) => {
+                let occurrence = product.local_occurrences.get(&LocalOccurrenceKey {
+                    definition_id,
+                    local_id,
+                })?;
+                if occurrence.parent != parent {
+                    return None;
+                }
+                definition_id = occurrence.definition_id;
+                parent = None;
+            }
+        }
+    }
+    Some(definition_id)
+}
+
 fn validate_assembly_mate(
     product: &ProductModel,
     mate: &AssemblyMate,
@@ -14410,15 +15280,13 @@ fn validate_assembly_mate(
     if mate.schema() != ASSEMBLY_MATE_SCHEMA_V1
         || mate.id().0 == 0
         || !mate.kind().is_valid()
-        || mate.endpoint_a().occurrence_id() == mate.endpoint_b().occurrence_id()
+        || mate.endpoint_a().instance_path() == mate.endpoint_b().instance_path()
     {
         return Err(CanonicalError::InvalidAssemblyMate(mate.id()));
     }
     for endpoint in [mate.endpoint_a(), mate.endpoint_b()] {
-        let occurrence = product
-            .occurrences
-            .get(&endpoint.occurrence_id())
-            .ok_or(CanonicalError::OccurrenceNotFound(endpoint.occurrence_id()))?;
+        let definition_id = resolve_product_instance_path(product, endpoint.instance_path())
+            .ok_or(CanonicalError::InvalidInstancePath)?;
         let reference = endpoint.reference();
         let health_is_valid = match endpoint.health() {
             AssemblyReferenceHealth::Resolved => true,
@@ -14436,15 +15304,15 @@ fn validate_assembly_mate(
             || !attachment_is_valid
             || !reference.has_valid_lineage()
             || reference.document_id != product.document_id
-            || reference.definition_id != occurrence.definition_id
+            || reference.definition_id != definition_id
             || product
                 .features
                 .get(&reference.profile_feature_id)
-                .is_none_or(|feature| feature.definition_id != occurrence.definition_id)
+                .is_none_or(|feature| feature.definition_id != definition_id)
             || product
                 .features
                 .get(&reference.producer_feature_id)
-                .is_none_or(|feature| feature.definition_id != occurrence.definition_id)
+                .is_none_or(|feature| feature.definition_id != definition_id)
         {
             return Err(CanonicalError::InvalidAssemblyMate(mate.id()));
         }
@@ -14487,15 +15355,11 @@ fn validate_assembly_joint(
 ) -> Result<(), CanonicalError> {
     if !joint.has_valid_shape()
         || joint.schema() != ASSEMBLY_JOINT_SCHEMA_V1
-        || !product
-            .occurrences
-            .contains_key(&joint.parent_occurrence_id())
-        || !product
-            .occurrences
-            .contains_key(&joint.child_occurrence_id())
+        || resolve_product_instance_path(product, joint.parent_instance_path()).is_none()
+        || resolve_product_instance_path(product, joint.child_instance_path()).is_none()
         || product.assembly_joints.values().any(|existing| {
             existing.id() != joint.id()
-                && existing.child_occurrence_id() == joint.child_occurrence_id()
+                && existing.child_instance_path() == joint.child_instance_path()
         })
     {
         return Err(CanonicalError::InvalidAssemblyJoint(joint.id()));
@@ -14507,16 +15371,19 @@ fn validate_assembly_joint(
         .filter(|existing| existing.id() != joint.id())
         .map(|existing| {
             (
-                existing.child_occurrence_id(),
-                existing.parent_occurrence_id(),
+                existing.child_instance_path().clone(),
+                existing.parent_instance_path().clone(),
             )
         })
         .collect::<BTreeMap<_, _>>();
-    parent_by_child.insert(joint.child_occurrence_id(), joint.parent_occurrence_id());
-    let mut cursor = joint.parent_occurrence_id();
+    parent_by_child.insert(
+        joint.child_instance_path().clone(),
+        joint.parent_instance_path().clone(),
+    );
+    let mut cursor = joint.parent_instance_path().clone();
     let mut visited = BTreeSet::new();
-    while let Some(parent) = parent_by_child.get(&cursor).copied() {
-        if parent == joint.child_occurrence_id() || !visited.insert(cursor) {
+    while let Some(parent) = parent_by_child.get(&cursor).cloned() {
+        if parent == *joint.child_instance_path() || !visited.insert(cursor) {
             return Err(CanonicalError::InvalidAssemblyJoint(joint.id()));
         }
         cursor = parent;
@@ -14791,14 +15658,18 @@ fn validate_assembly_joint_motion_publication(
     let required_transform_ids = kind_overrides
         .keys()
         .filter_map(|id| {
-            current
-                .assembly_joint(*id)
-                .map(AssemblyJoint::child_occurrence_id)
+            current.assembly_joint(*id).and_then(|joint| {
+                joint
+                    .child_instance_path()
+                    .is_root()
+                    .then_some(joint.child_occurrence_id())
+            })
         })
         .collect::<BTreeSet<_>>();
     let expected_transforms = expected_solution
         .poses()
         .iter()
+        .filter(|pose| pose.instance_path().is_root())
         .filter_map(|pose| {
             current
                 .occurrence(pose.occurrence_id())
@@ -14809,26 +15680,60 @@ fn validate_assembly_joint_motion_publication(
                 .map(|_| (pose.occurrence_id(), pose.local_transform()))
         })
         .collect::<Vec<_>>();
+    let expected_instance_transforms = expected_solution
+        .poses()
+        .iter()
+        .filter(|pose| !pose.instance_path().is_root())
+        .filter_map(|pose| {
+            current
+                .resolve_instance_path(pose.instance_path())
+                .ok()
+                .filter(|resolved| {
+                    !transforms_equivalent(resolved.local_transform, pose.local_transform())
+                })
+                .map(|_| (pose.instance_path().clone(), pose.local_transform()))
+        })
+        .collect::<Vec<_>>();
     let solve_publications = batch
         .commands
         .iter()
         .filter_map(|command| match command {
-            CanonicalCommand::ApplyAssemblySolve { transforms, .. } => Some(transforms),
+            CanonicalCommand::ApplyAssemblySolve {
+                transforms,
+                instance_transforms,
+                ..
+            } => Some((transforms, instance_transforms)),
             _ => None,
         })
         .collect::<Vec<_>>();
     if solve_publications.len() != 1
-        || solve_publications[0].len() != expected_transforms.len()
-        || solve_publications[0].iter().zip(&expected_transforms).any(
-            |((actual_id, actual), (expected_id, expected))| {
+        || solve_publications[0].0.len() != expected_transforms.len()
+        || solve_publications[0]
+            .0
+            .iter()
+            .zip(&expected_transforms)
+            .any(|((actual_id, actual), (expected_id, expected))| {
                 actual_id != expected_id || !transforms_equivalent(*actual, *expected)
-            },
-        )
+            })
+        || solve_publications[0].1.len() != expected_instance_transforms.len()
+        || solve_publications[0]
+            .1
+            .iter()
+            .zip(&expected_instance_transforms)
+            .any(|((actual_path, actual), (expected_path, expected))| {
+                actual_path != expected_path || !transforms_equivalent(*actual, *expected)
+            })
         || expected_transforms.iter().any(|(id, expected)| {
             product
                 .occurrences
                 .get(id)
                 .is_none_or(|occurrence| !transforms_equivalent(occurrence.transform(), *expected))
+        })
+        || expected_instance_transforms.iter().any(|(path, expected)| {
+            product
+                .instance_transform_overrides
+                .get(path)
+                .is_none_or(|actual| !transforms_equivalent(*actual, *expected))
         })
     {
         return Err(CanonicalError::UnsynchronizedAssemblyJointPosition(
@@ -14847,6 +15752,18 @@ fn validate_product_with_drawing_sources(
     validate_drawing_sources: bool,
 ) -> Result<(), CanonicalError> {
     ensure_product_id(product.document_id.0)?;
+    if product
+        .instance_transform_overrides
+        .iter()
+        .any(|(path, transform)| {
+            path.is_root()
+                || !matches!(path.steps().last(), Some(InstancePathStep::Occurrence(_)))
+                || validate_transform(*transform).is_err()
+                || resolve_product_instance_path(product, path).is_none()
+        })
+    {
+        return Err(CanonicalError::InvalidInstancePath);
+    }
     if let Some(id) = product
         .grounded_occurrences
         .iter()
@@ -14897,6 +15814,12 @@ fn validate_product_with_drawing_sources(
         if validate_drawing_sources {
             validate_drawing_sheet(product, sheet)?;
         }
+    }
+    for (id, plan) in &product.cam_plans {
+        if *id != plan.id() {
+            return Err(CanonicalError::Cam(CamError::InvalidPlan));
+        }
+        plan.validate_structure().map_err(CanonicalError::Cam)?;
     }
     FeatureDependencyGraph::from_product(product)?;
     for (id, joint) in &product.joints {
@@ -15031,7 +15954,7 @@ fn validate_product_with_drawing_sources(
                     .iter()
                     .chain(ownership.output_body_id.iter())
                     .any(|id| !definition.bodies.contains_key(id))
-                || feature_kind_is_solid(&feature.kind) != ownership.output_body_id.is_some()
+                || feature.kind.produces_body() != ownership.output_body_id.is_some()
                 || inferred_feature_body_ownership(product, definition, &feature.kind)?
                     .input_body_ids
                     != ownership.input_body_ids
@@ -15555,7 +16478,253 @@ fn validate_product_with_drawing_sources(
                     return Err(CanonicalError::InvalidSweep);
                 }
             }
-            FeatureKind::Loft { sections } => {
+            FeatureKind::WeldmentMember(spec) => {
+                let profile_source = product
+                    .features
+                    .get(&spec.profile)
+                    .ok_or(CanonicalError::FeatureNotFound(spec.profile))?;
+                let path_source = product
+                    .features
+                    .get(&spec.path)
+                    .ok_or(CanonicalError::FeatureNotFound(spec.path))?;
+                let valid_profile = matches!(
+                    &profile_source.kind,
+                    FeatureKind::Profile { points_mm } if points_mm.len() >= 3
+                ) || matches!(
+                    &profile_source.kind,
+                    FeatureKind::SegmentProfile {
+                        segments,
+                        closed: true,
+                    } if segments.len() >= 2
+                ) || matches!(
+                    &profile_source.kind,
+                    FeatureKind::Sketch(profile) if valid_sketch_sweep_profile(profile)
+                );
+                let valid_path = matches!(
+                    &path_source.kind,
+                    FeatureKind::SpatialPath { segments }
+                        if is_valid_spatial_sweep_path(segments)
+                            && spatial_sweep_bounds_are_valid(&profile_source.kind, segments)
+                );
+                let feature_position = definition
+                    .feature_ids
+                    .iter()
+                    .position(|candidate| *candidate == feature.id)
+                    .expect("validated definition contains feature");
+                let sources_precede_member =
+                    [spec.profile, spec.path].into_iter().all(|source_id| {
+                        definition
+                            .feature_ids
+                            .iter()
+                            .position(|candidate| *candidate == source_id)
+                            .is_some_and(|position| position < feature_position)
+                    });
+                if profile_source.definition_id != feature.definition_id
+                    || path_source.definition_id != feature.definition_id
+                    || !valid_profile
+                    || !valid_path
+                    || !sources_precede_member
+                {
+                    return Err(CanonicalError::InvalidWeldmentMember);
+                }
+            }
+            FeatureKind::WeldmentJoint(spec) => {
+                let member = |id: FeatureId| -> Option<(&Feature, [f64; 3], [f64; 3])> {
+                    let member = product.features.get(&id)?.as_ref();
+                    let FeatureKind::WeldmentMember(member_spec) = &member.kind else {
+                        return None;
+                    };
+                    let path = product.features.get(&member_spec.path)?;
+                    let FeatureKind::SpatialPath { segments } = &path.kind else {
+                        return None;
+                    };
+                    let [SpatialPathSegment::Line { start_mm, end_mm }] = segments.as_slice()
+                    else {
+                        return None;
+                    };
+                    Some((member, *start_mm, *end_mm))
+                };
+                let Some((first, first_start, first_end)) = member(spec.first_member) else {
+                    return Err(CanonicalError::InvalidWeldmentJoint);
+                };
+                let Some((second, second_start, second_end)) = member(spec.second_member) else {
+                    return Err(CanonicalError::InvalidWeldmentJoint);
+                };
+                let feature_position = definition
+                    .feature_ids
+                    .iter()
+                    .position(|candidate| *candidate == feature.id)
+                    .expect("validated definition contains feature");
+                let members_precede_joint = [spec.first_member, spec.second_member]
+                    .into_iter()
+                    .all(|member_id| {
+                        definition
+                            .feature_ids
+                            .iter()
+                            .position(|candidate| *candidate == member_id)
+                            .is_some_and(|position| position < feature_position)
+                    });
+                let distance = |left: [f64; 3], right: [f64; 3]| {
+                    ((left[0] - right[0]).powi(2)
+                        + (left[1] - right[1]).powi(2)
+                        + (left[2] - right[2]).powi(2))
+                    .sqrt()
+                };
+                let endpoint_pairs = [
+                    (first_start, first_end, second_start, second_end),
+                    (first_start, first_end, second_end, second_start),
+                    (first_end, first_start, second_start, second_end),
+                    (first_end, first_start, second_end, second_start),
+                ];
+                let matching = endpoint_pairs
+                    .into_iter()
+                    .filter(|(joint_first, _, joint_second, _)| {
+                        distance(*joint_first, *joint_second) <= PROFILE_EPSILON_MM
+                    })
+                    .collect::<Vec<_>>();
+                let Some((joint, first_far, _, second_far)) = matching.first().copied() else {
+                    return Err(CanonicalError::InvalidWeldmentJoint);
+                };
+                let first_length = distance(joint, first_far);
+                let second_length = distance(joint, second_far);
+                let first_direction = [
+                    (first_far[0] - joint[0]) / first_length,
+                    (first_far[1] - joint[1]) / first_length,
+                    (first_far[2] - joint[2]) / first_length,
+                ];
+                let second_direction = [
+                    (second_far[0] - joint[0]) / second_length,
+                    (second_far[1] - joint[1]) / second_length,
+                    (second_far[2] - joint[2]) / second_length,
+                ];
+                let direction_dot = first_direction[0] * second_direction[0]
+                    + first_direction[1] * second_direction[1]
+                    + first_direction[2] * second_direction[2];
+                if first.definition_id != feature.definition_id
+                    || second.definition_id != feature.definition_id
+                    || !members_precede_joint
+                    || matching.len() != 1
+                    || !first_length.is_finite()
+                    || !second_length.is_finite()
+                    || first_length < EXACT_MIN_LENGTH_MM
+                    || second_length < EXACT_MIN_LENGTH_MM
+                    || !direction_dot.is_finite()
+                    || direction_dot.abs() > 0.996_194_698_091_745_5
+                {
+                    return Err(CanonicalError::InvalidWeldmentJoint);
+                }
+            }
+            FeatureKind::SurfaceBody(SurfaceBodySpec::Planar { profile }) => {
+                let source = product
+                    .features
+                    .get(&profile)
+                    .ok_or(CanonicalError::FeatureNotFound(profile))?;
+                let feature_position = definition
+                    .feature_ids
+                    .iter()
+                    .position(|candidate| *candidate == feature.id)
+                    .expect("validated definition contains feature");
+                let source_precedes_surface = definition
+                    .feature_ids
+                    .iter()
+                    .position(|candidate| *candidate == profile)
+                    .is_some_and(|position| position < feature_position);
+                let valid_profile = matches!(
+                    &source.kind,
+                    FeatureKind::Profile { points_mm } if points_mm.len() >= 3
+                ) || matches!(
+                    &source.kind,
+                    FeatureKind::SegmentProfile {
+                        segments,
+                        closed: true,
+                    } if segments.len() >= 2
+                ) || matches!(
+                    &source.kind,
+                    FeatureKind::Sketch(sketch)
+                        if sketch.solved_regions().is_ok_and(|regions| regions.len() == 1)
+                );
+                if source.definition_id != feature.definition_id
+                    || !source_precedes_surface
+                    || !valid_profile
+                {
+                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+                }
+            }
+            FeatureKind::SurfaceTrim { target, cutter } => {
+                let feature_position = definition
+                    .feature_ids
+                    .iter()
+                    .position(|candidate| *candidate == feature.id)
+                    .expect("validated definition contains feature");
+                let valid_surface_operand = |operand: FeatureId| {
+                    product.features.get(&operand).is_some_and(|source| {
+                        source.definition_id == feature.definition_id
+                            && source.kind.body_kind() == Some(BodyKind::Surface)
+                            && definition
+                                .feature_ids
+                                .iter()
+                                .position(|candidate| *candidate == operand)
+                                .is_some_and(|position| position < feature_position)
+                    })
+                };
+                if target == cutter
+                    || !valid_surface_operand(target)
+                    || !valid_surface_operand(cutter)
+                {
+                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+                }
+            }
+            FeatureKind::SurfaceExtend { target, .. }
+            | FeatureKind::SurfaceThicken { target, .. } => {
+                let feature_position = definition
+                    .feature_ids
+                    .iter()
+                    .position(|candidate| *candidate == feature.id)
+                    .expect("validated definition contains feature");
+                let valid_target = product.features.get(&target).is_some_and(|source| {
+                    source.definition_id == feature.definition_id
+                        && source.kind.body_kind() == Some(BodyKind::Surface)
+                        && definition
+                            .feature_ids
+                            .iter()
+                            .position(|candidate| *candidate == target)
+                            .is_some_and(|position| position < feature_position)
+                });
+                if !valid_target {
+                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+                }
+            }
+            FeatureKind::SurfaceKnit { surfaces, .. } => {
+                let feature_position = definition
+                    .feature_ids
+                    .iter()
+                    .position(|candidate| *candidate == feature.id)
+                    .expect("validated definition contains feature");
+                let valid_surface = |surface: FeatureId| {
+                    product.features.get(&surface).is_some_and(|source| {
+                        source.definition_id == feature.definition_id
+                            && source.kind.body_kind() == Some(BodyKind::Surface)
+                            && definition
+                                .feature_ids
+                                .iter()
+                                .position(|candidate| *candidate == surface)
+                                .is_some_and(|position| position < feature_position)
+                    })
+                };
+                if !surfaces.iter().copied().all(valid_surface) {
+                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
+                }
+            }
+            FeatureKind::Loft {
+                sections,
+                guide,
+                continuity,
+            }
+            | FeatureKind::SurfaceBody(SurfaceBodySpec::Loft {
+                sections,
+                guide,
+                continuity,
+            }) => {
                 let feature_position = definition
                     .feature_ids
                     .iter()
@@ -15587,6 +16756,24 @@ fn validate_product_with_drawing_sources(
                         return Err(CanonicalError::InvalidLoft);
                     }
                 }
+                if let Some(guide) = guide {
+                    let guide_feature = product
+                        .features
+                        .get(&guide)
+                        .ok_or(CanonicalError::FeatureNotFound(guide))?;
+                    let guide_precedes_loft = definition
+                        .feature_ids
+                        .iter()
+                        .position(|candidate| *candidate == guide)
+                        .is_some_and(|position| position < feature_position);
+                    if continuity == LoftContinuity::Curvature
+                        || guide_feature.definition_id != feature.definition_id
+                        || !matches!(guide_feature.kind, FeatureKind::SpatialPath { .. })
+                        || !guide_precedes_loft
+                    {
+                        return Err(CanonicalError::InvalidLoft);
+                    }
+                }
             }
             FeatureKind::Boolean { target, tool, .. } => {
                 let target_feature = product
@@ -15597,7 +16784,6 @@ fn validate_product_with_drawing_sources(
                     .features
                     .get(&tool)
                     .ok_or(CanonicalError::FeatureNotFound(tool))?;
-                let produces_body = FeatureKind::produces_body;
                 let feature_position = definition
                     .feature_ids
                     .iter()
@@ -15613,8 +16799,8 @@ fn validate_product_with_drawing_sources(
                 if target == tool
                     || target_feature.definition_id != feature.definition_id
                     || tool_feature.definition_id != feature.definition_id
-                    || !produces_body(&target_feature.kind)
-                    || !produces_body(&tool_feature.kind)
+                    || !feature_kind_is_solid(&target_feature.kind)
+                    || !feature_kind_is_solid(&tool_feature.kind)
                     || !inputs_precede_boolean
                 {
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
@@ -15825,6 +17011,7 @@ fn validate_product_with_drawing_sources(
             }
             FeatureKind::Profile { .. }
             | FeatureKind::SegmentProfile { .. }
+            | FeatureKind::SheetMetal(_)
             | FeatureKind::SpatialPath { .. }
             | FeatureKind::ConstructionPoint { .. }
             | FeatureKind::ConstructionAxis { .. }
@@ -16653,6 +17840,12 @@ fn authoritative_writes(
             CanonicalCommand::DeleteClearanceVolume { id } => {
                 writes.insert(AuthoritativeDependency::ClearanceVolume(*id));
             }
+            CanonicalCommand::UpsertCamPlan(plan) => {
+                writes.insert(AuthoritativeDependency::CamPlan(plan.id()));
+            }
+            CanonicalCommand::DeleteCamPlan { id } => {
+                writes.insert(AuthoritativeDependency::CamPlan(*id));
+            }
             CanonicalCommand::UpsertPersistentDimension(dimension) => {
                 writes.insert(AuthoritativeDependency::PersistentDimension(dimension.id));
             }
@@ -16749,11 +17942,20 @@ fn authoritative_writes(
                 writes.insert(AuthoritativeDependency::Feature(*id));
             }
             CanonicalCommand::GuardAssemblyRecompute { .. } => {}
-            CanonicalCommand::ApplyAssemblySolve { transforms, .. } => {
+            CanonicalCommand::ApplyAssemblySolve {
+                transforms,
+                instance_transforms,
+                ..
+            } => {
                 writes.extend(
                     transforms
                         .iter()
                         .map(|(id, _)| AuthoritativeDependency::Occurrence(*id)),
+                );
+                writes.extend(
+                    instance_transforms.iter().map(|(path, _)| {
+                        AuthoritativeDependency::Occurrence(path.root_occurrence())
+                    }),
                 );
             }
             CanonicalCommand::SetOccurrenceGrounded { id, .. } => {
@@ -16992,7 +18194,8 @@ fn authoritative_dependencies(
                     FeatureKind::Extrusion { profile, .. }
                     | FeatureKind::BottleProfileControl { profile, .. }
                     | FeatureKind::Revolve { profile, .. }
-                    | FeatureKind::PlanarOffset { profile, .. } => {
+                    | FeatureKind::PlanarOffset { profile, .. }
+                    | FeatureKind::SurfaceBody(SurfaceBodySpec::Planar { profile }) => {
                         add_feature_dependency_closure(snapshot, *profile, &mut dependencies);
                     }
                     FeatureKind::ThroughCut { target, profile }
@@ -17006,16 +18209,37 @@ fn authoritative_dependencies(
                         add_feature_dependency_closure(snapshot, *profile, &mut dependencies);
                         add_feature_dependency_closure(snapshot, *path, &mut dependencies);
                     }
-                    FeatureKind::Loft { sections } => {
-                        for section in sections {
-                            add_feature_dependency_closure(
-                                snapshot,
-                                section.profile,
-                                &mut dependencies,
-                            );
+                    FeatureKind::WeldmentMember(spec) => {
+                        add_feature_dependency_closure(snapshot, spec.profile, &mut dependencies);
+                        add_feature_dependency_closure(snapshot, spec.path, &mut dependencies);
+                    }
+                    FeatureKind::WeldmentJoint(spec) => {
+                        add_feature_dependency_closure(
+                            snapshot,
+                            spec.first_member,
+                            &mut dependencies,
+                        );
+                        add_feature_dependency_closure(
+                            snapshot,
+                            spec.second_member,
+                            &mut dependencies,
+                        );
+                    }
+                    FeatureKind::Loft {
+                        sections, guide, ..
+                    }
+                    | FeatureKind::SurfaceBody(SurfaceBodySpec::Loft {
+                        sections, guide, ..
+                    }) => {
+                        for source in sections.iter().map(|section| section.profile).chain(*guide) {
+                            add_feature_dependency_closure(snapshot, source, &mut dependencies);
                         }
                     }
-                    FeatureKind::Boolean { target, tool, .. } => {
+                    FeatureKind::Boolean { target, tool, .. }
+                    | FeatureKind::SurfaceTrim {
+                        target,
+                        cutter: tool,
+                    } => {
                         add_feature_dependency_closure(snapshot, *target, &mut dependencies);
                         add_feature_dependency_closure(snapshot, *tool, &mut dependencies);
                     }
@@ -17024,11 +18248,19 @@ fn authoritative_dependencies(
                     | FeatureKind::TopologyShell { target, .. }
                     | FeatureKind::TopologyEdgeFinish { target, .. }
                     | FeatureKind::TopologyFaceOffset { target, .. }
+                    | FeatureKind::SurfaceExtend { target, .. }
+                    | FeatureKind::SurfaceThicken { target, .. }
                     | FeatureKind::RigidTransform { target, .. } => {
                         add_feature_dependency_closure(snapshot, *target, &mut dependencies);
                     }
+                    FeatureKind::SurfaceKnit { surfaces, .. } => {
+                        for surface in surfaces {
+                            add_feature_dependency_closure(snapshot, *surface, &mut dependencies);
+                        }
+                    }
                     FeatureKind::Profile { .. }
                     | FeatureKind::SegmentProfile { .. }
+                    | FeatureKind::SheetMetal(_)
                     | FeatureKind::SpatialPath { .. }
                     | FeatureKind::ConstructionPoint { .. }
                     | FeatureKind::ConstructionAxis { .. }
@@ -17105,11 +18337,20 @@ fn authoritative_dependencies(
                     AuthoritativeDependency::AssemblyMotionCoupling(coupling.id())
                 }));
             }
-            CanonicalCommand::ApplyAssemblySolve { transforms, .. } => {
+            CanonicalCommand::ApplyAssemblySolve {
+                transforms,
+                instance_transforms,
+                ..
+            } => {
                 dependencies.extend(
                     transforms
                         .iter()
                         .map(|(id, _)| AuthoritativeDependency::Occurrence(*id)),
+                );
+                dependencies.extend(
+                    instance_transforms.iter().map(|(path, _)| {
+                        AuthoritativeDependency::Occurrence(path.root_occurrence())
+                    }),
                 );
                 dependencies.extend(
                     snapshot
@@ -17309,8 +18550,34 @@ fn authoritative_dependencies(
                 match sheet.source() {
                     DrawingSource::Definition(id) => {
                         dependencies.insert(AuthoritativeDependency::Definition(*id));
+                        if let Some(definition) = snapshot.definition(*id) {
+                            dependencies.extend(
+                                definition
+                                    .feature_ids()
+                                    .iter()
+                                    .copied()
+                                    .map(AuthoritativeDependency::Feature),
+                            );
+                        }
                     }
                     DrawingSource::RigidAssembly { occurrence_ids } => {
+                        for occurrence_id in occurrence_ids {
+                            if let Some(occurrence) = snapshot.occurrence(*occurrence_id)
+                                && let Some(definition) =
+                                    snapshot.definition(occurrence.definition_id())
+                            {
+                                dependencies.insert(AuthoritativeDependency::Definition(
+                                    occurrence.definition_id(),
+                                ));
+                                dependencies.extend(
+                                    definition
+                                        .feature_ids()
+                                        .iter()
+                                        .copied()
+                                        .map(AuthoritativeDependency::Feature),
+                                );
+                            }
+                        }
                         dependencies.extend(
                             occurrence_ids
                                 .iter()
@@ -17330,6 +18597,63 @@ fn authoritative_dependencies(
                                     occurrence_ids.contains(&mate.endpoint_a().occurrence_id())
                                         || occurrence_ids
                                             .contains(&mate.endpoint_b().occurrence_id())
+                                })
+                                .map(|mate| AuthoritativeDependency::AssemblyMate(mate.id())),
+                        );
+                    }
+                    DrawingSource::RigidAssemblyInstances { instance_paths } => {
+                        dependencies.extend(instance_paths.iter().map(|path| {
+                            AuthoritativeDependency::Occurrence(path.root_occurrence())
+                        }));
+                        dependencies.extend(instance_paths.iter().map(|path| {
+                            AuthoritativeDependency::GroundedOccurrence(path.root_occurrence())
+                        }));
+                        for path in instance_paths {
+                            if let Some(root) = snapshot.occurrence(path.root_occurrence()) {
+                                dependencies.insert(AuthoritativeDependency::Definition(
+                                    root.definition_id(),
+                                ));
+                                if let Some(definition) = snapshot.definition(root.definition_id())
+                                {
+                                    dependencies.extend(
+                                        definition
+                                            .feature_ids()
+                                            .iter()
+                                            .copied()
+                                            .map(AuthoritativeDependency::Feature),
+                                    );
+                                }
+                            }
+                            let mut prefix = InstancePath::root(path.root_occurrence());
+                            for step in path.steps() {
+                                prefix = prefix.with_step(*step);
+                                if matches!(step, InstancePathStep::Occurrence(_))
+                                    && let Ok(resolved) = snapshot.resolve_instance_path(&prefix)
+                                {
+                                    dependencies.insert(AuthoritativeDependency::Definition(
+                                        resolved.definition_id,
+                                    ));
+                                    if let Some(definition) =
+                                        snapshot.definition(resolved.definition_id)
+                                    {
+                                        dependencies.extend(
+                                            definition
+                                                .feature_ids()
+                                                .iter()
+                                                .copied()
+                                                .map(AuthoritativeDependency::Feature),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        dependencies.extend(
+                            snapshot
+                                .assembly_mates()
+                                .filter(|mate| {
+                                    instance_paths.contains(mate.endpoint_a().instance_path())
+                                        || instance_paths
+                                            .contains(mate.endpoint_b().instance_path())
                                 })
                                 .map(|mate| AuthoritativeDependency::AssemblyMate(mate.id())),
                         );
@@ -17574,6 +18898,17 @@ fn authoritative_dependencies(
             CanonicalCommand::DeleteClearanceVolume { id } => {
                 dependencies.insert(AuthoritativeDependency::ClearanceVolume(*id));
             }
+            CanonicalCommand::UpsertCamPlan(plan) => {
+                dependencies.insert(AuthoritativeDependency::CamPlan(plan.id()));
+                add_feature_dependency_closure(
+                    snapshot,
+                    plan.target().feature_id,
+                    &mut dependencies,
+                );
+            }
+            CanonicalCommand::DeleteCamPlan { id } => {
+                dependencies.insert(AuthoritativeDependency::CamPlan(*id));
+            }
             CanonicalCommand::UpsertPersistentDimension(dimension) => {
                 dependencies.insert(AuthoritativeDependency::PersistentDimension(dimension.id));
                 match &dimension.target {
@@ -17704,7 +19039,8 @@ fn add_feature_dependency_closure(
             FeatureKind::Extrusion { profile, .. }
             | FeatureKind::BottleProfileControl { profile, .. }
             | FeatureKind::Revolve { profile, .. }
-            | FeatureKind::PlanarOffset { profile, .. } => {
+            | FeatureKind::PlanarOffset { profile, .. }
+            | FeatureKind::SurfaceBody(SurfaceBodySpec::Planar { profile }) => {
                 add_feature_dependency_closure(snapshot, *profile, dependencies);
             }
             FeatureKind::ThroughCut { target, profile }
@@ -17718,12 +19054,29 @@ fn add_feature_dependency_closure(
                 add_feature_dependency_closure(snapshot, *profile, dependencies);
                 add_feature_dependency_closure(snapshot, *path, dependencies);
             }
-            FeatureKind::Loft { sections } => {
-                for section in sections {
-                    add_feature_dependency_closure(snapshot, section.profile, dependencies);
+            FeatureKind::WeldmentMember(spec) => {
+                add_feature_dependency_closure(snapshot, spec.profile, dependencies);
+                add_feature_dependency_closure(snapshot, spec.path, dependencies);
+            }
+            FeatureKind::WeldmentJoint(spec) => {
+                add_feature_dependency_closure(snapshot, spec.first_member, dependencies);
+                add_feature_dependency_closure(snapshot, spec.second_member, dependencies);
+            }
+            FeatureKind::Loft {
+                sections, guide, ..
+            }
+            | FeatureKind::SurfaceBody(SurfaceBodySpec::Loft {
+                sections, guide, ..
+            }) => {
+                for source in sections.iter().map(|section| section.profile).chain(*guide) {
+                    add_feature_dependency_closure(snapshot, source, dependencies);
                 }
             }
-            FeatureKind::Boolean { target, tool, .. } => {
+            FeatureKind::Boolean { target, tool, .. }
+            | FeatureKind::SurfaceTrim {
+                target,
+                cutter: tool,
+            } => {
                 add_feature_dependency_closure(snapshot, *target, dependencies);
                 add_feature_dependency_closure(snapshot, *tool, dependencies);
             }
@@ -17732,11 +19085,19 @@ fn add_feature_dependency_closure(
             | FeatureKind::TopologyShell { target, .. }
             | FeatureKind::TopologyEdgeFinish { target, .. }
             | FeatureKind::TopologyFaceOffset { target, .. }
+            | FeatureKind::SurfaceExtend { target, .. }
+            | FeatureKind::SurfaceThicken { target, .. }
             | FeatureKind::RigidTransform { target, .. } => {
                 add_feature_dependency_closure(snapshot, *target, dependencies);
             }
+            FeatureKind::SurfaceKnit { surfaces, .. } => {
+                for surface in surfaces {
+                    add_feature_dependency_closure(snapshot, *surface, dependencies);
+                }
+            }
             FeatureKind::Profile { .. }
             | FeatureKind::SegmentProfile { .. }
+            | FeatureKind::SheetMetal(_)
             | FeatureKind::SpatialPath { .. }
             | FeatureKind::ConstructionPoint { .. }
             | FeatureKind::ConstructionAxis { .. }
@@ -17953,6 +19314,8 @@ mod parameter_contract_tests {
                         elevation_mm: 10.0,
                     },
                 ],
+                guide: None,
+                continuity: LoftContinuity::Position,
             },
         ];
         for kind in kinds {

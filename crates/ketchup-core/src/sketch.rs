@@ -3,6 +3,8 @@ use crate::exact_product::BodySubshapeRef;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+mod rank;
+
 pub const MAX_SKETCH_ENTITIES: usize = 4_096;
 pub const MAX_SKETCH_CONSTRAINTS: usize = 8_192;
 const MAX_ABS_MM: f64 = 1_000_000.0;
@@ -2410,24 +2412,17 @@ impl SketchSpec {
                 return Err(SketchError::OverConstrained(*constraint_id));
             }
         }
-        let status = if constraint_rank == degrees_of_freedom {
-            SketchSolveStatus::FullyConstrained
-        } else {
-            SketchSolveStatus::UnderConstrained {
-                remaining_dof: degrees_of_freedom - constraint_rank,
-            }
-        };
-        let unconstrained_entity_ids = variable_layouts
-            .iter()
-            .filter_map(|(entity_id, layout)| {
-                layout
-                    .variable_range()
-                    .any(|variable| variable_owners[variable].is_none())
-                    .then_some(*entity_id)
-            })
-            .collect();
+        // Structural matching is only an early upper-bound check, not a DOF proof.
         let mut solved_entities = self.entities.clone();
         solve_constraints(&mut solved_entities, &self.constraints, policy)?;
+        let (status, unconstrained_entity_ids) = rank::analyze(
+            &solved_entities,
+            &self.constraints,
+            &variable_layouts,
+            &rank_equations,
+            &constraint_equation_ranges,
+            variable_count,
+        )?;
         for entity in &solved_entities {
             entity.validate()?;
         }

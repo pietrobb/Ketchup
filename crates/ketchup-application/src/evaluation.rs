@@ -9,8 +9,9 @@ use ketchup_core::exact_product::{
 use ketchup_core::exact_revolve::ExactRevolveRequest;
 use ketchup_core::graph::sha256_bytes;
 use ketchup_core::import::{
-    IGES_PARSER_ID, IGES_PARSER_VERSION, ImportFormat, ImportUnitAuthority, STEP_PARSER_ID,
-    STEP_PARSER_VERSION, StepImportEvidence,
+    IGES_PARSER_ID, IGES_PARSER_VERSION, IGES_XDE_PARSER_VERSION, ImportFormat,
+    ImportUnitAuthority, STEP_PARSER_ID, STEP_PARSER_VERSION, STEP_XDE_PARSER_VERSION,
+    StepImportEvidence,
 };
 use ketchup_core::persistence::ContainerData;
 use ketchup_core::sketch::{WorkplaneSpec, WorkplaneSupport};
@@ -622,8 +623,26 @@ pub fn start_exact_evaluation_scoped(
                         || "imported STEP receipt is unavailable".to_owned(),
                     )?;
                 let (format_name, parser_id, parser_version, suffix) = match receipt.format() {
-                    ImportFormat::Step => ("STEP", STEP_PARSER_ID, STEP_PARSER_VERSION, ".step"),
-                    ImportFormat::Iges => ("IGES", IGES_PARSER_ID, IGES_PARSER_VERSION, ".iges"),
+                    ImportFormat::Step => (
+                        "STEP",
+                        STEP_PARSER_ID,
+                        if spec.source_part_index.is_some() {
+                            STEP_XDE_PARSER_VERSION
+                        } else {
+                            STEP_PARSER_VERSION
+                        },
+                        ".step",
+                    ),
+                    ImportFormat::Iges => (
+                        "IGES",
+                        IGES_PARSER_ID,
+                        if spec.source_part_index.is_some() {
+                            IGES_XDE_PARSER_VERSION
+                        } else {
+                            IGES_PARSER_VERSION
+                        },
+                        ".iges",
+                    ),
                     _ => return Err("imported exact receipt format is unsupported".to_owned()),
                 };
                 if receipt.units().authority() != ImportUnitAuthority::FileDeclared
@@ -638,8 +657,10 @@ pub fn start_exact_evaluation_scoped(
                 let mut expected = StepImportEvidence {
                     source_unit,
                     result_fingerprint: spec.result_fingerprint.clone(),
+                    body_kind: spec.body_kind,
                     solid_count: spec.solid_count,
                     topology_counts: spec.topology_counts.unwrap_or([0; 5]),
+                    area_mm2: spec.area_mm2,
                     volume_mm3: spec.volume_mm3,
                     bounds_mm: spec.bounds_mm,
                     backend: spec.backend.clone(),
@@ -656,32 +677,53 @@ pub fn start_exact_evaluation_scoped(
                     .map_err(|error| error.to_string())?;
                 let source_sha256 = ketchup_core::graph::sha256_hex(&source);
                 let actual = match receipt.format() {
-                    ImportFormat::Step => worker.inspect_step_import_with_cancellation(
-                        temporary.path(),
-                        &source_sha256,
-                        &worker_cancelled,
-                    ),
-                    ImportFormat::Iges => worker
-                        .inspect_iges_import_with_cancellation(
+                    ImportFormat::Step => match spec.source_part_index {
+                        Some(index) => worker.inspect_step_xde_part_with_cancellation(
+                            temporary.path(),
+                            &source_sha256,
+                            index,
+                            &worker_cancelled,
+                        ),
+                        None => worker.inspect_step_import_with_cancellation(
                             temporary.path(),
                             &source_sha256,
                             &worker_cancelled,
-                        )
-                        .map(|evidence| StepImportEvidence {
-                            source_unit: evidence.source_unit,
-                            result_fingerprint: evidence.result_fingerprint,
-                            solid_count: evidence.solid_count,
-                            topology_counts: evidence.topology_counts,
-                            volume_mm3: evidence.volume_mm3,
-                            bounds_mm: evidence.bounds_mm,
-                            backend: evidence.backend,
-                            tolerance: evidence.tolerance,
-                        }),
+                        ),
+                    },
+                    ImportFormat::Iges => match spec.source_part_index {
+                        Some(index) => worker.inspect_iges_xde_part_with_cancellation(
+                            temporary.path(),
+                            &source_sha256,
+                            index,
+                            &worker_cancelled,
+                        ),
+                        None => worker
+                            .inspect_iges_import_with_cancellation(
+                                temporary.path(),
+                                &source_sha256,
+                                &worker_cancelled,
+                            )
+                            .map(|evidence| StepImportEvidence {
+                                source_unit: evidence.source_unit,
+                                result_fingerprint: evidence.result_fingerprint,
+                                body_kind: evidence.body_kind,
+                                solid_count: evidence.solid_count,
+                                topology_counts: evidence.topology_counts,
+                                area_mm2: evidence.area_mm2,
+                                volume_mm3: evidence.volume_mm3,
+                                bounds_mm: evidence.bounds_mm,
+                                backend: evidence.backend,
+                                tolerance: evidence.tolerance,
+                            }),
+                    },
                     _ => unreachable!("receipt format was validated above"),
                 }
                 .map_err(|error| error.to_string())?;
                 if spec.topology_counts.is_none() {
                     expected.topology_counts = actual.topology_counts;
+                }
+                if spec.schema != ketchup_core::document::IMPORTED_EXACT_BODY_SCHEMA_V3 {
+                    expected.area_mm2 = actual.area_mm2;
                 }
                 if actual != expected {
                     return Err(format!(
@@ -694,20 +736,40 @@ pub fn start_exact_evaluation_scoped(
                     .tempfile()
                     .map_err(|error| error.to_string())?;
                 let mesh = match receipt.format() {
-                    ImportFormat::Step => worker.tessellate_step_import_with_cancellation(
-                        temporary.path(),
-                        &source_sha256,
-                        &spec.result_fingerprint,
-                        mesh_target.path(),
-                        &worker_cancelled,
-                    ),
-                    ImportFormat::Iges => worker.tessellate_iges_import_with_cancellation(
-                        temporary.path(),
-                        &source_sha256,
-                        &spec.result_fingerprint,
-                        mesh_target.path(),
-                        &worker_cancelled,
-                    ),
+                    ImportFormat::Step => match spec.source_part_index {
+                        Some(index) => worker.tessellate_step_xde_part_with_cancellation(
+                            temporary.path(),
+                            &source_sha256,
+                            &spec.result_fingerprint,
+                            mesh_target.path(),
+                            index,
+                            &worker_cancelled,
+                        ),
+                        None => worker.tessellate_step_import_with_cancellation(
+                            temporary.path(),
+                            &source_sha256,
+                            &spec.result_fingerprint,
+                            mesh_target.path(),
+                            &worker_cancelled,
+                        ),
+                    },
+                    ImportFormat::Iges => match spec.source_part_index {
+                        Some(index) => worker.tessellate_iges_xde_part_with_cancellation(
+                            temporary.path(),
+                            &source_sha256,
+                            &spec.result_fingerprint,
+                            mesh_target.path(),
+                            index,
+                            &worker_cancelled,
+                        ),
+                        None => worker.tessellate_iges_import_with_cancellation(
+                            temporary.path(),
+                            &source_sha256,
+                            &spec.result_fingerprint,
+                            mesh_target.path(),
+                            &worker_cancelled,
+                        ),
+                    },
                     _ => unreachable!("receipt format was validated above"),
                 }
                 .map_err(|error| error.to_string())?;

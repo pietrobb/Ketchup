@@ -8,27 +8,34 @@ use ketchup_app::{
     AssistantRepairOperation, AssistantRepairProgram, AssistantWorkspaceMode,
 };
 use ketchup_core::assistant_sidecar::{
-    ASSISTANT_PROTOCOL_VERSION, AssistantApiDiagnostics, AssistantAxisSpec,
+    ASSISTANT_PROTOCOL_VERSION, AssistantApiDiagnostics, AssistantAssemblyJointAxis,
+    AssistantAssemblyJointKind, AssistantAssemblyJointLimits, AssistantAxisSpec,
     AssistantBalloonTextIntent, AssistantBeamNotchIntent, AssistantBottleFinishKind,
     AssistantBottleIntent, AssistantBoxIntent, AssistantCadBodyFeature,
-    AssistantCadBooleanOperation, AssistantCadDeletePolicy, AssistantCadEditOperation,
-    AssistantCadEditProgram, AssistantCadEntitySelector, AssistantCadLoftSection,
-    AssistantCadPartFeature, AssistantCadRotation, AssistantChatResult, AssistantDistribution,
-    AssistantGableRoofIntent, AssistantKetchupBottleIntent, AssistantLinearArrayIntent,
-    AssistantModelIntent, AssistantOrientedBeamIntent, AssistantParameterEditIntent,
-    AssistantPrincipalPlane, AssistantProfileTranslationIntent, AssistantRotationIntent,
-    AssistantSketchConstraint, AssistantSketchEntity, AssistantSketchPointKind,
-    AssistantSketchPointRef, AssistantStaircaseIntent, AssistantSubtractionIntent,
-    AssistantTeapotIntent, AssistantTranslationIntent, AssistantWorkplaneSpec,
+    AssistantCadBooleanOperation, AssistantCadChamferMode, AssistantCadDeletePolicy,
+    AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
+    AssistantCadFeatureReference, AssistantCadFilletRadiusStation, AssistantCadLoftContinuity,
+    AssistantCadLoftSection, AssistantCadPartFeature, AssistantCadProgramFeatureOutput,
+    AssistantCadProgramFeatureReference, AssistantCadRotation, AssistantCadShellDirection,
+    AssistantCadSurfaceBodySource, AssistantChatResult, AssistantDistribution,
+    AssistantGableRoofIntent, AssistantInstancePath, AssistantInstancePathStep,
+    AssistantKetchupBottleIntent, AssistantLinearArrayIntent, AssistantModelIntent,
+    AssistantOrientedBeamIntent, AssistantParameterEditIntent, AssistantPrincipalPlane,
+    AssistantProfileTranslationIntent, AssistantRotationIntent, AssistantSketchConstraint,
+    AssistantSketchEntity, AssistantSketchPointKind, AssistantSketchPointRef,
+    AssistantStaircaseIntent, AssistantSubtractionIntent, AssistantTeapotIntent,
+    AssistantTranslationIntent, AssistantWorkplaneSpec,
 };
 use ketchup_core::document::{
-    BodyId, BooleanOperation, CanonicalCommand, ClassificationCategoryId,
-    ClassificationDimensionId, CommandBatch, DefinitionId, Dimension, DocumentStore,
-    EdgeFinishKind, FeatureId, FeatureKind, GroupId, LoftSection, NodeId, OccurrenceId,
-    ProfileSegment, ProposalGoal, ProposalValue, SpatialPathSegment, TagId, Transform,
+    BodyId, BooleanOperation, CanonicalCommand, ChamferEdgeSide, ChamferMode,
+    ClassificationCategoryId, ClassificationDimensionId, CommandBatch, DefinitionId, Dimension,
+    DocumentStore, EdgeFinishKind, FeatureId, FeatureKind, GroupId, InstancePath, InstancePathStep,
+    LoftSection, NodeId, OccurrenceId, ProfileSegment, ProposalGoal, ProposalValue,
+    SpatialPathSegment, TagId, Transform,
 };
 use ketchup_core::exact_brep_graph::{
-    EXACT_BREP_GRAPH_SCHEMA_V12, ExactBRepGraph, ExactBRepOperation,
+    EXACT_BREP_GRAPH_SCHEMA_V12, EXACT_BREP_GRAPH_SCHEMA_V15, EXACT_BREP_GRAPH_SCHEMA_V17,
+    EXACT_BREP_GRAPH_SCHEMA_V18, ExactBRepGraph, ExactBRepLoftContinuity, ExactBRepOperation,
 };
 use ketchup_core::exact_product::{ExactBodyPackage, ExactFaceRole, ExactPlanarOffsetRequest};
 use ketchup_core::intent::WorkflowIntent;
@@ -39,6 +46,7 @@ use ketchup_core::sketch::{
     SketchSpec, WorkplaneSpec,
 };
 use ketchup_core::state_view::encode_semantic_state;
+use ketchup_core::topology::{TopologicalElementKind, TopologicalReferenceStability};
 use ketchup_core::validation::VALIDATOR_ROLE_DIMENSION_V1;
 use ketchup_interaction::{LocaleCatalog, Vec3};
 use ketchup_scheduler::ExactWorkerSupervisor;
@@ -148,6 +156,26 @@ fn assign_validator_roles(shell: &mut Shell, assignments: &[(&str, &str, &str)])
         .app_mut()
         .set_assistant_workspace_mode(AssistantWorkspaceMode::Dock);
     shell.settle();
+}
+
+fn write_large_assistant_fixture(path: &std::path::Path) {
+    let mut document = DocumentStore::new();
+    let mut commands = vec![CanonicalCommand::CreateDefinition {
+        id: DefinitionId(1),
+        name: "Repeated production part".to_owned(),
+    }];
+    commands.extend((1..=101).map(|id| CanonicalCommand::CreateOccurrence {
+        id: OccurrenceId(id),
+        definition_id: DefinitionId(1),
+        name: format!("Part {id}"),
+        transform: Transform::identity(),
+        parent: None,
+        tag: None,
+        visible: true,
+    }));
+    document.apply_batch(&CommandBatch::new(commands)).unwrap();
+    document.discard_history_before_current();
+    persistence::save_atomic(path, &document.current()).unwrap();
 }
 
 fn write_assistant_movable_pocket_fixture(path: &std::path::Path) {
@@ -397,6 +425,17 @@ fn write_assistant_loft_fixture(path: &std::path::Path) {
                     control_points_mm: vec![[-4.0, -2.0], [5.0, -2.0], [4.0, 3.0], [-3.0, 4.0]],
                 },
             },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(3),
+                definition_id: DefinitionId(1),
+                name: "Loft guide".to_owned(),
+                kind: FeatureKind::SpatialPath {
+                    segments: vec![SpatialPathSegment::Line {
+                        start_mm: [0.0, 0.0, 0.0],
+                        end_mm: [0.0, 0.0, 35.0],
+                    }],
+                },
+            },
             CanonicalCommand::CreateOccurrence {
                 id: OccurrenceId(1),
                 definition_id: DefinitionId(1),
@@ -595,7 +634,7 @@ fn rotate_point_about_axis(
 
 fn wait_for_assistant_proposal(shell: &mut Shell) {
     let confirm = shell.catalog().text("assistant-confirm");
-    for _ in 0..100 {
+    for _ in 0..2_000 {
         shell.step();
         if shell.app().assistant_proposal().is_some() && shell.has_visible_label(&confirm) {
             return;
@@ -606,6 +645,15 @@ fn wait_for_assistant_proposal(shell: &mut Shell) {
         "scripted assistant response did not reach accessible proposal review: {:?}",
         shell.app().assistant_messages()
     );
+}
+
+fn submit_and_confirm_assistant_request(shell: &mut Shell, request: &str) {
+    let input = shell.catalog().text("assistant-input-hint");
+    shell.focus_text_input(&input);
+    shell.type_text(request);
+    shell.press_key(egui::Key::Enter);
+    wait_for_assistant_proposal(shell);
+    shell.click_row(&shell.catalog().text("assistant-confirm"));
 }
 
 #[test]
@@ -1322,7 +1370,7 @@ fn scripted_assistant_in_flight_requests_cancel_and_transport_survives_new_docum
     shell.focus_text_input(&input_label);
     shell.type_text("Cancel by new chat");
     shell.press_key(egui::Key::Enter);
-    for _ in 0..100 {
+    for _ in 0..2_000 {
         if transport.started_cancellation_requests() == 1 {
             break;
         }
@@ -1331,7 +1379,7 @@ fn scripted_assistant_in_flight_requests_cancel_and_transport_survives_new_docum
     assert_eq!(transport.started_cancellation_requests(), 1);
     let new_chat = shell.catalog().text("assistant-new-chat");
     shell.click_row(&new_chat);
-    for _ in 0..100 {
+    for _ in 0..2_000 {
         if transport.completed_cancellations() == 1 {
             break;
         }
@@ -1343,7 +1391,7 @@ fn scripted_assistant_in_flight_requests_cancel_and_transport_survives_new_docum
     shell.focus_text_input(&input_label);
     shell.type_text("Cancel by new document");
     shell.press_key(egui::Key::Enter);
-    for _ in 0..100 {
+    for _ in 0..2_000 {
         if transport.started_cancellation_requests() == 2 {
             break;
         }
@@ -1351,7 +1399,7 @@ fn scripted_assistant_in_flight_requests_cancel_and_transport_survives_new_docum
     }
     assert_eq!(transport.started_cancellation_requests(), 2);
     shell.click_menu_command("menu-file", AppCommand::New);
-    for _ in 0..100 {
+    for _ in 0..2_000 {
         if transport.completed_cancellations() == 2 {
             break;
         }
@@ -1363,7 +1411,7 @@ fn scripted_assistant_in_flight_requests_cancel_and_transport_survives_new_docum
     shell.focus_text_input(&input_label);
     shell.type_text("After New");
     shell.press_key(egui::Key::Enter);
-    for _ in 0..100 {
+    for _ in 0..2_000 {
         shell.step();
         if shell.app().assistant_messages().len() == 2 {
             break;
@@ -1377,6 +1425,83 @@ fn scripted_assistant_in_flight_requests_cancel_and_transport_survives_new_docum
         transport.request_ids(),
         ["chat-1", "chat-3", "chat-4"].map(str::to_owned)
     );
+}
+
+#[test]
+fn slow_context_preparation_keeps_headless_ui_responsive_and_cancels_stale_work() {
+    let request = "Slow context";
+    let transport = Arc::new(ScriptedAssistantTransport::new([(
+        request.to_owned(),
+        AssistantChatResult {
+            message: "Prepared in background".to_owned(),
+            model_intent: None,
+        },
+    )]));
+    let mut shell = Shell::with_assistant_transport(transport.clone());
+    shell
+        .app_mut()
+        .headless_set_assistant_context_preparation_delay(Duration::from_millis(750));
+    let input_label = shell.catalog().text("assistant-input-hint");
+    let revision = shell.app().document_revision();
+    let digest = shell.app().canonical_digest();
+    let undo_steps = shell.app().undo_step_count();
+
+    shell.focus_text_input(&input_label);
+    shell.type_text(request);
+    let started = Instant::now();
+    shell.press_key(egui::Key::Enter);
+    assert!(
+        started.elapsed() < Duration::from_millis(300),
+        "submitting a request blocked the GUI for {:?}",
+        started.elapsed()
+    );
+    assert_eq!(shell.app().document_revision(), revision);
+    assert_eq!(shell.app().canonical_digest(), digest);
+    assert_eq!(shell.app().undo_step_count(), undo_steps);
+    assert!(transport.request_ids().is_empty());
+
+    shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+    shell.click_menu_command("menu-view", AppCommand::Hide);
+    let intervening_revision = shell.app().document_revision();
+    let intervening_digest = shell.app().canonical_digest();
+    let intervening_undo_steps = shell.app().undo_step_count();
+    shell.step();
+    assert_eq!(shell.app().assistant_messages().len(), 2);
+    assert_eq!(
+        shell.app().assistant_messages()[1].role,
+        AssistantMessageRole::Error
+    );
+    assert!(shell.app().assistant_proposal().is_none());
+    assert_eq!(shell.app().document_revision(), intervening_revision);
+    assert_eq!(shell.app().canonical_digest(), intervening_digest);
+    assert_eq!(shell.app().undo_step_count(), intervening_undo_steps);
+    std::thread::sleep(Duration::from_millis(25));
+    assert!(transport.request_ids().is_empty());
+
+    let cancelled_transport = Arc::new(ScriptedAssistantTransport::new([(
+        request.to_owned(),
+        AssistantChatResult {
+            message: "Must not be delivered".to_owned(),
+            model_intent: None,
+        },
+    )]));
+    let mut cancelled = Shell::with_assistant_transport(cancelled_transport.clone());
+    cancelled
+        .app_mut()
+        .headless_set_assistant_context_preparation_delay(Duration::from_millis(750));
+    let revision = cancelled.app().document_revision();
+    let digest = cancelled.app().canonical_digest();
+    let undo_steps = cancelled.app().undo_step_count();
+    cancelled.focus_text_input(&input_label);
+    cancelled.type_text(request);
+    cancelled.press_key(egui::Key::Enter);
+    cancelled.click_row(&cancelled.catalog().text("assistant-new-chat"));
+    std::thread::sleep(Duration::from_millis(25));
+    assert!(cancelled_transport.request_ids().is_empty());
+    assert!(cancelled.app().assistant_messages().is_empty());
+    assert_eq!(cancelled.app().document_revision(), revision);
+    assert_eq!(cancelled.app().canonical_digest(), digest);
+    assert_eq!(cancelled.app().undo_step_count(), undo_steps);
 }
 
 #[test]
@@ -1574,6 +1699,204 @@ fn scripted_assistant_model_review_cancel_confirm_undo_and_redo_use_accesskit() 
     assert_eq!(shell.app().definition_count(), initial_definitions + 1);
     assert_eq!(shell.app().active_box_count(), initial_occurrences + 1);
     assert_eq!(transport.remaining_responses(), 0);
+}
+
+#[test]
+fn scripted_nested_assembly_joint_and_motion_preserve_consent_and_repeated_branch_identity() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = directory.path().join("assistant-nested-motion.ketchup");
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(50),
+                name: "Mechanism part".into(),
+            },
+            CanonicalCommand::CreateGroup {
+                id: GroupId(60),
+                name: "Reusable mechanism".into(),
+                transform: Transform::from_translation(100.0, 0.0, 0.0).unwrap(),
+                parent: None,
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(50),
+                definition_id: DefinitionId(50),
+                name: "Rail".into(),
+                transform: Transform::identity(),
+                parent: Some(GroupId(60)),
+                tag: None,
+                visible: true,
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(51),
+                definition_id: DefinitionId(50),
+                name: "Slider".into(),
+                transform: Transform::from_translation(20.0, 0.0, 0.0).unwrap(),
+                parent: Some(GroupId(60)),
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    let converted = document
+        .convert_group_to_component(GroupId(60), "Reusable mechanism")
+        .unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(80),
+                definition_id: converted.component_definition_id,
+                name: "Reusable mechanism copy".into(),
+                transform: Transform::from_translation(500.0, 0.0, 0.0).unwrap(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: converted.component_occurrence_id,
+                grounded: true,
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    let mut branch = snapshot
+        .scene_query()
+        .into_iter()
+        .filter(|item| {
+            item.instance_path.root_occurrence() == converted.component_occurrence_id
+                && !item.instance_path.is_root()
+        })
+        .collect::<Vec<_>>();
+    branch.sort_by(|left, right| {
+        left.transform.matrix()[3]
+            .partial_cmp(&right.transform.matrix()[3])
+            .unwrap()
+    });
+    let parent_path = branch[0].instance_path.clone();
+    let child_path = branch[1].instance_path.clone();
+    let child_before = branch[1].transform;
+    let twin = snapshot
+        .scene_query()
+        .into_iter()
+        .find(|item| {
+            item.instance_path.root_occurrence() == OccurrenceId(80)
+                && item.instance_path.steps() == child_path.steps()
+        })
+        .unwrap();
+    let twin_path = twin.instance_path.clone();
+    let twin_before = twin.transform;
+    let encode_path = |path: &InstancePath| AssistantInstancePath {
+        root_occurrence_id: path.root_occurrence().0,
+        steps: path
+            .steps()
+            .iter()
+            .map(|step| match *step {
+                InstancePathStep::Group(local_id) => AssistantInstancePathStep::Group {
+                    owner_definition_id: converted.component_definition_id.0,
+                    local_id: local_id.0,
+                },
+                InstancePathStep::Occurrence(local_id) => AssistantInstancePathStep::Occurrence {
+                    owner_definition_id: converted.component_definition_id.0,
+                    local_id: local_id.0,
+                },
+            })
+            .collect(),
+    };
+    let parent_input = encode_path(&parent_path);
+    let child_input = encode_path(&child_path);
+    drop(snapshot);
+    persistence::save_atomic(&fixture, &document.current()).unwrap();
+
+    let create_request = "Create the nested slider joint";
+    let move_request = "Move the nested slider by ten millimetres";
+    let transport = Arc::new(ScriptedAssistantTransport::new([
+        (
+            create_request.to_owned(),
+            AssistantChatResult {
+                message: "Review the nested joint.".into(),
+                model_intent: None,
+            },
+        ),
+        (
+            move_request.to_owned(),
+            AssistantChatResult {
+                message: "Review the nested motion.".into(),
+                model_intent: None,
+            },
+        ),
+    ]));
+    transport.queue_cad_edit_program(
+        create_request,
+        AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::CreateAssemblyJoint {
+                parent_instance_path: parent_input,
+                child_instance_path: child_input,
+                kind: AssistantAssemblyJointKind::Prismatic {
+                    axis: AssistantAssemblyJointAxis {
+                        direction_in_parent: [1.0, 0.0, 0.0],
+                        pivot_in_parent_mm: [0.0; 3],
+                    },
+                    limits: Some(AssistantAssemblyJointLimits {
+                        min: 0.0,
+                        max: 20.0,
+                    }),
+                    position_mm: 0.0,
+                },
+            }],
+        },
+    );
+    transport.queue_cad_edit_program(
+        move_request,
+        AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::SetAssemblyJointPosition {
+                joint_id: 1,
+                position: 10.0,
+            }],
+        },
+    );
+    let mut shell = Shell::with_assistant_transport(transport);
+    assert!(shell.app_mut().open_document_path(&fixture));
+    let input = shell.catalog().text("assistant-input-hint");
+    let confirm = shell.catalog().text("assistant-confirm");
+
+    let baseline = shell.app().canonical_digest();
+    shell.focus_text_input(&input);
+    shell.type_text(create_request);
+    shell.press_key(egui::Key::Enter);
+    wait_for_assistant_proposal(&mut shell);
+    assert_eq!(shell.app().canonical_digest(), baseline);
+    shell.click_row(&confirm);
+    let joint_digest = shell.app().canonical_digest();
+    assert_ne!(joint_digest, baseline);
+    assert_eq!(shell.app().document_snapshot().assembly_joints().count(), 1);
+
+    shell.focus_text_input(&input);
+    shell.type_text(move_request);
+    shell.press_key(egui::Key::Enter);
+    wait_for_assistant_proposal(&mut shell);
+    assert_eq!(shell.app().canonical_digest(), joint_digest);
+    shell.click_row(&confirm);
+    let moved_digest = shell.app().canonical_digest();
+    let moved = shell.app().document_snapshot();
+    assert_eq!(
+        moved
+            .resolve_instance_path(&child_path)
+            .unwrap()
+            .world_transform
+            .matrix()[3],
+        child_before.matrix()[3] + 10.0
+    );
+    assert_eq!(
+        moved
+            .resolve_instance_path(&twin_path)
+            .unwrap()
+            .world_transform,
+        twin_before
+    );
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), joint_digest);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().canonical_digest(), moved_digest);
 }
 
 #[test]
@@ -2484,7 +2807,7 @@ fn scripted_append_sweep_is_exact_persistent_and_one_step() {
 }
 
 #[test]
-fn scripted_append_loft_is_exact_persistent_and_one_step() {
+fn scripted_append_guided_loft_json_is_exact_persistent_and_one_step() {
     let request = "Loft the existing spline profiles";
     let transport = Arc::new(ScriptedAssistantTransport::new([(
         request.to_owned(),
@@ -2493,26 +2816,32 @@ fn scripted_append_loft_is_exact_persistent_and_one_step() {
             model_intent: None,
         },
     )]));
+    let program = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::AppendFeature {
+            definition_id: 1,
+            name: "Assistant guided loft".to_owned(),
+            feature: AssistantCadBodyFeature::Loft {
+                sections: vec![
+                    AssistantCadLoftSection {
+                        profile_feature_id: 1.into(),
+                        elevation_mm: 0.0,
+                    },
+                    AssistantCadLoftSection {
+                        profile_feature_id: 2.into(),
+                        elevation_mm: 35.0,
+                    },
+                ],
+                guide_feature_id: Some(3.into()),
+                continuity: AssistantCadLoftContinuity::Tangent,
+            },
+        }],
+    };
+    let json = serde_json::to_value(&program).unwrap();
+    assert_eq!(json["operations"][0]["feature"]["guide_feature_id"], 3);
+    assert_eq!(json["operations"][0]["feature"]["continuity"], "tangent");
     transport.queue_cad_edit_program(
         request,
-        AssistantCadEditProgram {
-            operations: vec![AssistantCadEditOperation::AppendFeature {
-                definition_id: 1,
-                name: "Assistant loft".to_owned(),
-                feature: AssistantCadBodyFeature::Loft {
-                    sections: vec![
-                        AssistantCadLoftSection {
-                            profile_feature_id: 1.into(),
-                            elevation_mm: 0.0,
-                        },
-                        AssistantCadLoftSection {
-                            profile_feature_id: 2.into(),
-                            elevation_mm: 35.0,
-                        },
-                    ],
-                },
-            }],
-        },
+        serde_json::from_value(json).expect("public guided Loft JSON must round-trip"),
     );
 
     let directory = tempfile::tempdir().unwrap();
@@ -2541,20 +2870,27 @@ fn scripted_append_loft_is_exact_persistent_and_one_step() {
     assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
     let committed = shell.app().document_snapshot();
     assert!(matches!(
-        committed.feature(FeatureId(3)).unwrap().kind(),
-        FeatureKind::Loft { sections } if sections == &vec![
+        committed.feature(FeatureId(4)).unwrap().kind(),
+        FeatureKind::Loft {
+            sections,
+            guide: Some(FeatureId(3)),
+            continuity: ketchup_core::document::LoftContinuity::Tangent,
+        } if sections == &vec![
             LoftSection { profile: FeatureId(1), elevation_mm: 0.0 },
             LoftSection { profile: FeatureId(2), elevation_mm: 35.0 },
         ]
     ));
-    let graph = ExactBRepGraph::from_snapshot(&committed, DefinitionId(1), FeatureId(3)).unwrap();
-    assert_eq!(graph.producer_feature_id, 3);
-    assert!(
-        graph
-            .nodes
-            .iter()
-            .any(|node| matches!(&node.operation, ExactBRepOperation::Loft { .. }))
-    );
+    let graph = ExactBRepGraph::from_snapshot(&committed, DefinitionId(1), FeatureId(4)).unwrap();
+    assert_eq!(graph.producer_feature_id, 4);
+    assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V15);
+    assert!(graph.nodes.iter().any(|node| matches!(
+        &node.operation,
+        ExactBRepOperation::Loft {
+            guide: Some(guide),
+            continuity: ExactBRepLoftContinuity::Tangent,
+            ..
+        } if guide.source_feature_id == 3 && guide.segments.len() == 1
+    )));
     let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
     let package = worker.evaluate_exact_brep_graph(&graph).unwrap();
     assert!(package.volume_mm3 > 0.0);
@@ -2566,7 +2902,17 @@ fn scripted_append_loft_is_exact_persistent_and_one_step() {
     persistence::save_atomic(&saved_path, &committed).unwrap();
     let reopened = persistence::load_file(&saved_path).unwrap().snapshot();
     assert_eq!(reopened.canonical_digest(), committed_digest);
-    assert!(ExactBRepGraph::from_snapshot(&reopened, DefinitionId(1), FeatureId(3)).is_ok());
+    let reopened_graph =
+        ExactBRepGraph::from_snapshot(&reopened, DefinitionId(1), FeatureId(4)).unwrap();
+    assert_eq!(reopened_graph.schema, EXACT_BREP_GRAPH_SCHEMA_V15);
+    assert!(matches!(
+        &reopened_graph.nodes[0].operation,
+        ExactBRepOperation::Loft {
+            guide: Some(guide),
+            continuity: ExactBRepLoftContinuity::Tangent,
+            ..
+        } if guide.source_feature_id == 3
+    ));
 
     shell.click_menu_command("menu-edit", AppCommand::Undo);
     assert_eq!(shell.app().canonical_digest(), baseline_digest);
@@ -2580,8 +2926,8 @@ fn scripted_append_loft_is_exact_persistent_and_one_step() {
 }
 
 #[test]
-fn scripted_append_topology_shell_is_exact_persistent_and_one_step() {
-    let request = "Shell the existing exact body";
+fn scripted_append_closed_symmetric_shell_is_exact_persistent_and_one_step() {
+    let request = "Create a closed symmetric shell from the existing exact body";
     let directory = tempfile::tempdir().unwrap();
     let fixture_path = directory.path().join("assistant-shell-input.ketchup");
     let fixture = ketchup_app::KetchupApp::new();
@@ -2593,30 +2939,6 @@ fn scripted_append_topology_shell_is_exact_persistent_and_one_step() {
     let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
     let base_package = worker.evaluate_exact_brep_graph(&base_graph).unwrap();
     let base_volume = base_package.volume_mm3;
-    let top_z = base_package.bounds_mm[1][2];
-    let top_face_ordinal = base_package
-        .triangles
-        .iter()
-        .zip(&base_package.triangle_face_ordinals)
-        .find_map(|(triangle, face_ordinal)| {
-            triangle
-                .vertex_indices
-                .iter()
-                .all(|index| {
-                    (base_package.vertices[*index as usize].position_mm[2] - top_z).abs() <= 1.0e-6
-                })
-                .then_some(*face_ordinal)
-        })
-        .unwrap();
-    let reference_id = base_package
-        .topological_references
-        .iter()
-        .find(|reference| {
-            reference.producer_element_id == format!("generated-result/face/{top_face_ordinal}")
-        })
-        .unwrap()
-        .lineage_digest
-        .clone();
 
     let transport = Arc::new(ScriptedAssistantTransport::new([(
         request.to_owned(),
@@ -2633,8 +2955,10 @@ fn scripted_append_topology_shell_is_exact_persistent_and_one_step() {
                 name: "Assistant shell".to_owned(),
                 feature: AssistantCadBodyFeature::TopologyShell {
                     target_feature_id: 2,
-                    removed_face_reference_ids: vec![reference_id.clone()],
+                    removed_face_reference_ids: Vec::new(),
                     thickness_mm: 2.0,
+                    direction:
+                        ketchup_core::assistant_sidecar::AssistantCadShellDirection::Symmetric,
                 },
             }],
         },
@@ -2647,14 +2971,6 @@ fn scripted_append_topology_shell_is_exact_persistent_and_one_step() {
         shell
             .app_mut()
             .headless_install_exact_package(ExactBodyPackage::Graph(base_package))
-    );
-    let context = shell.app().assistant_context();
-    assert!(
-        context["topology_face_references"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|reference| reference["reference_id"] == reference_id)
     );
     let baseline_revision = shell.app().document_revision();
     let baseline_digest = shell.app().canonical_digest();
@@ -2681,20 +2997,25 @@ fn scripted_append_topology_shell_is_exact_persistent_and_one_step() {
             target: FeatureId(2),
             removed_faces,
             thickness,
-        } if removed_faces.len() == 1
-            && removed_faces[0].lineage_digest == reference_id
-            && thickness.millimetres() == 2.0
+            direction: ketchup_core::document::ShellDirection::Symmetric,
+        } if removed_faces.is_empty() && thickness.millimetres() == 2.0
     ));
     let graph = ExactBRepGraph::from_snapshot(&committed, DefinitionId(1), FeatureId(3)).unwrap();
-    assert!(
-        graph
-            .nodes
-            .iter()
-            .any(|node| matches!(&node.operation, ExactBRepOperation::Shell { .. }))
+    assert_eq!(
+        graph.schema,
+        ketchup_core::exact_brep_graph::EXACT_BREP_GRAPH_SCHEMA_V16
     );
+    assert!(graph.nodes.iter().any(|node| matches!(
+        &node.operation,
+        ExactBRepOperation::Shell {
+            removed_faces,
+            direction: ketchup_core::exact_brep_graph::ExactBRepShellDirection::Symmetric,
+            ..
+        } if removed_faces.is_empty()
+    )));
     let package = worker.evaluate_exact_brep_graph(&graph).unwrap();
     assert!(package.volume_mm3 > 0.0);
-    assert!(package.volume_mm3 < base_volume);
+    assert!((package.volume_mm3 - base_volume).abs() > 1.0e-6);
     assert_eq!(package.topology_counts[4], 1);
     assert_eq!(committed.occurrences().count(), baseline_occurrences);
 
@@ -2705,8 +3026,11 @@ fn scripted_append_topology_shell_is_exact_persistent_and_one_step() {
     assert_eq!(reopened.canonical_digest(), committed_digest);
     assert!(matches!(
         reopened.feature(FeatureId(3)).unwrap().kind(),
-        FeatureKind::TopologyShell { removed_faces, .. }
-            if removed_faces.len() == 1 && removed_faces[0].lineage_digest == reference_id
+        FeatureKind::TopologyShell {
+            removed_faces,
+            direction: ketchup_core::document::ShellDirection::Symmetric,
+            ..
+        } if removed_faces.is_empty()
     ));
     assert!(ExactBRepGraph::from_snapshot(&reopened, DefinitionId(1), FeatureId(3)).is_ok());
 
@@ -2763,6 +3087,16 @@ fn scripted_append_topology_fillet_is_exact_persistent_and_one_step() {
                     target_feature_id: 2,
                     edge_reference_ids: vec![reference_id.clone()],
                     radius_mm: 2.0,
+                    radius_stations: vec![
+                        AssistantCadFilletRadiusStation {
+                            position: 0.5,
+                            radius_mm: 3.0,
+                        },
+                        AssistantCadFilletRadiusStation {
+                            position: 1.0,
+                            radius_mm: 1.0,
+                        },
+                    ],
                 },
             }],
         },
@@ -2810,17 +3144,30 @@ fn scripted_append_topology_fillet_is_exact_persistent_and_one_step() {
             edges,
             kind: EdgeFinishKind::Fillet,
             amount,
+            fillet_radius_stations,
+            ..
         } if edges.len() == 1
             && edges[0].lineage_digest == reference_id
             && amount.millimetres() == 2.0
+            && fillet_radius_stations.len() == 2
+            && fillet_radius_stations[0].position == 0.5
+            && fillet_radius_stations[0].radius.millimetres() == 3.0
+            && fillet_radius_stations[1].position == 1.0
+            && fillet_radius_stations[1].radius.millimetres() == 1.0
     ));
     let graph = ExactBRepGraph::from_snapshot(&committed, DefinitionId(1), FeatureId(3)).unwrap();
-    assert!(
-        graph
-            .nodes
-            .iter()
-            .any(|node| matches!(&node.operation, ExactBRepOperation::EdgeFinish { .. }))
-    );
+    assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V17);
+    assert!(graph.nodes.iter().any(|node| matches!(
+        &node.operation,
+        ExactBRepOperation::EdgeFinish {
+            fillet_radius_stations,
+            ..
+        } if fillet_radius_stations.len() == 2
+            && f64::from_bits(fillet_radius_stations[0].position_bits) == 0.5
+            && f64::from_bits(fillet_radius_stations[0].radius_bits) == 3.0
+            && f64::from_bits(fillet_radius_stations[1].position_bits) == 1.0
+            && f64::from_bits(fillet_radius_stations[1].radius_bits) == 1.0
+    )));
     let package = worker.evaluate_exact_brep_graph(&graph).unwrap();
     assert!(package.volume_mm3 > 0.0);
     assert_eq!(package.topology_counts[4], 1);
@@ -2836,8 +3183,15 @@ fn scripted_append_topology_fillet_is_exact_persistent_and_one_step() {
         FeatureKind::TopologyEdgeFinish {
             edges,
             kind: EdgeFinishKind::Fillet,
+            fillet_radius_stations,
             ..
-        } if edges.len() == 1 && edges[0].lineage_digest == reference_id
+        } if edges.len() == 1
+            && edges[0].lineage_digest == reference_id
+            && fillet_radius_stations.len() == 2
+            && fillet_radius_stations[0].position == 0.5
+            && fillet_radius_stations[0].radius.millimetres() == 3.0
+            && fillet_radius_stations[1].position == 1.0
+            && fillet_radius_stations[1].radius.millimetres() == 1.0
     ));
     assert!(ExactBRepGraph::from_snapshot(&reopened, DefinitionId(1), FeatureId(3)).is_ok());
 
@@ -2854,7 +3208,7 @@ fn scripted_append_topology_fillet_is_exact_persistent_and_one_step() {
 
 #[test]
 fn scripted_append_topology_chamfer_is_exact_persistent_and_one_step() {
-    let request = "Chamfer an existing exact body edge";
+    let request = "Add a two-distance Chamfer to an existing exact body edge";
     let directory = tempfile::tempdir().unwrap();
     let fixture_path = directory.path().join("assistant-chamfer-input.ketchup");
     let fixture = ketchup_app::KetchupApp::new();
@@ -2865,14 +3219,24 @@ fn scripted_append_topology_chamfer_is_exact_persistent_and_one_step() {
         ExactBRepGraph::from_snapshot(&fixture_snapshot, DefinitionId(1), FeatureId(2)).unwrap();
     let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
     let base_package = worker.evaluate_exact_brep_graph(&base_graph).unwrap();
+    let selected_edge = base_package
+        .edge_evidence
+        .iter()
+        .find(|edge| edge.adjacent_face_ordinals.len() == 2)
+        .unwrap();
     let reference_id = base_package
         .topological_references
         .iter()
-        .find(|reference| {
-            reference
-                .producer_element_id
-                .starts_with("generated-result/edge/")
-        })
+        .filter(|reference| reference.kind == TopologicalElementKind::Edge)
+        .nth(selected_edge.edge_ordinal as usize)
+        .unwrap()
+        .lineage_digest
+        .clone();
+    let side_face_reference_id = base_package
+        .topological_references
+        .iter()
+        .filter(|reference| reference.kind == TopologicalElementKind::Face)
+        .nth(selected_edge.adjacent_face_ordinals[0] as usize)
         .unwrap()
         .lineage_digest
         .clone();
@@ -2894,6 +3258,10 @@ fn scripted_append_topology_chamfer_is_exact_persistent_and_one_step() {
                     target_feature_id: 2,
                     edge_reference_ids: vec![reference_id.clone()],
                     distance_mm: 2.0,
+                    mode: AssistantCadChamferMode::TwoDistance {
+                        second_distance_mm: 3.0,
+                    },
+                    side_face_reference_ids: vec![side_face_reference_id.clone()],
                 },
             }],
         },
@@ -2941,11 +3309,18 @@ fn scripted_append_topology_chamfer_is_exact_persistent_and_one_step() {
             edges,
             kind: EdgeFinishKind::Chamfer,
             amount,
+            chamfer_mode: ChamferMode::TwoDistance { second_distance },
+            chamfer_edge_sides,
+            ..
         } if edges.len() == 1
             && edges[0].lineage_digest == reference_id
             && amount.millimetres() == 2.0
+            && second_distance.millimetres() == 3.0
+            && chamfer_edge_sides.len() == 1
+            && chamfer_edge_sides[0].side_face.lineage_digest == side_face_reference_id
     ));
     let graph = ExactBRepGraph::from_snapshot(&committed, DefinitionId(1), FeatureId(3)).unwrap();
+    assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V18);
     assert!(
         graph
             .nodes
@@ -2980,6 +3355,379 @@ fn scripted_append_topology_chamfer_is_exact_persistent_and_one_step() {
     assert_eq!(shell.app().canonical_digest(), committed_digest);
     assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
     assert_eq!(shell.app().redo_step_count(), baseline_redo);
+    assert_eq!(transport.remaining_responses(), 0);
+}
+
+#[test]
+fn integrated_finishing_chain_rebuilds_exactly_through_headless_assistant() {
+    let shell_request = "Create a closed symmetric shell";
+    let fillet_request = "Add a variable fillet to the shelled part";
+    let invalid_chamfer_request = "Use an edge as the Chamfer orientation face";
+    let chamfer_request = "Add an oriented two-distance chamfer after the fillet";
+    let response = |message: &str| AssistantChatResult {
+        message: message.to_owned(),
+        model_intent: None,
+    };
+    let transport = Arc::new(ScriptedAssistantTransport::new([
+        (
+            shell_request.to_owned(),
+            response("Review the integrated shell."),
+        ),
+        (
+            fillet_request.to_owned(),
+            response("Review the integrated fillet."),
+        ),
+        (
+            invalid_chamfer_request.to_owned(),
+            response("Review the invalid Chamfer."),
+        ),
+        (
+            invalid_chamfer_request.to_owned(),
+            response("Review the invalid Chamfer."),
+        ),
+        (
+            chamfer_request.to_owned(),
+            response("Review the integrated chamfer."),
+        ),
+    ]));
+    transport.queue_cad_edit_program(
+        shell_request,
+        AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::AppendFeature {
+                definition_id: 1,
+                name: "Integrated shell".to_owned(),
+                feature: AssistantCadBodyFeature::TopologyShell {
+                    target_feature_id: 2,
+                    removed_face_reference_ids: Vec::new(),
+                    thickness_mm: 0.5,
+                    direction:
+                        ketchup_core::assistant_sidecar::AssistantCadShellDirection::Symmetric,
+                },
+            }],
+        },
+    );
+
+    let directory = tempfile::tempdir().unwrap();
+    let fixture_path = directory.path().join("integrated-finishing-input.ketchup");
+    let fixture = ketchup_app::KetchupApp::new();
+    let fixture_snapshot = fixture.document_snapshot();
+    persistence::save_atomic(&fixture_path, &fixture_snapshot).unwrap();
+    let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
+    let base_graph =
+        ExactBRepGraph::from_snapshot(&fixture_snapshot, DefinitionId(1), FeatureId(2)).unwrap();
+    let base_package = worker.evaluate_exact_brep_graph(&base_graph).unwrap();
+
+    let mut shell = Shell::with_assistant_transport(transport.clone());
+    assert!(shell.app_mut().open_document_path(&fixture_path));
+    shell.settle();
+    assert!(
+        shell
+            .app_mut()
+            .headless_install_exact_package(ExactBodyPackage::Graph(base_package))
+    );
+    let initial_revision = shell.app().document_revision();
+    let initial_undo = shell.app().undo_step_count();
+
+    submit_and_confirm_assistant_request(&mut shell, shell_request);
+    assert_eq!(shell.app().document_revision(), initial_revision + 1);
+    assert_eq!(shell.app().undo_step_count(), initial_undo + 1);
+    let shell_snapshot = shell.app().document_snapshot();
+    let shell_graph =
+        ExactBRepGraph::from_snapshot(&shell_snapshot, DefinitionId(1), FeatureId(3)).unwrap();
+    assert_eq!(
+        shell_graph.schema,
+        ketchup_core::exact_brep_graph::EXACT_BREP_GRAPH_SCHEMA_V16
+    );
+    let shell_package = worker.evaluate_exact_brep_graph(&shell_graph).unwrap();
+    let fillet_edge_reference_id = shell_package
+        .edge_evidence
+        .iter()
+        .filter(|edge| edge.adjacent_face_ordinals.len() == 2)
+        .find_map(|edge| {
+            shell_package
+                .topological_references
+                .iter()
+                .filter(|reference| reference.kind == TopologicalElementKind::Edge)
+                .nth(edge.edge_ordinal as usize)
+                .filter(|reference| {
+                    reference.stability == TopologicalReferenceStability::Guaranteed
+                })
+                .map(|reference| reference.lineage_digest.clone())
+        })
+        .expect("the closed Shell must expose a guaranteed manifold Fillet edge");
+    assert!(
+        shell
+            .app_mut()
+            .headless_install_exact_package(ExactBodyPackage::Graph(shell_package))
+    );
+    transport.queue_cad_edit_program(
+        fillet_request,
+        AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::AppendFeature {
+                definition_id: 1,
+                name: "Integrated variable fillet".to_owned(),
+                feature: AssistantCadBodyFeature::TopologyFillet {
+                    target_feature_id: 3,
+                    edge_reference_ids: vec![fillet_edge_reference_id],
+                    radius_mm: 0.25,
+                    radius_stations: vec![
+                        AssistantCadFilletRadiusStation {
+                            position: 0.5,
+                            radius_mm: 0.35,
+                        },
+                        AssistantCadFilletRadiusStation {
+                            position: 1.0,
+                            radius_mm: 0.2,
+                        },
+                    ],
+                },
+            }],
+        },
+    );
+
+    submit_and_confirm_assistant_request(&mut shell, fillet_request);
+    assert_eq!(shell.app().document_revision(), initial_revision + 2);
+    assert_eq!(shell.app().undo_step_count(), initial_undo + 2);
+    let fillet_snapshot = shell.app().document_snapshot();
+    let fillet_graph =
+        ExactBRepGraph::from_snapshot(&fillet_snapshot, DefinitionId(1), FeatureId(4)).unwrap();
+    assert_eq!(fillet_graph.schema, EXACT_BREP_GRAPH_SCHEMA_V17);
+    let fillet_package = worker.evaluate_exact_brep_graph(&fillet_graph).unwrap();
+    let mut chamfer_selection = None;
+    'edges: for edge_evidence in &fillet_package.edge_evidence {
+        let edge = fillet_package
+            .topological_references
+            .iter()
+            .filter(|reference| reference.kind == TopologicalElementKind::Edge)
+            .nth(edge_evidence.edge_ordinal as usize)
+            .unwrap()
+            .clone();
+        if edge.stability != TopologicalReferenceStability::Guaranteed {
+            continue;
+        }
+        for face_ordinal in &edge_evidence.adjacent_face_ordinals {
+            let side_face = fillet_package
+                .topological_references
+                .iter()
+                .filter(|reference| reference.kind == TopologicalElementKind::Face)
+                .nth(*face_ordinal as usize)
+                .unwrap()
+                .clone();
+            if side_face.stability != TopologicalReferenceStability::Guaranteed {
+                continue;
+            }
+            let mut candidate = persistence::load(&persistence::save(&fillet_snapshot))
+                .unwrap()
+                .into_editable()
+                .unwrap_or_else(|_| panic!("schema 73 candidate must remain editable"));
+            candidate
+                .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+                    id: FeatureId(5),
+                    definition_id: DefinitionId(1),
+                    name: "Chamfer feasibility candidate".to_owned(),
+                    kind: FeatureKind::TopologyEdgeFinish {
+                        target: FeatureId(4),
+                        edges: vec![edge.clone()],
+                        kind: EdgeFinishKind::Chamfer,
+                        amount: Dimension::from_decimal("0.2").unwrap(),
+                        fillet_radius_stations: Vec::new(),
+                        chamfer_mode: ChamferMode::TwoDistance {
+                            second_distance: Dimension::from_decimal("0.3").unwrap(),
+                        },
+                        chamfer_edge_sides: vec![ChamferEdgeSide {
+                            edge: edge.clone(),
+                            side_face: side_face.clone(),
+                        }],
+                    },
+                }]))
+                .unwrap();
+            let candidate_graph =
+                ExactBRepGraph::from_snapshot(&candidate.current(), DefinitionId(1), FeatureId(5))
+                    .unwrap();
+            if worker.evaluate_exact_brep_graph(&candidate_graph).is_ok() {
+                chamfer_selection = Some((edge.lineage_digest, side_face.lineage_digest));
+                break 'edges;
+            }
+        }
+    }
+    let (chamfer_edge_reference_id, chamfer_face_reference_id) = chamfer_selection
+        .expect("the integrated exact part must expose a feasible oriented Chamfer edge/face pair");
+    assert!(
+        shell
+            .app_mut()
+            .headless_install_exact_package(ExactBodyPackage::Graph(fillet_package))
+    );
+    let invalid_program = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::AppendFeature {
+            definition_id: 1,
+            name: "Rejected edge-as-face Chamfer".to_owned(),
+            feature: AssistantCadBodyFeature::TopologyChamfer {
+                target_feature_id: 4,
+                edge_reference_ids: vec![chamfer_edge_reference_id.clone()],
+                distance_mm: 0.2,
+                mode: AssistantCadChamferMode::TwoDistance {
+                    second_distance_mm: 0.3,
+                },
+                side_face_reference_ids: vec![chamfer_edge_reference_id.clone()],
+            },
+        }],
+    };
+    transport.queue_cad_edit_program(invalid_chamfer_request, invalid_program.clone());
+    transport.queue_cad_edit_program(invalid_chamfer_request, invalid_program);
+    let before_rejection_revision = shell.app().document_revision();
+    let before_rejection_digest = shell.app().canonical_digest();
+    let before_rejection_undo = shell.app().undo_step_count();
+    let before_diagnostic_count = shell
+        .app()
+        .assistant_messages()
+        .iter()
+        .filter(|message| message.diagnostic.is_some())
+        .count();
+    let input = shell.catalog().text("assistant-input-hint");
+    shell.focus_text_input(&input);
+    shell.type_text(invalid_chamfer_request);
+    shell.press_key(egui::Key::Enter);
+    for _ in 0..2_000 {
+        shell.step();
+        if shell
+            .app()
+            .assistant_messages()
+            .iter()
+            .filter(|message| message.diagnostic.is_some())
+            .count()
+            == before_diagnostic_count + 2
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    shell.settle();
+    assert_eq!(
+        shell
+            .app()
+            .assistant_messages()
+            .iter()
+            .filter(|message| message.diagnostic.is_some())
+            .count(),
+        before_diagnostic_count + 2
+    );
+    assert!(shell.app().assistant_proposal().is_none());
+    assert_eq!(shell.app().document_revision(), before_rejection_revision);
+    assert_eq!(shell.app().canonical_digest(), before_rejection_digest);
+    assert_eq!(shell.app().undo_step_count(), before_rejection_undo);
+
+    transport.queue_cad_edit_program(
+        chamfer_request,
+        AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::AppendFeature {
+                definition_id: 1,
+                name: "Integrated two-distance chamfer".to_owned(),
+                feature: AssistantCadBodyFeature::TopologyChamfer {
+                    target_feature_id: 4,
+                    edge_reference_ids: vec![chamfer_edge_reference_id],
+                    distance_mm: 0.2,
+                    mode: AssistantCadChamferMode::TwoDistance {
+                        second_distance_mm: 0.3,
+                    },
+                    side_face_reference_ids: vec![chamfer_face_reference_id],
+                },
+            }],
+        },
+    );
+
+    submit_and_confirm_assistant_request(&mut shell, chamfer_request);
+    assert_eq!(shell.app().document_revision(), initial_revision + 3);
+    assert_eq!(shell.app().undo_step_count(), initial_undo + 3);
+    let finished_snapshot = shell.app().document_snapshot();
+    let finished_graph =
+        ExactBRepGraph::from_snapshot(&finished_snapshot, DefinitionId(1), FeatureId(5)).unwrap();
+    assert_eq!(finished_graph.schema, EXACT_BREP_GRAPH_SCHEMA_V18);
+    let finished_package = worker.evaluate_exact_brep_graph(&finished_graph).unwrap();
+    assert!(finished_package.volume_mm3 > 0.0);
+    assert_eq!(finished_package.topology_counts[4], 1);
+    let finished_fingerprint = finished_package.identity.result_fingerprint;
+    let before_upstream_digest = finished_snapshot.canonical_digest();
+    let upstream_body_id = finished_snapshot
+        .definition(DefinitionId(1))
+        .unwrap()
+        .feature_body_ownership(FeatureId(2))
+        .and_then(|ownership| ownership.output_body_id())
+        .unwrap();
+    let history = shell.catalog().text("feature-history-title");
+    shell.click_role_and_label(Role::Button, &history);
+    let upstream_feature = finished_snapshot.feature(FeatureId(2)).unwrap();
+    let upstream_label = shell.catalog().format(
+        "feature-history-select-feature",
+        &BTreeMap::from([
+            ("name", upstream_feature.name().to_owned()),
+            ("id", "2".to_owned()),
+            (
+                "status",
+                shell.catalog().text("feature-history-state-active"),
+            ),
+        ]),
+    );
+    shell.click_role_and_label(Role::Button, &upstream_label);
+
+    assert!(apply_reviewed_model_intent(
+        &mut shell,
+        AssistantModelIntent {
+            replace_scene: false,
+            boxes: Vec::new(),
+            translations: Vec::new(),
+            rotations: Vec::new(),
+            profile_translations: Vec::new(),
+            parameter_edits: vec![AssistantParameterEditIntent {
+                definition_id: 1,
+                body_id: upstream_body_id.0,
+                feature_id: 2,
+                constraint_id: None,
+                value_mm: 30.0,
+            }],
+            linear_arrays: Vec::new(),
+            bottles: Vec::new(),
+            gable_roofs: Vec::new(),
+            staircases: Vec::new(),
+            oriented_beams: Vec::new(),
+            balloon_texts: Vec::new(),
+        }
+    ));
+    assert_eq!(shell.app().document_revision(), initial_revision + 4);
+    assert_eq!(shell.app().undo_step_count(), initial_undo + 4);
+    let rebuilt = shell.app().document_snapshot();
+    assert_ne!(rebuilt.canonical_digest(), before_upstream_digest);
+    let rebuilt_graph =
+        ExactBRepGraph::from_snapshot(&rebuilt, DefinitionId(1), FeatureId(5)).unwrap();
+    assert_eq!(rebuilt_graph.schema, EXACT_BREP_GRAPH_SCHEMA_V18);
+    let rebuilt_package = worker.evaluate_exact_brep_graph(&rebuilt_graph).unwrap();
+    assert!(rebuilt_package.volume_mm3 > 0.0);
+    assert_eq!(rebuilt_package.topology_counts[4], 1);
+    assert_ne!(
+        rebuilt_package.identity.result_fingerprint,
+        finished_fingerprint
+    );
+
+    let rebuilt_digest = rebuilt.canonical_digest();
+    let saved_path = directory.path().join("integrated-finishing-result.ketchup");
+    persistence::save_atomic(&saved_path, &rebuilt).unwrap();
+    let reopened = persistence::load_file(&saved_path).unwrap().snapshot();
+    assert_eq!(reopened.canonical_digest(), rebuilt_digest);
+    let reopened_graph =
+        ExactBRepGraph::from_snapshot(&reopened, DefinitionId(1), FeatureId(5)).unwrap();
+    assert_eq!(reopened_graph.schema, EXACT_BREP_GRAPH_SCHEMA_V18);
+    assert_eq!(
+        worker
+            .evaluate_exact_brep_graph(&reopened_graph)
+            .unwrap()
+            .identity
+            .result_fingerprint,
+        rebuilt_package.identity.result_fingerprint
+    );
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), before_upstream_digest);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().canonical_digest(), rebuilt_digest);
     assert_eq!(transport.remaining_responses(), 0);
 }
 
@@ -3780,6 +4528,7 @@ fn assistant_parameter_edit_uses_the_selected_exact_target_for_feature_and_const
             "body_id": 1,
             "feature_id": 13,
             "constraint_id": null,
+            "parameter_path": null,
             "name": shell.catalog().text("feature-history-parameter-extent"),
             "current_value_mm": 5.0,
         })
@@ -3911,6 +4660,71 @@ fn assistant_parameter_edit_uses_the_selected_exact_target_for_feature_and_const
 }
 
 #[test]
+fn docked_assistant_can_inspect_selected_occurrence_101_from_bounded_context() {
+    let request = "Inspect selected part 101";
+    let transport = Arc::new(ScriptedAssistantTransport::new([(
+        request.to_owned(),
+        AssistantChatResult {
+            message: "Part 101 is available for inspection.".to_owned(),
+            model_intent: None,
+        },
+    )]));
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = directory.path().join("assistant-101-parts.ketchup");
+    write_large_assistant_fixture(&fixture);
+    let mut shell = Shell::with_assistant_transport(transport.clone());
+    assert!(shell.app_mut().open_document_path(&fixture));
+    assert!(
+        shell
+            .app_mut()
+            .headless_select_occurrence(OccurrenceId(101))
+    );
+    shell.settle();
+    let revision = shell.app().document_revision();
+    let digest = shell.app().canonical_digest();
+    let undo_steps = shell.app().undo_step_count();
+
+    shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
+    shell.type_text(request);
+    shell.press_key(egui::Key::Enter);
+    for _ in 0..100 {
+        shell.step();
+        if transport.contexts().len() == 1 && shell.app().assistant_messages().len() == 2 {
+            break;
+        }
+    }
+
+    let contexts = transport.contexts();
+    assert_eq!(contexts.len(), 1);
+    let context = &contexts[0];
+    assert_eq!(context["occurrence_count"], 101);
+    assert_eq!(context["occurrences_complete"], false);
+    let summary = context["occurrences"].as_array().unwrap();
+    assert_eq!(summary.len(), 100);
+    assert_eq!(summary[0]["occurrence_id"], 101);
+    assert_eq!(summary[0]["name"], "Part 101");
+    assert_eq!(context["selected_occurrence_ids"], serde_json::json!([101]));
+    let catalog = &context["_local_inspection_catalog"];
+    assert_eq!(catalog["document_id"], context["document_id"]);
+    assert_eq!(catalog["revision"], context["revision"]);
+    assert_eq!(catalog["canonical_digest"], context["canonical_digest"]);
+    assert_eq!(catalog["occurrences"].as_array().unwrap().len(), 101);
+    assert_eq!(
+        catalog["selection"],
+        serde_json::json!([{"root_occurrence_id": 101, "steps": []}])
+    );
+    let mut provider_context = context.clone();
+    provider_context
+        .as_object_mut()
+        .unwrap()
+        .remove("_local_inspection_catalog");
+    assert!(serde_json::to_vec(&provider_context).unwrap().len() <= 24 * 1024);
+    assert_eq!(shell.app().document_revision(), revision);
+    assert_eq!(shell.app().canonical_digest(), digest);
+    assert_eq!(shell.app().undo_step_count(), undo_steps);
+}
+
+#[test]
 fn assistant_selection_context_tracks_the_live_model_selection() {
     let mut shell = Shell::new();
     let none = shell.catalog().text("assistant-selection-none");
@@ -3936,6 +4750,153 @@ fn assistant_selection_context_tracks_the_live_model_selection() {
         serde_json::json!([])
     );
     assert!(shell.has_visible_label(&none));
+}
+
+#[test]
+fn scripted_surface_program_is_accessible_consent_bound_stale_safe_and_undoable() {
+    let create_request = "Create, extend, and thicken a planar surface";
+    let stale_request = "Prepare another surface extension";
+    let response = |message: &str| AssistantChatResult {
+        message: message.to_owned(),
+        model_intent: None,
+    };
+    let transport = Arc::new(ScriptedAssistantTransport::new([
+        (
+            create_request.to_owned(),
+            response("Review the surface workflow."),
+        ),
+        (
+            stale_request.to_owned(),
+            response("Review the additional surface extension."),
+        ),
+    ]));
+    let earlier_body = |operation_index| {
+        AssistantCadFeatureReference::ProgramOutput(AssistantCadProgramFeatureReference {
+            operation_index,
+            output: AssistantCadProgramFeatureOutput::BodyFeature,
+        })
+    };
+    transport.queue_cad_edit_program(
+        create_request,
+        AssistantCadEditProgram {
+            operations: vec![
+                AssistantCadEditOperation::AppendFeature {
+                    definition_id: 1,
+                    name: "Assistant planar surface".into(),
+                    feature: AssistantCadBodyFeature::SurfaceBody {
+                        source: AssistantCadSurfaceBodySource::Planar {
+                            profile_feature_id: 1.into(),
+                        },
+                    },
+                },
+                AssistantCadEditOperation::AppendFeature {
+                    definition_id: 1,
+                    name: "Assistant extended surface".into(),
+                    feature: AssistantCadBodyFeature::SurfaceExtend {
+                        target_feature_id: earlier_body(0),
+                        distance_mm: 2.0,
+                    },
+                },
+                AssistantCadEditOperation::AppendFeature {
+                    definition_id: 1,
+                    name: "Assistant thickened solid".into(),
+                    feature: AssistantCadBodyFeature::SurfaceThicken {
+                        target_feature_id: earlier_body(1),
+                        thickness_mm: 1.5,
+                        direction: AssistantCadShellDirection::Symmetric,
+                    },
+                },
+            ],
+        },
+    );
+    transport.queue_cad_edit_program(
+        stale_request,
+        AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::AppendFeature {
+                definition_id: 1,
+                name: "Stale surface extension".into(),
+                feature: AssistantCadBodyFeature::SurfaceExtend {
+                    target_feature_id: 3.into(),
+                    distance_mm: 1.0,
+                },
+            }],
+        },
+    );
+
+    let mut shell = Shell::with_assistant_transport(transport.clone());
+    let input = shell.catalog().text("assistant-input-hint");
+    let confirm = shell.catalog().text("assistant-confirm");
+    let baseline_revision = shell.app().document_revision();
+    let baseline_digest = shell.app().canonical_digest();
+    let baseline_undo = shell.app().undo_step_count();
+
+    shell.focus_text_input(&input);
+    shell.type_text(create_request);
+    shell.press_key(egui::Key::Enter);
+    wait_for_assistant_proposal(&mut shell);
+    assert!(shell.has_visible_label(&shell.catalog().text("assistant-review-title")));
+    assert_eq!(shell.app().document_revision(), baseline_revision);
+    assert_eq!(shell.app().canonical_digest(), baseline_digest);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo);
+
+    shell.click_row(&confirm);
+    let committed_revision = shell.app().document_revision();
+    let committed_digest = shell.app().canonical_digest();
+    assert_eq!(committed_revision, baseline_revision + 1);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
+    let committed = shell.app().document_snapshot();
+    assert!(matches!(
+        committed.feature(FeatureId(3)).unwrap().kind(),
+        FeatureKind::SurfaceBody(_)
+    ));
+    assert!(matches!(
+        committed.feature(FeatureId(4)).unwrap().kind(),
+        FeatureKind::SurfaceExtend {
+            target: FeatureId(3),
+            ..
+        }
+    ));
+    assert!(matches!(
+        committed.feature(FeatureId(5)).unwrap().kind(),
+        FeatureKind::SurfaceThicken {
+            target: FeatureId(4),
+            direction: ketchup_core::document::ShellDirection::Symmetric,
+            ..
+        }
+    ));
+
+    shell.focus_text_input(&input);
+    shell.type_text(stale_request);
+    shell.press_key(egui::Key::Enter);
+    wait_for_assistant_proposal(&mut shell);
+    assert_eq!(shell.app().document_revision(), committed_revision);
+    assert_eq!(shell.app().canonical_digest(), committed_digest);
+    shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+    shell.click_menu_command("menu-view", AppCommand::Hide);
+    let intervening_revision = shell.app().document_revision();
+    let intervening_digest = shell.app().canonical_digest();
+    let intervening_undo = shell.app().undo_step_count();
+    shell.settle();
+    shell.click_row(&confirm);
+    assert!(shell.app().assistant_proposal().is_none());
+    assert_eq!(shell.app().document_revision(), intervening_revision);
+    assert_eq!(shell.app().canonical_digest(), intervening_digest);
+    assert_eq!(shell.app().undo_step_count(), intervening_undo);
+    assert!(
+        shell
+            .app()
+            .document_snapshot()
+            .features()
+            .all(|feature| feature.name() != "Stale surface extension")
+    );
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), committed_digest);
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), baseline_digest);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().canonical_digest(), committed_digest);
+    assert_eq!(transport.remaining_responses(), 0);
 }
 
 #[test]

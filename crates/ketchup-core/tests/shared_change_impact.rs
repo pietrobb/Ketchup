@@ -2,9 +2,10 @@ use ketchup_core::assembly::{
     AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind, PlanarFaceAttachment,
 };
 use ketchup_core::document::{
-    BodyId, CanonicalCommand, CanonicalError, CollectionId, CommandBatch, DefinitionId, Dimension,
-    DocumentStore, FeatureId, FeatureKind, GroupId, OccurrenceId, ProposalCommitError,
-    ProposalPrincipal, StableFaceRole, Transform,
+    BodyId, BooleanOperation, CanonicalCommand, CanonicalError, CollectionId, CommandBatch,
+    DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind, FeatureParameterTarget,
+    GroupId, OccurrenceId, ParameterValueType, ProposalCommitError, ProposalPrincipal,
+    StableFaceRole, Transform,
 };
 use ketchup_core::drawing::{
     DrawingMargins, DrawingPageOrientation, DrawingPageSize, DrawingPageTemplate, DrawingScale,
@@ -1025,6 +1026,215 @@ fn history_registry(
         )))],
     )
     .unwrap()
+}
+
+#[test]
+fn cross_body_boolean_tool_edit_recomputes_terminal_exact_body_and_drawing_atomically() {
+    const TOOL_BODY: BodyId = BodyId(2);
+    const TOOL_PROFILE: FeatureId = FeatureId(12);
+    const TOOL_EXTRUSION: FeatureId = FeatureId(13);
+    const UNION: FeatureId = FeatureId(14);
+
+    let build = || {
+        let mut document = DocumentStore::new();
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DEFINITION,
+                    name: "Cross-body shared part".into(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: PROFILE,
+                    definition_id: DEFINITION,
+                    name: "Base profile".into(),
+                    kind: FeatureKind::Profile {
+                        points_mm: vec![[0.0, 0.0], [8.0, 0.0], [8.0, 8.0], [0.0, 8.0]],
+                    },
+                },
+                CanonicalCommand::CreateFeature {
+                    id: EXTRUSION,
+                    definition_id: DEFINITION,
+                    name: "Base extrusion".into(),
+                    kind: FeatureKind::Extrusion {
+                        profile: PROFILE,
+                        height: Dimension::from_decimal("5").unwrap(),
+                    },
+                },
+                CanonicalCommand::CreateBody {
+                    definition_id: DEFINITION,
+                    id: TOOL_BODY,
+                    name: "Tool body".into(),
+                    visible: true,
+                },
+                CanonicalCommand::SetActiveBody {
+                    definition_id: DEFINITION,
+                    id: TOOL_BODY,
+                },
+                CanonicalCommand::CreateFeature {
+                    id: TOOL_PROFILE,
+                    definition_id: DEFINITION,
+                    name: "Tool profile".into(),
+                    kind: FeatureKind::Profile {
+                        points_mm: vec![[6.0, 0.0], [12.0, 0.0], [12.0, 8.0], [6.0, 8.0]],
+                    },
+                },
+                CanonicalCommand::CreateFeature {
+                    id: TOOL_EXTRUSION,
+                    definition_id: DEFINITION,
+                    name: "Tool extrusion".into(),
+                    kind: FeatureKind::Extrusion {
+                        profile: TOOL_PROFILE,
+                        height: Dimension::from_decimal("5").unwrap(),
+                    },
+                },
+                CanonicalCommand::SetActiveBody {
+                    definition_id: DEFINITION,
+                    id: BodyId(1),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: UNION,
+                    definition_id: DEFINITION,
+                    name: "Union".into(),
+                    kind: FeatureKind::Boolean {
+                        operation: BooleanOperation::Union,
+                        target: EXTRUSION,
+                        tool: TOOL_EXTRUSION,
+                    },
+                },
+                CanonicalCommand::ConsumeBody {
+                    definition_id: DEFINITION,
+                    id: TOOL_BODY,
+                    by_feature_id: UNION,
+                },
+                CanonicalCommand::CreateOccurrence {
+                    id: FIRST,
+                    definition_id: DEFINITION,
+                    name: "First reuse".into(),
+                    transform: Transform::identity(),
+                    parent: None,
+                    tag: None,
+                    visible: true,
+                },
+                CanonicalCommand::CreateOccurrence {
+                    id: SECOND,
+                    definition_id: DEFINITION,
+                    name: "Second reuse".into(),
+                    transform: Transform::from_translation(30.0, 0.0, 0.0).unwrap(),
+                    parent: None,
+                    tag: None,
+                    visible: true,
+                },
+                CanonicalCommand::CreateDrawingSheet(
+                    DrawingSheet::new(
+                        SHEET,
+                        "Cross-body drawing",
+                        DrawingSource::Definition(DEFINITION),
+                    )
+                    .unwrap(),
+                ),
+            ]))
+            .unwrap();
+        document.discard_history_before_current();
+        document
+    };
+    let request = |snapshot: &ketchup_core::document::Snapshot| {
+        SharedDefinitionChangeRequest::exact_parameter_edit(
+            snapshot,
+            BodyParameterEditRequest {
+                definition_id: DEFINITION,
+                body_id: TOOL_BODY,
+                edits: vec![ExactParameterEdit {
+                    target: ExactParameterEditTarget::FeatureParameter(
+                        FeatureParameterTarget::new(
+                            TOOL_PROFILE,
+                            "bounds.width",
+                            ParameterValueType::Length,
+                        )
+                        .unwrap(),
+                    ),
+                    dimension: Dimension::from_decimal("7").unwrap(),
+                }],
+            },
+        )
+    };
+
+    let mut document = build();
+    let source = document.current();
+    let mut exact_results = history_registry(&source, "cross-body-before");
+    let before = stamp(&document);
+    let before_results = exact_results.contents_stamp();
+    let impact = project_shared_change_impact(
+        &document,
+        &exact_results,
+        request(&source),
+        ProposalPrincipal::LocalAssistant,
+    )
+    .unwrap();
+    assert_eq!(impact.affected_body_ids, vec![BodyId(1), TOOL_BODY]);
+    assert!(impact.unchanged_body_ids.is_empty());
+    assert_eq!(impact.exact_jobs.len(), 1);
+    assert_eq!(impact.exact_jobs[0].body_id, BodyId(1));
+    assert_eq!(impact.exact_jobs[0].producer_feature_id, UNION);
+    assert_eq!(stamp(&document), before);
+    assert_eq!(exact_results.contents_stamp(), before_results);
+
+    let candidate = document.preview_batch(impact.proposal.batch()).unwrap();
+    let evaluated = Arc::new(ExactBodyPackage::from(history_package(
+        &candidate,
+        "cross-body-after",
+    )));
+    let receipt = commit_shared_definition_change(
+        &mut document,
+        &mut exact_results,
+        &impact,
+        |_| -> Result<Arc<ExactBodyPackage>, String> { Ok(Arc::clone(&evaluated)) },
+    )
+    .unwrap();
+    assert_eq!(receipt.body_id, BodyId(1));
+    assert_eq!(receipt.unchanged_body_ids, Vec::<BodyId>::new());
+    assert_eq!(receipt.drawings.len(), 1);
+    assert!(receipt.drawings[0].is_current(&document.current()));
+    assert_eq!(document.visible_undo_steps(), before.undo + 1);
+    assert_eq!(
+        exact_results
+            .get_body(&document.current(), DEFINITION, BodyId(1))
+            .unwrap()
+            .unwrap()
+            .result_key()
+            .result_fingerprint,
+        "cross-body-after"
+    );
+    let committed_digest = document.current().canonical_digest();
+    let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
+    assert_eq!(reopened.snapshot().canonical_digest(), committed_digest);
+    document.undo().unwrap();
+    assert_eq!(document.current().canonical_digest(), before.digest);
+    document.redo().unwrap();
+    assert_eq!(document.current().canonical_digest(), committed_digest);
+
+    let mut failed_document = build();
+    let failed_source = failed_document.current();
+    let mut failed_results = history_registry(&failed_source, "cross-body-before");
+    let failed_impact = project_shared_change_impact(
+        &failed_document,
+        &failed_results,
+        request(&failed_source),
+        ProposalPrincipal::ManualClient,
+    )
+    .unwrap();
+    let failed_before = stamp(&failed_document);
+    let failed_results_before = failed_results.contents_stamp();
+    assert!(matches!(
+        commit_shared_definition_change(
+            &mut failed_document,
+            &mut failed_results,
+            &failed_impact,
+            |_| -> Result<Arc<ExactBodyPackage>, String> { Err("invalid Boolean geometry".into()) },
+        ),
+        Err(SharedChangePropagationError::Evaluation(_))
+    ));
+    assert_eq!(stamp(&failed_document), failed_before);
+    assert_eq!(failed_results.contents_stamp(), failed_results_before);
 }
 
 #[test]

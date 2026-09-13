@@ -6,10 +6,10 @@ use ketchup_core::document::{
     DefinitionId, DerivedIdentity, Dimension, DimensionDisplayUnit, DimensionPresentation,
     DimensionReferenceHealth, DocumentId, DocumentStore, EvaluationIdentity, FeatureId,
     FeatureKind, FeatureParameterBinding, FeatureParameterFreshness, FeatureParameterStaleReason,
-    FeatureParameterTarget, LoftSection, MeshAuthority, NodeId, OccurrenceId, ParameterPath,
-    ParameterValueType, PersistentDimension, PersistentDimensionId, PersistentDimensionTarget,
-    PortSpec, ProfileSegment, RuleOutput, SlotPath, SlotSegment, StableEdgeRole, StableFaceRole,
-    Transform,
+    FeatureParameterTarget, LoftContinuity, LoftSection, MeshAuthority, NodeId, OccurrenceId,
+    ParameterPath, ParameterValueType, PersistentDimension, PersistentDimensionId,
+    PersistentDimensionTarget, PortSpec, ProfileSegment, RuleOutput, SlotPath, SlotSegment,
+    StableEdgeRole, StableFaceRole, Transform,
 };
 use ketchup_core::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V8, ExactBRepGraph, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
@@ -23063,6 +23063,8 @@ fn scheduler_evaluates_bounded_spline_loft_and_rejects_over_limit_parity() {
                             elevation_mm: 80.0,
                         },
                     ],
+                    guide: None,
+                    continuity: LoftContinuity::Position,
                 },
             },
         ]))
@@ -23085,6 +23087,8 @@ fn scheduler_evaluates_bounded_spline_loft_and_rejects_over_limit_parity() {
                         elevation_mm: 1_000_000.001,
                     },
                 ],
+                guide: None,
+                continuity: LoftContinuity::Position,
             },
         }]))
         .err()
@@ -23149,6 +23153,8 @@ fn scheduler_evaluates_bounded_spline_loft_and_rejects_over_limit_parity() {
                             elevation_mm: 80.0,
                         },
                     ],
+                    guide: None,
+                    continuity: LoftContinuity::Position,
                 },
             },
         ]))

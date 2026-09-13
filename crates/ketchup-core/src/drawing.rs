@@ -4,10 +4,10 @@ use crate::assembly::{
     AssemblyReferenceHealth, AssemblySolveStatus, AssemblySolverPolicy, solve_rigid_assembly,
 };
 use crate::document::{
-    CanonicalCommand, CommandBatch, DefinitionId, DocumentId, DocumentStore, OccurrenceId,
-    Proposal, ProposalPrepareError, Snapshot, Transform,
+    CanonicalCommand, CommandBatch, DefinitionId, DocumentId, DocumentStore, InstancePath,
+    InstancePathStep, OccurrenceId, Proposal, ProposalPrepareError, Snapshot, Transform,
 };
-use crate::exact_product::{ExactBodyPackage, ExactResultRegistry};
+use crate::exact_product::{ExactBRepGraphEdgeEvidence, ExactBodyPackage, ExactResultRegistry};
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -27,9 +27,10 @@ const MAX_DRAWING_EDGES: usize = 300_000;
 const MAX_DRAWING_OCCLUSION_TESTS: usize = 4_000_000;
 const MAX_DRAWING_SPLITS: usize = 1_000_000;
 const MAX_DRAWING_OUTPUT_LINES: usize = 1_000_000;
-pub(crate) const MAX_DRAWING_VIEWS: usize = 4;
+pub(crate) const MAX_DRAWING_VIEWS: usize = 32;
 pub(crate) const MAX_DRAWING_DIMENSIONS: usize = 256;
 pub(crate) const MAX_DRAWING_NOTES: usize = 256;
+pub(crate) const MAX_DRAWING_BOM_BALLOONS: usize = 256;
 const MAX_DRAWING_TEXT_BYTES: usize = 256;
 const MAX_DRAWING_SCALE_TERM: u32 = 1_000_000;
 const DRAWING_TITLE_BLOCK_HEIGHT_MM: f64 = 36.0;
@@ -43,6 +44,15 @@ pub struct DrawingDimensionId(pub u64);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DrawingNoteId(pub u64);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DrawingDatumId(pub u64);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DrawingFeatureControlFrameId(pub u64);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DrawingBomBalloonId(pub u64);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DrawingViewFrame {
@@ -479,6 +489,635 @@ impl DrawingLinearDimension {
     pub const fn tolerance(&self) -> DrawingDimensionTolerance {
         self.tolerance
     }
+
+    #[must_use]
+    pub const fn unit(&self) -> DrawingDimensionUnit {
+        DrawingDimensionUnit::Millimetres
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DrawingDimensionUnit {
+    Millimetres,
+    Degrees,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DrawingAngularDimension {
+    id: DrawingDimensionId,
+    view_stable_name: String,
+    source_line_ids: [String; 2],
+    arc_radius_bits: u64,
+    tolerance: DrawingDimensionTolerance,
+}
+
+impl DrawingAngularDimension {
+    pub fn new(
+        id: DrawingDimensionId,
+        view: OrthographicViewKind,
+        source_line_ids: [String; 2],
+        arc_radius_page_mm: f64,
+        tolerance_degrees: DrawingDimensionTolerance,
+    ) -> Result<Self, DrawingError> {
+        Self::from_persisted(
+            id,
+            view.stable_name(),
+            source_line_ids,
+            arc_radius_page_mm,
+            tolerance_degrees,
+        )
+    }
+
+    pub(crate) fn from_persisted(
+        id: DrawingDimensionId,
+        view_stable_name: String,
+        source_line_ids: [String; 2],
+        arc_radius_page_mm: f64,
+        tolerance: DrawingDimensionTolerance,
+    ) -> Result<Self, DrawingError> {
+        if id.0 == 0
+            || view_stable_name.trim().is_empty()
+            || !valid_drawing_text(&view_stable_name)
+            || source_line_ids[0] == source_line_ids[1]
+            || source_line_ids
+                .iter()
+                .any(|source| source.trim().is_empty() || !valid_drawing_text(source))
+            || !arc_radius_page_mm.is_finite()
+            || arc_radius_page_mm <= INTERSECTION_EPSILON
+            || arc_radius_page_mm > MAX_DRAWING_ABS_COORDINATE_MM
+        {
+            return Err(DrawingError::InvalidDimension);
+        }
+        tolerance.validate()?;
+        let excessive_tolerance = match tolerance {
+            DrawingDimensionTolerance::None => false,
+            DrawingDimensionTolerance::Symmetric { deviation_bits } => {
+                f64::from_bits(deviation_bits) >= 180.0
+            }
+            DrawingDimensionTolerance::Bilateral {
+                upper_bits,
+                lower_bits,
+            } => f64::from_bits(upper_bits) >= 180.0 || f64::from_bits(lower_bits) >= 180.0,
+        };
+        if excessive_tolerance {
+            return Err(DrawingError::InvalidDimension);
+        }
+        Ok(Self {
+            id,
+            view_stable_name,
+            source_line_ids,
+            arc_radius_bits: canonical_view_component(arc_radius_page_mm).to_bits(),
+            tolerance,
+        })
+    }
+
+    #[must_use]
+    pub const fn id(&self) -> DrawingDimensionId {
+        self.id
+    }
+
+    #[must_use]
+    pub fn view_stable_name(&self) -> &str {
+        &self.view_stable_name
+    }
+
+    #[must_use]
+    pub fn source_line_ids(&self) -> [&str; 2] {
+        [&self.source_line_ids[0], &self.source_line_ids[1]]
+    }
+
+    #[must_use]
+    pub fn arc_radius_page_mm(&self) -> f64 {
+        f64::from_bits(self.arc_radius_bits)
+    }
+
+    #[must_use]
+    pub const fn tolerance(&self) -> DrawingDimensionTolerance {
+        self.tolerance
+    }
+
+    #[must_use]
+    pub const fn unit(&self) -> DrawingDimensionUnit {
+        DrawingDimensionUnit::Degrees
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DrawingCircularDimensionKind {
+    Radius,
+    Diameter,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DrawingCircularDimension {
+    id: DrawingDimensionId,
+    view_stable_name: String,
+    source_circle_id: String,
+    leader_angle_bits: u64,
+    offset_bits: u64,
+    kind: DrawingCircularDimensionKind,
+    tolerance: DrawingDimensionTolerance,
+}
+
+impl DrawingCircularDimension {
+    pub fn new(
+        id: DrawingDimensionId,
+        view: OrthographicViewKind,
+        source_circle_id: impl Into<String>,
+        kind: DrawingCircularDimensionKind,
+        leader_angle_degrees: f64,
+        offset_page_mm: f64,
+        tolerance: DrawingDimensionTolerance,
+    ) -> Result<Self, DrawingError> {
+        Self::from_persisted(
+            id,
+            view.stable_name(),
+            source_circle_id.into(),
+            kind,
+            leader_angle_degrees,
+            offset_page_mm,
+            tolerance,
+        )
+    }
+
+    pub(crate) fn from_persisted(
+        id: DrawingDimensionId,
+        view_stable_name: String,
+        source_circle_id: String,
+        kind: DrawingCircularDimensionKind,
+        leader_angle_degrees: f64,
+        offset_page_mm: f64,
+        tolerance: DrawingDimensionTolerance,
+    ) -> Result<Self, DrawingError> {
+        if id.0 == 0
+            || view_stable_name.trim().is_empty()
+            || !valid_drawing_text(&view_stable_name)
+            || source_circle_id.trim().is_empty()
+            || !valid_drawing_text(&source_circle_id)
+            || !leader_angle_degrees.is_finite()
+            || !(0.0..360.0).contains(&leader_angle_degrees)
+            || !offset_page_mm.is_finite()
+            || offset_page_mm <= INTERSECTION_EPSILON
+            || offset_page_mm > MAX_DRAWING_ABS_COORDINATE_MM
+        {
+            return Err(DrawingError::InvalidDimension);
+        }
+        tolerance.validate()?;
+        Ok(Self {
+            id,
+            view_stable_name,
+            source_circle_id,
+            leader_angle_bits: canonical_view_component(leader_angle_degrees).to_bits(),
+            offset_bits: canonical_view_component(offset_page_mm).to_bits(),
+            kind,
+            tolerance,
+        })
+    }
+
+    #[must_use]
+    pub const fn id(&self) -> DrawingDimensionId {
+        self.id
+    }
+
+    #[must_use]
+    pub fn view_stable_name(&self) -> &str {
+        &self.view_stable_name
+    }
+
+    #[must_use]
+    pub fn source_circle_id(&self) -> &str {
+        &self.source_circle_id
+    }
+
+    #[must_use]
+    pub const fn kind(&self) -> DrawingCircularDimensionKind {
+        self.kind
+    }
+
+    #[must_use]
+    pub fn leader_angle_degrees(&self) -> f64 {
+        f64::from_bits(self.leader_angle_bits)
+    }
+
+    #[must_use]
+    pub fn offset_page_mm(&self) -> f64 {
+        f64::from_bits(self.offset_bits)
+    }
+
+    #[must_use]
+    pub const fn tolerance(&self) -> DrawingDimensionTolerance {
+        self.tolerance
+    }
+
+    #[must_use]
+    pub const fn unit(&self) -> DrawingDimensionUnit {
+        DrawingDimensionUnit::Millimetres
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DrawingMaterialCondition {
+    None,
+    MaximumMaterial,
+    LeastMaterial,
+    RegardlessOfFeatureSize,
+}
+
+impl DrawingMaterialCondition {
+    #[must_use]
+    pub const fn stable_name(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::MaximumMaterial => "maximum-material",
+            Self::LeastMaterial => "least-material",
+            Self::RegardlessOfFeatureSize => "regardless-of-feature-size",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DrawingGeometricCharacteristic {
+    Straightness,
+    Flatness,
+    Circularity,
+    Cylindricity,
+    ProfileOfLine,
+    ProfileOfSurface,
+    Angularity,
+    Perpendicularity,
+    Parallelism,
+    Position,
+    Concentricity,
+    Symmetry,
+    CircularRunout,
+    TotalRunout,
+}
+
+impl DrawingGeometricCharacteristic {
+    #[must_use]
+    pub const fn stable_name(self) -> &'static str {
+        match self {
+            Self::Straightness => "straightness",
+            Self::Flatness => "flatness",
+            Self::Circularity => "circularity",
+            Self::Cylindricity => "cylindricity",
+            Self::ProfileOfLine => "profile-of-line",
+            Self::ProfileOfSurface => "profile-of-surface",
+            Self::Angularity => "angularity",
+            Self::Perpendicularity => "perpendicularity",
+            Self::Parallelism => "parallelism",
+            Self::Position => "position",
+            Self::Concentricity => "concentricity",
+            Self::Symmetry => "symmetry",
+            Self::CircularRunout => "circular-runout",
+            Self::TotalRunout => "total-runout",
+        }
+    }
+
+    const fn permits_datum_references(self) -> bool {
+        !matches!(
+            self,
+            Self::Straightness | Self::Flatness | Self::Circularity | Self::Cylindricity
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DrawingDatumReference {
+    label: String,
+    material_condition: DrawingMaterialCondition,
+}
+
+impl DrawingDatumReference {
+    pub fn new(
+        label: impl Into<String>,
+        material_condition: DrawingMaterialCondition,
+    ) -> Result<Self, DrawingError> {
+        let label = label.into();
+        if !valid_datum_label(&label) {
+            return Err(DrawingError::InvalidAnnotation);
+        }
+        Ok(Self {
+            label,
+            material_condition,
+        })
+    }
+
+    #[must_use]
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    #[must_use]
+    pub const fn material_condition(&self) -> DrawingMaterialCondition {
+        self.material_condition
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DrawingDatumSymbol {
+    id: DrawingDatumId,
+    view_stable_name: String,
+    source_line_id: String,
+    label: String,
+    offset_bits: [u64; 2],
+}
+
+impl DrawingDatumSymbol {
+    pub fn new(
+        id: DrawingDatumId,
+        view: OrthographicViewKind,
+        source_line_id: impl Into<String>,
+        label: impl Into<String>,
+        offset_page_mm: [f64; 2],
+    ) -> Result<Self, DrawingError> {
+        Self::from_persisted(
+            id,
+            view.stable_name(),
+            source_line_id.into(),
+            label.into(),
+            offset_page_mm,
+        )
+    }
+
+    pub(crate) fn from_persisted(
+        id: DrawingDatumId,
+        view_stable_name: String,
+        source_line_id: String,
+        label: String,
+        offset_page_mm: [f64; 2],
+    ) -> Result<Self, DrawingError> {
+        if id.0 == 0
+            || view_stable_name.trim().is_empty()
+            || !valid_drawing_text(&view_stable_name)
+            || source_line_id.trim().is_empty()
+            || !valid_drawing_text(&source_line_id)
+            || !valid_datum_label(&label)
+            || offset_page_mm
+                .into_iter()
+                .any(|value| !value.is_finite() || value.abs() > MAX_DRAWING_ABS_COORDINATE_MM)
+            || offset_page_mm
+                .into_iter()
+                .all(|value| value.abs() <= INTERSECTION_EPSILON)
+        {
+            return Err(DrawingError::InvalidAnnotation);
+        }
+        Ok(Self {
+            id,
+            view_stable_name,
+            source_line_id,
+            label,
+            offset_bits: offset_page_mm
+                .map(canonical_view_component)
+                .map(f64::to_bits),
+        })
+    }
+
+    #[must_use]
+    pub const fn id(&self) -> DrawingDatumId {
+        self.id
+    }
+
+    #[must_use]
+    pub fn view_stable_name(&self) -> &str {
+        &self.view_stable_name
+    }
+
+    #[must_use]
+    pub fn source_line_id(&self) -> &str {
+        &self.source_line_id
+    }
+
+    #[must_use]
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    #[must_use]
+    pub fn offset_page_mm(&self) -> [f64; 2] {
+        self.offset_bits.map(f64::from_bits)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DrawingFeatureControlFrame {
+    id: DrawingFeatureControlFrameId,
+    view_stable_name: String,
+    source_line_id: String,
+    characteristic: DrawingGeometricCharacteristic,
+    tolerance_bits: u64,
+    diameter_zone: bool,
+    material_condition: DrawingMaterialCondition,
+    datum_references: Vec<DrawingDatumReference>,
+    offset_bits: [u64; 2],
+}
+
+impl DrawingFeatureControlFrame {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: DrawingFeatureControlFrameId,
+        view: OrthographicViewKind,
+        source_line_id: impl Into<String>,
+        characteristic: DrawingGeometricCharacteristic,
+        tolerance_mm: f64,
+        diameter_zone: bool,
+        material_condition: DrawingMaterialCondition,
+        datum_references: Vec<DrawingDatumReference>,
+        offset_page_mm: [f64; 2],
+    ) -> Result<Self, DrawingError> {
+        Self::from_persisted(
+            id,
+            view.stable_name(),
+            source_line_id.into(),
+            characteristic,
+            tolerance_mm,
+            diameter_zone,
+            material_condition,
+            datum_references,
+            offset_page_mm,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_persisted(
+        id: DrawingFeatureControlFrameId,
+        view_stable_name: String,
+        source_line_id: String,
+        characteristic: DrawingGeometricCharacteristic,
+        tolerance_mm: f64,
+        diameter_zone: bool,
+        material_condition: DrawingMaterialCondition,
+        datum_references: Vec<DrawingDatumReference>,
+        offset_page_mm: [f64; 2],
+    ) -> Result<Self, DrawingError> {
+        if id.0 == 0
+            || view_stable_name.trim().is_empty()
+            || !valid_drawing_text(&view_stable_name)
+            || source_line_id.trim().is_empty()
+            || !valid_drawing_text(&source_line_id)
+            || !tolerance_mm.is_finite()
+            || tolerance_mm <= INTERSECTION_EPSILON
+            || tolerance_mm > MAX_DRAWING_ABS_COORDINATE_MM
+            || datum_references.len() > 3
+            || (!characteristic.permits_datum_references() && !datum_references.is_empty())
+            || datum_references
+                .iter()
+                .map(DrawingDatumReference::label)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != datum_references.len()
+            || offset_page_mm
+                .into_iter()
+                .any(|value| !value.is_finite() || value.abs() > MAX_DRAWING_ABS_COORDINATE_MM)
+            || offset_page_mm
+                .into_iter()
+                .all(|value| value.abs() <= INTERSECTION_EPSILON)
+        {
+            return Err(DrawingError::InvalidAnnotation);
+        }
+        Ok(Self {
+            id,
+            view_stable_name,
+            source_line_id,
+            characteristic,
+            tolerance_bits: canonical_view_component(tolerance_mm).to_bits(),
+            diameter_zone,
+            material_condition,
+            datum_references,
+            offset_bits: offset_page_mm
+                .map(canonical_view_component)
+                .map(f64::to_bits),
+        })
+    }
+
+    #[must_use]
+    pub const fn id(&self) -> DrawingFeatureControlFrameId {
+        self.id
+    }
+
+    #[must_use]
+    pub fn view_stable_name(&self) -> &str {
+        &self.view_stable_name
+    }
+
+    #[must_use]
+    pub fn source_line_id(&self) -> &str {
+        &self.source_line_id
+    }
+
+    #[must_use]
+    pub const fn characteristic(&self) -> DrawingGeometricCharacteristic {
+        self.characteristic
+    }
+
+    #[must_use]
+    pub fn tolerance_mm(&self) -> f64 {
+        f64::from_bits(self.tolerance_bits)
+    }
+
+    #[must_use]
+    pub const fn diameter_zone(&self) -> bool {
+        self.diameter_zone
+    }
+
+    #[must_use]
+    pub const fn material_condition(&self) -> DrawingMaterialCondition {
+        self.material_condition
+    }
+
+    #[must_use]
+    pub fn datum_references(&self) -> &[DrawingDatumReference] {
+        &self.datum_references
+    }
+
+    #[must_use]
+    pub fn offset_page_mm(&self) -> [f64; 2] {
+        self.offset_bits.map(f64::from_bits)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DrawingBomBalloon {
+    id: DrawingBomBalloonId,
+    view_stable_name: String,
+    instance_path: InstancePath,
+    position: u32,
+    offset_bits: [u64; 2],
+}
+
+impl DrawingBomBalloon {
+    pub fn new(
+        id: DrawingBomBalloonId,
+        view: OrthographicViewKind,
+        instance_path: InstancePath,
+        position: u32,
+        offset_page_mm: [f64; 2],
+    ) -> Result<Self, DrawingError> {
+        Self::from_persisted(
+            id,
+            view.stable_name(),
+            instance_path,
+            position,
+            offset_page_mm,
+        )
+    }
+
+    pub(crate) fn from_persisted(
+        id: DrawingBomBalloonId,
+        view_stable_name: String,
+        instance_path: InstancePath,
+        position: u32,
+        offset_page_mm: [f64; 2],
+    ) -> Result<Self, DrawingError> {
+        if id.0 == 0
+            || view_stable_name.trim().is_empty()
+            || !valid_drawing_text(&view_stable_name)
+            || instance_path.root_occurrence().0 == 0
+            || position == 0
+            || offset_page_mm
+                .into_iter()
+                .any(|value| !value.is_finite() || value.abs() > MAX_DRAWING_ABS_COORDINATE_MM)
+            || offset_page_mm
+                .into_iter()
+                .all(|value| value.abs() <= INTERSECTION_EPSILON)
+        {
+            return Err(DrawingError::InvalidAnnotation);
+        }
+        Ok(Self {
+            id,
+            view_stable_name,
+            instance_path,
+            position,
+            offset_bits: offset_page_mm
+                .map(canonical_view_component)
+                .map(f64::to_bits),
+        })
+    }
+
+    #[must_use]
+    pub const fn id(&self) -> DrawingBomBalloonId {
+        self.id
+    }
+
+    #[must_use]
+    pub fn view_stable_name(&self) -> &str {
+        &self.view_stable_name
+    }
+
+    #[must_use]
+    pub const fn instance_path(&self) -> &InstancePath {
+        &self.instance_path
+    }
+
+    #[must_use]
+    pub const fn position(&self) -> u32 {
+        self.position
+    }
+
+    #[must_use]
+    pub fn offset_page_mm(&self) -> [f64; 2] {
+        self.offset_bits.map(f64::from_bits)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -533,14 +1172,75 @@ impl DrawingNote {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DrawingAnnotations {
     linear_dimensions: Vec<DrawingLinearDimension>,
+    angular_dimensions: Vec<DrawingAngularDimension>,
+    circular_dimensions: Vec<DrawingCircularDimension>,
+    datum_symbols: Vec<DrawingDatumSymbol>,
+    feature_control_frames: Vec<DrawingFeatureControlFrame>,
+    bom_balloons: Vec<DrawingBomBalloon>,
     notes: Vec<DrawingNote>,
 }
 
 impl DrawingAnnotations {
     #[must_use]
     pub fn new(linear_dimensions: Vec<DrawingLinearDimension>, notes: Vec<DrawingNote>) -> Self {
+        Self::with_typed_dimensions(linear_dimensions, Vec::new(), Vec::new(), notes)
+    }
+
+    #[must_use]
+    pub fn with_typed_dimensions(
+        linear_dimensions: Vec<DrawingLinearDimension>,
+        angular_dimensions: Vec<DrawingAngularDimension>,
+        circular_dimensions: Vec<DrawingCircularDimension>,
+        notes: Vec<DrawingNote>,
+    ) -> Self {
+        Self::with_manufacturing_annotations(
+            linear_dimensions,
+            angular_dimensions,
+            circular_dimensions,
+            Vec::new(),
+            Vec::new(),
+            notes,
+        )
+    }
+
+    #[must_use]
+    pub fn with_manufacturing_annotations(
+        linear_dimensions: Vec<DrawingLinearDimension>,
+        angular_dimensions: Vec<DrawingAngularDimension>,
+        circular_dimensions: Vec<DrawingCircularDimension>,
+        datum_symbols: Vec<DrawingDatumSymbol>,
+        feature_control_frames: Vec<DrawingFeatureControlFrame>,
+        notes: Vec<DrawingNote>,
+    ) -> Self {
+        Self::with_bom_annotations(
+            linear_dimensions,
+            angular_dimensions,
+            circular_dimensions,
+            datum_symbols,
+            feature_control_frames,
+            Vec::new(),
+            notes,
+        )
+    }
+
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_bom_annotations(
+        linear_dimensions: Vec<DrawingLinearDimension>,
+        angular_dimensions: Vec<DrawingAngularDimension>,
+        circular_dimensions: Vec<DrawingCircularDimension>,
+        datum_symbols: Vec<DrawingDatumSymbol>,
+        feature_control_frames: Vec<DrawingFeatureControlFrame>,
+        bom_balloons: Vec<DrawingBomBalloon>,
+        notes: Vec<DrawingNote>,
+    ) -> Self {
         Self {
             linear_dimensions,
+            angular_dimensions,
+            circular_dimensions,
+            datum_symbols,
+            feature_control_frames,
+            bom_balloons,
             notes,
         }
     }
@@ -550,6 +1250,20 @@ impl DrawingAnnotations {
 pub enum DrawingSource {
     Definition(DefinitionId),
     RigidAssembly { occurrence_ids: Vec<OccurrenceId> },
+    RigidAssemblyInstances { instance_paths: Vec<InstancePath> },
+}
+
+impl DrawingSource {
+    #[must_use]
+    pub fn references_root_occurrence(&self, occurrence_id: OccurrenceId) -> bool {
+        match self {
+            Self::Definition(_) => false,
+            Self::RigidAssembly { occurrence_ids } => occurrence_ids.contains(&occurrence_id),
+            Self::RigidAssemblyInstances { instance_paths } => instance_paths
+                .iter()
+                .any(|path| path.root_occurrence() == occurrence_id),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -873,6 +1587,11 @@ pub struct DrawingSheet {
     title_block: DrawingTitleBlock,
     views: Vec<OrthographicViewKind>,
     linear_dimensions: Vec<DrawingLinearDimension>,
+    angular_dimensions: Vec<DrawingAngularDimension>,
+    circular_dimensions: Vec<DrawingCircularDimension>,
+    datum_symbols: Vec<DrawingDatumSymbol>,
+    feature_control_frames: Vec<DrawingFeatureControlFrame>,
+    bom_balloons: Vec<DrawingBomBalloon>,
     notes: Vec<DrawingNote>,
 }
 
@@ -965,16 +1684,29 @@ impl DrawingSheet {
     ) -> Result<Self, DrawingError> {
         let DrawingAnnotations {
             linear_dimensions,
+            angular_dimensions,
+            circular_dimensions,
+            datum_symbols,
+            feature_control_frames,
+            bom_balloons,
             notes,
         } = annotations;
         let name = name.into();
         if id.0 == 0 || name.trim().is_empty() {
             return Err(DrawingError::InvalidSheet);
         }
-        if let DrawingSource::RigidAssembly { occurrence_ids } = &source
-            && (occurrence_ids.is_empty()
-                || occurrence_ids.windows(2).any(|pair| pair[0] >= pair[1]))
-        {
+        let invalid_assembly_source = match &source {
+            DrawingSource::RigidAssembly { occurrence_ids } => {
+                occurrence_ids.is_empty()
+                    || occurrence_ids.windows(2).any(|pair| pair[0] >= pair[1])
+            }
+            DrawingSource::RigidAssemblyInstances { instance_paths } => {
+                instance_paths.is_empty()
+                    || instance_paths.windows(2).any(|pair| pair[0] >= pair[1])
+            }
+            DrawingSource::Definition(_) => false,
+        };
+        if invalid_assembly_source {
             return Err(DrawingError::InvalidSheet);
         }
         if views.is_empty()
@@ -988,8 +1720,23 @@ impl DrawingSheet {
         {
             return Err(DrawingError::InvalidView);
         }
-        if linear_dimensions.len() > MAX_DRAWING_DIMENSIONS
+        let dimension_count =
+            linear_dimensions.len() + angular_dimensions.len() + circular_dimensions.len();
+        let dimension_ids = linear_dimensions
+            .iter()
+            .map(DrawingLinearDimension::id)
+            .chain(angular_dimensions.iter().map(DrawingAngularDimension::id))
+            .chain(circular_dimensions.iter().map(DrawingCircularDimension::id))
+            .collect::<std::collections::BTreeSet<_>>();
+        if dimension_count > MAX_DRAWING_DIMENSIONS
+            || dimension_ids.len() != dimension_count
             || linear_dimensions
+                .windows(2)
+                .any(|pair| pair[0].id() >= pair[1].id())
+            || angular_dimensions
+                .windows(2)
+                .any(|pair| pair[0].id() >= pair[1].id())
+            || circular_dimensions
                 .windows(2)
                 .any(|pair| pair[0].id() >= pair[1].id())
             || linear_dimensions.iter().any(|dimension| {
@@ -1002,10 +1749,103 @@ impl DrawingSheet {
                         dimension.view_stable_name()
                     ))
             })
+            || angular_dimensions.iter().any(|dimension| {
+                !views
+                    .iter()
+                    .any(|view| view.stable_name() == dimension.view_stable_name())
+                    || dimension.source_line_ids().iter().any(|source| {
+                        !source.starts_with(&format!(
+                            "sheet-{}/view-{}/",
+                            id.0,
+                            dimension.view_stable_name()
+                        ))
+                    })
+            })
+            || circular_dimensions.iter().any(|dimension| {
+                !views
+                    .iter()
+                    .any(|view| view.stable_name() == dimension.view_stable_name())
+                    || !dimension.source_circle_id().starts_with(&format!(
+                        "sheet-{}/view-{}/",
+                        id.0,
+                        dimension.view_stable_name()
+                    ))
+            })
         {
             return Err(DrawingError::InvalidDimension);
         }
-        if notes.len() > MAX_DRAWING_NOTES
+        let source_paths = match &source {
+            DrawingSource::Definition(_) => None,
+            DrawingSource::RigidAssembly { occurrence_ids } => Some(
+                occurrence_ids
+                    .iter()
+                    .copied()
+                    .map(InstancePath::root)
+                    .collect::<Vec<_>>(),
+            ),
+            DrawingSource::RigidAssemblyInstances { instance_paths } => {
+                Some(instance_paths.clone())
+            }
+        };
+        let balloon_paths = bom_balloons
+            .iter()
+            .map(DrawingBomBalloon::instance_path)
+            .collect::<std::collections::BTreeSet<_>>();
+        if bom_balloons.len() > MAX_DRAWING_BOM_BALLOONS
+            || bom_balloons
+                .windows(2)
+                .any(|pair| pair[0].id() >= pair[1].id())
+            || balloon_paths.len() != bom_balloons.len()
+            || bom_balloons.iter().any(|balloon| {
+                balloon.position() as usize > MAX_DRAWING_BOM_BALLOONS
+                    || !views
+                        .iter()
+                        .any(|view| view.stable_name() == balloon.view_stable_name())
+                    || source_paths
+                        .as_ref()
+                        .is_none_or(|paths| paths.binary_search(balloon.instance_path()).is_err())
+            })
+        {
+            return Err(DrawingError::InvalidAnnotation);
+        }
+        let datum_labels = datum_symbols
+            .iter()
+            .map(DrawingDatumSymbol::label)
+            .collect::<std::collections::BTreeSet<_>>();
+        if datum_symbols.len() > MAX_DRAWING_NOTES
+            || feature_control_frames.len() > MAX_DRAWING_NOTES
+            || datum_symbols
+                .windows(2)
+                .any(|pair| pair[0].id() >= pair[1].id())
+            || feature_control_frames
+                .windows(2)
+                .any(|pair| pair[0].id() >= pair[1].id())
+            || datum_labels.len() != datum_symbols.len()
+            || datum_symbols.iter().any(|datum| {
+                !views
+                    .iter()
+                    .any(|view| view.stable_name() == datum.view_stable_name())
+                    || !datum.source_line_id().starts_with(&format!(
+                        "sheet-{}/view-{}/",
+                        id.0,
+                        datum.view_stable_name()
+                    ))
+            })
+            || feature_control_frames.iter().any(|frame| {
+                !views
+                    .iter()
+                    .any(|view| view.stable_name() == frame.view_stable_name())
+                    || !frame.source_line_id().starts_with(&format!(
+                        "sheet-{}/view-{}/",
+                        id.0,
+                        frame.view_stable_name()
+                    ))
+                    || frame
+                        .datum_references()
+                        .iter()
+                        .any(|reference| !datum_labels.contains(reference.label()))
+            })
+            || notes.len() > MAX_DRAWING_NOTES
             || notes.windows(2).any(|pair| pair[0].id() >= pair[1].id())
         {
             return Err(DrawingError::InvalidAnnotation);
@@ -1020,8 +1860,36 @@ impl DrawingSheet {
             title_block,
             views,
             linear_dimensions,
+            angular_dimensions,
+            circular_dimensions,
+            datum_symbols,
+            feature_control_frames,
+            bom_balloons,
             notes,
         })
+    }
+
+    pub fn with_bom_balloons(
+        &self,
+        bom_balloons: Vec<DrawingBomBalloon>,
+    ) -> Result<Self, DrawingError> {
+        Self::with_contract_views_and_annotations(
+            self.id,
+            self.name.clone(),
+            self.source.clone(),
+            self.page,
+            self.title_block.clone(),
+            self.views.clone(),
+            DrawingAnnotations::with_bom_annotations(
+                self.linear_dimensions.clone(),
+                self.angular_dimensions.clone(),
+                self.circular_dimensions.clone(),
+                self.datum_symbols.clone(),
+                self.feature_control_frames.clone(),
+                bom_balloons,
+                self.notes.clone(),
+            ),
+        )
     }
 
     pub fn with_source(&self, source: DrawingSource) -> Result<Self, DrawingError> {
@@ -1032,7 +1900,15 @@ impl DrawingSheet {
             self.page,
             self.title_block.clone(),
             self.views.clone(),
-            DrawingAnnotations::new(self.linear_dimensions.clone(), self.notes.clone()),
+            DrawingAnnotations::with_bom_annotations(
+                self.linear_dimensions.clone(),
+                self.angular_dimensions.clone(),
+                self.circular_dimensions.clone(),
+                self.datum_symbols.clone(),
+                self.feature_control_frames.clone(),
+                self.bom_balloons.clone(),
+                self.notes.clone(),
+            ),
         )
     }
 
@@ -1077,6 +1953,31 @@ impl DrawingSheet {
     }
 
     #[must_use]
+    pub fn angular_dimensions(&self) -> &[DrawingAngularDimension] {
+        &self.angular_dimensions
+    }
+
+    #[must_use]
+    pub fn circular_dimensions(&self) -> &[DrawingCircularDimension] {
+        &self.circular_dimensions
+    }
+
+    #[must_use]
+    pub fn datum_symbols(&self) -> &[DrawingDatumSymbol] {
+        &self.datum_symbols
+    }
+
+    #[must_use]
+    pub fn feature_control_frames(&self) -> &[DrawingFeatureControlFrame] {
+        &self.feature_control_frames
+    }
+
+    #[must_use]
+    pub fn bom_balloons(&self) -> &[DrawingBomBalloon] {
+        &self.bom_balloons
+    }
+
+    #[must_use]
     pub fn notes(&self) -> &[DrawingNote] {
         &self.notes
     }
@@ -1090,12 +1991,20 @@ pub struct ProjectedVisibleLine {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct ProjectedCircle {
+    pub stable_circle_id: String,
+    pub center_mm: [f64; 2],
+    pub radius_mm: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct OrthographicView {
     pub kind: OrthographicViewKind,
     pub stable_view_id: String,
     pub bounds_mm: [[f64; 2]; 2],
     pub visible_lines: Vec<ProjectedVisibleLine>,
     pub hidden_lines: Vec<ProjectedVisibleLine>,
+    pub circles: Vec<ProjectedCircle>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1119,6 +2028,79 @@ pub struct DrawingLinearDimensionLayout {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct DrawingAngularDimensionLayout {
+    pub stable_dimension_id: String,
+    pub source_line_ids: [String; 2],
+    pub value_degrees: f64,
+    pub tolerance: DrawingDimensionTolerance,
+    pub label: String,
+    pub extension_lines_mm: [[[f64; 2]; 2]; 2],
+    pub arc_points_mm: Vec<[f64; 2]>,
+    pub text_position_mm: [f64; 2],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DrawingCircularDimensionLayout {
+    pub stable_dimension_id: String,
+    pub source_circle_id: String,
+    pub kind: DrawingCircularDimensionKind,
+    pub value_mm: f64,
+    pub tolerance: DrawingDimensionTolerance,
+    pub label: String,
+    pub leader_line_mm: [[f64; 2]; 2],
+    pub text_position_mm: [f64; 2],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DrawingDatumSymbolLayout {
+    pub stable_datum_id: String,
+    pub source_line_id: String,
+    pub label: String,
+    pub leader_line_mm: [[f64; 2]; 2],
+    pub triangle_mm: [[f64; 2]; 3],
+    pub frame_bounds_mm: [[f64; 2]; 2],
+    pub text_position_mm: [f64; 2],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DrawingFeatureControlFrameLayout {
+    pub stable_frame_id: String,
+    pub source_line_id: String,
+    pub characteristic: DrawingGeometricCharacteristic,
+    pub tolerance_mm: f64,
+    pub diameter_zone: bool,
+    pub material_condition: DrawingMaterialCondition,
+    pub datum_references: Vec<DrawingDatumReference>,
+    pub label: String,
+    pub leader_line_mm: [[f64; 2]; 2],
+    pub frame_bounds_mm: [[f64; 2]; 2],
+    pub separator_x_mm: Vec<f64>,
+    pub text_position_mm: [f64; 2],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DrawingBomBalloonLayout {
+    pub stable_balloon_id: String,
+    pub instance_path: InstancePath,
+    pub position: u32,
+    pub label: String,
+    pub leader_line_mm: [[f64; 2]; 2],
+    pub circle_center_mm: [f64; 2],
+    pub circle_radius_mm: f64,
+    pub text_position_mm: [f64; 2],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DrawingBomRowLayout {
+    pub position: u32,
+    pub definition_id: DefinitionId,
+    pub part_name: String,
+    pub quantity: u32,
+    pub label: String,
+    pub text_position_mm: [f64; 2],
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct DrawingNoteLayout {
     pub stable_note_id: String,
     pub position_mm: [f64; 2],
@@ -1133,6 +2115,12 @@ pub struct DrawingSheetLayout {
     pub title_block_bounds_mm: [[f64; 2]; 2],
     pub view_placements: Vec<DrawingViewPlacement>,
     pub linear_dimensions: Vec<DrawingLinearDimensionLayout>,
+    pub angular_dimensions: Vec<DrawingAngularDimensionLayout>,
+    pub circular_dimensions: Vec<DrawingCircularDimensionLayout>,
+    pub datum_symbols: Vec<DrawingDatumSymbolLayout>,
+    pub feature_control_frames: Vec<DrawingFeatureControlFrameLayout>,
+    pub bom_balloons: Vec<DrawingBomBalloonLayout>,
+    pub bom_rows: Vec<DrawingBomRowLayout>,
     pub notes: Vec<DrawingNoteLayout>,
     pub title_block: DrawingTitleBlock,
     pub digest: String,
@@ -1170,6 +2158,7 @@ pub enum DrawingError {
     InvalidDimension,
     InvalidAnnotation,
     DimensionSourceLost,
+    AnnotationSourceLost,
     LayoutOverflow,
     SourceLost,
     SourceStale,
@@ -1191,6 +2180,7 @@ impl fmt::Display for DrawingError {
             Self::InvalidDimension => "drawing dimension contract is invalid",
             Self::InvalidAnnotation => "drawing annotation contract is invalid",
             Self::DimensionSourceLost => "drawing dimension source line is lost",
+            Self::AnnotationSourceLost => "drawing annotation source line is lost",
             Self::LayoutOverflow => {
                 "drawing views or dimensions do not fit inside the selected sheet layout"
             }
@@ -1315,63 +2305,79 @@ pub(crate) fn validate_source(
             }
         }
         DrawingSource::RigidAssembly { occurrence_ids } => {
-            if occurrence_ids.len() > MAX_DRAWING_INSTANCES {
-                return Err(DrawingError::ResourceLimit);
-            }
-            if occurrence_ids.is_empty()
-                || occurrence_ids.windows(2).any(|pair| pair[0] >= pair[1])
-                || occurrence_ids
-                    .iter()
-                    .any(|id| snapshot.occurrence(*id).is_none())
-            {
-                return Err(DrawingError::SourceLost);
-            }
-            if !occurrence_ids
+            let instance_paths = occurrence_ids
                 .iter()
-                .any(|id| snapshot.occurrence_is_grounded(*id))
-            {
-                return Err(DrawingError::SourceNotRigid);
-            }
-            let mut has_internal_mate = false;
-            for mate in snapshot.assembly_mates() {
-                let a_in = occurrence_ids
-                    .binary_search(&mate.endpoint_a().occurrence_id())
-                    .is_ok();
-                let b_in = occurrence_ids
-                    .binary_search(&mate.endpoint_b().occurrence_id())
-                    .is_ok();
-                if a_in != b_in
-                    || ((a_in || b_in)
-                        && (mate.endpoint_a().health() != AssemblyReferenceHealth::Resolved
-                            || mate.endpoint_b().health() != AssemblyReferenceHealth::Resolved))
-                {
-                    return Err(DrawingError::SourceNotRigid);
-                }
-                has_internal_mate |= a_in && b_in;
-            }
-            if occurrence_ids
-                .iter()
-                .all(|id| snapshot.occurrence_is_grounded(*id))
-            {
-                return Ok(());
-            }
-            if !has_internal_mate {
-                return Err(DrawingError::SourceNotRigid);
-            }
-            let solved = solve_rigid_assembly(snapshot, AssemblySolverPolicy::default())
-                .map_err(|_| DrawingError::SourceNotRigid)?;
-            if solved.status() != AssemblySolveStatus::FullyConstrained
-                || !solved.conflicting_mate_ids().is_empty()
-                || !solved.maximum_residual().is_finite()
-                || occurrence_ids.iter().any(|id| {
-                    solved
-                        .occurrence(*id)
-                        .is_none_or(|occurrence| occurrence.remaining_dof() != 0)
-                })
-            {
-                return Err(DrawingError::SourceNotRigid);
-            }
+                .copied()
+                .map(InstancePath::root)
+                .collect::<Vec<_>>();
+            validate_rigid_source(snapshot, &instance_paths)?;
         }
+        DrawingSource::RigidAssemblyInstances { instance_paths } => {
+            validate_rigid_source(snapshot, instance_paths)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_rigid_source(
+    snapshot: &Snapshot,
+    instance_paths: &[InstancePath],
+) -> Result<(), DrawingError> {
+    if instance_paths.len() > MAX_DRAWING_INSTANCES {
+        return Err(DrawingError::ResourceLimit);
+    }
+    if instance_paths.is_empty()
+        || instance_paths.windows(2).any(|pair| pair[0] >= pair[1])
+        || instance_paths
+            .iter()
+            .any(|path| snapshot.resolve_instance_path(path).is_err())
+    {
+        return Err(DrawingError::SourceLost);
+    }
+    if !instance_paths
+        .iter()
+        .any(|path| snapshot.occurrence_is_grounded(path.root_occurrence()))
+    {
+        return Err(DrawingError::SourceNotRigid);
+    }
+    let mut has_internal_mate = false;
+    for mate in snapshot.assembly_mates() {
+        let a_in = instance_paths
+            .binary_search(mate.endpoint_a().instance_path())
+            .is_ok();
+        let b_in = instance_paths
+            .binary_search(mate.endpoint_b().instance_path())
+            .is_ok();
+        if a_in != b_in
+            || ((a_in || b_in)
+                && (mate.endpoint_a().health() != AssemblyReferenceHealth::Resolved
+                    || mate.endpoint_b().health() != AssemblyReferenceHealth::Resolved))
+        {
+            return Err(DrawingError::SourceNotRigid);
+        }
+        has_internal_mate |= a_in && b_in;
+    }
+    if instance_paths
+        .iter()
+        .all(|path| snapshot.occurrence_is_grounded(path.root_occurrence()))
+    {
+        return Ok(());
+    }
+    if !has_internal_mate {
+        return Err(DrawingError::SourceNotRigid);
+    }
+    let solved = solve_rigid_assembly(snapshot, AssemblySolverPolicy::default())
+        .map_err(|_| DrawingError::SourceNotRigid)?;
+    if solved.status() != AssemblySolveStatus::FullyConstrained
+        || !solved.conflicting_mate_ids().is_empty()
+        || !solved.maximum_residual().is_finite()
+        || instance_paths.iter().any(|path| {
+            solved
+                .occurrence_at_path(path)
+                .is_none_or(|occurrence| occurrence.remaining_dof() != 0)
+        })
+    {
+        return Err(DrawingError::SourceNotRigid);
     }
     Ok(())
 }
@@ -1395,33 +2401,37 @@ fn source_instances(
             package: unique_current_package(snapshot, results, *id)?,
         }]),
         DrawingSource::RigidAssembly { occurrence_ids } => {
-            let root_transforms = snapshot
-                .scene_query()
-                .into_iter()
-                .filter(|candidate| candidate.instance_path.is_root())
-                .map(|candidate| (candidate.occurrence_id, candidate.transform))
-                .collect::<BTreeMap<_, _>>();
-            occurrence_ids
+            let instance_paths = occurrence_ids
                 .iter()
-                .map(|id| {
-                    let occurrence = snapshot.occurrence(*id).ok_or(DrawingError::SourceLost)?;
-                    let transform = root_transforms
-                        .get(id)
-                        .copied()
-                        .ok_or(DrawingError::SourceLost)?;
-                    Ok(DrawingInstance {
-                        token: format!("occurrence-{}", id.0),
-                        transform,
-                        package: unique_current_package(
-                            snapshot,
-                            results,
-                            occurrence.definition_id(),
-                        )?,
-                    })
-                })
-                .collect()
+                .copied()
+                .map(InstancePath::root)
+                .collect::<Vec<_>>();
+            drawing_instances_for_paths(snapshot, results, &instance_paths)
+        }
+        DrawingSource::RigidAssemblyInstances { instance_paths } => {
+            drawing_instances_for_paths(snapshot, results, instance_paths)
         }
     }
+}
+
+fn drawing_instances_for_paths(
+    snapshot: &Snapshot,
+    results: &ExactResultRegistry,
+    instance_paths: &[InstancePath],
+) -> Result<Vec<DrawingInstance>, DrawingError> {
+    instance_paths
+        .iter()
+        .map(|path| {
+            let resolved = snapshot
+                .resolve_instance_path(path)
+                .map_err(|_| DrawingError::SourceLost)?;
+            Ok(DrawingInstance {
+                token: format!("instance-{}", stable_instance_path(path)),
+                transform: resolved.world_transform,
+                package: unique_current_package(snapshot, results, resolved.definition_id)?,
+            })
+        })
+        .collect()
 }
 
 fn unique_current_package(
@@ -1460,6 +2470,14 @@ fn stable_source_identity(source: &DrawingSource, instances: &[DrawingInstance])
                 .collect::<Vec<_>>()
                 .join(",")
         ),
+        DrawingSource::RigidAssemblyInstances { instance_paths } => format!(
+            "assembly-paths:{}",
+            instance_paths
+                .iter()
+                .map(stable_instance_path)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
     };
     let geometry = instances
         .iter()
@@ -1473,6 +2491,17 @@ fn stable_source_identity(source: &DrawingSource, instances: &[DrawingInstance])
         .collect::<Vec<_>>()
         .join("|");
     format!("{source_token}/{geometry}")
+}
+
+fn stable_instance_path(path: &InstancePath) -> String {
+    let mut token = path.root_occurrence().0.to_string();
+    for step in path.steps() {
+        match step {
+            InstancePathStep::Group(id) => token.push_str(&format!("/g{}", id.0)),
+            InstancePathStep::Occurrence(id) => token.push_str(&format!("/o{}", id.0)),
+        }
+    }
+    token
 }
 
 #[derive(Clone)]
@@ -1493,6 +2522,51 @@ struct ProjectedTriangle {
     bounds: [[f64; 2]; 2],
 }
 
+fn project_instance_circles(
+    sheet_id: DrawingSheetId,
+    kind: OrthographicViewKind,
+    instance_token: &str,
+    transform: Transform,
+    edges: &[ExactBRepGraphEdgeEvidence],
+) -> Result<Vec<ProjectedCircle>, DrawingError> {
+    let frame = kind.frame();
+    let horizontal = frame.horizontal();
+    let vertical = frame.vertical();
+    let depth = frame.direction();
+    let circles = edges
+        .iter()
+        .filter_map(|edge| {
+            let (Some(radius_mm), Some(center), Some(axis)) = (
+                edge.circle_radius_mm,
+                edge.axis_origin_mm,
+                edge.unit_axis_direction,
+            ) else {
+                return None;
+            };
+            Some((edge, radius_mm, center, axis))
+        })
+        .filter_map(|(edge, radius_mm, center, axis)| {
+            let world_axis = normalized(transform_vector(transform, axis))?;
+            if (dot(world_axis, depth).abs() - 1.0).abs() > 1.0e-9 {
+                return None;
+            }
+            let world_center = transform_point(transform, center);
+            Some(ProjectedCircle {
+                stable_circle_id: format!(
+                    "sheet-{}/view-{}/{}:circle:{}",
+                    sheet_id.0,
+                    kind.stable_name(),
+                    instance_token,
+                    edge.edge_ordinal
+                ),
+                center_mm: [dot(world_center, horizontal), dot(world_center, vertical)],
+                radius_mm,
+            })
+        })
+        .collect();
+    Ok(circles)
+}
+
 fn project_view(
     sheet_id: DrawingSheetId,
     kind: OrthographicViewKind,
@@ -1503,6 +2577,19 @@ fn project_view(
     let vertical = frame.vertical();
     let depth = frame.direction();
     let section_depth_mm = kind.section_depth_mm();
+    let mut circles = Vec::new();
+    if section_depth_mm.is_none() {
+        for instance in instances {
+            circles.extend(project_instance_circles(
+                sheet_id,
+                kind,
+                instance.token.as_str(),
+                instance.transform,
+                instance.package.edge_evidence(),
+            )?);
+        }
+        circles.sort_by(|left, right| left.stable_circle_id.cmp(&right.stable_circle_id));
+    }
     let mut edges = BTreeMap::<String, EdgeEvidence>::new();
     let mut projected_triangles = Vec::new();
     for (instance_index, instance) in instances.iter().enumerate() {
@@ -1869,6 +2956,7 @@ fn project_view(
         bounds_mm: [min, max],
         visible_lines,
         hidden_lines,
+        circles,
     })
 }
 
@@ -2142,6 +3230,10 @@ fn valid_drawing_text(value: &str) -> bool {
     value.len() <= MAX_DRAWING_TEXT_BYTES && !value.chars().any(char::is_control)
 }
 
+fn valid_datum_label(value: &str) -> bool {
+    (1..=3).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_uppercase())
+}
+
 fn valid_drawing_template(value: &str) -> bool {
     if !valid_drawing_text(value) {
         return false;
@@ -2189,6 +3281,20 @@ fn drawing_source_name(
             })
             .collect::<Result<Vec<_>, _>>()?
             .join(", "),
+        DrawingSource::RigidAssemblyInstances { instance_paths } => {
+            let scene = snapshot.scene_query();
+            instance_paths
+                .iter()
+                .map(|path| {
+                    scene
+                        .iter()
+                        .find(|occurrence| occurrence.instance_path == *path)
+                        .map(|occurrence| occurrence.occurrence_name.clone())
+                        .ok_or(DrawingError::SourceLost)
+                })
+                .collect::<Result<Vec<_>, _>>()?
+                .join(", ")
+        }
     };
     if !valid_drawing_text(&name) {
         return Err(DrawingError::InvalidAnnotation);
@@ -2215,21 +3321,27 @@ fn layout_drawing_sheet(
     let drawing_min_y = title_block_bounds_mm[1][1] + DRAWING_LAYOUT_GAP_MM;
     let drawing_width = border_bounds_mm[1][0] - border_bounds_mm[0][0];
     let drawing_height = border_bounds_mm[1][1] - drawing_min_y;
-    let cell_width = (drawing_width - DRAWING_LAYOUT_GAP_MM) * 0.5;
-    let cell_height = (drawing_height - DRAWING_LAYOUT_GAP_MM) * 0.5;
+    let (column_count, row_count) = if views.len() <= 4 {
+        (2, 2)
+    } else {
+        let page_aspect = drawing_width / drawing_height;
+        let columns =
+            ((views.len() as f64 * page_aspect).sqrt().ceil() as usize).clamp(1, views.len());
+        (columns, views.len().div_ceil(columns))
+    };
+    let cell_width = (drawing_width
+        - DRAWING_LAYOUT_GAP_MM * column_count.saturating_sub(1) as f64)
+        / column_count as f64;
+    let cell_height = (drawing_height - DRAWING_LAYOUT_GAP_MM * row_count.saturating_sub(1) as f64)
+        / row_count as f64;
     if cell_width <= 0.0 || cell_height <= 0.0 {
         return Err(DrawingError::InvalidPageTemplate);
     }
     let mut view_placements = Vec::with_capacity(views.len());
+    let mut view_cell_bounds = Vec::with_capacity(views.len());
     for (index, view) in views.iter().enumerate() {
         let scale = page.scale().factor() * view.kind.layout_scale_multiplier();
-        let (column, row) = match index {
-            0 => (0.0, 0.0),
-            1 => (0.0, 1.0),
-            2 => (1.0, 0.0),
-            3 => (1.0, 1.0),
-            _ => return Err(DrawingError::LayoutOverflow),
-        };
+        let (column, row) = ((index / row_count) as f64, (index % row_count) as f64);
         let cell_min = [
             border_bounds_mm[0][0] + column * (cell_width + DRAWING_LAYOUT_GAP_MM),
             drawing_min_y + row * (cell_height + DRAWING_LAYOUT_GAP_MM),
@@ -2261,6 +3373,7 @@ fn layout_drawing_sheet(
                 origin_mm[1] + view.bounds_mm[1][1] * scale,
             ],
         ];
+        view_cell_bounds.push([cell_min, cell_max]);
         view_placements.push(DrawingViewPlacement {
             kind: view.kind,
             stable_view_id: view.stable_view_id.clone(),
@@ -2272,6 +3385,43 @@ fn layout_drawing_sheet(
         sheet,
         views,
         &view_placements,
+        border_bounds_mm,
+        drawing_min_y,
+    )?;
+    let angular_dimensions = layout_angular_dimensions(
+        sheet,
+        views,
+        &view_placements,
+        border_bounds_mm,
+        drawing_min_y,
+    )?;
+    let circular_dimensions = layout_circular_dimensions(
+        sheet,
+        views,
+        &view_placements,
+        border_bounds_mm,
+        drawing_min_y,
+    )?;
+    let datum_symbols = layout_datum_symbols(
+        sheet,
+        views,
+        &view_placements,
+        border_bounds_mm,
+        drawing_min_y,
+    )?;
+    let feature_control_frames = layout_feature_control_frames(
+        sheet,
+        views,
+        &view_placements,
+        border_bounds_mm,
+        drawing_min_y,
+    )?;
+    let (bom_balloons, bom_rows) = layout_bom_annotations(
+        snapshot,
+        sheet,
+        views,
+        &view_placements,
+        &view_cell_bounds,
         border_bounds_mm,
         drawing_min_y,
     )?;
@@ -2320,6 +3470,12 @@ fn layout_drawing_sheet(
         title_block_bounds_mm,
         &view_placements,
         &linear_dimensions,
+        &angular_dimensions,
+        &circular_dimensions,
+        &datum_symbols,
+        &feature_control_frames,
+        &bom_balloons,
+        &bom_rows,
         &notes,
     );
     Ok(DrawingSheetLayout {
@@ -2329,6 +3485,12 @@ fn layout_drawing_sheet(
         title_block_bounds_mm,
         view_placements,
         linear_dimensions,
+        angular_dimensions,
+        circular_dimensions,
+        datum_symbols,
+        feature_control_frames,
+        bom_balloons,
+        bom_rows,
         notes,
         title_block,
         digest,
@@ -2425,19 +3587,610 @@ fn layout_linear_dimensions(
     Ok(output)
 }
 
+fn layout_angular_dimensions(
+    sheet: &DrawingSheet,
+    views: &[OrthographicView],
+    placements: &[DrawingViewPlacement],
+    border_bounds_mm: [[f64; 2]; 2],
+    drawing_min_y: f64,
+) -> Result<Vec<DrawingAngularDimensionLayout>, DrawingError> {
+    let mut output = Vec::with_capacity(sheet.angular_dimensions().len());
+    for dimension in sheet.angular_dimensions() {
+        let view_index = views
+            .iter()
+            .position(|view| view.kind.stable_name() == dimension.view_stable_name())
+            .ok_or(DrawingError::DimensionSourceLost)?;
+        let view = &views[view_index];
+        let placement = &placements[view_index];
+        let mut source_lines = Vec::with_capacity(2);
+        for source_id in dimension.source_line_ids() {
+            let mut matching = view
+                .visible_lines
+                .iter()
+                .chain(&view.hidden_lines)
+                .filter(|line| line.stable_line_id == source_id);
+            let line = matching.next().ok_or(DrawingError::DimensionSourceLost)?;
+            if matching.next().is_some() {
+                return Err(DrawingError::DimensionSourceLost);
+            }
+            source_lines.push(line);
+        }
+        let directions = source_lines
+            .iter()
+            .map(|line| subtract_2d(line.end_mm, line.start_mm))
+            .map(|direction| {
+                let length = dot_2d(direction, direction).sqrt();
+                if !length.is_finite() || length <= INTERSECTION_EPSILON {
+                    return Err(DrawingError::InvalidGeometry);
+                }
+                Ok([direction[0] / length, direction[1] / length])
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let cross = directions[0][0] * directions[1][1] - directions[0][1] * directions[1][0];
+        if cross.abs() <= INTERSECTION_EPSILON {
+            return Err(DrawingError::InvalidGeometry);
+        }
+        let delta = subtract_2d(source_lines[1].start_mm, source_lines[0].start_mm);
+        let parameter = (delta[0] * directions[1][1] - delta[1] * directions[1][0]) / cross;
+        let center_model = [
+            source_lines[0].start_mm[0] + directions[0][0] * parameter,
+            source_lines[0].start_mm[1] + directions[0][1] * parameter,
+        ];
+        if center_model
+            .into_iter()
+            .any(|coordinate| !coordinate.is_finite())
+        {
+            return Err(DrawingError::InvalidGeometry);
+        }
+        let dot = dot_2d(directions[0], directions[1]).clamp(-1.0, 1.0);
+        let signed_sweep = cross.atan2(dot);
+        let (start_direction, sweep) = if signed_sweep >= 0.0 {
+            (directions[0], signed_sweep)
+        } else {
+            (directions[1], -signed_sweep)
+        };
+        if sweep <= INTERSECTION_EPSILON || std::f64::consts::PI - sweep <= INTERSECTION_EPSILON {
+            return Err(DrawingError::InvalidGeometry);
+        }
+        let scale = sheet.page().scale().factor() * view.kind.layout_scale_multiplier();
+        let center = [
+            placement.origin_mm[0] + center_model[0] * scale,
+            placement.origin_mm[1] + center_model[1] * scale,
+        ];
+        let radius = dimension.arc_radius_page_mm();
+        let start_angle = start_direction[1].atan2(start_direction[0]);
+        let arc_points_mm = (0..=16)
+            .map(|index| {
+                let angle = start_angle + sweep * f64::from(index) / 16.0;
+                [
+                    center[0] + radius * angle.cos(),
+                    center[1] + radius * angle.sin(),
+                ]
+            })
+            .collect::<Vec<_>>();
+        let extension_lines_mm = [
+            [center, arc_points_mm[0]],
+            [
+                center,
+                *arc_points_mm.last().expect("angular arc has endpoints"),
+            ],
+        ];
+        let text_angle = start_angle + sweep * 0.5;
+        let text_position_mm = [
+            center[0] + (radius + 3.0) * text_angle.cos(),
+            center[1] + (radius + 3.0) * text_angle.sin(),
+        ];
+        if extension_lines_mm
+            .iter()
+            .flatten()
+            .chain(&arc_points_mm)
+            .chain([&text_position_mm])
+            .any(|point| !drawing_page_contains(*point, border_bounds_mm, drawing_min_y))
+        {
+            return Err(DrawingError::LayoutOverflow);
+        }
+        let value_degrees = sweep.to_degrees();
+        output.push(DrawingAngularDimensionLayout {
+            stable_dimension_id: format!("sheet-{}/dimension-{}", sheet.id().0, dimension.id().0),
+            source_line_ids: dimension.source_line_ids().map(str::to_owned),
+            value_degrees,
+            tolerance: dimension.tolerance(),
+            label: format_dimension(
+                value_degrees,
+                dimension.tolerance(),
+                DrawingDimensionUnit::Degrees,
+            ),
+            extension_lines_mm,
+            arc_points_mm,
+            text_position_mm,
+        });
+    }
+    Ok(output)
+}
+
+fn layout_circular_dimensions(
+    sheet: &DrawingSheet,
+    views: &[OrthographicView],
+    placements: &[DrawingViewPlacement],
+    border_bounds_mm: [[f64; 2]; 2],
+    drawing_min_y: f64,
+) -> Result<Vec<DrawingCircularDimensionLayout>, DrawingError> {
+    let mut output = Vec::with_capacity(sheet.circular_dimensions().len());
+    for dimension in sheet.circular_dimensions() {
+        let view_index = views
+            .iter()
+            .position(|view| view.kind.stable_name() == dimension.view_stable_name())
+            .ok_or(DrawingError::DimensionSourceLost)?;
+        let view = &views[view_index];
+        let placement = &placements[view_index];
+        let mut matching = view
+            .circles
+            .iter()
+            .filter(|circle| circle.stable_circle_id == dimension.source_circle_id());
+        let circle = matching.next().ok_or(DrawingError::DimensionSourceLost)?;
+        if matching.next().is_some() {
+            return Err(DrawingError::DimensionSourceLost);
+        }
+        let scale = sheet.page().scale().factor() * view.kind.layout_scale_multiplier();
+        let center = [
+            placement.origin_mm[0] + circle.center_mm[0] * scale,
+            placement.origin_mm[1] + circle.center_mm[1] * scale,
+        ];
+        let radius_page = circle.radius_mm * scale;
+        let angle = dimension.leader_angle_degrees().to_radians();
+        let direction = [angle.cos(), angle.sin()];
+        let start_radius = match dimension.kind() {
+            DrawingCircularDimensionKind::Radius => 0.0,
+            DrawingCircularDimensionKind::Diameter => -radius_page,
+        };
+        let leader_line_mm = [
+            [
+                center[0] + direction[0] * start_radius,
+                center[1] + direction[1] * start_radius,
+            ],
+            [
+                center[0] + direction[0] * (radius_page + dimension.offset_page_mm()),
+                center[1] + direction[1] * (radius_page + dimension.offset_page_mm()),
+            ],
+        ];
+        let text_position_mm = [
+            leader_line_mm[1][0] + direction[0] * 2.0,
+            leader_line_mm[1][1] + direction[1] * 2.0,
+        ];
+        if leader_line_mm
+            .iter()
+            .chain([&text_position_mm])
+            .any(|point| !drawing_page_contains(*point, border_bounds_mm, drawing_min_y))
+        {
+            return Err(DrawingError::LayoutOverflow);
+        }
+        let value_mm = match dimension.kind() {
+            DrawingCircularDimensionKind::Radius => circle.radius_mm,
+            DrawingCircularDimensionKind::Diameter => circle.radius_mm * 2.0,
+        };
+        let prefix = match dimension.kind() {
+            DrawingCircularDimensionKind::Radius => "R",
+            DrawingCircularDimensionKind::Diameter => "⌀",
+        };
+        output.push(DrawingCircularDimensionLayout {
+            stable_dimension_id: format!("sheet-{}/dimension-{}", sheet.id().0, dimension.id().0),
+            source_circle_id: dimension.source_circle_id().to_owned(),
+            kind: dimension.kind(),
+            value_mm,
+            tolerance: dimension.tolerance(),
+            label: format!(
+                "{prefix}{}",
+                format_dimension(
+                    value_mm,
+                    dimension.tolerance(),
+                    DrawingDimensionUnit::Millimetres
+                )
+            ),
+            leader_line_mm,
+            text_position_mm,
+        });
+    }
+    Ok(output)
+}
+
+fn layout_datum_symbols(
+    sheet: &DrawingSheet,
+    views: &[OrthographicView],
+    placements: &[DrawingViewPlacement],
+    border_bounds_mm: [[f64; 2]; 2],
+    drawing_min_y: f64,
+) -> Result<Vec<DrawingDatumSymbolLayout>, DrawingError> {
+    sheet
+        .datum_symbols()
+        .iter()
+        .map(|datum| {
+            let anchor = annotation_source_anchor(
+                sheet,
+                views,
+                placements,
+                datum.view_stable_name(),
+                datum.source_line_id(),
+            )?;
+            let offset = datum.offset_page_mm();
+            let length = dot_2d(offset, offset).sqrt();
+            let direction = [offset[0] / length, offset[1] / length];
+            let perpendicular = [-direction[1], direction[0]];
+            let frame_center = [anchor[0] + offset[0], anchor[1] + offset[1]];
+            let triangle_base = [
+                anchor[0] + direction[0] * 3.0,
+                anchor[1] + direction[1] * 3.0,
+            ];
+            let triangle_mm = [
+                anchor,
+                [
+                    triangle_base[0] + perpendicular[0] * 2.0,
+                    triangle_base[1] + perpendicular[1] * 2.0,
+                ],
+                [
+                    triangle_base[0] - perpendicular[0] * 2.0,
+                    triangle_base[1] - perpendicular[1] * 2.0,
+                ],
+            ];
+            let frame_bounds_mm = [
+                [frame_center[0] - 3.0, frame_center[1] - 3.0],
+                [frame_center[0] + 3.0, frame_center[1] + 3.0],
+            ];
+            let leader_line_mm = [triangle_base, frame_center];
+            let text_position_mm = [frame_center[0] - 1.2, frame_center[1] - 1.2];
+            if triangle_mm
+                .iter()
+                .chain(leader_line_mm.iter())
+                .chain(frame_bounds_mm.iter())
+                .chain([&text_position_mm])
+                .any(|point| !drawing_page_contains(*point, border_bounds_mm, drawing_min_y))
+            {
+                return Err(DrawingError::LayoutOverflow);
+            }
+            Ok(DrawingDatumSymbolLayout {
+                stable_datum_id: format!("sheet-{}/datum-{}", sheet.id().0, datum.id().0),
+                source_line_id: datum.source_line_id().to_owned(),
+                label: datum.label().to_owned(),
+                leader_line_mm,
+                triangle_mm,
+                frame_bounds_mm,
+                text_position_mm,
+            })
+        })
+        .collect()
+}
+
+fn layout_feature_control_frames(
+    sheet: &DrawingSheet,
+    views: &[OrthographicView],
+    placements: &[DrawingViewPlacement],
+    border_bounds_mm: [[f64; 2]; 2],
+    drawing_min_y: f64,
+) -> Result<Vec<DrawingFeatureControlFrameLayout>, DrawingError> {
+    sheet
+        .feature_control_frames()
+        .iter()
+        .map(|frame| {
+            let anchor = annotation_source_anchor(
+                sheet,
+                views,
+                placements,
+                frame.view_stable_name(),
+                frame.source_line_id(),
+            )?;
+            let offset = frame.offset_page_mm();
+            let origin = [anchor[0] + offset[0], anchor[1] + offset[1]];
+            let tolerance = format_decimal_mm(frame.tolerance_mm());
+            let zone = if frame.diameter_zone() { "DIA " } else { "" };
+            let condition = match frame.material_condition() {
+                DrawingMaterialCondition::None => "",
+                DrawingMaterialCondition::MaximumMaterial => " MMC",
+                DrawingMaterialCondition::LeastMaterial => " LMC",
+                DrawingMaterialCondition::RegardlessOfFeatureSize => " RFS",
+            };
+            let mut cells = vec![
+                frame.characteristic().stable_name().to_ascii_uppercase(),
+                format!("{zone}{tolerance}{condition}"),
+            ];
+            cells.extend(frame.datum_references().iter().map(|reference| {
+                let suffix = match reference.material_condition() {
+                    DrawingMaterialCondition::None => "",
+                    DrawingMaterialCondition::MaximumMaterial => " MMC",
+                    DrawingMaterialCondition::LeastMaterial => " LMC",
+                    DrawingMaterialCondition::RegardlessOfFeatureSize => " RFS",
+                };
+                format!("{}{suffix}", reference.label())
+            }));
+            let cell_widths = cells
+                .iter()
+                .map(|cell| (cell.chars().count() as f64 * 2.2 + 3.0).max(8.0))
+                .collect::<Vec<_>>();
+            let width = cell_widths.iter().sum::<f64>();
+            let frame_bounds_mm = [origin, [origin[0] + width, origin[1] + 7.0]];
+            let mut running_x = origin[0];
+            let separator_x_mm = cell_widths
+                .iter()
+                .take(cell_widths.len().saturating_sub(1))
+                .map(|width| {
+                    running_x += width;
+                    running_x
+                })
+                .collect::<Vec<_>>();
+            let leader_line_mm = [anchor, [origin[0], origin[1] + 3.5]];
+            let text_position_mm = [origin[0] + 1.5, origin[1] + 2.0];
+            if leader_line_mm
+                .iter()
+                .chain(frame_bounds_mm.iter())
+                .chain([&text_position_mm])
+                .any(|point| !drawing_page_contains(*point, border_bounds_mm, drawing_min_y))
+                || separator_x_mm.iter().any(|x| !x.is_finite())
+            {
+                return Err(DrawingError::LayoutOverflow);
+            }
+            Ok(DrawingFeatureControlFrameLayout {
+                stable_frame_id: format!(
+                    "sheet-{}/feature-control-frame-{}",
+                    sheet.id().0,
+                    frame.id().0
+                ),
+                source_line_id: frame.source_line_id().to_owned(),
+                characteristic: frame.characteristic(),
+                tolerance_mm: frame.tolerance_mm(),
+                diameter_zone: frame.diameter_zone(),
+                material_condition: frame.material_condition(),
+                datum_references: frame.datum_references().to_vec(),
+                label: cells.join(" | "),
+                leader_line_mm,
+                frame_bounds_mm,
+                separator_x_mm,
+                text_position_mm,
+            })
+        })
+        .collect()
+}
+
+fn layout_bom_annotations(
+    snapshot: &Snapshot,
+    sheet: &DrawingSheet,
+    views: &[OrthographicView],
+    placements: &[DrawingViewPlacement],
+    view_cell_bounds: &[[[f64; 2]; 2]],
+    border_bounds_mm: [[f64; 2]; 2],
+    drawing_min_y: f64,
+) -> Result<(Vec<DrawingBomBalloonLayout>, Vec<DrawingBomRowLayout>), DrawingError> {
+    if sheet.bom_balloons().is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let source_path_count = match sheet.source() {
+        DrawingSource::Definition(_) => return Err(DrawingError::InvalidAnnotation),
+        DrawingSource::RigidAssembly { occurrence_ids } => occurrence_ids.len(),
+        DrawingSource::RigidAssemblyInstances { instance_paths } => instance_paths.len(),
+    };
+    if sheet.bom_balloons().len() != source_path_count {
+        return Err(DrawingError::InvalidAnnotation);
+    }
+
+    let mut definition_positions = BTreeMap::<DefinitionId, u32>::new();
+    let mut positions = BTreeMap::<u32, (DefinitionId, String, u32)>::new();
+    let mut balloons = Vec::with_capacity(sheet.bom_balloons().len());
+    for balloon in sheet.bom_balloons() {
+        let resolved = snapshot
+            .resolve_instance_path(balloon.instance_path())
+            .map_err(|_| DrawingError::AnnotationSourceLost)?;
+        if definition_positions
+            .insert(resolved.definition_id, balloon.position())
+            .is_some_and(|position| position != balloon.position())
+        {
+            return Err(DrawingError::InvalidAnnotation);
+        }
+        let definition = snapshot
+            .definition(resolved.definition_id)
+            .ok_or(DrawingError::AnnotationSourceLost)?;
+        match positions.entry(balloon.position()) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert((resolved.definition_id, definition.name().to_owned(), 1));
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                if entry.get().0 != resolved.definition_id {
+                    return Err(DrawingError::InvalidAnnotation);
+                }
+                entry.get_mut().2 = entry
+                    .get()
+                    .2
+                    .checked_add(1)
+                    .ok_or(DrawingError::ResourceLimit)?;
+            }
+        }
+
+        let view_index = views
+            .iter()
+            .position(|view| view.kind.stable_name() == balloon.view_stable_name())
+            .ok_or(DrawingError::AnnotationSourceLost)?;
+        let view = &views[view_index];
+        let prefix = format!(
+            "sheet-{}/view-{}/instance-{}:",
+            sheet.id().0,
+            balloon.view_stable_name(),
+            stable_instance_path(balloon.instance_path())
+        );
+        let source = view
+            .visible_lines
+            .iter()
+            .chain(&view.hidden_lines)
+            .find(|line| line.stable_line_id.starts_with(&prefix))
+            .ok_or(DrawingError::AnnotationSourceLost)?;
+        let scale = sheet.page().scale().factor() * view.kind.layout_scale_multiplier();
+        let anchor_model = [
+            (source.start_mm[0] + source.end_mm[0]) * 0.5,
+            (source.start_mm[1] + source.end_mm[1]) * 0.5,
+        ];
+        let anchor = [
+            placements[view_index].origin_mm[0] + anchor_model[0] * scale,
+            placements[view_index].origin_mm[1] + anchor_model[1] * scale,
+        ];
+        let preferred_offset = balloon.offset_page_mm();
+        let view_center = [
+            (placements[view_index].page_bounds_mm[0][0]
+                + placements[view_index].page_bounds_mm[1][0])
+                * 0.5,
+            (placements[view_index].page_bounds_mm[0][1]
+                + placements[view_index].page_bounds_mm[1][1])
+                * 0.5,
+        ];
+        let inward_offset = [
+            preferred_offset[0]
+                .abs()
+                .copysign(view_center[0] - anchor[0]),
+            preferred_offset[1]
+                .abs()
+                .copysign(view_center[1] - anchor[1]),
+        ];
+        let circle_radius_mm = 4.0;
+        let cell_bounds = view_cell_bounds[view_index];
+        let offset = [preferred_offset, inward_offset]
+            .into_iter()
+            .find(|candidate| {
+                let center = [anchor[0] + candidate[0], anchor[1] + candidate[1]];
+                [
+                    [center[0] - circle_radius_mm, center[1] - circle_radius_mm],
+                    [center[0] + circle_radius_mm, center[1] + circle_radius_mm],
+                ]
+                .into_iter()
+                .all(|point| {
+                    drawing_page_contains(point, border_bounds_mm, drawing_min_y)
+                        && point[0] >= cell_bounds[0][0] - INTERSECTION_EPSILON
+                        && point[0] <= cell_bounds[1][0] + INTERSECTION_EPSILON
+                        && point[1] >= cell_bounds[0][1] - INTERSECTION_EPSILON
+                        && point[1] <= cell_bounds[1][1] + INTERSECTION_EPSILON
+                })
+            })
+            .ok_or(DrawingError::LayoutOverflow)?;
+        let offset_length = dot_2d(offset, offset).sqrt();
+        let direction = [offset[0] / offset_length, offset[1] / offset_length];
+        let circle_center_mm = [anchor[0] + offset[0], anchor[1] + offset[1]];
+        let leader_line_mm = [
+            anchor,
+            [
+                circle_center_mm[0] - direction[0] * circle_radius_mm,
+                circle_center_mm[1] - direction[1] * circle_radius_mm,
+            ],
+        ];
+        let text_position_mm = [circle_center_mm[0] - 1.2, circle_center_mm[1] - 1.2];
+        balloons.push(DrawingBomBalloonLayout {
+            stable_balloon_id: format!("sheet-{}/balloon-{}", sheet.id().0, balloon.id().0),
+            instance_path: balloon.instance_path().clone(),
+            position: balloon.position(),
+            label: balloon.position().to_string(),
+            leader_line_mm,
+            circle_center_mm,
+            circle_radius_mm,
+            text_position_mm,
+        });
+    }
+    if positions.keys().copied().ne(1..=positions.len() as u32) {
+        return Err(DrawingError::InvalidAnnotation);
+    }
+
+    let row_height = 4.5;
+    let rows_per_column = ((border_bounds_mm[1][1] - drawing_min_y - 5.0) / row_height)
+        .floor()
+        .max(1.0) as usize;
+    let column_width = 70.0;
+    let mut rows = Vec::with_capacity(positions.len());
+    for (index, (position, (definition_id, part_name, quantity))) in
+        positions.into_iter().enumerate()
+    {
+        let column = index / rows_per_column;
+        let row = index % rows_per_column;
+        let text_position_mm = [
+            border_bounds_mm[0][0] + 3.0 + column as f64 * column_width,
+            border_bounds_mm[1][1] - 5.0 - row as f64 * row_height,
+        ];
+        if text_position_mm[0] + column_width > border_bounds_mm[1][0]
+            || !drawing_page_contains(text_position_mm, border_bounds_mm, drawing_min_y)
+        {
+            return Err(DrawingError::LayoutOverflow);
+        }
+        rows.push(DrawingBomRowLayout {
+            position,
+            definition_id,
+            part_name: part_name.clone(),
+            quantity,
+            label: format!("{position} | {part_name} | QTY {quantity}"),
+            text_position_mm,
+        });
+    }
+    Ok((balloons, rows))
+}
+
+fn annotation_source_anchor(
+    sheet: &DrawingSheet,
+    views: &[OrthographicView],
+    placements: &[DrawingViewPlacement],
+    view_stable_name: &str,
+    source_line_id: &str,
+) -> Result<[f64; 2], DrawingError> {
+    let view_index = views
+        .iter()
+        .position(|view| view.kind.stable_name() == view_stable_name)
+        .ok_or(DrawingError::AnnotationSourceLost)?;
+    let view = &views[view_index];
+    let mut matching = view
+        .visible_lines
+        .iter()
+        .chain(&view.hidden_lines)
+        .filter(|line| line.stable_line_id == source_line_id);
+    let source = matching.next().ok_or(DrawingError::AnnotationSourceLost)?;
+    if matching.next().is_some() {
+        return Err(DrawingError::AnnotationSourceLost);
+    }
+    let scale = sheet.page().scale().factor() * view.kind.layout_scale_multiplier();
+    let midpoint = [
+        (source.start_mm[0] + source.end_mm[0]) * 0.5,
+        (source.start_mm[1] + source.end_mm[1]) * 0.5,
+    ];
+    Ok([
+        placements[view_index].origin_mm[0] + midpoint[0] * scale,
+        placements[view_index].origin_mm[1] + midpoint[1] * scale,
+    ])
+}
+
+fn drawing_page_contains(
+    point: [f64; 2],
+    border_bounds_mm: [[f64; 2]; 2],
+    drawing_min_y: f64,
+) -> bool {
+    point.into_iter().all(f64::is_finite)
+        && point[0] >= border_bounds_mm[0][0] - INTERSECTION_EPSILON
+        && point[0] <= border_bounds_mm[1][0] + INTERSECTION_EPSILON
+        && point[1] >= drawing_min_y - INTERSECTION_EPSILON
+        && point[1] <= border_bounds_mm[1][1] + INTERSECTION_EPSILON
+}
+
 fn format_dimension_mm(value_mm: f64, tolerance: DrawingDimensionTolerance) -> String {
-    let nominal = format_decimal_mm(value_mm);
+    format_dimension(value_mm, tolerance, DrawingDimensionUnit::Millimetres)
+}
+
+fn format_dimension(
+    value: f64,
+    tolerance: DrawingDimensionTolerance,
+    unit: DrawingDimensionUnit,
+) -> String {
+    let nominal = format_decimal_mm(value);
+    let suffix = match unit {
+        DrawingDimensionUnit::Millimetres => " mm",
+        DrawingDimensionUnit::Degrees => "°",
+    };
     match tolerance {
-        DrawingDimensionTolerance::None => format!("{nominal} mm"),
+        DrawingDimensionTolerance::None => format!("{nominal}{suffix}"),
         DrawingDimensionTolerance::Symmetric { deviation_bits } => format!(
-            "{nominal} ±{} mm",
+            "{nominal} ±{}{suffix}",
             format_decimal_mm(f64::from_bits(deviation_bits))
         ),
         DrawingDimensionTolerance::Bilateral {
             upper_bits,
             lower_bits,
         } => format!(
-            "{nominal} +{}/-{} mm",
+            "{nominal} +{}/-{}{suffix}",
             format_decimal_mm(f64::from_bits(upper_bits)),
             format_decimal_mm(f64::from_bits(lower_bits))
         ),
@@ -2462,6 +4215,12 @@ pub(crate) fn drawing_layout_digest(
     title_block_bounds_mm: [[f64; 2]; 2],
     placements: &[DrawingViewPlacement],
     dimensions: &[DrawingLinearDimensionLayout],
+    angular_dimensions: &[DrawingAngularDimensionLayout],
+    circular_dimensions: &[DrawingCircularDimensionLayout],
+    datum_symbols: &[DrawingDatumSymbolLayout],
+    feature_control_frames: &[DrawingFeatureControlFrameLayout],
+    bom_balloons: &[DrawingBomBalloonLayout],
+    bom_rows: &[DrawingBomRowLayout],
     notes: &[DrawingNoteLayout],
 ) -> String {
     let mut digest = Sha256::new();
@@ -2515,6 +4274,116 @@ pub(crate) fn drawing_layout_digest(
             digest.update(coordinate.to_bits().to_le_bytes());
         }
     }
+    for dimension in angular_dimensions {
+        push_digest(&mut digest, dimension.stable_dimension_id.as_bytes());
+        for source in &dimension.source_line_ids {
+            push_digest(&mut digest, source.as_bytes());
+        }
+        digest.update(dimension.value_degrees.to_bits().to_le_bytes());
+        push_digest(&mut digest, dimension.label.as_bytes());
+        for coordinate in dimension
+            .extension_lines_mm
+            .iter()
+            .flatten()
+            .chain(&dimension.arc_points_mm)
+            .chain([&dimension.text_position_mm])
+            .flatten()
+        {
+            digest.update(coordinate.to_bits().to_le_bytes());
+        }
+    }
+    for dimension in circular_dimensions {
+        push_digest(&mut digest, dimension.stable_dimension_id.as_bytes());
+        push_digest(&mut digest, dimension.source_circle_id.as_bytes());
+        digest.update(match dimension.kind {
+            DrawingCircularDimensionKind::Radius => [1],
+            DrawingCircularDimensionKind::Diameter => [2],
+        });
+        digest.update(dimension.value_mm.to_bits().to_le_bytes());
+        push_digest(&mut digest, dimension.label.as_bytes());
+        for coordinate in dimension
+            .leader_line_mm
+            .iter()
+            .chain([&dimension.text_position_mm])
+            .flatten()
+        {
+            digest.update(coordinate.to_bits().to_le_bytes());
+        }
+    }
+    for datum in datum_symbols {
+        push_digest(&mut digest, datum.stable_datum_id.as_bytes());
+        push_digest(&mut digest, datum.source_line_id.as_bytes());
+        push_digest(&mut digest, datum.label.as_bytes());
+        for coordinate in datum
+            .leader_line_mm
+            .iter()
+            .chain(&datum.triangle_mm)
+            .chain(datum.frame_bounds_mm.iter())
+            .chain([&datum.text_position_mm])
+            .flatten()
+        {
+            digest.update(coordinate.to_bits().to_le_bytes());
+        }
+    }
+    for frame in feature_control_frames {
+        push_digest(&mut digest, frame.stable_frame_id.as_bytes());
+        push_digest(&mut digest, frame.source_line_id.as_bytes());
+        push_digest(&mut digest, frame.characteristic.stable_name().as_bytes());
+        digest.update(frame.tolerance_mm.to_bits().to_le_bytes());
+        digest.update([u8::from(frame.diameter_zone)]);
+        push_digest(
+            &mut digest,
+            frame.material_condition.stable_name().as_bytes(),
+        );
+        for reference in &frame.datum_references {
+            push_digest(&mut digest, reference.label().as_bytes());
+            push_digest(
+                &mut digest,
+                reference.material_condition().stable_name().as_bytes(),
+            );
+        }
+        push_digest(&mut digest, frame.label.as_bytes());
+        for coordinate in frame
+            .leader_line_mm
+            .iter()
+            .chain(frame.frame_bounds_mm.iter())
+            .chain([&frame.text_position_mm])
+            .flatten()
+        {
+            digest.update(coordinate.to_bits().to_le_bytes());
+        }
+        for separator in &frame.separator_x_mm {
+            digest.update(separator.to_bits().to_le_bytes());
+        }
+    }
+    for balloon in bom_balloons {
+        push_digest(&mut digest, balloon.stable_balloon_id.as_bytes());
+        push_digest(
+            &mut digest,
+            stable_instance_path(&balloon.instance_path).as_bytes(),
+        );
+        digest.update(balloon.position.to_le_bytes());
+        push_digest(&mut digest, balloon.label.as_bytes());
+        digest.update(balloon.circle_radius_mm.to_bits().to_le_bytes());
+        for coordinate in balloon
+            .leader_line_mm
+            .iter()
+            .chain([&balloon.circle_center_mm, &balloon.text_position_mm])
+            .flatten()
+        {
+            digest.update(coordinate.to_bits().to_le_bytes());
+        }
+    }
+    for row in bom_rows {
+        digest.update(row.position.to_le_bytes());
+        digest.update(row.definition_id.0.to_le_bytes());
+        push_digest(&mut digest, row.part_name.as_bytes());
+        digest.update(row.quantity.to_le_bytes());
+        push_digest(&mut digest, row.label.as_bytes());
+        for coordinate in row.text_position_mm {
+            digest.update(coordinate.to_bits().to_le_bytes());
+        }
+    }
     for note in notes {
         push_digest(&mut digest, note.stable_note_id.as_bytes());
         for coordinate in note.position_mm {
@@ -2553,6 +4422,13 @@ pub(crate) fn drawing_result_digest(
                 }
             }
         }
+        for circle in &view.circles {
+            push_digest(&mut digest, circle.stable_circle_id.as_bytes());
+            for coordinate in circle.center_mm {
+                digest.update(coordinate.to_bits().to_le_bytes());
+            }
+            digest.update(circle.radius_mm.to_bits().to_le_bytes());
+        }
     }
     digest
         .finalize()
@@ -2572,6 +4448,15 @@ fn transform_point(transform: Transform, point: [f64; 3]) -> [f64; 3] {
         matrix[0] * point[0] + matrix[1] * point[1] + matrix[2] * point[2] + matrix[3],
         matrix[4] * point[0] + matrix[5] * point[1] + matrix[6] * point[2] + matrix[7],
         matrix[8] * point[0] + matrix[9] * point[1] + matrix[10] * point[2] + matrix[11],
+    ]
+}
+
+fn transform_vector(transform: Transform, vector: [f64; 3]) -> [f64; 3] {
+    let matrix = transform.matrix();
+    [
+        matrix[0] * vector[0] + matrix[1] * vector[1] + matrix[2] * vector[2],
+        matrix[4] * vector[0] + matrix[5] * vector[1] + matrix[6] * vector[2],
+        matrix[8] * vector[0] + matrix[9] * vector[1] + matrix[10] * vector[2],
     ]
 }
 
@@ -2646,6 +4531,424 @@ mod tests {
         assert_eq!(
             OrthographicViewKind::auxiliary([f64::NAN, 0.0, 0.0], [0.0, 1.0, 0.0]),
             Err(DrawingError::InvalidView)
+        );
+    }
+
+    #[test]
+    fn typed_angular_radius_and_diameter_dimensions_layout_export_and_tamper_fail_closed() {
+        let view_kind = OrthographicViewKind::Front;
+        let horizontal_id = "sheet-9/view-front/definition-1:edge:1".to_owned();
+        let vertical_id = "sheet-9/view-front/definition-1:edge:2".to_owned();
+        let circle_id = "sheet-9/view-front/definition-1:circle:7".to_owned();
+        assert_eq!(
+            DrawingCircularDimension::new(
+                DrawingDimensionId(1),
+                view_kind,
+                circle_id.clone(),
+                DrawingCircularDimensionKind::Radius,
+                360.0,
+                8.0,
+                DrawingDimensionTolerance::None,
+            ),
+            Err(DrawingError::InvalidDimension)
+        );
+        assert_eq!(
+            DrawingAngularDimension::new(
+                DrawingDimensionId(1),
+                view_kind,
+                [horizontal_id.clone(), vertical_id.clone()],
+                12.0,
+                DrawingDimensionTolerance::symmetric(180.0).unwrap(),
+            ),
+            Err(DrawingError::InvalidDimension)
+        );
+        let sheet = DrawingSheet::with_contract_views_and_annotations(
+            DrawingSheetId(9),
+            "Typed dimensions",
+            DrawingSource::Definition(DefinitionId(1)),
+            DrawingPageTemplate::default(),
+            DrawingTitleBlock::new("Typed dimensions", "TD-9", "A", "Kečup").unwrap(),
+            vec![view_kind],
+            DrawingAnnotations::with_typed_dimensions(
+                Vec::new(),
+                vec![
+                    DrawingAngularDimension::new(
+                        DrawingDimensionId(1),
+                        view_kind,
+                        [horizontal_id.clone(), vertical_id.clone()],
+                        12.0,
+                        DrawingDimensionTolerance::symmetric(0.5).unwrap(),
+                    )
+                    .unwrap(),
+                ],
+                vec![
+                    DrawingCircularDimension::new(
+                        DrawingDimensionId(2),
+                        view_kind,
+                        circle_id.clone(),
+                        DrawingCircularDimensionKind::Radius,
+                        45.0,
+                        8.0,
+                        DrawingDimensionTolerance::None,
+                    )
+                    .unwrap(),
+                    DrawingCircularDimension::new(
+                        DrawingDimensionId(3),
+                        view_kind,
+                        circle_id.clone(),
+                        DrawingCircularDimensionKind::Diameter,
+                        135.0,
+                        8.0,
+                        DrawingDimensionTolerance::bilateral(0.2, 0.1).unwrap(),
+                    )
+                    .unwrap(),
+                ],
+                Vec::new(),
+            ),
+        )
+        .unwrap();
+        let mut document = DocumentStore::new();
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(1),
+                    name: "Part".into(),
+                },
+                CanonicalCommand::CreateDrawingSheet(sheet),
+            ]))
+            .unwrap();
+        let snapshot = document.current();
+        let sheet = snapshot.drawing_sheet(DrawingSheetId(9)).unwrap();
+        let views = vec![OrthographicView {
+            kind: view_kind,
+            stable_view_id: "sheet-9/view-front".into(),
+            bounds_mm: [[-15.0, -15.0], [15.0, 15.0]],
+            visible_lines: vec![
+                ProjectedVisibleLine {
+                    stable_line_id: horizontal_id,
+                    start_mm: [-10.0, 0.0],
+                    end_mm: [10.0, 0.0],
+                },
+                ProjectedVisibleLine {
+                    stable_line_id: vertical_id,
+                    start_mm: [0.0, -10.0],
+                    end_mm: [0.0, 10.0],
+                },
+            ],
+            hidden_lines: Vec::new(),
+            circles: vec![ProjectedCircle {
+                stable_circle_id: circle_id,
+                center_mm: [0.0, 0.0],
+                radius_mm: 5.0,
+            }],
+        }];
+        let mut parallel_views = views.clone();
+        parallel_views[0].visible_lines[1].end_mm = [10.0, -10.0];
+        assert_eq!(
+            layout_drawing_sheet(&snapshot, sheet, &parallel_views),
+            Err(DrawingError::InvalidGeometry)
+        );
+        let mut missing_circle_views = views.clone();
+        missing_circle_views[0].circles.clear();
+        assert_eq!(
+            layout_drawing_sheet(&snapshot, sheet, &missing_circle_views),
+            Err(DrawingError::DimensionSourceLost)
+        );
+        let layout = layout_drawing_sheet(&snapshot, sheet, &views).unwrap();
+        assert_eq!(layout.angular_dimensions[0].value_degrees, 90.0);
+        assert_eq!(layout.angular_dimensions[0].label, "90 ±0.5°");
+        assert_eq!(layout.circular_dimensions[0].label, "R5 mm");
+        assert_eq!(layout.circular_dimensions[1].label, "⌀10 +0.2/-0.1 mm");
+        assert_eq!(
+            sheet.angular_dimensions()[0].unit(),
+            DrawingDimensionUnit::Degrees
+        );
+        assert_eq!(
+            sheet.circular_dimensions()[0].unit(),
+            DrawingDimensionUnit::Millimetres
+        );
+        let stable_source_identity = "definition-1".to_owned();
+        let drawing = OrthographicDrawing {
+            schema: ORTHOGRAPHIC_LINEWORK_SCHEMA_V2,
+            sheet_id: sheet.id(),
+            document_id: snapshot.document_id(),
+            source_revision: snapshot.revision_id(),
+            source_digest: snapshot.canonical_digest(),
+            result_digest: drawing_result_digest(&stable_source_identity, &views),
+            stable_source_identity,
+            views,
+            layout,
+        };
+        let exported = crate::drawing_export::export_drawing(&snapshot, &drawing).unwrap();
+        let svg = std::str::from_utf8(exported.svg()).unwrap();
+        assert!(svg.contains("90 ±0.5°"));
+        assert!(svg.contains("R5 mm"));
+        assert!(svg.contains("⌀10 +0.2/-0.1 mm"));
+        let mut tampered = drawing;
+        tampered.layout.angular_dimensions[0].value_degrees = 91.0;
+        assert_eq!(
+            crate::drawing_export::export_drawing(&snapshot, &tampered),
+            Err(crate::drawing_export::DrawingExportError::InvalidDrawing)
+        );
+    }
+
+    #[test]
+    fn typed_gdt_datums_layout_export_and_tamper_fail_closed() {
+        let view = OrthographicViewKind::Front;
+        let horizontal_id = "sheet-12/view-front/definition-1:edge:1".to_owned();
+        let vertical_id = "sheet-12/view-front/definition-1:edge:2".to_owned();
+        let datum_a = DrawingDatumReference::new("A", DrawingMaterialCondition::None).unwrap();
+        assert_eq!(
+            DrawingDatumReference::new("a", DrawingMaterialCondition::None),
+            Err(DrawingError::InvalidAnnotation)
+        );
+        assert_eq!(
+            DrawingFeatureControlFrame::new(
+                DrawingFeatureControlFrameId(1),
+                view,
+                horizontal_id.clone(),
+                DrawingGeometricCharacteristic::Flatness,
+                0.1,
+                false,
+                DrawingMaterialCondition::None,
+                vec![datum_a.clone()],
+                [20.0, 20.0],
+            ),
+            Err(DrawingError::InvalidAnnotation)
+        );
+        let sheet = DrawingSheet::with_contract_views_and_annotations(
+            DrawingSheetId(12),
+            "GD&T sheet",
+            DrawingSource::Definition(DefinitionId(1)),
+            DrawingPageTemplate::default(),
+            DrawingTitleBlock::new("GD&T sheet", "GDT-12", "A", "Kečup").unwrap(),
+            vec![view],
+            DrawingAnnotations::with_manufacturing_annotations(
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                vec![
+                    DrawingDatumSymbol::new(
+                        DrawingDatumId(1),
+                        view,
+                        horizontal_id.clone(),
+                        "A",
+                        [25.0, 20.0],
+                    )
+                    .unwrap(),
+                    DrawingDatumSymbol::new(
+                        DrawingDatumId(2),
+                        view,
+                        vertical_id.clone(),
+                        "B",
+                        [-25.0, 20.0],
+                    )
+                    .unwrap(),
+                ],
+                vec![
+                    DrawingFeatureControlFrame::new(
+                        DrawingFeatureControlFrameId(1),
+                        view,
+                        horizontal_id.clone(),
+                        DrawingGeometricCharacteristic::Position,
+                        0.1,
+                        true,
+                        DrawingMaterialCondition::MaximumMaterial,
+                        vec![
+                            datum_a,
+                            DrawingDatumReference::new(
+                                "B",
+                                DrawingMaterialCondition::MaximumMaterial,
+                            )
+                            .unwrap(),
+                        ],
+                        [35.0, 35.0],
+                    )
+                    .unwrap(),
+                ],
+                Vec::new(),
+            ),
+        )
+        .unwrap();
+        let mut document = DocumentStore::new();
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(1),
+                    name: "Part".into(),
+                },
+                CanonicalCommand::CreateDrawingSheet(sheet),
+            ]))
+            .unwrap();
+        let snapshot = document.current();
+        let sheet = snapshot.drawing_sheet(DrawingSheetId(12)).unwrap();
+        let views = vec![OrthographicView {
+            kind: view,
+            stable_view_id: "sheet-12/view-front".into(),
+            bounds_mm: [[-15.0, -15.0], [15.0, 15.0]],
+            visible_lines: vec![
+                ProjectedVisibleLine {
+                    stable_line_id: horizontal_id,
+                    start_mm: [-10.0, 0.0],
+                    end_mm: [10.0, 0.0],
+                },
+                ProjectedVisibleLine {
+                    stable_line_id: vertical_id,
+                    start_mm: [0.0, -10.0],
+                    end_mm: [0.0, 10.0],
+                },
+            ],
+            hidden_lines: Vec::new(),
+            circles: Vec::new(),
+        }];
+        let layout = layout_drawing_sheet(&snapshot, sheet, &views).unwrap();
+        assert_eq!(layout.datum_symbols[0].label, "A");
+        assert_eq!(
+            layout.feature_control_frames[0].label,
+            "POSITION | DIA 0.1 MMC | A | B MMC"
+        );
+        let stable_source_identity = "definition-1".to_owned();
+        let drawing = OrthographicDrawing {
+            schema: ORTHOGRAPHIC_LINEWORK_SCHEMA_V2,
+            sheet_id: sheet.id(),
+            document_id: snapshot.document_id(),
+            source_revision: snapshot.revision_id(),
+            source_digest: snapshot.canonical_digest(),
+            result_digest: drawing_result_digest(&stable_source_identity, &views),
+            stable_source_identity,
+            views: views.clone(),
+            layout,
+        };
+        let exported = crate::drawing_export::export_drawing(&snapshot, &drawing).unwrap();
+        let svg = std::str::from_utf8(exported.svg()).unwrap();
+        assert!(svg.contains("sheet-12/datum-1/triangle-0"));
+        assert!(svg.contains("POSITION | DIA 0.1 MMC | A | B MMC"));
+
+        let mut missing_source_views = views;
+        missing_source_views[0].visible_lines.clear();
+        assert_eq!(
+            layout_drawing_sheet(&snapshot, sheet, &missing_source_views),
+            Err(DrawingError::AnnotationSourceLost)
+        );
+        let mut tampered = drawing;
+        tampered.layout.feature_control_frames[0].tolerance_mm = 0.2;
+        assert_eq!(
+            crate::drawing_export::export_drawing(&snapshot, &tampered),
+            Err(crate::drawing_export::DrawingExportError::InvalidDrawing)
+        );
+    }
+
+    #[test]
+    fn bom_balloon_flips_preferred_offset_inward_at_view_cell_boundary() {
+        let path = InstancePath::root(OccurrenceId(1));
+        let balloon = DrawingBomBalloon::new(
+            DrawingBomBalloonId(1),
+            OrthographicViewKind::Front,
+            path.clone(),
+            1,
+            [8.0, 8.0],
+        )
+        .unwrap();
+        let sheet = DrawingSheet::with_contract_views_and_annotations(
+            DrawingSheetId(13),
+            "Boundary BOM",
+            DrawingSource::RigidAssemblyInstances {
+                instance_paths: vec![path.clone()],
+            },
+            DrawingPageTemplate::default(),
+            DrawingTitleBlock::new("Boundary BOM", "BOM-13", "A", "Kečup").unwrap(),
+            vec![OrthographicViewKind::Front],
+            DrawingAnnotations::with_bom_annotations(
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                vec![balloon],
+                Vec::new(),
+            ),
+        )
+        .unwrap();
+        let mut document = DocumentStore::new();
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(1),
+                    name: "Boundary part".into(),
+                },
+                CanonicalCommand::CreateOccurrence {
+                    id: OccurrenceId(1),
+                    definition_id: DefinitionId(1),
+                    name: "Boundary instance".into(),
+                    transform: Transform::identity(),
+                    parent: None,
+                    tag: None,
+                    visible: true,
+                },
+            ]))
+            .unwrap();
+        let snapshot = document.current();
+        let source_line_id = "sheet-13/view-front/instance-1:edge:1".to_owned();
+        let views = vec![OrthographicView {
+            kind: OrthographicViewKind::Front,
+            stable_view_id: "sheet-13/view-front".into(),
+            bounds_mm: [[0.0, 0.0], [185.0, 10.0]],
+            visible_lines: vec![ProjectedVisibleLine {
+                stable_line_id: source_line_id,
+                start_mm: [185.0, 0.0],
+                end_mm: [185.0, 10.0],
+            }],
+            hidden_lines: Vec::new(),
+            circles: Vec::new(),
+        }];
+
+        let layout = layout_drawing_sheet(&snapshot, &sheet, &views).unwrap();
+        let balloon = &layout.bom_balloons[0];
+        assert!(balloon.circle_center_mm[0] < balloon.leader_line_mm[0][0]);
+        assert_eq!(sheet.bom_balloons()[0].offset_page_mm(), [8.0, 8.0]);
+    }
+
+    #[test]
+    fn exact_circle_evidence_projects_only_in_axis_normal_views() {
+        let edge = ExactBRepGraphEdgeEvidence {
+            edge_ordinal: 7,
+            curve_kind: "circle".into(),
+            length_mm: 31.415_926_535_897_93,
+            centroid_mm: [2.0, 3.0, 4.0],
+            bounds_mm: [[-3.0, 3.0, -1.0], [7.0, 3.0, 9.0]],
+            closed: true,
+            circle_radius_mm: Some(5.0),
+            axis_origin_mm: Some([2.0, 3.0, 4.0]),
+            unit_axis_direction: Some([0.0, -1.0, 0.0]),
+            adjacent_face_ordinals: vec![1],
+        };
+        let transform = Transform::from_translation(10.0, 20.0, 30.0).unwrap();
+
+        assert_eq!(
+            project_instance_circles(
+                DrawingSheetId(9),
+                OrthographicViewKind::Front,
+                "instance-4/g5/o6",
+                transform,
+                std::slice::from_ref(&edge),
+            )
+            .unwrap(),
+            vec![ProjectedCircle {
+                stable_circle_id: "sheet-9/view-front/instance-4/g5/o6:circle:7".into(),
+                center_mm: [12.0, 34.0],
+                radius_mm: 5.0,
+            }]
+        );
+        assert!(
+            project_instance_circles(
+                DrawingSheetId(9),
+                OrthographicViewKind::Top,
+                "instance-4/g5/o6",
+                transform,
+                &[edge],
+            )
+            .unwrap()
+            .is_empty()
         );
     }
 }

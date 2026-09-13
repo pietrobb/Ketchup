@@ -1,7 +1,7 @@
 use ketchup_core::document::{
     BodyId, BooleanOperation, CanonicalCommand, CanonicalError, CommandBatch, DefinitionId,
-    Dimension, DocumentStore, EdgeFinishKind, FeatureId, FeatureKind, LoftSection, ProfileSegment,
-    SpatialPathSegment, StableFaceRole, is_valid_spatial_sweep_path,
+    Dimension, DocumentStore, EdgeFinishKind, FeatureId, FeatureKind, LoftContinuity, LoftSection,
+    ProfileSegment, SpatialPathSegment, StableFaceRole, is_valid_spatial_sweep_path,
 };
 use ketchup_core::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V6, EXACT_BREP_GRAPH_SCHEMA_V7, EXACT_BREP_GRAPH_SCHEMA_V8,
@@ -274,6 +274,7 @@ fn topology_shell_and_edge_finish_compile_to_typed_target_bound_nodes() {
                 target: BOOLEAN,
                 removed_faces: vec![face.clone()],
                 thickness: dimension(2.5),
+                direction: ketchup_core::document::ShellDirection::Inward,
             },
         }]))
         .unwrap();
@@ -289,6 +290,9 @@ fn topology_shell_and_edge_finish_compile_to_typed_target_bound_nodes() {
                 edges: vec![edge.clone()],
                 kind: EdgeFinishKind::Chamfer,
                 amount: dimension(1.25),
+                fillet_radius_stations: Vec::new(),
+                chamfer_mode: ketchup_core::document::ChamferMode::Symmetric,
+                chamfer_edge_sides: Vec::new(),
             },
         }]))
         .unwrap();
@@ -300,6 +304,7 @@ fn topology_shell_and_edge_finish_compile_to_typed_target_bound_nodes() {
         target,
         removed_faces,
         thickness_bits,
+        direction: ketchup_core::exact_brep_graph::ExactBRepShellDirection::Inward,
     } = &graph.nodes[3].operation
     else {
         panic!("fourth node must be a topology shell");
@@ -315,6 +320,9 @@ fn topology_shell_and_edge_finish_compile_to_typed_target_bound_nodes() {
         edges,
         kind,
         amount_bits,
+        fillet_radius_stations,
+        chamfer_mode,
+        chamfer_edge_sides,
     } = &graph.nodes[4].operation
     else {
         panic!("last node must be a topology edge finish");
@@ -325,6 +333,12 @@ fn topology_shell_and_edge_finish_compile_to_typed_target_bound_nodes() {
     assert_eq!(edges[0].kind, ExactBRepTopologyKind::Edge);
     assert_eq!(edges[0].reference().unwrap(), edge);
     assert_eq!(f64::from_bits(*amount_bits), 1.25);
+    assert!(fillet_radius_stations.is_empty());
+    assert_eq!(
+        *chamfer_mode,
+        ketchup_core::exact_brep_graph::ExactBRepChamferMode::Symmetric
+    );
+    assert!(chamfer_edge_sides.is_empty());
 
     let bytes = graph.to_bytes().unwrap();
     assert_eq!(ExactBRepGraph::from_bytes(&bytes).unwrap(), graph);
@@ -612,6 +626,8 @@ fn compiler_uses_one_contract_for_pad_revolve_sweep_and_loft() {
                             elevation_mm: 35.0,
                         },
                     ],
+                    guide: None,
+                    continuity: LoftContinuity::Position,
                 },
             },
         ]))

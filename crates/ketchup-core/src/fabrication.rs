@@ -1,6 +1,7 @@
 use crate::document::{
     BooleanOperation, DefinitionId, DocumentId, FeatureId, FeatureKind, InstancePath,
-    InstancePathStep, OccurrenceId, Snapshot, Transform,
+    InstancePathStep, OccurrenceId, Snapshot, SpatialPathSegment, Transform, WeldmentJointPolicy,
+    WeldmentJointPrimary,
 };
 use crate::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepLinearInterval, ExactBRepOperation,
@@ -280,13 +281,20 @@ fn push_projection_bytes(output: &mut Vec<u8>, value: &[u8]) {
     output.extend_from_slice(value);
 }
 
-pub const GENERAL_FABRICATION_EVALUATOR_V4: &str = "ketchup.general-fabrication-evaluator.v4";
+pub const GENERAL_FABRICATION_EVALUATOR_V5: &str = "ketchup.general-fabrication-evaluator.v5";
 pub const FABRICATION_ROLE_DIMENSION_V1: &str = "ketchup.fabrication-role.v1";
 pub const TIMBER_MEMBER_ROLE_V1: &str = "fabrication.timber-member.v1";
+pub const MANUFACTURED_ITEM_ROLE_V1: &str = "fabrication.manufactured-item.v1";
+pub const PURCHASED_ITEM_ROLE_V1: &str = "fabrication.purchased-item.v1";
+pub const MATERIAL_DIMENSION_V1: &str = "ketchup.material.v1";
 pub const TIMBER_MATERIAL_V1: &str = "ketchup.material.timber.unspecified.v1";
-pub const GENERAL_BOM_EXPORT_V1: &str = "ketchup.general-bom-export.v1";
-pub const GENERAL_DRAWING_SVG_V2: &str = "ketchup.general-drawing-svg.v2";
+pub const UNSPECIFIED_MATERIAL_V1: &str = "ketchup.material.unspecified.v1";
+pub const GENERAL_BOM_EXPORT_V2: &str = "ketchup.general-bom-export.v2";
+pub const GENERAL_DRAWING_SVG_V3: &str = "ketchup.general-drawing-svg.v3";
 pub const GENERAL_MANUFACTURING_EXPORT_V2: &str = "ketchup.general-manufacturing-export.v2";
+pub const WELDMENT_CUT_LIST_EXPORT_V1: &str = "ketchup.weldment-cut-list-export.v1";
+pub const WELDMENT_DRAWING_SVG_V1: &str = "ketchup.weldment-drawing-svg.v1";
+pub const WELDMENT_FABRICATION_EVALUATOR_V1: &str = "ketchup.weldment-fabrication-evaluator.v1";
 pub const BTLX_2_3_1_VERSION: &str = "2.3.1";
 pub const BTLX_2_3_1_SCHEMA_URL: &str = "https://www.design2machine.com/btlx/BTLx_2_3_1.xsd";
 pub const BTLX_2_3_1_SCHEMA_SHA256: &str =
@@ -320,8 +328,11 @@ pub enum GeneralFabricationError {
     FabricationRoleDimensionAmbiguous,
     TimberMemberRoleMissing,
     TimberMemberRoleAmbiguous,
+    MaterialDimensionAmbiguous,
+    InvalidBomMetadata,
     UnsupportedOrUnavailableGeometry,
     InvalidGeometry,
+    InvalidWeldmentGeometry,
     NoSupportedGeometry,
     ExportBlocked,
     BtlxProfileRequestUnsupported,
@@ -345,12 +356,21 @@ impl fmt::Display for GeneralFabricationError {
             Self::TimberMemberRoleAmbiguous => {
                 formatter.write_str("the timber-member fabrication role is ambiguous")
             }
+            Self::MaterialDimensionAmbiguous => {
+                formatter.write_str("the BOM material dimension is ambiguous")
+            }
+            Self::InvalidBomMetadata => {
+                formatter.write_str("a BOM role or material token is invalid")
+            }
             Self::UnsupportedOrUnavailableGeometry => formatter.write_str(
                 "a visible geometry-bearing occurrence has unsupported or unavailable evidence",
             ),
             Self::InvalidGeometry => {
                 formatter.write_str("accepted fabrication geometry has invalid local bounds")
             }
+            Self::InvalidWeldmentGeometry => formatter.write_str(
+                "weldment cut lists require supported straight members and unambiguous joints",
+            ),
             Self::NoSupportedGeometry => {
                 formatter.write_str("the document contains no supported visible body geometry")
             }
@@ -372,11 +392,30 @@ impl From<GeneralBodyValidationError> for GeneralFabricationError {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum GeneralBomItemKind {
+    Timber,
+    Manufactured,
+    Purchased,
+}
+
+impl GeneralBomItemKind {
+    const fn token(self) -> &'static str {
+        match self {
+            Self::Timber => "manufactured-timber",
+            Self::Manufactured => "manufactured",
+            Self::Purchased => "purchased",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct GeneralBomRow {
     pub stable_row_id: String,
+    pub position: usize,
     pub definition_id: DefinitionId,
     pub source: GeneralBodySource,
+    pub item_kind: GeneralBomItemKind,
     pub material_key: String,
     pub quantity: usize,
     pub dimensions: PieceDimensions,
@@ -412,8 +451,14 @@ pub struct GeneralDimensionCallout {
 #[derive(Clone, Debug, PartialEq)]
 pub struct GeneralPieceDrawing {
     pub stable_drawing_id: String,
+    pub bom_row_id: String,
+    pub position: usize,
     pub definition_id: DefinitionId,
     pub source: GeneralBodySource,
+    pub item_kind: GeneralBomItemKind,
+    pub material_key: String,
+    pub quantity: usize,
+    pub instances: Vec<InstancePath>,
     pub projection_method: &'static str,
     pub views: Vec<GeneralDrawingView>,
     pub dimensions: Vec<GeneralDimensionCallout>,
@@ -518,11 +563,159 @@ pub struct GeneralManufacturingProjection {
     pub unresolved_sources: Vec<GeneralBodySource>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WeldmentCutTreatment {
+    Square,
+    Butt,
+    Miter,
+}
+
+impl WeldmentCutTreatment {
+    const fn token(self) -> &'static str {
+        match self {
+            Self::Square => "square",
+            Self::Butt => "butt",
+            Self::Miter => "miter",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WeldmentEndCut {
+    pub treatment: WeldmentCutTreatment,
+    pub angle_degrees: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WeldmentCutListRow {
+    pub stable_row_id: String,
+    pub position: usize,
+    pub definition_id: DefinitionId,
+    pub member_feature_id: FeatureId,
+    pub profile_feature_id: FeatureId,
+    pub material_key: String,
+    pub quantity: usize,
+    pub centerline_length_mm: f64,
+    pub orientation_degrees: f64,
+    pub start_cut: WeldmentEndCut,
+    pub end_cut: WeldmentEndCut,
+    pub instances: Vec<InstancePath>,
+    pub evidence_class: EvidenceClass,
+    pub validation_state: ValidationState,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WeldmentCutListProjection {
+    pub cut_list_envelope: FabricationProjectionEnvelope,
+    pub drawing_envelope: FabricationProjectionEnvelope,
+    pub validation_state: ValidationState,
+    pub rows: Vec<WeldmentCutListRow>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct GeneralFabricationProjection {
     pub bom: GeneralBomProjection,
     pub drawings: GeneralDrawingProjection,
     pub manufacturing: GeneralManufacturingProjection,
+    pub weldment: Option<WeldmentCutListProjection>,
+}
+
+impl WeldmentCutListProjection {
+    pub fn cut_list_export(&self, snapshot: &Snapshot) -> Result<Vec<u8>, GeneralFabricationError> {
+        let cut_list_bytes = weldment_cut_list_bytes(&self.rows, self.validation_state);
+        let drawing_bytes = weldment_drawing_bytes(
+            &self.rows,
+            &self.cut_list_envelope.result_digest,
+            self.validation_state,
+        );
+        if self.rows.is_empty()
+            || self.validation_state != ValidationState::Passed
+            || self.cut_list_envelope.status != ProjectionStatus::Complete
+            || self.drawing_envelope.status != ProjectionStatus::Complete
+            || !weldment_envelope_is_current(&self.cut_list_envelope, snapshot)
+            || !weldment_envelope_is_current(&self.drawing_envelope, snapshot)
+            || self.cut_list_envelope.result_digest != sha256_hex(&cut_list_bytes)
+            || self.drawing_envelope.result_digest != sha256_hex(&drawing_bytes)
+            || self.rows.iter().any(|row| {
+                row.validation_state != ValidationState::Passed
+                    || row.quantity == 0
+                    || row.quantity != row.instances.len()
+            })
+        {
+            return Err(GeneralFabricationError::ExportBlocked);
+        }
+        let mut output = format!(
+            "{WELDMENT_CUT_LIST_EXPORT_V1}\ndocument_id={}\nsource_revision={}\nsource_digest={}\nresult_digest={}\ndrawing_result_digest={}\n",
+            self.cut_list_envelope.document_id.0,
+            self.cut_list_envelope.source_revision,
+            self.cut_list_envelope.source_digest,
+            self.cut_list_envelope.result_digest,
+            self.drawing_envelope.result_digest,
+        );
+        for row in &self.rows {
+            output.push_str(&format!(
+                "row={};position={};definition={};member={};profile={};quantity={};length_mm={};orientation_degrees={};start={}:{};end={}:{};material={};evidence={}\n",
+                row.stable_row_id,
+                row.position,
+                row.definition_id.0,
+                row.member_feature_id.0,
+                row.profile_feature_id.0,
+                row.quantity,
+                format_number(row.centerline_length_mm),
+                format_number(row.orientation_degrees),
+                row.start_cut.treatment.token(),
+                format_number(row.start_cut.angle_degrees),
+                row.end_cut.treatment.token(),
+                format_number(row.end_cut.angle_degrees),
+                row.material_key,
+                evidence_token(&row.evidence_class),
+            ));
+        }
+        Ok(output.into_bytes())
+    }
+
+    pub fn drawing_svg(&self, snapshot: &Snapshot) -> Result<Vec<u8>, GeneralFabricationError> {
+        self.cut_list_export(snapshot)?;
+        let drawing_bytes = weldment_drawing_bytes(
+            &self.rows,
+            &self.cut_list_envelope.result_digest,
+            self.validation_state,
+        );
+        if self.drawing_envelope.result_digest != sha256_hex(&drawing_bytes) {
+            return Err(GeneralFabricationError::ExportBlocked);
+        }
+        let height = 45usize
+            .checked_add(
+                self.rows
+                    .len()
+                    .checked_mul(45)
+                    .ok_or(GeneralFabricationError::ExportBlocked)?,
+            )
+            .ok_or(GeneralFabricationError::ExportBlocked)?;
+        let mut output = format!(
+            "<!-- {WELDMENT_DRAWING_SVG_V1} cut_list={} drawing={} -->\n<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1200 {height}\">\n",
+            self.cut_list_envelope.result_digest, self.drawing_envelope.result_digest,
+        );
+        for (index, row) in self.rows.iter().enumerate() {
+            let y = 35 + index * 45;
+            output.push_str(&format!(
+                "<g id=\"{}/drawing\"><line x1=\"25\" y1=\"{y}\" x2=\"{}\" y2=\"{y}\" stroke=\"black\"/><text x=\"25\" y=\"{}\">position {}, member {}, length {} mm, start {} {} deg, end {} {} deg, material {}</text></g>\n",
+                row.stable_row_id,
+                25.0 + row.centerline_length_mm.min(400.0),
+                y + 20,
+                row.position,
+                row.member_feature_id.0,
+                format_number(row.centerline_length_mm),
+                row.start_cut.treatment.token(),
+                format_number(row.start_cut.angle_degrees),
+                row.end_cut.treatment.token(),
+                format_number(row.end_cut.angle_degrees),
+                xml_escape(&row.material_key),
+            ));
+        }
+        output.push_str("</svg>\n");
+        Ok(output.into_bytes())
+    }
 }
 
 impl GeneralFabricationProjection {
@@ -540,7 +733,7 @@ impl GeneralFabricationProjection {
             return Err(GeneralFabricationError::ExportBlocked);
         }
         let mut output = format!(
-            "{GENERAL_BOM_EXPORT_V1}\ndocument_id={}\nsource_revision={}\nsource_digest={}\nresult_digest={}\n",
+            "{GENERAL_BOM_EXPORT_V2}\ndocument_id={}\nsource_revision={}\nsource_digest={}\nresult_digest={}\n",
             self.bom.envelope.document_id.0,
             self.bom.envelope.source_revision,
             self.bom.envelope.source_digest,
@@ -548,9 +741,11 @@ impl GeneralFabricationProjection {
         );
         for row in &self.bom.rows {
             output.push_str(&format!(
-                "row={};definition={};quantity={};length_mm={};width_mm={};height_mm={};material={};evidence={}\n",
+                "row={};position={};definition={};kind={};quantity={};length_mm={};width_mm={};height_mm={};material={};evidence={}\n",
                 row.stable_row_id,
+                row.position,
                 row.definition_id.0,
+                row.item_kind.token(),
                 row.quantity,
                 format_number(row.dimensions.length_mm),
                 format_number(row.dimensions.width_mm),
@@ -563,6 +758,28 @@ impl GeneralFabricationProjection {
     }
 
     pub fn drawing_svg(&self, snapshot: &Snapshot) -> Result<Vec<u8>, GeneralFabricationError> {
+        self.bom_export(snapshot)?;
+        if self.drawings.drawings.len() != self.bom.rows.len()
+            || self
+                .drawings
+                .drawings
+                .iter()
+                .zip(&self.bom.rows)
+                .any(|(drawing, row)| {
+                    drawing.stable_drawing_id != format!("{}/drawing", row.stable_row_id)
+                        || drawing.bom_row_id != row.stable_row_id
+                        || drawing.position != row.position
+                        || drawing.definition_id != row.definition_id
+                        || drawing.source != row.source
+                        || drawing.item_kind != row.item_kind
+                        || drawing.material_key != row.material_key
+                        || drawing.quantity != row.quantity
+                        || drawing.instances != row.instances
+                        || drawing.evidence_class != row.evidence_class
+                })
+        {
+            return Err(GeneralFabricationError::ExportBlocked);
+        }
         let result_bytes =
             general_drawing_bytes(&self.drawings.drawings, self.drawings.validation_state);
         let manufacturing_bytes = general_manufacturing_bytes(
@@ -601,7 +818,7 @@ impl GeneralFabricationProjection {
                 .iter()
                 .map(|view| view.height_mm + 55.0)
                 .sum::<f64>()
-                + 60.0;
+                + 90.0;
             for operation in drawing
                 .machining_operations
                 .iter()
@@ -615,7 +832,8 @@ impl GeneralFabricationProjection {
         }
         sheet_width += 80.0;
         let mut svg = format!(
-            "<!-- {GENERAL_DRAWING_SVG_V2} drawing={} manufacturing={} -->\n<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {} {}\">\n",
+            "<!-- {GENERAL_DRAWING_SVG_V3} bom={} drawing={} manufacturing={} -->\n<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {} {}\">\n",
+            self.bom.envelope.result_digest,
             self.drawings.envelope.result_digest,
             self.manufacturing.envelope.result_digest,
             format_number(sheet_width),
@@ -627,6 +845,16 @@ impl GeneralFabricationProjection {
                 "<g id=\"{}\" fill=\"none\" stroke=\"black\">\n",
                 drawing.stable_drawing_id
             ));
+            svg.push_str(&format!(
+                "<text id=\"{}/bom-reference\" x=\"25\" y=\"{}\" fill=\"black\" stroke=\"none\">position: {}, quantity: {}, kind: {}, material: {}</text>\n",
+                drawing.stable_drawing_id,
+                format_number(y),
+                drawing.position,
+                drawing.quantity,
+                drawing.item_kind.token(),
+                drawing.material_key
+            ));
+            y += 30.0;
             for view in &drawing.views {
                 svg.push_str(&format!(
                     "<rect id=\"{}\" x=\"25\" y=\"{}\" width=\"{}\" height=\"{}\" />\n<text x=\"25\" y=\"{}\" fill=\"black\" stroke=\"none\">{} ({} × {})</text>\n",
@@ -741,7 +969,13 @@ impl GeneralFabricationProjection {
     ) -> Result<Vec<u8>, GeneralFabricationError> {
         self.bom_export(snapshot)?;
         self.manufacturing_export(snapshot)?;
-        if self.bom.rows.is_empty() || self.manufacturing.operations.is_empty() {
+        if !self
+            .bom
+            .rows
+            .iter()
+            .any(|row| row.item_kind == GeneralBomItemKind::Timber)
+            || self.manufacturing.operations.is_empty()
+        {
             return Err(GeneralFabricationError::ExportBlocked);
         }
 
@@ -751,7 +985,13 @@ impl GeneralFabricationProjection {
         let mut matched_operation_count = 0usize;
         let mut next_process_id = 1u32;
         let mut next_reference_plane_id = 100u32;
-        for (index, row) in self.bom.rows.iter().enumerate() {
+        for (index, row) in self
+            .bom
+            .rows
+            .iter()
+            .filter(|row| row.item_kind == GeneralBomItemKind::Timber)
+            .enumerate()
+        {
             let GeneralBodySource::Exact(row_source) = &row.source else {
                 return Err(GeneralFabricationError::ExportBlocked);
             };
@@ -1511,39 +1751,349 @@ fn rectangular_timber_stock_dimensions(
         .then_some((*length_mm, width_mm, height_mm))
 }
 
-fn timber_member_occurrences(
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct BomOccurrenceMetadata {
+    item_kind: GeneralBomItemKind,
+    material_key: String,
+}
+
+fn bom_occurrence_metadata(
     snapshot: &Snapshot,
-) -> Result<BTreeSet<OccurrenceId>, GeneralFabricationError> {
-    let dimensions = snapshot
+) -> Result<BTreeMap<OccurrenceId, BomOccurrenceMetadata>, GeneralFabricationError> {
+    let role_dimensions = snapshot
         .classification_dimensions()
         .filter(|dimension| dimension.name() == FABRICATION_ROLE_DIMENSION_V1)
         .collect::<Vec<_>>();
-    let [dimension] = dimensions.as_slice() else {
-        return Err(if dimensions.is_empty() {
+    let [role_dimension] = role_dimensions.as_slice() else {
+        return Err(if role_dimensions.is_empty() {
             GeneralFabricationError::FabricationRoleDimensionMissing
         } else {
             GeneralFabricationError::FabricationRoleDimensionAmbiguous
         });
     };
-    let categories = dimension
-        .categories()
-        .filter(|category| category.name() == TIMBER_MEMBER_ROLE_V1)
+    let material_dimensions = snapshot
+        .classification_dimensions()
+        .filter(|dimension| dimension.name() == MATERIAL_DIMENSION_V1)
         .collect::<Vec<_>>();
-    let [timber_category] = categories.as_slice() else {
-        return Err(if categories.is_empty() {
-            GeneralFabricationError::TimberMemberRoleMissing
-        } else {
-            GeneralFabricationError::TimberMemberRoleAmbiguous
-        });
+    let material_dimension = match material_dimensions.as_slice() {
+        [] => None,
+        [dimension] => Some(*dimension),
+        _ => return Err(GeneralFabricationError::MaterialDimensionAmbiguous),
     };
-    Ok(snapshot
-        .occurrences()
-        .filter(|occurrence| {
-            snapshot.occurrence_classification(occurrence.id(), dimension.id())
-                == Some(timber_category.id())
+
+    let mut metadata = BTreeMap::new();
+    for occurrence in snapshot.occurrences() {
+        let Some(role_category_id) =
+            snapshot.occurrence_classification(occurrence.id(), role_dimension.id())
+        else {
+            continue;
+        };
+        let Some(role_category) = role_dimension.category(role_category_id) else {
+            return Err(GeneralFabricationError::InvalidBomMetadata);
+        };
+        let item_kind = match role_category.name() {
+            TIMBER_MEMBER_ROLE_V1 => GeneralBomItemKind::Timber,
+            MANUFACTURED_ITEM_ROLE_V1 => GeneralBomItemKind::Manufactured,
+            PURCHASED_ITEM_ROLE_V1 => GeneralBomItemKind::Purchased,
+            _ => continue,
+        };
+        let material_key = if item_kind == GeneralBomItemKind::Timber {
+            TIMBER_MATERIAL_V1.to_owned()
+        } else if let Some(material_dimension) = material_dimension {
+            snapshot
+                .occurrence_classification(occurrence.id(), material_dimension.id())
+                .map(|category_id| {
+                    material_dimension
+                        .category(category_id)
+                        .map(|category| category.name().to_owned())
+                        .ok_or(GeneralFabricationError::InvalidBomMetadata)
+                })
+                .transpose()?
+                .unwrap_or_else(|| UNSPECIFIED_MATERIAL_V1.to_owned())
+        } else {
+            UNSPECIFIED_MATERIAL_V1.to_owned()
+        };
+        if !manufacturing_export_token_is_safe(&material_key) {
+            return Err(GeneralFabricationError::InvalidBomMetadata);
+        }
+        metadata.insert(
+            occurrence.id(),
+            BomOccurrenceMetadata {
+                item_kind,
+                material_key,
+            },
+        );
+    }
+    Ok(metadata)
+}
+
+fn straight_weldment_member(
+    snapshot: &Snapshot,
+    member_id: FeatureId,
+) -> Result<(FeatureId, f64, [f64; 3], [f64; 3]), GeneralFabricationError> {
+    let feature = snapshot
+        .feature(member_id)
+        .ok_or(GeneralFabricationError::InvalidWeldmentGeometry)?;
+    let FeatureKind::WeldmentMember(spec) = feature.kind() else {
+        return Err(GeneralFabricationError::InvalidWeldmentGeometry);
+    };
+    let path = snapshot
+        .feature(spec.path)
+        .ok_or(GeneralFabricationError::InvalidWeldmentGeometry)?;
+    let FeatureKind::SpatialPath { segments } = path.kind() else {
+        return Err(GeneralFabricationError::InvalidWeldmentGeometry);
+    };
+    let [SpatialPathSegment::Line { start_mm, end_mm }] = segments.as_slice() else {
+        return Err(GeneralFabricationError::InvalidWeldmentGeometry);
+    };
+    Ok((spec.profile, spec.orientation_degrees, *start_mm, *end_mm))
+}
+
+fn weldment_distance(left: [f64; 3], right: [f64; 3]) -> f64 {
+    ((left[0] - right[0]).powi(2) + (left[1] - right[1]).powi(2) + (left[2] - right[2]).powi(2))
+        .sqrt()
+}
+
+fn weldment_joint_member_cut(
+    snapshot: &Snapshot,
+    member_id: FeatureId,
+    joint: &crate::document::WeldmentJointSpec,
+) -> Result<Option<(bool, WeldmentEndCut)>, GeneralFabricationError> {
+    if joint.first_member != member_id && joint.second_member != member_id {
+        return Ok(None);
+    }
+    let (_, _, first_start, first_end) = straight_weldment_member(snapshot, joint.first_member)?;
+    let (_, _, second_start, second_end) = straight_weldment_member(snapshot, joint.second_member)?;
+    let endpoint_pairs = [
+        (true, first_start, first_end, true, second_start, second_end),
+        (
+            true,
+            first_start,
+            first_end,
+            false,
+            second_end,
+            second_start,
+        ),
+        (
+            false,
+            first_end,
+            first_start,
+            true,
+            second_start,
+            second_end,
+        ),
+        (
+            false,
+            first_end,
+            first_start,
+            false,
+            second_end,
+            second_start,
+        ),
+    ];
+    let matching = endpoint_pairs
+        .into_iter()
+        .filter(|(_, first_joint, _, _, second_joint, _)| {
+            weldment_distance(*first_joint, *second_joint) <= 1.0e-9
         })
-        .map(|occurrence| occurrence.id())
-        .collect())
+        .collect::<Vec<_>>();
+    let [(first_is_start, joint_point, first_far, second_is_start, _, second_far)] =
+        matching.as_slice()
+    else {
+        return Err(GeneralFabricationError::InvalidWeldmentGeometry);
+    };
+    let first_length = weldment_distance(*joint_point, *first_far);
+    let second_length = weldment_distance(*joint_point, *second_far);
+    if !first_length.is_finite()
+        || !second_length.is_finite()
+        || first_length <= 0.0
+        || second_length <= 0.0
+    {
+        return Err(GeneralFabricationError::InvalidWeldmentGeometry);
+    }
+    let first_direction =
+        std::array::from_fn::<_, 3, _>(|axis| (first_far[axis] - joint_point[axis]) / first_length);
+    let second_direction = std::array::from_fn::<_, 3, _>(|axis| {
+        (second_far[axis] - joint_point[axis]) / second_length
+    });
+    let dot = first_direction
+        .into_iter()
+        .zip(second_direction)
+        .map(|(left, right)| left * right)
+        .sum::<f64>()
+        .clamp(-1.0, 1.0);
+    let included_angle = dot.acos().to_degrees();
+    if !included_angle.is_finite() || !(5.0..=175.0).contains(&included_angle) {
+        return Err(GeneralFabricationError::InvalidWeldmentGeometry);
+    }
+    let is_first = member_id == joint.first_member;
+    let is_primary = matches!(
+        (is_first, joint.primary),
+        (true, WeldmentJointPrimary::First) | (false, WeldmentJointPrimary::Second)
+    );
+    let cut = match joint.policy {
+        WeldmentJointPolicy::Miter => WeldmentEndCut {
+            treatment: WeldmentCutTreatment::Miter,
+            angle_degrees: included_angle / 2.0,
+        },
+        WeldmentJointPolicy::Butt if is_primary => WeldmentEndCut {
+            treatment: WeldmentCutTreatment::Square,
+            angle_degrees: 90.0,
+        },
+        WeldmentJointPolicy::Butt => WeldmentEndCut {
+            treatment: WeldmentCutTreatment::Butt,
+            angle_degrees: included_angle.min(180.0 - included_angle),
+        },
+    };
+    Ok(Some((
+        if is_first {
+            *first_is_start
+        } else {
+            *second_is_start
+        },
+        cut,
+    )))
+}
+
+fn project_weldment_cut_list(
+    snapshot: &Snapshot,
+    bom: &GeneralBomProjection,
+) -> Result<Option<WeldmentCutListProjection>, GeneralFabricationError> {
+    let mut rows = Vec::new();
+    for bom_row in &bom.rows {
+        if bom_row.item_kind != GeneralBomItemKind::Manufactured {
+            continue;
+        }
+        let definition = snapshot
+            .definition(bom_row.definition_id)
+            .ok_or(GeneralFabricationError::InvalidWeldmentGeometry)?;
+        let member_ids = definition
+            .feature_ids()
+            .iter()
+            .copied()
+            .filter(|feature_id| {
+                matches!(
+                    snapshot.feature(*feature_id).map(|feature| feature.kind()),
+                    Some(FeatureKind::WeldmentMember(_))
+                )
+            })
+            .collect::<Vec<_>>();
+        if member_ids.is_empty() {
+            continue;
+        }
+        for member_id in member_ids {
+            let (profile_feature_id, orientation_degrees, start_mm, end_mm) =
+                straight_weldment_member(snapshot, member_id)?;
+            let centerline_length_mm = weldment_distance(start_mm, end_mm);
+            if !centerline_length_mm.is_finite() || centerline_length_mm <= 0.0 {
+                return Err(GeneralFabricationError::InvalidWeldmentGeometry);
+            }
+            let mut start_cut = WeldmentEndCut {
+                treatment: WeldmentCutTreatment::Square,
+                angle_degrees: 90.0,
+            };
+            let mut end_cut = start_cut;
+            let mut start_joint = false;
+            let mut end_joint = false;
+            for feature_id in definition.feature_ids() {
+                let Some(FeatureKind::WeldmentJoint(joint)) =
+                    snapshot.feature(*feature_id).map(|feature| feature.kind())
+                else {
+                    continue;
+                };
+                let Some((is_start, cut)) = weldment_joint_member_cut(snapshot, member_id, joint)?
+                else {
+                    continue;
+                };
+                let already_assigned = if is_start {
+                    std::mem::replace(&mut start_joint, true)
+                } else {
+                    std::mem::replace(&mut end_joint, true)
+                };
+                if already_assigned {
+                    return Err(GeneralFabricationError::InvalidWeldmentGeometry);
+                }
+                if is_start {
+                    start_cut = cut;
+                } else {
+                    end_cut = cut;
+                }
+            }
+            rows.push(WeldmentCutListRow {
+                stable_row_id: format!(
+                    "definition-{}/member-{}/material-{}",
+                    bom_row.definition_id.0,
+                    member_id.0,
+                    &sha256_hex(bom_row.material_key.as_bytes())[..16],
+                ),
+                position: 0,
+                definition_id: bom_row.definition_id,
+                member_feature_id: member_id,
+                profile_feature_id,
+                material_key: bom_row.material_key.clone(),
+                quantity: bom_row.quantity,
+                centerline_length_mm,
+                orientation_degrees,
+                start_cut,
+                end_cut,
+                instances: bom_row.instances.clone(),
+                evidence_class: bom_row.evidence_class.clone(),
+                validation_state: bom_row.validation_state,
+            });
+        }
+    }
+    if rows.is_empty() {
+        return Ok(None);
+    }
+    rows.sort_by(|left, right| {
+        left.definition_id
+            .cmp(&right.definition_id)
+            .then_with(|| left.member_feature_id.cmp(&right.member_feature_id))
+            .then_with(|| left.material_key.cmp(&right.material_key))
+    });
+    if rows
+        .iter()
+        .map(|row| &row.stable_row_id)
+        .collect::<BTreeSet<_>>()
+        .len()
+        != rows.len()
+    {
+        return Err(GeneralFabricationError::InvalidWeldmentGeometry);
+    }
+    for (index, row) in rows.iter_mut().enumerate() {
+        row.position = index + 1;
+    }
+    let validation_state = rows
+        .iter()
+        .map(|row| row.validation_state)
+        .find(|state| *state != ValidationState::Passed)
+        .unwrap_or(ValidationState::Passed);
+    let status = if validation_state == ValidationState::Passed {
+        ProjectionStatus::Complete
+    } else {
+        ProjectionStatus::Incomplete
+    };
+    let cut_list_bytes = weldment_cut_list_bytes(&rows, validation_state);
+    let cut_list_envelope = FabricationProjectionEnvelope::new_with_evaluator(
+        snapshot,
+        &cut_list_bytes,
+        status,
+        WELDMENT_FABRICATION_EVALUATOR_V1,
+    );
+    let drawing_bytes =
+        weldment_drawing_bytes(&rows, &cut_list_envelope.result_digest, validation_state);
+    let drawing_envelope = FabricationProjectionEnvelope::new_with_evaluator(
+        snapshot,
+        &drawing_bytes,
+        status,
+        WELDMENT_FABRICATION_EVALUATOR_V1,
+    );
+    Ok(Some(WeldmentCutListProjection {
+        cut_list_envelope,
+        drawing_envelope,
+        validation_state,
+        rows,
+    }))
 }
 
 pub fn project_general_fabrication(
@@ -1553,7 +2103,7 @@ pub fn project_general_fabrication(
     validation_report: &ValidationReport,
     tolerance: TolerancePolicy,
 ) -> Result<GeneralFabricationProjection, GeneralFabricationError> {
-    let timber_members = timber_member_occurrences(snapshot)?;
+    let bom_metadata = bom_occurrence_metadata(snapshot)?;
     let validation_input = general_body_input_bytes(validation_cases);
     if !validation_report.invocation.is_current(snapshot)
         || validation_report.invocation.contract_id != GENERAL_BODY_VALIDATOR_CONTRACT_V1
@@ -1572,18 +2122,18 @@ pub fn project_general_fabrication(
             )
         })
         .collect::<BTreeSet<_>>();
-    let single_visible_timber_member = validation_cases.is_empty()
+    let single_visible_bom_item = validation_cases.is_empty()
         && snapshot
             .scene_query()
             .into_iter()
             .filter(|occurrence| {
-                occurrence.visible && timber_members.contains(&occurrence.occurrence_id)
+                occurrence.visible && bom_metadata.contains_key(&occurrence.occurrence_id)
             })
             .count()
             == 1;
     let mut accepted = Vec::new();
     for occurrence in snapshot.scene_query().into_iter().filter(|occurrence| {
-        occurrence.visible && timber_members.contains(&occurrence.occurrence_id)
+        occurrence.visible && bom_metadata.contains_key(&occurrence.occurrence_id)
     }) {
         let definition = snapshot
             .definition(occurrence.definition_id)
@@ -1600,7 +2150,7 @@ pub fn project_general_fabrication(
             occurrence.instance_path.clone(),
             tolerance,
         )?;
-        if !single_visible_timber_member
+        if !single_visible_bom_item
             && !covered.contains(&(
                 participant.instance_path().clone(),
                 participant.source().clone(),
@@ -1609,7 +2159,11 @@ pub fn project_general_fabrication(
             return Err(GeneralFabricationError::ValidationBindingMismatch);
         }
         let dimensions = local_dimensions(snapshot, registry, participant.source())?;
-        accepted.push((participant, dimensions));
+        let metadata = bom_metadata
+            .get(&occurrence.occurrence_id)
+            .expect("the filtered BOM occurrence has metadata")
+            .clone();
+        accepted.push((participant, dimensions, metadata));
     }
     if accepted.is_empty() {
         return Err(GeneralFabricationError::NoSupportedGeometry);
@@ -1622,7 +2176,7 @@ pub fn project_general_fabrication(
     });
 
     let mut evidence_counts = EvidenceCounts::default();
-    for (participant, _) in &accepted {
+    for (participant, _, _) in &accepted {
         evidence_counts.record(participant.evidence_class());
     }
     let validation_state = validation_report.state;
@@ -1631,9 +2185,11 @@ pub fn project_general_fabrication(
     } else {
         ProjectionStatus::Incomplete
     };
-    let mut grouped =
-        BTreeMap::<(GeneralBodySource, [u64; 3]), Vec<&GeneralBodyParticipant>>::new();
-    for (participant, dimensions) in &accepted {
+    let mut grouped = BTreeMap::<
+        (GeneralBodySource, [u64; 3], GeneralBomItemKind, String),
+        Vec<&GeneralBodyParticipant>,
+    >::new();
+    for (participant, dimensions, metadata) in &accepted {
         grouped
             .entry((
                 participant.source().clone(),
@@ -1642,12 +2198,14 @@ pub fn project_general_fabrication(
                     dimensions.width_mm.to_bits(),
                     dimensions.height_mm.to_bits(),
                 ],
+                metadata.item_kind,
+                metadata.material_key.clone(),
             ))
             .or_default()
             .push(participant);
     }
     let mut rows = Vec::new();
-    for ((source, dimension_bits), participants) in grouped {
+    for ((source, dimension_bits, item_kind, material_key), participants) in grouped {
         let definition_id = source_definition_id(&source);
         let dimensions = PieceDimensions {
             length_mm: f64::from_bits(dimension_bits[0]),
@@ -1665,20 +2223,24 @@ pub fn project_general_fabrication(
                 .map(|participant| participant.evidence_class()),
             TolerantEvidence::new(
                 tolerance.epsilon_mm(),
-                GENERAL_FABRICATION_EVALUATOR_V4,
+                GENERAL_FABRICATION_EVALUATOR_V5,
                 PermittedErrorDirection::BidirectionalBounded,
             )
             .expect("the fabrication tolerance and method identity are valid"),
         );
         rows.push(GeneralBomRow {
             stable_row_id: format!(
-                "definition-{}/source-{}",
+                "definition-{}/source-{}/kind-{}/material-{}",
                 definition_id.0,
-                source_digest_token(&source)
+                source_digest_token(&source),
+                item_kind.token(),
+                &sha256_hex(material_key.as_bytes())[..16]
             ),
+            position: rows.len() + 1,
             definition_id,
             source,
-            material_key: TIMBER_MATERIAL_V1.to_owned(),
+            item_kind,
+            material_key,
             quantity: instances.len(),
             dimensions,
             instances,
@@ -1692,7 +2254,7 @@ pub fn project_general_fabrication(
             snapshot,
             &bom_bytes,
             general_status,
-            GENERAL_FABRICATION_EVALUATOR_V4,
+            GENERAL_FABRICATION_EVALUATOR_V5,
         ),
         evidence_counts,
         rows,
@@ -1701,6 +2263,9 @@ pub fn project_general_fabrication(
     let mut operations = Vec::new();
     let mut unresolved_sources = Vec::new();
     for row in &bom.rows {
+        if row.item_kind != GeneralBomItemKind::Timber {
+            continue;
+        }
         match &row.source {
             GeneralBodySource::Exact(source) => {
                 let package = registry
@@ -1748,7 +2313,7 @@ pub fn project_general_fabrication(
             snapshot,
             &manufacturing_bytes,
             manufacturing_status,
-            GENERAL_FABRICATION_EVALUATOR_V4,
+            GENERAL_FABRICATION_EVALUATOR_V5,
         ),
         validation_state,
         operations,
@@ -1765,15 +2330,17 @@ pub fn project_general_fabrication(
             snapshot,
             &drawing_bytes,
             general_status,
-            GENERAL_FABRICATION_EVALUATOR_V4,
+            GENERAL_FABRICATION_EVALUATOR_V5,
         ),
         validation_state,
         drawings,
     };
+    let weldment = project_weldment_cut_list(snapshot, &bom)?;
     Ok(GeneralFabricationProjection {
         bom,
         drawings,
         manufacturing,
+        weldment,
     })
 }
 
@@ -2735,12 +3302,30 @@ fn piece_dimensions_from_bounds(bounds: [[f64; 3]; 2]) -> Option<PieceDimensions
     .then_some(dimensions)
 }
 
+fn weldment_envelope_is_current(
+    envelope: &FabricationProjectionEnvelope,
+    snapshot: &Snapshot,
+) -> bool {
+    envelope.projection_schema == FABRICATION_PROJECTION_V1
+        && envelope.evaluator_id == WELDMENT_FABRICATION_EVALUATOR_V1
+        && envelope.is_current(snapshot)
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
 fn general_envelope_is_current(
     envelope: &FabricationProjectionEnvelope,
     snapshot: &Snapshot,
 ) -> bool {
     envelope.projection_schema == FABRICATION_PROJECTION_V1
-        && envelope.evaluator_id == GENERAL_FABRICATION_EVALUATOR_V4
+        && envelope.evaluator_id == GENERAL_FABRICATION_EVALUATOR_V5
         && envelope.is_current(snapshot)
 }
 
@@ -2904,8 +3489,14 @@ fn general_piece_drawing(
     };
     GeneralPieceDrawing {
         stable_drawing_id: drawing_id.clone(),
+        bom_row_id: row.stable_row_id.clone(),
+        position: row.position,
         definition_id: row.definition_id,
         source: row.source.clone(),
+        item_kind: row.item_kind,
+        material_key: row.material_key.clone(),
+        quantity: row.quantity,
+        instances: row.instances.clone(),
         projection_method: "accepted-body-local-bounds",
         views: vec![
             view(
@@ -2938,7 +3529,8 @@ fn general_piece_drawing(
         machining_operations: operations
             .iter()
             .filter(|operation| {
-                operation.definition_id == row.definition_id
+                row.item_kind == GeneralBomItemKind::Timber
+                    && operation.definition_id == row.definition_id
                     && GeneralBodySource::Exact(operation.source.clone()) == row.source
             })
             .cloned()
@@ -2962,15 +3554,63 @@ fn source_digest_token(source: &GeneralBodySource) -> String {
     sha256_hex(&bytes)[..16].to_owned()
 }
 
+fn weldment_cut_list_bytes(
+    rows: &[WeldmentCutListRow],
+    validation_state: ValidationState,
+) -> Vec<u8> {
+    let mut bytes = WELDMENT_CUT_LIST_EXPORT_V1.as_bytes().to_vec();
+    push_validation_state(&mut bytes, validation_state);
+    bytes.extend_from_slice(&(rows.len() as u64).to_le_bytes());
+    for row in rows {
+        push_projection_bytes(&mut bytes, row.stable_row_id.as_bytes());
+        bytes.extend_from_slice(&(row.position as u64).to_le_bytes());
+        bytes.extend_from_slice(&row.definition_id.0.to_le_bytes());
+        bytes.extend_from_slice(&row.member_feature_id.0.to_le_bytes());
+        bytes.extend_from_slice(&row.profile_feature_id.0.to_le_bytes());
+        push_projection_bytes(&mut bytes, row.material_key.as_bytes());
+        bytes.extend_from_slice(&(row.quantity as u64).to_le_bytes());
+        bytes.extend_from_slice(&row.centerline_length_mm.to_bits().to_le_bytes());
+        bytes.extend_from_slice(&row.orientation_degrees.to_bits().to_le_bytes());
+        for cut in [row.start_cut, row.end_cut] {
+            bytes.push(match cut.treatment {
+                WeldmentCutTreatment::Square => 0,
+                WeldmentCutTreatment::Butt => 1,
+                WeldmentCutTreatment::Miter => 2,
+            });
+            bytes.extend_from_slice(&cut.angle_degrees.to_bits().to_le_bytes());
+        }
+        bytes.extend_from_slice(&(row.instances.len() as u64).to_le_bytes());
+        for instance in &row.instances {
+            push_projection_path(&mut bytes, instance);
+        }
+        push_projection_evidence(&mut bytes, &row.evidence_class);
+        push_validation_state(&mut bytes, row.validation_state);
+    }
+    bytes
+}
+
+fn weldment_drawing_bytes(
+    rows: &[WeldmentCutListRow],
+    cut_list_digest: &str,
+    validation_state: ValidationState,
+) -> Vec<u8> {
+    let mut bytes = WELDMENT_DRAWING_SVG_V1.as_bytes().to_vec();
+    push_projection_bytes(&mut bytes, cut_list_digest.as_bytes());
+    push_projection_bytes(&mut bytes, &weldment_cut_list_bytes(rows, validation_state));
+    bytes
+}
+
 fn general_bom_bytes(rows: &[GeneralBomRow], evidence_counts: EvidenceCounts) -> Vec<u8> {
-    let mut bytes = GENERAL_BOM_EXPORT_V1.as_bytes().to_vec();
+    let mut bytes = GENERAL_BOM_EXPORT_V2.as_bytes().to_vec();
     bytes.extend_from_slice(&(rows.len() as u64).to_le_bytes());
     bytes.extend_from_slice(&(evidence_counts.exact as u64).to_le_bytes());
     bytes.extend_from_slice(&(evidence_counts.tolerant as u64).to_le_bytes());
     for row in rows {
         push_projection_bytes(&mut bytes, row.stable_row_id.as_bytes());
+        bytes.extend_from_slice(&(row.position as u64).to_le_bytes());
         bytes.extend_from_slice(&row.definition_id.0.to_le_bytes());
         push_general_source(&mut bytes, &row.source);
+        push_projection_bytes(&mut bytes, row.item_kind.token().as_bytes());
         push_projection_bytes(&mut bytes, row.material_key.as_bytes());
         bytes.extend_from_slice(&(row.quantity as u64).to_le_bytes());
         push_dimensions(&mut bytes, row.dimensions);
@@ -2988,13 +3628,22 @@ fn general_drawing_bytes(
     drawings: &[GeneralPieceDrawing],
     validation_state: ValidationState,
 ) -> Vec<u8> {
-    let mut bytes = GENERAL_DRAWING_SVG_V2.as_bytes().to_vec();
+    let mut bytes = GENERAL_DRAWING_SVG_V3.as_bytes().to_vec();
     push_validation_state(&mut bytes, validation_state);
     bytes.extend_from_slice(&(drawings.len() as u64).to_le_bytes());
     for drawing in drawings {
         push_projection_bytes(&mut bytes, drawing.stable_drawing_id.as_bytes());
+        push_projection_bytes(&mut bytes, drawing.bom_row_id.as_bytes());
+        bytes.extend_from_slice(&(drawing.position as u64).to_le_bytes());
         bytes.extend_from_slice(&drawing.definition_id.0.to_le_bytes());
         push_general_source(&mut bytes, &drawing.source);
+        push_projection_bytes(&mut bytes, drawing.item_kind.token().as_bytes());
+        push_projection_bytes(&mut bytes, drawing.material_key.as_bytes());
+        bytes.extend_from_slice(&(drawing.quantity as u64).to_le_bytes());
+        bytes.extend_from_slice(&(drawing.instances.len() as u64).to_le_bytes());
+        for instance in &drawing.instances {
+            push_projection_path(&mut bytes, instance);
+        }
         push_projection_bytes(&mut bytes, drawing.projection_method.as_bytes());
         bytes.extend_from_slice(&(drawing.views.len() as u64).to_le_bytes());
         for view in &drawing.views {

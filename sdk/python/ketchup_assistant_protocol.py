@@ -26,6 +26,7 @@ MAX_VALIDATOR_ISSUES = 32
 MAX_VALIDATOR_ASSUMPTIONS = 8
 MAX_INSPECT_RESULT_BYTES = 64 * 1024
 MAX_INSPECT_ROUNDS = 2
+LOCAL_INSPECTION_CATALOG = "_local_inspection_catalog"
 ALLOWED_CAPABILITIES = frozenset(
     {
         "chat",
@@ -37,7 +38,7 @@ ALLOWED_CAPABILITIES = frozenset(
 )
 SYSTEM_PROMPT = (
     "You are Kečup Assistant, a CAD modeling assistant. Your only tools are read-only "
-    "inspect_document, measure_bounds, plan_placement, plan_linear_array, list_validators and run_validators. "
+    "list_occurrences, inspect_document, measure_bounds, plan_placement, plan_linear_array, list_validators and run_validators. "
     "When the user asks what you can check, which validators exist, or to validate the model, use list_validators to name them and run_validators to read their findings on the current revision. "
     "Report every finding by the part names it refers to, never as an anonymous count, and say plainly when a validator returned state not_evaluated, skipped or unavailable instead of claiming the model is fine. "
     "When a result carries assumptions, state them with the verdict, because they say what the check had to derive rather than read from the document. "
@@ -68,18 +69,20 @@ SYSTEM_PROMPT = (
     "inputs, assumptions, calculated value, and limit; an anchor_required issue is a requirement because the "
     "current schema has no anchor declaration, not proof that no physical anchor exists. For hardware and manufacturing, report each named part or feature, its host when available, measured clearance or dimension, the explicit limit, and the violated rule; preserve not_evaluated reasons when a named hole has no identifiable host panel. For room placement and passage clearance, report the named room, furniture, passage, and obstacle IDs, each measured overrun or overlap, and the 900 mm width and 2000 mm headroom limits; preserve not_evaluated when the required named envelope is absent. For static load, report the explicit evaluator input node IDs, loaded and support occurrence IDs and names, mass, applied load, gravity vector and direction, calculated weight and resultant forces, summed support capacity, and margin; never infer physical inputs from names or geometry, and preserve every not_evaluated reason. Otherwise list "
     "unsupported or unavailable occurrences or say that the relevant check is incomplete or skipped. Return ONLY "
-    "one JSON object with exactly three fields: message (a concise user-facing string), "
-    "model_intent (null for discussion or CAD edits), and cad_edit_program (null unless proposing typed CAD operations). "
-    "Never return both mutation fields. Use cad_edit_program for create_part, create_sketch, create_program_sketch, typed construction geometry, spatial paths, helix paths, solid helixes, threads, direct edge fillets/chamfers, append_feature, append_program_pocket, set_dimension, delete, rigid transform, color, copy, linear pattern, circular pattern, mirror, classification metadata, or evaluator inputs. "
+    "one JSON object with exactly four fields: message (a concise user-facing string), "
+    "model_intent (null for discussion or typed actions), cad_edit_program (null unless proposing typed CAD operations), and fea_review (null unless preparing a confirmed static FEA review). "
+    "Return at most one non-null action field. Use cad_edit_program for create_part, create_sketch, create_program_sketch, typed construction geometry, spatial paths, helix paths, solid helixes, threads, direct edge fillets/chamfers, append_feature, append_program_pocket, set_dimension, set_feature_parameter, create_assembly_joint, set_assembly_joint_position, create_drawing, upsert_cam_plan, delete, rigid transform, color, copy, linear pattern, circular pattern, mirror, classification metadata, or evaluator inputs. "
+    "Use fea_review only when the user asks to set up or run static FEA and only with host-published current exact face ordinals. It has definition_id, feature_id, occurrence_id, case_id, youngs_modulus_mpa, poisson_ratio, yield_strength_mpa, constrained_face_ordinals, loaded_face_ordinal, traction_local_n_per_mm2 [x,y,z], coarse_deflection_mm, and fine_deflection_mm. The host opens an editable review dialog and still requires the user to click explicit confirmation before meshing or solving. Never invent face ordinals or claim a solve before the host returns review evidence. "
     "cad_edit_program is {operations: [...]} and every operation names its kind in the field operation, never in a field called type: {operation: create_part, ...}. Inside an operation the field type stays reserved for nested records such as feature, workplane, entities and constraints. "
     "create_part atomically creates a host-ID-assigned definition, workplane, sketch, universal feature, and occurrence. It has name, workplane, entities, constraints, feature, translation_mm, and optional rotation; feature is either {type: extrusion, distance_mm: positive length} or {type: revolve, axis: {type: origin_direction, origin_mm: [x,y,z], direction: [x,y,z]}|{type: two_points, start_mm: [x,y,z], end_mm: [x,y,z]}|{type: construction_axis, axis: positive feature ID or earlier typed construction_feature output}|{type: edge, edge_reference_id: one opaque reference_id copied exactly from current topology edge inspection, optional instance_path: the exact {root_occurrence_id, steps: [{owner_definition_id, kind: group|occurrence, local_id}]} copied from current instance inspection; instance_path is required when that definition has multiple visible instances}, angle_degrees: >0 and <=360}; a Revolve axis must lie in its sketch workplane. "
-    "append_feature adds one host-ID-assigned feature to an existing definition. It has definition_id, name, and either feature {type: boolean, operation: cut|union|intersect, target_feature_id, tool_feature_id}, whose inputs are distinct supported exact body features in that definition; each Boolean input is either a positive existing feature ID or {operation_index: zero-based earlier operation index, output: body_feature} referencing an earlier create_part or append_feature output in this same program; feature {type: pocket, target_feature_id, profile_feature_id, depth_mm}, whose distinct inputs are a supported exact extrusion target and closed profile in that definition with positive bounded depth below the target height; feature {type: planar_offset, profile_feature_id, distance_mm}, whose input is the sole existing exact rectangular profile in that definition and whose finite signed distance magnitude from 0.01 to 1000000 mm must leave both result dimensions at least 0.01 mm; feature {type: sweep, profile_feature_id, path_feature_id}, whose distinct inputs are a supported closed polygon or line/arc profile and one open straight path in that definition; feature {type: loft, sections: [{profile_feature_id, elevation_mm}, ...]}, with 2 to 16 unique existing or typed earlier sketch profiles in that definition and finite bounded elevations in strictly increasing order; feature {type: topology_shell, target_feature_id, removed_face_reference_ids, thickness_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_face_references for that definition and target, and finite thickness from 0.01 to 100000 mm; feature {type: topology_fillet, target_feature_id, edge_reference_ids, radius_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_edge_references for that definition and target, and finite radius from 0.01 to 100000 mm; or feature {type: topology_chamfer, target_feature_id, edge_reference_ids, distance_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_edge_references for that definition and target, and finite distance from 0.01 to 100000 mm. Never invent topology reference IDs, face or edge ordinals, semantic roles, or named-shape selectors. "
+    "append_feature adds one host-ID-assigned feature to an existing definition. It has definition_id, name, and either feature {type: boolean, operation: cut|union|intersect, target_feature_id, tool_feature_id}, whose inputs are distinct supported exact body features in that definition; each Boolean input is either a positive existing feature ID or {operation_index: zero-based earlier operation index, output: body_feature} referencing an earlier create_part or append_feature output in this same program; feature {type: pocket, target_feature_id, profile_feature_id, depth_mm}, whose distinct inputs are a supported exact extrusion target and closed profile in that definition with positive bounded depth below the target height; feature {type: planar_offset, profile_feature_id, distance_mm}, whose input is the sole existing exact rectangular profile in that definition and whose finite signed distance magnitude from 0.01 to 1000000 mm must leave both result dimensions at least 0.01 mm; feature {type: sweep, profile_feature_id, path_feature_id}, whose distinct inputs are a supported closed polygon or line/arc profile and one open straight path in that definition; feature {type: weldment_member, profile_feature_id, path_feature_id, orientation_degrees}, whose inputs are an unsuppressed closed profile and bounded SpatialPath in that definition and whose orientation is in [-180,180) degrees; feature {type: weldment_joint, first_member_id, second_member_id, policy: butt|miter, primary: first|second}, whose distinct member inputs may be existing IDs or earlier typed body_feature outputs and must meet at one manufacturable straight endpoint; feature {type: loft, sections: [{profile_feature_id, elevation_mm}, ...]}, with 2 to 16 unique existing or typed earlier sketch profiles in that definition and finite bounded elevations in strictly increasing order; feature {type: sheet_metal, width_mm, depth_mm, thickness_mm, k_factor, flanges: [{edge: min_x|max_x|min_y|max_y, length_mm, angle_degrees, inner_radius_mm}, ...]}, with canonical unique boundary edges and no adjacent flanges without explicit corner relief; feature {type: topology_shell, target_feature_id, removed_face_reference_ids, thickness_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_face_references for that definition and target, and finite thickness from 0.01 to 100000 mm; feature {type: topology_fillet, target_feature_id, edge_reference_ids, radius_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_edge_references for that definition and target, and finite radius from 0.01 to 100000 mm; or feature {type: topology_chamfer, target_feature_id, edge_reference_ids, distance_mm}, with 1 to 64 unique opaque reference_id values copied exactly from current topology_edge_references for that definition and target, and finite distance from 0.01 to 100000 mm. Surface features are generic: surface_body uses source {type: planar, profile_feature_id} or {type: loft, sections, optional guide_feature_id, continuity}; surface_trim uses distinct surface target_feature_id and cutter_feature_id; surface_extend uses a surface target and positive distance_mm; surface_knit uses 2 to 256 unique surface_feature_ids, tolerance_mm from 0.0000001 to 10, and make_solid; surface_thicken uses a surface target, thickness_mm from 0.01 to 100000, and direction inward|outward|symmetric. Surface operands may be positive existing IDs or earlier typed body_feature outputs; the host rejects solid/surface kind mismatches. Never invent topology reference IDs, face or edge ordinals, semantic roles, or named-shape selectors. "
     "create_sketch has definition_id, name, workplane, entities, and constraints; create_program_sketch has the same shape except definition is a typed earlier definition output. Workplane is principal with plane xy/yz/xz, an exact right-handed unit frame with origin_mm/x_axis/y_axis, offset with an existing base_feature_id and distance_mm for create_part/create_sketch, or construction_plane with plane as an existing feature ID or earlier create_construction_plane construction_feature output for create_program_sketch. "
     "append_program_pocket has definition, target_feature, and profile_feature typed references plus name and depth_mm. Reference the definition and body_feature of an earlier create_part, and the sketch_feature of that create_part or an earlier create_program_sketch; this creates the opening in the same atomic program without guessed host IDs. Loft profile_feature_id also accepts a typed sketch_feature output from an earlier create_part or create_program_sketch. "
     "Entities are typed line/arc/circle/cubic_bezier records with positive stable IDs and 2D millimetre coordinates; ellipse uses four positive unique segment_ids, center_mm, positive radius_x_mm/radius_y_mm, rotation_degrees, and a required positive maximum_deviation_mm that must cover its bounded cubic approximation error. Constraints are typed horizontal/vertical/coincident/distance/radius/fixed_point records with positive stable IDs and point refs {entity_id, point: start/end/center/control1/control2}. "
-    "The host assigns create_part definition, feature, and occurrence IDs and both sketch operations' workplane and sketch feature IDs. set_dimension targets an existing feature_id, optional constraint_id, and positive value_mm. "
-    "upsert_classification_dimension has positive dimension_id, non-empty name, and 1 to 64 categories [{id: positive unique ID, name: non-empty string}]. set_occurrence_classification has an occurrence selector, positive dimension_id, and category_id as a positive ID or null. create_evaluator_input has positive node_id, non-empty name, and finite value from -1000000 to 1000000. Use only IDs proven free or present by the current document context. "
+    "The host assigns create_part definition, feature, and occurrence IDs and both sketch operations' workplane and sketch feature IDs. set_dimension targets an existing feature_id, optional constraint_id, and positive value_mm. set_feature_parameter targets an existing feature_id with a host-advertised parameter_path, value_type length|angle|scalar, and finite value; copy the path and type exactly from current feature parameters. "
+    "upsert_cam_plan commits one exact-target-bound setup with positive plan/definition/feature/tool IDs, bounded stock minimum/maximum, tool_kind flat_end_mill|ball_end_mill|drill, tool and holder dimensions, spindle/feed/plunge, work_offset g54..g59, origin/x_axis/y_axis, safe_height, stepdown/stepover and allowances; use only a current solid feature and do not claim simulation or export until the host returns exact review evidence. upsert_classification_dimension has positive dimension_id, non-empty name, and 1 to 64 categories [{id: positive unique ID, name: non-empty string}]. set_occurrence_classification has an occurrence selector, positive dimension_id, and category_id as a positive ID or null. create_evaluator_input has positive node_id, non-empty name, and finite value from -1000000 to 1000000. Use only IDs proven free or present by the current document context. "
     "create_construction_point uses name and position_mm; create_construction_axis uses name, origin_mm and non-zero direction; create_construction_plane uses name, origin_mm, non-zero perpendicular normal and x_direction. create_spatial_path uses a name and 1 to 64 continuously joined, tangent-compatible line, circular_arc, or cubic_bezier segments with bounded 3D millimetre points. create_helix_path and create_helix use name plus parameters {axis, radius_mm, pitch_mm, turns, start_angle_degrees, handedness: right|left}; create_thread wraps those helix parameters plus profile_radius_mm and profile round|v|trapezoid. fillet_edges and chamfer_edges use definition_id, name, target_feature_id, 1 to 64 unique opaque edge_reference_ids, and radius_mm or distance_mm from 0.01 to 100000; copy references exactly from current topology inspection. A same-program helix axis may be the typed construction_feature output of an earlier create_construction_axis. "
+    "create_assembly_joint uses parent_instance_path, child_instance_path, and kind fixed, revolute, prismatic, or helical; moving kinds use axis {direction_in_parent, pivot_in_parent_mm}, optional limits {min,max}, and their typed position field. Paths must be copied exactly from current instance inspection. set_assembly_joint_position has joint_id and position and must be the only operation in its program so the host can publish one authoritative solve. create_drawing has a non-empty name and 1 to 100 unique current instance_paths and performs exact rigid-source preflight before proposal. "
     "Occurrence operations have a selector: either {type: current_selection} or {type: occurrences, occurrence_ids: [positive unique IDs]}. set_color has color as null or exactly three integer RGB channels from 0 to 255. circular_pattern additionally has instances from 2 to 1000, angle_step_degrees, and the same axis contract as Revolve; each generated angle must remain distinct from the source modulo 360 degrees. "
     "Delete also has dependency_policy reject_if_referenced or remove_references. Transform has translation_mm and optional rotation with pivot_mm, non-zero axis, and angle_degrees. "
     "Copy has non-zero translation_mm. Linear_pattern has instances including originals and non-zero step_mm. Mirror has plane_origin_mm and non-zero plane_normal. "
@@ -93,8 +96,9 @@ SYSTEM_PROMPT = (
     "state_view.content is the canonical agent_v1 StateView only when state_view.complete is true; "
     "otherwise it is a bounded preview identified by state_view.sha256. The occurrences list is "
     "authoritative only when occurrences_complete is true. If it is false, do not infer a "
-    "whole-scene or whole-assembly edit from the truncated list; ask the user to narrow "
-    "the target or selection. Use selected_occurrence_ids as the explicit current selection. Include "
+    "whole-scene or whole-assembly edit from the truncated list; use list_occurrences with its "
+    "next_cursor to inspect bounded pages, or inspect_document for exact root IDs, nested instance paths, "
+    "or the current selection. Use selected_occurrence_ids as the explicit root selection. Include "
     "every visible, copyable selected/requested occurrence even when it has no legacy boxes entry. "
     "Geometry details are not required to copy an occurrence. Derive a touching, non-overlapping "
     "step from occurrence bounds in document context when possible. "
@@ -117,18 +121,53 @@ SYSTEM_PROMPT = (
     "subtractions per body. Kečup validates geometry and applies it immediately as one "
     "undoable change, and reports any rejection. Do not use markdown fences."
 )
+LIST_OCCURRENCES_PARAMETERS = {
+    "type": "object",
+    "properties": {
+        "cursor": {"type": "integer", "minimum": 0},
+        "limit": {"type": "integer", "minimum": 1, "maximum": MAX_INSPECT_OCCURRENCES},
+    },
+    "required": ["cursor", "limit"],
+    "additionalProperties": False,
+}
 INSPECT_DOCUMENT_PARAMETERS = {
     "type": "object",
     "properties": {
-        "scope": {"type": "string", "enum": ["selection", "occurrences"]},
+        "scope": {"type": "string", "enum": ["selection", "occurrences", "instances"]},
         "occurrence_ids": {
             "type": "array",
             "items": {"type": "integer", "minimum": 1},
             "maxItems": MAX_INSPECT_OCCURRENCES,
             "uniqueItems": True,
         },
+        "instance_paths": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "root_occurrence_id": {"type": "integer", "minimum": 1},
+                    "steps": {
+                        "type": "array",
+                        "maxItems": 64,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "owner_definition_id": {"type": "integer", "minimum": 1},
+                                "kind": {"type": "string", "enum": ["group", "occurrence"]},
+                                "local_id": {"type": "integer", "minimum": 1},
+                            },
+                            "required": ["owner_definition_id", "kind", "local_id"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "required": ["root_occurrence_id", "steps"],
+                "additionalProperties": False,
+            },
+            "maxItems": MAX_INSPECT_OCCURRENCES,
+        },
     },
-    "required": ["scope", "occurrence_ids"],
+    "required": ["scope", "occurrence_ids", "instance_paths"],
     "additionalProperties": False,
 }
 MEASURE_BOUNDS_PARAMETERS = {
@@ -322,6 +361,7 @@ class ChatCall:
     message: str
     history: tuple[dict, ...]
     capabilities: frozenset[str]
+    document_context: dict
 
 
 class AssistantSidecarBase:
@@ -337,7 +377,7 @@ class AssistantSidecarBase:
     provider_rejection = "unsupported provider"
     distribution_rejection = "sidecar rejects this distribution"
 
-    def __init__(self, sender: Callable[[str, str, str, tuple[dict, ...]], object]):
+    def __init__(self, sender: Callable[[str, str, str, tuple[dict, ...], dict], object]):
         self._sender = sender
         self._handshake: Handshake | None = None
         self._history: list[dict] = []
@@ -347,7 +387,9 @@ class AssistantSidecarBase:
         if control is not None:
             return control
         call = self.begin_chat(request)
-        exchange = self._sender(call.provider, call.model, call.message, call.history)
+        exchange = self._sender(
+            call.provider, call.model, call.message, call.history, call.document_context
+        )
         return self.complete_chat(call, exchange)
 
     def handle_control(self, request: dict) -> dict | None:
@@ -423,7 +465,10 @@ class AssistantSidecarBase:
             raise ProtocolError("context must be a JSON object")
         if "local_memory" in handshake.capabilities:
             _validate_project_memory(context)
-        context_text = json.dumps(context, ensure_ascii=False, sort_keys=True)
+        document_context = dict(context)
+        provider_context = dict(context)
+        provider_context.pop(LOCAL_INSPECTION_CATALOG, None)
+        context_text = json.dumps(provider_context, ensure_ascii=False, sort_keys=True)
         if len(context_text) > MAX_MESSAGE_CHARS:
             raise ProtocolError("context is too large")
         bounded_message = f"<document-context>{context_text}</document-context>\n\n{message}"
@@ -434,6 +479,7 @@ class AssistantSidecarBase:
             message=bounded_message,
             history=tuple(self._history),
             capabilities=handshake.capabilities,
+            document_context=document_context,
         )
 
     def complete_chat(self, call: ChatCall, exchange: object) -> dict:
@@ -737,10 +783,18 @@ def _valid_cad_program_output_reference(
             "boolean",
             "pocket",
             "sweep",
+            "weldment_member",
+            "weldment_joint",
             "loft",
+            "sheet_metal",
             "topology_shell",
             "topology_fillet",
             "topology_chamfer",
+            "surface_body",
+            "surface_trim",
+            "surface_extend",
+            "surface_knit",
+            "surface_thicken",
         }
     )
 
@@ -780,6 +834,46 @@ def _valid_instance_path(value: object) -> bool:
         and 0 < step["local_id"] <= MAX_U64
         for step in steps
     )
+
+
+def _valid_assembly_joint_kind(value: object) -> bool:
+    if not isinstance(value, dict) or value.get("type") not in {
+        "fixed", "revolute", "prismatic", "helical"
+    }:
+        return False
+    if value["type"] == "fixed":
+        return set(value) == {"type"}
+    expected = {"type", "axis", "position_degrees" if value["type"] != "prismatic" else "position_mm"}
+    if "limits" in value:
+        expected.add("limits")
+    if value["type"] == "helical":
+        expected.add("lead_mm_per_revolution")
+    if set(value) != expected:
+        return False
+    axis = value["axis"]
+    if not isinstance(axis, dict) or set(axis) != {"direction_in_parent", "pivot_in_parent_mm"}:
+        return False
+    try:
+        _validate_vector(axis["direction_in_parent"], "provider assembly joint direction", positive=False)
+        _validate_vector(axis["pivot_in_parent_mm"], "provider assembly joint pivot", positive=False)
+    except ProtocolError:
+        return False
+    if all(component == 0 for component in axis["direction_in_parent"]):
+        return False
+    position = value["position_mm"] if value["type"] == "prismatic" else value["position_degrees"]
+    if not isinstance(position, (int, float)) or isinstance(position, bool) or not math.isfinite(position) or abs(position) > 1_000_000:
+        return False
+    limits = value.get("limits")
+    if limits is not None and (
+        not isinstance(limits, dict)
+        or set(limits) != {"min", "max"}
+        or any(not isinstance(limits[key], (int, float)) or isinstance(limits[key], bool) or not math.isfinite(limits[key]) or abs(limits[key]) > 1_000_000 for key in ("min", "max"))
+        or limits["min"] > position
+        or position > limits["max"]
+    ):
+        return False
+    lead = value.get("lead_mm_per_revolution", 1.0)
+    return isinstance(lead, (int, float)) and not isinstance(lead, bool) and math.isfinite(lead) and 0 < lead <= 1_000_000
 
 
 def _valid_cad_axis_spec(
@@ -1458,6 +1552,261 @@ def _validate_cad_edit_program(program: object) -> dict:
                         )
                         previous_elevation = elevation_mm
                     valid_feature = valid_feature and len(set(profile_ids)) == len(profile_ids)
+            elif feature.get("type") == "weldment_member":
+                profile_feature_id = feature.get("profile_feature_id")
+                path_feature_id = feature.get("path_feature_id")
+                orientation_degrees = feature.get("orientation_degrees")
+                valid_feature = (
+                    set(feature)
+                    == {
+                        "type",
+                        "profile_feature_id",
+                        "path_feature_id",
+                        "orientation_degrees",
+                    }
+                    and isinstance(profile_feature_id, int)
+                    and not isinstance(profile_feature_id, bool)
+                    and 0 < profile_feature_id <= MAX_U64
+                    and isinstance(path_feature_id, int)
+                    and not isinstance(path_feature_id, bool)
+                    and 0 < path_feature_id <= MAX_U64
+                    and profile_feature_id != path_feature_id
+                    and isinstance(orientation_degrees, (int, float))
+                    and not isinstance(orientation_degrees, bool)
+                    and math.isfinite(orientation_degrees)
+                    and -180 <= orientation_degrees < 180
+                )
+            elif feature.get("type") == "weldment_joint":
+                first_member_id = feature.get("first_member_id")
+                second_member_id = feature.get("second_member_id")
+                valid_feature = (
+                    set(feature)
+                    == {
+                        "type",
+                        "first_member_id",
+                        "second_member_id",
+                        "policy",
+                        "primary",
+                    }
+                    and _valid_cad_body_feature_reference(
+                        first_member_id, operation_index, operations
+                    )
+                    and _valid_cad_body_feature_reference(
+                        second_member_id, operation_index, operations
+                    )
+                    and first_member_id != second_member_id
+                    and feature.get("policy") in {"butt", "miter"}
+                    and feature.get("primary") in {"first", "second"}
+                )
+            elif feature.get("type") == "surface_body":
+                source = feature.get("source")
+                valid_feature = set(feature) == {"type", "source"} and isinstance(source, dict)
+                if valid_feature and source.get("type") == "planar":
+                    valid_feature = (
+                        set(source) == {"type", "profile_feature_id"}
+                        and _valid_cad_feature_reference(
+                            source.get("profile_feature_id"),
+                            operation_index,
+                            operations,
+                            "sketch_feature",
+                        )
+                    )
+                elif valid_feature and source.get("type") == "loft":
+                    sections = source.get("sections")
+                    valid_feature = (
+                        {"type", "sections"} <= set(source)
+                        <= {"type", "sections", "guide_feature_id", "continuity"}
+                        and source.get("continuity", "position")
+                        in {"position", "tangent", "curvature"}
+                        and isinstance(sections, list)
+                        and 2 <= len(sections) <= 16
+                    )
+                    profile_ids = []
+                    previous_elevation = None
+                    if valid_feature:
+                        for section in sections:
+                            if not isinstance(section, dict) or set(section) != {
+                                "profile_feature_id", "elevation_mm"
+                            }:
+                                valid_feature = False
+                                break
+                            profile_feature_id = section["profile_feature_id"]
+                            elevation_mm = section["elevation_mm"]
+                            if (
+                                not _valid_cad_feature_reference(
+                                    profile_feature_id,
+                                    operation_index,
+                                    operations,
+                                    "sketch_feature",
+                                )
+                                or not isinstance(elevation_mm, (int, float))
+                                or isinstance(elevation_mm, bool)
+                                or not math.isfinite(elevation_mm)
+                                or abs(elevation_mm) > 1_000_000
+                                or previous_elevation is not None
+                                and elevation_mm <= previous_elevation
+                            ):
+                                valid_feature = False
+                                break
+                            profile_ids.append(
+                                json.dumps(profile_feature_id, sort_keys=True, separators=(",", ":"))
+                            )
+                            previous_elevation = elevation_mm
+                        valid_feature = valid_feature and len(set(profile_ids)) == len(profile_ids)
+                    guide = source.get("guide_feature_id")
+                    valid_feature = valid_feature and (
+                        guide is None
+                        or _valid_cad_feature_reference(
+                            guide, operation_index, operations, "construction_feature"
+                        )
+                    )
+                    valid_feature = valid_feature and not (
+                        guide is not None and source.get("continuity", "position") == "curvature"
+                    )
+                else:
+                    valid_feature = False
+            elif feature.get("type") == "surface_trim":
+                cutter_feature_id = feature.get("cutter_feature_id")
+                valid_feature = (
+                    set(feature) == {"type", "target_feature_id", "cutter_feature_id"}
+                    and _valid_cad_body_feature_reference(
+                        target_feature_id, operation_index, operations
+                    )
+                    and _valid_cad_body_feature_reference(
+                        cutter_feature_id, operation_index, operations
+                    )
+                    and target_feature_id != cutter_feature_id
+                )
+            elif feature.get("type") == "surface_extend":
+                distance_mm = feature.get("distance_mm")
+                valid_feature = (
+                    set(feature) == {"type", "target_feature_id", "distance_mm"}
+                    and _valid_cad_body_feature_reference(
+                        target_feature_id, operation_index, operations
+                    )
+                    and isinstance(distance_mm, (int, float))
+                    and not isinstance(distance_mm, bool)
+                    and math.isfinite(distance_mm)
+                    and 0.01 <= distance_mm <= 1_000_000
+                )
+            elif feature.get("type") == "surface_knit":
+                surface_feature_ids = feature.get("surface_feature_ids")
+                tolerance_mm = feature.get("tolerance_mm")
+                valid_feature = (
+                    set(feature)
+                    == {
+                        "type",
+                        "surface_feature_ids",
+                        "tolerance_mm",
+                        "make_solid",
+                    }
+                    and isinstance(surface_feature_ids, list)
+                    and 2 <= len(surface_feature_ids) <= 256
+                    and all(
+                        _valid_cad_body_feature_reference(
+                            reference, operation_index, operations
+                        )
+                        for reference in surface_feature_ids
+                    )
+                    and len(
+                        {
+                            json.dumps(reference, sort_keys=True, separators=(",", ":"))
+                            for reference in surface_feature_ids
+                        }
+                    )
+                    == len(surface_feature_ids)
+                    and isinstance(tolerance_mm, (int, float))
+                    and not isinstance(tolerance_mm, bool)
+                    and math.isfinite(tolerance_mm)
+                    and 1.0e-7 <= tolerance_mm <= 10
+                    and isinstance(feature.get("make_solid"), bool)
+                )
+            elif feature.get("type") == "surface_thicken":
+                thickness_mm = feature.get("thickness_mm")
+                valid_feature = (
+                    set(feature)
+                    == {"type", "target_feature_id", "thickness_mm", "direction"}
+                    and _valid_cad_body_feature_reference(
+                        target_feature_id, operation_index, operations
+                    )
+                    and isinstance(thickness_mm, (int, float))
+                    and not isinstance(thickness_mm, bool)
+                    and math.isfinite(thickness_mm)
+                    and 0.01 <= thickness_mm <= 100_000
+                    and feature.get("direction") in {"inward", "outward", "symmetric"}
+                )
+            elif feature.get("type") == "sheet_metal":
+                width_mm = feature.get("width_mm")
+                depth_mm = feature.get("depth_mm")
+                thickness_mm = feature.get("thickness_mm")
+                k_factor = feature.get("k_factor")
+                flanges = feature.get("flanges")
+                numbers = [width_mm, depth_mm, thickness_mm, k_factor]
+                valid_feature = (
+                    set(feature)
+                    == {
+                        "type",
+                        "width_mm",
+                        "depth_mm",
+                        "thickness_mm",
+                        "k_factor",
+                        "flanges",
+                    }
+                    and all(
+                        isinstance(value, (int, float))
+                        and not isinstance(value, bool)
+                        and math.isfinite(value)
+                        for value in numbers
+                    )
+                    and 0.0001 <= width_mm <= 100_000
+                    and 0.0001 <= depth_mm <= 100_000
+                    and 0.0001 <= thickness_mm < min(width_mm, depth_mm)
+                    and 0 <= k_factor <= 1
+                    and isinstance(flanges, list)
+                    and len(flanges) <= 4
+                )
+                edge_order = {"min_x": 0, "max_x": 1, "min_y": 2, "max_y": 3}
+                parsed_edges = []
+                if valid_feature:
+                    for flange in flanges:
+                        if not isinstance(flange, dict) or set(flange) != {
+                            "edge",
+                            "length_mm",
+                            "angle_degrees",
+                            "inner_radius_mm",
+                        }:
+                            valid_feature = False
+                            break
+                        edge = flange["edge"]
+                        length_mm = flange["length_mm"]
+                        angle_degrees = flange["angle_degrees"]
+                        inner_radius_mm = flange["inner_radius_mm"]
+                        if (
+                            edge not in edge_order
+                            or any(
+                                not isinstance(value, (int, float))
+                                or isinstance(value, bool)
+                                or not math.isfinite(value)
+                                for value in [length_mm, angle_degrees, inner_radius_mm]
+                            )
+                            or not 0.0001 <= length_mm <= 100_000
+                            or not 0.1 <= abs(angle_degrees) <= 179.9
+                            or not 0.0001 <= inner_radius_mm <= 100_000
+                            or inner_radius_mm + thickness_mm > 100_000
+                        ):
+                            valid_feature = False
+                            break
+                        parsed_edges.append(edge)
+                    edge_values = [edge_order[edge] for edge in parsed_edges]
+                    valid_feature = valid_feature and all(
+                        left < right for left, right in zip(edge_values, edge_values[1:])
+                    )
+                    opposite = {frozenset(("min_x", "max_x")), frozenset(("min_y", "max_y"))}
+                    valid_feature = valid_feature and all(
+                        frozenset((left, right)) in opposite
+                        for index, left in enumerate(parsed_edges)
+                        for right in parsed_edges[index + 1 :]
+                    )
             elif feature.get("type") == "topology_shell":
                 reference_ids = feature.get("removed_face_reference_ids")
                 thickness_mm = feature.get("thickness_mm")
@@ -1620,6 +1969,78 @@ def _validate_cad_edit_program(program: object) -> dict:
                 or not 0 < value <= 1_000_000
             ):
                 raise ProtocolError("provider CAD dimension edit is invalid")
+        elif operation_type == "set_feature_parameter":
+            if set(operation) != {
+                "operation",
+                "feature_id",
+                "parameter_path",
+                "value_type",
+                "value",
+            }:
+                raise ProtocolError(
+                    "provider CAD feature parameter edit contains missing or unknown fields"
+                )
+            feature_id = operation["feature_id"]
+            parameter_path = operation["parameter_path"]
+            value_type = operation["value_type"]
+            value = operation["value"]
+            if (
+                not isinstance(feature_id, int)
+                or isinstance(feature_id, bool)
+                or not 0 < feature_id <= MAX_U64
+                or not isinstance(parameter_path, str)
+                or not parameter_path.strip()
+                or len(parameter_path.encode("utf-8")) > 128
+                or any(not character.isprintable() for character in parameter_path)
+                or value_type not in {"length", "angle", "scalar"}
+                or not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(value)
+                or abs(value) > 1_000_000
+                or value_type == "length"
+                and value <= 0
+            ):
+                raise ProtocolError("provider CAD feature parameter edit is invalid")
+        elif operation_type == "upsert_cam_plan":
+            fields = {
+                "operation", "plan_id", "name", "target_definition_id", "target_feature_id",
+                "stock_minimum_mm", "stock_maximum_mm", "tool_number", "tool_kind",
+                "tool_diameter_mm", "flute_length_mm", "overall_length_mm",
+                "holder_diameter_mm", "holder_length_mm", "spindle_rpm",
+                "feed_mm_per_min", "plunge_mm_per_min", "work_offset", "origin_mm",
+                "x_axis", "y_axis", "safe_height_mm", "maximum_stepdown_mm",
+                "stepover_ratio", "radial_allowance_mm", "axial_allowance_mm",
+            }
+            positive_ids = ("plan_id", "target_definition_id", "target_feature_id", "tool_number", "spindle_rpm")
+            positive_scalars = (
+                "tool_diameter_mm", "flute_length_mm", "overall_length_mm",
+                "holder_diameter_mm", "holder_length_mm", "feed_mm_per_min",
+                "plunge_mm_per_min", "maximum_stepdown_mm",
+            )
+            scalar_fields = positive_scalars + (
+                "safe_height_mm", "stepover_ratio", "radial_allowance_mm", "axial_allowance_mm",
+            )
+            vectors = ("stock_minimum_mm", "stock_maximum_mm", "origin_mm", "x_axis", "y_axis")
+            if (
+                set(operation) != fields
+                or any(not isinstance(operation[key], int) or isinstance(operation[key], bool)
+                       or not 0 < operation[key] <= MAX_U64 for key in positive_ids)
+                or not isinstance(operation["name"], str)
+                or not operation["name"].strip()
+                or len(operation["name"].encode("utf-8")) > 128
+                or operation["tool_kind"] not in {"flat_end_mill", "ball_end_mill", "drill"}
+                or operation["work_offset"] not in {"g54", "g55", "g56", "g57", "g58", "g59"}
+                or any(not isinstance(operation[key], (int, float)) or isinstance(operation[key], bool)
+                       or not math.isfinite(operation[key]) for key in scalar_fields)
+                or any(operation[key] <= 0 for key in positive_scalars)
+                or any(not isinstance(operation[key], list) or len(operation[key]) != 3
+                       or any(not isinstance(value, (int, float)) or isinstance(value, bool)
+                              or not math.isfinite(value) or abs(value) > 1_000_000
+                              for value in operation[key]) for key in vectors)
+                or not any(value != 0 for value in operation["x_axis"])
+                or not any(value != 0 for value in operation["y_axis"])
+            ):
+                raise ProtocolError("provider CAM plan is invalid")
         elif operation_type == "upsert_classification_dimension":
             if set(operation) != {"operation", "dimension_id", "name", "categories"}:
                 raise ProtocolError("provider CAD classification dimension contains missing or unknown fields")
@@ -1664,6 +2085,42 @@ def _validate_cad_edit_program(program: object) -> dict:
                 or abs(value) > 1_000_000
             ):
                 raise ProtocolError("provider CAD evaluator input is invalid")
+        elif operation_type == "create_assembly_joint":
+            if (
+                set(operation) != {"operation", "parent_instance_path", "child_instance_path", "kind"}
+                or not _valid_instance_path(operation["parent_instance_path"])
+                or not _valid_instance_path(operation["child_instance_path"])
+                or operation["parent_instance_path"] == operation["child_instance_path"]
+                or not _valid_assembly_joint_kind(operation["kind"])
+            ):
+                raise ProtocolError("provider assembly joint creation is invalid")
+        elif operation_type == "set_assembly_joint_position":
+            position = operation.get("position")
+            if (
+                set(operation) != {"operation", "joint_id", "position"}
+                or len(operations) != 1
+                or not isinstance(operation["joint_id"], int)
+                or isinstance(operation["joint_id"], bool)
+                or not 0 < operation["joint_id"] <= MAX_U64
+                or not isinstance(position, (int, float))
+                or isinstance(position, bool)
+                or not math.isfinite(position)
+                or abs(position) > 1_000_000
+            ):
+                raise ProtocolError("provider assembly joint edit is invalid")
+        elif operation_type == "create_drawing":
+            instance_paths = operation.get("instance_paths")
+            if (
+                set(operation) != {"operation", "name", "instance_paths"}
+                or not isinstance(operation["name"], str)
+                or not operation["name"].strip()
+                or len(operation["name"].encode("utf-8")) > 128
+                or not isinstance(instance_paths, list)
+                or not 0 < len(instance_paths) <= 100
+                or any(not _valid_instance_path(path) for path in instance_paths)
+                or len({json.dumps(path, sort_keys=True) for path in instance_paths}) != len(instance_paths)
+            ):
+                raise ProtocolError("provider drawing creation is invalid")
         else:
             if "selector" not in operation:
                 raise ProtocolError("provider CAD edit selector is missing")
@@ -1684,6 +2141,11 @@ def _validate_cad_edit_program(program: object) -> dict:
             "fillet_edges",
             "chamfer_edges",
             "set_dimension",
+            "set_feature_parameter",
+            "create_assembly_joint",
+            "set_assembly_joint_position",
+            "create_drawing",
+            "upsert_cam_plan",
             "upsert_classification_dimension",
             "create_evaluator_input",
         }:
@@ -1817,6 +2279,50 @@ def _validate_cad_edit_program(program: object) -> dict:
     return program
 
 
+def _validate_fea_review(request: object) -> dict:
+    required = {
+        "definition_id", "feature_id", "occurrence_id", "case_id",
+        "youngs_modulus_mpa", "poisson_ratio", "yield_strength_mpa",
+        "constrained_face_ordinals", "loaded_face_ordinal",
+        "traction_local_n_per_mm2", "coarse_deflection_mm", "fine_deflection_mm",
+    }
+    if not isinstance(request, dict) or set(request) != required:
+        raise ProtocolError("provider FEA review contains missing or unknown fields")
+    identifiers = [request[name] for name in ("definition_id", "feature_id", "occurrence_id")]
+    if any(not isinstance(value, int) or isinstance(value, bool) or not 0 < value <= MAX_U64 for value in identifiers):
+        raise ProtocolError("provider FEA review target is invalid")
+    case_id = request["case_id"]
+    if not isinstance(case_id, str) or not case_id.strip() or len(case_id.encode("utf-8")) > 256:
+        raise ProtocolError("provider FEA review case is invalid")
+    numeric = [request[name] for name in (
+        "youngs_modulus_mpa", "poisson_ratio", "yield_strength_mpa",
+        "coarse_deflection_mm", "fine_deflection_mm",
+    )]
+    if any(not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) for value in numeric):
+        raise ProtocolError("provider FEA review material or mesh value is invalid")
+    young, poisson, yield_strength, coarse, fine = numeric
+    if not (0 < young <= 1.0e9 and -1 < poisson < 0.5 and 0 < yield_strength <= 1.0e9 and 0 < fine < coarse <= 1_000_000):
+        raise ProtocolError("provider FEA review material or refinement is invalid")
+    constraints = request["constrained_face_ordinals"]
+    loaded = request["loaded_face_ordinal"]
+    if (
+        not isinstance(constraints, list) or not 1 <= len(constraints) <= 64
+        or any(not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 0xFFFFFFFF for value in constraints)
+        or len(set(constraints)) != len(constraints)
+        or not isinstance(loaded, int) or isinstance(loaded, bool) or not 0 <= loaded <= 0xFFFFFFFF
+        or loaded in constraints
+    ):
+        raise ProtocolError("provider FEA review face ordinals are invalid")
+    traction = request["traction_local_n_per_mm2"]
+    if (
+        not isinstance(traction, list) or len(traction) != 3
+        or any(not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or abs(value) > 1.0e6 for value in traction)
+        or not any(abs(value) > 0 for value in traction)
+    ):
+        raise ProtocolError("provider FEA review traction is invalid")
+    return request
+
+
 def _parse_assistant_result(answer: str) -> dict:
     try:
         result = json.loads(answer)
@@ -1828,6 +2334,7 @@ def _parse_assistant_result(answer: str) -> dict:
             "message",
             "model_intent",
             "cad_edit_program",
+            "fea_review",
         }
     ):
         raise ProtocolError("provider CAD result contains missing or unknown fields")
@@ -1835,20 +2342,30 @@ def _parse_assistant_result(answer: str) -> dict:
     intent = result["model_intent"]
     program_supplied = "cad_edit_program" in result
     program = result.get("cad_edit_program")
+    fea_supplied = "fea_review" in result
+    fea_review = result.get("fea_review")
     if not isinstance(message, str) or not message.strip():
         raise ProtocolError("provider CAD result message is empty")
-    if intent is not None and program is not None:
-        raise ProtocolError("provider returned multiple mutation programs")
+    if sum(value is not None for value in (intent, program, fea_review)) > 1:
+        raise ProtocolError("provider returned multiple action programs")
     if program is not None:
         return {
             "message": message,
             "model_intent": None,
             "cad_edit_program": _validate_cad_edit_program(program),
         }
+    if fea_review is not None:
+        return {
+            "message": message,
+            "model_intent": None,
+            "fea_review": _validate_fea_review(fea_review),
+        }
     if intent is None:
         parsed = {"message": message, "model_intent": None}
         if program_supplied:
             parsed["cad_edit_program"] = None
+        if fea_supplied:
+            parsed["fea_review"] = None
         return parsed
     if not isinstance(intent, dict) or not {"replace_scene", "boxes"} <= set(intent) <= {
         "replace_scene", "boxes", "translations", "rotations", "profile_translations", "parameter_edits", "linear_arrays", "bottles", "balloon_texts", "gable_roofs", "staircases", "oriented_beams"
@@ -2248,6 +2765,7 @@ def _document_context_from_message(message: str) -> dict:
 def _bounded_occurrence_record(value: object) -> dict:
     expected = {
         "occurrence_id",
+        "instance_path",
         "definition_id",
         "name",
         "visible",
@@ -2271,6 +2789,8 @@ def _bounded_occurrence_record(value: object) -> dict:
         or len(name.encode("utf-8")) > 1024
         or not isinstance(value["visible"], bool)
         or not isinstance(value["copyable"], bool)
+        or not _valid_instance_path(value["instance_path"])
+        or value["instance_path"]["root_occurrence_id"] != occurrence_id
     ):
         raise ProtocolError("document occurrence is invalid")
     bounds = value["bounds_mm"]
@@ -2294,6 +2814,7 @@ def _bounded_occurrence_record(value: object) -> dict:
             raise ProtocolError("document occurrence bounds are invalid")
     return {
         "occurrence_id": occurrence_id,
+        "instance_path": value["instance_path"],
         "definition_id": definition_id,
         "name": name,
         "visible": value["visible"],
@@ -2302,57 +2823,141 @@ def _bounded_occurrence_record(value: object) -> dict:
     }
 
 
+def _inspection_catalog(context: dict) -> tuple[list[dict], list[dict]]:
+    catalog = context.get(LOCAL_INSPECTION_CATALOG)
+    if catalog is None:
+        occurrences = context.get("occurrences")
+        if not isinstance(occurrences, list):
+            raise ProtocolError("document occurrence query is unavailable")
+        selected = [
+            {
+                "root_occurrence_id": occurrence_id,
+                "steps": [],
+            }
+            for occurrence_id in context.get("selected_occurrence_ids", [])
+        ]
+        return occurrences, selected
+    if not isinstance(catalog, dict) or set(catalog) != {
+        "document_id",
+        "revision",
+        "canonical_digest",
+        "selection",
+        "occurrences",
+    }:
+        raise ProtocolError("local inspection catalog is invalid")
+    for identity in ("document_id", "revision", "canonical_digest"):
+        if catalog[identity] != context.get(identity):
+            raise ProtocolError("local inspection catalog is stale")
+    occurrences = catalog["occurrences"]
+    selection = catalog["selection"]
+    if not isinstance(occurrences, list) or not isinstance(selection, list):
+        raise ProtocolError("local inspection catalog is invalid")
+    if any(not _valid_instance_path(path) for path in selection):
+        raise ProtocolError("local inspection selection is invalid")
+    return occurrences, selection
+
+
+def _list_occurrences(context: dict, arguments: object) -> dict:
+    if not isinstance(arguments, dict) or set(arguments) != {"cursor", "limit"}:
+        raise ProtocolError("list_occurrences arguments contain missing or unknown fields")
+    cursor = arguments["cursor"]
+    limit = arguments["limit"]
+    if (
+        not isinstance(cursor, int)
+        or isinstance(cursor, bool)
+        or cursor < 0
+        or not isinstance(limit, int)
+        or isinstance(limit, bool)
+        or not 1 <= limit <= MAX_INSPECT_OCCURRENCES
+    ):
+        raise ProtocolError("list_occurrences arguments are invalid")
+    raw_occurrences, _ = _inspection_catalog(context)
+    if cursor > len(raw_occurrences):
+        raise ProtocolError("list_occurrences cursor is outside the catalog")
+    occurrences = [
+        _bounded_occurrence_record(record)
+        for record in raw_occurrences[cursor : cursor + limit]
+    ]
+    next_cursor = cursor + len(occurrences)
+    result = {
+        "tool": "list_occurrences",
+        "document_id": context.get("document_id"),
+        "revision": context.get("revision"),
+        "canonical_digest": context.get("canonical_digest"),
+        "cursor": cursor,
+        "next_cursor": next_cursor if next_cursor < len(raw_occurrences) else None,
+        "total_count": len(raw_occurrences),
+        "complete": next_cursor >= len(raw_occurrences),
+        "occurrences": occurrences,
+    }
+    if len(json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > MAX_INSPECT_RESULT_BYTES:
+        raise ProtocolError("list_occurrences result exceeds the byte envelope")
+    return result
+
+
 def _inspect_document(context: dict, arguments: object) -> dict:
-    if not isinstance(arguments, dict) or set(arguments) != {"scope", "occurrence_ids"}:
+    valid_fields = (
+        {"scope", "occurrence_ids"},
+        {"scope", "occurrence_ids", "instance_paths"},
+    )
+    if not isinstance(arguments, dict) or set(arguments) not in valid_fields:
         raise ProtocolError("inspect_document arguments contain missing or unknown fields")
     scope = arguments["scope"]
-    requested = arguments["occurrence_ids"]
+    occurrence_ids = arguments["occurrence_ids"]
+    instance_paths = arguments.get("instance_paths", [])
     if (
-        scope not in {"selection", "occurrences"}
-        or not isinstance(requested, list)
-        or len(requested) > MAX_INSPECT_OCCURRENCES
+        scope not in {"selection", "occurrences", "instances"}
+        or not isinstance(occurrence_ids, list)
+        or len(occurrence_ids) > MAX_INSPECT_OCCURRENCES
         or any(
             not isinstance(occurrence_id, int)
             or isinstance(occurrence_id, bool)
             or occurrence_id <= 0
-            for occurrence_id in requested
+            for occurrence_id in occurrence_ids
         )
-        or len(set(requested)) != len(requested)
+        or len(set(occurrence_ids)) != len(occurrence_ids)
+        or not isinstance(instance_paths, list)
+        or len(instance_paths) > MAX_INSPECT_OCCURRENCES
+        or any(not _valid_instance_path(path) for path in instance_paths)
     ):
         raise ProtocolError("inspect_document arguments are invalid")
-    if scope == "selection":
-        if requested:
-            raise ProtocolError("selection inspection cannot override occurrence IDs")
-        requested = context.get("selected_occurrence_ids")
-    elif not requested:
-        raise ProtocolError("occurrence inspection requires at least one ID")
-    if (
-        not isinstance(requested, list)
-        or not requested
-        or len(requested) > MAX_INSPECT_OCCURRENCES
-        or any(
-            not isinstance(occurrence_id, int)
-            or isinstance(occurrence_id, bool)
-            or occurrence_id <= 0
-            for occurrence_id in requested
-        )
-        or len(set(requested)) != len(requested)
-    ):
-        raise ProtocolError("inspect_document target set is invalid")
 
-    occurrences = context.get("occurrences")
-    if not isinstance(occurrences, list):
-        raise ProtocolError("document occurrence query is unavailable")
-    indexed = {}
-    for occurrence in occurrences:
-        record = _bounded_occurrence_record(occurrence)
-        occurrence_id = record["occurrence_id"]
-        if occurrence_id in indexed:
-            raise ProtocolError("document occurrence query contains duplicate IDs")
-        indexed[occurrence_id] = record
-    missing = [occurrence_id for occurrence_id in requested if occurrence_id not in indexed]
+    raw_occurrences, selection = _inspection_catalog(context)
+    records = [_bounded_occurrence_record(occurrence) for occurrence in raw_occurrences]
+    indexed_paths = {}
+    for record in records:
+        path_key = json.dumps(record["instance_path"], separators=(",", ":"), sort_keys=True)
+        if path_key in indexed_paths:
+            raise ProtocolError("document occurrence query contains duplicate instance paths")
+        indexed_paths[path_key] = record
+
+    if scope == "selection":
+        if occurrence_ids or instance_paths:
+            raise ProtocolError("selection inspection cannot override targets")
+        requested_paths = selection
+    elif scope == "occurrences":
+        if not occurrence_ids or instance_paths:
+            raise ProtocolError("occurrence inspection requires only root occurrence IDs")
+        requested_paths = [
+            {"root_occurrence_id": occurrence_id, "steps": []}
+            for occurrence_id in occurrence_ids
+        ]
+    else:
+        if occurrence_ids or not instance_paths:
+            raise ProtocolError("instance inspection requires only instance paths")
+        requested_paths = instance_paths
+
+    if not requested_paths or len(requested_paths) > MAX_INSPECT_OCCURRENCES:
+        raise ProtocolError("inspect_document target set is invalid")
+    path_keys = [
+        json.dumps(path, separators=(",", ":"), sort_keys=True)
+        for path in requested_paths
+    ]
+    if len(set(path_keys)) != len(path_keys):
+        raise ProtocolError("inspect_document target set is invalid")
+    missing = [path for path, key in zip(requested_paths, path_keys) if key not in indexed_paths]
     if missing:
-        raise ProtocolError("inspect_document target is absent from the bounded document context")
+        raise ProtocolError("inspect_document target is absent from the revision-bound catalog")
 
     document_id = context.get("document_id")
     revision = context.get("revision")
@@ -2376,8 +2981,9 @@ def _inspect_document(context: dict, arguments: object) -> dict:
         "canonical_digest": canonical_digest,
         "scope": scope,
         "complete": True,
-        "occurrence_ids": requested,
-        "occurrences": [indexed[occurrence_id] for occurrence_id in requested],
+        "occurrence_ids": [path["root_occurrence_id"] for path in requested_paths],
+        "instance_paths": requested_paths,
+        "occurrences": [indexed_paths[key] for key in path_keys],
     }
     if len(json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > MAX_INSPECT_RESULT_BYTES:
         raise ProtocolError("inspect_document result exceeds the byte envelope")
@@ -2746,7 +3352,14 @@ def _run_validators(context: dict, arguments: object) -> dict:
 
 
 def _read_only_tool_result(message: str, name: object, arguments: object) -> dict:
-    context = _document_context_from_message(message)
+    return _read_only_tool_result_from_context(
+        _document_context_from_message(message), name, arguments
+    )
+
+
+def _read_only_tool_result_from_context(context: dict, name: object, arguments: object) -> dict:
+    if name == "list_occurrences":
+        return _list_occurrences(context, arguments)
     if name == "list_validators":
         return _list_validators(context, arguments)
     if name == "run_validators":
