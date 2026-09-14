@@ -1,8 +1,10 @@
 import hashlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
 import json
 from pathlib import Path
 import sys
+import threading
 
 import pytest
 
@@ -2452,6 +2454,56 @@ def test_plan_linear_array_uses_union_bounds_and_fails_closed():
         assistant._plan_linear_array(missing_bounds, valid)
 
 
+def test_provider_http_redirect_does_not_replay_credentials_cross_origin():
+    received = []
+
+    class SinkHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            received.append(dict(self.headers))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        do_POST = do_GET
+
+        def log_message(self, *_):
+            pass
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), SinkHandler) as sink:
+        sink_url = f"http://127.0.0.1:{sink.server_port}/capture"
+
+        class RedirectHandler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.send_response(302)
+                self.send_header("Location", sink_url)
+                self.end_headers()
+
+            def log_message(self, *_):
+                pass
+
+        with ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler) as redirect:
+            threads = [
+                threading.Thread(target=server.serve_forever, daemon=True)
+                for server in (sink, redirect)
+            ]
+            for thread in threads:
+                thread.start()
+            try:
+                with pytest.raises(assistant.ProtocolError, match="provider request failed"):
+                    assistant._post_json(
+                        f"http://127.0.0.1:{redirect.server_port}/provider",
+                        {},
+                        {"Authorization": "Bearer SECRET", "X-Api-Key": "KEY"},
+                    )
+            finally:
+                redirect.shutdown()
+                sink.shutdown()
+            for thread in threads:
+                thread.join(timeout=2)
+
+    assert received == []
+
+
 def test_provider_http_response_is_bounded_before_json_parsing(monkeypatch):
     class Response:
         def __init__(self, body, content_length=None):
@@ -2476,14 +2528,14 @@ def test_provider_http_response_is_bounded_before_json_parsing(monkeypatch):
 
     monkeypatch.setattr(assistant, "MAX_PROVIDER_RESPONSE_BYTES", 64)
     valid = Response(b'{"model":"bounded"}')
-    monkeypatch.setattr(assistant.urllib.request, "urlopen", lambda *_args, **_kwargs: valid)
+    monkeypatch.setattr(assistant._PROVIDER_OPENER, "open", lambda *_args, **_kwargs: valid)
     assert assistant._post_json("https://provider.invalid", {}, {}) == {"model": "bounded"}
     assert valid.read_sizes[0] == assistant.MAX_PROVIDER_RESPONSE_BYTES + 1
     assert len(valid.read_sizes) == 2
 
     oversized = Response(b"x" * (assistant.MAX_PROVIDER_RESPONSE_BYTES + 1), "1")
     monkeypatch.setattr(
-        assistant.urllib.request, "urlopen", lambda *_args, **_kwargs: oversized
+        assistant._PROVIDER_OPENER, "open", lambda *_args, **_kwargs: oversized
     )
     with pytest.raises(assistant.ProtocolError, match="byte limit"):
         assistant._post_json("https://provider.invalid", {}, {})
@@ -2491,7 +2543,7 @@ def test_provider_http_response_is_bounded_before_json_parsing(monkeypatch):
 
     declared_oversized = Response(b"{}", str(assistant.MAX_PROVIDER_RESPONSE_BYTES + 1))
     monkeypatch.setattr(
-        assistant.urllib.request, "urlopen", lambda *_args, **_kwargs: declared_oversized
+        assistant._PROVIDER_OPENER, "open", lambda *_args, **_kwargs: declared_oversized
     )
     with pytest.raises(assistant.ProtocolError, match="byte limit"):
         assistant._post_json("https://provider.invalid", {}, {})
@@ -2499,7 +2551,7 @@ def test_provider_http_response_is_bounded_before_json_parsing(monkeypatch):
 
     truncated = Response(b"{}", "3")
     monkeypatch.setattr(
-        assistant.urllib.request, "urlopen", lambda *_args, **_kwargs: truncated
+        assistant._PROVIDER_OPENER, "open", lambda *_args, **_kwargs: truncated
     )
     with pytest.raises(assistant.ProtocolError, match="Content-Length"):
         assistant._post_json("https://provider.invalid", {}, {})
@@ -2537,7 +2589,7 @@ def test_provider_http_response_requires_a_utf8_json_object(monkeypatch, body):
             return body
 
     monkeypatch.setattr(
-        assistant.urllib.request, "urlopen", lambda *_args, **_kwargs: Response()
+        assistant._PROVIDER_OPENER, "open", lambda *_args, **_kwargs: Response()
     )
     with pytest.raises(assistant.ProtocolError, match="UTF-8 JSON|JSON object"):
         assistant._post_json("https://provider.invalid", {}, {})

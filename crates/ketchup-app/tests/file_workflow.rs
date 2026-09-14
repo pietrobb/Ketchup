@@ -1727,6 +1727,161 @@ fn dirty_gui_document_recovers_after_crash_and_requires_save_as() {
 }
 
 #[test]
+fn gui_retries_failed_post_save_work_recovery_cleanup() {
+    let directory = tempfile::tempdir().unwrap();
+    let primary = directory.path().join("retry-save-cleanup.ketchup");
+    let recovery = ketchup_core::persistence::work_recovery_path(&primary);
+    let mut shell = Shell::with_dialogs(
+        ScriptedFileDialogs::new()
+            .queue_save(&primary)
+            .always_confirm_high_risk_as(8),
+    );
+    shell.click_menu_command("menu-file", AppCommand::Save);
+    assert!(shell.app_mut().create_box());
+    shell.settle();
+    let owned_checkpoint = std::fs::read(&recovery).unwrap();
+
+    std::fs::remove_file(&recovery).unwrap();
+    std::fs::create_dir(&recovery).unwrap();
+    shell.click_menu_command("menu-file", AppCommand::Save);
+    assert!(!shell.app().is_dirty());
+
+    std::fs::remove_dir(&recovery).unwrap();
+    std::fs::write(&recovery, owned_checkpoint).unwrap();
+    shell.settle();
+    assert!(!recovery.exists());
+}
+
+#[test]
+fn gui_undo_and_redo_roll_back_when_work_recovery_checkpoint_fails() {
+    let directory = tempfile::tempdir().unwrap();
+    let primary = directory.path().join("transactional-undo.ketchup");
+    let recovery = ketchup_core::persistence::work_recovery_path(&primary);
+    let mut shell = Shell::with_dialogs(ScriptedFileDialogs::new().queue_save(&primary));
+    shell.click_menu_command("menu-file", AppCommand::Save);
+    assert!(shell.app_mut().create_box());
+    assert!(shell.app_mut().create_box());
+    shell.settle();
+    assert!(recovery.is_file());
+
+    let before = canonical_state(&shell);
+    std::fs::remove_file(&recovery).unwrap();
+    std::fs::create_dir(&recovery).unwrap();
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(canonical_state(&shell), before);
+    assert!(digest_starts_like(&shell, "error-save-document"));
+
+    std::fs::remove_dir(&recovery).unwrap();
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert!(recovery.is_file());
+    let undone = canonical_state(&shell);
+    assert_eq!(
+        ketchup_core::persistence::load_file(&primary)
+            .unwrap()
+            .snapshot()
+            .canonical_digest(),
+        undone.digest
+    );
+    std::fs::remove_file(&recovery).unwrap();
+    std::fs::create_dir(&recovery).unwrap();
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(canonical_state(&shell), undone);
+    assert!(digest_starts_like(&shell, "error-save-document"));
+}
+
+#[test]
+fn gui_canonical_edit_rolls_back_when_work_recovery_checkpoint_fails() {
+    let directory = tempfile::tempdir().unwrap();
+    let primary = directory.path().join("transactional-edit.ketchup");
+    let recovery = ketchup_core::persistence::work_recovery_path(&primary);
+    let mut shell = Shell::with_dialogs(ScriptedFileDialogs::new().queue_save(&primary));
+    shell.click_menu_command("menu-file", AppCommand::Save);
+    let before = canonical_state(&shell);
+
+    std::fs::create_dir(&recovery).unwrap();
+    assert!(!shell.app_mut().create_box());
+    shell.settle();
+
+    assert_eq!(canonical_state(&shell), before);
+    assert!(digest_starts_like(&shell, "error-save-document"));
+}
+
+#[test]
+fn step_import_publishes_its_blob_in_the_same_work_recovery_transaction() {
+    let _serial = EXACT_FILE_EXPORT_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../corpora/r0/step/self-authored-box.step");
+    let directory = tempfile::tempdir().unwrap();
+    let primary = directory.path().join("step-import-recovery.ketchup");
+    let recovery = ketchup_core::persistence::work_recovery_path(&primary);
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_save(&primary)
+        .queue_import(ImportFormat::Step, &source)
+        .queue_import(ImportFormat::Step, &source);
+    let mut shell = Shell::with_dialogs(dialogs);
+    shell.click_menu_command("menu-file", AppCommand::Save);
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    let baseline = canonical_state(&shell);
+
+    std::fs::create_dir(&recovery).unwrap();
+    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    shell.click_button_label(&shell.catalog().text("dialog-import-step-confirm"));
+    assert_eq!(canonical_state(&shell), baseline);
+    std::fs::remove_dir(&recovery).unwrap();
+
+    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    shell.click_button_label(&shell.catalog().text("dialog-import-step-confirm"));
+
+    assert_eq!(shell.app().import_receipt_count(), 1);
+    assert!(recovery.is_file());
+    let recovered = ketchup_core::persistence::load_file_with_source(&primary).unwrap();
+    assert_eq!(recovered.source_path(), recovery);
+    assert_eq!(recovered.outcome().snapshot().import_receipts().count(), 1);
+}
+
+#[test]
+fn gui_save_as_cleanup_preserves_another_windows_newer_checkpoint() {
+    let directory = tempfile::tempdir().unwrap();
+    let shared = directory.path().join("shared-recovery.ketchup");
+    let alternate = directory.path().join("first-copy.ketchup");
+    let recovery = ketchup_core::persistence::work_recovery_path(&shared);
+    let mut author = Shell::with_dialogs(ScriptedFileDialogs::new().queue_save(&shared));
+    author.click_menu_command("menu-file", AppCommand::Save);
+
+    let mut first = Shell::with_dialogs(
+        ScriptedFileDialogs::new()
+            .queue_open(&shared)
+            .queue_save(&alternate),
+    );
+    let mut second = Shell::with_dialogs(ScriptedFileDialogs::new().queue_open(&shared));
+    first.click_menu_command("menu-file", AppCommand::Open);
+    second.click_menu_command("menu-file", AppCommand::Open);
+    assert!(first.app_mut().create_box());
+    first.settle();
+    assert!(second.app_mut().create_box());
+    assert!(second.app_mut().create_box());
+    second.settle();
+    let second_digest = second.app().canonical_digest();
+    let newer_checkpoint = std::fs::read(&recovery).unwrap();
+
+    first.click_menu_command("menu-file", AppCommand::SaveAs);
+
+    assert_eq!(first.app().document_path(), Some(alternate.as_path()));
+    assert_eq!(std::fs::read(&recovery).unwrap(), newer_checkpoint);
+    let recovered = ketchup_core::persistence::load_file_with_source(&shared).unwrap();
+    assert_eq!(recovered.source_path(), recovery);
+    assert_eq!(
+        recovered.outcome().snapshot().canonical_digest(),
+        second_digest
+    );
+}
+
+#[test]
 fn two_open_windows_detect_external_save_and_offer_safe_save_as() {
     let directory = tempfile::tempdir().unwrap();
     let shared = directory.path().join("shared.ketchup");
@@ -1751,14 +1906,11 @@ fn two_open_windows_detect_external_save_and_offer_safe_save_as() {
     let first_bytes = std::fs::read(&shared).unwrap();
     let first_digest = first.app().canonical_digest();
 
-    assert!(second.app_mut().create_box());
-    assert!(second.app_mut().create_box());
     let stale_state = canonical_state(&second);
-    let stale_history = reachable_history_digests(&mut second);
-    second.click_menu_command("menu-file", AppCommand::Save);
+    assert!(!second.app_mut().create_box());
 
     assert_eq!(std::fs::read(&shared).unwrap(), first_bytes);
-    assert!(second.app().is_dirty());
+    assert!(!second.app().is_dirty());
     assert!(digest_starts_like(&second, "error-save-document"));
     assert!(
         second
@@ -1766,7 +1918,7 @@ fn two_open_windows_detect_external_save_and_offer_safe_save_as() {
             .action_digest()
             .contains("changed outside this session")
     );
-    assert_state_and_history_unchanged(&mut second, &stale_state, &stale_history);
+    assert_eq!(canonical_state(&second), stale_state);
     assert_eq!(
         second_dialogs.high_risk_prompts().len(),
         0,
@@ -1776,6 +1928,9 @@ fn two_open_windows_detect_external_save_and_offer_safe_save_as() {
     second.click_menu_command("menu-file", AppCommand::SaveAs);
     assert!(!second.app().is_dirty());
     assert_eq!(second.app().document_path(), Some(alternate.as_path()));
+    assert!(second.app_mut().create_box());
+    second.click_menu_command("menu-file", AppCommand::Save);
+    let independent_digest = second.app().canonical_digest();
     assert_eq!(
         ketchup_core::persistence::load_file(&shared)
             .unwrap()
@@ -1788,7 +1943,7 @@ fn two_open_windows_detect_external_save_and_offer_safe_save_as() {
             .unwrap()
             .snapshot()
             .canonical_digest(),
-        stale_state.digest
+        independent_digest
     );
 }
 

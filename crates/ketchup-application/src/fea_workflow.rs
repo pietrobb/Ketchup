@@ -247,6 +247,7 @@ fn relative_change(previous: f64, current: f64) -> f64 {
     (current - previous).abs() / current.abs().max(previous.abs()).max(1.0e-15)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn review_digest(
     document_id: u64,
     revision: u64,

@@ -173,7 +173,9 @@ impl KetchupApp {
         let Some(pending) = self.mesh_conversion_state.pending.take() else {
             return;
         };
-        match commit_mesh_conversion(&mut self.document, &pending.plan, pending.verification) {
+        match self.mutate_document_with_work_recovery(|document| {
+            commit_mesh_conversion(document, &pending.plan, pending.verification)
+        }) {
             Ok(package) => {
                 if let Some(task) = self.exact_task.take() {
                     task.cancelled.store(true, Ordering::Release);

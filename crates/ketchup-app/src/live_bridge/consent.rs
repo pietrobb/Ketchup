@@ -15,7 +15,7 @@ use std::{
         mpsc,
     },
     thread::JoinHandle,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 const MAX_CONSENT_BYTES: usize = 512;
@@ -414,9 +414,9 @@ fn serve(
 ) {
     let _ = (|| -> io::Result<()> {
         stream.set_nonblocking(false)?;
-        stream.set_read_timeout(Some(IO_DEADLINE))?;
+        let read_deadline = Instant::now() + IO_DEADLINE;
         stream.set_write_timeout(Some(IO_DEADLINE))?;
-        let request = read_request(&mut stream)?;
+        let request = read_request(&mut stream, read_deadline)?;
         let nonce = request.nonce;
         if request.action == "list" {
             let state = discovery
@@ -437,9 +437,14 @@ fn serve(
     })();
 }
 
-fn read_request(stream: &mut TcpStream) -> io::Result<AttachRequest> {
+fn read_request(stream: &mut TcpStream, deadline: Instant) -> io::Result<AttachRequest> {
     let mut bytes = Vec::with_capacity(MAX_CONSENT_BYTES);
     for _ in 0..MAX_CONSENT_BYTES {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or(io::ErrorKind::TimedOut)?;
+        stream.set_read_timeout(Some(remaining))?;
         let mut byte = [0];
         stream.read_exact(&mut byte)?;
         bytes.push(byte[0]);

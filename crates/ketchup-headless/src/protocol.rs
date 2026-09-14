@@ -163,6 +163,7 @@ impl From<PdmWorkflowError> for Error {
                 | LocalPdmError::ManifestTooLarge
                 | LocalPdmError::InvalidManifest
                 | LocalPdmError::ManifestIdentityMismatch => "pdm_manifest_invalid",
+                LocalPdmError::InvalidRepositoryPath => "pdm_repository_invalid",
                 LocalPdmError::ReleaseAlreadyExists => "pdm_release_exists",
                 LocalPdmError::MissingRelease { .. } => "pdm_release_missing",
                 LocalPdmError::MissingObject { .. }
@@ -1254,8 +1255,8 @@ fn pdm_verified_release_value(release: &VerifiedRelease, current: &Snapshot) -> 
     json!({
         "verified":true,
         "manifest":pdm_manifest_value(&release.manifest),
-        "dependency_objects":release.dependency_objects.iter().map(|(logical_path, path)| json!({
-            "logical_path":logical_path,"verified_object_path":path,
+        "dependency_objects":release.dependency_objects.iter().map(|(logical_path, object)| json!({
+            "logical_path":logical_path,"object":{"sha256":object.sha256,"byte_len":object.byte_len},
         })).collect::<Vec<_>>(),
         "matches_current_document":release.snapshot.document_id() == current.document_id()
             && release.snapshot.revision_id() == current.revision_id()
@@ -1475,6 +1476,13 @@ mod tests {
             .as_bytes(),
         )
     }
+
+    #[test]
+    fn invalid_pdm_repository_path_has_a_stable_protocol_code() {
+        let error = Error::from(PdmWorkflowError::Core(LocalPdmError::InvalidRepositoryPath));
+        assert_eq!(error.code, "pdm_repository_invalid");
+    }
+
     #[test]
     fn rejects_unknown_version_fields_and_stale_without_mutation() {
         let mut s = Server::new(SessionSettings::default());
@@ -2416,6 +2424,12 @@ mod tests {
         );
         assert_eq!(opened["result"]["verified"], true, "{opened}");
         assert_eq!(opened["result"]["matches_current_document"], true);
+        let dependency_object = &opened["result"]["dependency_objects"][0];
+        assert_eq!(
+            dependency_object["object"],
+            opened["result"]["manifest"]["dependencies"][0]["object"]
+        );
+        assert!(dependency_object.get("verified_object_path").is_none());
         assert_eq!(server.state(), child_state);
 
         let stale = request(

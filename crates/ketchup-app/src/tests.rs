@@ -9,6 +9,45 @@ use ketchup_core::graph::{EvaluatorNodeKind, PortSpec};
 mod planning_topology;
 
 #[test]
+fn oversized_external_assistant_model_catalog_falls_back_to_embedded_models() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("assistant-models.yaml");
+    let mut catalog = String::from("- \"gpt-untrusted [api]\"\n");
+    catalog.push_str(&" ".repeat(64 * 1024));
+    std::fs::write(&path, catalog).unwrap();
+
+    let catalog = assistant_model_catalog_text_from_path(Some(&path));
+
+    assert_eq!(catalog, ASSISTANT_MODELS_YAML);
+}
+
+#[test]
+fn external_assistant_model_catalog_requires_a_regular_utf8_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let invalid_utf8 = directory.path().join("invalid.yaml");
+    std::fs::write(&invalid_utf8, [0xff, 0xfe]).unwrap();
+
+    assert_eq!(
+        assistant_model_catalog_text_from_path(Some(&invalid_utf8)),
+        ASSISTANT_MODELS_YAML
+    );
+    assert_eq!(
+        assistant_model_catalog_text_from_path(Some(directory.path())),
+        ASSISTANT_MODELS_YAML
+    );
+}
+
+#[test]
+fn bounded_external_assistant_model_catalog_remains_configurable() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("assistant-models.yaml");
+    let catalog = "- \"gpt-private [api]\"\n";
+    std::fs::write(&path, catalog).unwrap();
+
+    assert_eq!(assistant_model_catalog_text_from_path(Some(&path)), catalog);
+}
+
+#[test]
 fn cad_edit_program_compiles_selection_to_one_host_id_canonical_batch() {
     let mut app = KetchupApp::new();
     app.selection.occurrences = BTreeSet::from([InstancePath::root(OccurrenceId(1))]);
@@ -1922,6 +1961,65 @@ fn canonical_error_codes_are_stable_machine_identifiers() {
         CanonicalError::DefinitionNotFound(DefinitionId(9)).code(),
         "canonical.definition_not_found"
     );
+}
+
+#[test]
+fn export_target_sha256_streams_large_existing_artifact() {
+    let directory = tempfile::tempdir().unwrap();
+    let target = directory.path().join("large.step");
+    let mut file = std::fs::File::create(&target).unwrap();
+    for _ in 0..1_000 {
+        std::io::Write::write_all(&mut file, &[b'a'; 1_000]).unwrap();
+    }
+    drop(file);
+
+    assert_eq!(
+        export_target_sha256(&target).unwrap().as_deref(),
+        Some("cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0")
+    );
+}
+
+#[test]
+fn export_recovery_journal_rejects_actual_bytes_above_limit() {
+    let directory = tempfile::tempdir().unwrap();
+    let primary = directory.path().join("model.step");
+    let report = directory.path().join("model.step.loss.txt");
+    let journal = export_bundle_journal_path(&primary).unwrap();
+    let mut file = std::fs::File::create(journal).unwrap();
+    file.set_len(MAX_EXPORT_BUNDLE_JOURNAL_BYTES + 1).unwrap();
+    std::io::Write::write_all(&mut file, b"{").unwrap();
+    drop(file);
+
+    assert_eq!(
+        recover_export_bundle(&primary, &report).unwrap_err(),
+        "export recovery journal is not a bounded regular file"
+    );
+}
+
+#[test]
+fn export_backup_move_preserves_replacement_after_precondition_check() {
+    let directory = tempfile::tempdir().unwrap();
+    let target = directory.path().join("model.step");
+    std::fs::write(&target, b"authorized original").unwrap();
+    let original_sha256 = export_target_sha256(&target).unwrap().unwrap();
+    let backup = empty_export_temp_path(&target, ".ketchup-export-backup-").unwrap();
+    let backup_path = backup.to_path_buf();
+
+    let error = move_export_target_to_backup_after_compare(
+        &target,
+        Some(&original_sha256),
+        Some(&backup_path),
+        || {
+            let replacement = directory.path().join("replacement.tmp");
+            std::fs::write(&replacement, b"external replacement").unwrap();
+            std::fs::rename(replacement, &target).unwrap();
+        },
+    )
+    .unwrap_err();
+
+    assert!(error.contains("changed after authorization"));
+    assert_eq!(std::fs::read(&target).unwrap(), b"external replacement");
+    assert!(!backup_path.exists());
 }
 
 #[test]
@@ -5508,6 +5606,55 @@ fn production_exact_refresh_uses_graph_for_a_general_boolean_chain() {
             .mesh_obj
             .contains("g topological.face.")
     );
+}
+
+#[test]
+fn gui_exact_publication_rolls_back_when_work_recovery_finalization_fails() {
+    let executable = exact_worker_executable();
+    assert!(executable.is_file());
+    let directory = tempfile::tempdir().unwrap();
+    let primary = directory
+        .path()
+        .join("transactional-exact-publication.ketchup");
+    let recovery = ketchup_core::persistence::work_recovery_path(&primary);
+    let mut app = KetchupApp::new();
+    app.document = through_cut_document();
+    app.reset_document_presentation();
+    assert!(app.save_document_to(&primary));
+    std::fs::create_dir(&recovery).unwrap();
+    app.connect_exact_worker(&executable).unwrap();
+    let before = app.document.current();
+    let context = egui::Context::default();
+
+    app.refresh_exact_products(&context);
+    for _ in 0..200 {
+        if app.exact_task.is_none() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+        app.refresh_exact_products(&context);
+    }
+
+    assert!(app.exact_task.is_none(), "exact worker did not complete");
+    assert_eq!(
+        app.document.current().canonical_digest(),
+        before.canonical_digest()
+    );
+    assert_eq!(app.document.current().revision_id(), before.revision_id());
+    assert_eq!(app.document.current().exact_reference_evidence().count(), 0);
+    assert!(app.exact_results.is_empty());
+    assert!(app.topology_results.is_empty());
+
+    std::fs::remove_dir(&recovery).unwrap();
+    for _ in 0..300 {
+        app.refresh_exact_products(&context);
+        if !app.exact_results.is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!app.exact_results.is_empty());
+    assert!(app.document.current().exact_reference_evidence().count() > 0);
 }
 
 #[test]
@@ -9704,6 +9851,8 @@ fn imported_exact_occurrences_route_through_solid_tool_preview_and_commit() {
     ];
     let evidences = [
         StepImportEvidence {
+            source_sha256: ketchup_core::graph::sha256_bytes(sources[0]),
+            source_byte_len: sources[0].len() as u64,
             source_unit: ImportLengthUnit::Millimetre,
             result_fingerprint: "target-exact-result".into(),
             body_kind: ketchup_core::document::BodyKind::Solid,
@@ -9716,6 +9865,8 @@ fn imported_exact_occurrences_route_through_solid_tool_preview_and_commit() {
             tolerance: "1e-7-mm".into(),
         },
         StepImportEvidence {
+            source_sha256: ketchup_core::graph::sha256_bytes(sources[1]),
+            source_byte_len: sources[1].len() as u64,
             source_unit: ImportLengthUnit::Millimetre,
             result_fingerprint: "tool-exact-result".into(),
             body_kind: ketchup_core::document::BodyKind::Solid,
@@ -9885,6 +10036,8 @@ fn mixed_extrusion_and_imported_exact_occurrences_route_through_solid_tools() {
     let mut app = KetchupApp::new();
     let source = b"mixed imported exact body";
     let evidence = StepImportEvidence {
+        source_sha256: ketchup_core::graph::sha256_bytes(source),
+        source_byte_len: source.len() as u64,
         source_unit: ImportLengthUnit::Millimetre,
         result_fingerprint: "mixed-imported-exact-result".into(),
         body_kind: ketchup_core::document::BodyKind::Solid,

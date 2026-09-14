@@ -16,6 +16,7 @@ use ketchup_scheduler::validator_runtime::{
 };
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::time::{Duration, Instant};
 
 const PUBLISHER: &str = "org.ketchup.tests.publisher";
 const PACKAGE: &str = "org.ketchup.tests.hosted-validator";
@@ -325,6 +326,93 @@ fn m18b_external_disclosure_requires_exact_human_authorization_before_connect() 
         listener.accept().unwrap_err().kind(),
         std::io::ErrorKind::WouldBlock
     );
+}
+
+#[test]
+fn m7c_zero_egress_limits_fail_closed_before_connecting() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let host = installed(
+        VALID_WASM,
+        ValidatorRuntime::WasmNoImports,
+        vec!["127.0.0.1".to_owned()],
+    );
+    let package = host.resolve(PACKAGE).unwrap();
+    let request = EgressRequest {
+        host: "127.0.0.1".to_owned(),
+        port,
+        payload: b"request".to_vec(),
+    };
+    let grant = EgressGrant::new([("127.0.0.1".to_owned(), port)]);
+
+    for limits in [
+        EgressLimits {
+            maximum_request_bytes: 0,
+            ..EgressLimits::M7C
+        },
+        EgressLimits {
+            maximum_response_bytes: 0,
+            ..EgressLimits::M7C
+        },
+        EgressLimits {
+            timeout: Duration::ZERO,
+            ..EgressLimits::M7C
+        },
+    ] {
+        let authorization = authorize_external_disclosure(package, &request);
+        assert!(matches!(
+            perform_host_mediated_egress(package, &grant, &request, Some(authorization), limits),
+            Err(ValidatorRuntimeError::InvalidLimits)
+        ));
+    }
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
+#[test]
+fn m7c_egress_timeout_is_one_cumulative_transport_deadline() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = Vec::new();
+        stream.read_to_end(&mut request).unwrap();
+        assert_eq!(request, b"request");
+        for byte in b"slow response" {
+            std::thread::sleep(Duration::from_millis(25));
+            if stream.write_all(&[*byte]).is_err() {
+                break;
+            }
+        }
+    });
+    let host = installed(
+        VALID_WASM,
+        ValidatorRuntime::WasmNoImports,
+        vec!["127.0.0.1".to_owned()],
+    );
+    let package = host.resolve(PACKAGE).unwrap();
+    let request = EgressRequest {
+        host: "127.0.0.1".to_owned(),
+        port,
+        payload: b"request".to_vec(),
+    };
+    let grant = EgressGrant::new([("127.0.0.1".to_owned(), port)]);
+    let authorization = authorize_external_disclosure(package, &request);
+    let limits = EgressLimits {
+        timeout: Duration::from_millis(80),
+        ..EgressLimits::M7C
+    };
+
+    let started = Instant::now();
+    assert!(matches!(
+        perform_host_mediated_egress(package, &grant, &request, Some(authorization), limits),
+        Err(ValidatorRuntimeError::EgressTransport(_))
+    ));
+    assert!(started.elapsed() < Duration::from_millis(250));
+    server.join().unwrap();
 }
 
 #[test]

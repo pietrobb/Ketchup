@@ -77,6 +77,8 @@ pub struct DocumentSession {
     path: Option<PathBuf>,
     recovery: Option<RecoveryState>,
     file_identity: Option<persistence::FileIdentity>,
+    work_recovery_identity: Option<persistence::FileIdentity>,
+    pending_work_recovery_cleanup: Option<(PathBuf, persistence::FileIdentity)>,
     saved_digest: Option<String>,
     exact_results: ExactResultRegistry,
     topology_results: ExactResultRegistry,
@@ -95,6 +97,8 @@ impl DocumentSession {
             path: None,
             recovery: None,
             file_identity: None,
+            work_recovery_identity: None,
+            pending_work_recovery_cleanup: None,
             saved_digest: None,
             exact_results: ExactResultRegistry::default(),
             topology_results: ExactResultRegistry::default(),
@@ -105,7 +109,7 @@ impl DocumentSession {
         let requested_path = path.as_ref();
         let loaded = persistence::load_file_with_source(requested_path)
             .map_err(|error| SessionError::Persistence(error.to_string()))?;
-        let (outcome, source_path, source_bytes) = loaded.into_parts();
+        let (outcome, source_path, source_bytes, work_recovery_identity) = loaded.into_parts();
         let (document, container_data) = outcome
             .into_editable_with_container()
             .map_err(|_| SessionError::ReviewOnly)?;
@@ -122,6 +126,8 @@ impl DocumentSession {
             file_identity: recovery
                 .is_none()
                 .then(|| persistence::FileIdentity::from_bytes(&source_bytes)),
+            work_recovery_identity,
+            pending_work_recovery_cleanup: None,
             recovery,
             saved_digest,
             exact_results: ExactResultRegistry::default(),
@@ -152,6 +158,7 @@ impl DocumentSession {
         options: SaveOptions,
         preserve_history: bool,
     ) -> Result<(), SessionError> {
+        self.retry_pending_work_recovery_cleanup()?;
         let saved_bytes = if preserve_history {
             persistence::save_document_store(&self.document, &self.container_data)
         } else {
@@ -217,21 +224,21 @@ impl DocumentSession {
         if !preserve_history {
             self.document.discard_history_before_current();
         }
-        let previous_path = self.path.clone();
-        let recovery_requested = self
-            .recovery
-            .as_ref()
-            .map(|recovery| recovery.requested_path.clone());
-        let _ = persistence::clear_work_recovery(path);
-        if let Some(previous_path) = previous_path {
-            let _ = persistence::clear_work_recovery(&previous_path);
-        }
-        if let Some(recovery_requested) = recovery_requested {
-            let _ = persistence::clear_work_recovery(&recovery_requested);
+        let owned_recovery_path = self.path.clone().or_else(|| {
+            self.recovery
+                .as_ref()
+                .map(|recovery| recovery.requested_path.clone())
+        });
+        if let (Some(recovery_path), Some(recovery_identity)) =
+            (owned_recovery_path, self.work_recovery_identity)
+            && persistence::clear_work_recovery(&recovery_path, Some(recovery_identity)).is_err()
+        {
+            self.pending_work_recovery_cleanup = Some((recovery_path, recovery_identity));
         }
         self.path = Some(path.to_owned());
         self.recovery = None;
         self.file_identity = Some(saved_identity);
+        self.work_recovery_identity = None;
         self.saved_digest = Some(self.document.history_digest());
         Ok(())
     }
@@ -247,23 +254,54 @@ impl DocumentSession {
     pub fn recovery_state(&self) -> Option<&RecoveryState> {
         self.recovery.as_ref()
     }
-    pub fn write_work_recovery_checkpoint(&self) -> Result<bool, SessionError> {
-        let (Some(path), Some(identity)) = (self.path.as_deref(), self.file_identity) else {
-            return Ok(false);
+    fn retry_pending_work_recovery_cleanup(&mut self) -> Result<(), SessionError> {
+        let Some((path, identity)) = self.pending_work_recovery_cleanup.clone() else {
+            return Ok(());
         };
-        if !self.is_modified() {
-            persistence::clear_work_recovery(path)
+        persistence::clear_work_recovery(&path, Some(identity))
+            .map_err(|error| SessionError::Persistence(error.to_string()))?;
+        self.pending_work_recovery_cleanup = None;
+        Ok(())
+    }
+    pub fn write_work_recovery_checkpoint(&mut self) -> Result<bool, SessionError> {
+        let _ = self.retry_pending_work_recovery_cleanup();
+        let identity = Self::write_work_recovery_checkpoint_for(
+            &self.document,
+            &self.container_data,
+            self.path.as_deref(),
+            self.file_identity,
+            self.saved_digest.as_deref(),
+            self.work_recovery_identity,
+        )?;
+        let written = identity.is_some();
+        self.work_recovery_identity = identity;
+        Ok(written)
+    }
+    fn write_work_recovery_checkpoint_for(
+        document: &DocumentStore,
+        container_data: &ContainerData,
+        path: Option<&Path>,
+        file_identity: Option<persistence::FileIdentity>,
+        saved_digest: Option<&str>,
+        work_recovery_identity: Option<persistence::FileIdentity>,
+    ) -> Result<Option<persistence::FileIdentity>, SessionError> {
+        let (Some(path), Some(identity)) = (path, file_identity) else {
+            return Ok(work_recovery_identity);
+        };
+        let current_digest = document.history_digest();
+        if saved_digest == Some(current_digest.as_str()) {
+            persistence::clear_work_recovery(path, work_recovery_identity)
                 .map_err(|error| SessionError::Persistence(error.to_string()))?;
-            return Ok(false);
+            return Ok(None);
         }
         persistence::save_work_recovery_document_store_with_container(
             path,
-            &self.document,
-            &self.container_data,
+            document,
+            container_data,
             identity,
         )
-        .map_err(|error| SessionError::Persistence(error.to_string()))?;
-        Ok(true)
+        .map(Some)
+        .map_err(|error| SessionError::Persistence(error.to_string()))
     }
     pub fn is_modified(&self) -> bool {
         self.recovery.is_some()
@@ -306,6 +344,32 @@ impl DocumentSession {
             .prepare_proposal_with_context(batch, ProposalContext::local_assistant_model())
             .map_err(SessionError::Prepare)
     }
+    fn mutate_with_work_recovery<T>(
+        &mut self,
+        mutate: impl FnOnce(&mut DocumentStore) -> Result<T, SessionError>,
+    ) -> Result<T, SessionError> {
+        let container_data = &self.container_data;
+        let path = self.path.as_deref();
+        let file_identity = self.file_identity;
+        let saved_digest = self.saved_digest.as_deref();
+        let work_recovery_identity = self.work_recovery_identity;
+        let mut next_work_recovery_identity = work_recovery_identity;
+        let result = self.document.try_canonical_transaction(mutate, |document| {
+            next_work_recovery_identity = Self::write_work_recovery_checkpoint_for(
+                document,
+                container_data,
+                path,
+                file_identity,
+                saved_digest,
+                work_recovery_identity,
+            )?;
+            Ok(())
+        });
+        if result.is_ok() {
+            self.work_recovery_identity = next_work_recovery_identity;
+        }
+        result
+    }
     pub fn apply_proposal(&mut self, proposal: &Proposal) -> Result<Snapshot, SessionError> {
         self.apply_proposal_verified(proposal)?;
         Ok(self.snapshot())
@@ -314,12 +378,12 @@ impl DocumentSession {
         &mut self,
         proposal: &Proposal,
     ) -> Result<VerifiedProposalCommit, SessionError> {
-        let committed = self
-            .document
-            .commit_verified_proposal(proposal)
-            .map_err(SessionError::Commit)?;
+        let committed = self.mutate_with_work_recovery(|document| {
+            document
+                .commit_verified_proposal(proposal)
+                .map_err(SessionError::Commit)
+        })?;
         self.rebind();
-        let _ = self.write_work_recovery_checkpoint();
         Ok(committed)
     }
     /// One bounded program is one Undo step. Created IDs can be obtained by snapshot diff.
@@ -349,16 +413,16 @@ impl DocumentSession {
         );
     }
     pub fn undo(&mut self) -> Result<Snapshot, SessionError> {
-        self.document.undo().ok_or(SessionError::NoUndo)?;
+        let snapshot =
+            self.mutate_with_work_recovery(|document| document.undo().ok_or(SessionError::NoUndo))?;
         self.rebind();
-        let _ = self.write_work_recovery_checkpoint();
-        Ok(self.snapshot())
+        Ok(snapshot)
     }
     pub fn redo(&mut self) -> Result<Snapshot, SessionError> {
-        self.document.redo().ok_or(SessionError::NoRedo)?;
+        let snapshot =
+            self.mutate_with_work_recovery(|document| document.redo().ok_or(SessionError::NoRedo))?;
         self.rebind();
-        let _ = self.write_work_recovery_checkpoint();
-        Ok(self.snapshot())
+        Ok(snapshot)
     }
     pub fn start_exact_evaluation_task(&mut self) -> ExactEvaluationTask {
         self.start_scoped_exact_evaluation_task(None)
@@ -388,14 +452,21 @@ impl DocumentSession {
         task: &ExactEvaluationTask,
         products: ExactEvaluationProducts,
     ) -> Result<EvaluationReport, SessionError> {
-        publish_exact_products(
-            &mut self.document,
-            &mut self.exact_results,
-            &mut self.topology_results,
-            task,
-            products,
-        )
-        .map_err(SessionError::Evaluation)
+        let mut exact_results = self.exact_results.clone();
+        let mut topology_results = self.topology_results.clone();
+        let report = self.mutate_with_work_recovery(|document| {
+            publish_exact_products(
+                document,
+                &mut exact_results,
+                &mut topology_results,
+                task,
+                products,
+            )
+            .map_err(SessionError::Evaluation)
+        })?;
+        self.exact_results = exact_results;
+        self.topology_results = topology_results;
+        Ok(report)
     }
     pub fn evaluate(&mut self) -> Result<EvaluationReport, SessionError> {
         self.evaluate_with_timeout(self.settings.evaluation_timeout)

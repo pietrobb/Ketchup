@@ -12,7 +12,6 @@ import math
 import os
 from pathlib import Path
 import queue
-import shutil
 import subprocess
 import threading
 from collections.abc import Mapping
@@ -50,12 +49,26 @@ class SessionClosedError(TransportError):
 def _resolve(value: str | os.PathLike | None, env: Mapping[str, str],
              variable: str, name: str) -> str:
     value = os.fspath(value) if value is not None else env.get(variable, name)
-    resolved = shutil.which(value, path=env.get("PATH"))
-    if resolved:
-        return str(Path(resolved).resolve())
     path = Path(value).expanduser()
-    if path.is_file():
-        return str(path.resolve())
+    extensions = [""]
+    if os.name == "nt" and not path.suffix:
+        extensions = [extension for extension in env.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(os.pathsep)
+                      if extension]
+
+    if path.is_absolute() or os.path.dirname(value):
+        candidates = [Path(f"{path}{extension}") for extension in extensions]
+    else:
+        current_directory = Path.cwd().resolve()
+        candidates = []
+        for directory_value in env.get("PATH", "").split(os.pathsep):
+            directory = Path(directory_value).expanduser()
+            if not directory.is_absolute() or directory.resolve() == current_directory:
+                continue
+            candidates.extend(Path(f"{directory / path}{extension}") for extension in extensions)
+
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate.resolve())
     raise FileNotFoundError(f"Cannot locate {name}: {value!r}; supply a path or {variable}")
 
 

@@ -1388,15 +1388,15 @@ impl KetchupApp {
         let propagated = preview.execution.is_propagated();
         let result = match &preview.execution {
             FeatureHistoryExecutionPlan::Local(proposal) => self
-                .document
-                .commit_verified_proposal(proposal)
+                .commit_verified_proposal_with_work_recovery(proposal)
                 .map(|_| ())
                 .map_err(|error| error.to_string()),
-            FeatureHistoryExecutionPlan::Replacement(impact) => {
-                commit_component_replacement(&mut self.document, &mut self.exact_results, impact)
-                    .map(|_| ())
-                    .map_err(|error| error.to_string())
-            }
+            FeatureHistoryExecutionPlan::Replacement(impact) => self
+                .mutate_document_and_exact_results_with_work_recovery(|document, exact_results| {
+                    commit_component_replacement(document, exact_results, impact)
+                })
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
             FeatureHistoryExecutionPlan::Shared(_) | FeatureHistoryExecutionPlan::Fork(_) => {
                 let executable = match self.exact_worker_executable() {
                     Ok(executable) => executable,
@@ -1416,34 +1416,44 @@ impl KetchupApp {
                     task.cancelled.store(true, Ordering::Release);
                 }
                 match &preview.execution {
-                    FeatureHistoryExecutionPlan::Shared(impact) => commit_shared_definition_change(
-                        &mut self.document,
-                        &mut self.exact_results,
-                        impact,
-                        |request| {
-                            worker
-                                .evaluate_rectangle(request)
-                                .map(ExactBodyPackage::from)
-                                .map(Arc::new)
-                                .map_err(|error| error.to_string())
-                        },
-                    )
-                    .map(|_| ())
-                    .map_err(|error| error.to_string()),
-                    FeatureHistoryExecutionPlan::Fork(impact) => commit_occurrence_fork_change(
-                        &mut self.document,
-                        &mut self.exact_results,
-                        impact,
-                        |request| {
-                            worker
-                                .evaluate_rectangle(request)
-                                .map(ExactBodyPackage::from)
-                                .map(Arc::new)
-                                .map_err(|error| error.to_string())
-                        },
-                    )
-                    .map(|_| ())
-                    .map_err(|error| error.to_string()),
+                    FeatureHistoryExecutionPlan::Shared(impact) => self
+                        .mutate_document_and_exact_results_with_work_recovery(
+                            |document, exact_results| {
+                                commit_shared_definition_change(
+                                    document,
+                                    exact_results,
+                                    impact,
+                                    |request| {
+                                        worker
+                                            .evaluate_rectangle(request)
+                                            .map(ExactBodyPackage::from)
+                                            .map(Arc::new)
+                                            .map_err(|error| error.to_string())
+                                    },
+                                )
+                            },
+                        )
+                        .map(|_| ())
+                        .map_err(|error| error.to_string()),
+                    FeatureHistoryExecutionPlan::Fork(impact) => self
+                        .mutate_document_and_exact_results_with_work_recovery(
+                            |document, exact_results| {
+                                commit_occurrence_fork_change(
+                                    document,
+                                    exact_results,
+                                    impact,
+                                    |request| {
+                                        worker
+                                            .evaluate_rectangle(request)
+                                            .map(ExactBodyPackage::from)
+                                            .map(Arc::new)
+                                            .map_err(|error| error.to_string())
+                                    },
+                                )
+                            },
+                        )
+                        .map(|_| ())
+                        .map_err(|error| error.to_string()),
                     FeatureHistoryExecutionPlan::Local(_)
                     | FeatureHistoryExecutionPlan::Replacement(_) => unreachable!(),
                 }
@@ -2041,11 +2051,12 @@ impl KetchupApp {
             .button(self.catalog.text("revision-history-create-checkpoint"))
             .clicked()
         {
-            match self.document.create_checkpoint(
-                current.revision_id(),
-                &current.canonical_digest(),
-                &self.feature_history.checkpoint_input,
-            ) {
+            let expected_revision = current.revision_id();
+            let expected_digest = current.canonical_digest();
+            let checkpoint = self.feature_history.checkpoint_input.clone();
+            match self.mutate_document_with_work_recovery(|document| {
+                document.create_checkpoint(expected_revision, &expected_digest, &checkpoint)
+            }) {
                 Ok(()) => {
                     self.feature_history.checkpoint_input.clear();
                     self.digest = self.catalog.text("revision-history-checkpoint-created");
@@ -2194,12 +2205,16 @@ impl KetchupApp {
             )
             .clicked()
         {
-            match self.document.rollback_to_revision(
-                current.revision_id(),
-                &current.canonical_digest(),
-                rollback,
-                ProposalPrincipal::ManualClient,
-            ) {
+            let expected_revision = current.revision_id();
+            let expected_digest = current.canonical_digest();
+            match self.mutate_document_with_work_recovery(|document| {
+                document.rollback_to_revision(
+                    expected_revision,
+                    &expected_digest,
+                    rollback,
+                    ProposalPrincipal::ManualClient,
+                )
+            }) {
                 Ok(_) => {
                     self.invalidate_pending_import_reviews();
                     self.clear_ephemeral_edit_state();

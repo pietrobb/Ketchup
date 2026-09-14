@@ -96,6 +96,8 @@ pub fn plan_iges_import(
         return Err(IgesImportPlanError::SourceTooLarge);
     }
     let exact = super::StepImportEvidence {
+        source_sha256: evidence.source_sha256,
+        source_byte_len: evidence.source_byte_len,
         source_unit: evidence.source_unit,
         result_fingerprint: evidence.result_fingerprint.clone(),
         body_kind: evidence.body_kind,

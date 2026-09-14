@@ -10,7 +10,8 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 fn public_handshake() -> AssistantHandshake {
@@ -34,6 +35,7 @@ fn write_mock(temp: &TempDir, mode: &str) -> PathBuf {
         &script,
         r#"import json
 import os
+import subprocess
 import sys
 import time
 
@@ -44,6 +46,11 @@ if mode == "exit":
 if mode == "timeout":
     time.sleep(30)
     raise SystemExit(0)
+if mode == "descendant-timeout":
+    child = 'import pathlib,sys,time; time.sleep(0.4); pathlib.Path(sys.argv[1]).write_text("escaped")'
+    subprocess.Popen([sys.executable, '-c', child, sys.argv[2]])
+    time.sleep(30)
+    raise SystemExit(0)
 if mode == "bad-ready":
     print(json.dumps({"type":"ready","protocol_version":2,"distribution":"public-api","provider":"openai-api","model":hello["model"],"capabilities":hello["capabilities"]}), flush=True)
     time.sleep(30)
@@ -52,12 +59,20 @@ print(json.dumps({"type":"ready","protocol_version":hello["protocol_version"],"d
 if mode == "no-read":
     time.sleep(30)
     raise SystemExit(0)
+if mode == "slow-read-and-response":
+    time.sleep(0.12)
 request = json.loads(sys.stdin.readline())
 if mode == "remote-error":
     print(json.dumps({"type":"error","error":"provider unavailable"}), flush=True)
 elif mode == "malformed":
     print("not-json", flush=True)
 elif mode == "chat":
+    print(json.dumps({"type":"chat-result","request_id":request["request_id"],"message":"bounded answer","model_intent":None}), flush=True)
+    shutdown = json.loads(sys.stdin.readline())
+    print(json.dumps({"type":"bye"}), flush=True)
+elif mode == "descendant-chat":
+    child = 'import pathlib,sys,time; time.sleep(0.4); pathlib.Path(sys.argv[1]).write_text("escaped")'
+    subprocess.Popen([sys.executable, '-c', child, sys.argv[2]])
     print(json.dumps({"type":"chat-result","request_id":request["request_id"],"message":"bounded answer","model_intent":None}), flush=True)
     shutdown = json.loads(sys.stdin.readline())
     print(json.dumps({"type":"bye"}), flush=True)
@@ -82,6 +97,9 @@ elif mode == "diagnostics":
     print(json.dumps({"type":"bye"}), flush=True)
 elif mode == "chat-timeout":
     time.sleep(30)
+elif mode == "slow-read-and-response":
+    time.sleep(0.12)
+    print(json.dumps({"type":"chat-result","request_id":request["request_id"],"message":"late answer","model_intent":None}), flush=True)
 "#,
     )
     .unwrap();
@@ -171,6 +189,7 @@ fn assistant_process_isolated_launch_uses_explicit_cwd_and_minimal_environment()
         arguments: vec![script.into_os_string(), OsString::from("isolated")],
         working_directory,
         environment,
+        environment_files: Vec::new(),
     };
     let mut client = AssistantProcessClient::spawn_isolated_with_cancellation(
         &launch,
@@ -205,6 +224,45 @@ fn assistant_process_isolated_launch_uses_explicit_cwd_and_minimal_environment()
     )
     .unwrap_err();
     assert!(matches!(error, AssistantProcessError::Spawn(_)));
+}
+
+#[test]
+fn isolated_launch_keeps_environment_files_until_client_drop() {
+    let temp = TempDir::new().unwrap();
+    let working_directory = temp.path().canonicalize().unwrap();
+    let script = write_mock(&temp, "isolated").canonicalize().unwrap();
+    let snapshot = tempfile::NamedTempFile::new().unwrap();
+    let snapshot_path = snapshot.path().to_path_buf();
+    let executable = absolute_python();
+    let mut environment = Vec::new();
+    #[cfg(windows)]
+    if let Some(system_root) = std::env::var_os("SYSTEMROOT") {
+        environment.push((OsString::from("SYSTEMROOT"), system_root));
+    }
+    let launch = AssistantProcessLaunch {
+        executable_sha256: ketchup_core::graph::sha256_hex(&fs::read(&executable).unwrap()),
+        executable,
+        arguments: vec![script.into_os_string(), OsString::from("isolated")],
+        working_directory,
+        environment,
+        environment_files: vec![Arc::new(snapshot)],
+    };
+    let mut client = AssistantProcessClient::spawn_isolated_with_cancellation(
+        &launch,
+        public_handshake(),
+        Duration::from_secs(10),
+        AssistantCancellation::default(),
+    )
+    .unwrap();
+
+    drop(launch);
+    assert!(snapshot_path.exists());
+    client
+        .chat("environment-file-lifetime", "hello", &json!({}))
+        .unwrap();
+    assert_eq!(client.shutdown(), Ok(()));
+    drop(client);
+    assert!(!snapshot_path.exists());
 }
 
 #[test]
@@ -317,6 +375,19 @@ fn assistant_process_surfaces_remote_and_malformed_responses_fail_closed() {
 }
 
 #[test]
+fn assistant_process_rejects_unrepresentable_timeout_before_spawn() {
+    let error = AssistantProcessClient::spawn(
+        PathBuf::from("assistant-must-not-be-spawned"),
+        &[],
+        public_handshake(),
+        Duration::MAX,
+    )
+    .unwrap_err();
+
+    assert_eq!(error, AssistantProcessError::InvalidTimeout);
+}
+
+#[test]
 fn assistant_process_times_out_and_terminates_during_handshake_or_chat() {
     for mode in ["timeout", "chat-timeout"] {
         let temp = TempDir::new().unwrap();
@@ -346,6 +417,59 @@ fn assistant_process_times_out_and_terminates_during_handshake_or_chat() {
     }
 }
 
+#[cfg(windows)]
+#[test]
+fn assistant_process_timeout_terminates_sidecar_descendants() {
+    let temp = TempDir::new().unwrap();
+    let script = write_mock(&temp, "descendant-timeout");
+    let sentinel = temp.path().join("escaped-descendant.txt");
+    let error = AssistantProcessClient::spawn(
+        python(),
+        &[
+            script.into_os_string(),
+            OsString::from("descendant-timeout"),
+            sentinel.as_os_str().to_owned(),
+        ],
+        public_handshake(),
+        Duration::from_millis(100),
+    )
+    .unwrap_err();
+
+    assert_eq!(error, AssistantProcessError::TimedOut);
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(
+        !sentinel.exists(),
+        "assistant descendant survived host timeout and performed a delayed side effect"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn assistant_process_shutdown_terminates_sidecar_descendants() {
+    let temp = TempDir::new().unwrap();
+    let script = write_mock(&temp, "descendant-chat");
+    let sentinel = temp.path().join("escaped-after-shutdown.txt");
+    let mut client = AssistantProcessClient::spawn(
+        python(),
+        &[
+            script.into_os_string(),
+            OsString::from("descendant-chat"),
+            sentinel.as_os_str().to_owned(),
+        ],
+        public_handshake(),
+        Duration::from_secs(10),
+    )
+    .unwrap();
+
+    client.chat("request", "hello", &json!({})).unwrap();
+    assert_eq!(client.shutdown(), Ok(()));
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(
+        !sentinel.exists(),
+        "assistant descendant survived successful shutdown"
+    );
+}
+
 #[test]
 fn assistant_process_times_out_when_the_sidecar_stops_reading_requests() {
     let temp = TempDir::new().unwrap();
@@ -362,6 +486,27 @@ fn assistant_process_times_out_when_the_sidecar_stops_reading_requests() {
         client.chat("request", &message, &json!({})),
         Err(AssistantProcessError::TimedOut)
     );
+}
+
+#[test]
+fn assistant_process_chat_uses_one_cumulative_io_deadline() {
+    let temp = TempDir::new().unwrap();
+    let script = write_mock(&temp, "slow-read-and-response");
+    let mut client = AssistantProcessClient::spawn(
+        python(),
+        &arguments(&script, "slow-read-and-response"),
+        public_handshake(),
+        Duration::from_millis(180),
+    )
+    .unwrap();
+    let message = "x".repeat(120 * 1024);
+
+    let started = Instant::now();
+    assert_eq!(
+        client.chat("request", &message, &json!({})),
+        Err(AssistantProcessError::TimedOut)
+    );
+    assert!(started.elapsed() < Duration::from_millis(300));
 }
 
 #[test]

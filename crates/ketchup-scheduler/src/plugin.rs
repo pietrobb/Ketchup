@@ -3,18 +3,41 @@ use ketchup_core::extension::{
     PLUGIN_PROTOCOL_V1, PluginCapability, PluginGateway, PluginGatewayError, PluginGrant,
     PluginLimits, PluginManifest, PluginRequest, PluginResponse,
 };
+#[cfg(windows)]
+use process_wrap::std::JobObject;
+use process_wrap::std::{ChildWrapper, CommandWrap};
 use std::ffi::OsString;
 use std::fmt;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 pub const MAX_PLUGIN_REQUEST_LINE_BYTES: usize = 4 * 1024;
-pub const MAX_PLUGIN_RESPONSE_LINE_BYTES: usize = 128 * 1024;
+// STATE hex-encodes every gateway-authorized query byte plus a bounded header.
+pub const MAX_PLUGIN_RESPONSE_LINE_BYTES: usize = 2 * PluginLimits::HOST_MAX.max_query_bytes + 32;
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+fn spawn_plugin_process(
+    executable: &Path,
+    arguments: &[OsString],
+) -> Result<Box<dyn ChildWrapper>, PluginHostError> {
+    let mut command = Command::new(executable);
+    command
+        .args(arguments)
+        .env_clear()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut command = CommandWrap::from(command);
+    #[cfg(windows)]
+    command.wrap(JobObject);
+    command
+        .spawn()
+        .map_err(|error| PluginHostError::Spawn(error.to_string()))
+}
 
 #[derive(Debug)]
 pub struct PluginRunResult {
@@ -31,30 +54,38 @@ pub fn run_plugin_process(
     timeout: Duration,
     cancelled: &AtomicBool,
 ) -> Result<PluginRunResult, PluginHostError> {
-    let mut child = Command::new(executable.as_ref())
-        .args(arguments)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| PluginHostError::Spawn(error.to_string()))?;
-    let mut stdin = child
-        .stdin
+    if cancelled.load(Ordering::Acquire) {
+        return Err(PluginHostError::Cancelled);
+    }
+    Instant::now()
+        .checked_add(timeout)
+        .ok_or(PluginHostError::InvalidTimeout)?;
+    let mut child = spawn_plugin_process(executable.as_ref(), arguments)?;
+    let stdin = child
+        .stdin()
         .take()
         .ok_or_else(|| PluginHostError::Spawn("plugin stdin was not piped".to_owned()))?;
+    let writer = spawn_bounded_writer(stdin);
     let stdout = child
-        .stdout
+        .stdout()
         .take()
         .ok_or_else(|| PluginHostError::Spawn("plugin stdout was not piped".to_owned()))?;
     let receiver = spawn_bounded_reader(stdout);
-    let deadline = Instant::now() + timeout;
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or(PluginHostError::InvalidTimeout)?;
 
     let outcome = (|| {
         let hello = receive_line(&receiver, deadline, cancelled)?
             .ok_or(PluginHostError::ExitedBeforeDone)?;
         let manifest = parse_manifest(&hello)?;
         let mut gateway = PluginGateway::new(manifest.clone(), grant)?;
-        write_line(&mut stdin, "READY\tketchup.plugin.v1")?;
+        send_line(
+            &writer,
+            "READY\tketchup.plugin.v1".to_owned(),
+            deadline,
+            cancelled,
+        )?;
 
         let mut query_count = 0usize;
         let mut proposal = None;
@@ -62,25 +93,27 @@ pub fn run_plugin_process(
             let line = receive_line(&receiver, deadline, cancelled)?
                 .ok_or(PluginHostError::ExitedBeforeDone)?;
             if line == "DONE" {
-                write_line(&mut stdin, "BYE")?;
+                send_line(&writer, "BYE".to_owned(), deadline, cancelled)?;
                 break;
             }
             let request = parse_request(&line)?;
             match gateway.handle(store, request)? {
                 PluginResponse::AgentState(state) => {
                     query_count = query_count.saturating_add(1);
-                    write_line(
-                        &mut stdin,
-                        &format!("STATE\t{}\t{}", state.len(), hex_encode(state.as_bytes())),
+                    send_line(
+                        &writer,
+                        format!("STATE\t{}\t{}", state.len(), hex_encode(state.as_bytes())),
+                        deadline,
+                        cancelled,
                     )?;
                 }
                 PluginResponse::Proposal(candidate) => {
                     if proposal.is_some() {
                         return Err(PluginHostError::MultipleProposals);
                     }
-                    write_line(
-                        &mut stdin,
-                        &format!(
+                    send_line(
+                        &writer,
+                        format!(
                             "PROPOSAL\t{}\t{}\t{}\t{}\t{}",
                             candidate.command_digest(),
                             candidate.intended_result_digest(),
@@ -88,6 +121,8 @@ pub fn run_plugin_process(
                             candidate.cost().read_dependencies,
                             candidate.cost().write_targets
                         ),
+                        deadline,
+                        cancelled,
                     )?;
                     proposal = Some(*candidate);
                 }
@@ -102,13 +137,14 @@ pub fn run_plugin_process(
 
     match outcome {
         Ok(result) => {
-            wait_for_exit(&mut child, deadline, cancelled)?;
+            wait_for_exit(child.as_mut(), deadline, cancelled)?;
+            terminate(child.as_mut())?;
             Ok(result)
         }
-        Err(error) => {
-            terminate(&mut child);
-            Err(error)
-        }
+        Err(error) => match terminate(child.as_mut()) {
+            Ok(()) => Err(error),
+            Err(cleanup_error) => Err(cleanup_error),
+        },
     }
 }
 
@@ -196,6 +232,63 @@ fn write_line(writer: &mut impl Write, line: &str) -> Result<(), PluginHostError
         .map_err(|error| PluginHostError::Transport(error.to_string()))
 }
 
+struct PluginWriteRequest {
+    line: String,
+    acknowledgment: mpsc::Sender<Result<(), String>>,
+}
+
+fn spawn_bounded_writer(
+    mut writer: impl Write + Send + 'static,
+) -> mpsc::Sender<PluginWriteRequest> {
+    let (sender, receiver) = mpsc::channel::<PluginWriteRequest>();
+    let _ = std::thread::spawn(move || {
+        for request in receiver {
+            let result = write_line(&mut writer, &request.line).map_err(|error| error.to_string());
+            let terminal = result.is_err();
+            if request.acknowledgment.send(result).is_err() || terminal {
+                break;
+            }
+        }
+    });
+    sender
+}
+
+fn send_line(
+    writer: &mpsc::Sender<PluginWriteRequest>,
+    line: String,
+    deadline: Instant,
+    cancelled: &AtomicBool,
+) -> Result<(), PluginHostError> {
+    if line.len() > MAX_PLUGIN_RESPONSE_LINE_BYTES {
+        return Err(PluginHostError::ResponseLineTooLarge);
+    }
+    let (acknowledgment, receiver) = mpsc::channel();
+    writer
+        .send(PluginWriteRequest {
+            line,
+            acknowledgment,
+        })
+        .map_err(|_| PluginHostError::Transport("plugin writer disconnected".to_owned()))?;
+    loop {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(PluginHostError::Cancelled);
+        }
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            return Err(PluginHostError::TimedOut);
+        };
+        match receiver.recv_timeout(remaining.min(POLL_INTERVAL)) {
+            Ok(Ok(())) => return Ok(()),
+            Ok(Err(error)) => return Err(PluginHostError::Transport(error)),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(PluginHostError::Transport(
+                    "plugin writer disconnected".to_owned(),
+                ));
+            }
+        }
+    }
+}
+
 fn spawn_bounded_reader(
     stdout: impl io::Read + Send + 'static,
 ) -> Receiver<Result<Option<String>, String>> {
@@ -272,13 +365,13 @@ fn receive_line(
 }
 
 fn wait_for_exit(
-    child: &mut Child,
+    child: &mut dyn ChildWrapper,
     deadline: Instant,
     cancelled: &AtomicBool,
 ) -> Result<(), PluginHostError> {
     loop {
         if cancelled.load(Ordering::Acquire) {
-            terminate(child);
+            terminate(child)?;
             return Err(PluginHostError::Cancelled);
         }
         if let Some(status) = child
@@ -292,16 +385,17 @@ fn wait_for_exit(
             };
         }
         if Instant::now() >= deadline {
-            terminate(child);
+            terminate(child)?;
             return Err(PluginHostError::TimedOut);
         }
         std::thread::sleep(POLL_INTERVAL);
     }
 }
 
-fn terminate(child: &mut Child) {
-    let _ = child.kill();
-    let _ = child.wait();
+fn terminate(child: &mut dyn ChildWrapper) -> Result<(), PluginHostError> {
+    child
+        .kill()
+        .map_err(|error| PluginHostError::Transport(error.to_string()))
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -325,6 +419,7 @@ pub enum PluginHostError {
     ResponseLineTooLarge,
     ExitedBeforeDone,
     ExitedUnsuccessfully,
+    InvalidTimeout,
     TimedOut,
     Cancelled,
 }
@@ -349,6 +444,7 @@ impl fmt::Display for PluginHostError {
             Self::ExitedUnsuccessfully => {
                 formatter.write_str("plugin process exited unsuccessfully")
             }
+            Self::InvalidTimeout => formatter.write_str("plugin timeout is not representable"),
             Self::TimedOut => formatter.write_str("plugin process timed out"),
             Self::Cancelled => formatter.write_str("plugin process was cancelled"),
         }

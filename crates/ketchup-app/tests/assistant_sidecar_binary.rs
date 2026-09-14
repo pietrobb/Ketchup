@@ -190,6 +190,40 @@ fn public_sidecar_launch_rejects_relative_interpreter_and_changed_runtime() {
 }
 
 #[test]
+fn public_sidecar_bootstrap_rejects_a_grown_runtime_source_before_unbounded_reading() {
+    let temp = TempDir::new().unwrap();
+    for name in ["ketchup_assistant.py", "ketchup_assistant_protocol.py"] {
+        fs::copy(public_runtime_root().join(name), temp.path().join(name)).unwrap();
+    }
+    let launch = public_assistant_launch_for_install_root(
+        temp.path(),
+        &absolute_python(),
+        &python_sha256(),
+        "anthropic-api",
+    )
+    .expect("trusted public Assistant runtime");
+    fs::OpenOptions::new()
+        .write(true)
+        .open(temp.path().join("ketchup_assistant.py"))
+        .unwrap()
+        .set_len(8 * 1024 * 1024)
+        .unwrap();
+
+    let output = Command::new(&launch.executable)
+        .args(&launch.arguments)
+        .env_clear()
+        .envs(launch.environment)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("public Assistant runtime source exceeds its bounded identity")
+    );
+}
+
+#[test]
 fn private_oauth_sidecar_binary_completes_the_production_handshake() {
     let Ok(launch) = private_assistant_launch() else {
         eprintln!("skipped: no private OAuth sidecar is configured on this machine");

@@ -6,8 +6,12 @@ use ketchup_core::extension::{PluginCapability, PluginGatewayError, PluginGrant,
 use ketchup_scheduler::plugin::{PluginHostError, run_plugin_process};
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
-use std::time::Duration;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
+use std::time::{Duration, Instant};
 
 const DEFINITION: DefinitionId = DefinitionId(10);
 const PROFILE: FeatureId = FeatureId(11);
@@ -73,6 +77,39 @@ fn pilot_grant(limits: PluginLimits) -> PluginGrant {
     )
 }
 
+fn host_max_store() -> DocumentStore {
+    let mut baseline = DocumentStore::new();
+    baseline
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "x".to_owned(),
+            },
+        ]))
+        .unwrap();
+    let baseline_bytes = ketchup_core::state_view::encode_semantic_state(&baseline.current())
+        .agent_v1()
+        .len();
+    let target_bytes = PluginLimits::HOST_MAX.max_query_bytes;
+    assert!(baseline_bytes < target_bytes);
+    let mut store = DocumentStore::new();
+    store
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "x".repeat(target_bytes - baseline_bytes + 1),
+            },
+        ]))
+        .unwrap();
+    assert_eq!(
+        ketchup_core::state_view::encode_semantic_state(&store.current())
+            .agent_v1()
+            .len(),
+        target_bytes
+    );
+    store
+}
+
 fn run_example(
     store: &DocumentStore,
     grant: PluginGrant,
@@ -118,6 +155,99 @@ fn m7b_python_plugin_queries_bounded_state_and_returns_one_review_only_proposal(
 }
 
 #[test]
+fn m7b_host_max_query_state_fits_the_declared_response_line() {
+    let store = host_max_store();
+    let script = "import sys\nprint('HELLO\\tketchup.plugin.v1\\torg.ketchup.host-max\\t1.0.0\\t7001\\tquery.agent-state.v1\\t2\\t65536\\t1\\t1\\t1', flush=True)\nsys.stdin.readline()\nprint('QUERY\\tAGENT_STATE', flush=True)\nstate = sys.stdin.readline()\nassert state.startswith('STATE\\t65536\\t')\nprint('DONE', flush=True)\nsys.stdin.readline()";
+
+    let run = run_plugin_process(
+        python(),
+        &[OsString::from("-c"), OsString::from(script)],
+        &store,
+        pilot_grant(PluginLimits::HOST_MAX),
+        Duration::from_secs(5),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+
+    assert_eq!(run.query_count, 1);
+    assert!(run.proposal.is_none());
+}
+
+#[test]
+fn m7b_host_max_response_honors_timeout_when_plugin_stops_reading() {
+    let store = host_max_store();
+    let script = "import sys,time\nprint('HELLO\\tketchup.plugin.v1\\torg.ketchup.backpressure\\t1.0.0\\t7001\\tquery.agent-state.v1\\t1\\t65536\\t1\\t1\\t1', flush=True)\nsys.stdin.readline()\nprint('QUERY\\tAGENT_STATE', flush=True)\ntime.sleep(5)";
+    let (sender, receiver) = mpsc::channel();
+    let started = Instant::now();
+    std::thread::spawn(move || {
+        let result = run_plugin_process(
+            python(),
+            &[OsString::from("-c"), OsString::from(script)],
+            &store,
+            pilot_grant(PluginLimits::HOST_MAX),
+            Duration::from_millis(100),
+            &AtomicBool::new(false),
+        );
+        let _ = sender.send(result);
+    });
+
+    let result = receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("plugin host remained blocked writing a bounded response after its deadline");
+    assert!(matches!(result, Err(PluginHostError::TimedOut)));
+    assert!(started.elapsed() < Duration::from_secs(2));
+}
+
+#[test]
+fn m7b_unrepresentable_timeout_is_rejected_without_panicking() {
+    let result = std::panic::catch_unwind(|| {
+        run_plugin_process(
+            python(),
+            &[
+                OsString::from("-c"),
+                OsString::from("import time; time.sleep(5)"),
+            ],
+            &seed(),
+            pilot_grant(PluginLimits::M7B_PILOT),
+            Duration::MAX,
+            &AtomicBool::new(false),
+        )
+    });
+
+    assert!(
+        matches!(result, Ok(Err(PluginHostError::InvalidTimeout))),
+        "unrepresentable timeout must fail closed before plugin I/O"
+    );
+}
+
+#[test]
+fn m7b_host_max_response_honors_cancellation_when_plugin_stops_reading() {
+    let store = host_max_store();
+    let script = "import sys,time\nprint('HELLO\\tketchup.plugin.v1\\torg.ketchup.backpressure-cancel\\t1.0.0\\t7001\\tquery.agent-state.v1\\t1\\t65536\\t1\\t1\\t1', flush=True)\nsys.stdin.readline()\nprint('QUERY\\tAGENT_STATE', flush=True)\ntime.sleep(5)";
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let run_cancelled = Arc::clone(&cancelled);
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = run_plugin_process(
+            python(),
+            &[OsString::from("-c"), OsString::from(script)],
+            &store,
+            pilot_grant(PluginLimits::HOST_MAX),
+            Duration::from_secs(5),
+            &run_cancelled,
+        );
+        let _ = sender.send(result);
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    cancelled.store(true, Ordering::Release);
+
+    let result = receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("plugin host remained blocked writing a bounded response after cancellation");
+    assert!(matches!(result, Err(PluginHostError::Cancelled)));
+}
+
+#[test]
 fn m7b_host_denies_ungranted_intent_and_request_or_query_budget_exhaustion() {
     let store = seed();
     let query_only = PluginGrant::new(
@@ -156,6 +286,24 @@ fn m7b_host_denies_ungranted_intent_and_request_or_query_budget_exhaustion() {
 }
 
 #[test]
+fn m7b_plugin_process_does_not_inherit_parent_environment() {
+    let store = seed();
+    let script = "import os,sys\npackage = 'org.ketchup.ambient-leak' if os.environ.get('PATH') else 'org.ketchup.isolated'\nprint(f'HELLO\\tketchup.plugin.v1\\t{package}\\t1.0.0\\t7001\\t\\t1\\t1\\t1\\t1\\t1', flush=True)\nsys.stdin.readline()\nprint('DONE', flush=True)\nsys.stdin.readline()";
+
+    let run = run_plugin_process(
+        python(),
+        &[OsString::from("-c"), OsString::from(script)],
+        &store,
+        pilot_grant(PluginLimits::M7B_PILOT),
+        Duration::from_secs(5),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+
+    assert_eq!(run.manifest.package(), "org.ketchup.isolated");
+}
+
+#[test]
 fn m7b_process_rejects_direct_mutation_vocabulary_and_oversized_input() {
     let store = seed();
     let hello = "HELLO\\tketchup.plugin.v1\\torg.ketchup.dimension-pilot\\t1.0.0\\t7001\\tquery.agent-state.v1,intent.set-feature-dimension.v1\\t4\\t32768\\t1\\t64\\t1";
@@ -185,6 +333,25 @@ fn m7b_process_rejects_direct_mutation_vocabulary_and_oversized_input() {
 }
 
 #[test]
+fn m7b_pre_cancelled_run_does_not_attempt_to_spawn_the_plugin() {
+    let store = seed();
+    let cancelled = AtomicBool::new(true);
+    let temp = tempfile::tempdir().unwrap();
+    let missing_executable = temp.path().join("ketchup-plugin-must-not-spawn.exe");
+
+    let result = run_plugin_process(
+        missing_executable,
+        &[],
+        &store,
+        pilot_grant(PluginLimits::M7B_PILOT),
+        Duration::from_secs(5),
+        &cancelled,
+    );
+
+    assert!(matches!(result, Err(PluginHostError::Cancelled)));
+}
+
+#[test]
 fn m7b_process_timeout_and_cancellation_kill_the_untrusted_client() {
     let store = seed();
     let sleeper = "import time; time.sleep(5)";
@@ -208,6 +375,65 @@ fn m7b_process_timeout_and_cancellation_kill_the_untrusted_client() {
         &cancelled,
     );
     assert!(matches!(result, Err(PluginHostError::Cancelled)));
+}
+
+#[cfg(windows)]
+#[test]
+fn m7b_timeout_terminates_plugin_descendants() {
+    let store = seed();
+    let directory = tempfile::tempdir().unwrap();
+    let sentinel = directory.path().join("escaped-descendant.txt");
+    let script = "import subprocess,sys,time\nchild = 'import pathlib,sys,time; time.sleep(0.4); pathlib.Path(sys.argv[1]).write_text(\"escaped\")'\nsubprocess.Popen([sys.executable, '-c', child, sys.argv[1]])\nprint('HELLO\\tketchup.plugin.v1\\torg.ketchup.process-tree\\t1.0.0\\t7001\\t\\t1\\t1\\t1\\t1\\t1', flush=True)\ntime.sleep(30)";
+
+    let result = run_plugin_process(
+        python(),
+        &[
+            OsString::from("-c"),
+            OsString::from(script),
+            sentinel.as_os_str().to_owned(),
+        ],
+        &store,
+        pilot_grant(PluginLimits::M7B_PILOT),
+        Duration::from_millis(100),
+        &AtomicBool::new(false),
+    );
+
+    assert!(matches!(result, Err(PluginHostError::TimedOut)));
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(
+        !sentinel.exists(),
+        "plugin descendant survived host timeout and performed a delayed side effect"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn m7b_successful_run_terminates_plugin_descendants() {
+    let store = seed();
+    let directory = tempfile::tempdir().unwrap();
+    let sentinel = directory.path().join("escaped-after-done.txt");
+    let script = "import subprocess,sys,time\nchild = 'import pathlib,sys,time; time.sleep(0.4); pathlib.Path(sys.argv[1]).write_text(\"escaped\")'\nsubprocess.Popen([sys.executable, '-c', child, sys.argv[1]])\nprint('HELLO\tketchup.plugin.v1\torg.ketchup.process-tree\t1.0.0\t7001\t\t1\t1\t1\t1\t1', flush=True)\nsys.stdin.readline()\nprint('DONE', flush=True)\nsys.stdin.readline()";
+
+    let run = run_plugin_process(
+        python(),
+        &[
+            OsString::from("-c"),
+            OsString::from(script),
+            sentinel.as_os_str().to_owned(),
+        ],
+        &store,
+        pilot_grant(PluginLimits::M7B_PILOT),
+        Duration::from_secs(5),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+
+    assert_eq!(run.manifest.package(), "org.ketchup.process-tree");
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(
+        !sentinel.exists(),
+        "plugin descendant survived a successful parent exit"
+    );
 }
 
 #[test]

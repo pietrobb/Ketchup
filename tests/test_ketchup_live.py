@@ -10,6 +10,7 @@ from pathlib import Path
 import secrets
 import socket
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -20,6 +21,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sdk" / "python"))
 from ketchup import LiveSession, Session, SessionClosedError
+import ketchup.live as live_module
 from ketchup.live import (
     MAX_FRAME_BYTES, LiveBridgeError, LiveConsentError, LiveProtocolError, LiveTimeout,
     LiveTransportError, Stamp, save_image, MAX_PNG_BYTES, _attach_live_instance,
@@ -991,16 +993,45 @@ def test_image_existing_file_and_exclusive_create_race(tmp_path, monkeypatch):
         save_image(image_response(), STAMP, str(destination))
     assert destination.read_bytes() == b"user-owned"
     target = tmp_path / "race.png"
-    original = Path.open
-    def raced(path, mode="r", *args, **kwargs):
-        if path == target and mode == "xb":
-            with original(path, "wb") as stream:
-                stream.write(b"concurrent-owner")
-        return original(path, mode, *args, **kwargs)
-    monkeypatch.setattr(Path, "open", raced)
+    original = live_module._open_new_image_file
+    def raced(path):
+        if path == target:
+            target.write_bytes(b"concurrent-owner")
+        return original(path)
+    monkeypatch.setattr(live_module, "_open_new_image_file", raced)
     with pytest.raises(FileExistsError):
         save_image(image_response(), STAMP, str(target))
     assert target.read_bytes() == b"concurrent-owner"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows junction regression")
+def test_image_ancestor_cannot_be_replaced_after_validation(tmp_path, monkeypatch):
+    parent = tmp_path / "checked"
+    parent.mkdir()
+    displaced = tmp_path / "displaced"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = parent / "capture.png"
+    original = live_module._windows_create_new_image_handle
+    race_attempted = False
+
+    def raced(parent_handle, name):
+        nonlocal race_attempted
+        race_attempted = True
+        parent.rename(displaced)
+        subprocess.run(
+            ["cmd.exe", "/d", "/c", "mklink", "/J", str(parent), str(outside)],
+            check=True,
+            capture_output=True,
+        )
+        return original(parent_handle, name)
+
+    monkeypatch.setattr(live_module, "_windows_create_new_image_handle", raced)
+    with pytest.raises(ValueError):
+        save_image(image_response(), STAMP, str(target))
+    assert race_attempted
+    assert not (outside / target.name).exists()
+    assert not (displaced / target.name).exists()
 
 
 @pytest.mark.parametrize("dangling", [False, True])

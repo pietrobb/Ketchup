@@ -1,7 +1,7 @@
 //! Real TCP requests processed by the existing offscreen GUI shell, never OS input.
 mod harness;
 use harness::Shell;
-use ketchup_app::{AppCommand, live_bridge::*};
+use ketchup_app::{AppCommand, dialogs::ScriptedFileDialogs, live_bridge::*};
 use ketchup_application::{
     batch_task::OccurrenceBatchOperation,
     model_query::{EntityKind, PageRequest},
@@ -229,6 +229,140 @@ fn same_gui_store_observational_reads_verified_once_and_gui_history() {
         "{:?}",
         image.error
     );
+}
+
+#[test]
+fn live_commit_rolls_back_when_work_recovery_checkpoint_fails() {
+    let directory = tempfile::tempdir().unwrap();
+    let primary = directory.path().join("live-transactional-commit.ketchup");
+    let recovery = ketchup_core::persistence::work_recovery_path(&primary);
+    let mut shell = Shell::with_dialogs(ScriptedFileDialogs::new().queue_save(primary.clone()));
+    shell.click_menu_command("menu-file", AppCommand::Save);
+    let mut client = Client::connect(&mut shell);
+    let (expected, proposal_id) = propose(&mut client, &mut shell);
+    let undo_before = shell.app().undo_step_count();
+    let redo_before = shell.app().redo_step_count();
+    std::fs::create_dir(&recovery).unwrap();
+
+    let rejected = client.call(
+        &mut shell,
+        Request::Commit {
+            expected: expected.clone(),
+            proposal_id,
+        },
+    );
+
+    assert!(!rejected.ok);
+    assert_eq!(rejected.error.as_deref(), Some("recovery_rejected"));
+    let rolled_back = shell.app().live_bridge_stamp();
+    assert_eq!(rolled_back.document_id, expected.document_id);
+    assert_eq!(rolled_back.revision, expected.revision);
+    assert_eq!(rolled_back.canonical_digest, expected.canonical_digest);
+    assert_ne!(rolled_back.mutation_epoch, expected.mutation_epoch);
+    assert_eq!(shell.app().undo_step_count(), undo_before);
+    assert_eq!(shell.app().redo_step_count(), redo_before);
+
+    std::fs::remove_dir(&recovery).unwrap();
+    let retried = commit(&mut client, &mut shell);
+    assert!(retried.ok, "{:?}", retried.error);
+    assert_eq!(shell.app().document_revision(), expected.revision + 1);
+    assert_eq!(shell.app().undo_step_count(), undo_before + 1);
+}
+
+#[test]
+fn live_batch_step_rolls_back_when_work_recovery_checkpoint_fails() {
+    let directory = tempfile::tempdir().unwrap();
+    let primary = directory.path().join("live-transactional-batch.ketchup");
+    let recovery = ketchup_core::persistence::work_recovery_path(&primary);
+    let mut shell = Shell::with_dialogs(ScriptedFileDialogs::new().queue_save(primary.clone()));
+    shell.click_menu_command("menu-file", AppCommand::Save);
+    let mut client = Client::connect(&mut shell);
+    commit(&mut client, &mut shell);
+
+    let create_job = |client: &mut Client, shell: &mut Shell| {
+        let expected = shell.app().live_bridge_stamp();
+        let workset = client.call(
+            shell,
+            Request::WorksetCreate {
+                expected: expected.clone(),
+                query: PageRequest {
+                    kind: EntityKind::Occurrences,
+                    limit: 100,
+                    search: String::new(),
+                    definition_id: None,
+                    tag_id: None,
+                    classification_dimension_id: None,
+                    classification_category_id: None,
+                    world_bounds_mm: None,
+                    cursor: None,
+                },
+            },
+        );
+        assert!(workset.ok, "{:?}", workset.error);
+        let workset_handle = workset.result.unwrap()["workset_handle"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let started = client.call(
+            shell,
+            Request::BatchJobStart {
+                expected: expected.clone(),
+                workset_handle,
+                operation: OccurrenceBatchOperation::SetColor {
+                    color: Some([10, 20, 30]),
+                },
+            },
+        );
+        assert!(started.ok, "{:?}", started.error);
+        let job_handle = started.result.unwrap()["job_handle"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        (expected, job_handle)
+    };
+
+    let (expected, job_handle) = create_job(&mut client, &mut shell);
+    let undo_before = shell.app().undo_step_count();
+    let redo_before = shell.app().redo_step_count();
+    std::fs::remove_file(&recovery).unwrap();
+    std::fs::create_dir(&recovery).unwrap();
+    let rejected = client.call(
+        &mut shell,
+        Request::BatchJobStep {
+            expected: expected.clone(),
+            handle: job_handle.clone(),
+        },
+    );
+    assert!(!rejected.ok);
+    assert_eq!(rejected.error.as_deref(), Some("batch_transaction_failed"));
+    let rolled_back = shell.app().live_bridge_stamp();
+    assert_eq!(rolled_back.revision, expected.revision);
+    assert_eq!(rolled_back.canonical_digest, expected.canonical_digest);
+    assert_ne!(rolled_back.mutation_epoch, expected.mutation_epoch);
+    assert_eq!(shell.app().undo_step_count(), undo_before);
+    assert_eq!(shell.app().redo_step_count(), redo_before);
+    let status = client.call(
+        &mut shell,
+        Request::BatchJobStatus {
+            expected: rolled_back,
+            handle: job_handle,
+        },
+    );
+    let status = status.result.unwrap();
+    assert_eq!(status["status"]["state"], "stale");
+    assert_eq!(status["status"]["completed_count"], 0);
+
+    std::fs::remove_dir(&recovery).unwrap();
+    let (expected, job_handle) = create_job(&mut client, &mut shell);
+    let retried = client.call(
+        &mut shell,
+        Request::BatchJobStep {
+            expected,
+            handle: job_handle,
+        },
+    );
+    assert!(retried.ok, "{:?}", retried.error);
+    assert_eq!(shell.app().undo_step_count(), undo_before + 1);
 }
 
 #[test]

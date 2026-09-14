@@ -4208,6 +4208,7 @@ fn format_decimal_mm(value_mm: f64) -> String {
     value
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn drawing_layout_digest(
     page: DrawingPageTemplate,
     title_block: &DrawingTitleBlock,

@@ -7911,6 +7911,32 @@ fn m21_step_part_inspection_response(
     }
 }
 
+fn read_step_output(path: &str, operation: &str) -> Result<Vec<u8>, String> {
+    let file = std::fs::File::open(path)
+        .map_err(|error| transport_error_response(operation, &error.to_string()))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| transport_error_response(operation, &error.to_string()))?;
+    if !metadata.is_file() || metadata.len() > MAX_STEP_SOURCE_BYTES {
+        return Err(transport_error_response(
+            operation,
+            "STEP output is not a bounded regular file",
+        ));
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    (&file)
+        .take(MAX_STEP_SOURCE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| transport_error_response(operation, &error.to_string()))?;
+    if bytes.len() as u64 > MAX_STEP_SOURCE_BYTES {
+        return Err(transport_error_response(
+            operation,
+            "STEP output exceeds the bounded 32 MiB envelope",
+        ));
+    }
+    Ok(bytes)
+}
+
 fn m21_step_xde_part_export_response(
     backend: &ExactBackend,
     source_sha256: &str,
@@ -7942,9 +7968,9 @@ fn m21_step_xde_part_export_response(
     if let Err(error) = backend.export_step(&output.body, &output_path) {
         return geometry_error_response(&error);
     }
-    let exported = match std::fs::read(&output_path) {
+    let exported = match read_step_output(&output_path, "export_step_xde_part") {
         Ok(exported) => exported,
-        Err(error) => return transport_error_response("export_step_xde_part", &error.to_string()),
+        Err(response) => return response,
     };
     format!(
         "OK_M21_STEP_XDE_EXPORT_V1 {source_sha256} {result_fingerprint} {}",
@@ -8205,9 +8231,9 @@ fn m21_step_assembly_response(
             "STEP XDE output lost a part definition or occurrence",
         );
     }
-    let step_bytes = match std::fs::read(&output_path) {
+    let step_bytes = match read_step_output(&output_path, "read_step_output") {
         Ok(bytes) => bytes,
-        Err(error) => return transport_error_response("read_step_output", &error.to_string()),
+        Err(response) => return response,
     };
     let step_sha256 = sha256_hex(&step_bytes);
     let reread = match backend.import_step(&output_path) {
@@ -8449,6 +8475,17 @@ mod tests {
         let input = vec![b'x'; MAX_WORKER_REQUEST_LINE_BYTES + 1];
         let error = read_bounded_request_line(&mut io::Cursor::new(input)).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn step_output_reader_rejects_oversized_file_before_hashing() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("oversized.step");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_STEP_SOURCE_BYTES + 1).unwrap();
+
+        let response = read_step_output(path.to_str().unwrap(), "test_step_output").unwrap_err();
+        assert!(response.starts_with("ERR_DETAIL backend_exception "));
     }
 
     #[test]

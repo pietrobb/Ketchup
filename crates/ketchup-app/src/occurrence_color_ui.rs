@@ -283,8 +283,7 @@ impl KetchupApp {
         if commands.is_empty() {
             return false;
         }
-        self.document
-            .apply_batch(&CommandBatch::new(commands))
+        self.apply_batch_with_work_recovery(&CommandBatch::new(commands))
             .is_ok()
     }
 

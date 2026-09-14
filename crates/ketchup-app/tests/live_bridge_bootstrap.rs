@@ -421,6 +421,56 @@ fn per_user_registry_lists_only_nonce_verified_live_window_metadata() {
 }
 
 #[test]
+fn consent_broker_request_deadline_is_cumulative_across_slow_bytes() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut shell = Shell::new();
+    let address = shell
+        .app_mut()
+        .enable_live_consent_broker_in(&eframe::egui::Context::default(), directory.path())
+        .unwrap();
+    shell.step();
+
+    let mut slow = TcpStream::connect(address).unwrap();
+    slow.write_all(b"{").unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    let dripper = std::thread::spawn(move || {
+        for _ in 0..8 {
+            std::thread::sleep(Duration::from_millis(500));
+            if slow.write_all(b" ").is_err() {
+                break;
+            }
+        }
+    });
+
+    let started = Instant::now();
+    let mut prompt = TcpStream::connect(address).unwrap();
+    prompt
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    writeln!(
+        prompt,
+        "{}",
+        serde_json::json!({
+            "version": 1, "action": "list", "nonce": "6".repeat(64)
+        })
+    )
+    .unwrap();
+    let mut response = String::new();
+    let read = std::io::BufRead::read_line(&mut std::io::BufReader::new(prompt), &mut response);
+    dripper.join().unwrap();
+
+    assert!(
+        read.is_ok(),
+        "valid request was blocked by a slow peer: {read:?}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(3));
+    let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+    assert_eq!(response["status"], "available");
+    assert_eq!(response["nonce"], "6".repeat(64));
+    assert!(!shell.app().live_consent_pending());
+}
+
+#[test]
 fn consent_broker_accepts_a_request_arriving_after_the_connection() {
     let directory = tempfile::tempdir().unwrap();
     let mut shell = Shell::new();

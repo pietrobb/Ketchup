@@ -565,6 +565,80 @@ fn revision_catalog_checkpoint_diff_rollback_and_save_open_work_through_accesski
 }
 
 #[test]
+fn revision_checkpoint_rolls_back_when_work_recovery_checkpoint_fails() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = directory
+        .path()
+        .join("revision-checkpoint-recovery.ketchup");
+    let recovery = persistence::work_recovery_path(&fixture);
+    let mut shell = Shell::with_dialogs(ScriptedFileDialogs::new().queue_save(&fixture));
+    shell.click_menu_command("menu-file", AppCommand::Save);
+    assert!(shell.app_mut().create_box());
+    shell.settle();
+    assert!(recovery.is_file());
+    open_history(&mut shell);
+    let revision = shell.app().document_revision();
+    let before = shell.app().revision_catalog();
+    std::fs::remove_file(&recovery).unwrap();
+    std::fs::create_dir(&recovery).unwrap();
+
+    let checkpoint_label = shell.catalog().text("revision-history-checkpoint-name");
+    shell.focus_text_input(&checkpoint_label);
+    shell.type_text("Blocked checkpoint");
+    shell.click_button_label(&shell.catalog().text("revision-history-create-checkpoint"));
+
+    assert_eq!(shell.app().revision_catalog(), before);
+    assert_eq!(shell.app().document_revision(), revision);
+    assert!(!shell.app().action_digest().contains("Blocked checkpoint"));
+
+    std::fs::remove_dir(&recovery).unwrap();
+    shell.click_button_label(&shell.catalog().text("revision-history-create-checkpoint"));
+    assert_eq!(
+        shell
+            .app()
+            .revision_catalog()
+            .iter()
+            .find(|entry| entry.revision_id == revision)
+            .and_then(|entry| entry.checkpoint.as_deref()),
+        Some("Blocked checkpoint")
+    );
+    assert!(recovery.is_file());
+}
+
+#[test]
+fn revision_rollback_rolls_back_when_work_recovery_checkpoint_fails() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = directory.path().join("revision-rollback-recovery.ketchup");
+    let recovery = persistence::work_recovery_path(&fixture);
+    let mut shell = Shell::with_dialogs(ScriptedFileDialogs::new().queue_save(&fixture));
+    shell.click_menu_command("menu-file", AppCommand::Save);
+    assert!(shell.app_mut().create_box());
+    shell.settle();
+    assert!(recovery.is_file());
+    open_history(&mut shell);
+    let before_revision = shell.app().document_revision();
+    let before_digest = shell.app().canonical_digest();
+    let before_catalog = shell.app().revision_catalog();
+    let before_undo = shell.app().undo_step_count();
+    std::fs::remove_file(&recovery).unwrap();
+    std::fs::create_dir(&recovery).unwrap();
+
+    shell.click_button_label(&shell.catalog().text("revision-history-rollback"));
+
+    assert_eq!(shell.app().document_revision(), before_revision);
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    assert_eq!(shell.app().revision_catalog(), before_catalog);
+    assert_eq!(shell.app().undo_step_count(), before_undo);
+
+    std::fs::remove_dir(&recovery).unwrap();
+    shell.click_button_label(&shell.catalog().text("revision-history-rollback"));
+    assert_eq!(shell.app().document_revision(), before_revision + 1);
+    assert_ne!(shell.app().canonical_digest(), before_digest);
+    assert_eq!(shell.app().undo_step_count(), before_undo + 1);
+    assert!(recovery.is_file());
+}
+
+#[test]
 fn sketch_construction_previews_confirms_and_undoes_through_accesskit() {
     let directory = tempfile::tempdir().unwrap();
     let fixture = directory.path().join("sketch-construction.ketchup");
@@ -1478,6 +1552,58 @@ fn replace_component_choice_previews_complete_impact_and_commits_one_undo_step()
     );
     shell.click_menu_command("menu-edit", AppCommand::Redo);
     assert_eq!(shell.app().canonical_digest(), replaced_digest);
+}
+
+#[test]
+fn replace_component_rolls_back_when_work_recovery_checkpoint_fails() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = directory.path().join("replacement-recovery.ketchup");
+    write_component_replacement_fixture(&fixture);
+    let mut shell = Shell::with_dialogs(
+        ScriptedFileDialogs::new()
+            .queue_open(&fixture)
+            .always_discard(),
+    );
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    wait_for_exact_bodies(&mut shell, 2);
+    shell.click_at(shell.top_face_centre(REPLACEMENT_SELECTED.0));
+    open_history(&mut shell);
+    let replace = shell
+        .catalog()
+        .text("feature-history-change-scope-replace-component");
+    shell.click_role_and_label(Role::RadioButton, &replace);
+    let preview = shell
+        .catalog()
+        .text("feature-history-preview-replace-component");
+    shell.click_button_label(&preview);
+    assert!(shell.app().feature_history_preview_pending());
+    let before = stamp(&shell);
+    let recovery = persistence::work_recovery_path(&fixture);
+    std::fs::create_dir(&recovery).unwrap();
+
+    confirm(&mut shell);
+
+    assert_eq!(stamp(&shell), before);
+    assert_eq!(shell.app().exact_render_body_count(), 2);
+    assert_eq!(
+        shell.app().occurrence_definition_id(REPLACEMENT_SELECTED),
+        Some(REPLACEMENT_SOURCE)
+    );
+
+    std::fs::remove_dir(&recovery).unwrap();
+    shell.click_button_label(&preview);
+    confirm(&mut shell);
+    assert_eq!(shell.app().document_revision(), before.0 + 1);
+    assert_eq!(shell.app().undo_step_count(), before.2 + 1);
+    assert_eq!(shell.app().exact_render_body_count(), 2);
+    assert_eq!(
+        shell.app().occurrence_definition_id(REPLACEMENT_SELECTED),
+        Some(REPLACEMENT_TARGET)
+    );
 }
 
 #[test]

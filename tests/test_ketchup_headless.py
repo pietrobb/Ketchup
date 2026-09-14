@@ -1,16 +1,17 @@
 """Offline public-client tests. These do not claim OCCT/native geometry evidence."""
 import io
 import json
+import os
 from pathlib import Path
 import queue
 import sys
-import threading
+import tempfile
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sdk" / "python"))
 from ketchup import Session, HeadlessError, ProtocolError, SessionClosedError, TransportTimeout
-from ketchup.client import PROTOCOL, MAX_LINE_BYTES, rectangle
+from ketchup.client import PROTOCOL, MAX_LINE_BYTES, _resolve, rectangle
 
 
 class Pipe(io.RawIOBase):
@@ -88,6 +89,59 @@ class FakeProcess:
 
 
 class ClientTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows executable search regression")
+    def test_resolver_never_uses_current_directory_for_bare_names(self):
+        with tempfile.TemporaryDirectory() as untrusted_value, tempfile.TemporaryDirectory() as trusted_value:
+            untrusted = Path(untrusted_value)
+            trusted = Path(trusted_value)
+            untrusted_executable = untrusted / "ketchup-headless.EXE"
+            trusted_executable = trusted / "ketchup-headless.EXE"
+            untrusted_worker = untrusted / "ketchup-exact-worker.EXE"
+            trusted_worker = trusted / "ketchup-exact-worker.EXE"
+            untrusted_executable.write_bytes(b"untrusted")
+            trusted_executable.write_bytes(b"trusted")
+            untrusted_worker.write_bytes(b"untrusted")
+            trusted_worker.write_bytes(b"trusted")
+            environment = {"PATH": str(trusted), "PATHEXT": ".COM;.EXE;.BAT;.CMD"}
+            original_directory = Path.cwd()
+            try:
+                os.chdir(untrusted)
+                for value, env in (
+                    (None, environment),
+                    (None, {**environment, "KETCHUP_HEADLESS": "ketchup-headless"}),
+                    ("ketchup-headless", environment),
+                ):
+                    with self.subTest(value=value, configured="KETCHUP_HEADLESS" in env):
+                        self.assertEqual(
+                            Path(_resolve(value, env, "KETCHUP_HEADLESS", "ketchup-headless")),
+                            trusted_executable.resolve(),
+                        )
+                for value, env in (
+                    (None, {**environment, "KETCHUP_EXACT_WORKER": "ketchup-exact-worker"}),
+                    ("ketchup-exact-worker", environment),
+                ):
+                    with self.subTest(value=value, configured="KETCHUP_EXACT_WORKER" in env):
+                        self.assertEqual(
+                            Path(_resolve(value, env, "KETCHUP_EXACT_WORKER",
+                                          "ketchup-exact-worker")),
+                            trusted_worker.resolve(),
+                        )
+                with self.assertRaises(FileNotFoundError):
+                    _resolve(None, {"PATH": "", "PATHEXT": ".EXE"},
+                             "KETCHUP_HEADLESS", "ketchup-headless")
+                self.assertEqual(
+                    Path(_resolve(untrusted_executable, environment,
+                                  "KETCHUP_HEADLESS", "ketchup-headless")),
+                    untrusted_executable.resolve(),
+                )
+                self.assertEqual(
+                    Path(_resolve(r".\ketchup-headless.EXE", environment,
+                                  "KETCHUP_HEADLESS", "ketchup-headless")),
+                    untrusted_executable.resolve(),
+                )
+            finally:
+                os.chdir(original_directory)
+
     def session(self, process, **kwargs):
         patcher = patch("ketchup.client.subprocess.Popen", return_value=process)
         popen = patcher.start()

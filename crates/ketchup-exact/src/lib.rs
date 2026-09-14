@@ -300,6 +300,7 @@ mod ffi {
             face_ordinal: u32,
             distance: f64,
         ) -> UniquePtr<NativeOperationResult>;
+        #[allow(clippy::too_many_arguments)]
         fn finish_body_native(
             body: &NativeOperationResult,
             edge_ordinals: &[u32],
@@ -431,6 +432,7 @@ mod ffi {
             base: &NativeOperationResult,
             added: &NativeOperationResult,
         ) -> UniquePtr<NativeOperationResult>;
+        #[allow(clippy::too_many_arguments)]
         fn trim_body_by_plane_native(
             body: &NativeOperationResult,
             origin_x: f64,
@@ -4458,6 +4460,9 @@ impl ExactBackend {
             || result.common_contact_area_mm2 < 0.0
             || !result.distance_mm.is_finite()
             || result.distance_mm < 0.0
+            || (result.common_volume_mm3 > 0.0
+                && (result.common_contact_area_mm2 > 0.0 || result.distance_mm != 0.0))
+            || (result.common_contact_area_mm2 > 0.0 && result.distance_mm != 0.0)
         {
             return Err(error(
                 GeometryErrorCode::InvalidShape,

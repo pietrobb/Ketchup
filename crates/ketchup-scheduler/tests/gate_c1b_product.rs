@@ -23842,13 +23842,28 @@ fn worker_exports_d_profile_pocket_as_rereadable_step_and_preserves_stale_destin
 fn worker_exports_transformed_current_model_as_rereadable_step_and_rejects_stale_evidence() {
     let directory = tempfile::tempdir().unwrap();
     let step_path = directory.path().join("current-model.step");
+    let phantom_path = directory.path().join("phantom-current-model.step");
     let stale_path = directory.path().join("stale-current-model.step");
     let mut supervisor = ExactWorkerSupervisor::spawn(worker_path()).unwrap();
     let mut document = rectangle_document(100.0, 60.0, 18.0);
+    let translated = Transform::from_translation(150.0, 25.0, 5.0).unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(14),
+                definition_id: DEFINITION,
+                name: "Translated C1b occurrence".to_owned(),
+                transform: translated,
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    document.discard_history_before_current();
     let snapshot = document.current();
     let request = ExactFeatureChainRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
     let package = supervisor.evaluate_rectangle(&request).unwrap();
-    let translated = Transform::from_translation(150.0, 25.0, 5.0).unwrap();
     let model = [
         (
             ExactBodyPackage::from(package.clone()),
@@ -23882,6 +23897,21 @@ fn worker_exports_transformed_current_model_as_rereadable_step_and_rejects_stale
     assert_eq!(document.current().revision_id(), before_revision);
     assert_eq!(document.current().canonical_digest(), before_digest);
     assert_eq!(document.visible_undo_steps(), before_undo);
+
+    std::fs::write(&phantom_path, b"preserved destination").unwrap();
+    let phantom_model = [(
+        ExactBodyPackage::from(package.clone()),
+        Transform::from_translation(151.0, 25.0, 5.0).unwrap(),
+    )];
+    assert!(
+        supervisor
+            .export_current_model_step(&snapshot, &phantom_model, &phantom_path)
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read(&phantom_path).unwrap(),
+        b"preserved destination"
+    );
 
     document
         .apply_batch(&CommandBatch::new(vec![

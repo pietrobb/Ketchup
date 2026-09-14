@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use wasmi::{Config, EnforcedLimits, Engine, Linker, Module, Store, StoreLimitsBuilder};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -149,6 +149,13 @@ pub struct EgressReceipt {
     pub response_sha256: String,
 }
 
+fn remaining_egress_time(deadline: Instant) -> Result<Duration, ValidatorRuntimeError> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| ValidatorRuntimeError::EgressTransport("operation timed out".to_owned()))
+}
+
 pub fn perform_host_mediated_egress(
     package: &InstalledValidatorPackage,
     grant: &EgressGrant,
@@ -156,6 +163,15 @@ pub fn perform_host_mediated_egress(
     authorization: Option<SideEffectAuthorizationReceipt>,
     limits: EgressLimits,
 ) -> Result<(Vec<u8>, EgressReceipt), ValidatorRuntimeError> {
+    if limits.maximum_request_bytes == 0
+        || limits.maximum_response_bytes == 0
+        || limits.timeout.is_zero()
+    {
+        return Err(ValidatorRuntimeError::InvalidLimits);
+    }
+    let deadline = Instant::now()
+        .checked_add(limits.timeout)
+        .ok_or(ValidatorRuntimeError::InvalidLimits)?;
     if !grant.allows(&request.host, request.port)
         || !package
             .manifest()
@@ -186,25 +202,45 @@ pub fn perform_host_mediated_egress(
         .ok_or_else(|| {
             ValidatorRuntimeError::EgressTransport("host resolved to no address".to_owned())
         })?;
-    let mut stream = TcpStream::connect_timeout(&address, limits.timeout)
+    let mut stream = TcpStream::connect_timeout(&address, remaining_egress_time(deadline)?)
         .map_err(|error| ValidatorRuntimeError::EgressTransport(error.to_string()))?;
+    let mut written = 0;
+    while written < request.payload.len() {
+        stream
+            .set_write_timeout(Some(remaining_egress_time(deadline)?))
+            .map_err(|error| ValidatorRuntimeError::EgressTransport(error.to_string()))?;
+        let count = stream
+            .write(&request.payload[written..])
+            .map_err(|error| ValidatorRuntimeError::EgressTransport(error.to_string()))?;
+        if count == 0 {
+            return Err(ValidatorRuntimeError::EgressTransport(
+                "connection closed while writing request".to_owned(),
+            ));
+        }
+        written += count;
+    }
+    remaining_egress_time(deadline)?;
     stream
-        .set_read_timeout(Some(limits.timeout))
-        .and_then(|()| stream.set_write_timeout(Some(limits.timeout)))
-        .map_err(|error| ValidatorRuntimeError::EgressTransport(error.to_string()))?;
-    stream
-        .write_all(&request.payload)
-        .and_then(|()| stream.shutdown(Shutdown::Write))
+        .shutdown(Shutdown::Write)
         .map_err(|error| ValidatorRuntimeError::EgressTransport(error.to_string()))?;
 
-    let response_limit = u64::try_from(limits.maximum_response_bytes)
-        .unwrap_or(u64::MAX)
-        .saturating_add(1);
+    let response_limit = limits.maximum_response_bytes.saturating_add(1);
     let mut response = Vec::new();
-    stream
-        .take(response_limit)
-        .read_to_end(&mut response)
-        .map_err(|error| ValidatorRuntimeError::EgressTransport(error.to_string()))?;
+    let mut buffer = [0_u8; 8 * 1024];
+    while response.len() < response_limit {
+        stream
+            .set_read_timeout(Some(remaining_egress_time(deadline)?))
+            .map_err(|error| ValidatorRuntimeError::EgressTransport(error.to_string()))?;
+        let available = response_limit - response.len();
+        let read_bytes = available.min(buffer.len());
+        let count = stream
+            .read(&mut buffer[..read_bytes])
+            .map_err(|error| ValidatorRuntimeError::EgressTransport(error.to_string()))?;
+        if count == 0 {
+            break;
+        }
+        response.extend_from_slice(&buffer[..count]);
+    }
     if response.len() > limits.maximum_response_bytes {
         return Err(ValidatorRuntimeError::EgressResponseLimitExceeded);
     }

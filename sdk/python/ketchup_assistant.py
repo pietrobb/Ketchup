@@ -55,6 +55,14 @@ PROVIDER_RESPONSE_READ_CHUNK_BYTES = 64 * 1024
 MAX_PROVIDER_COUNTER = (1 << 64) - 1
 
 
+class _RejectRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_PROVIDER_OPENER = urllib.request.build_opener(_RejectRedirectHandler())
+
+
 def _provider_object(data: dict, field: str, provider: str) -> dict:
     value = data.get(field, {})
     if not isinstance(value, dict):
@@ -443,7 +451,7 @@ def _post_json(url: str, payload: dict, headers: dict[str, str]) -> dict:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=120) as response:
+        with _PROVIDER_OPENER.open(request, timeout=120) as response:
             content_length = response.headers.get("Content-Length")
             declared_length = None
             if content_length is not None:

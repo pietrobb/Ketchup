@@ -438,10 +438,7 @@ impl KetchupApp {
             self.body_error(self.catalog.text("error-preview-stale"));
             return false;
         }
-        match self
-            .document
-            .commit_verified_proposal(&preview.plan.proposal)
-        {
+        match self.commit_verified_proposal_with_work_recovery(&preview.plan.proposal) {
             Ok(_) => {
                 self.body_editor.body_name.clear();
                 self.body_editor.feature_name.clear();

@@ -4502,6 +4502,7 @@ impl fmt::Display for ReferenceEvidenceError {
 
 impl std::error::Error for ReferenceEvidenceError {}
 
+#[derive(Clone)]
 struct HumanConfirmationPolicy {
     verifying_key: VerifyingKey,
     epoch: u64,
@@ -4524,6 +4525,30 @@ impl Default for DocumentStore {
 }
 
 impl DocumentStore {
+    /// Applies a canonical mutation and keeps it only when its external finalizer succeeds.
+    /// Rollback restores the complete history and process-local policy state, but deliberately
+    /// leaves the mutation epoch advanced so in-flight derived work cannot publish stale results.
+    pub fn try_canonical_transaction<T, E>(
+        &mut self,
+        mutate: impl FnOnce(&mut Self) -> Result<T, E>,
+        finalize: impl FnOnce(&Self) -> Result<(), E>,
+    ) -> Result<T, E> {
+        let previous_revisions = self.revisions.clone();
+        let previous_cursor = self.cursor;
+        let previous_next_revision_id = self.next_revision_id;
+        let previous_registry = self.evaluation_registry.clone();
+        let previous_confirmation_policy = self.human_confirmation_policy.clone();
+        let result = mutate(self).and_then(|value| finalize(self).map(|()| value));
+        if result.is_err() {
+            self.revisions = previous_revisions;
+            self.cursor = previous_cursor;
+            self.next_revision_id = previous_next_revision_id;
+            self.evaluation_registry = previous_registry;
+            self.human_confirmation_policy = previous_confirmation_policy;
+        }
+        result
+    }
+
     // Process-local epoch is not snapshot/history state; rollback must never restore it.
     pub fn mutation_epoch(&self) -> u64 {
         self.mutation_epoch
@@ -11667,8 +11692,8 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
                 },
                 EdgeFinishKind::Fillet => {}
             }
-            if !matches!(chamfer_mode, ChamferMode::Symmetric) {
-                if chamfer_edge_sides.len() != edges.len()
+            if !matches!(chamfer_mode, ChamferMode::Symmetric)
+                && (chamfer_edge_sides.len() != edges.len()
                     || chamfer_edge_sides
                         .iter()
                         .zip(edges)
@@ -11676,10 +11701,9 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
                             selection.edge != *edge
                                 || selection.side_face.kind != TopologicalElementKind::Face
                                 || !selection.side_face.has_valid_lineage()
-                        })
-                {
-                    return Err(CanonicalError::InvalidTopologicalFeatureReference);
-                }
+                        }))
+            {
+                return Err(CanonicalError::InvalidTopologicalFeatureReference);
             }
             if !fillet_radius_stations.is_empty() {
                 if fillet_radius_stations.len() > 32

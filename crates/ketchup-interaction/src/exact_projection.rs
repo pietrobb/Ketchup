@@ -984,6 +984,8 @@ mod tests {
     fn imported_face_edge_vertex_picks_are_snapshot_bound_for_manual_and_proposal_flows() {
         let source = b"headless topological selection fixture";
         let evidence = StepImportEvidence {
+            source_sha256: ketchup_core::graph::sha256_bytes(source),
+            source_byte_len: source.len() as u64,
             source_unit: ImportLengthUnit::Millimetre,
             result_fingerprint: "headless-selection-result".into(),
             body_kind: ketchup_core::document::BodyKind::Solid,

@@ -341,7 +341,9 @@ fn parse_pair_result(
     let common_volume_mm3 = decode(fields[2])?;
     let common_contact_area_mm2 = decode(fields[3])?;
     let distance_mm = decode(fields[4])?;
-    if common_volume_mm3 > 0.0 && distance_mm != 0.0 {
+    if (common_volume_mm3 > 0.0 && (common_contact_area_mm2 > 0.0 || distance_mm != 0.0))
+        || (common_contact_area_mm2 > 0.0 && distance_mm != 0.0)
+    {
         return Err(invalid());
     }
     Ok(ExactPairQueryResult {
@@ -459,6 +461,8 @@ mod tests {
             "OK_PAIR_QUERY_V2 wrong 0000000000000000 0000000000000000",
             "OK_PAIR_QUERY_V2 id 7ff8000000000000 0000000000000000",
             "OK_PAIR_QUERY_V2 id 3ff0000000000000 3ff0000000000000",
+            "OK_PAIR_QUERY_V2 id 3ff0000000000000 3ff0000000000000 0000000000000000",
+            "OK_PAIR_QUERY_V2 id 0000000000000000 3ff0000000000000 3ff0000000000000",
             "OK_PAIR_QUERY_V2 id 0000000000000000 bff0000000000000",
         ] {
             assert!(

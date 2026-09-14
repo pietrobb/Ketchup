@@ -3297,7 +3297,24 @@ fn save_atomic_bytes(
     bytes: &[u8],
     expected: Option<FileIdentity>,
 ) -> Result<(), FilePersistenceError> {
+    save_atomic_bytes_after_compare(path, bytes, expected, || {})
+}
+
+fn save_atomic_bytes_after_compare(
+    path: &Path,
+    bytes: &[u8],
+    expected: Option<FileIdentity>,
+    after_compare: impl FnOnce(),
+) -> Result<(), FilePersistenceError> {
     load(bytes).map_err(FilePersistenceError::Format)?;
+    let lock_path = save_lock_path(path);
+    let lock_file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_path)?;
+    lock_file.lock()?;
     match read_native_document_file(path) {
         Ok(previous)
             if expected.is_some_and(|identity| identity != FileIdentity::from_bytes(&previous)) =>
@@ -3315,6 +3332,7 @@ fn save_atomic_bytes(
         Err(_) if expected.is_some() => return Err(FilePersistenceError::ExternalConflict),
         _ => {}
     }
+    after_compare();
     write_atomic(path, bytes)
 }
 
@@ -3344,12 +3362,43 @@ pub fn save_work_recovery_document_store_with_container(
     document: &DocumentStore,
     container_data: &ContainerData,
     base_identity: FileIdentity,
-) -> Result<(), FilePersistenceError> {
+) -> Result<FileIdentity, FilePersistenceError> {
+    save_work_recovery_document_store_with_container_after_compare(
+        path,
+        document,
+        container_data,
+        base_identity,
+        || {},
+    )
+}
+
+fn save_work_recovery_document_store_with_container_after_compare(
+    path: &Path,
+    document: &DocumentStore,
+    container_data: &ContainerData,
+    base_identity: FileIdentity,
+    after_compare: impl FnOnce(),
+) -> Result<FileIdentity, FilePersistenceError> {
+    let lock_path = save_lock_path(path);
+    let lock_file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_path)?;
+    lock_file.lock()?;
     if read_native_document_identity(path)? != base_identity {
         return Err(FilePersistenceError::ExternalConflict);
     }
-    let payload =
-        save_document_store(document, container_data).map_err(FilePersistenceError::Format)?;
+    after_compare();
+    let payload = match save_document_store(document, container_data) {
+        Ok(payload) => payload,
+        Err(PersistenceError::ResourceLimit) => {
+            save_document_store_current_snapshot(document, container_data)
+                .map_err(FilePersistenceError::Format)?
+        }
+        Err(error) => return Err(FilePersistenceError::Format(error)),
+    };
     let mut bytes = Vec::with_capacity(WORK_RECOVERY_MAGIC.len() + 2 + 8 + 32 + 8 + payload.len());
     bytes.extend_from_slice(WORK_RECOVERY_MAGIC);
     push_u16(&mut bytes, WORK_RECOVERY_SCHEMA);
@@ -3357,13 +3406,52 @@ pub fn save_work_recovery_document_store_with_container(
     bytes.extend_from_slice(&base_identity.sha256());
     push_u64(&mut bytes, payload.len() as u64);
     bytes.extend_from_slice(&payload);
-    write_atomic(&work_recovery_path(path), &bytes)
+    write_atomic(&work_recovery_path(path), &bytes)?;
+    Ok(FileIdentity::from_bytes(&bytes))
 }
 
-pub fn clear_work_recovery(path: &Path) -> Result<(), FilePersistenceError> {
-    match fs::remove_file(work_recovery_path(path)) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+pub fn clear_work_recovery(
+    path: &Path,
+    expected: Option<FileIdentity>,
+) -> Result<bool, FilePersistenceError> {
+    let lock_path = save_lock_path(path);
+    let lock_file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_path)?;
+    lock_file.lock()?;
+    let recovery_path = work_recovery_path(path);
+    let metadata = match fs::symlink_metadata(&recovery_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(FilePersistenceError::Io(error)),
+    };
+    if !metadata.file_type().is_file() {
+        return Err(FilePersistenceError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "work-recovery path is not a regular file",
+        )));
+    }
+    let Some(expected) = expected else {
+        return Ok(false);
+    };
+    let mut file = fs::File::open(&recovery_path)?;
+    let wrapper_limit = MAX_NATIVE_DOCUMENT_BYTES as u64 + 60;
+    if file.metadata()?.len() > wrapper_limit {
+        return Ok(false);
+    }
+    let mut bytes = Vec::new();
+    std::io::Read::by_ref(&mut file)
+        .take(wrapper_limit + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > wrapper_limit || FileIdentity::from_bytes(&bytes) != expected {
+        return Ok(false);
+    }
+    match fs::remove_file(recovery_path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(FilePersistenceError::Io(error)),
     }
 }
@@ -3372,6 +3460,12 @@ fn recovery_path(path: &Path) -> PathBuf {
     let mut recovery = path.as_os_str().to_os_string();
     recovery.push(".recovery");
     PathBuf::from(recovery)
+}
+
+fn save_lock_path(path: &Path) -> PathBuf {
+    let mut lock = path.as_os_str().to_os_string();
+    lock.push(".save-lock");
+    PathBuf::from(lock)
 }
 
 fn try_load_work_recovery(
@@ -3438,6 +3532,7 @@ fn try_load_work_recovery(
         outcome,
         source_path,
         source_bytes: payload.to_vec(),
+        work_recovery_identity: Some(FileIdentity::from_bytes(&bytes)),
     }))
 }
 
@@ -3445,6 +3540,7 @@ pub struct LoadedFile {
     outcome: LoadOutcome,
     source_path: PathBuf,
     source_bytes: Vec<u8>,
+    work_recovery_identity: Option<FileIdentity>,
 }
 
 impl LoadedFile {
@@ -3464,8 +3560,18 @@ impl LoadedFile {
     }
 
     #[must_use]
-    pub fn into_parts(self) -> (LoadOutcome, PathBuf, Vec<u8>) {
-        (self.outcome, self.source_path, self.source_bytes)
+    pub fn work_recovery_identity(&self) -> Option<FileIdentity> {
+        self.work_recovery_identity
+    }
+
+    #[must_use]
+    pub fn into_parts(self) -> (LoadOutcome, PathBuf, Vec<u8>, Option<FileIdentity>) {
+        (
+            self.outcome,
+            self.source_path,
+            self.source_bytes,
+            self.work_recovery_identity,
+        )
     }
 }
 
@@ -3485,6 +3591,7 @@ pub fn load_file_with_source(path: impl AsRef<Path>) -> Result<LoadedFile, FileP
                         outcome,
                         source_path: path.to_owned(),
                         source_bytes: bytes,
+                        work_recovery_identity: None,
                     }),
                 }
             }
@@ -3531,6 +3638,7 @@ fn try_load_recovery(path: &Path) -> Result<Option<LoadedFile>, FilePersistenceE
         outcome,
         source_path,
         source_bytes: bytes,
+        work_recovery_identity: None,
     }))
 }
 
@@ -5354,6 +5462,7 @@ fn read_drawing_sheet(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn read_drawing_sheet_with_annotations(
     reader: &mut Reader<'_>,
     page_contract: bool,
@@ -7627,6 +7736,139 @@ fn push_optional_id(bytes: &mut Vec<u8>, id: Option<u64>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concurrent_conditional_saves_allow_exactly_one_stale_writer() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        fn document_bytes(name: &str) -> Vec<u8> {
+            let mut document = DocumentStore::new();
+            document
+                .apply_batch(&CommandBatch::new(vec![
+                    CanonicalCommand::CreateDefinition {
+                        id: DefinitionId(1),
+                        name: name.into(),
+                    },
+                ]))
+                .unwrap();
+            save(&document.current())
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("concurrent-save.ketchup");
+        let initial = save(&DocumentStore::new().current());
+        fs::write(&path, &initial).unwrap();
+        let expected = FileIdentity::from_bytes(&initial);
+        let first_bytes = document_bytes("first");
+        let second_bytes = document_bytes("second");
+        let (compared_tx, compared_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+
+        let first_path = path.clone();
+        let first_payload = first_bytes.clone();
+        let first_compared_tx = compared_tx.clone();
+        let first = std::thread::spawn(move || {
+            save_atomic_bytes_after_compare(&first_path, &first_payload, Some(expected), || {
+                first_compared_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            })
+        });
+        compared_rx.recv().unwrap();
+
+        let second_path = path.clone();
+        let second_compared_tx = compared_tx;
+        let second = std::thread::spawn(move || {
+            save_atomic_bytes_after_compare(&second_path, &second_bytes, Some(expected), || {
+                second_compared_tx.send(()).unwrap()
+            })
+        });
+        let second_passed_comparison = compared_rx.recv_timeout(Duration::from_millis(250)).is_ok();
+        release_tx.send(()).unwrap();
+
+        assert!(first.join().unwrap().is_ok());
+        assert!(matches!(
+            second.join().unwrap(),
+            Err(FilePersistenceError::ExternalConflict)
+        ));
+        assert!(
+            !second_passed_comparison,
+            "a second stale writer passed identity comparison before the first writer replaced the file"
+        );
+        assert_eq!(fs::read(path).unwrap(), first_bytes);
+    }
+
+    #[test]
+    fn concurrent_work_recovery_and_save_share_identity_lock() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("concurrent-recovery.ketchup");
+        let container_data = ContainerData::default();
+        let initial = DocumentStore::new();
+        let initial_bytes = save_document_store(&initial, &container_data).unwrap();
+        fs::write(&path, &initial_bytes).unwrap();
+        let base_identity = FileIdentity::from_bytes(&initial_bytes);
+
+        let mut dirty = DocumentStore::new();
+        dirty
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(1),
+                    name: "dirty".into(),
+                },
+            ]))
+            .unwrap();
+        let mut replacement = DocumentStore::new();
+        replacement
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(2),
+                    name: "replacement".into(),
+                },
+            ]))
+            .unwrap();
+        let replacement_bytes = save_document_store(&replacement, &container_data).unwrap();
+        let (compared_tx, compared_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+
+        let recovery_path = path.clone();
+        let recovery_compared_tx = compared_tx.clone();
+        let recovery = std::thread::spawn(move || {
+            save_work_recovery_document_store_with_container_after_compare(
+                &recovery_path,
+                &dirty,
+                &container_data,
+                base_identity,
+                || {
+                    recovery_compared_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                },
+            )
+        });
+        compared_rx.recv().unwrap();
+
+        let save_path = path.clone();
+        let save_compared_tx = compared_tx;
+        let save = std::thread::spawn(move || {
+            save_atomic_bytes_after_compare(
+                &save_path,
+                &replacement_bytes,
+                Some(base_identity),
+                || save_compared_tx.send(()).unwrap(),
+            )
+        });
+        let save_passed_comparison = compared_rx.recv_timeout(Duration::from_millis(250)).is_ok();
+        release_tx.send(()).unwrap();
+
+        assert!(recovery.join().unwrap().is_ok());
+        assert!(save.join().unwrap().is_ok());
+        assert!(
+            !save_passed_comparison,
+            "a save passed identity comparison while work recovery was still being published"
+        );
+    }
 
     #[test]
     fn schema_54_drawing_sheet_loads_with_explicit_lossless_default_contract() {

@@ -1469,16 +1469,20 @@ impl AssistantCadBodyFeature {
                 }
             }
             Self::SurfaceBody {
-                source: AssistantCadSurfaceBodySource::Planar { profile_feature_id },
+                source:
+                    AssistantCadSurfaceBodySource::Planar {
+                        profile_feature_id: AssistantCadFeatureReference::ProgramOutput(reference),
+                    },
             } => {
-                if let AssistantCadFeatureReference::ProgramOutput(reference) = profile_feature_id {
-                    reference.validate_for(
-                        operation_index,
-                        operations,
-                        AssistantCadProgramFeatureOutput::SketchFeature,
-                    )?;
-                }
+                reference.validate_for(
+                    operation_index,
+                    operations,
+                    AssistantCadProgramFeatureOutput::SketchFeature,
+                )?;
             }
+            Self::SurfaceBody {
+                source: AssistantCadSurfaceBodySource::Planar { .. },
+            } => {}
             Self::SurfaceTrim {
                 target_feature_id,
                 cutter_feature_id,

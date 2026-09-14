@@ -1423,6 +1423,59 @@ fn dirty_work_recovery_is_bound_to_the_primary_and_corruption_is_ignored() {
 }
 
 #[test]
+fn stale_session_cleanup_does_not_delete_a_newer_work_recovery_checkpoint() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("shared-working.ketchup");
+    let work_recovery = persistence::work_recovery_path(&path);
+    let container_data = persistence::ContainerData::default();
+    let mut first = graph_document();
+    persistence::save_atomic_document_store_with_container(&path, &first, &container_data).unwrap();
+    let base_identity = persistence::read_native_document_identity(&path).unwrap();
+
+    first
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetEvaluatorDimension {
+                id: NodeId(1),
+                dimension: Dimension::new("17", 17.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+    let first_checkpoint_identity = persistence::save_work_recovery_document_store_with_container(
+        &path,
+        &first,
+        &container_data,
+        base_identity,
+    )
+    .unwrap();
+
+    let mut second = graph_document();
+    second
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetEvaluatorDimension {
+                id: NodeId(1),
+                dimension: Dimension::new("23", 23.0).unwrap(),
+            },
+        ]))
+        .unwrap();
+    let second_checkpoint_identity = persistence::save_work_recovery_document_store_with_container(
+        &path,
+        &second,
+        &container_data,
+        base_identity,
+    )
+    .unwrap();
+    let newer_checkpoint = std::fs::read(&work_recovery).unwrap();
+
+    assert!(!persistence::clear_work_recovery(&path, Some(first_checkpoint_identity)).unwrap());
+
+    assert_eq!(std::fs::read(&work_recovery).unwrap(), newer_checkpoint);
+    assert!(!persistence::clear_work_recovery(&path, None).unwrap());
+    assert_eq!(std::fs::read(&work_recovery).unwrap(), newer_checkpoint);
+    assert!(persistence::clear_work_recovery(&path, Some(second_checkpoint_identity)).unwrap());
+    assert!(!work_recovery.exists());
+}
+
+#[test]
 fn sparse_native_documents_and_recovery_fail_before_unbounded_reads() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("oversized.ketchup");

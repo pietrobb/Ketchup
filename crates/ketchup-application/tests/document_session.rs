@@ -311,6 +311,136 @@ fn unsaved_session_edit_recovers_with_history_and_requires_save_as() {
 }
 
 #[test]
+fn exact_publication_failure_to_finalize_recovery_rolls_back_evidence_and_allows_retry() {
+    let directory = tempfile::tempdir().unwrap();
+    let primary = directory
+        .path()
+        .join("transactional-exact-publication.ketchup");
+    let recovery = persistence::work_recovery_path(&primary);
+    let mut session = DocumentSession::new(worker_settings());
+    session
+        .apply_cad_program(&program(), &BTreeSet::new())
+        .unwrap();
+    session.save(&primary, SaveOptions::default()).unwrap();
+
+    let task = session.start_exact_evaluation_task();
+    let products = task.wait(Duration::from_secs(30)).unwrap();
+    let before = session.snapshot();
+    std::fs::create_dir(&recovery).unwrap();
+
+    assert!(matches!(
+        session.publish_exact_evaluation(&task, products),
+        Err(SessionError::Persistence(_))
+    ));
+    assert_eq!(
+        session.snapshot().canonical_digest(),
+        before.canonical_digest()
+    );
+    assert_eq!(session.snapshot().revision_id(), before.revision_id());
+    assert_eq!(session.snapshot().exact_reference_evidence().count(), 0);
+    assert!(session.exact_results().is_empty());
+    assert!(session.topology_results().is_empty());
+
+    std::fs::remove_dir(&recovery).unwrap();
+    let report = session.evaluate().unwrap();
+    assert!(report.complete && report.topology_complete, "{report:?}");
+    assert!(!recovery.exists());
+    assert!(session.snapshot().exact_reference_evidence().count() > 0);
+    assert!(!session.exact_results().is_empty());
+    assert!(!session.topology_results().is_empty());
+}
+
+#[test]
+fn checkpoint_failures_roll_back_apply_undo_and_redo_without_changing_history() {
+    let directory = tempfile::tempdir().unwrap();
+    let primary = directory.path().join("transactional-checkpoint.ketchup");
+    let recovery = persistence::work_recovery_path(&primary);
+    let mut session = DocumentSession::default();
+    session
+        .apply_cad_program(&program(), &BTreeSet::new())
+        .unwrap();
+    session.save(&primary, SaveOptions::default()).unwrap();
+
+    let proposal = session
+        .plan_commands(CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: OccurrenceId(1),
+                grounded: true,
+            },
+        ]))
+        .unwrap();
+    std::fs::create_dir(&recovery).unwrap();
+    let clean_epoch = session.mutation_epoch();
+    let clean = (
+        session.snapshot().canonical_digest(),
+        session.snapshot().revision_id(),
+        session.visible_undo_steps(),
+        session.visible_redo_steps(),
+    );
+    assert!(matches!(
+        session.apply_proposal(&proposal),
+        Err(SessionError::Persistence(_))
+    ));
+    assert_eq!(
+        (
+            session.snapshot().canonical_digest(),
+            session.snapshot().revision_id(),
+            session.visible_undo_steps(),
+            session.visible_redo_steps(),
+        ),
+        clean
+    );
+    assert!(session.mutation_epoch() > clean_epoch);
+
+    std::fs::remove_dir(&recovery).unwrap();
+    session.apply_proposal(&proposal).unwrap();
+    assert!(recovery.is_file());
+    std::fs::remove_file(&recovery).unwrap();
+    std::fs::create_dir(&recovery).unwrap();
+    let dirty_epoch = session.mutation_epoch();
+    let dirty = (
+        session.snapshot().canonical_digest(),
+        session.snapshot().revision_id(),
+        session.visible_undo_steps(),
+        session.visible_redo_steps(),
+    );
+    assert!(matches!(session.undo(), Err(SessionError::Persistence(_))));
+    assert_eq!(
+        (
+            session.snapshot().canonical_digest(),
+            session.snapshot().revision_id(),
+            session.visible_undo_steps(),
+            session.visible_redo_steps(),
+        ),
+        dirty
+    );
+    assert!(session.mutation_epoch() > dirty_epoch);
+
+    std::fs::remove_dir(&recovery).unwrap();
+    session.undo().unwrap();
+    assert!(!recovery.exists());
+    std::fs::create_dir(&recovery).unwrap();
+    let undone_epoch = session.mutation_epoch();
+    let undone = (
+        session.snapshot().canonical_digest(),
+        session.snapshot().revision_id(),
+        session.visible_undo_steps(),
+        session.visible_redo_steps(),
+    );
+    assert!(matches!(session.redo(), Err(SessionError::Persistence(_))));
+    assert_eq!(
+        (
+            session.snapshot().canonical_digest(),
+            session.snapshot().revision_id(),
+            session.visible_undo_steps(),
+            session.visible_redo_steps(),
+        ),
+        undone
+    );
+    assert!(session.mutation_epoch() > undone_epoch);
+}
+
+#[test]
 fn stale_session_save_is_rejected_but_save_as_preserves_both_versions() {
     let directory = tempfile::tempdir().unwrap();
     let shared = directory.path().join("shared.ketchup");
@@ -330,20 +460,31 @@ fn stale_session_save_is_rejected_but_save_as_preserves_both_versions() {
     let first_bytes = std::fs::read(&shared).unwrap();
     let first_digest = first.snapshot().canonical_digest();
 
-    second.set_grounded(OccurrenceId(1), true).unwrap();
-    second.set_grounded(OccurrenceId(1), false).unwrap();
-    let second_digest = second.snapshot().canonical_digest();
-    let second_undo = second.visible_undo_steps();
+    let stale_digest = second.snapshot().canonical_digest();
+    let stale_undo = second.visible_undo_steps();
+    let error = second
+        .set_grounded(OccurrenceId(1), true)
+        .err()
+        .expect("stale session mutation must fail before commit");
+    assert!(error.to_string().contains("changed outside this session"));
+    assert_eq!(second.snapshot().canonical_digest(), stale_digest);
+    assert_eq!(second.visible_undo_steps(), stale_undo);
     let error = second
         .save(&shared, SaveOptions { overwrite: true })
         .unwrap_err();
     assert!(error.to_string().contains("changed outside this session"));
+
+    second.save(&alternate, SaveOptions::default()).unwrap();
+    second.set_grounded(OccurrenceId(1), true).unwrap();
+    second.set_grounded(OccurrenceId(1), false).unwrap();
+    let second_digest = second.snapshot().canonical_digest();
+    let second_undo = second.visible_undo_steps();
+    second
+        .save(&alternate, SaveOptions { overwrite: true })
+        .unwrap();
     assert_eq!(std::fs::read(&shared).unwrap(), first_bytes);
     assert_eq!(second.snapshot().canonical_digest(), second_digest);
     assert_eq!(second.visible_undo_steps(), second_undo);
-    assert!(second.is_modified());
-
-    second.save(&alternate, SaveOptions::default()).unwrap();
     assert!(!second.is_modified());
     assert_eq!(
         DocumentSession::open(&shared, SessionSettings::default())
@@ -359,6 +500,62 @@ fn stale_session_save_is_rejected_but_save_as_preserves_both_versions() {
             .canonical_digest(),
         second_digest
     );
+}
+
+#[test]
+fn save_as_cleanup_preserves_a_newer_checkpoint_from_another_session() {
+    let directory = tempfile::tempdir().unwrap();
+    let shared = directory.path().join("shared-recovery.ketchup");
+    let alternate = directory.path().join("first-copy.ketchup");
+    let recovery = persistence::work_recovery_path(&shared);
+    let mut author = DocumentSession::default();
+    author
+        .apply_cad_program(&program(), &BTreeSet::new())
+        .unwrap();
+    author.save(&shared, SaveOptions::default()).unwrap();
+
+    let mut first = DocumentSession::open(&shared, SessionSettings::default()).unwrap();
+    let mut second = DocumentSession::open(&shared, SessionSettings::default()).unwrap();
+    first.set_grounded(OccurrenceId(1), true).unwrap();
+    second
+        .apply_cad_program(&program(), &BTreeSet::new())
+        .unwrap();
+    let second_digest = second.snapshot().canonical_digest();
+    let newer_checkpoint = std::fs::read(&recovery).unwrap();
+
+    first.save(&alternate, SaveOptions::default()).unwrap();
+
+    assert_eq!(std::fs::read(&recovery).unwrap(), newer_checkpoint);
+    let recovered = persistence::load_file_with_source(&shared).unwrap();
+    assert_eq!(recovered.source_path(), recovery);
+    assert_eq!(
+        recovered.outcome().snapshot().canonical_digest(),
+        second_digest
+    );
+}
+
+#[test]
+fn failed_save_cleanup_is_retried_with_the_owned_checkpoint_identity() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("retry-save-cleanup.ketchup");
+    let alternate = directory.path().join("saved-copy.ketchup");
+    let recovery = persistence::work_recovery_path(&path);
+    let mut session = DocumentSession::default();
+    session
+        .apply_cad_program(&program(), &BTreeSet::new())
+        .unwrap();
+    session.save(&path, SaveOptions::default()).unwrap();
+    session.set_grounded(OccurrenceId(1), true).unwrap();
+    let owned_checkpoint = std::fs::read(&recovery).unwrap();
+
+    std::fs::remove_file(&recovery).unwrap();
+    std::fs::create_dir(&recovery).unwrap();
+    session.save(&alternate, SaveOptions::default()).unwrap();
+
+    std::fs::remove_dir(&recovery).unwrap();
+    std::fs::write(&recovery, owned_checkpoint).unwrap();
+    assert!(!session.write_work_recovery_checkpoint().unwrap());
+    assert!(!recovery.exists());
 }
 
 #[test]

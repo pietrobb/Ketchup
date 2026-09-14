@@ -353,6 +353,8 @@ fn generated_exact_publication_refuses_unbounded_worker_counts() {
 fn imported_exact_publication_is_source_bound_best_effort_and_backend_guarded() {
     let source = b"generic exact source";
     let evidence = StepImportEvidence {
+        source_sha256: ketchup_core::graph::sha256_bytes(source),
+        source_byte_len: source.len() as u64,
         source_unit: ImportLengthUnit::Millimetre,
         result_fingerprint: "import-result-a".into(),
         body_kind: ketchup_core::document::BodyKind::Solid,
@@ -444,6 +446,8 @@ fn imported_exact_publication_is_source_bound_best_effort_and_backend_guarded() 
 fn serialized_reference_survives_recompute_undo_redo_and_byte_stable_save_open() {
     let source = b"generic persistent exact source";
     let evidence = StepImportEvidence {
+        source_sha256: ketchup_core::graph::sha256_bytes(source),
+        source_byte_len: source.len() as u64,
         source_unit: ImportLengthUnit::Millimetre,
         result_fingerprint: "persistent-import-result".into(),
         body_kind: ketchup_core::document::BodyKind::Solid,

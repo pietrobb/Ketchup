@@ -257,10 +257,7 @@ impl KetchupApp {
             self.digest = self.catalog.text("error-preview-stale");
             return false;
         }
-        match self
-            .document
-            .commit_verified_proposal(&preview.plan.proposal)
-        {
+        match self.commit_verified_proposal_with_work_recovery(&preview.plan.proposal) {
             Ok(_) => {
                 self.clear_ephemeral_edit_state();
                 self.selection = SelectionState::default();
@@ -576,14 +573,13 @@ impl KetchupApp {
         {
             return false;
         }
-        self.document
-            .apply_batch(&CommandBatch::new(vec![
-                CanonicalCommand::RenameDefinition {
-                    id: INITIAL_BOX_DEFINITION,
-                    name: "Intervening edit".to_owned(),
-                },
-            ]))
-            .is_ok()
+        self.apply_batch_with_work_recovery(&CommandBatch::new(vec![
+            CanonicalCommand::RenameDefinition {
+                id: INITIAL_BOX_DEFINITION,
+                name: "Intervening edit".to_owned(),
+            },
+        ]))
+        .is_ok()
     }
 
     #[cfg(debug_assertions)]

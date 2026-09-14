@@ -12,16 +12,16 @@ fn controlled_worker() -> (
     Receiver<WorkerWriteRequest>,
     Sender<WorkerResponse>,
 ) {
-    let child = Command::new(std::env::current_exe().unwrap())
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
         .args([
             "--exact",
             "request_timeout_tests::sleeping_worker",
             "--ignored",
         ])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+        .stderr(Stdio::null());
+    let child = spawn_exact_worker_command(command).unwrap();
     let (write_sender, write_receiver) = mpsc::channel();
     let (response_sender, response_receiver) = mpsc::channel();
     (
@@ -34,6 +34,178 @@ fn controlled_worker() -> (
         write_receiver,
         response_sender,
     )
+}
+
+#[cfg(windows)]
+#[test]
+fn request_timeout_terminates_exact_worker_descendants() {
+    let directory = tempfile::tempdir().unwrap();
+    let sentinel = directory.path().join("escaped-descendant.txt");
+    let script = "import subprocess,sys,time\nchild = 'import pathlib,sys,time; time.sleep(0.4); pathlib.Path(sys.argv[1]).write_text(\"escaped\")'\nsubprocess.Popen([sys.executable, '-c', child, sys.argv[1]])\ntime.sleep(30)";
+    let mut command = Command::new(
+        std::env::var_os("PYTHON").unwrap_or_else(|| std::ffi::OsString::from("python")),
+    );
+    command
+        .args([
+            std::ffi::OsString::from("-c"),
+            std::ffi::OsString::from(script),
+        ])
+        .arg(&sentinel)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let child = spawn_exact_worker_command(command).unwrap();
+    let (write_sender, writes) = mpsc::channel();
+    let (_responses, response_receiver) = mpsc::channel();
+    let mut worker = ExactWorkerClient {
+        child,
+        write_sender,
+        response_receiver,
+        _temp_directory: tempfile::tempdir().unwrap(),
+    };
+    let responder = std::thread::spawn(move || {
+        writes.recv().unwrap().acknowledgment.send(Ok(())).unwrap();
+    });
+    std::thread::sleep(Duration::from_millis(300));
+
+    assert!(matches!(
+        worker.request_with_timeout("work", &NEVER_CANCELLED, Duration::from_millis(80)),
+        Err(WorkerError::RequestTimedOut(timeout)) if timeout == Duration::from_millis(80)
+    ));
+    responder.join().unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(
+        !sentinel.exists(),
+        "exact worker descendant survived request timeout and performed a delayed side effect"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn dropping_exact_worker_terminates_descendants() {
+    let directory = tempfile::tempdir().unwrap();
+    let sentinel = directory.path().join("escaped-after-drop.txt");
+    let script = "import subprocess,sys,time\nchild = 'import pathlib,sys,time; time.sleep(0.4); pathlib.Path(sys.argv[1]).write_text(\"escaped\")'\nsubprocess.Popen([sys.executable, '-c', child, sys.argv[1]])\ntime.sleep(30)";
+    let mut command = Command::new(
+        std::env::var_os("PYTHON").unwrap_or_else(|| std::ffi::OsString::from("python")),
+    );
+    command
+        .args([
+            std::ffi::OsString::from("-c"),
+            std::ffi::OsString::from(script),
+        ])
+        .arg(&sentinel)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let child = spawn_exact_worker_command(command).unwrap();
+    let (write_sender, _writes) = mpsc::channel();
+    let (_responses, response_receiver) = mpsc::channel();
+    let worker = ExactWorkerClient {
+        child,
+        write_sender,
+        response_receiver,
+        _temp_directory: tempfile::tempdir().unwrap(),
+    };
+    std::thread::sleep(Duration::from_millis(300));
+
+    drop(worker);
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(
+        !sentinel.exists(),
+        "exact worker descendant survived client drop and performed a delayed side effect"
+    );
+}
+
+#[test]
+fn oversized_step_xde_worker_output_is_rejected_before_hashing() {
+    let (mut worker, writes, responses) = controlled_worker();
+    let output = tempfile::NamedTempFile::new().unwrap();
+    output.as_file().set_len(MAX_STEP_SOURCE_BYTES + 1).unwrap();
+    let source_sha256 = "b".repeat(64);
+    let result_fingerprint = "fnv1a64:0123456789abcdef";
+    let receipt = format!(
+        "OK_M21_STEP_XDE_EXPORT_V1 {source_sha256} {result_fingerprint} {}",
+        "a".repeat(64)
+    );
+    let responder = std::thread::spawn(move || {
+        for response in ["CAPS M21_STEP_XDE_V1".to_owned(), receipt] {
+            let request = writes.recv().unwrap();
+            request.acknowledgment.send(Ok(())).unwrap();
+            responses.send(WorkerResponse::Line(response)).unwrap();
+        }
+    });
+
+    assert!(matches!(
+        worker.export_step_xde_part_request_with_cancellation(
+            Path::new("source.step"),
+            &source_sha256,
+            0,
+            result_fingerprint,
+            output.path(),
+            &NEVER_CANCELLED,
+        ),
+        Err(WorkerError::Transport(message))
+            if message == "exact worker STEP output exceeds the bounded 32 MiB envelope"
+    ));
+    assert!(worker.child.try_wait().unwrap().is_some());
+    responder.join().unwrap();
+}
+
+#[test]
+fn converted_iges_returns_bounded_snapshot_not_later_path_contents() {
+    let (mut worker, writes, responses) = controlled_worker();
+    let output = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(output.path(), b"verified IGES").unwrap();
+    let source_sha256 = "b".repeat(64);
+    let receipt = format!("OK_M21_IGES_EXPORT_V1 {source_sha256} fnv1a64:0123456789abcdef");
+    let responder = std::thread::spawn(move || {
+        for response in ["CAPS M21_IGES_V1".to_owned(), receipt] {
+            let request = writes.recv().unwrap();
+            request.acknowledgment.send(Ok(())).unwrap();
+            responses.send(WorkerResponse::Line(response)).unwrap();
+        }
+    });
+
+    let verified = worker
+        .convert_step_to_iges_request_with_cancellation(
+            Path::new("source.step"),
+            &source_sha256,
+            output.path(),
+            &NEVER_CANCELLED,
+        )
+        .unwrap();
+    std::fs::write(output.path(), b"replaced after verification").unwrap();
+
+    assert_eq!(verified, b"verified IGES");
+    responder.join().unwrap();
+}
+
+#[test]
+fn oversized_converted_iges_is_rejected_before_returning_bytes() {
+    let (mut worker, writes, responses) = controlled_worker();
+    let output = tempfile::NamedTempFile::new().unwrap();
+    output.as_file().set_len(MAX_STEP_SOURCE_BYTES + 1).unwrap();
+    let source_sha256 = "b".repeat(64);
+    let receipt = format!("OK_M21_IGES_EXPORT_V1 {source_sha256} fnv1a64:0123456789abcdef");
+    let responder = std::thread::spawn(move || {
+        for response in ["CAPS M21_IGES_V1".to_owned(), receipt] {
+            let request = writes.recv().unwrap();
+            request.acknowledgment.send(Ok(())).unwrap();
+            responses.send(WorkerResponse::Line(response)).unwrap();
+        }
+    });
+
+    assert!(matches!(
+        worker.convert_step_to_iges_request_with_cancellation(
+            Path::new("source.step"),
+            &source_sha256,
+            output.path(),
+            &NEVER_CANCELLED,
+        ),
+        Err(WorkerError::Transport(message))
+            if message == "exact worker IGES output exceeds the bounded 32 MiB envelope"
+    ));
+    assert!(worker.child.try_wait().unwrap().is_some());
+    responder.join().unwrap();
 }
 
 #[test]

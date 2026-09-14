@@ -120,7 +120,7 @@ impl ReleaseManifest {
 pub struct VerifiedRelease {
     pub manifest: ReleaseManifest,
     pub snapshot: Snapshot,
-    pub dependency_objects: BTreeMap<String, PathBuf>,
+    pub dependency_objects: BTreeMap<String, ReleaseObjectIdentity>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -193,6 +193,7 @@ pub enum LocalPdmError {
     InvalidReleaseId,
     ManifestTooLarge,
     InvalidManifest,
+    InvalidRepositoryPath,
     ManifestIdentityMismatch,
     ReleaseAlreadyExists,
     MissingRelease { release_id: String },
@@ -236,6 +237,9 @@ impl fmt::Display for LocalPdmError {
             }
             Self::InvalidManifest => {
                 formatter.write_str("release manifest violates the canonical contract")
+            }
+            Self::InvalidRepositoryPath => {
+                formatter.write_str("local PDM repository path is not a physical directory or file")
             }
             Self::ManifestIdentityMismatch => {
                 formatter.write_str("release manifest identity does not match its content")
@@ -444,10 +448,7 @@ pub fn open_release(
     let mut dependency_objects = BTreeMap::new();
     for dependency in &manifest.dependencies {
         read_object(repository, &dependency.object)?;
-        dependency_objects.insert(
-            dependency.logical_path.clone(),
-            release_object_path(repository, &dependency.object.sha256)?,
-        );
+        dependency_objects.insert(dependency.logical_path.clone(), dependency.object.clone());
     }
     Ok(VerifiedRelease {
         manifest,
@@ -461,6 +462,13 @@ pub fn release_catalog(
 ) -> Result<Vec<ReleaseCatalogEntry>, LocalPdmError> {
     let repository = repository.as_ref();
     let releases_path = repository.join("releases");
+    match ensure_repository_directory(repository, &releases_path, false) {
+        Ok(()) => {}
+        Err(LocalPdmError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(Vec::new());
+        }
+        Err(error) => return Err(error),
+    }
     let entries = match fs::read_dir(&releases_path) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -657,8 +665,10 @@ fn release_ancestry(
 
 fn read_manifest(repository: &Path, release_id: &str) -> Result<ReleaseManifest, LocalPdmError> {
     validate_sha256(release_id)?;
-    let manifest_bytes = match read_bounded_file(
-        &release_manifest_path(repository, release_id)?,
+    let manifest_path = release_manifest_path(repository, release_id)?;
+    let manifest_bytes = match read_bounded_repository_file(
+        repository,
+        &manifest_path,
         MAX_RELEASE_MANIFEST_BYTES,
         LocalPdmError::ManifestTooLarge,
     ) {
@@ -793,6 +803,83 @@ fn identity(bytes: &[u8]) -> ReleaseObjectIdentity {
     }
 }
 
+fn repository_metadata_is_link(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+fn ensure_repository_directory(
+    repository: &Path,
+    directory: &Path,
+    create: bool,
+) -> Result<(), LocalPdmError> {
+    let relative = directory
+        .strip_prefix(repository)
+        .map_err(|_| LocalPdmError::InvalidRepositoryPath)?;
+    if create {
+        fs::create_dir_all(repository)?;
+    }
+    let mut current = repository.to_path_buf();
+    validate_repository_directory(&current)?;
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            return Err(LocalPdmError::InvalidRepositoryPath);
+        };
+        current.push(name);
+        if create {
+            match fs::create_dir(&current) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(LocalPdmError::Io(error)),
+            }
+        }
+        validate_repository_directory(&current)?;
+    }
+    Ok(())
+}
+
+fn validate_repository_directory(path: &Path) -> Result<(), LocalPdmError> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_dir() || repository_metadata_is_link(&metadata) {
+        return Err(LocalPdmError::InvalidRepositoryPath);
+    }
+    Ok(())
+}
+
+fn validate_repository_file(path: &Path) -> Result<(), LocalPdmError> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_file() || repository_metadata_is_link(&metadata) {
+        return Err(LocalPdmError::InvalidRepositoryPath);
+    }
+    Ok(())
+}
+
+fn read_bounded_repository_file(
+    repository: &Path,
+    path: &Path,
+    limit: usize,
+    limit_error: LocalPdmError,
+) -> Result<Vec<u8>, LocalPdmError> {
+    let parent = path.parent().ok_or(LocalPdmError::InvalidRepositoryPath)?;
+    ensure_repository_directory(repository, parent, false)?;
+    validate_repository_file(path)?;
+    let bytes = read_bounded_file(path, limit, limit_error)?;
+    ensure_repository_directory(repository, parent, false)?;
+    validate_repository_file(path)?;
+    Ok(bytes)
+}
+
 fn read_bounded_file(
     path: &Path,
     limit: usize,
@@ -816,29 +903,38 @@ fn write_content_addressed_object(
     bytes: &[u8],
 ) -> Result<(), LocalPdmError> {
     let path = release_object_path(repository, &identity.sha256)?;
-    if path.exists() {
-        return verify_existing_object(&path, identity, bytes);
+    match fs::symlink_metadata(&path) {
+        Ok(_) => {
+            validate_repository_file(&path)?;
+            return verify_existing_object(repository, &path, identity, bytes);
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(LocalPdmError::Io(error)),
     }
-    let parent = path.parent().ok_or(LocalPdmError::InvalidManifest)?;
-    fs::create_dir_all(parent)?;
+    let parent = path.parent().ok_or(LocalPdmError::InvalidRepositoryPath)?;
+    ensure_repository_directory(repository, parent, true)?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
     temporary.write_all(bytes)?;
     temporary.as_file_mut().sync_all()?;
+    ensure_repository_directory(repository, parent, false)?;
     match temporary.persist_noclobber(&path) {
         Ok(_) => Ok(()),
         Err(error) if error.error.kind() == io::ErrorKind::AlreadyExists => {
-            verify_existing_object(&path, identity, bytes)
+            validate_repository_file(&path)?;
+            verify_existing_object(repository, &path, identity, bytes)
         }
         Err(error) => Err(LocalPdmError::Io(error.error)),
     }
 }
 
 fn verify_existing_object(
+    repository: &Path,
     path: &Path,
     identity: &ReleaseObjectIdentity,
     expected_bytes: &[u8],
 ) -> Result<(), LocalPdmError> {
-    let actual = read_bounded_file(
+    let actual = read_bounded_repository_file(
+        repository,
         path,
         MAX_RELEASE_DEPENDENCY_BYTES,
         LocalPdmError::ObjectConflict {
@@ -855,11 +951,20 @@ fn verify_existing_object(
 
 fn write_manifest(repository: &Path, release_id: &str, bytes: &[u8]) -> Result<(), LocalPdmError> {
     let path = release_manifest_path(repository, release_id)?;
-    let parent = path.parent().ok_or(LocalPdmError::InvalidManifest)?;
-    fs::create_dir_all(parent)?;
+    let parent = path.parent().ok_or(LocalPdmError::InvalidRepositoryPath)?;
+    ensure_repository_directory(repository, parent, true)?;
+    match fs::symlink_metadata(&path) {
+        Ok(_) => {
+            validate_repository_file(&path)?;
+            return Err(LocalPdmError::ReleaseAlreadyExists);
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(LocalPdmError::Io(error)),
+    }
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
     temporary.write_all(bytes)?;
     temporary.as_file_mut().sync_all()?;
+    ensure_repository_directory(repository, parent, false)?;
     match temporary.persist_noclobber(path) {
         Ok(_) => Ok(()),
         Err(error) if error.error.kind() == io::ErrorKind::AlreadyExists => {
@@ -875,7 +980,8 @@ fn read_object(
 ) -> Result<Vec<u8>, LocalPdmError> {
     validate_object_identity(expected)?;
     let path = release_object_path(repository, &expected.sha256)?;
-    let bytes = match read_bounded_file(
+    let bytes = match read_bounded_repository_file(
+        repository,
         &path,
         MAX_RELEASE_DEPENDENCY_BYTES,
         LocalPdmError::ObjectTampered {

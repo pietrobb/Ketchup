@@ -106,8 +106,7 @@ impl KetchupApp {
             if rederived != pending.plan {
                 return Err("GLB review or canonical batch changed after preview".to_owned());
             }
-            self.document
-                .apply_batch(&pending.plan.batch)
+            self.apply_batch_with_work_recovery(&pending.plan.batch)
                 .map_err(|error| error.to_string())?;
             Ok::<(), String>(())
         })();

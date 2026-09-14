@@ -9,11 +9,13 @@ use ketchup_scheduler::assistant::{
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs;
-use std::io::Read;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 const ASSISTANT_TIMEOUT: Duration = Duration::from_secs(300);
+const MAX_ASSISTANT_CA_BUNDLE_BYTES: u64 = 4 * 1024 * 1024;
 const PINNED_PUBLIC_PYTHON_SHA256: &str =
     "5f7b89a612c9b8af1d6456cdfcd1dbe5ca630849e79aebced9bee9a6694952ec";
 const PUBLIC_ASSISTANT: &[u8] = include_bytes!("../../../sdk/python/ketchup_assistant.py");
@@ -21,23 +23,53 @@ const PUBLIC_ASSISTANT_PROTOCOL: &[u8] =
     include_bytes!("../../../sdk/python/ketchup_assistant_protocol.py");
 const PUBLIC_ASSISTANT_BOOTSTRAP: &str = r#"import hashlib,pathlib,sys,types
 
-def checked_source(path, expected):
-    source = pathlib.Path(path).read_bytes()
-    if hashlib.sha256(source).hexdigest() != expected:
+def checked_source(path, expected, expected_size):
+    expected_size = int(expected_size)
+    with pathlib.Path(path).open("rb") as source_file:
+        source = source_file.read(expected_size + 1)
+    if len(source) > expected_size:
+        raise SystemExit("public Assistant runtime source exceeds its bounded identity")
+    if len(source) != expected_size or hashlib.sha256(source).hexdigest() != expected:
         raise SystemExit("public Assistant runtime identity mismatch")
     return source
 
-script_path, script_hash, protocol_path, protocol_hash = sys.argv[1:5]
+script_path, script_hash, script_size, protocol_path, protocol_hash, protocol_size = sys.argv[1:7]
 protocol = types.ModuleType("ketchup_assistant_protocol")
 protocol.__file__ = protocol_path
 protocol.__package__ = None
 sys.modules[protocol.__name__] = protocol
-exec(compile(checked_source(protocol_path, protocol_hash), protocol_path, "exec"), protocol.__dict__)
+exec(compile(checked_source(protocol_path, protocol_hash, protocol_size), protocol_path, "exec"), protocol.__dict__)
 namespace = {"__name__": "__main__", "__file__": script_path, "__package__": None}
-exec(compile(checked_source(script_path, script_hash), script_path, "exec"), namespace)
+exec(compile(checked_source(script_path, script_hash, script_size), script_path, "exec"), namespace)
 "#;
 
 pub(crate) struct ProcessAssistantTransport;
+
+#[derive(Debug)]
+struct PublicAssistantEnvironment {
+    variables: Vec<(OsString, OsString)>,
+    files: Vec<Arc<tempfile::NamedTempFile>>,
+}
+
+fn read_bounded_regular_file(path: &Path, max_bytes: u64) -> io::Result<Vec<u8>> {
+    let file = fs::File::open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > max_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "file exceeds its bounded identity",
+        ));
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(max_bytes + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "file grew beyond its bounded identity",
+        ));
+    }
+    Ok(bytes)
+}
 
 impl AssistantTransport for ProcessAssistantTransport {
     fn chat(
@@ -117,23 +149,11 @@ pub fn private_assistant_launch_for_executable(
     let executable = executable
         .canonicalize()
         .map_err(|error| format!("private OAuth Assistant is unavailable: {error}"))?;
-    let file = fs::File::open(&executable)
-        .map_err(|error| format!("private OAuth Assistant is unreadable: {error}"))?;
-    let metadata = file
-        .metadata()
-        .map_err(|error| format!("private OAuth Assistant identity is unavailable: {error}"))?;
-    if !metadata.is_file()
-        || metadata.len() > ketchup_scheduler::assistant::MAX_ASSISTANT_EXECUTABLE_BYTES
-    {
-        return Err("private OAuth Assistant is not a bounded file".to_owned());
-    }
-    let mut bytes = Vec::new();
-    file.take(ketchup_scheduler::assistant::MAX_ASSISTANT_EXECUTABLE_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| format!("private OAuth Assistant is unreadable: {error}"))?;
-    if bytes.len() as u64 > ketchup_scheduler::assistant::MAX_ASSISTANT_EXECUTABLE_BYTES {
-        return Err("private OAuth Assistant is not a bounded file".to_owned());
-    }
+    let bytes = read_bounded_regular_file(
+        &executable,
+        ketchup_scheduler::assistant::MAX_ASSISTANT_EXECUTABLE_BYTES,
+    )
+    .map_err(|error| format!("private OAuth Assistant is not a bounded file: {error}"))?;
     let working_directory = executable
         .parent()
         .ok_or_else(|| "private OAuth Assistant install root is unavailable".to_owned())?
@@ -161,6 +181,7 @@ pub fn private_assistant_launch_for_executable(
         arguments: Vec::new(),
         working_directory,
         environment,
+        environment_files: Vec::new(),
     })
 }
 
@@ -227,25 +248,13 @@ fn installed_public_python(install_root: &Path) -> Result<PathBuf, String> {
         let Ok(path) = candidate.canonicalize() else {
             continue;
         };
-        let Ok(file) = fs::File::open(&path) else {
+        let Ok(bytes) = read_bounded_regular_file(
+            &path,
+            ketchup_scheduler::assistant::MAX_ASSISTANT_EXECUTABLE_BYTES,
+        ) else {
             continue;
         };
-        let Ok(metadata) = file.metadata() else {
-            continue;
-        };
-        if !metadata.is_file()
-            || metadata.len() > ketchup_scheduler::assistant::MAX_ASSISTANT_EXECUTABLE_BYTES
-        {
-            continue;
-        }
-        let mut bytes = Vec::new();
-        if file
-            .take(ketchup_scheduler::assistant::MAX_ASSISTANT_EXECUTABLE_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .is_ok()
-            && bytes.len() as u64 <= ketchup_scheduler::assistant::MAX_ASSISTANT_EXECUTABLE_BYTES
-            && sha256_hex(&bytes) == PINNED_PUBLIC_PYTHON_SHA256
-        {
+        if sha256_hex(&bytes) == PINNED_PUBLIC_PYTHON_SHA256 {
             return Ok(path);
         }
     }
@@ -258,8 +267,11 @@ fn installed_public_python(install_root: &Path) -> Result<PathBuf, String> {
     let path = candidate
         .canonicalize()
         .map_err(|_| "the co-located pinned Python runtime is unavailable".to_owned())?;
-    let bytes = fs::read(&path)
-        .map_err(|_| "the co-located pinned Python runtime is unavailable".to_owned())?;
+    let bytes = read_bounded_regular_file(
+        &path,
+        ketchup_scheduler::assistant::MAX_ASSISTANT_EXECUTABLE_BYTES,
+    )
+    .map_err(|_| "the co-located pinned Python runtime is unavailable".to_owned())?;
     if sha256_hex(&bytes) != PINNED_PUBLIC_PYTHON_SHA256 {
         return Err(
             "the co-located Python runtime identity does not match the release pin".to_owned(),
@@ -318,24 +330,28 @@ pub fn public_assistant_launch_for_install_root(
             OsString::from(PUBLIC_ASSISTANT_BOOTSTRAP),
             script.into_os_string(),
             OsString::from(sha256_hex(PUBLIC_ASSISTANT)),
+            OsString::from(PUBLIC_ASSISTANT.len().to_string()),
             protocol.into_os_string(),
             OsString::from(sha256_hex(PUBLIC_ASSISTANT_PROTOCOL)),
+            OsString::from(PUBLIC_ASSISTANT_PROTOCOL.len().to_string()),
         ],
         working_directory,
-        environment,
+        environment: environment.variables,
+        environment_files: environment.files,
     })
 }
 
 fn public_assistant_environment(
     provider: &str,
     source: impl Fn(&str) -> Option<OsString>,
-) -> Result<Vec<(OsString, OsString)>, String> {
+) -> Result<PublicAssistantEnvironment, String> {
     let api_key = match provider {
         "anthropic-api" => "ANTHROPIC_API_KEY",
         "openai-api" => "OPENAI_API_KEY",
         _ => return Err("unsupported public Assistant provider".to_owned()),
     };
     let mut environment = Vec::new();
+    let mut environment_files = Vec::new();
     if let Some(value) = source(api_key).filter(|value| !value.is_empty()) {
         environment.push((OsString::from(api_key), value));
     }
@@ -373,19 +389,32 @@ fn public_assistant_environment(
         let canonical = configured
             .canonicalize()
             .map_err(|error| format!("Assistant CA bundle is unavailable: {error}"))?;
-        let metadata = canonical
-            .metadata()
-            .map_err(|error| format!("Assistant CA bundle identity is unavailable: {error}"))?;
-        if !metadata.is_file() || metadata.len() > 4 * 1024 * 1024 {
-            return Err("Assistant CA bundle must be a bounded file".to_owned());
-        }
-        environment.push((OsString::from("SSL_CERT_FILE"), canonical.into_os_string()));
+        let bytes = read_bounded_regular_file(&canonical, MAX_ASSISTANT_CA_BUNDLE_BYTES)
+            .map_err(|error| format!("Assistant CA bundle must be a bounded file: {error}"))?;
+        let mut snapshot = tempfile::Builder::new()
+            .prefix("ketchup-assistant-ca-")
+            .suffix(".pem")
+            .tempfile()
+            .map_err(|error| format!("Assistant CA bundle snapshot is unavailable: {error}"))?;
+        snapshot
+            .write_all(&bytes)
+            .and_then(|()| snapshot.flush())
+            .map_err(|error| format!("Assistant CA bundle snapshot failed: {error}"))?;
+        let snapshot = Arc::new(snapshot);
+        environment.push((
+            OsString::from("SSL_CERT_FILE"),
+            snapshot.path().as_os_str().to_owned(),
+        ));
+        environment_files.push(snapshot);
     }
     #[cfg(windows)]
     if let Some(value) = source("SYSTEMROOT").filter(|value| !value.is_empty()) {
         environment.push((OsString::from("SYSTEMROOT"), value));
     }
-    Ok(environment)
+    Ok(PublicAssistantEnvironment {
+        variables: environment,
+        files: environment_files,
+    })
 }
 
 fn verified_runtime_file(root: &Path, relative: &Path, expected: &[u8]) -> Result<PathBuf, String> {
@@ -399,13 +428,7 @@ fn verified_runtime_file(root: &Path, relative: &Path, expected: &[u8]) -> Resul
             relative.display()
         ));
     }
-    let metadata = canonical
-        .metadata()
-        .map_err(|error| format!("{} identity is unavailable: {error}", relative.display()))?;
-    if metadata.len() != expected.len() as u64 {
-        return Err(format!("{} identity mismatch", relative.display()));
-    }
-    let actual = fs::read(&canonical)
+    let actual = read_bounded_regular_file(&canonical, expected.len() as u64)
         .map_err(|error| format!("{} identity is unreadable: {error}", relative.display()))?;
     if actual != expected {
         return Err(format!("{} identity mismatch", relative.display()));
@@ -415,9 +438,21 @@ fn verified_runtime_file(root: &Path, relative: &Path, expected: &[u8]) -> Resul
 
 #[cfg(test)]
 mod tests {
-    use super::public_assistant_environment;
+    use super::{public_assistant_environment, read_bounded_regular_file};
     use std::collections::BTreeMap;
     use std::ffi::OsString;
+
+    #[test]
+    fn runtime_identity_reader_rejects_oversized_regular_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("runtime.bin");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(1024 * 1024).unwrap();
+
+        let error = read_bounded_regular_file(&path, 64).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
 
     #[test]
     fn public_environment_maps_only_explicit_bounded_network_configuration() {
@@ -445,21 +480,55 @@ mod tests {
         let environment =
             public_assistant_environment("anthropic-api", |name| values.get(name).cloned())
                 .unwrap();
+        assert_eq!(environment.files.len(), 1);
 
-        assert!(environment.contains(&(
+        assert!(environment.variables.contains(&(
             OsString::from("HTTPS_PROXY"),
             OsString::from("http://proxy.example:8080")
         )));
-        assert!(environment.contains(&(
+        assert!(environment.variables.contains(&(
             OsString::from("NO_PROXY"),
             OsString::from("localhost,.example.test")
         )));
-        assert!(environment.iter().any(|(name, value)| {
+        assert!(environment.variables.iter().any(|(name, value)| {
             name == "SSL_CERT_FILE" && std::path::PathBuf::from(value).is_absolute()
         }));
-        assert!(environment.iter().all(|(name, value)| {
+        assert!(environment.variables.iter().all(|(name, value)| {
             name != "PATH" && value != "http://ambient.invalid" && value != "ambient-invalid.pem"
         }));
+    }
+
+    #[test]
+    fn public_environment_snapshots_ca_bundle_before_launch() {
+        let directory = tempfile::tempdir().unwrap();
+        let ca_bundle = directory.path().join("company-ca.pem");
+        std::fs::write(&ca_bundle, b"trusted certificate bundle").unwrap();
+        let environment = public_assistant_environment("openai-api", |name| {
+            (name == "KETCHUP_ASSISTANT_CA_BUNDLE").then(|| ca_bundle.as_os_str().to_owned())
+        })
+        .unwrap();
+        assert_eq!(environment.files.len(), 1);
+        let snapshot = environment
+            .variables
+            .iter()
+            .find_map(|(name, value)| (name == "SSL_CERT_FILE").then(|| value.clone()))
+            .map(std::path::PathBuf::from)
+            .unwrap();
+
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&ca_bundle)
+            .unwrap()
+            .set_len(8 * 1024 * 1024)
+            .unwrap();
+
+        assert_ne!(snapshot, ca_bundle.canonicalize().unwrap());
+        assert_eq!(
+            std::fs::read(&snapshot).unwrap(),
+            b"trusted certificate bundle"
+        );
+        drop(environment.files);
+        assert!(!snapshot.exists());
     }
 
     #[test]

@@ -515,6 +515,171 @@ def _image_path(image_path: str) -> Path:
     return path
 
 
+def _windows_create_new_image_handle(parent_handle: int, name: str) -> int:
+    import ctypes
+    from ctypes import wintypes
+
+    class UnicodeString(ctypes.Structure):
+        _fields_ = [("length", ctypes.c_ushort), ("maximum_length", ctypes.c_ushort),
+                    ("buffer", wintypes.LPWSTR)]
+
+    class ObjectAttributes(ctypes.Structure):
+        _fields_ = [("length", wintypes.ULONG), ("root_directory", wintypes.HANDLE),
+                    ("object_name", ctypes.POINTER(UnicodeString)),
+                    ("attributes", wintypes.ULONG), ("security_descriptor", wintypes.LPVOID),
+                    ("security_quality_of_service", wintypes.LPVOID)]
+
+    class IoStatusBlock(ctypes.Structure):
+        _fields_ = [("status", wintypes.LPVOID), ("information", ctypes.c_size_t)]
+
+    buffer = ctypes.create_unicode_buffer(name)
+    encoded_length = len(name.encode("utf-16-le"))
+    unicode_name = UnicodeString(
+        encoded_length, encoded_length + 2, ctypes.cast(buffer, wintypes.LPWSTR)
+    )
+    attributes = ObjectAttributes(
+        ctypes.sizeof(ObjectAttributes), parent_handle, ctypes.pointer(unicode_name),
+        0x40, None, None,
+    )
+    io_status = IoStatusBlock()
+    output = wintypes.HANDLE()
+    ntdll = ctypes.WinDLL("ntdll")
+    create_file = ntdll.NtCreateFile
+    create_file.argtypes = [ctypes.POINTER(wintypes.HANDLE), wintypes.ULONG,
+                            ctypes.POINTER(ObjectAttributes), ctypes.POINTER(IoStatusBlock),
+                            wintypes.LPVOID, wintypes.ULONG, wintypes.ULONG, wintypes.ULONG,
+                            wintypes.ULONG, wintypes.LPVOID, wintypes.ULONG]
+    create_file.restype = ctypes.c_long
+    status = create_file(
+        ctypes.byref(output), 0x00130116, ctypes.byref(attributes), ctypes.byref(io_status),
+        None, 0x80, 0, 2, 0x60, None, 0,
+    )
+    if status < 0:
+        to_dos_error = ntdll.RtlNtStatusToDosError
+        to_dos_error.argtypes = [ctypes.c_long]
+        to_dos_error.restype = wintypes.ULONG
+        error = to_dos_error(status)
+        if error in (80, 183):
+            raise FileExistsError(error, "image destination already exists", name)
+        raise ctypes.WinError(error)
+    return output.value
+
+
+def _open_new_image_file(path: Path) -> int:
+    if os.name != "nt":
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        directory = os.open(path.anchor, flags)
+        try:
+            for component in path.parent.relative_to(path.anchor).parts:
+                child = os.open(component, flags, dir_fd=directory)
+                os.close(directory)
+                directory = child
+            return os.open(
+                path.name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                0o666,
+                dir_fd=directory,
+            )
+        finally:
+            os.close(directory)
+
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class FileAttributeTagInfo(ctypes.Structure):
+        _fields_ = [("attributes", wintypes.DWORD), ("reparse_tag", wintypes.DWORD)]
+
+    class ByHandleFileInformation(ctypes.Structure):
+        _fields_ = [
+            ("attributes", wintypes.DWORD), ("creation_time", wintypes.FILETIME),
+            ("access_time", wintypes.FILETIME), ("write_time", wintypes.FILETIME),
+            ("volume_serial", wintypes.DWORD), ("size_high", wintypes.DWORD),
+            ("size_low", wintypes.DWORD), ("link_count", wintypes.DWORD),
+            ("file_index_high", wintypes.DWORD), ("file_index_low", wintypes.DWORD),
+        ]
+
+    class FileDispositionInfo(ctypes.Structure):
+        _fields_ = [("delete_file", ctypes.c_ubyte)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                            wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD,
+                            wintypes.HANDLE]
+    create_file.restype = wintypes.HANDLE
+    get_info = kernel32.GetFileInformationByHandleEx
+    get_info.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
+    get_info.restype = wintypes.BOOL
+    get_identity = kernel32.GetFileInformationByHandle
+    get_identity.argtypes = [wintypes.HANDLE, ctypes.POINTER(ByHandleFileInformation)]
+    get_identity.restype = wintypes.BOOL
+    set_info = kernel32.SetFileInformationByHandle
+    set_info.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
+    set_info.restype = wintypes.BOOL
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+    invalid = wintypes.HANDLE(-1).value
+    handles: list[int] = []
+    leaf_handle: int | None = None
+
+    def identity(handle: int) -> tuple[int, int, int]:
+        info = ByHandleFileInformation()
+        if not get_identity(handle, ctypes.byref(info)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return info.volume_serial, info.file_index_high, info.file_index_low
+
+    try:
+        for component in reversed((path.parent, *path.parent.parents)):
+            handle = create_file(str(component), 0x0080, 0x00000003, None, 3,
+                                 0x02200000, None)
+            if handle == invalid:
+                raise ctypes.WinError(ctypes.get_last_error())
+            handles.append(handle)
+            info = FileAttributeTagInfo()
+            if not get_info(handle, 9, ctypes.byref(info), ctypes.sizeof(info)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if not info.attributes & 0x10 or info.attributes & 0x400:
+                raise ValueError("image paths must not contain links")
+        leaf_handle = _windows_create_new_image_handle(handles[-1], path.name)
+        current_parent = create_file(str(path.parent), 0x0080, 0x00000003, None, 3,
+                                     0x02200000, None)
+        same_parent = False
+        if current_parent != invalid:
+            try:
+                info = FileAttributeTagInfo()
+                if not get_info(current_parent, 9, ctypes.byref(info), ctypes.sizeof(info)):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                same_parent = not info.attributes & 0x400 and (
+                    identity(current_parent) == identity(handles[-1])
+                )
+            finally:
+                close_handle(current_parent)
+        if not same_parent:
+            disposition = FileDispositionInfo(1)
+            if not set_info(leaf_handle, 4, ctypes.byref(disposition), ctypes.sizeof(disposition)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            raise ValueError("image destination parent changed during creation")
+        descriptor = msvcrt.open_osfhandle(leaf_handle, os.O_WRONLY | os.O_BINARY)
+        leaf_handle = None
+        return descriptor
+    finally:
+        if leaf_handle is not None:
+            close_handle(leaf_handle)
+        for handle in reversed(handles):
+            close_handle(handle)
+
+
+def _write_new_image(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _image_path(str(path))
+    descriptor = _open_new_image_file(path)
+    with os.fdopen(descriptor, "wb") as stream:
+        if stream.write(data) != len(data):
+            raise OSError("incomplete image artifact write")
+
+
 def save_image(response: dict, expected: Stamp | dict, image_path: str,
                capture_mode: CaptureMode = "offscreen",
                max_side_px: int = DEFAULT_IMAGE_SIDE_PX,
@@ -546,11 +711,7 @@ def save_image(response: dict, expected: Stamp | dict, image_path: str,
             raise ValueError("image receipt exceeds output budget")
     except (ValueError, TypeError, KeyError, binascii.Error, zlib.error):
         raise LiveProtocolError("invalid live image response") from None
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _image_path(image_path)  # Recheck after mkdir; exclusive create is authoritative.
-    with path.open("xb") as stream:
-        if stream.write(data) != len(data):
-            raise OSError("incomplete image artifact write")
+    _write_new_image(path, data)
     return snapshot
 
 

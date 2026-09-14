@@ -3,7 +3,7 @@ use ketchup_core::document::{
     EvaluationIdentity, EvaluationStatus, GraphError, NodeId, OverrideParameterSpec, PortSpec,
     RuleOutput, SlotPath, SlotResolution, SlotSegment,
 };
-use ketchup_core::graph::DiagnosticCode;
+use ketchup_core::graph::{DiagnosticCode, sha256_reader_hex};
 use ketchup_core::persistence;
 
 fn segment(key: &str) -> SlotSegment {
@@ -305,5 +305,30 @@ fn registration_is_strict_and_canonical_history_is_invariant() {
             .register_evaluation(NodeId(4), path("left"), &stale)
             .unwrap_err(),
         CanonicalError::EvaluationEnvelopeMismatch
+    );
+}
+
+#[test]
+fn reader_sha256_is_incremental_and_bounded() {
+    struct RepeatedByte {
+        remaining: usize,
+    }
+
+    impl std::io::Read for RepeatedByte {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            assert!(buffer.len() <= 64 * 1024);
+            let read = self.remaining.min(buffer.len());
+            buffer[..read].fill(b'a');
+            self.remaining -= read;
+            Ok(read)
+        }
+    }
+
+    assert_eq!(
+        sha256_reader_hex(RepeatedByte {
+            remaining: 1_000_000,
+        })
+        .unwrap(),
+        "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
     );
 }

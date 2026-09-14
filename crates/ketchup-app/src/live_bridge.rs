@@ -10,17 +10,22 @@
 //! On a lost response, do not retry mutations blindly. Re-observe the document.
 //! Images are callback-correlated CAD-only PNG thumbnails; geometry completeness is not claimed.
 
-use crate::{ActiveTool, AppCommand, KetchupApp, SelectionId};
+use crate::{ActiveTool, AppCommand, KetchupApp, SelectionId, WorkRecoveryMutationError};
 use eframe::egui;
 use ketchup_application::{
-    batch_task::{OccurrenceBatchOperation, OccurrenceBatchState, OccurrenceBatchTask},
+    batch_task::{
+        OccurrenceBatchDocument, OccurrenceBatchError, OccurrenceBatchOperation,
+        OccurrenceBatchState, OccurrenceBatchTask,
+    },
     model_query::{EntityKind, ModelQuery, PageRequest},
 };
 use ketchup_core::{
     assistant_sidecar::{
         AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
     },
-    document::{OccurrenceId, Proposal},
+    document::{
+        CommandBatch, DocumentStore, OccurrenceId, Proposal, Snapshot, VerifiedProposalCommit,
+    },
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -263,6 +268,29 @@ struct BatchJob {
     handle: String,
     task: OccurrenceBatchTask,
 }
+
+impl OccurrenceBatchDocument for KetchupApp {
+    fn batch_snapshot(&self) -> Snapshot {
+        self.document.current()
+    }
+
+    fn batch_mutation_epoch(&self) -> u64 {
+        self.document.mutation_epoch()
+    }
+
+    fn batch_plan(&self, batch: CommandBatch) -> Result<Proposal, OccurrenceBatchError> {
+        <DocumentStore as OccurrenceBatchDocument>::batch_plan(&self.document, batch)
+    }
+
+    fn batch_commit(
+        &mut self,
+        proposal: &Proposal,
+    ) -> Result<VerifiedProposalCommit, OccurrenceBatchError> {
+        self.commit_verified_proposal_with_work_recovery(proposal)
+            .map_err(|_| OccurrenceBatchError::HostTransaction)
+    }
+}
+
 pub(crate) struct LiveBridge {
     address: SocketAddr,
     token: String,
@@ -715,7 +743,7 @@ impl LiveBridge {
                     .ok_or("batch_job_not_found")?;
                 let receipt = self.batch_jobs[index]
                     .task
-                    .commit_next(&mut app.document)
+                    .commit_next(app)
                     .map_err(|e| e.code())?;
                 if receipt.is_some() {
                     self.query.invalidate();
@@ -789,11 +817,13 @@ impl LiveBridge {
                 {
                     return Err("selection_changed");
                 }
-                let pending = self.pending.take().expect("checked pending proposal");
                 let committed = app
-                    .document
-                    .commit_verified_proposal(&pending.proposal)
-                    .map_err(|_| "commit_rejected")?;
+                    .commit_verified_proposal_with_work_recovery(&pending.proposal)
+                    .map_err(|error| match error {
+                        WorkRecoveryMutationError::Mutation(_) => "commit_rejected",
+                        WorkRecoveryMutationError::Recovery(_) => "recovery_rejected",
+                    })?;
+                self.pending.take().expect("committed pending proposal");
                 let value = json!({"proposal_id":proposal_id,"committed":true,"verified":true,
                     "before":expected,"after":app.live_bridge_stamp(),"command_digest":committed.command_digest(),
                     "result_digest":committed.result_digest(),"write_count":committed.verified_writes().len(),

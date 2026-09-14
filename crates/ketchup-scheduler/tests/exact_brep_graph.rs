@@ -1516,34 +1516,22 @@ fn worker_binds_multiple_imported_sources_by_digest_for_boolean_and_mesh() {
             .is_err()
     );
     let malformed_source = b"not a STEP payload";
-    let mut malformed_document = DocumentStore::new();
-    malformed_document
-        .apply_batch(
-            &plan_step_import(
-                &malformed_document.current(),
-                malformed_source,
-                "malformed.step",
-                &evidences[0],
-            )
-            .unwrap(),
-        )
-        .unwrap();
-    let malformed_snapshot = malformed_document.current();
-    let malformed_definition = malformed_snapshot.definitions().next().unwrap().id();
-    let malformed_producer = malformed_snapshot.features().next().unwrap().id();
-    let malformed_graph = ExactBRepGraph::from_snapshot(
-        &malformed_snapshot,
-        malformed_definition,
-        malformed_producer,
-    )
-    .unwrap();
-    assert!(matches!(
-        supervisor.evaluate_exact_brep_graph_with_imported_sources(
-            &malformed_graph,
-            &[malformed_source.as_slice()],
+    let malformed_document = DocumentStore::new();
+    let malformed_before = malformed_document.current().canonical_digest();
+    assert_eq!(
+        plan_step_import(
+            &malformed_document.current(),
+            malformed_source,
+            "malformed.step",
+            &evidences[0],
         ),
-        Err(WorkerError::Geometry(_))
-    ));
+        Err(ketchup_core::import::StepImportPlanError::InvalidWorkerEvidence)
+    );
+    assert_eq!(
+        malformed_document.current().canonical_digest(),
+        malformed_before
+    );
+    assert_eq!(malformed_document.visible_undo_steps(), 0);
     assert_eq!(
         supervisor
             .evaluate_exact_brep_graph_with_imported_sources(&graph, &reversed_sources)
@@ -1856,7 +1844,7 @@ fn generated_boolean_graph_preserves_legacy_export_and_stale_contracts() {
     assert!(step.len() > 256);
     assert!(step.windows(9).any(|window| window == b"ISO-10303"));
     let model_step_path = directory.path().join("generated-boolean-model.step");
-    supervisor
+    let verified_model_step = supervisor
         .export_current_model_step(
             &snapshot,
             &[(
@@ -1867,8 +1855,15 @@ fn generated_boolean_graph_preserves_legacy_export_and_stale_contracts() {
         )
         .unwrap();
     let model_step = std::fs::read(&model_step_path).unwrap();
+    assert_eq!(verified_model_step, model_step);
     assert!(model_step.len() > 256);
     assert!(model_step.windows(9).any(|window| window == b"ISO-10303"));
+    std::fs::write(&model_step_path, b"replaced after verification").unwrap();
+    assert!(
+        verified_model_step
+            .windows(9)
+            .any(|window| window == b"ISO-10303")
+    );
 
     document
         .apply_batch(&CommandBatch::new(vec![

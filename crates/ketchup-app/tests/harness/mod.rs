@@ -71,6 +71,13 @@ impl ScriptedAssistantTransport {
         self.diagnostics.lock().unwrap().push_back(diagnostics);
     }
 
+    pub fn queue_response(&self, message: impl Into<String>, response: AssistantChatResult) {
+        self.responses
+            .lock()
+            .unwrap()
+            .push_back((message.into(), response));
+    }
+
     pub fn queue_cad_edit_program(
         &self,
         message: impl Into<String>,

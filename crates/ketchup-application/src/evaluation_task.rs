@@ -158,8 +158,8 @@ pub fn rebind_exact_results(
     }
 }
 
-/// Publish only snapshot-bound, uncancelled products. Evidence registration is sequential,
-/// not a transaction; canonical content and the Undo stack are never edited here.
+/// Publish only snapshot-bound, uncancelled products. Evidence registration is atomic;
+/// canonical content and the Undo stack are never edited here.
 pub fn publish_exact_products(
     document: &mut DocumentStore,
     render: &mut ExactResultRegistry,
@@ -191,22 +191,208 @@ pub fn publish_exact_products(
         .flat_map(|package| package.references())
         .cloned()
         .collect::<Vec<_>>();
-    for reference in references {
-        let identity = format!(
-            "role={}, source={}, profile={}, producer={}",
-            reference.semantic_role,
-            reference.source_element_id,
-            reference.profile_feature_id.0,
-            reference.producer_feature_id.0
-        );
-        document
-            .register_exact_reference_evidence(reference)
-            .map_err(|error| format!("{error}: {identity}"))?;
-    }
-    document
-        .register_exact_reference_evidence(&results)
-        .map_err(|error| error.to_string())?;
+    document.try_canonical_transaction(
+        |document| {
+            for reference in references {
+                let identity = format!(
+                    "role={}, source={}, profile={}, producer={}",
+                    reference.semantic_role,
+                    reference.source_element_id,
+                    reference.profile_feature_id.0,
+                    reference.producer_feature_id.0
+                );
+                document
+                    .register_exact_reference_evidence(reference)
+                    .map_err(|error| format!("{error}: {identity}"))?;
+            }
+            document
+                .register_exact_reference_evidence(&results)
+                .map_err(|error| error.to_string())
+        },
+        |_| Ok(()),
+    )?;
     *render = results;
     *topology = topology_results;
     Ok(products.report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ketchup_core::document::{
+        CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
+        FeatureKind, OccurrenceId, Transform,
+    };
+    use ketchup_core::exact_product::{
+        ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactResultRegistry,
+        build_box_render_package, canonical_reference_lineage_digest,
+    };
+    use ketchup_core::sketch::{
+        PrincipalPlane, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport, WorkplaneSupportHealth,
+    };
+
+    const DEFINITION: DefinitionId = DefinitionId(1);
+    const PROFILE: FeatureId = FeatureId(10);
+    const EXTRUSION: FeatureId = FeatureId(11);
+    const FACE_PLANE: FeatureId = FeatureId(12);
+
+    fn package<const N: usize>(
+        snapshot: &Snapshot,
+        fingerprint: &str,
+        roles: [ExactFaceRole; N],
+    ) -> ExactBodyPackage {
+        let request =
+            ExactFeatureChainRequest::from_snapshot_for_producer(snapshot, DEFINITION, EXTRUSION)
+                .unwrap();
+        let evidence = roles.map(|role| {
+            (
+                role,
+                canonical_reference_lineage_digest(
+                    snapshot.document_id(),
+                    EXTRUSION,
+                    role.semantic_role(),
+                    role.source_element_id(),
+                    role.expected_type(),
+                ),
+                format!("geometry:{fingerprint}:{role:?}"),
+            )
+        });
+        build_box_render_package(
+            &request,
+            format!("input:{fingerprint}"),
+            fingerprint.to_owned(),
+            "test-backend".into(),
+            "test-tolerance".into(),
+            request.expected_bounds_mm(),
+            evidence,
+        )
+        .unwrap()
+        .into()
+    }
+
+    fn seed() -> DocumentStore {
+        let mut document = DocumentStore::new();
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DEFINITION,
+                    name: "Part".into(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: PROFILE,
+                    definition_id: DEFINITION,
+                    name: "Profile".into(),
+                    kind: FeatureKind::Profile {
+                        points_mm: vec![[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.0, 10.0]],
+                    },
+                },
+                CanonicalCommand::CreateFeature {
+                    id: EXTRUSION,
+                    definition_id: DEFINITION,
+                    name: "Extrusion".into(),
+                    kind: FeatureKind::Extrusion {
+                        profile: PROFILE,
+                        height: Dimension::from_decimal("5").unwrap(),
+                    },
+                },
+                CanonicalCommand::CreateOccurrence {
+                    id: OccurrenceId(20),
+                    definition_id: DEFINITION,
+                    name: "Part occurrence".into(),
+                    transform: Transform::identity(),
+                    parent: None,
+                    tag: None,
+                    visible: true,
+                },
+            ]))
+            .unwrap();
+        let anchor_package = package(
+            &document.current(),
+            "anchor",
+            [
+                ExactFaceRole::Top,
+                ExactFaceRole::Bottom,
+                ExactFaceRole::East,
+            ],
+        );
+        let anchor = anchor_package.references()[0].clone();
+        document
+            .register_exact_reference_evidence(anchor.clone())
+            .unwrap();
+        document
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+                id: FACE_PLANE,
+                definition_id: DEFINITION,
+                name: "Face plane".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec {
+                    support: WorkplaneSupport::PlanarFace {
+                        reference: Box::new(anchor),
+                        health: WorkplaneSupportHealth::Resolved,
+                    },
+                    frame: WorkplaneFrame::principal(PrincipalPlane::Xy).offset(5.0),
+                }),
+            }]))
+            .unwrap();
+        document
+    }
+
+    #[test]
+    fn exact_publication_is_atomic_when_later_reference_conflicts() {
+        let mut document = seed();
+        let snapshot = document.current();
+        let before = snapshot
+            .exact_reference_evidence()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(before.len(), 1);
+        let package = package(
+            &snapshot,
+            "conflicting",
+            [
+                ExactFaceRole::Bottom,
+                ExactFaceRole::East,
+                ExactFaceRole::Top,
+            ],
+        );
+        let source = exact_source(&snapshot);
+        let (_sender, receiver) = mpsc::channel();
+        let task = ExactEvaluationTask {
+            source: source.clone(),
+            cancelled: Arc::new(AtomicBool::new(false)),
+            finished: Arc::new(AtomicBool::new(true)),
+            receiver,
+            total_producers: 1,
+            completed_producers: Arc::new(AtomicUsize::new(1)),
+            reused_producers: 0,
+            active_producer: Arc::new(Mutex::new(None)),
+        };
+        let products = ExactEvaluationProducts {
+            source: source.clone(),
+            render_packages: vec![Arc::new(package)],
+            topology_packages: Vec::new(),
+            report: EvaluationReport {
+                source,
+                producers: Vec::new(),
+                complete: true,
+                topology_complete: false,
+                not_evaluated: None,
+            },
+        };
+        let mut render = ExactResultRegistry::default();
+        let mut topology = ExactResultRegistry::default();
+
+        publish_exact_products(&mut document, &mut render, &mut topology, &task, products)
+            .unwrap_err();
+
+        assert_eq!(
+            document
+                .current()
+                .exact_reference_evidence()
+                .cloned()
+                .collect::<Vec<_>>(),
+            before
+        );
+        assert!(render.is_empty());
+        assert!(topology.is_empty());
+    }
 }

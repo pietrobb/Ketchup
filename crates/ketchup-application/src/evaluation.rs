@@ -655,6 +655,8 @@ pub fn start_exact_evaluation_scoped(
                 }
                 let source_unit = receipt.units().source_unit();
                 let mut expected = StepImportEvidence {
+                    source_sha256: spec.source_sha256,
+                    source_byte_len: spec.source_byte_len,
                     source_unit,
                     result_fingerprint: spec.result_fingerprint.clone(),
                     body_kind: spec.body_kind,
@@ -704,6 +706,8 @@ pub fn start_exact_evaluation_scoped(
                                 &worker_cancelled,
                             )
                             .map(|evidence| StepImportEvidence {
+                                source_sha256: evidence.source_sha256,
+                                source_byte_len: evidence.source_byte_len,
                                 source_unit: evidence.source_unit,
                                 result_fingerprint: evidence.result_fingerprint,
                                 body_kind: evidence.body_kind,

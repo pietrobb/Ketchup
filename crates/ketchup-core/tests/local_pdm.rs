@@ -1,4 +1,6 @@
 use std::fs;
+#[cfg(windows)]
+use std::process::Command;
 
 use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
@@ -54,6 +56,22 @@ fn audit() -> ReleaseAudit {
     ReleaseAudit::new("local-user", 1_789_321_000_000, "Approved bracket release")
 }
 
+#[cfg(unix)]
+fn create_directory_link(target: &std::path::Path, link: &std::path::Path) {
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+#[cfg(windows)]
+fn create_directory_link(target: &std::path::Path, link: &std::path::Path) {
+    let status = Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .status()
+        .unwrap();
+    assert!(status.success(), "directory junction creation failed");
+}
+
 fn editable_copy(snapshot: &ketchup_core::document::Snapshot) -> DocumentStore {
     match persistence::load(&persistence::save(snapshot))
         .unwrap()
@@ -106,9 +124,24 @@ fn immutable_release_reopens_after_external_sources_change() {
     assert_eq!(verified.snapshot.canonical_digest(), digest);
     assert_eq!(verified.dependency_objects.len(), 1);
     assert_eq!(
-        fs::read(&verified.dependency_objects["supplier/bearing.step"]).unwrap(),
-        b"ISO-10303-21; original bearing"
+        verified.dependency_objects["supplier/bearing.step"],
+        manifest.dependencies[0].object
     );
+    let object_path = release_object_path(
+        &repository,
+        &verified.dependency_objects["supplier/bearing.step"].sha256,
+    )
+    .unwrap();
+    fs::write(&object_path, b"replaced after verification").unwrap();
+    assert_eq!(
+        verified.dependency_objects["supplier/bearing.step"],
+        manifest.dependencies[0].object
+    );
+    assert!(matches!(
+        open_release(&repository, &manifest.release_id),
+        Err(LocalPdmError::ObjectTampered { sha256 })
+            if sha256 == manifest.dependencies[0].object.sha256
+    ));
 }
 
 #[test]
@@ -143,6 +176,101 @@ fn stale_snapshot_is_rejected_before_repository_creation() {
         Err(LocalPdmError::StaleSnapshot)
     ));
     assert!(!repository.exists());
+}
+
+#[test]
+fn repository_directory_links_cannot_escape_object_or_manifest_storage() {
+    let directory = tempfile::tempdir().unwrap();
+    let document = released_document();
+    let snapshot = document.current();
+    let reference = create_release(
+        directory.path().join("reference"),
+        &snapshot,
+        snapshot.revision_id(),
+        &snapshot.canonical_digest(),
+        &[],
+        audit(),
+    )
+    .unwrap();
+
+    let object_repository = directory.path().join("object-repository");
+    let object_outside = directory.path().join("object-outside");
+    fs::create_dir_all(object_repository.join("objects")).unwrap();
+    fs::create_dir_all(&object_outside).unwrap();
+    create_directory_link(
+        &object_outside,
+        &object_repository
+            .join("objects")
+            .join(&reference.document.object.sha256[..2]),
+    );
+    assert!(matches!(
+        create_release(
+            &object_repository,
+            &snapshot,
+            snapshot.revision_id(),
+            &snapshot.canonical_digest(),
+            &[],
+            audit(),
+        ),
+        Err(LocalPdmError::InvalidRepositoryPath)
+    ));
+    assert!(fs::read_dir(&object_outside).unwrap().next().is_none());
+
+    let manifest_repository = directory.path().join("manifest-repository");
+    let manifest_outside = directory.path().join("manifest-outside");
+    fs::create_dir_all(&manifest_repository).unwrap();
+    fs::create_dir_all(&manifest_outside).unwrap();
+    create_directory_link(&manifest_outside, &manifest_repository.join("releases"));
+    assert!(matches!(
+        create_release(
+            &manifest_repository,
+            &snapshot,
+            snapshot.revision_id(),
+            &snapshot.canonical_digest(),
+            &[],
+            audit(),
+        ),
+        Err(LocalPdmError::InvalidRepositoryPath)
+    ));
+    assert!(fs::read_dir(&manifest_outside).unwrap().next().is_none());
+
+    let object_read_repository = directory.path().join("object-read-repository");
+    fs::create_dir_all(object_read_repository.join("releases")).unwrap();
+    fs::copy(
+        release_manifest_path(directory.path().join("reference"), &reference.release_id).unwrap(),
+        release_manifest_path(&object_read_repository, &reference.release_id).unwrap(),
+    )
+    .unwrap();
+    fs::create_dir_all(object_read_repository.join("objects")).unwrap();
+    create_directory_link(
+        &directory
+            .path()
+            .join("reference")
+            .join("objects")
+            .join(&reference.document.object.sha256[..2]),
+        &object_read_repository
+            .join("objects")
+            .join(&reference.document.object.sha256[..2]),
+    );
+    assert!(matches!(
+        open_release(&object_read_repository, &reference.release_id),
+        Err(LocalPdmError::InvalidRepositoryPath)
+    ));
+
+    let manifest_read_repository = directory.path().join("manifest-read-repository");
+    fs::create_dir_all(&manifest_read_repository).unwrap();
+    create_directory_link(
+        &directory.path().join("reference").join("releases"),
+        &manifest_read_repository.join("releases"),
+    );
+    assert!(matches!(
+        open_release(&manifest_read_repository, &reference.release_id),
+        Err(LocalPdmError::InvalidRepositoryPath)
+    ));
+    assert!(matches!(
+        release_catalog(&manifest_read_repository),
+        Err(LocalPdmError::InvalidRepositoryPath)
+    ));
 }
 
 #[test]

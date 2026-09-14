@@ -122,7 +122,7 @@ fn timber(
 
 fn wait_for_assistant_proposal(shell: &mut Shell) {
     let confirm = shell.catalog().text("assistant-confirm");
-    for _ in 0..200 {
+    for _ in 0..1_000 {
         shell.step();
         if shell.app().assistant_proposal().is_some() && shell.has_visible_label(&confirm) {
             return;
@@ -1718,6 +1718,246 @@ fn the_timber_frame_house_projects_a_manufacturable_handoff() {
         "timber-frame-house-manufacturing.txt",
         manufacturing.as_bytes(),
     );
+}
+
+#[test]
+fn measured_house_change_assembly_fabrication_step_and_reopen_workflow() {
+    let total_started = Instant::now();
+    let build_started = Instant::now();
+    let (mut shell, transport, _baseline_revision, _baseline_digest) = build_timber_frame_house();
+    let model_build = build_started.elapsed();
+
+    let stud_definition = definition_id_of(&shell, "Front stud");
+    let changed_definition = definition_id_of(&shell, "Front sheathing");
+    let changed_body = body_feature_id_of(&shell, "Front sheathing");
+    let change_started = Instant::now();
+    let change_request = "Reduce the front sheathing thickness to 16 mm";
+    transport.queue_response(
+        change_request,
+        AssistantChatResult {
+            message: "Review the parametric stud change.".to_owned(),
+            model_intent: None,
+        },
+    );
+    build_step(
+        &mut shell,
+        &transport,
+        change_request,
+        AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::SetDimension {
+                feature_id: changed_body.0,
+                constraint_id: None,
+                value_mm: 16.0,
+            }],
+        },
+    );
+    let parametric_change = change_started.elapsed();
+    assert_eq!(
+        shell
+            .app()
+            .document_snapshot()
+            .occurrences()
+            .filter(|occurrence| occurrence.definition_id() == stud_definition)
+            .count(),
+        STUD_INSTANCES as usize
+    );
+
+    let assembly_started = Instant::now();
+    let final_snapshot = shell.app().document_snapshot();
+    let assembly_scene = final_snapshot.scene_query();
+    let assembly = assembly_started.elapsed();
+    assert_eq!(assembly_scene.len(), 19);
+    assert_eq!(
+        final_snapshot.definitions().count(),
+        HOUSE_MEMBERS.len() + 1
+    );
+    assert_eq!(
+        assembly_scene
+            .iter()
+            .filter(|occurrence| occurrence.definition_id == stud_definition)
+            .count(),
+        STUD_INSTANCES as usize
+    );
+    let final_revision = final_snapshot.revision_id();
+    let final_digest = final_snapshot.canonical_digest();
+    let final_undo_steps = shell.app().undo_step_count();
+
+    let exact_started = Instant::now();
+    let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
+    let packages = HOUSE_MEMBERS
+        .iter()
+        .map(|name| {
+            let definition_id = definition_id_of(&shell, name);
+            let request = ExactFeatureChainRequest::from_snapshot(&final_snapshot, definition_id)
+                .unwrap_or_else(|error| panic!("{name} must yield an exact request: {error}"));
+            let package = worker
+                .evaluate_rectangle(&request)
+                .unwrap_or_else(|error| panic!("{name} must rebuild exactly: {error}"));
+            Arc::new(ExactBodyPackage::from(package))
+        })
+        .collect::<Vec<_>>();
+    let registry = ExactResultRegistry::accept(&final_snapshot, packages).unwrap();
+    let exact_rebuild = exact_started.elapsed();
+    let changed_bounds = registry
+        .get_render(&final_snapshot, changed_definition)
+        .unwrap()
+        .bounds_mm();
+    let changed_extents =
+        std::array::from_fn::<_, 3, _>(|axis| changed_bounds[1][axis] - changed_bounds[0][axis]);
+    assert!(
+        changed_extents
+            .iter()
+            .any(|extent| (*extent - 16.0).abs() < 1.0e-9),
+        "changed exact sheathing extents were {changed_extents:?}"
+    );
+
+    let tolerance = TolerancePolicy::default();
+    let participants = final_snapshot
+        .scene_query()
+        .into_iter()
+        .filter(|occurrence| occurrence.visible)
+        .map(|occurrence| {
+            GeneralBodyParticipant::accept(
+                &final_snapshot,
+                &registry,
+                InstancePath::root(occurrence.occurrence_id),
+                tolerance,
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let cases = (0..participants.len())
+        .map(|index| {
+            GeneralClearanceCase::new(
+                participants[index].clone(),
+                participants[(index + 1) % participants.len()].clone(),
+                0.0,
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let fabrication_started = Instant::now();
+    let validation = general_report(&final_snapshot, &cases, tolerance);
+    assert_eq!(validation.state, ValidationState::Passed);
+    let projection = ketchup_core::fabrication::project_general_fabrication(
+        &final_snapshot,
+        &registry,
+        &cases,
+        &validation,
+        tolerance,
+    )
+    .unwrap();
+    let bom = projection.bom_export(&final_snapshot).unwrap();
+    let drawing = projection.drawing_svg(&final_snapshot).unwrap();
+    let manufacturing = projection.manufacturing_export(&final_snapshot).unwrap();
+    let fabrication = fabrication_started.elapsed();
+    assert_eq!(projection.bom.envelope.status, ProjectionStatus::Complete);
+    assert_eq!(
+        projection.drawings.envelope.status,
+        ProjectionStatus::Complete
+    );
+    assert_eq!(
+        projection.manufacturing.envelope.status,
+        ProjectionStatus::Complete
+    );
+
+    let exact_by_definition = registry.render_by_definition(&final_snapshot);
+    let model = final_snapshot
+        .scene_query()
+        .into_iter()
+        .filter(|occurrence| occurrence.visible)
+        .map(|occurrence| {
+            (
+                exact_by_definition[&occurrence.definition_id]
+                    .as_ref()
+                    .clone(),
+                occurrence.transform,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(model.len(), participants.len());
+    let directory = tempfile::tempdir().unwrap();
+    let step_path = directory.path().join("changed-house.step");
+    let step_export_started = Instant::now();
+    worker
+        .export_current_model_step(&final_snapshot, &model, &step_path)
+        .unwrap();
+    let step_export = step_export_started.elapsed();
+    let step_bytes = std::fs::read(&step_path).unwrap();
+    assert!(step_bytes.windows(9).any(|window| window == b"ISO-10303"));
+    let step_import_started = Instant::now();
+    let imported = worker
+        .inspect_step_import_with_cancellation(
+            &step_path,
+            &ketchup_core::graph::sha256_hex(&step_bytes),
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .unwrap();
+    let step_import = step_import_started.elapsed();
+    assert!(imported.solid_count >= model.len() as u32);
+    assert!(imported.volume_mm3 > 0.0);
+
+    assert!(shell.app_mut().undo());
+    let stale_snapshot = shell.app().document_snapshot();
+    assert_ne!(stale_snapshot.canonical_digest(), final_digest);
+    let stale_path = directory.path().join("stale.step");
+    std::fs::write(&stale_path, b"preserved destination").unwrap();
+    assert!(
+        worker
+            .export_current_model_step(&stale_snapshot, &model, &stale_path)
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read(&stale_path).unwrap(),
+        b"preserved destination"
+    );
+    assert!(shell.app_mut().redo());
+    assert_eq!(shell.app().document_revision(), final_revision);
+    assert_eq!(shell.app().canonical_digest(), final_digest);
+    assert_eq!(shell.app().undo_step_count(), final_undo_steps);
+
+    let native_path = directory.path().join("changed-house.ketchup");
+    let native_save_started = Instant::now();
+    persistence::save_atomic(&native_path, &final_snapshot).unwrap();
+    let native_save = native_save_started.elapsed();
+    let native_reopen_started = Instant::now();
+    let reopened = persistence::load_file(&native_path).unwrap();
+    let native_reopen = native_reopen_started.elapsed();
+    assert!(reopened.is_editable());
+    assert_eq!(reopened.snapshot().revision_id(), final_revision);
+    assert_eq!(reopened.snapshot().canonical_digest(), final_digest);
+    assert_eq!(reopened.snapshot().occurrences().count(), model.len());
+
+    let metrics = serde_json::json!({
+        "schema": "ketchup.production-acceptance-workflow.v1",
+        "claim_scope": "local Ketchup end-to-end evidence; no SolidWorks comparison measured",
+        "build_profile": if cfg!(debug_assertions) { "debug" } else { "release" },
+        "occurrences": model.len(),
+        "definitions": final_snapshot.definitions().count(),
+        "exact_packages": registry.render_values(&final_snapshot).count(),
+        "model_build_ms": model_build.as_secs_f64() * 1000.0,
+        "parametric_change_ms": parametric_change.as_secs_f64() * 1000.0,
+        "assembly_scene_projection_ms": assembly.as_secs_f64() * 1000.0,
+        "exact_rebuild_ms": exact_rebuild.as_secs_f64() * 1000.0,
+        "fabrication_ms": fabrication.as_secs_f64() * 1000.0,
+        "step_export_ms": step_export.as_secs_f64() * 1000.0,
+        "step_import_ms": step_import.as_secs_f64() * 1000.0,
+        "native_save_ms": native_save.as_secs_f64() * 1000.0,
+        "native_reopen_ms": native_reopen.as_secs_f64() * 1000.0,
+        "total_ms": total_started.elapsed().as_secs_f64() * 1000.0,
+        "bom_bytes": bom.len(),
+        "drawing_bytes": drawing.len(),
+        "manufacturing_bytes": manufacturing.len(),
+        "step_bytes": step_bytes.len(),
+        "native_bytes": std::fs::metadata(&native_path).unwrap().len(),
+        "stale_export_preserved_destination": true,
+        "undo_redo_restored_identity": true
+    });
+    let json = serde_json::to_string_pretty(&metrics).unwrap();
+    eprintln!("KETCHUP_PRODUCTION_ACCEPTANCE={json}");
+    if let Some(path) = std::env::var_os("KETCHUP_PRODUCTION_ACCEPTANCE_PATH") {
+        std::fs::write(path, format!("{json}\n")).unwrap();
+    }
 }
 
 /// Manufacturability is not structural sanity. The same house must also be

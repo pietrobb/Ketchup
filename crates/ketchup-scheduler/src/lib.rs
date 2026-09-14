@@ -54,21 +54,26 @@ use ketchup_core::fea::{
 use ketchup_core::graph::sha256_hex;
 use ketchup_core::import::{
     IgesImportEvidence, IgesXdeImportEvidence, IgesXdeNodeEvidence, IgesXdePartEvidence,
-    ImportLengthUnit, MAX_STEP_SOURCE_BYTES, StepImportEvidence, StepImportMesh,
-    StepXdeImportEvidence, StepXdeNodeEvidence, StepXdePartEvidence,
+    ImportLengthUnit, MAX_STEP_MESH_TRIANGLES, MAX_STEP_MESH_VERTICES, MAX_STEP_SOURCE_BYTES,
+    STEP_MESH_MAGIC, StepImportEvidence, StepImportMesh, StepXdeImportEvidence,
+    StepXdeNodeEvidence, StepXdePartEvidence,
 };
 #[cfg(feature = "named-product-fixtures")]
 use ketchup_core::prismatic::Aabb;
 #[cfg(feature = "named-product-fixtures")]
 use ketchup_core::prismatic::JointId;
 use ketchup_exact::GeometryErrorCode;
+#[cfg(windows)]
+use process_wrap::std::JobObject;
+use process_wrap::std::{ChildWrapper, CommandWrap};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::fmt::Write as _;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::fs;
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
@@ -1264,9 +1269,96 @@ impl From<&ExactFeatureChainRequest> for StepFeatureExportSpec {
 const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const MAX_WORKER_RESPONSE_LINE_BYTES: usize = 64 * 1024;
 const MAX_EXACT_WORKER_EXECUTABLE_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_EXACT_VOLUME_MESH_OUTPUT_BYTES: u64 = 64 * 1024 * 1024;
 static NEVER_CANCELLED: AtomicBool = AtomicBool::new(false);
 
-fn exact_worker_identity(executable: &Path) -> Result<(PathBuf, String), WorkerError> {
+fn read_bounded_regular_file(
+    path: &Path,
+    maximum_bytes: u64,
+    limit_message: &str,
+) -> Result<Vec<u8>, WorkerError> {
+    let file = fs::File::open(path).map_err(|error| WorkerError::Transport(error.to_string()))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| WorkerError::Transport(error.to_string()))?;
+    if !metadata.is_file() || metadata.len() > maximum_bytes {
+        return Err(WorkerError::Transport(limit_message.to_owned()));
+    }
+    let mut bytes = Vec::new();
+    (&file)
+        .take(maximum_bytes + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| WorkerError::Transport(error.to_string()))?;
+    if bytes.len() as u64 > maximum_bytes {
+        return Err(WorkerError::Transport(limit_message.to_owned()));
+    }
+    Ok(bytes)
+}
+
+fn read_step_import_mesh_output(
+    output_path: &Path,
+    vertex_count: u32,
+    triangle_count: u32,
+) -> Result<Vec<u8>, WorkerError> {
+    if vertex_count == 0
+        || triangle_count == 0
+        || vertex_count > MAX_STEP_MESH_VERTICES
+        || triangle_count > MAX_STEP_MESH_TRIANGLES
+    {
+        return Err(WorkerError::Protocol(
+            "exact worker mesh receipt exceeds its bounded envelope".to_owned(),
+        ));
+    }
+    let expected_bytes = STEP_MESH_MAGIC.len() as u64
+        + 8
+        + u64::from(vertex_count) * 24
+        + u64::from(triangle_count) * 16;
+    let file =
+        fs::File::open(output_path).map_err(|error| WorkerError::Transport(error.to_string()))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| WorkerError::Transport(error.to_string()))?;
+    if !metadata.is_file() || metadata.len() != expected_bytes {
+        return Err(WorkerError::Transport(
+            "exact worker mesh output does not match its bounded receipt".to_owned(),
+        ));
+    }
+    let mut bytes = Vec::new();
+    (&file)
+        .take(expected_bytes + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| WorkerError::Transport(error.to_string()))?;
+    if bytes.len() as u64 != expected_bytes {
+        return Err(WorkerError::Transport(
+            "exact worker mesh output does not match its bounded receipt".to_owned(),
+        ));
+    }
+    Ok(bytes)
+}
+
+fn open_guarded_exact_worker(path: &Path) -> io::Result<fs::File> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ: u32 = 0x0000_0001;
+        fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(path)
+    }
+    #[cfg(not(windows))]
+    {
+        fs::File::open(path)
+    }
+}
+
+struct GuardedExactWorker {
+    executable: PathBuf,
+    sha256: String,
+    _file: fs::File,
+}
+
+fn guarded_exact_worker_identity(executable: &Path) -> Result<GuardedExactWorker, WorkerError> {
     if !executable.is_absolute() {
         return Err(WorkerError::Spawn(
             "exact worker executable must be absolute".to_owned(),
@@ -1275,8 +1367,8 @@ fn exact_worker_identity(executable: &Path) -> Result<(PathBuf, String), WorkerE
     let executable = executable
         .canonicalize()
         .map_err(|error| WorkerError::Spawn(error.to_string()))?;
-    let file =
-        std::fs::File::open(&executable).map_err(|error| WorkerError::Spawn(error.to_string()))?;
+    let file = open_guarded_exact_worker(&executable)
+        .map_err(|error| WorkerError::Spawn(error.to_string()))?;
     let metadata = file
         .metadata()
         .map_err(|error| WorkerError::Spawn(error.to_string()))?;
@@ -1286,7 +1378,8 @@ fn exact_worker_identity(executable: &Path) -> Result<(PathBuf, String), WorkerE
         ));
     }
     let mut bytes = Vec::new();
-    file.take(MAX_EXACT_WORKER_EXECUTABLE_BYTES + 1)
+    (&file)
+        .take(MAX_EXACT_WORKER_EXECUTABLE_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| WorkerError::Spawn(error.to_string()))?;
     if bytes.len() as u64 > MAX_EXACT_WORKER_EXECUTABLE_BYTES {
@@ -1294,20 +1387,29 @@ fn exact_worker_identity(executable: &Path) -> Result<(PathBuf, String), WorkerE
             "exact worker executable is not a bounded file".to_owned(),
         ));
     }
-    Ok((executable, sha256_hex(&bytes)))
+    Ok(GuardedExactWorker {
+        executable,
+        sha256: sha256_hex(&bytes),
+        _file: file,
+    })
+}
+
+fn exact_worker_identity(executable: &Path) -> Result<(PathBuf, String), WorkerError> {
+    let guarded = guarded_exact_worker_identity(executable)?;
+    Ok((guarded.executable, guarded.sha256))
 }
 
 fn verify_exact_worker_identity(
     executable: &Path,
     expected_sha256: &str,
-) -> Result<PathBuf, WorkerError> {
-    let (executable, actual_sha256) = exact_worker_identity(executable)?;
-    if actual_sha256 != expected_sha256 {
+) -> Result<GuardedExactWorker, WorkerError> {
+    let guarded = guarded_exact_worker_identity(executable)?;
+    if guarded.sha256 != expected_sha256 {
         return Err(WorkerError::Spawn(
             "exact worker executable identity changed".to_owned(),
         ));
     }
-    Ok(executable)
+    Ok(guarded)
 }
 
 struct WorkerWriteRequest {
@@ -1323,22 +1425,46 @@ enum WorkerResponse {
     Transport(String),
 }
 
+fn spawn_exact_worker_command(command: Command) -> io::Result<Box<dyn ChildWrapper>> {
+    let mut command = CommandWrap::from(command);
+    #[cfg(windows)]
+    command.wrap(JobObject);
+    command.spawn()
+}
+
 pub struct ExactWorkerClient {
-    child: Child,
+    child: Box<dyn ChildWrapper>,
     write_sender: Sender<WorkerWriteRequest>,
     response_receiver: Receiver<WorkerResponse>,
     _temp_directory: tempfile::TempDir,
 }
 
 impl ExactWorkerClient {
+    fn read_bounded_output(
+        &mut self,
+        path: &Path,
+        maximum_bytes: u64,
+        limit_message: &str,
+    ) -> Result<Vec<u8>, WorkerError> {
+        match read_bounded_regular_file(path, maximum_bytes, limit_message) {
+            Ok(bytes) => Ok(bytes),
+            Err(error) => self.fail(error),
+        }
+    }
+
     pub fn spawn(executable: impl AsRef<Path>) -> Result<Self, WorkerError> {
-        let (executable, _) = exact_worker_identity(executable.as_ref())?;
+        let executable = guarded_exact_worker_identity(executable.as_ref())?;
+        Self::spawn_guarded(executable)
+    }
+
+    fn spawn_guarded(executable: GuardedExactWorker) -> Result<Self, WorkerError> {
         let working_directory = executable
+            .executable
             .parent()
             .expect("canonical exact worker executable has a parent");
         let temp_directory =
             tempfile::tempdir().map_err(|error| WorkerError::Spawn(error.to_string()))?;
-        let mut command = Command::new(&executable);
+        let mut command = Command::new(&executable.executable);
         command
             .current_dir(working_directory)
             .env_clear()
@@ -1348,15 +1474,14 @@ impl ExactWorkerClient {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        let mut child = command
-            .spawn()
+        let mut child = spawn_exact_worker_command(command)
             .map_err(|error| WorkerError::Spawn(error.to_string()))?;
         let stdin = child
-            .stdin
+            .stdin()
             .take()
             .ok_or_else(|| WorkerError::Spawn("worker stdin was not piped".to_owned()))?;
         let stdout = child
-            .stdout
+            .stdout()
             .take()
             .ok_or_else(|| WorkerError::Spawn("worker stdout was not piped".to_owned()))?;
         let (write_sender, write_receiver) = mpsc::channel();
@@ -1884,8 +2009,7 @@ impl ExactWorkerClient {
         else {
             return self.fail_protocol(response);
         };
-        let encoded = std::fs::read(output_path)
-            .map_err(|error| WorkerError::Transport(error.to_string()))?;
+        let encoded = read_step_import_mesh_output(output_path, vertex_count, triangle_count)?;
         if sha256_hex(&encoded) != fields[5] {
             return Err(WorkerError::Transport(
                 "exact B-Rep graph mesh digest does not match the worker receipt".to_owned(),
@@ -1937,6 +2061,7 @@ impl ExactWorkerClient {
             EXACT_BREP_GRAPH_SCHEMA_V23 => "VOLUME_MESH_BREP_GRAPH_V23",
             _ => unreachable!("capability validation rejects unsupported graph schemas"),
         };
+        let max_tetrahedra = options.max_tetrahedra;
         let options = serde_json::to_vec(&options)
             .map_err(|error| WorkerError::Protocol(error.to_string()))?;
         let mut request = format!(
@@ -1969,8 +2094,22 @@ impl ExactWorkerClient {
         ) else {
             return self.fail_protocol(response);
         };
-        let encoded = std::fs::read(output_path)
-            .map_err(|error| WorkerError::Transport(error.to_string()))?;
+        let maximum_vertices = max_tetrahedra.saturating_mul(4);
+        let maximum_boundary_triangles = max_tetrahedra.saturating_mul(4);
+        if vertex_count < 4
+            || tetrahedron_count == 0
+            || tetrahedron_count > max_tetrahedra
+            || boundary_count == 0
+            || vertex_count > maximum_vertices
+            || boundary_count > maximum_boundary_triangles
+        {
+            return self.fail_protocol(response);
+        }
+        let encoded = self.read_bounded_output(
+            output_path,
+            MAX_EXACT_VOLUME_MESH_OUTPUT_BYTES,
+            "exact worker volume-mesh output exceeds the bounded 64 MiB envelope",
+        )?;
         if sha256_hex(&encoded) != fields[6] {
             return Err(WorkerError::Transport(
                 "exact volume-mesh digest does not match the worker receipt".to_owned(),
@@ -3117,6 +3256,7 @@ impl ExactWorkerClient {
         }
         let source_sha256 = decode_sha256(source_sha256)
             .ok_or_else(|| WorkerError::Protocol("invalid STEP source SHA-256".to_owned()))?;
+        let source_byte_len = evidence.source_byte_len;
         let source_unit = match evidence.source_unit.as_str() {
             "millimetre" => ImportLengthUnit::Millimetre,
             "centimetre" => ImportLengthUnit::Centimetre,
@@ -3134,6 +3274,8 @@ impl ExactWorkerClient {
                 name_from_source: part.name_from_source,
                 color: part.color,
                 exact: StepImportEvidence {
+                    source_sha256,
+                    source_byte_len,
                     source_unit,
                     result_fingerprint: part.result_fingerprint,
                     body_kind: parse_import_body_kind(&part.body_kind)
@@ -3223,6 +3365,7 @@ impl ExactWorkerClient {
         }
         let source_sha256 = decode_sha256(source_sha256)
             .ok_or_else(|| WorkerError::Protocol("invalid IGES source SHA-256".to_owned()))?;
+        let source_byte_len = evidence.source_byte_len;
         let source_unit = match evidence.source_unit.as_str() {
             "millimetre" => ImportLengthUnit::Millimetre,
             "centimetre" => ImportLengthUnit::Centimetre,
@@ -3240,6 +3383,8 @@ impl ExactWorkerClient {
                 name_from_source: part.name_from_source,
                 color: part.color,
                 exact: StepImportEvidence {
+                    source_sha256,
+                    source_byte_len,
                     source_unit,
                     result_fingerprint: part.result_fingerprint,
                     body_kind: parse_import_body_kind(&part.body_kind)
@@ -3330,6 +3475,11 @@ impl ExactWorkerClient {
                 .and_then(|value| u64::from_str_radix(value, 16).ok())
                 .map(f64::from_bits)
         };
+        let source_sha256_bytes = decode_sha256(source_sha256)
+            .ok_or_else(|| WorkerError::Protocol("invalid import source SHA-256".to_owned()))?;
+        let source_byte_len = std::fs::metadata(path)
+            .map_err(|error| WorkerError::Transport(error.to_string()))?
+            .len();
         let evidence = (|| {
             if fields.len() != 20
                 || fields[0] != response_schema
@@ -3362,6 +3512,8 @@ impl ExactWorkerClient {
                 _ => return None,
             };
             Some(StepImportEvidence {
+                source_sha256: source_sha256_bytes,
+                source_byte_len,
                 source_unit,
                 result_fingerprint: fields[2].to_owned(),
                 body_kind,
@@ -3421,6 +3573,11 @@ impl ExactWorkerClient {
                 .and_then(|value| u64::from_str_radix(value, 16).ok())
                 .map(f64::from_bits)
         };
+        let source_sha256_bytes = decode_sha256(source_sha256)
+            .ok_or_else(|| WorkerError::Protocol("invalid import source SHA-256".to_owned()))?;
+        let source_byte_len = std::fs::metadata(path)
+            .map_err(|error| WorkerError::Transport(error.to_string()))?
+            .len();
         let evidence = (|| {
             if fields.len() != 20
                 || fields[0] != response_schema
@@ -3440,6 +3597,8 @@ impl ExactWorkerClient {
                 _ => return None,
             };
             Some(StepImportEvidence {
+                source_sha256: source_sha256_bytes,
+                source_byte_len,
                 source_unit,
                 result_fingerprint: fields[2].to_owned(),
                 body_kind,
@@ -3518,8 +3677,7 @@ impl ExactWorkerClient {
         else {
             return self.fail_protocol(response);
         };
-        let encoded = std::fs::read(output_path)
-            .map_err(|error| WorkerError::Transport(error.to_string()))?;
+        let encoded = read_step_import_mesh_output(output_path, vertex_count, triangle_count)?;
         if sha256_hex(&encoded) != fields[5] {
             return Err(WorkerError::Transport(
                 "imported IGES display mesh digest does not match the worker receipt".to_owned(),
@@ -3543,7 +3701,7 @@ impl ExactWorkerClient {
         source_sha256: &str,
         output_path: &Path,
         cancelled: &AtomicBool,
-    ) -> Result<(), WorkerError> {
+    ) -> Result<Vec<u8>, WorkerError> {
         self.verify_m21_iges_capability(cancelled)?;
         let response = self.request_with_cancellation(
             &format!(
@@ -3560,15 +3718,18 @@ impl ExactWorkerClient {
                 error => Err(error),
             };
         }
-        if fields.len() == 3
-            && fields[0] == "OK_M21_IGES_EXPORT_V1"
-            && fields[1] == source_sha256
-            && is_fnv1a64_digest(fields[2])
+        if fields.len() != 3
+            || fields[0] != "OK_M21_IGES_EXPORT_V1"
+            || fields[1] != source_sha256
+            || !is_fnv1a64_digest(fields[2])
         {
-            Ok(())
-        } else {
-            self.fail_protocol(response)
+            return self.fail_protocol(response);
         }
+        self.read_bounded_output(
+            output_path,
+            MAX_STEP_SOURCE_BYTES,
+            "exact worker IGES output exceeds the bounded 32 MiB envelope",
+        )
     }
 
     fn export_step_xde_part_request_with_cancellation(
@@ -3604,8 +3765,11 @@ impl ExactWorkerClient {
         {
             return self.fail_protocol(response);
         }
-        let bytes = std::fs::read(output_path)
-            .map_err(|error| WorkerError::Transport(error.to_string()))?;
+        let bytes = self.read_bounded_output(
+            output_path,
+            MAX_STEP_SOURCE_BYTES,
+            "exact worker STEP output exceeds the bounded 32 MiB envelope",
+        )?;
         if sha256_hex(&bytes) != fields[3] {
             return self.fail_protocol("worker STEP XDE part output hash mismatch".to_owned());
         }
@@ -3664,8 +3828,7 @@ impl ExactWorkerClient {
         else {
             return self.fail_protocol(response);
         };
-        let encoded = std::fs::read(output_path)
-            .map_err(|error| WorkerError::Transport(error.to_string()))?;
+        let encoded = read_step_import_mesh_output(output_path, vertex_count, triangle_count)?;
         if sha256_hex(&encoded) != fields[5] {
             return Err(WorkerError::Transport(
                 "imported STEP display mesh digest does not match the worker receipt".to_owned(),
@@ -3689,7 +3852,7 @@ impl ExactWorkerClient {
         sources: &[PathBuf],
         path: &Path,
         cancelled: &AtomicBool,
-    ) -> Result<(), WorkerError> {
+    ) -> Result<Vec<u8>, WorkerError> {
         self.verify_m21_step_model_capability(cancelled)?;
         if manifest.parts.len() != sources.len() {
             return Err(WorkerError::Protocol(
@@ -3725,12 +3888,15 @@ impl ExactWorkerClient {
         {
             return self.fail_protocol(response);
         }
-        let bytes =
-            std::fs::read(path).map_err(|error| WorkerError::Transport(error.to_string()))?;
+        let bytes = self.read_bounded_output(
+            path,
+            MAX_STEP_SOURCE_BYTES,
+            "exact worker STEP output exceeds the bounded 32 MiB envelope",
+        )?;
         if sha256_hex(&bytes) != fields[3] {
             return self.fail_protocol("worker STEP output hash mismatch".to_owned());
         }
-        Ok(())
+        Ok(bytes)
     }
 
     #[cfg(feature = "named-product-fixtures")]
@@ -4068,7 +4234,7 @@ impl ExactWorkerSupervisor {
             return Err(WorkerError::Cancelled);
         }
         let executable = verify_exact_worker_identity(executable, executable_sha256)?;
-        let mut client = ExactWorkerClient::spawn(executable)?;
+        let mut client = ExactWorkerClient::spawn_guarded(executable)?;
         client.ensure_not_cancelled(cancelled)?;
         client.ping_with_cancellation(cancelled)?;
         client.verify_m3_capability(cancelled)?;
@@ -4436,14 +4602,12 @@ impl ExactWorkerSupervisor {
         source_path: &Path,
         output_path: &Path,
         cancelled: &AtomicBool,
-    ) -> Result<(), WorkerError> {
-        let source = std::fs::read(source_path)
-            .map_err(|error| WorkerError::Transport(error.to_string()))?;
-        if source.len() as u64 > MAX_STEP_SOURCE_BYTES {
-            return Err(WorkerError::Transport(
-                "STEP staging source exceeds the bounded 32 MiB envelope".to_owned(),
-            ));
-        }
+    ) -> Result<Vec<u8>, WorkerError> {
+        let source = read_bounded_regular_file(
+            source_path,
+            MAX_STEP_SOURCE_BYTES,
+            "STEP staging source exceeds the bounded 32 MiB envelope",
+        )?;
         let source_sha256 = sha256_hex(&source);
         self.client.ensure_not_cancelled(cancelled)?;
         match self.client.convert_step_to_iges_request_with_cancellation(
@@ -4452,7 +4616,7 @@ impl ExactWorkerSupervisor {
             output_path,
             cancelled,
         ) {
-            Ok(()) => Ok(()),
+            Ok(bytes) => Ok(bytes),
             Err(error) if error.permits_restart() => {
                 self.client = Self::spawn_verified_client(
                     &self.executable,
@@ -5536,7 +5700,7 @@ impl ExactWorkerSupervisor {
         snapshot: &Snapshot,
         occurrences: &[(ExactBodyPackage, Transform)],
         path: &Path,
-    ) -> Result<(), M6EvaluationError> {
+    ) -> Result<Vec<u8>, M6EvaluationError> {
         self.export_current_model_step_with_imported_sources(
             snapshot,
             occurrences,
@@ -5551,7 +5715,7 @@ impl ExactWorkerSupervisor {
         occurrences: &[(ExactBodyPackage, Transform)],
         path: &Path,
         imported_source_blobs: &BTreeMap<String, Vec<u8>>,
-    ) -> Result<(), M6EvaluationError> {
+    ) -> Result<Vec<u8>, M6EvaluationError> {
         let scene = snapshot.scene_query();
         let mut matched = Vec::with_capacity(occurrences.len());
         for (package, transform) in occurrences {
@@ -5579,7 +5743,7 @@ impl ExactWorkerSupervisor {
         occurrences: &[(ExactBodyPackage, SceneOccurrence)],
         path: &Path,
         imported_source_blobs: &BTreeMap<String, Vec<u8>>,
-    ) -> Result<(), M6EvaluationError> {
+    ) -> Result<Vec<u8>, M6EvaluationError> {
         if occurrences.is_empty() {
             return Err(ExactProductError::EmptyModelExport.into());
         }
@@ -5789,8 +5953,11 @@ impl ExactWorkerSupervisor {
                     return Err(error.into());
                 }
             }
-            let source_bytes = std::fs::read(&source)
-                .map_err(|error| WorkerError::Transport(error.to_string()))?;
+            let source_bytes = self.client.read_bounded_output(
+                &source,
+                MAX_STEP_SOURCE_BYTES,
+                "exact worker STEP output exceeds the bounded 32 MiB envelope",
+            )?;
             let source_sha256 = sha256_hex(&source_bytes);
             let imported_result_fingerprint = self
                 .client
@@ -5832,8 +5999,8 @@ impl ExactWorkerSupervisor {
             &temporary,
             &NEVER_CANCELLED,
         );
-        match assembly {
-            Ok(()) => {}
+        let verified = match assembly {
+            Ok(bytes) => bytes,
             Err(error) if error.permits_restart() => {
                 self.client = Self::spawn_verified_client(
                     &self.executable,
@@ -5845,14 +6012,14 @@ impl ExactWorkerSupervisor {
                     &sources,
                     &temporary,
                     &NEVER_CANCELLED,
-                )?;
+                )?
             }
             Err(error) => return Err(error.into()),
-        }
+        };
         temporary
             .persist(path)
             .map_err(|error| WorkerError::Transport(error.error.to_string()))?;
-        Ok(())
+        Ok(verified)
     }
 
     #[cfg(feature = "named-product-fixtures")]
@@ -5898,6 +6065,7 @@ impl ExactWorkerSupervisor {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_step_assembly_node(
     nodes: &mut Vec<StepAssemblyNode>,
     keys: &mut BTreeMap<String, u32>,
@@ -9891,6 +10059,46 @@ mod tests {
             Err(WorkerError::Spawn(message))
                 if message == "exact worker executable is not a bounded file"
         ));
+    }
+
+    #[test]
+    fn worker_mesh_output_is_bounded_by_receipt_before_allocation() {
+        let output = tempfile::NamedTempFile::new().unwrap();
+        output.as_file().set_len(1024 * 1024).unwrap();
+
+        assert!(matches!(
+            read_step_import_mesh_output(output.path(), 1, 1),
+            Err(WorkerError::Transport(message))
+                if message == "exact worker mesh output does not match its bounded receipt"
+        ));
+        assert!(matches!(
+            read_step_import_mesh_output(output.path(), MAX_STEP_MESH_VERTICES + 1, 1),
+            Err(WorkerError::Protocol(message))
+                if message == "exact worker mesh receipt exceeds its bounded envelope"
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn verified_exact_worker_denies_replacement_until_spawn_guard_is_released() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("worker.exe");
+        std::fs::write(&executable, b"trusted worker").unwrap();
+        let (_, expected_sha256) = exact_worker_identity(&executable).unwrap();
+
+        let guarded = verify_exact_worker_identity(&executable, &expected_sha256).unwrap();
+        assert!(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&executable)
+                .is_err()
+        );
+        assert!(std::fs::remove_file(&executable).is_err());
+
+        drop(guarded);
+        std::fs::write(&executable, b"replacement").unwrap();
+        std::fs::remove_file(executable).unwrap();
     }
 
     #[test]

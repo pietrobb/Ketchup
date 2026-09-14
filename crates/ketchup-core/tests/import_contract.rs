@@ -98,6 +98,8 @@ fn reviewed_import_is_one_undoable_persistent_deterministic_batch() {
 fn exact_step_import_is_one_deterministic_persistent_undoable_transaction() {
     let source = b"ISO-10303-21;DATA;#1=SI_UNIT(.MILLI.,.METRE.);ENDSEC;END-ISO-10303-21;";
     let evidence = StepImportEvidence {
+        source_sha256: ketchup_core::graph::sha256_bytes(source),
+        source_byte_len: source.len() as u64,
         source_unit: ImportLengthUnit::Millimetre,
         result_fingerprint: "0123456789abcdef".to_owned(),
         body_kind: ketchup_core::document::BodyKind::Solid,
@@ -179,6 +181,45 @@ fn exact_step_import_is_one_deterministic_persistent_undoable_transaction() {
         persistence::save_container(&reopened.snapshot(), reopened.container_data()).unwrap(),
         encoded
     );
+}
+
+#[test]
+fn exact_step_import_rejects_worker_evidence_from_another_source() {
+    let source = b"first STEP source";
+    let evidence = StepImportEvidence {
+        source_sha256: ketchup_core::graph::sha256_bytes(source),
+        source_byte_len: source.len() as u64,
+        source_unit: ImportLengthUnit::Millimetre,
+        result_fingerprint: "fnv1a64:0123456789abcdef".to_owned(),
+        body_kind: ketchup_core::document::BodyKind::Solid,
+        solid_count: 1,
+        topology_counts: [8, 12, 6, 1, 1],
+        area_mm2: 600.0,
+        volume_mm3: 1_000.0,
+        bounds_mm: [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]],
+        backend: "occt-test".to_owned(),
+        tolerance: "test-tolerance".to_owned(),
+    };
+    let document = DocumentStore::new();
+    let before = document.current().canonical_digest();
+    assert!(plan_step_import(&document.current(), source, "first.step", &evidence).is_ok());
+    assert_eq!(
+        plan_step_import(
+            &document.current(),
+            b"other STEP source",
+            "second.step",
+            &evidence,
+        ),
+        Err(ketchup_core::import::StepImportPlanError::InvalidWorkerEvidence)
+    );
+    let mut stale_length = evidence.clone();
+    stale_length.source_byte_len += 1;
+    assert_eq!(
+        plan_step_import(&document.current(), source, "first.step", &stale_length),
+        Err(ketchup_core::import::StepImportPlanError::InvalidWorkerEvidence)
+    );
+    assert_eq!(document.current().canonical_digest(), before);
+    assert_eq!(document.visible_undo_steps(), 0);
 }
 
 #[test]
@@ -267,6 +308,8 @@ fn exact_iges_import_is_deterministic_persistent_and_explicit_about_losses() {
 fn iges_xde_import_preserves_flat_root_names_colors_and_reports_exact_losses() {
     let source = b"independent IGES XDE flat roots";
     let exact = |index: u32, x: f64| StepImportEvidence {
+        source_sha256: ketchup_core::graph::sha256_bytes(source),
+        source_byte_len: source.len() as u64,
         source_unit: ImportLengthUnit::Millimetre,
         result_fingerprint: format!("fnv1a64:iges-root-{index}"),
         body_kind: ketchup_core::document::BodyKind::Solid,
@@ -394,6 +437,8 @@ fn iges_xde_import_preserves_flat_root_names_colors_and_reports_exact_losses() {
 fn step_xde_import_preserves_nested_repeated_instances_names_colors_and_round_trip() {
     let source = b"independent STEP XDE assembly bytes";
     let exact = StepImportEvidence {
+        source_sha256: ketchup_core::graph::sha256_bytes(source),
+        source_byte_len: source.len() as u64,
         source_unit: ImportLengthUnit::Millimetre,
         result_fingerprint: "fnv1a64:part-0".to_owned(),
         body_kind: ketchup_core::document::BodyKind::Solid,
@@ -518,9 +563,12 @@ fn step_xde_import_preserves_nested_repeated_instances_names_colors_and_round_tr
 
 #[test]
 fn exact_step_plan_refuses_invalid_worker_evidence_without_mutation() {
+    let source = b"#1=SI_UNIT(.MILLI.,.METRE.);";
     let document = DocumentStore::new();
     let before = document.current().canonical_digest();
     let valid = StepImportEvidence {
+        source_sha256: ketchup_core::graph::sha256_bytes(source),
+        source_byte_len: source.len() as u64,
         source_unit: ImportLengthUnit::Millimetre,
         result_fingerprint: "0123456789abcdef".to_owned(),
         body_kind: ketchup_core::document::BodyKind::Solid,
@@ -535,12 +583,7 @@ fn exact_step_plan_refuses_invalid_worker_evidence_without_mutation() {
     let mut invalid = valid;
     invalid.result_fingerprint.clear();
     assert_eq!(
-        plan_step_import(
-            &document.current(),
-            b"#1=SI_UNIT(.MILLI.,.METRE.);",
-            "part.step",
-            &invalid,
-        ),
+        plan_step_import(&document.current(), source, "part.step", &invalid,),
         Err(StepImportPlanError::InvalidWorkerEvidence)
     );
     assert_eq!(document.current().canonical_digest(), before);

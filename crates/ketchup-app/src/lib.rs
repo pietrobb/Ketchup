@@ -96,6 +96,7 @@ use ketchup_core::fabrication::{FullBomProjection, PieceDimensionSheet};
 use ketchup_core::fea::{FeaMaterial, FeaSolveSettings};
 use ketchup_core::graph::{
     DerivedIdentity, EvaluationStatus, EvaluatorNodeKind, RuleOutput, SlotSegment, sha256_bytes,
+    sha256_reader_hex,
 };
 use ketchup_core::import::{
     DxfImportOptions, IgesXdeImportEvidence, ImportDiagnosticSeverity, ImportFormat,
@@ -237,6 +238,7 @@ const MIN_CAMERA_ZOOM: f32 = 1.0e-6;
 const MAX_CAMERA_ZOOM: f32 = 8.0;
 const CAMERA_ZOOM_STEP: f32 = 1.25;
 const ASSISTANT_MODELS_YAML: &str = include_str!("../assistant-models.yaml");
+const MAX_ASSISTANT_MODEL_CATALOG_BYTES: u64 = 64 * 1024;
 const ASSISTANT_CHAT_NAMESPACE: &str = "org.ketchup.assistant";
 const ASSISTANT_CHAT_PATH: &str = "conversation-v1.json";
 const ASSISTANT_MEMORY_PATH: &str = "project-memory-v1.json";
@@ -1050,12 +1052,16 @@ impl SmartPushPullProposal {
         }
     }
 
-    fn commit(&self, document: &mut DocumentStore) -> bool {
+    fn commit(&self, document: &mut DocumentStore) -> Result<(), String> {
         match self {
-            Self::Append(proposal) => document.commit_verified_proposal(proposal).is_ok(),
-            Self::TipReplacement(proposal) => {
-                document.commit_tip_replacement_proposal(proposal).is_ok()
-            }
+            Self::Append(proposal) => document
+                .commit_verified_proposal(proposal)
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
+            Self::TipReplacement(proposal) => document
+                .commit_tip_replacement_proposal(proposal)
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
         }
     }
 }
@@ -6571,6 +6577,20 @@ struct PdmReviewDialog {
     comparison: Option<ReleaseComparison>,
 }
 
+enum WorkRecoveryMutationError<E> {
+    Mutation(E),
+    Recovery(ketchup_core::persistence::FilePersistenceError),
+}
+
+impl<E: std::fmt::Display> std::fmt::Display for WorkRecoveryMutationError<E> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Mutation(error) => error.fmt(formatter),
+            Self::Recovery(error) => error.fmt(formatter),
+        }
+    }
+}
+
 pub struct KetchupApp {
     document: DocumentStore,
     live_bridge: Option<live_bridge::LiveBridge>,
@@ -6584,6 +6604,8 @@ pub struct KetchupApp {
     recovery_open: Option<RecoveryOpenState>,
     document_path: Option<PathBuf>,
     file_identity: Option<ketchup_core::persistence::FileIdentity>,
+    work_recovery_identity: Option<ketchup_core::persistence::FileIdentity>,
+    pending_work_recovery_cleanup: Option<(PathBuf, ketchup_core::persistence::FileIdentity)>,
     work_recovery_digest: Option<String>,
     saved_digest: String,
     confirmation_surface: TrustedConfirmationSurface,
@@ -6858,6 +6880,8 @@ impl KetchupApp {
             recovery_open: None,
             document_path: None,
             file_identity: None,
+            work_recovery_identity: None,
+            pending_work_recovery_cleanup: None,
             work_recovery_digest: None,
             saved_digest,
             confirmation_surface,
@@ -7363,7 +7387,8 @@ impl KetchupApp {
         self.cancel_pending_assistant_work();
         match ketchup_core::persistence::load_file_with_source(path) {
             Ok(loaded_file) => {
-                let (outcome, effective_path, source) = loaded_file.into_parts();
+                let (outcome, effective_path, source, work_recovery_identity) =
+                    loaded_file.into_parts();
                 if !outcome.is_editable() {
                     let plan = match self.prepare_migration_review_plan(
                         path,
@@ -7422,6 +7447,7 @@ impl KetchupApp {
                 self.document_path = recovery_open.is_none().then(|| path.to_owned());
                 self.recovery_open = recovery_open;
                 self.file_identity = file_identity;
+                self.work_recovery_identity = work_recovery_identity;
                 self.work_recovery_digest = None;
                 self.saved_digest = self.document.history_digest();
                 self.reset_document_presentation();
@@ -7581,16 +7607,31 @@ impl KetchupApp {
         )
     }
 
+    fn retry_pending_work_recovery_cleanup(&mut self) -> Result<(), String> {
+        let Some((path, identity)) = self.pending_work_recovery_cleanup.clone() else {
+            return Ok(());
+        };
+        ketchup_core::persistence::clear_work_recovery(&path, Some(identity))
+            .map_err(|error| error.to_string())?;
+        self.pending_work_recovery_cleanup = None;
+        Ok(())
+    }
+
     fn refresh_work_recovery_checkpoint(&mut self) {
+        let _ = self.retry_pending_work_recovery_cleanup();
         let checkpoint_digest = format!(
             "{}:{}",
             self.document.history_digest(),
             assistant_conversation_digest(&self.assistant_messages)
         );
         if !self.is_dirty() {
-            if let Some(path) = self.document_path.as_deref() {
-                let _ = ketchup_core::persistence::clear_work_recovery(path);
+            if let Some(path) = self.document_path.as_deref()
+                && ketchup_core::persistence::clear_work_recovery(path, self.work_recovery_identity)
+                    .is_err()
+            {
+                return;
             }
+            self.work_recovery_identity = None;
             self.work_recovery_digest = None;
             return;
         }
@@ -7602,14 +7643,15 @@ impl KetchupApp {
         };
         self.store_assistant_conversation();
         self.store_assistant_memory();
-        if ketchup_core::persistence::save_work_recovery_document_store_with_container(
-            &path,
-            &self.document,
-            &self.container_data,
-            identity,
-        )
-        .is_ok()
+        if let Ok(checkpoint_identity) =
+            ketchup_core::persistence::save_work_recovery_document_store_with_container(
+                &path,
+                &self.document,
+                &self.container_data,
+                identity,
+            )
         {
+            self.work_recovery_identity = Some(checkpoint_identity);
             self.work_recovery_digest = Some(checkpoint_digest);
         }
     }
@@ -7622,6 +7664,13 @@ impl KetchupApp {
                     ("path", path.display().to_string()),
                     ("reason", "the target path is a directory".to_owned()),
                 ]),
+            );
+            return false;
+        }
+        if let Err(error) = self.retry_pending_work_recovery_cleanup() {
+            self.digest = self.catalog.format(
+                "error-save-document",
+                &BTreeMap::from([("path", path.display().to_string()), ("reason", error)]),
             );
             return false;
         }
@@ -7747,21 +7796,25 @@ impl KetchupApp {
                 if truncate_history {
                     self.document.discard_history_before_current();
                 }
-                let previous_path = self.document_path.clone();
-                let recovery_requested = self
-                    .recovery_open
-                    .as_ref()
-                    .map(|recovery| recovery.requested_path.clone());
-                let _ = ketchup_core::persistence::clear_work_recovery(path);
-                if let Some(previous_path) = previous_path {
-                    let _ = ketchup_core::persistence::clear_work_recovery(&previous_path);
-                }
-                if let Some(recovery_requested) = recovery_requested {
-                    let _ = ketchup_core::persistence::clear_work_recovery(&recovery_requested);
+                let owned_recovery_path = self.document_path.clone().or_else(|| {
+                    self.recovery_open
+                        .as_ref()
+                        .map(|recovery| recovery.requested_path.clone())
+                });
+                if let (Some(recovery_path), Some(recovery_identity)) =
+                    (owned_recovery_path, self.work_recovery_identity)
+                    && ketchup_core::persistence::clear_work_recovery(
+                        &recovery_path,
+                        Some(recovery_identity),
+                    )
+                    .is_err()
+                {
+                    self.pending_work_recovery_cleanup = Some((recovery_path, recovery_identity));
                 }
                 self.document_path = Some(path.to_owned());
                 self.recovery_open = None;
                 self.file_identity = Some(saved_identity);
+                self.work_recovery_identity = None;
                 self.work_recovery_digest = None;
                 self.saved_digest = self.document.history_digest();
                 self.saved_assistant_conversation_digest =
@@ -7966,8 +8019,7 @@ impl KetchupApp {
             if rederived != pending.plan {
                 return Err("STL import unit, review, or proposal changed after preview".to_owned());
             }
-            self.document
-                .commit_verified_proposal(&pending.plan.proposal)
+            self.commit_verified_proposal_with_work_recovery(&pending.plan.proposal)
                 .map_err(|error| error.to_string())?;
             Ok::<(), String>(())
         })();
@@ -8108,8 +8160,7 @@ impl KetchupApp {
             if rederived != pending.plan {
                 return Err("DXF import review or proposal changed after preview".to_owned());
             }
-            self.document
-                .commit_verified_proposal(&pending.plan.proposal)
+            self.commit_verified_proposal_with_work_recovery(&pending.plan.proposal)
                 .map_err(|error| error.to_string())?;
             Ok::<(), String>(())
         })();
@@ -8268,10 +8319,11 @@ impl KetchupApp {
             if blob_hash != pending.plan.blob_hash {
                 return Err("STEP content-addressed blob identity changed after review".to_owned());
             }
-            self.document
-                .commit_verified_proposal(&pending.plan.proposal)
-                .map_err(|error| error.to_string())?;
-            self.container_data = staged_container;
+            self.commit_verified_proposal_with_container_work_recovery(
+                &pending.plan.proposal,
+                staged_container,
+            )
+            .map_err(|error| error.to_string())?;
             Ok::<(), String>(())
         })();
         match result {
@@ -8403,10 +8455,11 @@ impl KetchupApp {
             {
                 return Err("IGES content-addressed blob identity changed".to_owned());
             }
-            self.document
-                .commit_verified_proposal(&pending.plan.proposal)
-                .map_err(|error| error.to_string())?;
-            self.container_data = staged_container;
+            self.commit_verified_proposal_with_container_work_recovery(
+                &pending.plan.proposal,
+                staged_container,
+            )
+            .map_err(|error| error.to_string())?;
             Ok::<(), String>(())
         })();
         match result {
@@ -8524,8 +8577,7 @@ impl KetchupApp {
             if rederived != pending.plan {
                 return Err("SketchUp scene review or proposal changed after preview".to_owned());
             }
-            self.document
-                .commit_verified_proposal(&pending.plan.proposal)
+            self.commit_verified_proposal_with_work_recovery(&pending.plan.proposal)
                 .map_err(|error| error.to_string())?;
             Ok::<(), String>(())
         })();
@@ -9493,7 +9545,7 @@ impl KetchupApp {
             let prepared_step = prepared_directory.path().join("model.step");
             let mut worker =
                 ExactWorkerSupervisor::spawn(executable).map_err(|error| error.to_string())?;
-            worker
+            let verified_step = worker
                 .export_current_model_step_scene_with_imported_sources(
                     &snapshot,
                     &model,
@@ -9501,10 +9553,7 @@ impl KetchupApp {
                     self.container_data.blobs(),
                 )
                 .map_err(|error| error.to_string())?;
-            let mut step = String::from_utf8(
-                std::fs::read(&prepared_step).map_err(|error| error.to_string())?,
-            )
-            .map_err(|error| error.to_string())?;
+            let mut step = String::from_utf8(verified_step).map_err(|error| error.to_string())?;
             let timestamp_marker = "FILE_NAME('Open CASCADE Shape Model','";
             let timestamp_start = step
                 .find(timestamp_marker)
@@ -9606,7 +9655,7 @@ impl KetchupApp {
             let prepared_iges = prepared_directory.path().join("model.iges");
             let mut worker =
                 ExactWorkerSupervisor::spawn(executable).map_err(|error| error.to_string())?;
-            worker
+            let _verified_step = worker
                 .export_current_model_step_scene_with_imported_sources(
                     &snapshot,
                     &model,
@@ -9614,14 +9663,13 @@ impl KetchupApp {
                     self.container_data.blobs(),
                 )
                 .map_err(|error| error.to_string())?;
-            worker
+            let iges = worker
                 .convert_step_to_iges_with_cancellation(
                     &prepared_step,
                     &prepared_iges,
                     &AtomicBool::new(false),
                 )
                 .map_err(|error| error.to_string())?;
-            let iges = std::fs::read(&prepared_iges).map_err(|error| error.to_string())?;
             let iges_sha256 = ketchup_core::graph::sha256_hex(&iges);
             let exported_evidence = worker
                 .inspect_iges_xde_import_with_cancellation(
@@ -9715,7 +9763,12 @@ impl KetchupApp {
                             .as_ref()
                             .is_some_and(|recovery| recovery.requested_path == path);
                     if reopening_active {
-                        if let Err(error) = ketchup_core::persistence::clear_work_recovery(&path) {
+                        if let Some(identity) = self.work_recovery_identity
+                            && let Err(error) = ketchup_core::persistence::clear_work_recovery(
+                                &path,
+                                Some(identity),
+                            )
+                        {
                             self.digest = self.catalog.format(
                                 "error-open-document",
                                 &BTreeMap::from([
@@ -9725,6 +9778,7 @@ impl KetchupApp {
                             );
                             return;
                         }
+                        self.work_recovery_identity = None;
                         self.work_recovery_digest = None;
                     }
                     self.open_document_from(&path);
@@ -10705,6 +10759,7 @@ impl KetchupApp {
         self.recovery_open = None;
         self.document_path = Some(destination.to_owned());
         self.file_identity = Some(file_identity);
+        self.work_recovery_identity = None;
         self.work_recovery_digest = None;
         self.saved_digest = saved_digest;
         self.reset_document_presentation();
@@ -10866,7 +10921,7 @@ impl KetchupApp {
             | AssistantPreviewSource::CadEdit(_) => None,
         };
         let repair_preview = plan.repair.clone();
-        match self.document.commit_verified_proposal(&plan.proposal) {
+        match self.commit_verified_proposal_with_work_recovery(&plan.proposal) {
             Ok(committed) => {
                 let (repair_program, repair_validator, validation_before, validation_after) =
                     repair_preview.map_or((None, None, None, None), |repair| {
@@ -13928,15 +13983,28 @@ impl KetchupApp {
             match task.poll() {
                 Ok(result) => {
                     let task = self.exact_task.take().expect("completed task exists");
-                    match result.and_then(|products| {
-                        ketchup_application::evaluation::publish_exact_products(
-                            &mut self.document,
-                            &mut self.exact_results,
-                            &mut self.topology_results,
-                            &task,
-                            products,
-                        )
-                    }) {
+                    let published = match result {
+                        Ok(products) => {
+                            let mut exact_results = self.exact_results.clone();
+                            let mut topology_results = self.topology_results.clone();
+                            let published = self.mutate_document_with_work_recovery(|document| {
+                                ketchup_application::evaluation::publish_exact_products(
+                                    document,
+                                    &mut exact_results,
+                                    &mut topology_results,
+                                    &task,
+                                    products,
+                                )
+                            });
+                            if published.is_ok() {
+                                self.exact_results = exact_results;
+                                self.topology_results = topology_results;
+                            }
+                            published
+                        }
+                        Err(error) => Err(WorkRecoveryMutationError::Mutation(error)),
+                    };
+                    match published {
                         Ok(report) => {
                             self.render_plan = Some(Arc::new(InstancedRenderPlan::from_snapshot(
                                 &snapshot,
@@ -16010,7 +16078,7 @@ impl KetchupApp {
         let Some(preview) = self.revolve_preview.take() else {
             return false;
         };
-        if self.document.apply_batch(&preview.batch).is_err() {
+        if self.apply_batch_with_work_recovery(&preview.batch).is_err() {
             self.status_key = "error-preview-stale";
             return false;
         }
@@ -16218,7 +16286,7 @@ impl KetchupApp {
         let Some(preview) = self.planar_offset_preview.take() else {
             return false;
         };
-        if self.document.apply_batch(&preview.batch).is_err() {
+        if self.apply_batch_with_work_recovery(&preview.batch).is_err() {
             self.status_key = "error-preview-stale";
             return false;
         }
@@ -16380,7 +16448,7 @@ impl KetchupApp {
         let Some(preview) = self.sweep_preview.take() else {
             return false;
         };
-        if self.document.apply_batch(&preview.batch).is_err() {
+        if self.apply_batch_with_work_recovery(&preview.batch).is_err() {
             self.status_key = "error-preview-stale";
             return false;
         }
@@ -16576,7 +16644,7 @@ impl KetchupApp {
         let Some(preview) = self.loft_preview.take() else {
             return false;
         };
-        if self.document.apply_batch(&preview.batch).is_err() {
+        if self.apply_batch_with_work_recovery(&preview.batch).is_err() {
             self.status_key = "error-preview-stale";
             return false;
         }
@@ -16988,7 +17056,7 @@ impl KetchupApp {
         let Some(preview) = self.general_finish_preview.take() else {
             return false;
         };
-        if self.document.apply_batch(&preview.batch).is_err() {
+        if self.apply_batch_with_work_recovery(&preview.batch).is_err() {
             self.status_key = "error-preview-stale";
             return false;
         }
@@ -17521,8 +17589,7 @@ impl KetchupApp {
         };
         if self.occurrence_rename_plan(&pending).as_ref() != Some(&plan)
             || self
-                .document
-                .apply_batch(&CommandBatch::new(vec![plan.command]))
+                .apply_batch_with_work_recovery(&CommandBatch::new(vec![plan.command]))
                 .is_err()
         {
             return false;
@@ -17674,8 +17741,7 @@ impl KetchupApp {
             command,
         } = plan;
         if self
-            .document
-            .apply_batch(&CommandBatch::new(vec![command]))
+            .apply_batch_with_work_recovery(&CommandBatch::new(vec![command]))
             .is_err()
         {
             return false;
@@ -17808,8 +17874,7 @@ impl KetchupApp {
             return false;
         }
         if self
-            .document
-            .apply_batch(&CommandBatch::new(plan.commands.clone()))
+            .apply_batch_with_work_recovery(&CommandBatch::new(plan.commands.clone()))
             .is_err()
         {
             return false;
@@ -17904,8 +17969,7 @@ impl KetchupApp {
             return false;
         }
         if self
-            .document
-            .apply_batch(&CommandBatch::new(plan.commands.clone()))
+            .apply_batch_with_work_recovery(&CommandBatch::new(plan.commands.clone()))
             .is_err()
         {
             return false;
@@ -17990,8 +18054,7 @@ impl KetchupApp {
             return false;
         }
         if self
-            .document
-            .apply_batch(&CommandBatch::new(plan.commands.clone()))
+            .apply_batch_with_work_recovery(&CommandBatch::new(plan.commands.clone()))
             .is_err()
         {
             return false;
@@ -18090,8 +18153,7 @@ impl KetchupApp {
             return false;
         }
         if self
-            .document
-            .apply_batch(&CommandBatch::new(vec![plan.command.clone()]))
+            .apply_batch_with_work_recovery(&CommandBatch::new(vec![plan.command.clone()]))
             .is_err()
         {
             return false;
@@ -18316,8 +18378,7 @@ impl KetchupApp {
         };
         let count = commands.len();
         if self
-            .document
-            .apply_batch(&CommandBatch::new(commands))
+            .apply_batch_with_work_recovery(&CommandBatch::new(commands))
             .is_err()
         {
             return false;
@@ -18335,8 +18396,7 @@ impl KetchupApp {
         };
         let count = commands.len();
         if self
-            .document
-            .apply_batch(&CommandBatch::new(commands))
+            .apply_batch_with_work_recovery(&CommandBatch::new(commands))
             .is_err()
         {
             return false;
@@ -18417,8 +18477,7 @@ impl KetchupApp {
             return false;
         };
         if self
-            .document
-            .apply_batch(&CommandBatch::new(vec![
+            .apply_batch_with_work_recovery(&CommandBatch::new(vec![
                 CanonicalCommand::UpsertClassificationDimension {
                     id: dimension_id,
                     name: name.to_owned(),
@@ -18477,8 +18536,7 @@ impl KetchupApp {
             .collect::<Vec<_>>();
         categories.push((category_id, name.to_owned()));
         if self
-            .document
-            .apply_batch(&CommandBatch::new(vec![
+            .apply_batch_with_work_recovery(&CommandBatch::new(vec![
                 CanonicalCommand::UpsertClassificationDimension {
                     id: dimension_id,
                     name: dimension_name.clone(),
@@ -18535,8 +18593,7 @@ impl KetchupApp {
         }
         let count = commands.len();
         if self
-            .document
-            .apply_batch(&CommandBatch::new(commands))
+            .apply_batch_with_work_recovery(&CommandBatch::new(commands))
             .is_err()
         {
             return false;
@@ -18567,8 +18624,7 @@ impl KetchupApp {
         }
         let name = tag.name().to_owned();
         if self
-            .document
-            .apply_batch(&CommandBatch::new(vec![
+            .apply_batch_with_work_recovery(&CommandBatch::new(vec![
                 CanonicalCommand::SetTagVisibility { id, visible },
             ]))
             .is_err()
@@ -18616,8 +18672,7 @@ impl KetchupApp {
         };
         let count = commands.len();
         if self
-            .document
-            .apply_batch(&CommandBatch::new(commands))
+            .apply_batch_with_work_recovery(&CommandBatch::new(commands))
             .is_err()
         {
             return false;
@@ -18662,8 +18717,7 @@ impl KetchupApp {
         };
         let count = commands.len();
         if self
-            .document
-            .apply_batch(&CommandBatch::new(commands))
+            .apply_batch_with_work_recovery(&CommandBatch::new(commands))
             .is_err()
         {
             return false;
@@ -18701,8 +18755,7 @@ impl KetchupApp {
         };
         let count = commands.len();
         if self
-            .document
-            .apply_batch(&CommandBatch::new(commands))
+            .apply_batch_with_work_recovery(&CommandBatch::new(commands))
             .is_err()
         {
             return false;
@@ -18757,8 +18810,7 @@ impl KetchupApp {
         };
         let count = commands.len();
         if self
-            .document
-            .apply_batch(&CommandBatch::new(commands))
+            .apply_batch_with_work_recovery(&CommandBatch::new(commands))
             .is_err()
         {
             return false;
@@ -18783,8 +18835,7 @@ impl KetchupApp {
         };
         let count = commands.len();
         if self
-            .document
-            .apply_batch(&CommandBatch::new(commands))
+            .apply_batch_with_work_recovery(&CommandBatch::new(commands))
             .is_err()
         {
             return false;
@@ -18824,8 +18875,7 @@ impl KetchupApp {
         };
         let count = commands.len();
         if self
-            .document
-            .apply_batch(&CommandBatch::new(commands))
+            .apply_batch_with_work_recovery(&CommandBatch::new(commands))
             .is_err()
         {
             return false;
@@ -18913,8 +18963,7 @@ impl KetchupApp {
         };
         let count = commands.len();
         if self
-            .document
-            .apply_batch(&CommandBatch::new(commands))
+            .apply_batch_with_work_recovery(&CommandBatch::new(commands))
             .is_err()
         {
             return false;
@@ -19035,8 +19084,7 @@ impl KetchupApp {
         }
         let count = plan.commands.len();
         if self
-            .document
-            .apply_batch(&CommandBatch::new(plan.commands))
+            .apply_batch_with_work_recovery(&CommandBatch::new(plan.commands))
             .is_err()
         {
             return false;
@@ -19115,8 +19163,7 @@ impl KetchupApp {
         };
         if self.definition_rename_plan(&pending).as_ref() != Some(&plan)
             || self
-                .document
-                .apply_batch(&CommandBatch::new(vec![plan.command]))
+                .apply_batch_with_work_recovery(&CommandBatch::new(vec![plan.command]))
                 .is_err()
         {
             return false;
@@ -19201,8 +19248,7 @@ impl KetchupApp {
         if plan.definition_count != plan.definition_ids.len()
             || self.purge_unused_source_plan().as_ref() != Some(&plan)
             || self
-                .document
-                .apply_batch(&CommandBatch::new(
+                .apply_batch_with_work_recovery(&CommandBatch::new(
                     plan.definition_ids
                         .into_iter()
                         .map(|id| CanonicalCommand::DeleteDefinition { id })
@@ -19275,8 +19321,7 @@ impl KetchupApp {
                 .as_ref()
                 != Some(&plan)
             || self
-                .document
-                .apply_batch(&CommandBatch::new(vec![plan.command]))
+                .apply_batch_with_work_recovery(&CommandBatch::new(vec![plan.command]))
                 .is_err()
         {
             return false;
@@ -19354,8 +19399,7 @@ impl KetchupApp {
         }
         let count = plan.changed_occurrence_ids.len();
         if self
-            .document
-            .apply_batch(&CommandBatch::new(plan.commands))
+            .apply_batch_with_work_recovery(&CommandBatch::new(plan.commands))
             .is_err()
         {
             return false;
@@ -19419,8 +19463,7 @@ impl KetchupApp {
             || plan.occurrence_count != plan.commands.len()
             || self.hide_others_source_plan().as_ref() != Some(&plan)
             || self
-                .document
-                .apply_batch(&CommandBatch::new(plan.commands))
+                .apply_batch_with_work_recovery(&CommandBatch::new(plan.commands))
                 .is_err()
         {
             return false;
@@ -19469,8 +19512,7 @@ impl KetchupApp {
             || plan.occurrence_count != plan.commands.len()
             || self.unhide_all_source_plan().as_ref() != Some(&plan)
             || self
-                .document
-                .apply_batch(&CommandBatch::new(plan.commands))
+                .apply_batch_with_work_recovery(&CommandBatch::new(plan.commands))
                 .is_err()
         {
             return false;
@@ -20417,8 +20459,7 @@ impl KetchupApp {
             ..
         } = plan;
         if self
-            .document
-            .apply_batch(&CommandBatch::new(commands))
+            .apply_batch_with_work_recovery(&CommandBatch::new(commands))
             .is_err()
         {
             return false;
@@ -20452,8 +20493,7 @@ impl KetchupApp {
             ..
         } = plan;
         if self
-            .document
-            .apply_batch(&CommandBatch::new(commands))
+            .apply_batch_with_work_recovery(&CommandBatch::new(commands))
             .is_err()
         {
             return false;
@@ -20610,8 +20650,7 @@ impl KetchupApp {
             ..
         } = plan;
         if self
-            .document
-            .apply_batch(&CommandBatch::new(vec![
+            .apply_batch_with_work_recovery(&CommandBatch::new(vec![
                 CanonicalCommand::CloneDefinitionAndRepoint(command),
             ]))
             .is_err()
@@ -20811,7 +20850,7 @@ impl KetchupApp {
                 visible: true,
             },
         ]);
-        if self.document.apply_batch(&batch).is_err() {
+        if self.apply_batch_with_work_recovery(&batch).is_err() {
             return false;
         }
         self.selection
@@ -20871,7 +20910,7 @@ impl KetchupApp {
                 kind: editor.finish_kind,
             },
         ]);
-        if self.document.apply_batch(&batch).is_err() {
+        if self.apply_batch_with_work_recovery(&batch).is_err() {
             self.digest = "Bottle edit rejected; canonical document unchanged".to_owned();
             return false;
         }
@@ -21171,7 +21210,7 @@ impl KetchupApp {
                 visible: true,
             },
         ]);
-        if self.document.apply_batch(&batch).is_err() {
+        if self.apply_batch_with_work_recovery(&batch).is_err() {
             return false;
         }
         self.clear_ephemeral_edit_state();
@@ -21278,7 +21317,7 @@ impl KetchupApp {
                 visible: true,
             },
         ]);
-        if self.document.apply_batch(&batch).is_err() {
+        if self.apply_batch_with_work_recovery(&batch).is_err() {
             return false;
         }
         self.clear_ephemeral_edit_state();
@@ -21368,8 +21407,7 @@ impl KetchupApp {
             visible: true,
         });
         if self
-            .document
-            .apply_batch(&CommandBatch::new(commands))
+            .apply_batch_with_work_recovery(&CommandBatch::new(commands))
             .is_err()
         {
             return false;
@@ -21460,7 +21498,7 @@ impl KetchupApp {
                 visible: true,
             },
         ]);
-        if self.document.apply_batch(&batch).is_err() {
+        if self.apply_batch_with_work_recovery(&batch).is_err() {
             return false;
         }
         self.clear_ephemeral_edit_state();
@@ -21541,7 +21579,7 @@ impl KetchupApp {
                 visible: true,
             },
         ]);
-        if self.document.apply_batch(&batch).is_err() {
+        if self.apply_batch_with_work_recovery(&batch).is_err() {
             return false;
         }
         self.clear_ephemeral_edit_state();
@@ -21605,8 +21643,7 @@ impl KetchupApp {
             &BTreeMap::from([("name", name.clone())]),
         );
         if self
-            .document
-            .apply_batch(&create_box_batch(
+            .apply_batch_with_work_recovery(&create_box_batch(
                 definition_id,
                 [profile_id, extrusion_id],
                 occurrence_id,
@@ -21684,8 +21721,7 @@ impl KetchupApp {
             return false;
         };
         if self
-            .document
-            .apply_batch(&CommandBatch::new(vec![
+            .apply_batch_with_work_recovery(&CommandBatch::new(vec![
                 CanonicalCommand::SetGroupTransform {
                     id: group_id,
                     transform,
@@ -21727,7 +21763,10 @@ impl KetchupApp {
             ) else {
                 return false;
             };
-            if self.document.commit_proposal(&preview.proposal).is_err() {
+            if self
+                .commit_proposal_with_work_recovery(&preview.proposal)
+                .is_err()
+            {
                 return false;
             }
             self.selection.select_exact(drag.selection.clone(), false);
@@ -21778,8 +21817,7 @@ impl KetchupApp {
         };
         let transform = rotation.compose(group.transform());
         if self
-            .document
-            .apply_batch(&CommandBatch::new(vec![
+            .apply_batch_with_work_recovery(&CommandBatch::new(vec![
                 CanonicalCommand::SetGroupTransform {
                     id: group_id,
                     transform,
@@ -21894,8 +21932,7 @@ impl KetchupApp {
             });
         }
         if self
-            .document
-            .apply_batch(&CommandBatch::new(commands))
+            .apply_batch_with_work_recovery(&CommandBatch::new(commands))
             .is_err()
         {
             return false;
@@ -22030,8 +22067,9 @@ impl KetchupApp {
             return false;
         };
         if self
-            .document
-            .commit_tip_replacement_proposal(&proposal)
+            .mutate_document_with_work_recovery(|document| {
+                document.commit_tip_replacement_proposal(&proposal)
+            })
             .is_err()
         {
             return false;
@@ -22139,8 +22177,7 @@ impl KetchupApp {
             });
         }
         if self
-            .document
-            .apply_batch(&CommandBatch::new(commands))
+            .apply_batch_with_work_recovery(&CommandBatch::new(commands))
             .is_err()
         {
             return false;
@@ -24232,7 +24269,7 @@ impl KetchupApp {
         let Some(preview) = self.occurrence_operation_preview.take() else {
             return false;
         };
-        if self.document.apply_batch(&preview.batch).is_err() {
+        if self.apply_batch_with_work_recovery(&preview.batch).is_err() {
             self.status_key = "error-preview-stale";
             return false;
         }
@@ -24348,8 +24385,7 @@ impl KetchupApp {
             ..
         } = plan;
         if self
-            .document
-            .apply_batch(&CommandBatch::new(commands))
+            .apply_batch_with_work_recovery(&CommandBatch::new(commands))
             .is_err()
         {
             return false;
@@ -24499,8 +24535,7 @@ impl KetchupApp {
             commands, pasted, ..
         } = plan;
         if self
-            .document
-            .apply_batch(&CommandBatch::new(commands))
+            .apply_batch_with_work_recovery(&CommandBatch::new(commands))
             .is_err()
         {
             return false;
@@ -24621,8 +24656,7 @@ impl KetchupApp {
             ..
         } = plan;
         if self
-            .document
-            .apply_batch(&CommandBatch::new(commands))
+            .apply_batch_with_work_recovery(&CommandBatch::new(commands))
             .is_err()
         {
             return false;
@@ -24682,8 +24716,7 @@ impl KetchupApp {
             return false;
         };
         if self
-            .document
-            .apply_batch(&CommandBatch::new(vec![
+            .apply_batch_with_work_recovery(&CommandBatch::new(vec![
                 CanonicalCommand::SetOccurrenceTransform {
                     id: occurrence_id,
                     transform,
@@ -24822,8 +24855,7 @@ impl KetchupApp {
             ..
         } = plan;
         if self
-            .document
-            .apply_batch(&CommandBatch::new(commands))
+            .apply_batch_with_work_recovery(&CommandBatch::new(commands))
             .is_err()
         {
             return false;
@@ -26124,7 +26156,10 @@ impl KetchupApp {
             self.status_key = "error-preview-stale";
             return false;
         }
-        if !proposal.commit(&mut self.document) {
+        if self
+            .mutate_document_with_work_recovery(|document| proposal.commit(document))
+            .is_err()
+        {
             self.status_key = "error-preview-stale";
             return false;
         }
@@ -26277,9 +26312,152 @@ impl KetchupApp {
         self.document.visible_redo_steps()
     }
 
+    fn mutate_document_with_work_recovery<T, E>(
+        &mut self,
+        mutate: impl FnOnce(&mut DocumentStore) -> Result<T, E>,
+    ) -> Result<T, WorkRecoveryMutationError<E>> {
+        self.store_assistant_conversation();
+        self.store_assistant_memory();
+        let document_path = self.document_path.clone();
+        let file_identity = self.file_identity;
+        let recovery_open = self.recovery_open.is_some();
+        let saved_digest = self.saved_digest.clone();
+        let conversation_digest = assistant_conversation_digest(&self.assistant_messages);
+        let saved_conversation_digest = self.saved_assistant_conversation_digest.clone();
+        let container_data = &self.container_data;
+        let work_recovery_identity = self.work_recovery_identity;
+        let mut next_work_recovery_identity = work_recovery_identity;
+        let result = self.document.try_canonical_transaction(
+            |document| mutate(document).map_err(WorkRecoveryMutationError::Mutation),
+            |document| {
+                let dirty = recovery_open
+                    || document.history_digest() != saved_digest
+                    || conversation_digest != saved_conversation_digest;
+                if !dirty {
+                    if let Some(path) = document_path.as_deref() {
+                        ketchup_core::persistence::clear_work_recovery(
+                            path,
+                            work_recovery_identity,
+                        )
+                        .map_err(WorkRecoveryMutationError::Recovery)?;
+                    }
+                    next_work_recovery_identity = None;
+                    return Ok(());
+                }
+                let (Some(path), Some(identity)) = (document_path.as_deref(), file_identity) else {
+                    return Ok(());
+                };
+                next_work_recovery_identity = Some(
+                    ketchup_core::persistence::save_work_recovery_document_store_with_container(
+                        path,
+                        document,
+                        container_data,
+                        identity,
+                    )
+                    .map_err(WorkRecoveryMutationError::Recovery)?,
+                );
+                Ok(())
+            },
+        );
+        match result {
+            Ok(value) => {
+                self.work_recovery_identity = next_work_recovery_identity;
+                self.work_recovery_digest = (self.is_dirty()
+                    && document_path.is_some()
+                    && file_identity.is_some())
+                .then(|| format!("{}:{conversation_digest}", self.document.history_digest()));
+                Ok(value)
+            }
+            Err(error @ WorkRecoveryMutationError::Mutation(_)) => Err(error),
+            Err(WorkRecoveryMutationError::Recovery(error)) => {
+                let path = document_path
+                    .as_deref()
+                    .map(ketchup_core::persistence::work_recovery_path)
+                    .unwrap_or_default();
+                self.digest = self.catalog.format(
+                    "error-save-document",
+                    &BTreeMap::from([
+                        ("path", path.display().to_string()),
+                        ("reason", error.to_string()),
+                    ]),
+                );
+                Err(WorkRecoveryMutationError::Recovery(error))
+            }
+        }
+    }
+
+    fn mutate_document_and_exact_results_with_work_recovery<T, E>(
+        &mut self,
+        mutate: impl FnOnce(&mut DocumentStore, &mut ExactResultRegistry) -> Result<T, E>,
+    ) -> Result<T, WorkRecoveryMutationError<E>> {
+        let mut staged_exact_results = self.exact_results.clone();
+        let result = self.mutate_document_with_work_recovery(|document| {
+            mutate(document, &mut staged_exact_results)
+        });
+        if result.is_ok() {
+            self.exact_results = staged_exact_results;
+        }
+        result
+    }
+
+    fn apply_batch_with_work_recovery(
+        &mut self,
+        batch: &CommandBatch,
+    ) -> Result<(), WorkRecoveryMutationError<CanonicalError>> {
+        self.mutate_document_with_work_recovery(|document| document.apply_batch(batch).map(|_| ()))
+    }
+
+    fn commit_proposal_with_work_recovery(
+        &mut self,
+        proposal: &Proposal,
+    ) -> Result<(), WorkRecoveryMutationError<ProposalCommitError>> {
+        self.mutate_document_with_work_recovery(|document| {
+            document.commit_proposal(proposal).map(|_| ())
+        })
+    }
+
+    fn commit_verified_proposal_with_work_recovery(
+        &mut self,
+        proposal: &Proposal,
+    ) -> Result<
+        ketchup_core::document::VerifiedProposalCommit,
+        WorkRecoveryMutationError<ProposalCommitError>,
+    > {
+        self.mutate_document_with_work_recovery(|document| {
+            document.commit_verified_proposal(proposal)
+        })
+    }
+
+    fn commit_verified_proposal_with_container_work_recovery(
+        &mut self,
+        proposal: &Proposal,
+        staged_container: ContainerData,
+    ) -> Result<
+        ketchup_core::document::VerifiedProposalCommit,
+        WorkRecoveryMutationError<ProposalCommitError>,
+    > {
+        let previous_container = std::mem::replace(&mut self.container_data, staged_container);
+        let result = self.commit_verified_proposal_with_work_recovery(proposal);
+        if result.is_err() {
+            self.container_data = previous_container;
+        }
+        result
+    }
+
+    fn mutate_history_with_work_recovery(
+        &mut self,
+        mutate: impl FnOnce(&mut DocumentStore) -> Option<Snapshot>,
+    ) -> bool {
+        match self.mutate_document_with_work_recovery(|document| Ok::<_, String>(mutate(document)))
+        {
+            Ok(Some(_)) => true,
+            Ok(None) | Err(_) => false,
+        }
+    }
+
     pub fn undo(&mut self) -> bool {
         let undoing_assistant_change = self.assistant_change_can_undo();
-        if self.document.undo().is_none() {
+        if !self.mutate_history_with_work_recovery(DocumentStore::undo) {
             return false;
         }
         self.invalidate_pending_import_reviews();
@@ -26297,7 +26475,7 @@ impl KetchupApp {
     }
 
     pub fn redo(&mut self) -> bool {
-        if self.document.redo().is_none() {
+        if !self.mutate_history_with_work_recovery(DocumentStore::redo) {
             return false;
         }
         self.invalidate_pending_import_reviews();
@@ -26331,7 +26509,12 @@ impl KetchupApp {
         ) else {
             return false;
         };
-        if plan != preview.plan || batch != preview.batch || !proposal.commit(&mut self.document) {
+        if plan != preview.plan
+            || batch != preview.batch
+            || self
+                .mutate_document_with_work_recovery(|document| proposal.commit(document))
+                .is_err()
+        {
             self.preview = None;
             self.preview_box = None;
             self.preview_definition_id = None;
@@ -26573,7 +26756,7 @@ impl KetchupApp {
             control: drag.control,
             dimension,
         }]);
-        if self.document.apply_batch(&batch).is_err() {
+        if self.apply_batch_with_work_recovery(&batch).is_err() {
             self.digest = "Bottle direct edit rejected; canonical document unchanged".to_owned();
             return false;
         }
@@ -27960,7 +28143,7 @@ impl KetchupApp {
                 },
             },
         ]);
-        if self.document.apply_batch(&batch).is_err() {
+        if self.apply_batch_with_work_recovery(&batch).is_err() {
             self.digest = self.catalog.text("digest-cut-through-invalid-profile");
             return false;
         }
@@ -28206,7 +28389,7 @@ impl KetchupApp {
         let Some(preview) = self.pocket_preview.take() else {
             return false;
         };
-        if self.document.apply_batch(&preview.batch).is_err() {
+        if self.apply_batch_with_work_recovery(&preview.batch).is_err() {
             self.status_key = "error-preview-stale";
             return false;
         }
@@ -28256,8 +28439,7 @@ impl KetchupApp {
             return false;
         };
         if self
-            .document
-            .apply_batch(&CommandBatch::new(vec![
+            .apply_batch_with_work_recovery(&CommandBatch::new(vec![
                 CanonicalCommand::SetFeatureDimension {
                     id: feature_id,
                     dimension,
@@ -28440,8 +28622,7 @@ impl KetchupApp {
             },
         ]);
         if self
-            .document
-            .apply_batch(&CommandBatch::new(commands))
+            .apply_batch_with_work_recovery(&CommandBatch::new(commands))
             .is_err()
         {
             return false;
@@ -28725,7 +28906,7 @@ impl KetchupApp {
         ) else {
             return false;
         };
-        if self.document.commit_proposal(&proposal).is_err() {
+        if self.commit_proposal_with_work_recovery(&proposal).is_err() {
             self.digest = self.catalog.text("error-preview-stale");
             return false;
         }
@@ -34837,7 +35018,7 @@ impl KetchupApp {
             self.digest = self.catalog.text("error-parameter-stale");
             return false;
         }
-        match self.document.commit_verified_proposal(&proposal) {
+        match self.commit_verified_proposal_with_work_recovery(&proposal) {
             Ok(committed) => {
                 self.parameter_last_recomputed_nodes =
                     committed.revision().recomputed_nodes().clone();
@@ -34864,7 +35045,7 @@ impl KetchupApp {
                 self.status_key = "status-ready";
                 true
             }
-            Err(ProposalCommitError::Stale(_)) => {
+            Err(WorkRecoveryMutationError::Mutation(ProposalCommitError::Stale(_))) => {
                 self.digest = self.catalog.text("error-parameter-stale");
                 false
             }
@@ -36727,22 +36908,23 @@ impl KetchupApp {
                 Err(error) => self.digest = error,
             }
         }
-        if confirm && let Some(review) = &pending.review {
-            if let Some(path) = self.choose_export_path("nc") {
-                let result = self.cam_reviews.export(
-                    &self.document.current(),
-                    &review.token,
-                    &path,
-                    true,
-                    &AtomicBool::new(false),
-                );
-                match result {
-                    Ok(_) => {
-                        self.digest = self.catalog.text("cam-review-exported");
-                        cancel = true;
-                    }
-                    Err(error) => self.digest = error.to_string(),
+        if confirm
+            && let Some(review) = &pending.review
+            && let Some(path) = self.choose_export_path("nc")
+        {
+            let result = self.cam_reviews.export(
+                &self.document.current(),
+                &review.token,
+                &path,
+                true,
+                &AtomicBool::new(false),
+            );
+            match result {
+                Ok(_) => {
+                    self.digest = self.catalog.text("cam-review-exported");
+                    cancel = true;
                 }
+                Err(error) => self.digest = error.to_string(),
             }
         }
         if open && !cancel {
@@ -37710,16 +37892,34 @@ impl KetchupApp {
 }
 
 fn assistant_model_catalog_text() -> String {
-    std::env::var_os("KETCHUP_ASSISTANT_MODELS")
+    let path = std::env::var_os("KETCHUP_ASSISTANT_MODELS")
         .map(PathBuf::from)
         .or_else(|| {
             std::env::current_exe().ok().and_then(|path| {
                 path.parent()
                     .map(|parent| parent.join("assistant-models.yaml"))
             })
-        })
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .unwrap_or_else(|| ASSISTANT_MODELS_YAML.to_owned())
+        });
+    assistant_model_catalog_text_from_path(path.as_deref())
+}
+
+fn assistant_model_catalog_text_from_path(path: Option<&Path>) -> String {
+    path.and_then(|path| {
+        let file = std::fs::File::open(path).ok()?;
+        let metadata = file.metadata().ok()?;
+        if !metadata.is_file() || metadata.len() > MAX_ASSISTANT_MODEL_CATALOG_BYTES {
+            return None;
+        }
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        file.take(MAX_ASSISTANT_MODEL_CATALOG_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        if bytes.len() as u64 > MAX_ASSISTANT_MODEL_CATALOG_BYTES {
+            return None;
+        }
+        String::from_utf8(bytes).ok()
+    })
+    .unwrap_or_else(|| ASSISTANT_MODELS_YAML.to_owned())
 }
 
 fn assistant_models_for(provider: AssistantProvider) -> Vec<String> {
@@ -38947,14 +39147,20 @@ impl ExportBundlePrecondition {
 }
 
 fn export_target_sha256(path: &Path) -> Result<Option<String>, String> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    if !path.is_file() {
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    if !file
+        .metadata()
+        .map_err(|error| error.to_string())?
+        .is_file()
+    {
         return Err(format!("{} is not a regular file", path.display()));
     }
-    std::fs::read(path)
-        .map(|bytes| Some(ketchup_core::graph::sha256_hex(&bytes)))
+    sha256_reader_hex(file)
+        .map(Some)
         .map_err(|error| error.to_string())
 }
 
@@ -39055,16 +39261,47 @@ fn move_export_target_to_backup(
     expected_sha256: Option<&str>,
     backup_path: Option<&Path>,
 ) -> Result<(), String> {
+    move_export_target_to_backup_after_compare(path, expected_sha256, backup_path, || {})
+}
+
+fn move_export_target_to_backup_after_compare(
+    path: &Path,
+    expected_sha256: Option<&str>,
+    backup_path: Option<&Path>,
+    after_compare: impl FnOnce(),
+) -> Result<(), String> {
     if export_target_sha256(path)?.as_deref() != expected_sha256 {
         return Err(format!(
             "export target {} changed after authorization",
             path.display()
         ));
     }
+    after_compare();
     match (expected_sha256, backup_path) {
         (None, None) => Ok(()),
-        (Some(_), Some(backup_path)) => {
+        (Some(expected_sha256), Some(backup_path)) => {
             std::fs::rename(path, backup_path).map_err(|error| error.to_string())?;
+            let moved_sha256 = export_target_sha256(backup_path);
+            if !matches!(&moved_sha256, Ok(Some(actual)) if actual == expected_sha256) {
+                std::fs::hard_link(backup_path, path).map_err(|error| {
+                    format!(
+                        "export target {} changed after authorization and could not be restored: {error}",
+                        path.display()
+                    )
+                })?;
+                std::fs::remove_file(backup_path).map_err(|error| error.to_string())?;
+                sync_export_parent(path.parent().unwrap_or_else(|| Path::new(".")))?;
+                return Err(match moved_sha256 {
+                    Ok(_) => format!(
+                        "export target {} changed after authorization",
+                        path.display()
+                    ),
+                    Err(error) => format!(
+                        "export target {} could not be verified after backup move: {error}",
+                        path.display()
+                    ),
+                });
+            }
             sync_export_parent(path.parent().unwrap_or_else(|| Path::new(".")))
         }
         _ => Err("export transaction backup does not match its precondition".to_owned()),
@@ -39154,18 +39391,36 @@ fn recover_export_target(
     }
 }
 
-fn recover_export_bundle(primary_path: &Path, report_path: &Path) -> Result<(), String> {
-    let journal_path = export_bundle_journal_path(primary_path)?;
-    if !journal_path.exists() {
-        return Ok(());
-    }
-    let metadata = std::fs::metadata(&journal_path).map_err(|error| error.to_string())?;
-    if !metadata.is_file() || metadata.len() > MAX_EXPORT_BUNDLE_JOURNAL_BYTES {
+fn read_export_bundle_journal(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    if !file
+        .metadata()
+        .map_err(|error| error.to_string())?
+        .is_file()
+    {
         return Err("export recovery journal is not a bounded regular file".to_owned());
     }
-    let journal: ExportBundleJournal =
-        serde_json::from_slice(&std::fs::read(&journal_path).map_err(|error| error.to_string())?)
-            .map_err(|error| format!("invalid export recovery journal: {error}"))?;
+    let mut bytes = Vec::new();
+    file.take(MAX_EXPORT_BUNDLE_JOURNAL_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > MAX_EXPORT_BUNDLE_JOURNAL_BYTES {
+        return Err("export recovery journal is not a bounded regular file".to_owned());
+    }
+    Ok(Some(bytes))
+}
+
+fn recover_export_bundle(primary_path: &Path, report_path: &Path) -> Result<(), String> {
+    let journal_path = export_bundle_journal_path(primary_path)?;
+    let Some(journal_bytes) = read_export_bundle_journal(&journal_path)? else {
+        return Ok(());
+    };
+    let journal: ExportBundleJournal = serde_json::from_slice(&journal_bytes)
+        .map_err(|error| format!("invalid export recovery journal: {error}"))?;
     if journal.schema != EXPORT_BUNDLE_JOURNAL_SCHEMA_V1
         || journal.primary_path_sha256 != export_path_identity_sha256(primary_path)
         || journal.report_path_sha256 != export_path_identity_sha256(report_path)

@@ -8,7 +8,7 @@ use ketchup_core::assembly_joint::{
 use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DocumentStore, OccurrenceId, Transform,
 };
-use ketchup_core::graph::sha256_hex;
+use ketchup_core::graph::{sha256_bytes, sha256_hex};
 use ketchup_core::import::{
     ImportLengthUnit, ImportOutputRef, StepImportEvidence, plan_step_import,
 };
@@ -77,7 +77,8 @@ const RUNNER_PARTS: [RunnerPart; 6] = [
     },
 ];
 
-fn import_evidence(source_sha256: &str, output: &ExactOpOutput) -> StepImportEvidence {
+fn import_evidence(source: &[u8], output: &ExactOpOutput) -> StepImportEvidence {
+    let source_sha256 = sha256_hex(source);
     let topology = &output.body.topology;
     let signature = format!(
         "{source_sha256}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
@@ -102,6 +103,8 @@ fn import_evidence(source_sha256: &str, output: &ExactOpOutput) -> StepImportEvi
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     StepImportEvidence {
+        source_sha256: sha256_bytes(source),
+        source_byte_len: source.len() as u64,
         source_unit: ImportLengthUnit::Millimetre,
         result_fingerprint: format!("fnv1a64:{hash:016x}"),
         body_kind: ketchup_core::document::BodyKind::Solid,
@@ -325,8 +328,7 @@ fn main() {
             .import_step(extracted_path.to_str().unwrap())
             .unwrap();
         let source_name = format!("{}.step", part.name);
-        let extracted_sha256 = sha256_hex(&extracted_source);
-        let evidence = import_evidence(&extracted_sha256, &verified);
+        let evidence = import_evidence(&extracted_source, &verified);
         let fingerprint = evidence.result_fingerprint.clone();
         captured_interfaces.push(match (ordinal, part.role) {
             // The cabinet members are anchored by the large perforated flange that

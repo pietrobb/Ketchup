@@ -1012,7 +1012,7 @@ impl CamToolpath {
                     ..
                 } => {
                     if motion.kind != CamMotionKind::Cut
-                        || center_mm.into_iter().any(|value| !value.is_finite())
+                        || center_mm.iter().any(|value| !value.is_finite())
                         || (start_mm[2] - end_mm[2]).abs() > GEOMETRY_TOLERANCE_MM
                         || (start_mm[2] - center_mm[2]).abs() > GEOMETRY_TOLERANCE_MM
                         || (distance_3d(*start_mm, *center_mm) - distance_3d(*end_mm, *center_mm))

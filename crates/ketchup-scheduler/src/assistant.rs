@@ -3,6 +3,9 @@ use ketchup_core::assistant_sidecar::{
     AssistantDistribution, AssistantFeaReviewRequest, AssistantHandshake, AssistantModelIntent,
 };
 use ketchup_core::graph::sha256_hex;
+#[cfg(windows)]
+use process_wrap::std::JobObject;
+use process_wrap::std::{ChildWrapper, CommandWrap};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -11,7 +14,7 @@ use std::fmt;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{ChildStdin, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -21,6 +24,12 @@ pub const MAX_ASSISTANT_REQUEST_LINE_BYTES: usize = 128 * 1024;
 pub const MAX_ASSISTANT_RESPONSE_LINE_BYTES: usize = 256 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 pub const MAX_ASSISTANT_EXECUTABLE_BYTES: u64 = 96 * 1024 * 1024;
+
+fn checked_deadline(timeout: Duration) -> Result<Instant, AssistantProcessError> {
+    Instant::now()
+        .checked_add(timeout)
+        .ok_or(AssistantProcessError::InvalidTimeout)
+}
 
 fn open_guarded_executable(path: &Path) -> io::Result<fs::File> {
     #[cfg(windows)]
@@ -63,13 +72,14 @@ pub struct AssistantProcessChatResult {
     pub diagnostics: Option<AssistantApiDiagnostics>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct AssistantProcessLaunch {
     pub executable: PathBuf,
     pub executable_sha256: String,
     pub arguments: Vec<OsString>,
     pub working_directory: PathBuf,
     pub environment: Vec<(OsString, OsString)>,
+    pub environment_files: Vec<Arc<tempfile::NamedTempFile>>,
 }
 
 struct AssistantWriteRequest {
@@ -79,12 +89,13 @@ struct AssistantWriteRequest {
 
 #[derive(Debug)]
 pub struct AssistantProcessClient {
-    child: Child,
+    child: Box<dyn ChildWrapper>,
     write_sender: Option<mpsc::Sender<AssistantWriteRequest>>,
     receiver: Receiver<Result<Option<String>, String>>,
     timeout: Duration,
     cancelled: AssistantCancellation,
     closed: bool,
+    _environment_files: Vec<Arc<tempfile::NamedTempFile>>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -158,7 +169,7 @@ impl AssistantProcessClient {
     ) -> Result<Self, AssistantProcessError> {
         let mut command = Command::new(executable.as_ref());
         command.args(arguments);
-        Self::spawn_command(command, handshake, timeout, cancelled)
+        Self::spawn_command(command, handshake, timeout, cancelled, Vec::new())
     }
 
     pub fn spawn_isolated_with_cancellation(
@@ -216,7 +227,13 @@ impl AssistantProcessClient {
             .current_dir(&launch.working_directory)
             .env_clear()
             .envs(launch.environment.iter().cloned());
-        let result = Self::spawn_command(command, handshake, timeout, cancelled);
+        let result = Self::spawn_command(
+            command,
+            handshake,
+            timeout,
+            cancelled,
+            launch.environment_files.clone(),
+        );
         drop(executable_file);
         result
     }
@@ -226,20 +243,26 @@ impl AssistantProcessClient {
         handshake: AssistantHandshake,
         timeout: Duration,
         cancelled: AssistantCancellation,
+        environment_files: Vec<Arc<tempfile::NamedTempFile>>,
     ) -> Result<Self, AssistantProcessError> {
         handshake
             .validate()
             .map_err(|error| AssistantProcessError::Protocol(error.to_string()))?;
-        let mut child = command
+        checked_deadline(timeout)?;
+        command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::null());
+        let mut command = CommandWrap::from(command);
+        #[cfg(windows)]
+        command.wrap(JobObject);
+        let mut child = command
             .spawn()
             .map_err(|error| AssistantProcessError::Spawn(error.to_string()))?;
-        let stdin = child.stdin.take().ok_or_else(|| {
+        let stdin = child.stdin().take().ok_or_else(|| {
             AssistantProcessError::Spawn("assistant stdin was not piped".to_owned())
         })?;
-        let stdout = child.stdout.take().ok_or_else(|| {
+        let stdout = child.stdout().take().ok_or_else(|| {
             AssistantProcessError::Spawn("assistant stdout was not piped".to_owned())
         })?;
         let write_sender = spawn_bounded_writer(stdin);
@@ -251,7 +274,9 @@ impl AssistantProcessClient {
             timeout,
             cancelled,
             closed: false,
+            _environment_files: environment_files,
         };
+        let deadline = checked_deadline(client.timeout)?;
         let hello = HelloRequest {
             request_type: "hello",
             protocol_version: handshake.protocol_version,
@@ -260,30 +285,28 @@ impl AssistantProcessClient {
             model: &handshake.model,
             capabilities: &handshake.capabilities,
         };
-        if let Err(error) =
-            client
-                .write_json(&hello)
-                .and_then(|()| match client.receive_response()? {
-                    SidecarResponse::Ready {
-                        protocol_version,
-                        distribution,
-                        provider,
-                        model,
-                        capabilities,
-                    } if protocol_version == handshake.protocol_version
-                        && distribution == handshake.distribution
-                        && provider == handshake.provider
-                        && model == handshake.model
-                        && capabilities == handshake.capabilities =>
-                    {
-                        Ok(())
-                    }
-                    SidecarResponse::Error { error } => Err(AssistantProcessError::Remote(error)),
-                    _ => Err(AssistantProcessError::Protocol(
-                        "assistant returned a mismatched handshake".to_owned(),
-                    )),
-                })
-        {
+        if let Err(error) = client.write_json_until(&hello, deadline).and_then(|()| {
+            match client.receive_response_until(deadline)? {
+                SidecarResponse::Ready {
+                    protocol_version,
+                    distribution,
+                    provider,
+                    model,
+                    capabilities,
+                } if protocol_version == handshake.protocol_version
+                    && distribution == handshake.distribution
+                    && provider == handshake.provider
+                    && model == handshake.model
+                    && capabilities == handshake.capabilities =>
+                {
+                    Ok(())
+                }
+                SidecarResponse::Error { error } => Err(AssistantProcessError::Remote(error)),
+                _ => Err(AssistantProcessError::Protocol(
+                    "assistant returned a mismatched handshake".to_owned(),
+                )),
+            }
+        }) {
             client.terminate();
             return Err(error);
         }
@@ -314,13 +337,17 @@ impl AssistantProcessClient {
                 "request id and message must be non-empty".to_owned(),
             ));
         }
-        self.write_json(&ChatRequest {
-            request_type: "chat",
-            request_id,
-            message,
-            context,
-        })?;
-        match self.receive_response()? {
+        let deadline = checked_deadline(self.timeout)?;
+        self.write_json_until(
+            &ChatRequest {
+                request_type: "chat",
+                request_id,
+                message,
+                context,
+            },
+            deadline,
+        )?;
+        match self.receive_response_until(deadline)? {
             SidecarResponse::ChatResult {
                 request_id: returned_id,
                 message,
@@ -379,20 +406,25 @@ impl AssistantProcessClient {
         if self.closed {
             return Ok(());
         }
-        self.write_json(&serde_json::json!({"type": "shutdown"}))?;
-        match self.receive_response()? {
+        let deadline = checked_deadline(self.timeout)?;
+        self.write_json_until(&serde_json::json!({"type": "shutdown"}), deadline)?;
+        match self.receive_response_until(deadline)? {
             SidecarResponse::Bye => {
                 self.write_sender.take();
-                self.wait_for_exit()?;
-                self.closed = true;
-                Ok(())
+                let outcome = self.wait_for_exit();
+                self.terminate();
+                outcome
             }
             SidecarResponse::Error { error } => self.fail(AssistantProcessError::Remote(error)),
             _ => self.fail_protocol("assistant did not acknowledge shutdown"),
         }
     }
 
-    fn write_json(&mut self, value: &impl Serialize) -> Result<(), AssistantProcessError> {
+    fn write_json_until(
+        &mut self,
+        value: &impl Serialize,
+        deadline: Instant,
+    ) -> Result<(), AssistantProcessError> {
         let line = serde_json::to_string(value)
             .map_err(|error| AssistantProcessError::Protocol(error.to_string()))?;
         if line.len() > MAX_ASSISTANT_REQUEST_LINE_BYTES {
@@ -410,7 +442,6 @@ impl AssistantProcessClient {
                 acknowledgment,
             })
             .map_err(|_| AssistantProcessError::Closed)?;
-        let deadline = Instant::now() + self.timeout;
         loop {
             if self.cancelled.is_cancelled() {
                 self.terminate();
@@ -437,8 +468,10 @@ impl AssistantProcessClient {
         }
     }
 
-    fn receive_response(&mut self) -> Result<SidecarResponse, AssistantProcessError> {
-        let deadline = Instant::now() + self.timeout;
+    fn receive_response_until(
+        &mut self,
+        deadline: Instant,
+    ) -> Result<SidecarResponse, AssistantProcessError> {
         let line = match receive_line(&self.receiver, deadline, &self.cancelled) {
             Ok(Some(line)) => line,
             Ok(None) => {
@@ -466,7 +499,7 @@ impl AssistantProcessClient {
     }
 
     fn wait_for_exit(&mut self) -> Result<(), AssistantProcessError> {
-        let deadline = Instant::now() + self.timeout;
+        let deadline = checked_deadline(self.timeout)?;
         loop {
             if self.cancelled.is_cancelled() {
                 self.terminate();
@@ -611,6 +644,7 @@ pub enum AssistantProcessError {
     Remote(String),
     RequestLineTooLarge,
     Exited,
+    InvalidTimeout,
     TimedOut,
     Cancelled,
     Closed,
@@ -627,6 +661,7 @@ impl fmt::Display for AssistantProcessError {
                 formatter.write_str("assistant request exceeded byte limit")
             }
             Self::Exited => formatter.write_str("assistant process exited unexpectedly"),
+            Self::InvalidTimeout => formatter.write_str("assistant timeout is not representable"),
             Self::TimedOut => formatter.write_str("assistant process timed out"),
             Self::Cancelled => formatter.write_str("assistant process was cancelled"),
             Self::Closed => formatter.write_str("assistant process is closed"),

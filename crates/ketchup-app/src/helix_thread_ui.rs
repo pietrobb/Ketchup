@@ -170,7 +170,7 @@ impl KetchupApp {
                 return false;
             }
         };
-        if let Err(error) = self.document.apply_batch(&batch) {
+        if let Err(error) = self.apply_batch_with_work_recovery(&batch) {
             self.digest = format!("Helix refused: {error}");
             return false;
         }
@@ -207,7 +207,7 @@ impl KetchupApp {
                 return false;
             }
         };
-        if let Err(error) = self.document.apply_batch(&batch) {
+        if let Err(error) = self.apply_batch_with_work_recovery(&batch) {
             self.digest = format!("Thread refused: {error}");
             return false;
         }

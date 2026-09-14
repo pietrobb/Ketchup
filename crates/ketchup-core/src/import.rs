@@ -355,6 +355,8 @@ pub const MAX_STEP_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct StepImportEvidence {
+    pub source_sha256: [u8; 32],
+    pub source_byte_len: u64,
     pub source_unit: ImportLengthUnit,
     pub result_fingerprint: String,
     pub body_kind: BodyKind,
@@ -559,7 +561,10 @@ pub fn plan_step_import(
     if source.len() as u64 > MAX_STEP_SOURCE_BYTES {
         return Err(StepImportPlanError::SourceTooLarge);
     }
-    if !exact_body_evidence_valid(evidence) {
+    if evidence.source_sha256 != sha256_bytes(source)
+        || evidence.source_byte_len != source.len() as u64
+        || !exact_body_evidence_valid(evidence)
+    {
         return Err(StepImportPlanError::InvalidWorkerEvidence);
     }
     let next_id = |ids: Vec<u64>| {
