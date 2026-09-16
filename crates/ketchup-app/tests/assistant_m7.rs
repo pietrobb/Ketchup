@@ -55,24 +55,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 fn exact_worker_path() -> std::path::PathBuf {
-    let name = if cfg!(windows) {
-        "ketchup-exact-worker.exe"
-    } else {
-        "ketchup-exact-worker"
-    };
-    let colocated = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .and_then(std::path::Path::parent)
-        .unwrap()
-        .join(name);
-    if colocated.is_file() {
-        colocated
-    } else {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/debug")
-            .join(name)
-    }
+    std::path::PathBuf::from(env!("CARGO_BIN_EXE_ketchup-performance-exact-worker"))
 }
 
 fn apply_reviewed_model_intent(shell: &mut Shell, intent: AssistantModelIntent) -> bool {
@@ -1348,6 +1331,36 @@ fn assistant_diagnostics_show_exact_api_usage_and_search_project_memory() {
     shell.type_text("rafter");
     shell.step();
     assert!(shell.has_visible_label(answer));
+}
+
+#[test]
+fn dropping_headless_shell_cancels_in_flight_assistant_request() {
+    let request = "Cancel by shutdown";
+    let transport =
+        Arc::new(ScriptedAssistantTransport::new([]).with_cancellation_request(request));
+    let mut shell = Shell::with_assistant_transport(transport.clone());
+    let input_label = shell.catalog().text("assistant-input-hint");
+
+    shell.focus_text_input(&input_label);
+    shell.type_text(request);
+    shell.press_key(egui::Key::Enter);
+    for _ in 0..2_000 {
+        if transport.started_cancellation_requests() == 1 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(transport.started_cancellation_requests(), 1);
+
+    drop(shell);
+
+    for _ in 0..2_000 {
+        if transport.completed_cancellations() == 1 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(transport.completed_cancellations(), 1);
 }
 
 #[test]
@@ -8839,24 +8852,7 @@ fn assistant_stacks_24_existing_parts_into_20_layers_as_shared_occurrences_in_on
     assert_eq!(context["occurrences_complete"], false);
     assert_eq!(context["occurrences"].as_array().unwrap().len(), 100);
 
-    let worker_name = if cfg!(windows) {
-        "ketchup-exact-worker.exe"
-    } else {
-        "ketchup-exact-worker"
-    };
-    let colocated_worker = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .and_then(std::path::Path::parent)
-        .unwrap()
-        .join(worker_name);
-    let worker = if colocated_worker.is_file() {
-        colocated_worker
-    } else {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/debug")
-            .join(worker_name)
-    };
+    let worker = exact_worker_path();
     shell.app_mut().connect_exact_worker(&worker).unwrap();
 
     let first_frame = Instant::now();

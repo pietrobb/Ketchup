@@ -16,6 +16,7 @@ use crate::exact_validation::{
     GeneralBodyValidationError, GeneralClearanceCase, general_body_input_bytes,
 };
 use crate::graph::{DerivedIdentity, sha256_hex};
+use crate::joinery::{DowelHole, project_dowel_joint_contract};
 use crate::prismatic::TolerancePolicy;
 use crate::validation::{
     EvidenceClass, EvidenceCounts, PermittedErrorDirection, TolerantEvidence, ValidationReport,
@@ -292,6 +293,10 @@ pub const UNSPECIFIED_MATERIAL_V1: &str = "ketchup.material.unspecified.v1";
 pub const GENERAL_BOM_EXPORT_V2: &str = "ketchup.general-bom-export.v2";
 pub const GENERAL_DRAWING_SVG_V3: &str = "ketchup.general-drawing-svg.v3";
 pub const GENERAL_MANUFACTURING_EXPORT_V2: &str = "ketchup.general-manufacturing-export.v2";
+pub const WOODWOP_MPR_4_0_DRILL_EXPORT_V1: &str = "ketchup.woodwop-mpr-4.0-drill-export.v1";
+pub const WOODWOP_MPR_4_0_MACHINING_EXPORT_V2: &str = "ketchup.woodwop-mpr-4.0-machining-export.v2";
+pub const HOMAG_BHX_PRODUCTION_PACKAGE_V1: &str = "ketchup.homag-bhx-production-package.v1";
+pub const HOMAG_CODE128_LABEL_V1: &str = "ketchup.homag-code128-label.v1";
 pub const WELDMENT_CUT_LIST_EXPORT_V1: &str = "ketchup.weldment-cut-list-export.v1";
 pub const WELDMENT_DRAWING_SVG_V1: &str = "ketchup.weldment-drawing-svg.v1";
 pub const WELDMENT_FABRICATION_EVALUATOR_V1: &str = "ketchup.weldment-fabrication-evaluator.v1";
@@ -299,6 +304,20 @@ pub const BTLX_2_3_1_VERSION: &str = "2.3.1";
 pub const BTLX_2_3_1_SCHEMA_URL: &str = "https://www.design2machine.com/btlx/BTLx_2_3_1.xsd";
 pub const BTLX_2_3_1_SCHEMA_SHA256: &str =
     "208848116af3b43c189156610d3b82f6f86ea2afa7d09bc85a15876cc91cf1c6";
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct WoodwopMprOptions {
+    pub vertical_pocket_tool_number: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct HomagProductionProgram {
+    pub schema: &'static str,
+    pub program_name: String,
+    pub instance_path: InstancePath,
+    pub mpr: Vec<u8>,
+    pub barcode_svg: Vec<u8>,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BtlxProfileProcessingRequest {
@@ -948,6 +967,221 @@ impl GeneralFabricationProjection {
             ));
         }
         Ok(output.into_bytes())
+    }
+
+    pub fn woodwop_mpr_4_0_drill_export(
+        &self,
+        snapshot: &Snapshot,
+    ) -> Result<Vec<u8>, GeneralFabricationError> {
+        self.woodwop_mpr_4_0_machining_export(snapshot, WoodwopMprOptions::default())
+    }
+
+    pub fn woodwop_mpr_4_0_machining_export(
+        &self,
+        snapshot: &Snapshot,
+        options: WoodwopMprOptions,
+    ) -> Result<Vec<u8>, GeneralFabricationError> {
+        self.bom_export(snapshot)?;
+        self.manufacturing_export(snapshot)?;
+        let [row] = self.bom.rows.as_slice() else {
+            return Err(GeneralFabricationError::ExportBlocked);
+        };
+        if row.quantity == 0
+            || row.quantity != row.instances.len()
+            || row.item_kind == GeneralBomItemKind::Purchased
+        {
+            return Err(GeneralFabricationError::ExportBlocked);
+        }
+        let GeneralBodySource::Exact(row_source) = &row.source else {
+            return Err(GeneralFabricationError::ExportBlocked);
+        };
+        let matching = self
+            .manufacturing
+            .operations
+            .iter()
+            .filter(|operation| {
+                operation.definition_id == row.definition_id && operation.source == *row_source
+            })
+            .collect::<Vec<_>>();
+        if matching.len() != self.manufacturing.operations.len() {
+            return Err(GeneralFabricationError::ExportBlocked);
+        }
+        let [stock, machining @ ..] = matching.as_slice() else {
+            return Err(GeneralFabricationError::ExportBlocked);
+        };
+        if stock.kind != GeneralManufacturingKind::Stock
+            || !stock.semantic_inputs.is_empty()
+            || machining.is_empty()
+            || machining.iter().any(|operation| {
+                !matches!(
+                    operation.kind,
+                    GeneralManufacturingKind::CircularDrill | GeneralManufacturingKind::ProfileCut
+                )
+            })
+            || options
+                .vertical_pocket_tool_number
+                .is_some_and(|tool| tool == 0 || tool > 999_999)
+        {
+            return Err(GeneralFabricationError::ExportBlocked);
+        }
+        let stock_frame =
+            woodwop_stock_frame(&stock.machining).ok_or(GeneralFabricationError::ExportBlocked)?;
+        let macros = machining
+            .iter()
+            .map(|operation| match operation.kind {
+                GeneralManufacturingKind::CircularDrill => {
+                    woodwop_drilling_macro(&operation.machining, stock_frame)
+                }
+                GeneralManufacturingKind::ProfileCut => {
+                    options.vertical_pocket_tool_number.and_then(|tool| {
+                        woodwop_vertical_pocket_macro(&operation.machining, stock_frame, tool)
+                    })
+                }
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or(GeneralFabricationError::ExportBlocked)?;
+        let [length_mm, width_mm, thickness_mm] = stock_frame.dimensions_mm;
+        let length =
+            format_btlx_positive_number(length_mm).ok_or(GeneralFabricationError::ExportBlocked)?;
+        let width =
+            format_btlx_positive_number(width_mm).ok_or(GeneralFabricationError::ExportBlocked)?;
+        let thickness = format_btlx_positive_number(thickness_mm)
+            .ok_or(GeneralFabricationError::ExportBlocked)?;
+        let export_contract = if machining
+            .iter()
+            .any(|operation| operation.kind == GeneralManufacturingKind::ProfileCut)
+        {
+            WOODWOP_MPR_4_0_MACHINING_EXPORT_V2
+        } else {
+            WOODWOP_MPR_4_0_DRILL_EXPORT_V1
+        };
+        let mut output = format!(
+            "[H\nVERSION=\"4.0\"\nOP=\"1\"\nINCH=\"0\"\nMAT=\"HOMAG\"\n_BSX={length}\n_BSY={width}\n_BSZ={thickness}\n\\{export_contract}\\\n<100 \\WerkStck\\\nLA=\"{length}\"\nBR=\"{width}\"\nDI=\"{thickness}\"\nFNX=\"0\"\nFNY=\"0\"\nAX=\"0\"\nAY=\"0\"\nRNX=\"0\"\nRNY=\"0\"\nRNZ=\"0\"\n"
+        );
+        for processing in macros {
+            output.push_str(&processing);
+        }
+        output.push_str("!\n");
+        if !output.is_ascii() {
+            return Err(GeneralFabricationError::ExportBlocked);
+        }
+        Ok(output.into_bytes())
+    }
+
+    pub fn woodwop_mpr_4_0_production_package(
+        &self,
+        snapshot: &Snapshot,
+        options: WoodwopMprOptions,
+    ) -> Result<Vec<HomagProductionProgram>, GeneralFabricationError> {
+        self.bom_export(snapshot)?;
+        self.manufacturing_export(snapshot)?;
+        if options
+            .vertical_pocket_tool_number
+            .is_some_and(|tool| tool == 0 || tool > 999_999)
+        {
+            return Err(GeneralFabricationError::ExportBlocked);
+        }
+        let mut holes = Vec::new();
+        for joint in snapshot.dowel_joints() {
+            let projection = project_dowel_joint_contract(snapshot, joint)
+                .map_err(|_| GeneralFabricationError::ExportBlocked)?;
+            for pair in projection.pairs {
+                holes.push(pair.first);
+                holes.push(pair.second);
+            }
+        }
+        let mut programs = Vec::new();
+        let mut program_names = BTreeSet::new();
+        for row in self
+            .bom
+            .rows
+            .iter()
+            .filter(|row| row.item_kind != GeneralBomItemKind::Purchased)
+        {
+            let GeneralBodySource::Exact(row_source) = &row.source else {
+                return Err(GeneralFabricationError::ExportBlocked);
+            };
+            let matching = self
+                .manufacturing
+                .operations
+                .iter()
+                .filter(|operation| {
+                    operation.definition_id == row.definition_id && operation.source == *row_source
+                })
+                .collect::<Vec<_>>();
+            let [stock, machining @ ..] = matching.as_slice() else {
+                return Err(GeneralFabricationError::ExportBlocked);
+            };
+            if stock.kind != GeneralManufacturingKind::Stock
+                || !stock.semantic_inputs.is_empty()
+                || machining.iter().any(|operation| {
+                    !matches!(
+                        operation.kind,
+                        GeneralManufacturingKind::CircularDrill
+                            | GeneralManufacturingKind::ProfileCut
+                    )
+                })
+            {
+                return Err(GeneralFabricationError::ExportBlocked);
+            }
+            let stock_frame = woodwop_stock_frame(&stock.machining)
+                .ok_or(GeneralFabricationError::ExportBlocked)?;
+            for instance_path in &row.instances {
+                let instance_holes = holes
+                    .iter()
+                    .filter(|hole| hole.instance_path == *instance_path)
+                    .collect::<Vec<_>>();
+                if machining.is_empty() && instance_holes.is_empty() {
+                    continue;
+                }
+                let mut macros = machining
+                    .iter()
+                    .map(|operation| match operation.kind {
+                        GeneralManufacturingKind::CircularDrill => {
+                            woodwop_drilling_macro(&operation.machining, stock_frame)
+                        }
+                        GeneralManufacturingKind::ProfileCut => {
+                            options.vertical_pocket_tool_number.and_then(|tool| {
+                                woodwop_vertical_pocket_macro(
+                                    &operation.machining,
+                                    stock_frame,
+                                    tool,
+                                )
+                            })
+                        }
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or(GeneralFabricationError::ExportBlocked)?;
+                macros.extend(
+                    instance_holes
+                        .into_iter()
+                        .map(|hole| woodwop_dowel_macro(hole, stock_frame))
+                        .collect::<Option<Vec<_>>>()
+                        .ok_or(GeneralFabricationError::ExportBlocked)?,
+                );
+                let program_name = homag_program_name(snapshot, instance_path);
+                if !program_names.insert(program_name.clone()) {
+                    return Err(GeneralFabricationError::ExportBlocked);
+                }
+                let mpr =
+                    woodwop_mpr_output(stock_frame, &macros, HOMAG_BHX_PRODUCTION_PACKAGE_V1)?;
+                let barcode_svg = homag_code128_svg(&program_name)
+                    .ok_or(GeneralFabricationError::ExportBlocked)?;
+                programs.push(HomagProductionProgram {
+                    schema: HOMAG_BHX_PRODUCTION_PACKAGE_V1,
+                    program_name,
+                    instance_path: instance_path.clone(),
+                    mpr,
+                    barcode_svg,
+                });
+            }
+        }
+        if programs.is_empty() {
+            return Err(GeneralFabricationError::NoSupportedGeometry);
+        }
+        Ok(programs)
     }
 
     pub fn btlx_2_3_1_export(
@@ -1653,6 +1887,411 @@ fn machining_frame_is_right_handed(frame: &GeneralMachiningFrame) -> bool {
             .into_iter()
             .zip(frame.normal)
             .all(|(actual, expected)| close(actual, expected))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct WoodwopStockFrame {
+    definition_axes: [usize; 3],
+    dimensions_mm: [f64; 3],
+}
+
+fn woodwop_stock_frame(geometry: &GeneralMachiningGeometry) -> Option<WoodwopStockFrame> {
+    let (definition_z_mm, definition_x_mm, definition_y_mm) =
+        rectangular_timber_stock_dimensions(geometry)?;
+    let definition_dimensions = [definition_x_mm, definition_y_mm, definition_z_mm];
+    let mut definition_axes = [0, 1, 2];
+    definition_axes.sort_by(|left, right| {
+        definition_dimensions[*right]
+            .total_cmp(&definition_dimensions[*left])
+            .then(left.cmp(right))
+    });
+    Some(WoodwopStockFrame {
+        definition_axes,
+        dimensions_mm: definition_axes.map(|axis| definition_dimensions[axis]),
+    })
+}
+
+fn woodwop_coordinate(definition_coordinate: [f64; 3], stock_frame: WoodwopStockFrame) -> [f64; 3] {
+    stock_frame
+        .definition_axes
+        .map(|axis| definition_coordinate[axis])
+}
+
+fn homag_program_name(snapshot: &Snapshot, instance_path: &InstancePath) -> String {
+    let mut identity = Vec::new();
+    identity.extend_from_slice(&snapshot.document_id().0.to_le_bytes());
+    identity.extend_from_slice(&instance_path.root_occurrence().0.to_le_bytes());
+    for step in instance_path.steps() {
+        match step {
+            InstancePathStep::Group(id) => {
+                identity.push(0);
+                identity.extend_from_slice(&id.0.to_le_bytes());
+            }
+            InstancePathStep::Occurrence(id) => {
+                identity.push(1);
+                identity.extend_from_slice(&id.0.to_le_bytes());
+            }
+        }
+    }
+    sha256_hex(&identity)[..12].to_ascii_uppercase()
+}
+
+fn woodwop_mpr_output(
+    stock_frame: WoodwopStockFrame,
+    macros: &[String],
+    export_contract: &str,
+) -> Result<Vec<u8>, GeneralFabricationError> {
+    let [length_mm, width_mm, thickness_mm] = stock_frame.dimensions_mm;
+    let length =
+        format_btlx_positive_number(length_mm).ok_or(GeneralFabricationError::ExportBlocked)?;
+    let width =
+        format_btlx_positive_number(width_mm).ok_or(GeneralFabricationError::ExportBlocked)?;
+    let thickness =
+        format_btlx_positive_number(thickness_mm).ok_or(GeneralFabricationError::ExportBlocked)?;
+    let mut output = format!(
+        "[H\nVERSION=\"4.0\"\nOP=\"1\"\nINCH=\"0\"\nMAT=\"HOMAG\"\n_BSX={length}\n_BSY={width}\n_BSZ={thickness}\n\\{export_contract}\\\n<100 \\WerkStck\\\nLA=\"{length}\"\nBR=\"{width}\"\nDI=\"{thickness}\"\nFNX=\"0\"\nFNY=\"0\"\nAX=\"0\"\nAY=\"0\"\nRNX=\"0\"\nRNY=\"0\"\nRNZ=\"0\"\n"
+    );
+    for processing in macros {
+        output.push_str(processing);
+    }
+    output.push_str("!\n");
+    if !output.is_ascii() {
+        return Err(GeneralFabricationError::ExportBlocked);
+    }
+    Ok(output.into_bytes())
+}
+
+fn woodwop_dowel_macro(hole: &DowelHole, stock_frame: WoodwopStockFrame) -> Option<String> {
+    let normal = hole.inward_unit_local;
+    let tolerance = 1.0e-12;
+    let (x_axis, y_axis) = if normal[0] >= 1.0 - tolerance
+        && normal[1].abs() <= tolerance
+        && normal[2].abs() <= tolerance
+    {
+        ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0])
+    } else if normal[0] <= -1.0 + tolerance
+        && normal[1].abs() <= tolerance
+        && normal[2].abs() <= tolerance
+    {
+        ([0.0, 1.0, 0.0], [0.0, 0.0, -1.0])
+    } else if normal[1] >= 1.0 - tolerance
+        && normal[0].abs() <= tolerance
+        && normal[2].abs() <= tolerance
+    {
+        ([0.0, 0.0, 1.0], [1.0, 0.0, 0.0])
+    } else if normal[1] <= -1.0 + tolerance
+        && normal[0].abs() <= tolerance
+        && normal[2].abs() <= tolerance
+    {
+        ([0.0, 0.0, 1.0], [-1.0, 0.0, 0.0])
+    } else if normal[2] >= 1.0 - tolerance
+        && normal[0].abs() <= tolerance
+        && normal[1].abs() <= tolerance
+    {
+        ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0])
+    } else if normal[2] <= -1.0 + tolerance
+        && normal[0].abs() <= tolerance
+        && normal[1].abs() <= tolerance
+    {
+        ([1.0, 0.0, 0.0], [0.0, -1.0, 0.0])
+    } else {
+        return None;
+    };
+    woodwop_drilling_macro(
+        &GeneralMachiningGeometry::CircularDrill {
+            frame: GeneralMachiningFrame {
+                origin_mm: hole.entry_local_mm,
+                x_axis,
+                y_axis,
+                normal,
+            },
+            center_mm: [0.0, 0.0],
+            diameter_mm: hole.diameter_mm,
+            start_mm: 0.0,
+            end_mm: hole.depth_mm,
+        },
+        stock_frame,
+    )
+}
+
+fn homag_code128_svg(program_name: &str) -> Option<Vec<u8>> {
+    if program_name.len() != 12
+        || !program_name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return None;
+    }
+    const PATTERNS: [&str; 107] = [
+        "212222", "222122", "222221", "121223", "121322", "131222", "122213", "122312", "132212",
+        "221213", "221312", "231212", "112232", "122132", "122231", "113222", "123122", "123221",
+        "223211", "221132", "221231", "213212", "223112", "312131", "311222", "321122", "321221",
+        "312212", "322112", "322211", "212123", "212321", "232121", "111323", "131123", "131321",
+        "112313", "132113", "132311", "211313", "231113", "231311", "112133", "112331", "132131",
+        "113123", "113321", "133121", "313121", "211331", "231131", "213113", "213311", "213131",
+        "311123", "311321", "331121", "312113", "312311", "332111", "314111", "221411", "431111",
+        "111224", "111422", "121124", "121421", "141122", "141221", "112214", "112412", "122114",
+        "122411", "142112", "142211", "241211", "221114", "413111", "241112", "134111", "111242",
+        "121142", "121241", "114212", "124112", "124211", "411212", "421112", "421211", "212141",
+        "214121", "412121", "111143", "111341", "131141", "114113", "114311", "411113", "411311",
+        "113141", "114131", "311141", "411131", "211412", "211214", "211232", "2331112",
+    ];
+    let values = program_name
+        .bytes()
+        .map(|byte| usize::from(byte - 32))
+        .collect::<Vec<_>>();
+    let checksum = (104
+        + values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| (index + 1) * value)
+            .sum::<usize>())
+        % 103;
+    let symbols = std::iter::once(104)
+        .chain(values)
+        .chain([checksum, 106])
+        .collect::<Vec<_>>();
+    let module_count = 20
+        + symbols
+            .iter()
+            .map(|symbol| {
+                PATTERNS[*symbol]
+                    .bytes()
+                    .map(|digit| usize::from(digit - b'0'))
+                    .sum::<usize>()
+            })
+            .sum::<usize>();
+    let mut svg = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" data-schema=\"{HOMAG_CODE128_LABEL_V1}\" viewBox=\"0 0 {module_count} 80\" role=\"img\" aria-label=\"HOMAG program {program_name}\"><rect width=\"100%\" height=\"100%\" fill=\"white\"/>"
+    );
+    let mut x = 10usize;
+    for symbol in symbols {
+        let mut bar = true;
+        for width in PATTERNS[symbol]
+            .bytes()
+            .map(|digit| usize::from(digit - b'0'))
+        {
+            if bar {
+                svg.push_str(&format!(
+                    "<rect x=\"{x}\" y=\"4\" width=\"{width}\" height=\"56\" fill=\"black\"/>"
+                ));
+            }
+            x += width;
+            bar = !bar;
+        }
+    }
+    svg.push_str(&format!(
+        "<text x=\"{}\" y=\"74\" text-anchor=\"middle\" font-family=\"monospace\" font-size=\"9\">{program_name}</text></svg>\n",
+        module_count / 2
+    ));
+    Some(svg.into_bytes())
+}
+
+fn woodwop_drilling_macro(
+    geometry: &GeneralMachiningGeometry,
+    stock_frame: WoodwopStockFrame,
+) -> Option<String> {
+    let GeneralMachiningGeometry::CircularDrill {
+        frame,
+        center_mm,
+        diameter_mm,
+        start_mm,
+        end_mm,
+    } = geometry
+    else {
+        return None;
+    };
+    if !machining_frame_is_right_handed(frame)
+        || center_mm.iter().any(|value| !value.is_finite())
+        || !diameter_mm.is_finite()
+        || *diameter_mm <= 0.0
+        || !start_mm.is_finite()
+        || !end_mm.is_finite()
+        || end_mm <= start_mm
+    {
+        return None;
+    }
+    let definition_entry = std::array::from_fn(|axis| {
+        frame.origin_mm[axis]
+            + frame.x_axis[axis] * center_mm[0]
+            + frame.y_axis[axis] * center_mm[1]
+            + frame.normal[axis] * start_mm
+    });
+    let entry = woodwop_coordinate(definition_entry, stock_frame);
+    let direction = woodwop_coordinate(frame.normal, stock_frame);
+    let [length_mm, width_mm, thickness_mm] = stock_frame.dimensions_mm;
+    let dimensions = stock_frame.dimensions_mm;
+    let tolerance = dimensions.into_iter().fold(1.0_f64, f64::max) * 1.0e-9;
+    let axis = (0..3).find(|candidate| {
+        direction[*candidate].abs() >= 1.0 - 1.0e-12
+            && direction
+                .iter()
+                .enumerate()
+                .all(|(index, value)| index == *candidate || value.abs() <= 1.0e-12)
+    })?;
+    let sign = if direction[axis] > 0.0 { 1.0 } else { -1.0 };
+    let expected_entry = if sign > 0.0 { 0.0 } else { dimensions[axis] };
+    let depth_mm = end_mm - start_mm;
+    if (entry[axis] - expected_entry).abs() > tolerance
+        || depth_mm >= dimensions[axis] - tolerance
+        || entry.iter().enumerate().any(|(index, value)| {
+            !value.is_finite() || *value < -tolerance || *value > dimensions[index] + tolerance
+        })
+    {
+        return None;
+    }
+    let coordinate = |value: f64, maximum: f64| {
+        format_btlx_number_in_range(value.clamp(0.0, maximum), 0.0, maximum)
+    };
+    let x = coordinate(entry[0], length_mm)?;
+    let y = coordinate(entry[1], width_mm)?;
+    let z = coordinate(entry[2], thickness_mm)?;
+    let depth = format_btlx_number_in_range(depth_mm, f64::MIN_POSITIVE, dimensions[axis])?;
+    let diameter = format_btlx_number_in_range(*diameter_mm, f64::MIN_POSITIVE, 50_000.0)?;
+    if axis == 2 {
+        if sign > 0.0 {
+            return None;
+        }
+        Some(format!(
+            "<102 \\BohrVert\\\nXA=\"{x}\"\nYA=\"{y}\"\nBM=\"LS\"\nTI=\"{depth}\"\nDU=\"{diameter}\"\nAN=\"1\"\nMI=\"0\"\nAB=\"0\"\nF_=\"STANDARD\"\nS_=\"1\"\nKO=\"0\"\n??=\"1\"\nEN=\"1\"\n"
+        ))
+    } else {
+        let mode = match (axis, sign > 0.0) {
+            (0, true) => "XP",
+            (0, false) => "XM",
+            (1, true) => "YP",
+            (1, false) => "YM",
+            _ => return None,
+        };
+        Some(format!(
+            "<103 \\BohrHoriz\\\nXA=\"{x}\"\nYA=\"{y}\"\nZA=\"{z}\"\nBM=\"{mode}\"\nTI=\"{depth}\"\nDU=\"{diameter}\"\nAN=\"1\"\nMI=\"0\"\nAB=\"0\"\nF_=\"STANDARD\"\nKO=\"0\"\n??=\"1\"\nEN=\"1\"\n"
+        ))
+    }
+}
+
+fn woodwop_vertical_pocket_macro(
+    geometry: &GeneralMachiningGeometry,
+    stock_frame: WoodwopStockFrame,
+    tool_number: u32,
+) -> Option<String> {
+    let GeneralMachiningGeometry::ProfileCut {
+        frame,
+        segments,
+        start_mm,
+        end_mm,
+    } = geometry
+    else {
+        return None;
+    };
+    if tool_number == 0
+        || tool_number > 999_999
+        || !machining_frame_is_right_handed(frame)
+        || !start_mm.is_finite()
+        || !end_mm.is_finite()
+        || end_mm <= start_mm
+        || segments.len() != 4
+    {
+        return None;
+    }
+    let direction = woodwop_coordinate(frame.normal, stock_frame);
+    if direction[2] >= -1.0 + 1.0e-12
+        || direction[0].abs() > 1.0e-12
+        || direction[1].abs() > 1.0e-12
+    {
+        return None;
+    }
+    let dimensions = stock_frame.dimensions_mm;
+    let tolerance = dimensions.into_iter().fold(1.0_f64, f64::max) * 1.0e-9;
+    let depth_mm = end_mm - start_mm;
+    if depth_mm >= dimensions[2] - tolerance {
+        return None;
+    }
+
+    let profile_point = |point: [f64; 2]| {
+        woodwop_coordinate(
+            std::array::from_fn(|axis| {
+                frame.origin_mm[axis]
+                    + frame.x_axis[axis] * point[0]
+                    + frame.y_axis[axis] * point[1]
+                    + frame.normal[axis] * start_mm
+            }),
+            stock_frame,
+        )
+    };
+    let mut vertices = Vec::with_capacity(4);
+    let mut previous_end = None;
+    for segment in segments {
+        let GeneralMachiningSegment::Line { start_mm, end_mm } = segment else {
+            return None;
+        };
+        let start = profile_point(*start_mm);
+        let end = profile_point(*end_mm);
+        if start.into_iter().chain(end).any(|value| !value.is_finite())
+            || (start[2] - dimensions[2]).abs() > tolerance
+            || (end[2] - dimensions[2]).abs() > tolerance
+            || previous_end.is_some_and(|previous: [f64; 3]| {
+                (0..3).any(|axis| (previous[axis] - start[axis]).abs() > tolerance)
+            })
+        {
+            return None;
+        }
+        let horizontal = (start[1] - end[1]).abs() <= tolerance;
+        let vertical = (start[0] - end[0]).abs() <= tolerance;
+        if horizontal == vertical {
+            return None;
+        }
+        vertices.push(start);
+        previous_end = Some(end);
+    }
+    let final_end = previous_end?;
+    if (0..3).any(|axis| (final_end[axis] - vertices[0][axis]).abs() > tolerance) {
+        return None;
+    }
+    let minimum = [
+        vertices
+            .iter()
+            .map(|point| point[0])
+            .fold(f64::INFINITY, f64::min),
+        vertices
+            .iter()
+            .map(|point| point[1])
+            .fold(f64::INFINITY, f64::min),
+    ];
+    let maximum = [
+        vertices
+            .iter()
+            .map(|point| point[0])
+            .fold(f64::NEG_INFINITY, f64::max),
+        vertices
+            .iter()
+            .map(|point| point[1])
+            .fold(f64::NEG_INFINITY, f64::max),
+    ];
+    if minimum[0] < -tolerance
+        || minimum[1] < -tolerance
+        || maximum[0] > dimensions[0] + tolerance
+        || maximum[1] > dimensions[1] + tolerance
+        || maximum[0] - minimum[0] <= tolerance
+        || maximum[1] - minimum[1] <= tolerance
+        || vertices.iter().any(|point| {
+            ![minimum[0], maximum[0]]
+                .into_iter()
+                .any(|value| (point[0] - value).abs() <= tolerance)
+                || ![minimum[1], maximum[1]]
+                    .into_iter()
+                    .any(|value| (point[1] - value).abs() <= tolerance)
+        })
+    {
+        return None;
+    }
+    let x = format_btlx_number_in_range((minimum[0] + maximum[0]) / 2.0, 0.0, dimensions[0])?;
+    let y = format_btlx_number_in_range((minimum[1] + maximum[1]) / 2.0, 0.0, dimensions[1])?;
+    let length = format_btlx_positive_number(maximum[0] - minimum[0])?;
+    let width = format_btlx_positive_number(maximum[1] - minimum[1])?;
+    let depth = format_btlx_number_in_range(depth_mm, f64::MIN_POSITIVE, dimensions[2])?;
+    Some(format!(
+        "<112 \\Tasche\\\nXA=\"{x}\"\nYA=\"{y}\"\nLA=\"{length}\"\nBR=\"{width}\"\nRD=\"0\"\nWI=\"0\"\nTI=\"{depth}\"\nZT=\"0\"\nXY=\"80\"\nDS=\"1\"\nT_=\"{tool_number}\"\nF_=\"STANDARD\"\nKO=\"0\"\n??=\"1\"\nEN=\"1\"\n"
+    ))
 }
 
 fn rectangular_timber_stock_dimensions(
@@ -3862,6 +4501,183 @@ mod tests {
         };
         *end_mm = [100.0, 1.0];
         assert_eq!(rectangular_timber_stock_dimensions(&diagonal), None);
+    }
+
+    #[test]
+    fn woodwop_drilling_maps_horizontal_and_top_vertical_axes_and_rejects_unsafe_axes() {
+        let beam_stock = woodwop_stock_frame(&legacy_stock_geometry(PieceDimensions {
+            length_mm: 100.0,
+            width_mm: 50.0,
+            height_mm: 1000.0,
+        }))
+        .unwrap();
+        assert_eq!(beam_stock.definition_axes, [2, 0, 1]);
+        assert_eq!(beam_stock.dimensions_mm, [1000.0, 100.0, 50.0]);
+        let horizontal = GeneralMachiningGeometry::CircularDrill {
+            frame: identity_machining_frame(),
+            center_mm: [50.0, 25.0],
+            diameter_mm: 10.0,
+            start_mm: 0.0,
+            end_mm: 50.0,
+        };
+        let horizontal_macro = woodwop_drilling_macro(&horizontal, beam_stock).unwrap();
+        assert!(horizontal_macro.starts_with(
+            "<103 \\BohrHoriz\\\nXA=\"0\"\nYA=\"50\"\nZA=\"25\"\nBM=\"XP\"\nTI=\"50\"\nDU=\"10\"\n"
+        ));
+
+        let panel_stock = woodwop_stock_frame(&legacy_stock_geometry(PieceDimensions {
+            length_mm: 600.0,
+            width_mm: 400.0,
+            height_mm: 19.0,
+        }))
+        .unwrap();
+        assert_eq!(panel_stock.definition_axes, [0, 1, 2]);
+        assert_eq!(panel_stock.dimensions_mm, [600.0, 400.0, 19.0]);
+        let vertical = GeneralMachiningGeometry::CircularDrill {
+            frame: GeneralMachiningFrame {
+                origin_mm: [0.0, 0.0, 19.0],
+                x_axis: [0.0, 1.0, 0.0],
+                y_axis: [1.0, 0.0, 0.0],
+                normal: [0.0, 0.0, -1.0],
+            },
+            center_mm: [25.0, 50.0],
+            diameter_mm: 5.0,
+            start_mm: 0.0,
+            end_mm: 12.0,
+        };
+        let vertical_macro = woodwop_drilling_macro(&vertical, panel_stock).unwrap();
+        assert!(vertical_macro.starts_with(
+            "<102 \\BohrVert\\\nXA=\"50\"\nYA=\"25\"\nBM=\"LS\"\nTI=\"12\"\nDU=\"5\"\n"
+        ));
+        let mut through = vertical.clone();
+        let GeneralMachiningGeometry::CircularDrill { end_mm, .. } = &mut through else {
+            unreachable!()
+        };
+        *end_mm = 19.0;
+        assert_eq!(woodwop_drilling_macro(&through, panel_stock), None);
+
+        let root_half = 0.5_f64.sqrt();
+        let angled = GeneralMachiningGeometry::CircularDrill {
+            frame: GeneralMachiningFrame {
+                origin_mm: [0.0, 0.0, 0.0],
+                x_axis: [1.0, 0.0, 0.0],
+                y_axis: [0.0, root_half, root_half],
+                normal: [0.0, -root_half, root_half],
+            },
+            center_mm: [25.0, 25.0],
+            diameter_mm: 5.0,
+            start_mm: 0.0,
+            end_mm: 12.0,
+        };
+        assert_eq!(woodwop_drilling_macro(&angled, panel_stock), None);
+
+        let from_below = GeneralMachiningGeometry::CircularDrill {
+            frame: identity_machining_frame(),
+            center_mm: [50.0, 25.0],
+            diameter_mm: 5.0,
+            start_mm: 0.0,
+            end_mm: 12.0,
+        };
+        assert_eq!(woodwop_drilling_macro(&from_below, panel_stock), None);
+    }
+
+    #[test]
+    fn woodwop_vertical_pocket_requires_top_rectangular_geometry_and_explicit_tool() {
+        let stock = woodwop_stock_frame(&legacy_stock_geometry(PieceDimensions {
+            length_mm: 600.0,
+            width_mm: 400.0,
+            height_mm: 19.0,
+        }))
+        .unwrap();
+        let pocket = GeneralMachiningGeometry::ProfileCut {
+            frame: GeneralMachiningFrame {
+                origin_mm: [0.0, 0.0, 19.0],
+                x_axis: [0.0, 1.0, 0.0],
+                y_axis: [1.0, 0.0, 0.0],
+                normal: [0.0, 0.0, -1.0],
+            },
+            segments: vec![
+                GeneralMachiningSegment::Line {
+                    start_mm: [100.0, 200.0],
+                    end_mm: [140.0, 200.0],
+                },
+                GeneralMachiningSegment::Line {
+                    start_mm: [140.0, 200.0],
+                    end_mm: [140.0, 260.0],
+                },
+                GeneralMachiningSegment::Line {
+                    start_mm: [140.0, 260.0],
+                    end_mm: [100.0, 260.0],
+                },
+                GeneralMachiningSegment::Line {
+                    start_mm: [100.0, 260.0],
+                    end_mm: [100.0, 200.0],
+                },
+            ],
+            start_mm: 0.0,
+            end_mm: 12.0,
+        };
+
+        let macro_text = woodwop_vertical_pocket_macro(&pocket, stock, 101).unwrap();
+        assert!(macro_text.starts_with(
+            "<112 \\Tasche\\\nXA=\"230\"\nYA=\"120\"\nLA=\"60\"\nBR=\"40\"\nRD=\"0\"\nWI=\"0\"\nTI=\"12\"\n"
+        ));
+        assert!(macro_text.contains("T_=\"101\"\nF_=\"STANDARD\"\n"));
+        assert_eq!(woodwop_vertical_pocket_macro(&pocket, stock, 0), None);
+
+        let mut through = pocket.clone();
+        let GeneralMachiningGeometry::ProfileCut { end_mm, .. } = &mut through else {
+            unreachable!()
+        };
+        *end_mm = 19.0;
+        assert_eq!(woodwop_vertical_pocket_macro(&through, stock, 101), None);
+
+        let mut open = pocket;
+        let GeneralMachiningGeometry::ProfileCut { segments, .. } = &mut open else {
+            unreachable!()
+        };
+        let GeneralMachiningSegment::Line { end_mm, .. } = &mut segments[3] else {
+            unreachable!()
+        };
+        *end_mm = [110.0, 200.0];
+        assert_eq!(woodwop_vertical_pocket_macro(&open, stock, 101), None);
+    }
+
+    #[test]
+    fn homag_dowel_macro_and_code128_label_share_the_machine_program_identity() {
+        let stock = woodwop_stock_frame(&legacy_stock_geometry(PieceDimensions {
+            length_mm: 600.0,
+            width_mm: 400.0,
+            height_mm: 19.0,
+        }))
+        .unwrap();
+        let hole = DowelHole {
+            stable_hole_id: "dowel-7/0/first".to_owned(),
+            instance_path: InstancePath::root(OccurrenceId(1)),
+            entry_local_mm: [50.0, 20.0, 19.0],
+            inward_unit_local: [0.0, 0.0, -1.0],
+            diameter_mm: 8.0,
+            depth_mm: 16.0,
+            shared_center_world_mm: [50.0, 20.0, 19.0],
+        };
+        let drilling = woodwop_dowel_macro(&hole, stock).unwrap();
+        assert!(drilling.starts_with(
+            "<102 \\BohrVert\\\nXA=\"50\"\nYA=\"20\"\nBM=\"LS\"\nTI=\"16\"\nDU=\"8\"\n"
+        ));
+        let mpr = woodwop_mpr_output(stock, &[drilling], HOMAG_BHX_PRODUCTION_PACKAGE_V1).unwrap();
+        let mpr = String::from_utf8(mpr).unwrap();
+        assert!(mpr.contains("\\ketchup.homag-bhx-production-package.v1\\"));
+        assert_eq!(mpr.matches("\\BohrVert\\").count(), 1);
+
+        let label = homag_code128_svg("ABCDEF123456").unwrap();
+        let label_again = homag_code128_svg("ABCDEF123456").unwrap();
+        assert_eq!(label, label_again);
+        let label = String::from_utf8(label).unwrap();
+        assert!(label.contains(HOMAG_CODE128_LABEL_V1));
+        assert!(label.contains(">ABCDEF123456</text>"));
+        assert!(label.contains("aria-label=\"HOMAG program ABCDEF123456\""));
+        assert!(homag_code128_svg("SHORT").is_none());
+        assert!(homag_code128_svg("12345678901!").is_none());
     }
 
     #[test]

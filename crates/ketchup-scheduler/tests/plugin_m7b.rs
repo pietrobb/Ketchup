@@ -199,6 +199,38 @@ fn m7b_host_max_response_honors_timeout_when_plugin_stops_reading() {
 }
 
 #[test]
+fn m7b_flooding_plugin_is_backpressured_while_host_response_is_blocked() {
+    let marker = std::env::temp_dir().join(format!(
+        "ketchup-plugin-backpressure-{}.marker",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&marker);
+    let script = "import pathlib,sys,time\nprint('HELLO\\tketchup.plugin.v1\\torg.ketchup.queue-backpressure\\t1.0.0\\t7001\\tquery.agent-state.v1\\t8\\t65536\\t1\\t1\\t1', flush=True)\nsys.stdin.readline()\nprint('QUERY\\tAGENT_STATE', flush=True)\nsys.stdout.write('QUERY\\tAGENT_STATE\\n' * 20000)\nsys.stdout.flush()\npathlib.Path(sys.argv[1]).touch()\ntime.sleep(5)";
+
+    let result = run_plugin_process(
+        python(),
+        &[
+            OsString::from("-c"),
+            OsString::from(script),
+            marker.clone().into_os_string(),
+        ],
+        &host_max_store(),
+        pilot_grant(PluginLimits::HOST_MAX),
+        Duration::from_millis(500),
+        &AtomicBool::new(false),
+    );
+
+    assert!(
+        matches!(result, Err(PluginHostError::TimedOut)),
+        "unexpected plugin result: {result:?}"
+    );
+    assert!(
+        !marker.exists(),
+        "plugin stdout flood was drained into host memory instead of receiving backpressure"
+    );
+}
+
+#[test]
 fn m7b_unrepresentable_timeout_is_rejected_without_panicking() {
     let result = std::panic::catch_unwind(|| {
         run_plugin_process(

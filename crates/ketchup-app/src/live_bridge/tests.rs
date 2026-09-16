@@ -1,5 +1,8 @@
 use super::*;
-use crate::dialogs::ScriptedFileDialogs;
+use crate::dialogs::{
+    DiscardRequest, ExportRequest, FileDialogs, HighRiskConfirmationRequest,
+    HistoryTruncationRequest, ImportDialogRequest, SaveRequest, ScriptedFileDialogs,
+};
 #[path = "idle_retry_tests.rs"]
 mod idle_retry;
 #[path = "mesh_conversion_tests.rs"]
@@ -17,6 +20,8 @@ use ketchup_core::{
 use std::{
     io::{Read, Write},
     net::{Shutdown, TcpStream},
+    path::PathBuf,
+    sync::Mutex,
     time::{Duration, Instant},
 };
 
@@ -36,6 +41,98 @@ fn setup() -> (KetchupApp, LiveBridge) {
     let bridge = transport::start(egui::Context::default()).unwrap();
     (app, bridge)
 }
+
+struct DisconnectOnHighRisk {
+    stream: Arc<Mutex<Option<TcpStream>>>,
+    prompted: Arc<AtomicBool>,
+}
+
+impl FileDialogs for DisconnectOnHighRisk {
+    fn pick_open_path(&mut self, _filter_label: &str) -> Option<PathBuf> {
+        None
+    }
+
+    fn pick_save_path(&mut self, _request: SaveRequest<'_>) -> Option<PathBuf> {
+        None
+    }
+
+    fn pick_export_path(&mut self, _request: ExportRequest<'_>) -> Option<PathBuf> {
+        None
+    }
+
+    fn pick_import_path(&mut self, _request: ImportDialogRequest<'_>) -> Option<PathBuf> {
+        None
+    }
+
+    fn confirm_discard(&mut self, _request: DiscardRequest<'_>) -> bool {
+        false
+    }
+
+    fn confirm_history_truncation(&mut self, _request: HistoryTruncationRequest<'_>) -> bool {
+        false
+    }
+
+    fn confirm_high_risk(&mut self, _request: HighRiskConfirmationRequest<'_>) -> Option<u64> {
+        self.prompted.store(true, Ordering::Release);
+        let mut stream = self.stream.lock().unwrap().take().unwrap();
+        stream.shutdown(Shutdown::Write).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut byte = [0];
+        assert_eq!(stream.read(&mut byte).unwrap(), 0);
+        Some(7)
+    }
+}
+
+#[test]
+fn disconnect_during_live_overwrite_consent_revokes_publication_authority() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("cancelled-live-save-as.ketchup");
+    let original_bytes = b"existing destination";
+    std::fs::write(&path, original_bytes).unwrap();
+    let stream_slot = Arc::new(Mutex::new(None));
+    let prompted = Arc::new(AtomicBool::new(false));
+    let dialogs = DisconnectOnHighRisk {
+        stream: Arc::clone(&stream_slot),
+        prompted: Arc::clone(&prompted),
+    };
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    app.selection.clear();
+    assert!(app.create_box());
+    let expected = app.live_bridge_stamp();
+    let context = egui::Context::default();
+    let address = app.enable_live_bridge(&context).unwrap();
+    let credentials = app.live_bridge_credentials().unwrap();
+    let mut stream = TcpStream::connect(address).unwrap();
+    *stream_slot.lock().unwrap() = Some(stream.try_clone().unwrap());
+    let bytes = serde_json::to_vec(&Envelope {
+        version: 1,
+        id: 1,
+        token: credentials.token,
+        request: Request::SaveAs {
+            expected,
+            path: path.to_string_lossy().into_owned(),
+        },
+    })
+    .unwrap();
+    stream
+        .write_all(&(bytes.len() as u32).to_be_bytes())
+        .unwrap();
+    stream.write_all(&bytes).unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !prompted.load(Ordering::Acquire) {
+        assert!(Instant::now() < deadline);
+        app.poll_live_bridge(&context);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
+    assert!(app.document_path.is_none());
+    assert!(app.is_dirty());
+}
+
 #[test]
 fn save_is_revision_bound_and_uses_the_live_gui_overwrite_consent() {
     let directory = tempfile::tempdir().unwrap();

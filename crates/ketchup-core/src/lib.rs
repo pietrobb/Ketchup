@@ -29,6 +29,7 @@ pub mod feature_history;
 pub mod graph;
 pub mod import;
 pub mod intent;
+pub mod joinery;
 pub mod linear_hardware;
 pub mod local_pdm;
 pub mod mechanical_contract;

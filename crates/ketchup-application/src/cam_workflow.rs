@@ -26,6 +26,7 @@ pub struct CamReviewSummary {
     pub document_id: DocumentId,
     pub revision: u64,
     pub canonical_digest: String,
+    pub mutation_epoch: u64,
     pub plan_digest: String,
     pub toolpath_digest: String,
     pub simulation_fingerprint: String,
@@ -135,9 +136,17 @@ impl CamReviewWorkflow {
     pub fn preview(
         &mut self,
         snapshot: &Snapshot,
+        mutation_epoch: u64,
         request: CamReviewRequest,
         cancelled: &AtomicBool,
     ) -> Result<CamReviewSummary, CamReviewError> {
+        let source_digest = snapshot.canonical_digest();
+        self.pending.retain(|review| {
+            review.summary.document_id == snapshot.document_id()
+                && review.summary.revision == snapshot.revision_id()
+                && review.summary.canonical_digest == source_digest
+                && review.summary.mutation_epoch == mutation_epoch
+        });
         if self.pending.len() == MAX_PENDING_CAM_REVIEWS {
             return Err(CamReviewError::ReviewLimit);
         }
@@ -166,7 +175,6 @@ impl CamReviewWorkflow {
         .map_err(|error| CamReviewError::Postprocessing(error.to_string()))?;
         let id = self.next_id;
         self.next_id = id.checked_add(1).ok_or(CamReviewError::ReviewLimit)?;
-        let source_digest = snapshot.canonical_digest();
         let token = format!(
             "cam-review-{id:016x}-{:016x}",
             self.key.hash_one((
@@ -174,6 +182,7 @@ impl CamReviewWorkflow {
                 snapshot.document_id().0,
                 snapshot.revision_id(),
                 source_digest.as_str(),
+                mutation_epoch,
                 output.content_digest.as_str(),
             ))
         );
@@ -182,6 +191,7 @@ impl CamReviewWorkflow {
             document_id: snapshot.document_id(),
             revision: snapshot.revision_id(),
             canonical_digest: source_digest,
+            mutation_epoch,
             plan_digest: toolpath.plan_digest.clone(),
             toolpath_digest: toolpath.toolpath_digest.clone(),
             simulation_fingerprint: simulation.result_fingerprint.clone(),
@@ -212,6 +222,7 @@ impl CamReviewWorkflow {
     pub fn export(
         &mut self,
         snapshot: &Snapshot,
+        mutation_epoch: u64,
         token: &str,
         path: &Path,
         confirmed: bool,
@@ -229,6 +240,7 @@ impl CamReviewWorkflow {
         if snapshot.document_id() != review.summary.document_id
             || snapshot.revision_id() != review.summary.revision
             || snapshot.canonical_digest() != review.summary.canonical_digest
+            || mutation_epoch != review.summary.mutation_epoch
         {
             return Err(CamReviewError::StaleReview);
         }

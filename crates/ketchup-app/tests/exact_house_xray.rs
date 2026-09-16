@@ -1,10 +1,10 @@
 //! Opt-in native exact-worker CPU regression; no desktop window or GPU execution.
-//! Run with default OAuth features after building ketchup-exact-worker in the same
-//! profile: cargo test -p ketchup-app --release --test exact_house_xray -- --ignored --nocapture
+//! Run with default OAuth features; Cargo provisions the exact worker in the same profile:
+//! cargo test -p ketchup-app --release --test exact_house_xray -- --ignored --nocapture
 
 use eframe::egui::{Event, Modifiers, PointerButton, Vec2, epaint::Primitive};
 use ketchup_app::{KetchupApp, dialogs::ScriptedFileDialogs};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 const BODIES: usize = 140;
@@ -93,21 +93,7 @@ fn exact_house_shaded_and_xray_idle_orbit_cpu_regression() {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../examples/garden-studio-exact.ketchup");
     let original_bytes = std::fs::read(&fixture).expect("140-body exact house fixture is required");
-    let worker = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .and_then(Path::parent)
-        .unwrap()
-        .join(if cfg!(windows) {
-            "ketchup-exact-worker.exe"
-        } else {
-            "ketchup-exact-worker"
-        });
-    assert!(
-        worker.is_file(),
-        "build the exact worker first: {}",
-        worker.display()
-    );
+    let worker = PathBuf::from(env!("CARGO_BIN_EXE_ketchup-performance-exact-worker"));
     eprintln!(
         "exact-house debug={} private-oauth={} fixture={} bytes={} worker={} deadline_s=180 path=headless-instanced CPU-only",
         cfg!(debug_assertions),

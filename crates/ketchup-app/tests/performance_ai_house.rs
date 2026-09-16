@@ -7,6 +7,10 @@ use ketchup_core::assistant_sidecar::AssistantChatResult;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+fn exact_worker_path() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_BIN_EXE_ketchup-performance-exact-worker"))
+}
+
 #[test]
 fn ai_house_schema_36_fixture_opens_from_file_menu() {
     let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -47,17 +51,7 @@ fn ai_house_fixture_orbits_interactively_with_exact_geometry() {
     assert_eq!(definitions, 64);
     assert_eq!(snapshot.occurrences().count(), 64);
 
-    let worker_name = if cfg!(windows) {
-        "ketchup-exact-worker.exe"
-    } else {
-        "ketchup-exact-worker"
-    };
-    let worker = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .and_then(std::path::Path::parent)
-        .unwrap()
-        .join(worker_name);
+    let worker = exact_worker_path();
     shell.app_mut().connect_exact_worker(&worker).unwrap();
     for _ in 0..500 {
         shell.step();
@@ -98,17 +92,7 @@ fn ai_house_follow_up_fits_the_sidecar_request_envelope() {
     let mut shell = Shell::with_dialogs_and_assistant_transport(dialogs, transport.clone());
     shell.click_menu_command("menu-file", AppCommand::Open);
 
-    let worker_name = if cfg!(windows) {
-        "ketchup-exact-worker.exe"
-    } else {
-        "ketchup-exact-worker"
-    };
-    let worker = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .and_then(std::path::Path::parent)
-        .unwrap()
-        .join(worker_name);
+    let worker = exact_worker_path();
     shell.app_mut().connect_exact_worker(&worker).unwrap();
     for _ in 0..500 {
         shell.step();
@@ -161,21 +145,7 @@ fn garden_studio_exact_load_idle_and_orbit_performance() {
     const FRAMES: usize = 20;
     let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../examples/garden-studio.ketchup");
-    let worker = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .and_then(std::path::Path::parent)
-        .unwrap()
-        .join(if cfg!(windows) {
-            "ketchup-exact-worker.exe"
-        } else {
-            "ketchup-exact-worker"
-        });
-    assert!(
-        worker.is_file(),
-        "missing exact worker: {}",
-        worker.display()
-    );
+    let worker = exact_worker_path();
     eprintln!(
         "garden path=headless-instanced debug={} private-oauth={} fixture_bytes={} worker={}",
         cfg!(debug_assertions),

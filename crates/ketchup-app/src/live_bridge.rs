@@ -386,10 +386,11 @@ impl KetchupApp {
                 continue;
             }
             let disconnect = matches!(queued.request, Request::Disconnect {});
-            let result = bridge.execute(
+            let result = bridge.execute_authorized(
                 self,
                 queued.request,
                 context.wants_keyboard_input() || context.is_using_pointer(),
+                &queued.cancelled,
             );
             let mut response = match result {
                 Ok(value) => Response {
@@ -617,6 +618,14 @@ impl LiveBridge {
         }
         Ok(())
     }
+    fn require_request_authority(cancelled: &AtomicBool) -> Result<(), &'static str> {
+        if cancelled.load(Ordering::Acquire) {
+            Err("request_cancelled")
+        } else {
+            Ok(())
+        }
+    }
+
     fn validate_ids(ids: &[u64]) -> Result<Vec<u64>, &'static str> {
         if ids.len() > MAX_SELECTION || ids.contains(&0) {
             return Err("invalid_selection");
@@ -628,12 +637,24 @@ impl LiveBridge {
         Ok(sorted.into_iter().collect())
     }
 
+    #[cfg(test)]
     fn execute(
         &mut self,
         app: &mut KetchupApp,
         request: Request,
         ui_busy: bool,
     ) -> Result<Value, &'static str> {
+        self.execute_authorized(app, request, ui_busy, &AtomicBool::new(false))
+    }
+
+    fn execute_authorized(
+        &mut self,
+        app: &mut KetchupApp,
+        request: Request,
+        ui_busy: bool,
+        cancelled: &AtomicBool,
+    ) -> Result<Value, &'static str> {
+        Self::require_request_authority(cancelled)?;
         match request {
             Request::Status {} => Ok(
                 json!({"connected":true,"protocol":1,"image":"cad_viewport_png_thumbnail",
@@ -730,6 +751,7 @@ impl LiveBridge {
                     .iter_mut()
                     .find(|job| job.handle == handle)
                     .ok_or("batch_job_not_found")?;
+                Self::require_request_authority(cancelled)?;
                 job.task.cancel();
                 Ok(json!({"job_handle":job.handle,"status":job.task.status(&app.document)}))
             }
@@ -741,6 +763,7 @@ impl LiveBridge {
                     .iter()
                     .position(|job| job.handle == handle)
                     .ok_or("batch_job_not_found")?;
+                Self::require_request_authority(cancelled)?;
                 let receipt = self.batch_jobs[index]
                     .task
                     .commit_next(app)
@@ -817,6 +840,7 @@ impl LiveBridge {
                 {
                     return Err("selection_changed");
                 }
+                Self::require_request_authority(cancelled)?;
                 let committed = app
                     .commit_verified_proposal_with_work_recovery(&pending.proposal)
                     .map_err(|error| match error {
@@ -848,6 +872,7 @@ impl LiveBridge {
                 if !app.command_enabled(AppCommand::Undo) {
                     return Err("undo_unavailable");
                 }
+                Self::require_request_authority(cancelled)?;
                 Ok(json!({"changed":app.undo()}))
             }
             Request::Redo { expected } => {
@@ -856,13 +881,14 @@ impl LiveBridge {
                 if !app.command_enabled(AppCommand::Redo) {
                     return Err("redo_unavailable");
                 }
+                Self::require_request_authority(cancelled)?;
                 Ok(json!({"changed":app.redo()}))
             }
             Request::Save { expected } => {
                 Self::guard(app, &expected)?;
                 Self::available(app, ui_busy)?;
                 let path = app.document_path.clone().ok_or("save_path_required")?;
-                if !app.save_document_to(&path) {
+                if !app.save_document_to_while(&path, || !cancelled.load(Ordering::Acquire)) {
                     return Err("save_rejected");
                 }
                 Ok(json!({"saved":true,"same_gui_document":true,"dirty":app.is_dirty()}))
@@ -877,7 +903,9 @@ impl LiveBridge {
                 {
                     return Err("invalid_path");
                 }
-                if !app.save_document_to(Path::new(&path)) {
+                if !app
+                    .save_document_to_while(Path::new(&path), || !cancelled.load(Ordering::Acquire))
+                {
                     return Err("save_rejected");
                 }
                 Ok(json!({"saved":true,"same_gui_document":true,"dirty":app.is_dirty()}))
@@ -893,7 +921,11 @@ impl LiveBridge {
                 {
                     return Err("invalid_path");
                 }
-                if !app.confirm_discard_if_dirty() || !app.open_document_from(Path::new(&path)) {
+                if !app.confirm_discard_if_dirty() {
+                    return Err("open_rejected");
+                }
+                Self::require_request_authority(cancelled)?;
+                if !app.open_document_from(Path::new(&path)) {
                     return Err("open_rejected");
                 }
                 self.invalidate_document_context();

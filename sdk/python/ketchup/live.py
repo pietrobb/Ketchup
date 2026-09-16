@@ -39,6 +39,7 @@ DEFAULT_IMAGE_SIDE_PX = 512
 MAX_TIMEOUT = 30.0
 MAX_DISCOVERY_BYTES = 512
 MAX_DISCOVERY_INSTANCES = 64
+MAX_DISCOVERY_REGISTRY_ENTRIES = 4096
 MAX_CONSENT_TIMEOUT = 65.0
 DISCOVERY_DIRECTORY = Path("Ketchup/live-instances")
 _U64_MAX = (1 << 64) - 1
@@ -47,14 +48,14 @@ _VIEWS = ("iso", "top", "front", "zoom_fit")
 _CAPTURE_MODES = ("offscreen", "visible_viewport")
 _IMAGE_FRAMINGS = ("viewport", "selection", "detail_selection")
 _IMAGE_DETAIL_KINDS = ("edges", "faces")
-_MUTATIONS = frozenset({"batch_job_step", "propose", "commit", "undo", "redo", "save", "save_as", "open", "selection", "view"})
+_MUTATIONS = frozenset({"batch_job_start", "batch_job_step", "batch_job_cancel", "propose", "commit", "undo", "redo", "save", "save_as", "open", "selection", "view"})
 # Never surface arbitrary remote text, even if it looks like an error code.
 _ERROR_CODES = frozenset({
     "invalid_request", "unauthorized", "unsupported_version", "queue_unavailable",
     "response_limit", "stale_document", "unsupported_selection_scope",
     "selection_limit", "invalid_selection", "read_only_document", "selection_changed",
     "invalid_program", "planning_rejected", "proposal_ids_exhausted",
-    "receipt_guard_mismatch", "proposal_not_found", "commit_rejected",
+    "receipt_guard_mismatch", "proposal_not_found", "commit_rejected", "recovery_rejected",
     "undo_unavailable", "redo_unavailable", "entity_not_found", "view_unavailable",
     "unsupported_image", "unsupported_image_protocol", "invalid_params", "invalid_cursor", "stale_cursor",
     "cross_query_cursor", "output_too_large", "busy", "image_unavailable", "image_timeout",
@@ -858,24 +859,29 @@ def _list_live_instances(discovery_root: Path | None = None,
     """Bounded same-user registry scan; invalid and stale entries are omitted."""
     if type(timeout) not in (int, float) or not 0 < timeout <= 2 or not math.isfinite(timeout):
         raise ValueError("discovery timeout must be finite and in (0, 2] seconds")
+    deadline = time.monotonic() + float(timeout)
     root = _discovery_root() if discovery_root is None else Path(discovery_root)
     if not root.is_absolute():
         raise ValueError("discovery root must be absolute")
     result = []
+    registry_candidates = 0
     try:
         iterator = root.iterdir()
     except OSError:
         return result
     for index, path in enumerate(iterator):
-        if index >= MAX_DISCOVERY_INSTANCES:
+        if index >= MAX_DISCOVERY_REGISTRY_ENTRIES or time.monotonic() >= deadline:
             break
         try:
             name = path.name
             instance_id = name[:-5] if name.endswith(".json") else ""
             endpoint = _registry_endpoint(root, instance_id)
+            if registry_candidates >= MAX_DISCOVERY_INSTANCES:
+                break
+            registry_candidates += 1
             nonce = secrets.token_hex(32)
             listed = _broker_exchange(
-                endpoint, "list", instance_id, nonce, float(timeout)
+                endpoint, "list", instance_id, nonce, _remaining(deadline)
             )
             if listed["instance_id"] != instance_id:
                 continue

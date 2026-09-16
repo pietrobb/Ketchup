@@ -246,6 +246,7 @@ struct ScriptState {
     discard: bool,
     history_truncation_approvals: VecDeque<bool>,
     high_risk_approvals: VecDeque<Option<u64>>,
+    high_risk_writes: VecDeque<Option<(PathBuf, Vec<u8>)>>,
     default_high_risk_approver: Option<u64>,
     suggested_names: Vec<String>,
     export_requests: Vec<ExportRequestRecord>,
@@ -338,13 +339,35 @@ impl ScriptedFileDialogs {
 
     #[must_use]
     pub fn queue_refused_high_risk(self) -> Self {
-        self.state().high_risk_approvals.push_back(None);
+        let mut state = self.state();
+        state.high_risk_approvals.push_back(None);
+        state.high_risk_writes.push_back(None);
+        drop(state);
         self
     }
 
     #[must_use]
     pub fn queue_high_risk_approval(self, human_id: u64) -> Self {
-        self.state().high_risk_approvals.push_back(Some(human_id));
+        let mut state = self.state();
+        state.high_risk_approvals.push_back(Some(human_id));
+        state.high_risk_writes.push_back(None);
+        drop(state);
+        self
+    }
+
+    #[must_use]
+    pub fn queue_high_risk_approval_after_write(
+        self,
+        human_id: u64,
+        path: impl Into<PathBuf>,
+        bytes: impl Into<Vec<u8>>,
+    ) -> Self {
+        let mut state = self.state();
+        state.high_risk_approvals.push_back(Some(human_id));
+        state
+            .high_risk_writes
+            .push_back(Some((path.into(), bytes.into())));
+        drop(state);
         self
     }
 
@@ -460,10 +483,14 @@ impl FileDialogs for ScriptedFileDialogs {
         state
             .high_risk_prompts
             .push(format!("{}\n{}", request.title, request.description));
-        state
+        let approval = state
             .high_risk_approvals
             .pop_front()
-            .unwrap_or(state.default_high_risk_approver)
+            .unwrap_or(state.default_high_risk_approver);
+        if let Some(Some((path, bytes))) = state.high_risk_writes.pop_front() {
+            std::fs::write(path, bytes).expect("the scripted external write succeeds");
+        }
+        approval
     }
 }
 

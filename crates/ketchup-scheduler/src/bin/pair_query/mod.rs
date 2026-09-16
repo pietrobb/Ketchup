@@ -1,8 +1,6 @@
 //! Ephemeral native bodies owned only for one supervisor pair-query batch.
 use super::*;
-use ketchup_scheduler::pair_query::{
-    EXACT_PAIR_IDENTITY, MAX_EXACT_PAIR_CANDIDATES, MAX_EXACT_PAIR_GRAPHS,
-};
+use crate::pair_query::{EXACT_PAIR_IDENTITY, MAX_EXACT_PAIR_CANDIDATES, MAX_EXACT_PAIR_GRAPHS};
 
 type TransformKey = (usize, [u64; 16]);
 

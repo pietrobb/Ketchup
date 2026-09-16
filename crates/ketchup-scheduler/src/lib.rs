@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod assistant;
+pub mod exact_worker;
 pub mod general;
 pub mod pair_query;
 pub mod plugin;

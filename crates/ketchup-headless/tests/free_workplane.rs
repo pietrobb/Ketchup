@@ -31,6 +31,7 @@ impl Client {
         if mutation {
             params["expected_revision"] = self.state["revision"].clone();
             params["expected_digest"] = self.state["canonical_digest"].clone();
+            params["expected_mutation_epoch"] = self.state["mutation_epoch"].clone();
         }
         writeln!(
             self.input,

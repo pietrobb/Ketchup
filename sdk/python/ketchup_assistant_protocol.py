@@ -319,6 +319,11 @@ def _validate_project_memory(context: dict) -> None:
         sequence = entry["sequence"]
         user = entry["user"]
         answer = entry["assistant"]
+        try:
+            user_byte_length = len(user.encode("utf-8")) if isinstance(user, str) else 0
+            answer_byte_length = len(answer.encode("utf-8")) if isinstance(answer, str) else 0
+        except UnicodeEncodeError:
+            raise ProtocolError("project memory entry is invalid") from None
         if (
             not isinstance(sequence, int)
             or isinstance(sequence, bool)
@@ -326,10 +331,10 @@ def _validate_project_memory(context: dict) -> None:
             or sequence in sequences
             or not isinstance(user, str)
             or not user
-            or len(user.encode("utf-8")) > MAX_PROJECT_MEMORY_TEXT_BYTES
+            or user_byte_length > MAX_PROJECT_MEMORY_TEXT_BYTES
             or not isinstance(answer, str)
             or not answer
-            or len(answer.encode("utf-8")) > MAX_PROJECT_MEMORY_TEXT_BYTES
+            or answer_byte_length > MAX_PROJECT_MEMORY_TEXT_BYTES
         ):
             raise ProtocolError("project memory entry is invalid")
         sequences.add(sequence)
@@ -487,13 +492,6 @@ class AssistantSidecarBase:
         if not isinstance(answer, str) or not answer:
             raise ProtocolError("provider returned no text")
         parsed = _parse_assistant_result(answer)
-        self._history.extend(
-            (
-                {"role": "user", "content": call.message},
-                {"role": "assistant", "content": answer},
-            )
-        )
-        self._history = self._history[-20:]
         result = {"type": "chat-result", "request_id": call.request_id, **parsed}
         if "debug_observability" in call.capabilities and isinstance(
             exchange, ProviderExchange
@@ -511,6 +509,20 @@ class AssistantSidecarBase:
                 "request_payload": exchange.request_payload,
                 "response_text": answer,
             }
+        response_line = json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n"
+        try:
+            response_bytes = response_line.encode("utf-8")
+        except UnicodeEncodeError as error:
+            raise ProtocolError("provider CAD result contains invalid Unicode") from error
+        if len(response_bytes) > MAX_LINE_BYTES:
+            raise ProtocolError("assistant response exceeds the byte limit")
+        self._history.extend(
+            (
+                {"role": "user", "content": call.message},
+                {"role": "assistant", "content": answer},
+            )
+        )
+        self._history = self._history[-20:]
         return result
 
     def serve(self, read_line: Callable[[], bytes], write_line: Callable[[str], None]) -> int:

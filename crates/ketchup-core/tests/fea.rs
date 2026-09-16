@@ -1,6 +1,7 @@
 use ketchup_core::fea::{
     FEA_MODEL_SCHEMA_V1, FeaConstraint, FeaConvergenceError, FeaElement, FeaElementKind, FeaError,
-    FeaLoad, FeaMaterial, FeaModel, FeaNode, FeaSolveSettings, solve_convergence_study,
+    FeaLoad, FeaMaterial, FeaModel, FeaNode, FeaSolveSettings, MAX_FEA_CONSTRAINTS,
+    MAX_FEA_ELEMENTS, MAX_FEA_LOADS, MAX_FEA_MATERIALS, solve_convergence_study,
 };
 
 const YOUNG_MPA: f64 = 200_000.0;
@@ -76,6 +77,24 @@ fn axial_bar_matches_closed_form_and_reports_equilibrium_and_limits() {
     assert_eq!(solution.model_digest, model.digest());
     assert_eq!(solution.validity.maximum_yield_utilization, Some(0.4));
     assert!(solution.is_within_declared_limits());
+}
+
+#[test]
+fn reversed_connectivity_duplicate_element_is_rejected() {
+    let mut model = axial_bar(1, 10_000.0);
+    model.elements.push(FeaElement {
+        id: 2,
+        kind: FeaElementKind::LinearTruss2 {
+            nodes: [1, 0],
+            material_id: 1,
+            area_mm2: 100.0,
+        },
+    });
+
+    assert_eq!(
+        model.solve(FeaSolveSettings::default()),
+        Err(FeaError::DuplicateElement)
+    );
 }
 
 #[test]
@@ -176,6 +195,49 @@ fn tetrahedron_patch_matches_constant_uniaxial_stress() {
             .force_balance_n
             .iter()
             .all(|value| value.abs() < 1.0e-8)
+    );
+}
+
+#[test]
+fn aggregate_model_collections_are_bounded_before_validation_work() {
+    let baseline = axial_bar(1, 10_000.0);
+
+    let mut materials = baseline.clone();
+    materials.materials.resize(MAX_FEA_MATERIALS + 1, steel());
+    assert_eq!(
+        materials.solve(FeaSolveSettings::default()),
+        Err(FeaError::ModelTooLarge)
+    );
+
+    let mut elements = baseline.clone();
+    elements
+        .elements
+        .resize(MAX_FEA_ELEMENTS + 1, baseline.elements[0].clone());
+    assert_eq!(
+        elements.solve(FeaSolveSettings::default()),
+        Err(FeaError::ModelTooLarge)
+    );
+
+    let mut constraints = baseline.clone();
+    constraints
+        .constraints
+        .resize(MAX_FEA_CONSTRAINTS + 1, baseline.constraints[0].clone());
+    assert_eq!(
+        constraints.solve(FeaSolveSettings::default()),
+        Err(FeaError::ModelTooLarge)
+    );
+
+    let mut loads = baseline;
+    loads.loads.resize(
+        MAX_FEA_LOADS + 1,
+        FeaLoad::NodalForce {
+            node: 1,
+            force_n: [10_000.0, 0.0, 0.0],
+        },
+    );
+    assert_eq!(
+        loads.solve(FeaSolveSettings::default()),
+        Err(FeaError::ModelTooLarge)
     );
 }
 
@@ -318,5 +380,93 @@ fn convergence_refuses_unrelated_case_domain_or_load() {
     assert_eq!(
         solve_convergence_study(&[first, axial_bar(2, 9_000.0)], FeaSolveSettings::default()),
         Err(FeaConvergenceError::LoadMismatch)
+    );
+}
+
+#[test]
+fn convergence_refuses_changed_element_material_assignments() {
+    let mut coarse = axial_bar(1, 10_000.0);
+    let mut fine = axial_bar(2, 10_000.0);
+    let alternate = FeaMaterial {
+        id: 2,
+        youngs_modulus_mpa: 198_000.0,
+        poisson_ratio: POISSON,
+        yield_strength_mpa: Some(250.0),
+    };
+    coarse.materials.push(alternate.clone());
+    fine.materials.push(alternate);
+    for element in &mut fine.elements {
+        let FeaElementKind::LinearTruss2 { material_id, .. } = &mut element.kind else {
+            unreachable!("axial bar fixture only contains truss elements");
+        };
+        *material_id = 2;
+    }
+
+    assert_eq!(
+        solve_convergence_study(&[coarse, fine], FeaSolveSettings::default()),
+        Err(FeaConvergenceError::MaterialMismatch)
+    );
+}
+
+#[test]
+fn convergence_refuses_spatially_swapped_equal_volume_materials() {
+    let mut coarse = axial_bar(2, 10_000.0);
+    let mut fine = axial_bar(4, 10_000.0);
+    let alternate = FeaMaterial {
+        id: 2,
+        youngs_modulus_mpa: 100_000.0,
+        poisson_ratio: POISSON,
+        yield_strength_mpa: Some(250.0),
+    };
+    coarse.materials.push(alternate.clone());
+    fine.materials.push(alternate);
+
+    let FeaElementKind::LinearTruss2 { material_id, .. } = &mut coarse.elements[1].kind else {
+        unreachable!("axial bar fixture only contains truss elements");
+    };
+    *material_id = 2;
+    for (index, element) in fine.elements.iter_mut().enumerate() {
+        let FeaElementKind::LinearTruss2 { material_id, .. } = &mut element.kind else {
+            unreachable!("axial bar fixture only contains truss elements");
+        };
+        *material_id = if index < 2 { 2 } else { 1 };
+    }
+
+    assert_eq!(
+        solve_convergence_study(&[coarse, fine], FeaSolveSettings::default()),
+        Err(FeaConvergenceError::MaterialMismatch)
+    );
+}
+
+#[test]
+fn convergence_refuses_redistributed_equal_resultant_load() {
+    let coarse = axial_bar(1, 10_000.0);
+    let mut fine = axial_bar(2, 10_000.0);
+    fine.loads = vec![
+        FeaLoad::NodalForce {
+            node: 1,
+            force_n: [100.0, 0.0, 0.0],
+        },
+        FeaLoad::NodalForce {
+            node: 2,
+            force_n: [9_900.0, 0.0, 0.0],
+        },
+    ];
+
+    assert_eq!(
+        solve_convergence_study(&[coarse, fine], FeaSolveSettings::default()),
+        Err(FeaConvergenceError::LoadMismatch)
+    );
+}
+
+#[test]
+fn convergence_refuses_changed_boundary_condition() {
+    let coarse = axial_bar(1, 10_000.0);
+    let mut fine = axial_bar(2, 10_000.0);
+    fine.constraints[0].displacement_mm[0] = Some(0.1);
+
+    assert_eq!(
+        solve_convergence_study(&[coarse, fine], FeaSolveSettings::default()),
+        Err(FeaConvergenceError::ConstraintMismatch)
     );
 }

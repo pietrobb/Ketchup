@@ -41,6 +41,9 @@ use crate::import::{
     ImportDiagnosticSeverity, ImportFormat, ImportId, ImportLengthUnit, ImportOutputRef,
     ImportReceipt, ImportUnitAuthority,
 };
+use crate::joinery::{
+    DowelJointContract, DowelJointError, DowelJointId, project_dowel_joint_contract,
+};
 use crate::mechanical_contract::{
     MECHANICAL_CONDITION_SCHEMA_V1, MECHANICAL_INTERFACE_SCHEMA_V1, MechanicalCondition,
     MechanicalConditionId, MechanicalConditionKind, MechanicalInterface, MechanicalInterfaceId,
@@ -1909,6 +1912,7 @@ pub(crate) struct ProductModel {
     pub(crate) spaces: BTreeMap<SpaceId, Arc<CanonicalSpace>>,
     pub(crate) clearance_volumes: BTreeMap<ClearanceVolumeId, Arc<CanonicalClearanceVolume>>,
     pub(crate) cam_plans: BTreeMap<CamPlanId, Arc<CamPlan>>,
+    pub(crate) dowel_joints: BTreeMap<DowelJointId, Arc<DowelJointContract>>,
     pub(crate) exact_reference_evidence: BTreeMap<String, Arc<BodySubshapeRef>>,
     pub(crate) persistent_dimensions: BTreeMap<PersistentDimensionId, Arc<PersistentDimension>>,
     pub(crate) tags: BTreeMap<TagId, Arc<Tag>>,
@@ -1967,6 +1971,7 @@ impl Default for ProductModel {
             spaces: BTreeMap::new(),
             clearance_volumes: BTreeMap::new(),
             cam_plans: BTreeMap::new(),
+            dowel_joints: BTreeMap::new(),
             exact_reference_evidence: BTreeMap::new(),
             persistent_dimensions: BTreeMap::new(),
             tags: BTreeMap::new(),
@@ -2373,6 +2378,10 @@ pub enum CanonicalCommand {
     UpsertCamPlan(CamPlan),
     DeleteCamPlan {
         id: CamPlanId,
+    },
+    UpsertDowelJoint(DowelJointContract),
+    DeleteDowelJoint {
+        id: DowelJointId,
     },
     UpsertPersistentDimension(PersistentDimension),
     DeletePersistentDimension {
@@ -2791,6 +2800,7 @@ pub enum AuthoritativeDependency {
     Space(SpaceId),
     ClearanceVolume(ClearanceVolumeId),
     CamPlan(CamPlanId),
+    DowelJoint(DowelJointId),
     PersistentDimension(PersistentDimensionId),
     Tag(TagId),
     ClassificationDimension(ClassificationDimensionId),
@@ -3444,6 +3454,15 @@ impl Snapshot {
     #[must_use]
     pub fn cam_plan(&self, id: CamPlanId) -> Option<&CamPlan> {
         self.product.cam_plans.get(&id).map(Arc::as_ref)
+    }
+
+    pub fn dowel_joints(&self) -> impl Iterator<Item = &DowelJointContract> {
+        self.product.dowel_joints.values().map(Arc::as_ref)
+    }
+
+    #[must_use]
+    pub fn dowel_joint(&self, id: DowelJointId) -> Option<&DowelJointContract> {
+        self.product.dowel_joints.get(&id).map(Arc::as_ref)
     }
 
     #[must_use]
@@ -5508,6 +5527,22 @@ impl DocumentStore {
                         return Err(CanonicalError::CamPlanNotFound(*id));
                     }
                 }
+                CanonicalCommand::UpsertDowelJoint(joint) => {
+                    let candidate = Snapshot {
+                        revision_id: current.revision_id(),
+                        product: Arc::new(product.clone()),
+                    };
+                    project_dowel_joint_contract(&candidate, joint)
+                        .map_err(CanonicalError::DowelJoint)?;
+                    product
+                        .dowel_joints
+                        .insert(joint.id, Arc::new(joint.clone()));
+                }
+                CanonicalCommand::DeleteDowelJoint { id } => {
+                    if product.dowel_joints.remove(id).is_none() {
+                        return Err(CanonicalError::DowelJointNotFound(*id));
+                    }
+                }
                 CanonicalCommand::UpsertPersistentDimension(dimension) => {
                     validate_persistent_dimension(dimension)?;
                     product
@@ -6786,6 +6821,12 @@ impl DocumentStore {
                         joint.parent_occurrence_id() == *id || joint.child_occurrence_id() == *id
                     }) {
                         return Err(CanonicalError::OccurrenceInAssemblyJoint(*id));
+                    }
+                    if product.dowel_joints.values().any(|joint| {
+                        joint.first.instance_path.root_occurrence() == *id
+                            || joint.second.instance_path.root_occurrence() == *id
+                    }) {
+                        return Err(CanonicalError::OccurrenceInDowelJoint(*id));
                     }
                     product
                         .occurrences
@@ -9194,6 +9235,9 @@ pub enum CanonicalError {
     OccurrenceNotFound(OccurrenceId),
     OccurrenceInAssemblyMate(OccurrenceId),
     OccurrenceInAssemblyJoint(OccurrenceId),
+    OccurrenceInDowelJoint(OccurrenceId),
+    DowelJointNotFound(DowelJointId),
+    DowelJoint(DowelJointError),
     AssemblyMateAlreadyExists(AssemblyMateId),
     AssemblyMateNotFound(AssemblyMateId),
     InvalidAssemblyMate(AssemblyMateId),
@@ -9342,6 +9386,9 @@ impl CanonicalError {
             Self::OccurrenceNotFound(..) => "canonical.occurrence_not_found",
             Self::OccurrenceInAssemblyMate(..) => "canonical.occurrence_in_assembly_mate",
             Self::OccurrenceInAssemblyJoint(..) => "canonical.occurrence_in_assembly_joint",
+            Self::OccurrenceInDowelJoint(..) => "canonical.occurrence_in_dowel_joint",
+            Self::DowelJointNotFound(..) => "canonical.dowel_joint_not_found",
+            Self::DowelJoint(..) => "canonical.dowel_joint",
             Self::AssemblyMateAlreadyExists(..) => "canonical.assembly_mate_already_exists",
             Self::AssemblyMateNotFound(..) => "canonical.assembly_mate_not_found",
             Self::InvalidAssemblyMate(..) => "canonical.invalid_assembly_mate",
@@ -9603,6 +9650,13 @@ impl fmt::Display for CanonicalError {
             Self::OccurrenceInAssemblyJoint(id) => {
                 write!(formatter, "occurrence {} is still used by an assembly joint", id.0)
             }
+            Self::OccurrenceInDowelJoint(id) => {
+                write!(formatter, "occurrence {} is still used by a dowel joint", id.0)
+            }
+            Self::DowelJointNotFound(id) => {
+                write!(formatter, "dowel joint {} does not exist", id.0)
+            }
+            Self::DowelJoint(error) => write!(formatter, "invalid dowel joint: {error}"),
             Self::AssemblyMateAlreadyExists(id) => {
                 write!(formatter, "assembly mate {} already exists", id.0)
             }
@@ -15845,6 +15899,16 @@ fn validate_product_with_drawing_sources(
         }
         plan.validate_structure().map_err(CanonicalError::Cam)?;
     }
+    let snapshot = Snapshot {
+        revision_id: 0,
+        product: Arc::new(product.clone()),
+    };
+    for (id, joint) in &product.dowel_joints {
+        if *id != joint.id {
+            return Err(CanonicalError::DowelJoint(DowelJointError::InvalidJointId));
+        }
+        project_dowel_joint_contract(&snapshot, joint).map_err(CanonicalError::DowelJoint)?;
+    }
     FeatureDependencyGraph::from_product(product)?;
     for (id, joint) in &product.joints {
         if *id != joint.id() || !joint.volume().has_positive_volume() {
@@ -17870,6 +17934,12 @@ fn authoritative_writes(
             CanonicalCommand::DeleteCamPlan { id } => {
                 writes.insert(AuthoritativeDependency::CamPlan(*id));
             }
+            CanonicalCommand::UpsertDowelJoint(joint) => {
+                writes.insert(AuthoritativeDependency::DowelJoint(joint.id));
+            }
+            CanonicalCommand::DeleteDowelJoint { id } => {
+                writes.insert(AuthoritativeDependency::DowelJoint(*id));
+            }
             CanonicalCommand::UpsertPersistentDimension(dimension) => {
                 writes.insert(AuthoritativeDependency::PersistentDimension(dimension.id));
             }
@@ -18932,6 +19002,18 @@ fn authoritative_dependencies(
             }
             CanonicalCommand::DeleteCamPlan { id } => {
                 dependencies.insert(AuthoritativeDependency::CamPlan(*id));
+            }
+            CanonicalCommand::UpsertDowelJoint(joint) => {
+                dependencies.insert(AuthoritativeDependency::DowelJoint(joint.id));
+                dependencies.insert(AuthoritativeDependency::Occurrence(
+                    joint.first.instance_path.root_occurrence(),
+                ));
+                dependencies.insert(AuthoritativeDependency::Occurrence(
+                    joint.second.instance_path.root_occurrence(),
+                ));
+            }
+            CanonicalCommand::DeleteDowelJoint { id } => {
+                dependencies.insert(AuthoritativeDependency::DowelJoint(*id));
             }
             CanonicalCommand::UpsertPersistentDimension(dimension) => {
                 dependencies.insert(AuthoritativeDependency::PersistentDimension(dimension.id));

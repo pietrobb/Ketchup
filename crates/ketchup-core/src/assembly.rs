@@ -832,6 +832,7 @@ pub struct AssemblyRecomputeResult {
     status: AssemblyRecomputeStatus,
     mates: Vec<AssemblyMate>,
     transforms: Vec<(OccurrenceId, Transform)>,
+    instance_transforms: Vec<(InstancePath, Transform)>,
     solve: Option<AssemblySolveResult>,
 }
 
@@ -896,7 +897,8 @@ impl AssemblyRecomputeResult {
             .cloned()
             .map(CanonicalCommand::RebindAssemblyMate)
             .collect::<Vec<_>>();
-        if commands.is_empty() && self.transforms.is_empty() {
+        if commands.is_empty() && self.transforms.is_empty() && self.instance_transforms.is_empty()
+        {
             return Err(AssemblyRecomputePublishError::NoCanonicalChanges);
         }
         commands.insert(
@@ -906,12 +908,12 @@ impl AssemblyRecomputeResult {
                 source_digest: self.source_digest.clone(),
             },
         );
-        if !self.transforms.is_empty() {
+        if !self.transforms.is_empty() || !self.instance_transforms.is_empty() {
             commands.push(CanonicalCommand::ApplyAssemblySolve {
                 source_revision: self.source_revision,
                 source_digest: self.source_digest.clone(),
                 transforms: self.transforms.clone(),
-                instance_transforms: Vec::new(),
+                instance_transforms: self.instance_transforms.clone(),
             });
         }
         Ok(CommandBatch::new(commands))
@@ -1088,6 +1090,7 @@ fn recompute_rigid_assembly_selection(
         .collect::<Vec<_>>();
 
     let mut transforms = Vec::new();
+    let mut instance_transforms = Vec::new();
     let mut solve = None;
     if status == AssemblyRecomputeStatus::Solved {
         let mut solve_commands = mate_ids.map_or_else(Vec::new, |ids| {
@@ -1124,12 +1127,26 @@ fn recompute_rigid_assembly_selection(
             transforms = solved
                 .occurrences()
                 .iter()
-                .filter(|occurrence| !occurrence.grounded())
+                .filter(|occurrence| !occurrence.grounded() && occurrence.instance_path().is_root())
                 .filter_map(|occurrence| {
                     source
                         .occurrence(occurrence.occurrence_id())
                         .filter(|current| current.transform() != occurrence.transform())
                         .map(|_| (occurrence.occurrence_id(), occurrence.transform()))
+                })
+                .collect();
+            instance_transforms = solved
+                .occurrences()
+                .iter()
+                .filter(|occurrence| {
+                    !occurrence.grounded() && !occurrence.instance_path().is_root()
+                })
+                .filter_map(|occurrence| {
+                    source
+                        .resolve_instance_path(occurrence.instance_path())
+                        .ok()
+                        .filter(|current| current.local_transform != occurrence.transform())
+                        .map(|_| (occurrence.instance_path().clone(), occurrence.transform()))
                 })
                 .collect();
         }
@@ -1144,6 +1161,7 @@ fn recompute_rigid_assembly_selection(
         status,
         mates,
         transforms,
+        instance_transforms,
         solve,
     })
 }

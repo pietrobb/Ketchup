@@ -290,7 +290,22 @@ def test_atomic_apply_and_undo_redo(native_paths):
         assert after["undo_steps"] == before["undo_steps"] + 1
         assert_translation(after, occurrence_id, [3, 4, 0])
         doc.undo()
-        assert doc.state["canonical_digest"] == before["canonical_digest"]
+        undone = doc.state
+        assert undone["revision"] == before["revision"]
+        assert undone["canonical_digest"] == before["canonical_digest"]
+        assert undone["mutation_epoch"] > before["mutation_epoch"]
+        assert undone["redo_steps"] == 1
+        with pytest.raises(HeadlessError) as aba:
+            session._request("apply", {
+                "expected_revision": before["revision"],
+                "expected_digest": before["canonical_digest"],
+                "expected_mutation_epoch": before["mutation_epoch"],
+                "program": {"operations": [move_operation(occurrence_id, [1, 0, 0])]},
+                "selection": [],
+            })
+        assert aba.value.code == "stale_state"
+        assert aba.value.details["mutation_epoch"] == undone["mutation_epoch"]
+        assert doc.state == undone
         doc.redo()
         assert doc.state["canonical_digest"] == after["canonical_digest"]
         # Only this negative protocol probe bypasses automatic public guards.
@@ -301,6 +316,7 @@ def test_atomic_apply_and_undo_redo(native_paths):
             with pytest.raises(HeadlessError) as rejected:
                 session._request("apply", {
                     "expected_revision": revision, "expected_digest": digest,
+                    "expected_mutation_epoch": current["mutation_epoch"],
                     "program": {"operations": [move_operation(occurrence_id, [1, 0, 0])]},
                     "selection": [],
                 })
@@ -524,7 +540,7 @@ def test_persisted_colors_public_api_atomicity_and_geometry_cache(native_paths, 
         assert doc.state == before
         with pytest.raises(HeadlessError) as stale:
             session._request("apply", {"expected_revision": baseline["revision"], "expected_digest": baseline["canonical_digest"],
-                "program": {"operations": [{"operation": "set_color", "selector": {"type": "occurrences", "occurrence_ids": [occurrence_id]}, "color": None}]}})
+                "expected_mutation_epoch": baseline["mutation_epoch"], "program": {"operations": [{"operation": "set_color", "selector": {"type": "occurrences", "occurrence_ids": [occurrence_id]}, "color": None}]}})
         assert stale.value.code == "stale_state"
         doc.copy([occurrence_id], [50, 0, 0])
         assert all(o["color"] == [0, 128, 255] for o in doc.state["occurrences"])

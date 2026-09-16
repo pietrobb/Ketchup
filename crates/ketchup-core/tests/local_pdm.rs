@@ -6,10 +6,12 @@ use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
     OccurrenceId, Transform,
 };
+use ketchup_core::import::{ImportLengthUnit, StepImportEvidence, plan_step_import};
 use ketchup_core::local_pdm::{
     DependencyChange, DependencyChangeKind, LocalPdmError, ReleaseAudit, ReleaseConflictVerdict,
     ReleaseDependencyInput, ReleaseRelationship, compare_releases, create_child_release,
-    create_release, open_release, release_catalog, release_manifest_path, release_object_path,
+    create_child_release_with_container, create_release, create_release_with_container,
+    open_release, release_catalog, release_manifest_path, release_object_path,
 };
 use ketchup_core::persistence;
 
@@ -141,6 +143,102 @@ fn immutable_release_reopens_after_external_sources_change() {
         open_release(&repository, &manifest.release_id),
         Err(LocalPdmError::ObjectTampered { sha256 })
             if sha256 == manifest.dependencies[0].object.sha256
+    ));
+}
+
+#[test]
+fn release_with_imported_exact_geometry_reopens_with_its_source_blob() {
+    let directory = tempfile::tempdir().unwrap();
+    let repository = directory.path().join("pdm");
+    let source = b"ISO-10303-21; imported release source";
+    let evidence = StepImportEvidence {
+        source_sha256: ketchup_core::graph::sha256_bytes(source),
+        source_byte_len: source.len() as u64,
+        source_unit: ImportLengthUnit::Millimetre,
+        result_fingerprint: "0123456789abcdef".to_owned(),
+        body_kind: ketchup_core::document::BodyKind::Solid,
+        solid_count: 1,
+        topology_counts: [8, 12, 6, 1, 1],
+        area_mm2: 600.0,
+        volume_mm3: 1_000.0,
+        bounds_mm: [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]],
+        backend: "occt-test".to_owned(),
+        tolerance: "test-tolerance".to_owned(),
+    };
+    let mut document = DocumentStore::new();
+    let batch = plan_step_import(&document.current(), source, "part.step", &evidence).unwrap();
+    document.apply_batch(&batch).unwrap();
+    let snapshot = document.current();
+    let mut container_data = persistence::ContainerData::default();
+    let source_hash = container_data.insert_import_blob(source.to_vec()).unwrap();
+
+    assert!(matches!(
+        create_release(
+            &repository,
+            &snapshot,
+            snapshot.revision_id(),
+            &snapshot.canonical_digest(),
+            &[],
+            audit(),
+        ),
+        Err(LocalPdmError::Persistence(
+            persistence::PersistenceError::InvalidBlobHash
+        ))
+    ));
+    assert!(!repository.exists());
+
+    let manifest = create_release_with_container(
+        &repository,
+        (&snapshot, &container_data),
+        snapshot.revision_id(),
+        &snapshot.canonical_digest(),
+        &[],
+        audit(),
+    )
+    .unwrap();
+
+    let reopened = open_release(&repository, &manifest.release_id).unwrap();
+    assert_eq!(
+        reopened.snapshot.canonical_digest(),
+        snapshot.canonical_digest()
+    );
+    assert_eq!(
+        reopened
+            .container_data
+            .blobs()
+            .get(&source_hash)
+            .map(Vec::as_slice),
+        Some(source.as_slice())
+    );
+
+    add_branch_revision(&mut document, "Released imported child");
+    let child_snapshot = document.current();
+    let child = create_child_release_with_container(
+        &repository,
+        &manifest.release_id,
+        (&child_snapshot, &container_data),
+        child_snapshot.revision_id(),
+        &child_snapshot.canonical_digest(),
+        &[],
+        audit(),
+    )
+    .unwrap();
+    let reopened_child = open_release(&repository, &child.release_id).unwrap();
+    assert_eq!(
+        reopened_child
+            .container_data
+            .blobs()
+            .get(&source_hash)
+            .map(Vec::as_slice),
+        Some(source.as_slice())
+    );
+
+    let object_path = release_object_path(&repository, &child.document.object.sha256).unwrap();
+    fs::write(&object_path, b"tampered imported release").unwrap();
+    assert!(matches!(
+        open_release(&repository, &child.release_id),
+        Err(LocalPdmError::ObjectTampered { sha256 })
+            if sha256 == child.document.object.sha256
     ));
 }
 

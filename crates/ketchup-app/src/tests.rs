@@ -48,6 +48,47 @@ fn bounded_external_assistant_model_catalog_remains_configurable() {
 }
 
 #[test]
+fn homag_mpr_program_names_are_exactly_twelve_machine_safe_characters() {
+    assert_eq!(
+        KetchupApp::homag_mpr_program_name("door-side"),
+        "DOOR-SIDE000"
+    );
+    assert_eq!(
+        KetchupApp::homag_mpr_program_name("123456789012345"),
+        "123456789012"
+    );
+    assert_eq!(
+        KetchupApp::homag_mpr_program_name("čelo dverí"),
+        "ELODVER00000"
+    );
+    assert!(KetchupApp::validate_homag_mpr_path(Path::new("123456789012.mpr")).is_ok());
+    assert!(KetchupApp::validate_homag_mpr_path(Path::new("ABCDEF_12345.MPR")).is_ok());
+    assert!(KetchupApp::validate_homag_mpr_path(Path::new("short.mpr")).is_err());
+    assert!(KetchupApp::validate_homag_mpr_path(Path::new("123456789012.nc")).is_err());
+    assert!(KetchupApp::validate_homag_mpr_path(Path::new("12345678901!.mpr")).is_err());
+}
+
+#[test]
+fn homag_mpr_file_command_requests_a_twelve_character_mpr_name() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("UNTITLED0000.mpr");
+    let dialogs = dialogs::ScriptedFileDialogs::new().queue_export(&path);
+    let script = dialogs.clone();
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+
+    app.dispatch_file_command(AppCommand::ExportHomagMpr);
+
+    assert_eq!(script.suggested_names(), vec!["UNTITLED0000.mpr"]);
+    let requests = script.export_requests();
+    let [request] = requests.as_slice() else {
+        panic!("the HOMAG command must open one export dialog");
+    };
+    assert_eq!(request.extension, "mpr");
+    assert_eq!(request.suggested_name, "UNTITLED0000.mpr");
+    assert!(!path.exists());
+}
+
+#[test]
 fn cad_edit_program_compiles_selection_to_one_host_id_canonical_batch() {
     let mut app = KetchupApp::new();
     app.selection.occurrences = BTreeSet::from([InstancePath::root(OccurrenceId(1))]);
@@ -1997,6 +2038,40 @@ fn export_recovery_journal_rejects_actual_bytes_above_limit() {
 }
 
 #[test]
+fn export_single_artifact_preserves_replacement_after_precondition_check() {
+    let directory = tempfile::tempdir().unwrap();
+    let target = directory.path().join("drawing.svg");
+    std::fs::write(&target, b"authorized original").unwrap();
+    let original_sha256 = export_target_sha256(&target).unwrap().unwrap();
+
+    let error = write_export_artifact_if_unchanged_after_compare(
+        &target,
+        b"ketchup export",
+        Some(&original_sha256),
+        || {
+            let replacement = directory.path().join("replacement.tmp");
+            std::fs::write(&replacement, b"external replacement").unwrap();
+            std::fs::rename(replacement, &target).unwrap();
+        },
+    )
+    .unwrap_err();
+
+    assert!(error.contains("changed concurrently"));
+    assert_eq!(std::fs::read(&target).unwrap(), b"external replacement");
+    let preserved = std::fs::read_dir(directory.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".ketchup-export-backup-")
+        })
+        .unwrap();
+    assert_eq!(std::fs::read(preserved).unwrap(), b"authorized original");
+}
+
+#[test]
 fn export_backup_move_preserves_replacement_after_precondition_check() {
     let directory = tempfile::tempdir().unwrap();
     let target = directory.path().join("model.step");
@@ -3505,6 +3580,30 @@ fn new_chat_cancels_the_active_assistant_request() {
 }
 
 #[test]
+fn dropping_an_active_assistant_request_cancels_it() {
+    let app = KetchupApp::new();
+    let cancellation = AssistantCancellation::default();
+    let (_sender, receiver) = mpsc::channel();
+    let task = AssistantChatTask {
+        receiver,
+        selected_occurrence_ids: Vec::new(),
+        request_id: "test".to_owned(),
+        message: "test".to_owned(),
+        replan_attempted: false,
+        started_at: Instant::now(),
+        cancellation: cancellation.clone(),
+        document_id: app.document.current().document_id(),
+        revision_id: app.document.current().revision_id(),
+        canonical_digest: app.document.current().canonical_digest(),
+        source: "test".to_owned(),
+    };
+
+    drop(task);
+
+    assert!(cancellation.is_cancelled());
+}
+
+#[test]
 fn new_and_open_cancel_active_assistant_requests() {
     let mut app = KetchupApp::new();
     let new_cancellation = AssistantCancellation::default();
@@ -4391,6 +4490,70 @@ fn accepted_bottle_result_drives_render_pick_authority_and_fail_closed_exports()
     assert!(!app.bottle_authority_report(definition_id).unwrap().current);
     assert!(!app.export_bottle_exact_recipe_to(definition_id, &stale_path));
     assert!(!stale_path.exists());
+}
+
+#[test]
+#[cfg(feature = "named-product-fixtures")]
+fn exact_revolve_step_export_failure_does_not_replace_existing_artifact() {
+    let executable = exact_worker_executable();
+    assert!(executable.is_file(), "{}", executable.display());
+    let directory = tempfile::tempdir().unwrap();
+    let step_path = directory.path().join("protected.step");
+    let report_path = step_path.with_extension("step.loss.txt");
+    std::fs::write(&step_path, b"existing STEP").unwrap();
+    std::fs::create_dir(&report_path).unwrap();
+
+    let mut app = KetchupApp::new();
+    assert!(app.create_bottle());
+    let definition_id = app.selected_bottle_definition().unwrap();
+    let snapshot = app.document.current();
+    let request = ExactRevolveRequest::from_snapshot(&snapshot, definition_id).unwrap();
+    let mut worker = ExactWorkerSupervisor::spawn(&executable).unwrap();
+    let package: Arc<ExactBodyPackage> =
+        Arc::new(worker.evaluate_revolve(&request).unwrap().into());
+    app.exact_results
+        .insert_current(&snapshot, package)
+        .unwrap();
+    app.headless_force_exact_worker_path(&executable);
+
+    assert!(!app.export_bottle_step_to(definition_id, &step_path));
+    assert_eq!(std::fs::read(&step_path).unwrap(), b"existing STEP");
+    assert!(report_path.is_dir());
+
+    std::fs::remove_dir(&report_path).unwrap();
+    assert!(app.export_bottle_step_to(definition_id, &step_path));
+    assert!(
+        std::fs::read(&step_path)
+            .unwrap()
+            .starts_with(b"ISO-10303-21;")
+    );
+    assert!(
+        std::fs::read_to_string(&report_path)
+            .unwrap()
+            .contains("editability_loss=")
+    );
+}
+
+#[test]
+fn exact_mesh_export_failure_does_not_partially_replace_existing_artifact() {
+    let directory = tempfile::tempdir().unwrap();
+    let mesh_path = directory.path().join("protected.obj");
+    let report_path = mesh_path.with_extension("obj.loss.txt");
+    std::fs::write(&mesh_path, b"existing mesh").unwrap();
+    std::fs::create_dir(&report_path).unwrap();
+
+    let error = write_exact_mesh_export(
+        &mesh_path,
+        ExactMeshExport {
+            mesh_obj: "replacement mesh".to_owned(),
+            loss_report: "replacement report".to_owned(),
+        },
+    )
+    .unwrap_err();
+
+    assert!(!error.is_empty());
+    assert_eq!(std::fs::read(&mesh_path).unwrap(), b"existing mesh");
+    assert!(report_path.is_dir());
 }
 
 #[test]

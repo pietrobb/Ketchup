@@ -177,6 +177,75 @@ def test_discovery_lists_only_nonce_verified_live_registry_entries(tmp_path):
     assert "127.0.0.1" not in json.dumps(result)
 
 
+def test_discovery_malformed_prefix_does_not_hide_valid_instance(tmp_path):
+    instance_id = "3" * 32
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    errors = []
+
+    def broker():
+        try:
+            stream, _ = listener.accept()
+            with stream:
+                request = bytearray()
+                while not request.endswith(b"\n"):
+                    request.extend(stream.recv(1))
+                value = json.loads(request)
+                response_value = {
+                    "version": 1,
+                    "nonce": value["nonce"],
+                    "status": "available",
+                    "instance_id": instance_id,
+                    "document": "visible.ketchup",
+                }
+                stream.sendall(json.dumps(response_value, separators=(",", ":")).encode() + b"\n")
+        except OSError:
+            pass
+        except BaseException as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=broker, daemon=True)
+    worker.start()
+    entry = {"version": 1, "instance_id": instance_id,
+             "consent_address": f"127.0.0.1:{listener.getsockname()[1]}"}
+    valid_path = tmp_path / f"{instance_id}.json"
+    valid_path.write_text(json.dumps(entry), encoding="utf-8")
+    malformed = [tmp_path / f"malformed-{index}.json"
+                 for index in range(live_module.MAX_DISCOVERY_INSTANCES)]
+    try:
+        with patch.object(Path, "iterdir", return_value=iter([*malformed, valid_path])):
+            result = _list_live_instances(tmp_path, timeout=1)
+    finally:
+        listener.close()
+        worker.join(3)
+    assert not worker.is_alive() and not errors
+    assert result == [{"instance_id": instance_id, "document": "visible.ketchup",
+                       "status": "available"}]
+
+
+def test_discovery_uses_one_global_timeout_budget(tmp_path):
+    candidates = [tmp_path / f"{index:032x}.json" for index in range(8)]
+    broker_timeouts = []
+
+    def timeout_broker(_endpoint, _action, _instance_id, _nonce, timeout):
+        broker_timeouts.append(timeout)
+        time.sleep(timeout)
+        raise TimeoutError
+
+    started = time.monotonic()
+    with patch.object(Path, "iterdir", return_value=iter(candidates)), \
+            patch.object(live_module, "_registry_endpoint", return_value=("127.0.0.1", 1)), \
+            patch.object(live_module, "_broker_exchange", side_effect=timeout_broker):
+        result = _list_live_instances(tmp_path, timeout=0.02)
+    elapsed = time.monotonic() - started
+
+    assert result == []
+    assert 1 <= len(broker_timeouts) < len(candidates)
+    assert all(0 < remaining <= 0.021 for remaining in broker_timeouts)
+    assert elapsed < 0.1
+
+
 def test_attach_revalidates_instance_and_uses_credential_only_internally(tmp_path):
     instance_id = "3" * 32
     broker_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -576,6 +645,21 @@ def test_output_too_large_is_typed_and_nonfatal():
         assert not live.closed
 
 
+def test_recovery_rejected_is_typed_nonfatal_and_connection_is_reusable():
+    def answer(req, _stream):
+        if req["request"]["method"] == "commit":
+            return response(req, error="recovery_rejected")
+        return response(req)
+
+    with Peer(answer) as peer, LiveSession(peer.address, TOKEN) as live:
+        with pytest.raises(LiveBridgeError) as caught:
+            live.commit(STAMP, 1)
+        assert caught.value.code == "recovery_rejected"
+        assert not live.closed
+        assert live.status()["ok"]
+        assert [request["request"]["method"] for request in peer.requests] == ["commit", "status"]
+
+
 def test_unrecognized_error_text_is_not_exposed():
     with Peer(lambda req, stream: response(req, error="sensitive server message")) as peer, LiveSession(peer.address, TOKEN) as live:
         with pytest.raises(LiveBridgeError) as caught:
@@ -599,6 +683,21 @@ def test_response_limit_after_mutation_is_unknown(method):
                 live.save(STAMP)
         assert caught.value.mutation_outcome_unknown and live.closed
         assert len(peer.requests) == 1
+
+
+@pytest.mark.parametrize("method", ["batch_job_start", "batch_job_cancel"])
+def test_lost_batch_job_response_reports_unknown_outcome(method):
+    def answer(_req, stream):
+        stream.shutdown(socket.SHUT_RDWR)
+
+    with Peer(answer) as peer, LiveSession(peer.address, TOKEN) as live:
+        with pytest.raises(LiveTransportError) as caught:
+            if method == "batch_job_start":
+                live.start_batch_job(STAMP, "opaque-workset", {"type": "set_color", "color": [1, 2, 3]})
+            else:
+                live.cancel_batch_job(STAMP, "opaque-job")
+        assert caught.value.mutation_outcome_unknown and live.closed
+        assert [request["request"]["method"] for request in peer.requests] == [method]
 
 
 @pytest.mark.parametrize("phase", ["header", "body", "shared"])

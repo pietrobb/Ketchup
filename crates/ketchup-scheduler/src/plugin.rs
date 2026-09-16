@@ -292,7 +292,7 @@ fn send_line(
 fn spawn_bounded_reader(
     stdout: impl io::Read + Send + 'static,
 ) -> Receiver<Result<Option<String>, String>> {
-    let (sender, receiver) = mpsc::channel();
+    let (sender, receiver) = mpsc::sync_channel(1);
     let _ = std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
         loop {

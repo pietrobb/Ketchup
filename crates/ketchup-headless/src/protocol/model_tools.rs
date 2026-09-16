@@ -8,6 +8,8 @@ struct BatchJobStart {
     _expected_revision: u64,
     #[serde(rename = "expected_digest")]
     _expected_digest: String,
+    #[serde(rename = "expected_mutation_epoch")]
+    _expected_mutation_epoch: u64,
     workset_handle: String,
     operation: OccurrenceBatchOperation,
 }
@@ -25,6 +27,8 @@ struct BatchJobStep {
     _expected_revision: u64,
     #[serde(rename = "expected_digest")]
     _expected_digest: String,
+    #[serde(rename = "expected_mutation_epoch")]
+    _expected_mutation_epoch: u64,
     handle: String,
 }
 
@@ -35,6 +39,8 @@ struct VerifyJobStart {
     _expected_revision: u64,
     #[serde(rename = "expected_digest")]
     _expected_digest: String,
+    #[serde(rename = "expected_mutation_epoch")]
+    _expected_mutation_epoch: u64,
     scope: Option<Vec<VerifyProducerScope>>,
     #[serde(default = "default_verify_timeout_ms")]
     timeout_ms: u64,
@@ -103,6 +109,7 @@ impl Server {
     pub(super) fn compact_state_result(&self) -> Value {
         let snapshot = self.session.snapshot();
         let mut state = model_query::identity(&snapshot);
+        state["mutation_epoch"] = json!(self.session.mutation_epoch());
         state["undo_steps"] = json!(self.session.visible_undo_steps());
         state["redo_steps"] = json!(self.session.visible_redo_steps());
         json!({"state":state,"summary":self.model_queries.summary(&snapshot),
@@ -119,6 +126,9 @@ impl Server {
         let p = params
             .as_object_mut()
             .ok_or_else(|| Error::invalid("params must be an object"))?;
+        if method_requires_guard(method) {
+            self.guard(p)?;
+        }
         if matches!(
             method,
             "verify_job_start" | "verify_job_status" | "verify_job_cancel"
@@ -127,7 +137,6 @@ impl Server {
                 "verify_job_start" => {
                     let request: VerifyJobStart = serde_json::from_value(Value::Object(p.clone()))
                         .map_err(|e| Error::invalid(e.to_string()))?;
-                    self.guard(p)?;
                     if !(1..=300_000).contains(&request.timeout_ms) {
                         return Err(Error::invalid("timeout_ms must be in [1, 300000]"));
                     }
@@ -219,7 +228,6 @@ impl Server {
                 "batch_job_start" => {
                     let request: BatchJobStart = serde_json::from_value(Value::Object(p.clone()))
                         .map_err(|e| Error::invalid(e.to_string()))?;
-                    self.guard(p)?;
                     let task = self
                         .model_queries
                         .create_occurrence_batch_task(
@@ -286,7 +294,6 @@ impl Server {
                 "batch_job_step" => {
                     let request: BatchJobStep = serde_json::from_value(Value::Object(p.clone()))
                         .map_err(|e| Error::invalid(e.to_string()))?;
-                    self.guard(p)?;
                     let index = self
                         .batch_jobs
                         .iter()
@@ -388,7 +395,12 @@ impl Server {
 mod tests {
     use super::*;
 
-    fn call(server: &mut Server, method: &str, params: Value) -> Value {
+    fn call(server: &mut Server, method: &str, mut params: Value) -> Value {
+        if params.get("expected_revision").is_some()
+            && params.get("expected_mutation_epoch").is_none()
+        {
+            params["expected_mutation_epoch"] = json!(server.session.mutation_epoch());
+        }
         server.handle(
             serde_json::to_vec(
                 &json!({"protocol":PROTOCOL,"id":1,"method":method,"params":params}),
@@ -399,7 +411,8 @@ mod tests {
     }
     fn guard(result: &Value) -> Value {
         json!({"expected_revision":result["result"]["state"]["revision"],
-            "expected_digest":result["result"]["state"]["canonical_digest"],"response":"compact"})
+            "expected_digest":result["result"]["state"]["canonical_digest"],
+            "expected_mutation_epoch":result["result"]["state"]["mutation_epoch"],"response":"compact"})
     }
 
     #[test]

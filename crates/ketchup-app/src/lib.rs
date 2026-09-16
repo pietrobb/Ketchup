@@ -15,7 +15,7 @@ use ketchup_application::fea_workflow::{
     FeaReviewWorkflow, FeaStudyRequest,
 };
 use ketchup_application::pdm_workflow::{
-    LocalPdmWorkflow, PdmCreateReleaseRequest, PdmSourceIdentity,
+    LocalPdmWorkflow, PdmCreateReleaseRequest, PdmDocumentState, PdmSourceIdentity,
 };
 pub use ketchup_application::topology::GeneralFinishKind;
 use ketchup_application::topology::{
@@ -3258,6 +3258,7 @@ pub enum AppCommand {
     ExportGeneralFabrication,
     ExportWeldmentCutList,
     ExportSheetMetalManufacturing,
+    ExportHomagMpr,
     ReviewCamExport,
     ReviewStaticFea,
     ReviewLocalPdm,
@@ -3432,7 +3433,7 @@ struct CommandSpec {
 struct CommandRegistry;
 
 impl CommandRegistry {
-    const COMMANDS: [CommandSpec; 123] = [
+    const COMMANDS: [CommandSpec; 124] = [
         CommandSpec {
             id: AppCommand::New,
             label_key: "file-new",
@@ -3569,6 +3570,13 @@ impl CommandRegistry {
         CommandSpec {
             id: AppCommand::ExportSheetMetalManufacturing,
             label_key: "file-export-sheet-metal-manufacturing",
+            shortcut_key: "shortcut-none",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::ExportHomagMpr,
+            label_key: "file-export-homag-mpr",
             shortcut_key: "shortcut-none",
             tool: None,
             implemented: true,
@@ -5213,6 +5221,12 @@ struct AssistantChatTask {
     canonical_digest: String,
     selected_occurrence_ids: Vec<u64>,
     source: String,
+}
+
+impl Drop for AssistantChatTask {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+    }
 }
 
 fn assistant_fea_face_context(
@@ -7657,6 +7671,17 @@ impl KetchupApp {
     }
 
     fn save_document_to(&mut self, path: &Path) -> bool {
+        self.save_document_to_while(path, || true)
+    }
+
+    fn save_document_to_while(
+        &mut self,
+        path: &Path,
+        request_authorized: impl Fn() -> bool,
+    ) -> bool {
+        if !request_authorized() {
+            return false;
+        }
         if path.is_dir() {
             self.digest = self.catalog.format(
                 "error-save-document",
@@ -7722,6 +7747,9 @@ impl KetchupApp {
                     );
                     return false;
                 }
+                if !request_authorized() {
+                    return false;
+                }
                 (bytes, true)
             }
             Err(error) => {
@@ -7736,12 +7764,29 @@ impl KetchupApp {
             }
         };
         let saved_identity = ketchup_core::persistence::FileIdentity::from_bytes(&prepared);
-        let expected_identity = (self.document_path.as_deref() == Some(path))
+        let owned_identity = (self.document_path.as_deref() == Some(path))
             .then_some(self.file_identity)
             .flatten();
-        if let Some(expected) = expected_identity
-            && ketchup_core::persistence::read_native_document_identity(path).ok() != Some(expected)
+        let expected_identity = match ketchup_core::persistence::read_native_document_identity(path)
         {
+            Ok(identity) => Some(identity),
+            Err(ketchup_core::persistence::FilePersistenceError::Io(error))
+                if error.kind() == std::io::ErrorKind::NotFound =>
+            {
+                None
+            }
+            Err(error) => {
+                self.digest = self.catalog.format(
+                    "error-save-document",
+                    &BTreeMap::from([
+                        ("path", path.display().to_string()),
+                        ("reason", error.to_string()),
+                    ]),
+                );
+                return false;
+            }
+        };
+        if owned_identity.is_some_and(|owned| Some(owned) != expected_identity) {
             self.digest = self.catalog.format(
                 "error-save-document",
                 &BTreeMap::from([
@@ -7755,13 +7800,16 @@ impl KetchupApp {
             );
             return false;
         }
-        if path.exists()
+        if expected_identity.is_some()
             && let Err(error) = self.authorize_overwrite(path, &prepared)
         {
             self.digest = self.catalog.format(
                 "error-save-document",
                 &BTreeMap::from([("path", path.display().to_string()), ("reason", error)]),
             );
+            return false;
+        }
+        if !request_authorized() {
             return false;
         }
         let result = match (truncate_history, expected_identity) {
@@ -7779,16 +7827,18 @@ impl KetchupApp {
                 expected,
             )
             .map(|_| ()),
-            (true, None) => ketchup_core::persistence::save_atomic_document_store_current_snapshot_with_container(
+            (true, None) => ketchup_core::persistence::save_atomic_document_store_current_snapshot_with_container_if_absent(
                 path,
                 &self.document,
                 &self.container_data,
-            ),
-            (false, None) => ketchup_core::persistence::save_atomic_document_store_with_container(
+            )
+            .map(|_| ()),
+            (false, None) => ketchup_core::persistence::save_atomic_document_store_with_container_if_absent(
                 path,
                 &self.document,
                 &self.container_data,
-            ),
+            )
+            .map(|_| ()),
         }
         .map_err(|error| error.to_string());
         match result {
@@ -7870,6 +7920,44 @@ impl KetchupApp {
         })
     }
 
+    fn homag_mpr_program_name(stem: &str) -> String {
+        let mut name = stem
+            .chars()
+            .filter(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+            .map(|character| character.to_ascii_uppercase())
+            .take(12)
+            .collect::<String>();
+        while name.len() < 12 {
+            name.push('0');
+        }
+        name
+    }
+
+    fn validate_homag_mpr_path(path: &Path) -> Result<(), String> {
+        if !path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("mpr"))
+        {
+            return Err("HOMAG woodWOP export requires an explicit .mpr destination".to_owned());
+        }
+        let stem = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .ok_or_else(|| "HOMAG program name must be valid text".to_owned())?;
+        if stem.len() != 12
+            || !stem
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        {
+            return Err(
+                "HOMAG program name must contain exactly 12 ASCII letters, digits, '-' or '_'"
+                    .to_owned(),
+            );
+        }
+        Ok(())
+    }
+
     fn choose_export_path(&mut self, extension: &str) -> Option<PathBuf> {
         let (filter_key, suffix) = match extension {
             "dxf" => ("file-filter-dxf", "dxf"),
@@ -7880,9 +7968,10 @@ impl KetchupApp {
             "glb" => ("file-filter-glb", "glb"),
             "csv" => ("file-filter-general-bom", "csv"),
             "nc" => ("file-filter-cam-gcode", "nc"),
+            "mpr" => ("file-filter-homag-mpr", "mpr"),
             "btlx" => ("file-filter-btlx", "btlx"),
             _ => unreachable!(
-                "the File menu exposes only DXF, STEP, IGES, STL, 3MF, GLB, CSV, NC, and BTLx export"
+                "the File menu exposes only DXF, STEP, IGES, STL, 3MF, GLB, CSV, NC, MPR, and BTLx export"
             ),
         };
         let filter_label = self.catalog.text(filter_key);
@@ -7893,7 +7982,11 @@ impl KetchupApp {
             .and_then(|stem| stem.to_str())
             .filter(|stem| !stem.trim().is_empty())
             .unwrap_or("Untitled");
-        let suggested_name = format!("{stem}.{suffix}");
+        let suggested_name = if extension == "mpr" {
+            format!("{}.mpr", Self::homag_mpr_program_name(stem))
+        } else {
+            format!("{stem}.{suffix}")
+        };
         self.dialogs.pick_export_path(ExportRequest {
             filter_label: &filter_label,
             extension,
@@ -9429,6 +9522,70 @@ impl KetchupApp {
         }
     }
 
+    fn export_current_model_homag_mpr_to(&mut self, path: &Path) -> bool {
+        self.side_effect_receipts.clear();
+        let snapshot = self.document.current();
+        let result = (|| {
+            Self::validate_homag_mpr_path(path)?;
+            let projection = self.current_general_fabrication_projection()?;
+            let mpr = projection
+                .woodwop_mpr_4_0_drill_export(&snapshot)
+                .map_err(|error| error.to_string())?;
+            let expected_sha256 = export_target_sha256(path)?;
+            let title = self.catalog.text("dialog-export-homag-mpr-title");
+            let risk = self.catalog.text("dialog-export-homag-mpr-risk");
+            self.authorize_path_side_effect(
+                HighRiskClass::ReleaseManufacturingExportWithWarnings,
+                "release-homag-woodwop-mpr",
+                &title,
+                &risk,
+                path,
+                &mpr,
+            )?;
+            if expected_sha256.is_some() {
+                let title = self.catalog.text("dialog-export-overwrite-title");
+                let risk = self.catalog.text("dialog-export-overwrite-risk");
+                self.authorize_path_side_effect(
+                    HighRiskClass::Overwrite,
+                    "overwrite-homag-woodwop-mpr",
+                    &title,
+                    &risk,
+                    path,
+                    &mpr,
+                )?;
+            }
+            let current = self.document.current();
+            let current_projection = self.current_general_fabrication_projection()?;
+            if current.document_id() != snapshot.document_id()
+                || current.revision_id() != snapshot.revision_id()
+                || current.canonical_digest() != snapshot.canonical_digest()
+                || current_projection
+                    .woodwop_mpr_4_0_drill_export(&current)
+                    .map_err(|error| error.to_string())?
+                    != mpr
+            {
+                return Err("HOMAG MPR export changed after authorization".to_owned());
+            }
+            write_export_artifact_if_unchanged(path, &mpr, expected_sha256.as_deref())
+        })();
+        match result {
+            Ok(()) => {
+                self.digest = self.catalog.format(
+                    "digest-exported-homag-mpr",
+                    &BTreeMap::from([("path", path.display().to_string())]),
+                );
+                true
+            }
+            Err(error) => {
+                self.digest = self.catalog.format(
+                    "error-export-homag-mpr",
+                    &BTreeMap::from([("path", path.display().to_string()), ("reason", error)]),
+                );
+                false
+            }
+        }
+    }
+
     fn export_current_model_btlx_to(&mut self, path: &Path) -> bool {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
@@ -10102,7 +10259,7 @@ impl KetchupApp {
                         |parent| parent.join(".ketchup-pdm"),
                     );
                 self.pdm_review_dialog = Some(PdmReviewDialog {
-                    source: PdmSourceIdentity::observed(&snapshot),
+                    source: PdmSourceIdentity::observed(&snapshot, self.document.mutation_epoch()),
                     repository: repository.display().to_string(),
                     parent_release_id: String::new(),
                     release_id: String::new(),
@@ -10114,6 +10271,11 @@ impl KetchupApp {
                     opened: None,
                     comparison: None,
                 });
+            }
+            AppCommand::ExportHomagMpr => {
+                if let Some(path) = self.choose_export_path("mpr") {
+                    self.export_current_model_homag_mpr_to(&path);
+                }
             }
             AppCommand::ExportHundeggerBtlx => {
                 if let Some(path) = self.choose_export_path("btlx") {
@@ -10355,7 +10517,7 @@ impl KetchupApp {
             .beam_m5_products()
             .ok_or_else(|| "M5 exact products are not current".to_owned())
             .and_then(|products| products.drawing_svg().map_err(|error| error.to_string()))
-            .and_then(|bytes| std::fs::write(path, bytes).map_err(|error| error.to_string()));
+            .and_then(|bytes| write_export_artifact(path, &bytes));
         match result {
             Ok(()) => {
                 self.digest = format!("Exported Beam A piece drawing to {}", path.display());
@@ -10379,6 +10541,7 @@ impl KetchupApp {
                     .map_err(|error| error.to_string())
             })
             .and_then(|bytes| {
+                let expected_sha256 = export_target_sha256(path)?;
                 self.authorize_beam_path_side_effect(
                     HighRiskClass::ReleaseManufacturingExportWithWarnings,
                     "release-manufacturing-export-with-warnings",
@@ -10387,7 +10550,7 @@ impl KetchupApp {
                     path,
                     &bytes,
                 )?;
-                std::fs::write(path, bytes).map_err(|error| error.to_string())
+                write_export_artifact_if_unchanged(path, &bytes, expected_sha256.as_deref())
             });
         match result {
             Ok(()) => {
@@ -11018,6 +11181,7 @@ impl KetchupApp {
                 Some(("assistant-entity-clearance", id.0))
             }
             AuthoritativeDependency::CamPlan(id) => Some(("assistant-entity-cam-plan", id.0)),
+            AuthoritativeDependency::DowelJoint(id) => Some(("assistant-entity-joint", id.0)),
             AuthoritativeDependency::PersistentDimension(id) => {
                 Some(("assistant-entity-persistent-dimension", id.0))
             }
@@ -17336,6 +17500,7 @@ impl KetchupApp {
             | AppCommand::ExportGeneralFabrication
             | AppCommand::ExportWeldmentCutList
             | AppCommand::ExportSheetMetalManufacturing
+            | AppCommand::ExportHomagMpr
             | AppCommand::ReviewCamExport
             | AppCommand::ReviewStaticFea
             | AppCommand::ReviewLocalPdm
@@ -20948,9 +21113,7 @@ impl KetchupApp {
                     .export_bundle(&snapshot)
                     .map_err(|error| error.to_string())
             })
-            .and_then(|bundle| {
-                std::fs::write(path, bundle.exact_recipe).map_err(|error| error.to_string())
-            });
+            .and_then(|bundle| write_export_artifact(path, &bundle.exact_recipe));
         match result {
             Ok(()) => {
                 self.digest = format!("Exported current exact bottle recipe to {}", path.display());
@@ -20985,16 +21148,40 @@ impl KetchupApp {
                         .find(|path| path.is_file())
                 })
                 .ok_or_else(|| "exact worker is unavailable".to_owned())?;
+            let report_path = path.with_extension("step.loss.txt");
+            let precondition = ExportBundlePrecondition::capture(path, &report_path)?;
+            let parent = path.parent().unwrap_or_else(|| Path::new("."));
+            let prepared_directory = tempfile::Builder::new()
+                .prefix(".ketchup-prepared-revolve-export-")
+                .tempdir_in(parent)
+                .map_err(|error| error.to_string())?;
+            let prepared_step = prepared_directory.path().join("model.step");
             let mut worker =
                 ExactWorkerSupervisor::spawn(executable).map_err(|error| error.to_string())?;
             worker
-                .export_revolve_step(&snapshot, &request, &package, path)
+                .export_revolve_step(&snapshot, &request, &package, &prepared_step)
                 .map_err(|error| error.to_string())?;
-            std::fs::write(
-                path.with_extension("step.loss.txt"),
-                exact_step_loss_report(&package),
-            )
-            .map_err(|error| error.to_string())
+            let prepared_file =
+                std::fs::File::open(&prepared_step).map_err(|error| error.to_string())?;
+            if !prepared_file
+                .metadata()
+                .map_err(|error| error.to_string())?
+                .is_file()
+            {
+                return Err("exact worker STEP output is not a regular file".to_owned());
+            }
+            let mut step = Vec::new();
+            prepared_file
+                .take(MAX_STEP_SOURCE_BYTES + 1)
+                .read_to_end(&mut step)
+                .map_err(|error| error.to_string())?;
+            if step.len() as u64 > MAX_STEP_SOURCE_BYTES {
+                return Err(
+                    "exact worker STEP output exceeds the bounded 32 MiB envelope".to_owned(),
+                );
+            }
+            let report = exact_step_loss_report(&package);
+            write_export_bundle(path, &step, &report_path, report.as_bytes(), &precondition)
         })();
         match result {
             Ok(()) => {
@@ -32257,6 +32444,7 @@ impl KetchupApp {
                 self.menu_command(ui, AppCommand::ExportGeneralFabrication);
                 self.menu_command(ui, AppCommand::ExportWeldmentCutList);
                 self.menu_command(ui, AppCommand::ExportSheetMetalManufacturing);
+                self.menu_command(ui, AppCommand::ExportHomagMpr);
                 self.menu_command(ui, AppCommand::ReviewCamExport);
                 self.menu_command(ui, AppCommand::ReviewStaticFea);
                 self.menu_command(ui, AppCommand::ReviewLocalPdm);
@@ -36879,6 +37067,7 @@ impl KetchupApp {
         if preview {
             let result = (|| {
                 let snapshot = self.document.current();
+                let mutation_epoch = self.document.mutation_epoch();
                 let plan = snapshot
                     .cam_plan(pending.plan_id)
                     .ok_or_else(|| self.catalog.text("cam-review-no-plan"))?;
@@ -36890,6 +37079,7 @@ impl KetchupApp {
                 self.cam_reviews
                     .preview(
                         &snapshot,
+                        mutation_epoch,
                         CamReviewRequest {
                             plan_id: pending.plan_id,
                             operations: vec![operation],
@@ -36912,8 +37102,11 @@ impl KetchupApp {
             && let Some(review) = &pending.review
             && let Some(path) = self.choose_export_path("nc")
         {
+            let snapshot = self.document.current();
+            let mutation_epoch = self.document.mutation_epoch();
             let result = self.cam_reviews.export(
-                &self.document.current(),
+                &snapshot,
+                mutation_epoch,
                 &review.token,
                 &path,
                 true,
@@ -37115,8 +37308,10 @@ impl KetchupApp {
             .resizable(true)
             .show(context, |ui| {
                 ui.label(format!(
-                    "Revision {} · SHA-256 {}",
-                    pending.source.revision, pending.source.canonical_digest
+                    "Revision {} · Epoch {} · SHA-256 {}",
+                    pending.source.revision,
+                    pending.source.mutation_epoch,
+                    pending.source.canonical_digest
                 ));
                 for (label, value) in [
                     ("pdm-repository", &mut pending.repository),
@@ -37204,13 +37399,13 @@ impl KetchupApp {
             });
 
         let cancelled = AtomicBool::new(false);
+        let current =
+            PdmDocumentState::observed(self.document.current(), self.document.mutation_epoch());
         if refresh {
-            match self.pdm.catalog(
-                &self.document.current(),
-                &pending.source,
-                &pending.repository,
-                &cancelled,
-            ) {
+            match self
+                .pdm
+                .catalog(&current, &pending.source, &pending.repository, &cancelled)
+            {
                 Ok(catalog) => {
                     if let Some(latest) = catalog
                         .iter()
@@ -37232,7 +37427,7 @@ impl KetchupApp {
         }
         if open_release {
             match self.pdm.open(
-                &self.document.current(),
+                &current,
                 &pending.source,
                 &pending.repository,
                 pending.release_id.trim(),
@@ -37247,7 +37442,7 @@ impl KetchupApp {
         }
         if compare {
             match self.pdm.compare(
-                &self.document.current(),
+                &current,
                 &pending.source,
                 &pending.repository,
                 pending.release_id.trim(),
@@ -37295,7 +37490,8 @@ impl KetchupApp {
                 };
                 self.pdm
                     .create(
-                        &self.document.current(),
+                        &current,
+                        &self.container_data,
                         &pending.source,
                         &request,
                         true,
@@ -39245,6 +39441,98 @@ fn sync_export_parent(parent: &Path) -> Result<(), String> {
     }
 }
 
+fn export_artifact_lock_path(path: &Path) -> PathBuf {
+    let mut lock_path = path.as_os_str().to_os_string();
+    lock_path.push(".ketchup-export-lock");
+    PathBuf::from(lock_path)
+}
+
+fn write_export_artifact_if_unchanged(
+    path: &Path,
+    bytes: &[u8],
+    expected_sha256: Option<&str>,
+) -> Result<(), String> {
+    write_export_artifact_if_unchanged_after_compare(path, bytes, expected_sha256, || {})
+}
+
+fn write_export_artifact_if_unchanged_after_compare(
+    path: &Path,
+    bytes: &[u8],
+    expected_sha256: Option<&str>,
+    after_compare: impl FnOnce(),
+) -> Result<(), String> {
+    if path.is_dir() {
+        return Err("export target must be a regular file path".to_owned());
+    }
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(export_artifact_lock_path(path))
+        .map_err(|error| error.to_string())?;
+    lock.lock().map_err(|error| error.to_string())?;
+    let mut temporary =
+        tempfile::NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
+    temporary
+        .write_all(bytes)
+        .and_then(|()| temporary.as_file_mut().sync_all())
+        .map_err(|error| error.to_string())?;
+    if export_target_sha256(path)?.as_deref() != expected_sha256 {
+        return Err(format!(
+            "export target {} changed after authorization",
+            path.display()
+        ));
+    }
+    let backup = expected_sha256
+        .map(|_| empty_export_temp_path(path, ".ketchup-export-backup-"))
+        .transpose()?;
+    move_export_target_to_backup(path, expected_sha256, backup.as_deref())?;
+    after_compare();
+    match temporary.persist_noclobber(path) {
+        Ok(_) => {
+            if let Some(backup) = backup {
+                backup.close().map_err(|error| error.to_string())?;
+            }
+            sync_export_parent(parent)
+        }
+        Err(error) => {
+            let publish_error = error.error.to_string();
+            match backup {
+                Some(backup) if !path.exists() => {
+                    std::fs::rename(&backup, path).map_err(|error| {
+                        format!(
+                            "{publish_error}; authorized original could not be restored from {}: {error}",
+                            backup.display()
+                        )
+                    })?;
+                    sync_export_parent(parent)?;
+                    Err(publish_error)
+                }
+                Some(backup) => {
+                    let preserved = backup.keep().map_err(|error| error.error.to_string())?;
+                    Err(format!(
+                        "export target {} changed concurrently; authorized original preserved at {}",
+                        path.display(),
+                        preserved.display()
+                    ))
+                }
+                None => Err(format!(
+                    "export target {} changed after authorization: {publish_error}",
+                    path.display()
+                )),
+            }
+        }
+    }
+}
+
+#[cfg(feature = "named-product-fixtures")]
+fn write_export_artifact(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let expected_sha256 = export_target_sha256(path)?;
+    write_export_artifact_if_unchanged(path, bytes, expected_sha256.as_deref())
+}
+
 fn empty_export_temp_path(path: &Path, prefix: &str) -> Result<tempfile::TempPath, String> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let temporary = tempfile::Builder::new()
@@ -39652,9 +39940,15 @@ fn exact_mesh_export_evidence(bundle: &ExactMeshExport) -> Vec<u8> {
 }
 
 fn write_exact_mesh_export(path: &Path, bundle: ExactMeshExport) -> Result<(), String> {
-    std::fs::write(path, bundle.mesh_obj).map_err(|error| error.to_string())?;
-    std::fs::write(path.with_extension("obj.loss.txt"), bundle.loss_report)
-        .map_err(|error| error.to_string())
+    let report_path = path.with_extension("obj.loss.txt");
+    let precondition = ExportBundlePrecondition::capture(path, &report_path)?;
+    write_export_bundle(
+        path,
+        bundle.mesh_obj.as_bytes(),
+        &report_path,
+        bundle.loss_report.as_bytes(),
+        &precondition,
+    )
 }
 
 fn transform_model_point(transform: Transform, point: Vec3) -> Vec3 {

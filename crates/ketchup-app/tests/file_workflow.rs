@@ -146,24 +146,7 @@ fn assert_state_and_history_unchanged(
 }
 
 fn exact_worker_path() -> PathBuf {
-    let name = if cfg!(windows) {
-        "ketchup-exact-worker.exe"
-    } else {
-        "ketchup-exact-worker"
-    };
-    let colocated = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .and_then(Path::parent)
-        .unwrap()
-        .join(name);
-    if colocated.is_file() {
-        colocated
-    } else {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/debug")
-            .join(name)
-    }
+    PathBuf::from(env!("CARGO_BIN_EXE_ketchup-performance-exact-worker"))
 }
 
 fn imported_exact_feature_id(shell: &Shell) -> FeatureId {
@@ -909,6 +892,22 @@ fn local_pdm_root_child_and_verified_open_run_through_offscreen_accesskit() {
     );
     assert_state_and_history_unchanged(&mut shell, &child_state, &child_history);
 
+    shell.click_button_label(&confirm);
+    assert_eq!(
+        shell.app().action_digest(),
+        "local PDM request no longer matches the current document"
+    );
+    assert_eq!(
+        std::fs::read_dir(repository.join("releases"))
+            .unwrap()
+            .count(),
+        2
+    );
+    shell.click_button_label(&cancel);
+
+    shell.click_menu_command("menu-file", AppCommand::ReviewLocalPdm);
+    wait_for_visible_label(&mut shell, &refresh);
+    shell.click_button_label(&refresh);
     let verify = shell.catalog().text("pdm-open-release");
     shell.click_button_label(&verify);
     assert!(digest_starts_like(&shell, "pdm-open-verified"));
@@ -2074,6 +2073,25 @@ fn overwrite_save_requires_payload_bound_human_receipt_before_disk_write() {
             .canonical_digest(),
         canonical
     );
+}
+
+#[test]
+fn save_as_rejects_a_target_changed_after_overwrite_approval() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("existing.ketchup");
+    std::fs::write(&path, b"original external file").unwrap();
+    let concurrent = b"concurrent external update".to_vec();
+    let script = ScriptedFileDialogs::new()
+        .queue_save(&path)
+        .queue_high_risk_approval_after_write(42, &path, concurrent.clone());
+    let mut shell = Shell::with_dialogs(script);
+    compose_two_shared_occurrences(&mut shell);
+
+    shell.click_menu_command("menu-file", AppCommand::SaveAs);
+
+    assert_eq!(std::fs::read(&path).unwrap(), concurrent);
+    assert!(shell.app().is_dirty());
+    assert!(digest_starts_like(&shell, "error-save-document"));
 }
 
 #[test]

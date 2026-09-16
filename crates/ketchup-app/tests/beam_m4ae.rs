@@ -101,22 +101,8 @@ fn visible_beam_panel_loads_and_refreshes_canonical_slice() {
 
 #[test]
 fn running_app_accepts_worker_notches_and_exports_current_piece_outputs() {
-    let executable_name = if cfg!(windows) {
-        "ketchup-exact-worker.exe"
-    } else {
-        "ketchup-exact-worker"
-    };
-    let current = std::env::current_exe().unwrap();
-    let executable = current
-        .parent()
-        .and_then(std::path::Path::parent)
-        .unwrap()
-        .join(executable_name);
-    assert!(
-        executable.is_file(),
-        "build the workspace all-targets so the exact worker is present at {}",
-        executable.display()
-    );
+    let executable =
+        std::path::PathBuf::from(env!("CARGO_BIN_EXE_ketchup-performance-exact-worker"));
 
     let dialogs = ScriptedFileDialogs::new()
         .queue_refused_high_risk()
@@ -133,10 +119,12 @@ fn running_app_accepts_worker_notches_and_exports_current_piece_outputs() {
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    let products = shell
-        .app()
-        .beam_m5_products()
-        .expect("the running app must accept current M5 worker products");
+    assert!(
+        shell.app().beam_m5_products().is_some(),
+        "the running app must accept current M5 worker products: {}",
+        shell.app().action_digest()
+    );
+    let products = shell.app().beam_m5_products().unwrap();
     assert_eq!(products.packages.len(), 13);
     assert_eq!(shell.app().beam_exact_body_count(), 13);
     assert_eq!(products.stable_reference_count(), 48);
@@ -240,6 +228,7 @@ fn running_app_accepts_worker_notches_and_exports_current_piece_outputs() {
     assert_eq!(shell.app().document_revision(), active_revision);
     assert_eq!(shell.app().can_undo(), active_can_undo);
     assert_eq!(shell.app().beam_slice().unwrap().revision_id, beam_revision);
+
     assert_eq!(dialogs.high_risk_prompts().len(), 4);
     assert!(dialogs.high_risk_prompts()[0].contains("Payload SHA-256:"));
     assert!(
@@ -256,6 +245,23 @@ fn running_app_accepts_worker_notches_and_exports_current_piece_outputs() {
     let loss = std::fs::read_to_string(mesh_path.with_extension("obj.loss.txt")).unwrap();
     assert!(mesh.starts_with("# Ketchup exact body OBJ\n"));
     assert!(loss.contains("producer_piece_key="));
+
+    let concurrent_manufacturing = b"external manufacturing export after approval";
+    let _ = dialogs.clone().queue_high_risk_approval_after_write(
+        43,
+        &manufacturing_path,
+        concurrent_manufacturing,
+    );
+    assert!(
+        !shell
+            .app_mut()
+            .export_beam_manufacturing_to(&manufacturing_path)
+    );
+    assert_eq!(
+        std::fs::read(&manufacturing_path).unwrap(),
+        concurrent_manufacturing
+    );
+    assert_eq!(dialogs.high_risk_prompts().len(), 5);
 
     assert!(shell.app_mut().set_beam_zone1_gap_mm(420.0));
     assert!(shell.app().beam_m5_products().is_none());

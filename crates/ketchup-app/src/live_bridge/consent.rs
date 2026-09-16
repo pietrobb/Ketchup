@@ -5,7 +5,7 @@
 use super::{KetchupApp, egui, transport};
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::{self, OpenOptions},
+    fs,
     io::{self, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
@@ -20,7 +20,9 @@ use std::{
 
 const MAX_CONSENT_BYTES: usize = 512;
 const IO_DEADLINE: Duration = Duration::from_secs(2);
+const STOP_POLL: Duration = Duration::from_millis(25);
 const DECISION_DEADLINE: Duration = Duration::from_secs(60);
+const MAX_CONNECTIONS: usize = 8;
 const DISCOVERY_DIRECTORY: &str = "Ketchup/live-instances";
 const INSTANCE_ID_BYTES: usize = 16;
 
@@ -28,17 +30,21 @@ pub(crate) struct ConsentBroker {
     address: SocketAddr,
     instance_id: String,
     registry_path: PathBuf,
+    registry_identity: ketchup_core::persistence::FileIdentity,
     discovery: Arc<Mutex<DiscoveryState>>,
     stopped: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
     requests: mpsc::Receiver<PendingConsent>,
+    deliveries: mpsc::Receiver<bool>,
 }
 
 impl Drop for ConsentBroker {
     fn drop(&mut self) {
         self.stopped.store(true, Ordering::Release);
-        let _ = fs::remove_file(&self.registry_path);
-        self.worker.take();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+        let _ = remove_registry_entry_if_unchanged(&self.registry_path, self.registry_identity);
     }
 }
 
@@ -50,6 +56,7 @@ struct DiscoveryState {
 
 pub(crate) struct PendingConsent {
     decision: mpsc::SyncSender<ConsentDecision>,
+    requester_closed: mpsc::Receiver<()>,
 }
 
 enum ConsentDecision {
@@ -149,6 +156,25 @@ impl KetchupApp {
     }
 
     pub(crate) fn poll_live_consent(&mut self) {
+        if self.live_pending_consent.as_ref().is_some_and(|pending| {
+            matches!(
+                pending.requester_closed.try_recv(),
+                Err(mpsc::TryRecvError::Disconnected)
+            )
+        }) {
+            self.live_pending_consent = None;
+        }
+        let delivery_failed = self.live_consent_broker.as_ref().is_some_and(|broker| {
+            let mut failed = false;
+            while let Ok(delivered) = broker.deliveries.try_recv() {
+                failed |= !delivered;
+            }
+            failed
+        });
+        if delivery_failed {
+            self.live_consent_attached = false;
+            self.disable_live_bridge();
+        }
         let document = self.live_consent_document();
         let Some(broker) = self.live_consent_broker.as_ref() else {
             return;
@@ -320,17 +346,18 @@ fn publish_registry_entry(
     root: &Path,
     instance_id: &str,
     address: SocketAddr,
-) -> io::Result<PathBuf> {
+) -> io::Result<(PathBuf, ketchup_core::persistence::FileIdentity)> {
+    publish_registry_entry_before_publish(root, instance_id, address, || {})
+}
+
+fn publish_registry_entry_before_publish(
+    root: &Path,
+    instance_id: &str,
+    address: SocketAddr,
+    before_publish: impl FnOnce(),
+) -> io::Result<(PathBuf, ketchup_core::persistence::FileIdentity)> {
     prepare_discovery_root(root)?;
     let path = root.join(format!("{instance_id}.json"));
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(&path)?;
     let bytes = serde_json::to_vec(&RegistryEntry {
         version: 1,
         instance_id,
@@ -340,11 +367,28 @@ fn publish_registry_entry(
     if bytes.len() > MAX_CONSENT_BYTES {
         return Err(io::ErrorKind::InvalidData.into());
     }
-    if let Err(error) = file.write_all(&bytes).and_then(|()| file.sync_all()) {
-        let _ = fs::remove_file(&path);
-        return Err(error);
-    }
-    Ok(path)
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".ketchup-registry-")
+        .tempfile_in(root)?;
+    temporary.write_all(&bytes)?;
+    temporary.as_file_mut().sync_all()?;
+    before_publish();
+    temporary
+        .persist_noclobber(&path)
+        .map_err(|error| error.error)?;
+    let identity = ketchup_core::persistence::FileIdentity::from_bytes(&bytes);
+    Ok((path, identity))
+}
+
+fn remove_registry_entry_if_unchanged(
+    path: &Path,
+    expected: ketchup_core::persistence::FileIdentity,
+) -> io::Result<bool> {
+    ketchup_core::persistence::remove_regular_file_if_unchanged(
+        path,
+        expected,
+        MAX_CONSENT_BYTES as u64,
+    )
 }
 
 fn start(
@@ -356,7 +400,8 @@ fn start(
     listener.set_nonblocking(true)?;
     let address = listener.local_addr()?;
     let instance_id = random_instance_id()?;
-    let registry_path = publish_registry_entry(discovery_root, &instance_id, address)?;
+    let (registry_path, registry_identity) =
+        publish_registry_entry(discovery_root, &instance_id, address)?;
     let discovery = Arc::new(Mutex::new(DiscoveryState {
         document,
         available: true,
@@ -364,21 +409,44 @@ fn start(
     let worker_discovery = Arc::clone(&discovery);
     let worker_instance_id = instance_id.clone();
     let (sender, requests) = mpsc::sync_channel(1);
+    let (delivery_sender, deliveries) = mpsc::channel();
     let stopped = Arc::new(AtomicBool::new(false));
     let stop = Arc::clone(&stopped);
     let worker = match std::thread::Builder::new()
         .name("ketchup-live-consent".into())
         .spawn(move || {
+            let mut handlers = Vec::new();
             while !stop.load(Ordering::Acquire) {
+                while let Some(index) = handlers.iter().position(JoinHandle::is_finished) {
+                    let _ = handlers.swap_remove(index).join();
+                }
                 match listener.accept() {
                     Ok((stream, peer)) if peer.ip().is_loopback() => {
-                        serve(
-                            stream,
-                            &sender,
-                            &context,
-                            &worker_instance_id,
-                            &worker_discovery,
-                        );
+                        if handlers.len() >= MAX_CONNECTIONS {
+                            continue;
+                        }
+                        let connection_sender = sender.clone();
+                        let connection_delivery_sender = delivery_sender.clone();
+                        let connection_context = context.clone();
+                        let connection_instance_id = worker_instance_id.clone();
+                        let connection_discovery = Arc::clone(&worker_discovery);
+                        let connection_stop = Arc::clone(&stop);
+                        if let Ok(handler) = std::thread::Builder::new()
+                            .name("ketchup-live-consent-connection".into())
+                            .spawn(move || {
+                                serve(
+                                    stream,
+                                    &connection_sender,
+                                    &connection_delivery_sender,
+                                    &connection_context,
+                                    &connection_instance_id,
+                                    &connection_discovery,
+                                    &connection_stop,
+                                );
+                            })
+                        {
+                            handlers.push(handler);
+                        }
                     }
                     Ok(_) => {}
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -387,10 +455,13 @@ fn start(
                     Err(_) => break,
                 }
             }
+            for handler in handlers {
+                let _ = handler.join();
+            }
         }) {
         Ok(worker) => worker,
         Err(error) => {
-            let _ = fs::remove_file(&registry_path);
+            let _ = remove_registry_entry_if_unchanged(&registry_path, registry_identity);
             return Err(error);
         }
     };
@@ -398,55 +469,136 @@ fn start(
         address,
         instance_id,
         registry_path,
+        registry_identity,
         discovery,
         stopped,
         worker: Some(worker),
         requests,
+        deliveries,
     })
 }
 
 fn serve(
     mut stream: TcpStream,
     sender: &mpsc::SyncSender<PendingConsent>,
+    delivery_sender: &mpsc::Sender<bool>,
     context: &egui::Context,
     instance_id: &str,
     discovery: &Mutex<DiscoveryState>,
+    stop: &AtomicBool,
 ) {
     let _ = (|| -> io::Result<()> {
         stream.set_nonblocking(false)?;
         let read_deadline = Instant::now() + IO_DEADLINE;
-        stream.set_write_timeout(Some(IO_DEADLINE))?;
-        let request = read_request(&mut stream, read_deadline)?;
+        let request = read_request(&mut stream, read_deadline, stop)?;
         let nonce = request.nonce;
         if request.action == "list" {
             let state = discovery
                 .lock()
                 .map_err(|_| io::Error::other("discovery state unavailable"))?
                 .clone();
-            return write_list_response(&mut stream, &nonce, instance_id, &state);
+            return write_list_response(&mut stream, &nonce, instance_id, &state, stop);
         }
         let (decision, receiver) = mpsc::sync_channel(1);
-        if sender.try_send(PendingConsent { decision }).is_err() {
-            return write_response(&mut stream, &nonce, instance_id, ConsentDecision::Reject);
+        let (requester_alive, requester_closed) = mpsc::sync_channel(0);
+        if sender
+            .try_send(PendingConsent {
+                decision,
+                requester_closed,
+            })
+            .is_err()
+        {
+            return write_response(
+                &mut stream,
+                &nonce,
+                instance_id,
+                ConsentDecision::Reject,
+                stop,
+            );
         }
         context.request_repaint();
-        let decision = receiver
-            .recv_timeout(DECISION_DEADLINE)
-            .unwrap_or(ConsentDecision::Reject);
-        write_response(&mut stream, &nonce, instance_id, decision)
+        stream.set_nonblocking(true)?;
+        let decision = wait_for_decision(&stream, &receiver, stop);
+        drop(requester_alive);
+        context.request_repaint();
+        let decision = decision?;
+        stream.set_nonblocking(false)?;
+        let allowed = matches!(decision, ConsentDecision::Allow { .. });
+        let result = write_response(&mut stream, &nonce, instance_id, decision, stop);
+        if allowed {
+            let _ = delivery_sender.send(result.is_ok());
+            context.request_repaint();
+        }
+        result
     })();
 }
 
-fn read_request(stream: &mut TcpStream, deadline: Instant) -> io::Result<AttachRequest> {
-    let mut bytes = Vec::with_capacity(MAX_CONSENT_BYTES);
-    for _ in 0..MAX_CONSENT_BYTES {
+fn wait_for_decision(
+    stream: &TcpStream,
+    receiver: &mpsc::Receiver<ConsentDecision>,
+    stop: &AtomicBool,
+) -> io::Result<ConsentDecision> {
+    let deadline = Instant::now() + DECISION_DEADLINE;
+    loop {
+        if stop.load(Ordering::Acquire) {
+            return Err(io::ErrorKind::ConnectionAborted.into());
+        }
+        let mut byte = [0];
+        match stream.peek(&mut byte) {
+            Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+            Ok(_) => return Err(io::ErrorKind::InvalidData.into()),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock
+                        | io::ErrorKind::TimedOut
+                        | io::ErrorKind::Interrupted
+                ) => {}
+            Err(error) => return Err(error),
+        }
         let remaining = deadline
             .checked_duration_since(Instant::now())
             .filter(|remaining| !remaining.is_zero())
             .ok_or(io::ErrorKind::TimedOut)?;
-        stream.set_read_timeout(Some(remaining))?;
+        match receiver.recv_timeout(remaining.min(STOP_POLL)) {
+            Ok(decision) => return Ok(decision),
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(ConsentDecision::Reject),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+    }
+}
+
+fn read_request(
+    stream: &mut TcpStream,
+    deadline: Instant,
+    stop: &AtomicBool,
+) -> io::Result<AttachRequest> {
+    let mut bytes = Vec::with_capacity(MAX_CONSENT_BYTES);
+    while bytes.len() < MAX_CONSENT_BYTES {
+        if stop.load(Ordering::Acquire) {
+            return Err(io::ErrorKind::ConnectionAborted.into());
+        }
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or(io::ErrorKind::TimedOut)?;
+        stream.set_read_timeout(Some(remaining.min(STOP_POLL)))?;
         let mut byte = [0];
-        stream.read_exact(&mut byte)?;
+        match stream.read(&mut byte) {
+            Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+            Ok(_) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock
+                        | io::ErrorKind::TimedOut
+                        | io::ErrorKind::Interrupted
+                ) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error),
+        }
         bytes.push(byte[0]);
         if byte[0] == b'\n' {
             let request: AttachRequest =
@@ -475,6 +627,7 @@ fn write_list_response(
     nonce: &str,
     instance_id: &str,
     state: &DiscoveryState,
+    stop: &AtomicBool,
 ) -> io::Result<()> {
     write_json_line(
         stream,
@@ -485,6 +638,7 @@ fn write_list_response(
             instance_id,
             document: &state.document,
         },
+        stop,
     )
 }
 
@@ -493,6 +647,7 @@ fn write_response(
     nonce: &str,
     instance_id: &str,
     decision: ConsentDecision,
+    stop: &AtomicBool,
 ) -> io::Result<()> {
     let response = match &decision {
         ConsentDecision::Allow { address, token } => AttachResponse {
@@ -512,15 +667,180 @@ fn write_response(
             token: None,
         },
     };
-    write_json_line(stream, &response)
+    write_json_line(stream, &response, stop)
 }
 
-fn write_json_line(stream: &mut TcpStream, value: &impl Serialize) -> io::Result<()> {
+fn write_json_line(
+    stream: &mut TcpStream,
+    value: &impl Serialize,
+    stop: &AtomicBool,
+) -> io::Result<()> {
     let mut bytes = serde_json::to_vec(value).map_err(io::Error::other)?;
     bytes.push(b'\n');
     if bytes.len() > MAX_CONSENT_BYTES {
         return Err(io::ErrorKind::InvalidData.into());
     }
-    stream.write_all(&bytes)?;
+    let deadline = Instant::now() + IO_DEADLINE;
+    let mut remaining_bytes = bytes.as_slice();
+    while !remaining_bytes.is_empty() {
+        if stop.load(Ordering::Acquire) {
+            return Err(io::ErrorKind::ConnectionAborted.into());
+        }
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or(io::ErrorKind::TimedOut)?;
+        stream.set_write_timeout(Some(remaining.min(STOP_POLL)))?;
+        match stream.write(remaining_bytes) {
+            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+            Ok(count) => remaining_bytes = &remaining_bytes[count..],
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock
+                        | io::ErrorKind::TimedOut
+                        | io::ErrorKind::Interrupted
+                ) => {}
+            Err(error) => return Err(error),
+        }
+    }
     stream.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registry_destination_is_invisible_until_complete() {
+        let directory = tempfile::tempdir().unwrap();
+        let instance_id = "0123456789abcdef0123456789abcdef";
+        let path = directory.path().join(format!("{instance_id}.json"));
+
+        publish_registry_entry_before_publish(
+            directory.path(),
+            instance_id,
+            "127.0.0.1:12345".parse().unwrap(),
+            || {
+                assert!(
+                    !path.exists(),
+                    "discovery must not expose the destination before its JSON is complete"
+                );
+            },
+        )
+        .unwrap();
+
+        let bytes = fs::read(path).unwrap();
+        let entry: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(entry["instance_id"], instance_id);
+    }
+
+    #[test]
+    fn pending_attach_does_not_block_discovery_requests() {
+        let directory = tempfile::tempdir().unwrap();
+        let broker = start(
+            egui::Context::default(),
+            directory.path(),
+            "Untitled".to_owned(),
+        )
+        .unwrap();
+        let mut attach = TcpStream::connect(broker.address).unwrap();
+        attach
+            .write_all(
+                br#"{"version":1,"action":"attach","nonce":"0000000000000000000000000000000000000000000000000000000000000000"}
+"#,
+            )
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let pending = loop {
+            if let Ok(pending) = broker.requests.try_recv() {
+                break pending;
+            }
+            assert!(Instant::now() < deadline, "attach was not received");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+
+        let mut list = TcpStream::connect(broker.address).unwrap();
+        list.set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
+        list.write_all(
+            br#"{"version":1,"action":"list","nonce":"1111111111111111111111111111111111111111111111111111111111111111"}
+"#,
+        )
+        .unwrap();
+        let mut response = String::new();
+        list.read_to_string(&mut response)
+            .expect("a pending consent decision must not block discovery");
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(response["status"], "available");
+        drop(pending);
+    }
+
+    #[test]
+    fn broker_drop_stops_a_pending_attach_promptly() {
+        let directory = tempfile::tempdir().unwrap();
+        let broker = start(
+            egui::Context::default(),
+            directory.path(),
+            "Untitled".to_owned(),
+        )
+        .unwrap();
+        let mut attach = TcpStream::connect(broker.address).unwrap();
+        attach
+            .write_all(
+                br#"{"version":1,"action":"attach","nonce":"2222222222222222222222222222222222222222222222222222222222222222"}
+"#,
+            )
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let pending = loop {
+            if let Ok(pending) = broker.requests.try_recv() {
+                break pending;
+            }
+            assert!(Instant::now() < deadline, "attach was not received");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+
+        let started = Instant::now();
+        drop(broker);
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "broker shutdown must not wait for the consent deadline"
+        );
+        attach
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
+        let mut byte = [0];
+        match attach.read(&mut byte) {
+            Ok(0) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::ConnectionReset
+                        | io::ErrorKind::ConnectionAborted
+                        | io::ErrorKind::BrokenPipe
+                ) => {}
+            other => panic!("shutdown must close without returning credentials: {other:?}"),
+        }
+        drop(pending);
+    }
+
+    #[test]
+    fn registry_publish_does_not_clobber_an_existing_destination() {
+        let directory = tempfile::tempdir().unwrap();
+        let instance_id = "fedcba9876543210fedcba9876543210";
+        let path = directory.path().join(format!("{instance_id}.json"));
+        fs::write(&path, b"external entry").unwrap();
+
+        let error = publish_registry_entry(
+            directory.path(),
+            instance_id,
+            "127.0.0.1:12345".parse().unwrap(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&path).unwrap(), b"external entry");
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
 }

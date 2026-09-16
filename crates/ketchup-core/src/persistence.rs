@@ -59,6 +59,7 @@ use crate::import::{
     ImportOutputRef, ImportReceipt, ImportUnitAuthority, ImportUnitDecision,
     MAX_IMPORT_DIAGNOSTICS, MAX_IMPORT_OUTPUTS,
 };
+use crate::joinery::{DowelJointContract, DowelJointFace, DowelJointId, DowelSpec};
 use crate::mechanical_contract::{
     MECHANICAL_CONDITION_SCHEMA_V1, MECHANICAL_INTERFACE_SCHEMA_V1, MechanicalAxisAlignment,
     MechanicalCondition, MechanicalConditionId, MechanicalConditionKind, MechanicalInterface,
@@ -164,7 +165,8 @@ const SURFACE_KNIT_SCHEMA: u16 = 86;
 const SURFACE_THICKEN_SCHEMA: u16 = 87;
 const IMPORTED_EXACT_BODY_KIND_SCHEMA: u16 = 88;
 const CAM_PLAN_SCHEMA: u16 = 89;
-pub const CURRENT_SCHEMA: u16 = CAM_PLAN_SCHEMA;
+const DOWEL_JOINERY_SCHEMA: u16 = 90;
+pub const CURRENT_SCHEMA: u16 = DOWEL_JOINERY_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -269,6 +271,7 @@ struct ProductSchemaCapabilities {
     surface_knit: bool,
     surface_thicken: bool,
     cam_plans: bool,
+    dowel_joinery: bool,
 }
 
 impl ProductSchemaCapabilities {
@@ -358,6 +361,7 @@ impl ProductSchemaCapabilities {
         surface_knit: false,
         surface_thicken: false,
         cam_plans: false,
+        dowel_joinery: false,
     };
 
     const fn current(schema: u16) -> Self {
@@ -447,6 +451,7 @@ impl ProductSchemaCapabilities {
             surface_knit: schema >= SURFACE_KNIT_SCHEMA,
             surface_thicken: schema >= SURFACE_THICKEN_SCHEMA,
             cam_plans: schema >= CAM_PLAN_SCHEMA,
+            dowel_joinery: schema >= DOWEL_JOINERY_SCHEMA,
         }
     }
 }
@@ -1019,14 +1024,18 @@ fn save_with_schema(snapshot: &Snapshot, schema: u16) -> Vec<u8> {
         write_mechanical_condition(&mut payload, condition);
     }
     if capabilities.cam_plans
-        && (!product.cam_plans.is_empty() || !product.instance_transform_overrides.is_empty())
+        && (!product.cam_plans.is_empty()
+            || !product.instance_transform_overrides.is_empty()
+            || !product.dowel_joints.is_empty())
     {
         push_u32(&mut payload, product.cam_plans.len() as u32);
         for plan in product.cam_plans.values() {
             write_cam_plan(&mut payload, plan);
         }
     }
-    if capabilities.nested_instance_transforms && !product.instance_transform_overrides.is_empty() {
+    if capabilities.nested_instance_transforms
+        && (!product.instance_transform_overrides.is_empty() || !product.dowel_joints.is_empty())
+    {
         push_u32(
             &mut payload,
             product.instance_transform_overrides.len() as u32,
@@ -1034,6 +1043,12 @@ fn save_with_schema(snapshot: &Snapshot, schema: u16) -> Vec<u8> {
         for (path, transform) in &product.instance_transform_overrides {
             write_instance_path(&mut payload, path);
             push_transform(&mut payload, *transform);
+        }
+    }
+    if capabilities.dowel_joinery {
+        push_u32(&mut payload, product.dowel_joints.len() as u32);
+        for joint in product.dowel_joints.values() {
+            write_dowel_joint(&mut payload, joint);
         }
     }
 
@@ -1051,6 +1066,41 @@ fn save_with_schema(snapshot: &Snapshot, schema: u16) -> Vec<u8> {
     bytes.extend_from_slice(&manifest);
     bytes.extend_from_slice(&payload);
     bytes
+}
+
+fn write_dowel_joint(bytes: &mut Vec<u8>, joint: &DowelJointContract) {
+    push_u64(bytes, joint.id.0);
+    push_string(bytes, &joint.name);
+    for side in [&joint.first, &joint.second] {
+        write_instance_path(bytes, &side.instance_path);
+        for value in side
+            .face_origin_local_mm
+            .into_iter()
+            .chain(side.inward_unit_local)
+            .chain(side.bounds_min_local_mm)
+            .chain(side.bounds_max_local_mm)
+        {
+            push_u64(bytes, value.to_bits());
+        }
+    }
+    for value in joint
+        .first_center_local_mm
+        .into_iter()
+        .chain(joint.row_unit_first_local)
+    {
+        push_u64(bytes, value.to_bits());
+    }
+    push_u32(bytes, joint.count);
+    for value in [
+        joint.spacing_mm,
+        joint.dowel.diameter_mm,
+        joint.dowel.length_mm,
+        joint.dowel.first_insertion_mm,
+        joint.dowel.second_insertion_mm,
+        joint.dowel.bottom_clearance_mm,
+    ] {
+        push_u64(bytes, value.to_bits());
+    }
 }
 
 fn write_cam_plan(bytes: &mut Vec<u8>, plan: &CamPlan) {
@@ -3207,6 +3257,86 @@ impl FileIdentity {
     }
 }
 
+pub fn remove_regular_file_if_unchanged(
+    path: &Path,
+    expected: FileIdentity,
+    maximum_bytes: u64,
+) -> io::Result<bool> {
+    remove_regular_file_if_unchanged_after_check(path, expected, maximum_bytes, || {})
+}
+
+fn remove_regular_file_if_unchanged_after_check(
+    path: &Path,
+    expected: FileIdentity,
+    maximum_bytes: u64,
+    after_check: impl FnOnce(),
+) -> io::Result<bool> {
+    if bounded_regular_file_identity(path, maximum_bytes)? != Some(expected) {
+        return Ok(false);
+    }
+    after_check();
+
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let temporary = tempfile::Builder::new()
+        .prefix(".ketchup-cleanup-")
+        .tempfile_in(parent)?;
+    let claimed_path = temporary.path().to_path_buf();
+    temporary.close()?;
+    match fs::rename(path, &claimed_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    }
+
+    if bounded_regular_file_identity(&claimed_path, maximum_bytes)? == Some(expected) {
+        fs::remove_file(claimed_path)?;
+        return Ok(true);
+    }
+
+    match fs::hard_link(&claimed_path, path) {
+        Ok(()) => {
+            fs::remove_file(claimed_path)?;
+            Ok(false)
+        }
+        Err(error) => Err(io::Error::new(
+            error.kind(),
+            format!(
+                "cleanup target changed concurrently; preserved claimed entry at {}: {error}",
+                claimed_path.display()
+            ),
+        )),
+    }
+}
+
+fn bounded_regular_file_identity(
+    path: &Path,
+    maximum_bytes: u64,
+) -> io::Result<Option<FileIdentity>> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if !metadata.file_type().is_file() || metadata.len() > maximum_bytes {
+        return Ok(None);
+    }
+    let file = fs::File::open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > maximum_bytes {
+        return Ok(None);
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(maximum_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > maximum_bytes {
+        return Ok(None);
+    }
+    Ok(Some(FileIdentity::from_bytes(&bytes)))
+}
+
 pub fn read_native_document_file(path: impl AsRef<Path>) -> Result<Vec<u8>, FilePersistenceError> {
     let path = path.as_ref();
     let file = fs::File::open(path)?;
@@ -3270,6 +3400,17 @@ pub fn save_atomic_document_store_with_container_if_unchanged(
     Ok(FileIdentity::from_bytes(&bytes))
 }
 
+pub fn save_atomic_document_store_with_container_if_absent(
+    path: impl AsRef<Path>,
+    document: &DocumentStore,
+    container_data: &ContainerData,
+) -> Result<FileIdentity, FilePersistenceError> {
+    let bytes =
+        save_document_store(document, container_data).map_err(FilePersistenceError::Format)?;
+    save_atomic_bytes_if_absent(path.as_ref(), &bytes)?;
+    Ok(FileIdentity::from_bytes(&bytes))
+}
+
 pub fn save_atomic_document_store_current_snapshot_with_container(
     path: impl AsRef<Path>,
     document: &DocumentStore,
@@ -3292,12 +3433,64 @@ pub fn save_atomic_document_store_current_snapshot_with_container_if_unchanged(
     Ok(FileIdentity::from_bytes(&bytes))
 }
 
+pub fn save_atomic_document_store_current_snapshot_with_container_if_absent(
+    path: impl AsRef<Path>,
+    document: &DocumentStore,
+    container_data: &ContainerData,
+) -> Result<FileIdentity, FilePersistenceError> {
+    let bytes = save_document_store_current_snapshot(document, container_data)
+        .map_err(FilePersistenceError::Format)?;
+    save_atomic_bytes_if_absent(path.as_ref(), &bytes)?;
+    Ok(FileIdentity::from_bytes(&bytes))
+}
+
 fn save_atomic_bytes(
     path: &Path,
     bytes: &[u8],
     expected: Option<FileIdentity>,
 ) -> Result<(), FilePersistenceError> {
     save_atomic_bytes_after_compare(path, bytes, expected, || {})
+}
+
+fn save_atomic_bytes_if_absent(path: &Path, bytes: &[u8]) -> Result<(), FilePersistenceError> {
+    save_atomic_bytes_if_absent_after_check(path, bytes, || {})
+}
+
+fn save_atomic_bytes_if_absent_after_check(
+    path: &Path,
+    bytes: &[u8],
+    after_check: impl FnOnce(),
+) -> Result<(), FilePersistenceError> {
+    load(bytes).map_err(FilePersistenceError::Format)?;
+    let lock_path = save_lock_path(path);
+    let lock_file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_path)?;
+    lock_file.lock()?;
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(FilePersistenceError::Io(error)),
+        Ok(_) => return Err(FilePersistenceError::ExternalConflict),
+    }
+    after_check();
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.write_all(bytes)?;
+    temporary.as_file_mut().sync_all()?;
+    temporary.persist_noclobber(path).map_err(|error| {
+        if error.error.kind() == io::ErrorKind::AlreadyExists {
+            FilePersistenceError::ExternalConflict
+        } else {
+            FilePersistenceError::Io(error.error)
+        }
+    })?;
+    Ok(())
 }
 
 fn save_atomic_bytes_after_compare(
@@ -3332,11 +3525,26 @@ fn save_atomic_bytes_after_compare(
         Err(_) if expected.is_some() => return Err(FilePersistenceError::ExternalConflict),
         _ => {}
     }
-    after_compare();
-    write_atomic(path, bytes)
+    write_atomic_after_prepare(path, bytes, || {
+        after_compare();
+        if expected.is_some_and(|expected| {
+            read_native_document_identity(path).map_or(true, |observed| observed != expected)
+        }) {
+            return Err(FilePersistenceError::ExternalConflict);
+        }
+        Ok(())
+    })
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), FilePersistenceError> {
+    write_atomic_after_prepare(path, bytes, || Ok(()))
+}
+
+fn write_atomic_after_prepare(
+    path: &Path,
+    bytes: &[u8],
+    before_persist: impl FnOnce() -> Result<(), FilePersistenceError>,
+) -> Result<(), FilePersistenceError> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -3344,6 +3552,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), FilePersistenceError> {
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
     temporary.write_all(bytes)?;
     temporary.as_file_mut().sync_all()?;
+    before_persist()?;
     temporary
         .persist(path)
         .map_err(|error| FilePersistenceError::Io(error.error))?;
@@ -3414,6 +3623,14 @@ pub fn clear_work_recovery(
     path: &Path,
     expected: Option<FileIdentity>,
 ) -> Result<bool, FilePersistenceError> {
+    clear_work_recovery_after_compare(path, expected, || {})
+}
+
+fn clear_work_recovery_after_compare(
+    path: &Path,
+    expected: Option<FileIdentity>,
+    after_compare: impl FnOnce(),
+) -> Result<bool, FilePersistenceError> {
     let lock_path = save_lock_path(path);
     let lock_file = fs::OpenOptions::new()
         .read(true)
@@ -3437,23 +3654,13 @@ pub fn clear_work_recovery(
     let Some(expected) = expected else {
         return Ok(false);
     };
-    let mut file = fs::File::open(&recovery_path)?;
-    let wrapper_limit = MAX_NATIVE_DOCUMENT_BYTES as u64 + 60;
-    if file.metadata()?.len() > wrapper_limit {
-        return Ok(false);
-    }
-    let mut bytes = Vec::new();
-    std::io::Read::by_ref(&mut file)
-        .take(wrapper_limit + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > wrapper_limit || FileIdentity::from_bytes(&bytes) != expected {
-        return Ok(false);
-    }
-    match fs::remove_file(recovery_path) {
-        Ok(()) => Ok(true),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(FilePersistenceError::Io(error)),
-    }
+    remove_regular_file_if_unchanged_after_check(
+        &recovery_path,
+        expected,
+        MAX_NATIVE_DOCUMENT_BYTES as u64 + 60,
+        after_compare,
+    )
+    .map_err(FilePersistenceError::Io)
 }
 
 fn recovery_path(path: &Path) -> PathBuf {
@@ -5961,6 +6168,46 @@ fn read_cam_plan(reader: &mut Reader<'_>) -> Result<CamPlan, PersistenceError> {
     ))
 }
 
+fn read_dowel_joint(reader: &mut Reader<'_>) -> Result<DowelJointContract, PersistenceError> {
+    let id = DowelJointId(reader.u64()?);
+    let name = reader.string()?;
+    let point3 = |reader: &mut Reader<'_>| -> Result<[f64; 3], PersistenceError> {
+        Ok([
+            f64::from_bits(reader.u64()?),
+            f64::from_bits(reader.u64()?),
+            f64::from_bits(reader.u64()?),
+        ])
+    };
+    let read_side = |reader: &mut Reader<'_>| -> Result<DowelJointFace, PersistenceError> {
+        Ok(DowelJointFace {
+            instance_path: read_instance_path(reader)?,
+            face_origin_local_mm: point3(reader)?,
+            inward_unit_local: point3(reader)?,
+            bounds_min_local_mm: point3(reader)?,
+            bounds_max_local_mm: point3(reader)?,
+        })
+    };
+    let first = read_side(reader)?;
+    let second = read_side(reader)?;
+    Ok(DowelJointContract {
+        id,
+        name,
+        first,
+        second,
+        first_center_local_mm: point3(reader)?,
+        row_unit_first_local: point3(reader)?,
+        count: reader.u32()?,
+        spacing_mm: f64::from_bits(reader.u64()?),
+        dowel: DowelSpec {
+            diameter_mm: f64::from_bits(reader.u64()?),
+            length_mm: f64::from_bits(reader.u64()?),
+            first_insertion_mm: f64::from_bits(reader.u64()?),
+            second_insertion_mm: f64::from_bits(reader.u64()?),
+            bottom_clearance_mm: f64::from_bits(reader.u64()?),
+        },
+    })
+}
+
 fn read_product(
     reader: &mut Reader<'_>,
     capabilities: ProductSchemaCapabilities,
@@ -7213,6 +7460,20 @@ fn read_product(
                 }
             }
         }
+        if capabilities.dowel_joinery && !reader.is_finished() {
+            for _ in 0..reader.count_with_limit(MAX_COLLECTION_ITEMS)? {
+                let joint = read_dowel_joint(reader)?;
+                if product
+                    .dowel_joints
+                    .insert(joint.id, Arc::new(joint))
+                    .is_some()
+                {
+                    return Err(PersistenceError::InvalidCanonicalData(
+                        CanonicalError::DowelJoint(crate::joinery::DowelJointError::InvalidJointId),
+                    ));
+                }
+            }
+        }
     }
     if !capabilities.body_contract {
         crate::document::migrate_legacy_body_contract(&mut product)?;
@@ -7738,6 +7999,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn work_recovery_cleanup_preserves_replacement_after_identity_check() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("model.ketchup");
+        let recovery = work_recovery_path(&path);
+        let owned = b"owned recovery";
+        let external = b"external replacement";
+        fs::write(&recovery, owned).unwrap();
+
+        let removed =
+            clear_work_recovery_after_compare(&path, Some(FileIdentity::from_bytes(owned)), || {
+                let replacement = directory.path().join("replacement.tmp");
+                fs::write(&replacement, external).unwrap();
+                fs::rename(replacement, &recovery).unwrap();
+            })
+            .unwrap();
+
+        assert!(!removed);
+        assert_eq!(fs::read(recovery).unwrap(), external);
+    }
+
+    #[test]
+    fn absent_only_save_preserves_a_concurrently_created_target() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("concurrently-created.ketchup");
+        let payload = save(&DocumentStore::new().current());
+        let external = b"concurrent external creation";
+
+        assert!(matches!(
+            save_atomic_bytes_if_absent_after_check(&path, &payload, || {
+                fs::write(&path, external).unwrap();
+            }),
+            Err(FilePersistenceError::ExternalConflict)
+        ));
+        assert_eq!(fs::read(path).unwrap(), external);
+    }
+
+    #[test]
     fn concurrent_conditional_saves_allow_exactly_one_stale_writer() {
         use std::sync::mpsc;
         use std::time::Duration;
@@ -7796,6 +8094,47 @@ mod tests {
             "a second stale writer passed identity comparison before the first writer replaced the file"
         );
         assert_eq!(fs::read(path).unwrap(), first_bytes);
+    }
+
+    #[test]
+    fn conditional_save_rejects_external_write_after_identity_comparison() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("external-write-race.ketchup");
+        let initial = save(&DocumentStore::new().current());
+        fs::write(&path, &initial).unwrap();
+        let expected = FileIdentity::from_bytes(&initial);
+
+        let mut replacement = DocumentStore::new();
+        replacement
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(1),
+                    name: "replacement".into(),
+                },
+            ]))
+            .unwrap();
+        let replacement = save(&replacement.current());
+
+        let mut external = DocumentStore::new();
+        external
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(2),
+                    name: "external".into(),
+                },
+            ]))
+            .unwrap();
+        let external = save(&external.current());
+        let external_write = external.clone();
+
+        assert!(matches!(
+            save_atomic_bytes_after_compare(&path, &replacement, Some(expected), || {
+                fs::write(&path, external_write).unwrap();
+            }),
+            Err(FilePersistenceError::ExternalConflict)
+        ));
+        assert_eq!(fs::read(&path).unwrap(), external);
+        assert_eq!(fs::read(recovery_path(&path)).unwrap(), initial);
     }
 
     #[test]

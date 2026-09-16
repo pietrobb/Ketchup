@@ -103,13 +103,15 @@ def _world_bounds(value):
 
 
 def _identity(state):
-    return {key: state[key] for key in ("document_id", "revision", "canonical_digest")}
+    return {key: state[key] for key in ("document_id", "revision", "canonical_digest", "mutation_epoch")}
 
 
-def _precondition(entry, fresh, revision, digest):
-    if type(revision) is not int or revision < 0 or not digest:
-        raise Rejection("precondition_required", "Supply expected_revision and expected_digest from an inspect read")
-    expected = {"document_id": entry["document_id"], "revision": revision, "canonical_digest": digest}
+def _precondition(entry, fresh, revision, digest, mutation_epoch):
+    if (type(revision) is not int or revision < 0 or not digest
+            or type(mutation_epoch) is not int or mutation_epoch < 0):
+        raise Rejection("precondition_required", "Supply expected_revision, expected_digest and expected_mutation_epoch from an inspect read")
+    expected = {"document_id": entry["document_id"], "revision": revision,
+                "canonical_digest": digest, "mutation_epoch": mutation_epoch}
     if entry.get("observed") != expected or _identity(fresh) != expected:
         raise Rejection("stale_precondition", "Plan is stale or unobserved; inspect before another mutation")
 
@@ -172,10 +174,10 @@ class Runtime:
                 "undo_steps": state["undo_steps"], "redo_steps": state["redo_steps"],
                 "backend_compact": True}
 
-    def mutation(self, handle, revision, digest):
+    def mutation(self, handle, revision, digest, mutation_epoch):
         self.guard()
         entry = self.entry(handle)
-        _precondition(entry, self.read(entry)["state"], revision, digest)
+        _precondition(entry, self.read(entry)["state"], revision, digest, mutation_epoch)
         self.guard()
         return entry
 
@@ -225,7 +227,7 @@ def register_tools() -> list:
                         "max_output_bytes": MAX_OUTPUT, "plan_guard_bound": runtime.plan_state is not None,
                         "backend_compact": True,
                         "workflow": "session new/open -> inspect summary -> search -> detail -> edit -> inspect -> verify -> save",
-                        "preconditions": "edit/save/close require caller-observed expected_revision and expected_digest; inspect after every edit",
+                        "preconditions": "edit/save/close require caller-observed expected_revision, expected_digest and expected_mutation_epoch; inspect after every edit",
                         "limitations": "Requires compact-capable SDK/headless. No scripts, raw canonical commands, "
                                        "GUI bridge, exact spatial geometry or automatic retries. Spatial bounds use explicit conservative proxies; "
                                        "coverage reports omitted unbounded instances. Oversized evidence is rejected incomplete."}
@@ -238,7 +240,7 @@ def register_tools() -> list:
     @beta_async_tool(name="KetchupSession")
     async def session(action: str, handle: str = "", path: str = "", executable: str = "",
                       worker: str = "", discard: bool = False, expected_revision: int = -1,
-                      expected_digest: str = "") -> str:
+                      expected_digest: str = "", expected_mutation_epoch: int = -1) -> str:
         """Open/new a separate owned process and document, or safely close its UUID. Never controls the GUI.
 
         Args:
@@ -250,6 +252,7 @@ def register_tools() -> list:
             discard: Required to close any unsaved document, including an unsaved new one.
             expected_revision: Observed inspect revision, required for close.
             expected_digest: Observed inspect canonical_digest, required for close.
+            expected_mutation_epoch: Observed inspect mutation_epoch, required for close.
         """
         owned = str(uuid.uuid4()) if action in ("new", "open") else handle
         def job():
@@ -257,7 +260,7 @@ def register_tools() -> list:
             if action == "close":
                 if path or executable or worker:
                     raise Rejection("invalid_arguments", "close accepts no paths or executables")
-                entry = runtime.mutation(handle, expected_revision, expected_digest)
+                entry = runtime.mutation(handle, expected_revision, expected_digest, expected_mutation_epoch)
                 if entry["modified"] and not discard:
                     raise Rejection("unsaved_changes", "Use discard=true to close an unsaved document")
                 runtime.forget(handle)
@@ -370,7 +373,8 @@ def register_tools() -> list:
 
     @beta_async_tool(name="KetchupEdit")
     async def edit(handle: str, action: str, expected_revision: int, expected_digest: str,
-                   program: dict | None = None, selection: list[int] | None = None) -> str:
+                   expected_mutation_epoch: int, program: dict | None = None,
+                   selection: list[int] | None = None) -> str:
         """Apply one atomic typed CAD program, undo, or redo. Inspect first; never silently refresh a stale plan.
 
         Args:
@@ -378,6 +382,7 @@ def register_tools() -> list:
             action: apply, undo, or redo.
             expected_revision: Revision from previous inspect/session read.
             expected_digest: canonical_digest from that same read.
+            expected_mutation_epoch: mutation_epoch from that same read.
             program: Public CadEditProgram object with operations; only for apply. No code or file execution.
             selection: Explicit occurrence IDs for current_selection, only for apply; never GUI selection.
         """
@@ -388,7 +393,7 @@ def register_tools() -> list:
                     raise Rejection("invalid_program", "Supply a finite typed program of at most 128 KiB")
             elif program is not None or selection is not None:
                 raise Rejection("invalid_arguments", "undo/redo accept no program or selection")
-            entry = runtime.mutation(handle, expected_revision, expected_digest)
+            entry = runtime.mutation(handle, expected_revision, expected_digest, expected_mutation_epoch)
             entry["observed"] = None
             doc = entry["document"]
             result = doc.apply(program, selection=selection or []) if action == "apply" else getattr(doc, action)()
@@ -398,7 +403,8 @@ def register_tools() -> list:
 
     @beta_async_tool(name="KetchupBatch")
     async def batch(handle: str, action: str, expected_revision: int = -1,
-                    expected_digest: str = "", workset_handle: str = "",
+                    expected_digest: str = "", expected_mutation_epoch: int = -1,
+                    workset_handle: str = "",
                     job_handle: str = "", operation: dict | None = None) -> str:
         """Run one bounded occurrence-workset batch job step at a time.
 
@@ -407,6 +413,7 @@ def register_tools() -> list:
             action: start, status, step, or cancel.
             expected_revision: Required caller-observed revision for start/step only.
             expected_digest: Required caller-observed canonical_digest for start/step only.
+            expected_mutation_epoch: Required caller-observed mutation_epoch for start/step only.
             workset_handle: Complete occurrence workset handle required only for start.
             job_handle: Opaque batch job handle required for status/step/cancel.
             operation: For start only; currently {"type":"set_color","color":[r,g,b] or null}.
@@ -418,7 +425,7 @@ def register_tools() -> list:
                         or not isinstance(operation, dict)
                         or len(_json(operation).encode("utf-8")) > 4096):
                     raise Rejection("invalid_arguments", "start requires one bounded workset handle and operation object")
-                entry = runtime.mutation(handle, expected_revision, expected_digest)
+                entry = runtime.mutation(handle, expected_revision, expected_digest, expected_mutation_epoch)
                 return entry["document"].start_batch_job(workset_handle, operation)
             if (not job_handle or len(job_handle) > 128 or workset_handle or operation is not None):
                 raise Rejection("invalid_arguments", "status/step/cancel require only one bounded job handle")
@@ -427,7 +434,7 @@ def register_tools() -> list:
                 return entry["document"].batch_job_status(job_handle)
             if action == "cancel":
                 return entry["document"].cancel_batch_job(job_handle)
-            entry = runtime.mutation(handle, expected_revision, expected_digest)
+            entry = runtime.mutation(handle, expected_revision, expected_digest, expected_mutation_epoch)
             result = entry["document"].step_batch_job(job_handle)
             entry["observed"] = None
             return result
@@ -435,7 +442,7 @@ def register_tools() -> list:
 
     @beta_async_tool(name="KetchupSave")
     async def save(handle: str, path: str, expected_revision: int, expected_digest: str,
-                   overwrite: bool = False) -> str:
+                   expected_mutation_epoch: int, overwrite: bool = False) -> str:
         """Save only to an explicit absolute path. Existing files require explicit overwrite=true.
 
         Args:
@@ -443,11 +450,12 @@ def register_tools() -> list:
             path: Absolute destination; never inferred from document origin.
             expected_revision: Revision from previous inspect/session read.
             expected_digest: canonical_digest from the same read.
+            expected_mutation_epoch: mutation_epoch from the same read.
             overwrite: Explicit permission to replace an existing destination; defaults false.
         """
         def job():
             destination = _absolute(path)
-            entry = runtime.mutation(handle, expected_revision, expected_digest)
+            entry = runtime.mutation(handle, expected_revision, expected_digest, expected_mutation_epoch)
             if Path(destination).exists() and not overwrite:
                 raise Rejection("file_exists", "Destination exists; overwrite=true is required")
             result = entry["document"].save(destination, overwrite=overwrite)
@@ -459,7 +467,7 @@ def register_tools() -> list:
     async def verify(handle: str, action: str = "evaluate", validator_ids: list[str] | None = None,
                      scope: list[dict[str, int]] | None = None, job_handle: str = "",
                      expected_revision: int = -1, expected_digest: str = "",
-                     timeout_ms: int = 30000) -> str:
+                     expected_mutation_epoch: int = -1, timeout_ms: int = 30000) -> str:
         """Start, inspect, or cancel native exact evaluation; also run validators or legacy bounded evaluate.
 
         Args:
@@ -470,6 +478,7 @@ def register_tools() -> list:
             job_handle: Opaque Verify job handle for status/cancel only.
             expected_revision: Caller-observed revision required for start only.
             expected_digest: Caller-observed canonical_digest required for start only.
+            expected_mutation_epoch: Caller-observed mutation_epoch required for start only.
             timeout_ms: Native 1..300000 ms deadline for start/evaluate; defaults to 30000.
         """
         def job():
@@ -479,23 +488,24 @@ def register_tools() -> list:
             if action == "validators":
                 if (not validator_ids or len(validator_ids) > 100 or scope is not None
                         or job_handle or expected_revision != -1 or expected_digest
-                        or timeout_ms != 30000):
+                        or expected_mutation_epoch != -1 or timeout_ms != 30000):
                     raise Rejection("invalid_validators", "Supply only 1..100 validator IDs")
                 return doc.validators.run(validator_ids)
             if action == "start":
                 if validator_ids is not None or job_handle:
                     raise Rejection("invalid_arguments", "start requires only the observed revision and digest")
-                _precondition(entry, runtime.read(entry)["state"], expected_revision, expected_digest)
+                _precondition(entry, runtime.read(entry)["state"], expected_revision,
+                              expected_digest, expected_mutation_epoch)
                 return doc.start_verify_job(scope=scope, timeout_ms=timeout_ms)
             if action in ("status", "cancel"):
                 if (validator_ids is not None or scope is not None or not job_handle
                         or len(job_handle) > 128 or expected_revision != -1 or expected_digest
-                        or timeout_ms != 30000):
+                        or expected_mutation_epoch != -1 or timeout_ms != 30000):
                     raise Rejection("invalid_arguments", "status/cancel require only one bounded job handle")
                 return (doc.verify_job_status(job_handle) if action == "status"
                         else doc.cancel_verify_job(job_handle))
             if (validator_ids is not None or scope is not None or job_handle
-                    or expected_revision != -1 or expected_digest
+                    or expected_revision != -1 or expected_digest or expected_mutation_epoch != -1
                     or (action == "list" and timeout_ms != 30000)):
                 raise Rejection("invalid_arguments", "evaluate/list accept no job or precondition arguments")
             return doc.evaluate(timeout_ms=timeout_ms) if action == "evaluate" else doc.validators.list()

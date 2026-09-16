@@ -10,13 +10,7 @@ use ketchup_core::document::FeatureKind;
 use std::{path::PathBuf, time::Duration};
 
 fn exact_worker_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/debug")
-        .join(if cfg!(windows) {
-            "ketchup-exact-worker.exe"
-        } else {
-            "ketchup-exact-worker"
-        })
+    PathBuf::from(env!("CARGO_BIN_EXE_ketchup-performance-exact-worker"))
 }
 
 fn wait_for_exact_bodies(shell: &mut Shell, expected: usize) {

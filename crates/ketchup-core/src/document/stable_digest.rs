@@ -46,6 +46,13 @@ pub(super) fn digest_snapshot(snapshot: &Snapshot) -> String {
             digest.cam_plan(plan);
         }
     }
+    if !snapshot.product.dowel_joints.is_empty() {
+        digest.bytes(b"canonical-dowel-joints.v1");
+        digest.u64(snapshot.product.dowel_joints.len() as u64);
+        for joint in snapshot.product.dowel_joints.values() {
+            digest.dowel_joint(joint);
+        }
+    }
     digest.u64(snapshot.product.persistent_dimensions.len() as u64);
     for dimension in snapshot.product.persistent_dimensions.values() {
         digest.persistent_dimension(dimension);
@@ -425,6 +432,39 @@ impl StableDigest {
         ] {
             self.u64(value.to_bits());
         }
+    }
+
+    fn dowel_joint(&mut self, joint: &crate::joinery::DowelJointContract) {
+        self.u64(joint.id.0);
+        self.bytes(joint.name.as_bytes());
+        for side in [&joint.first, &joint.second] {
+            self.instance_path(&side.instance_path);
+            for value in side
+                .face_origin_local_mm
+                .into_iter()
+                .chain(side.inward_unit_local)
+                .chain(side.bounds_min_local_mm)
+                .chain(side.bounds_max_local_mm)
+            {
+                self.u64(value.to_bits());
+            }
+        }
+        for value in joint
+            .first_center_local_mm
+            .into_iter()
+            .chain(joint.row_unit_first_local)
+            .chain([
+                joint.spacing_mm,
+                joint.dowel.diameter_mm,
+                joint.dowel.length_mm,
+                joint.dowel.first_insertion_mm,
+                joint.dowel.second_insertion_mm,
+                joint.dowel.bottom_clearance_mm,
+            ])
+        {
+            self.u64(value.to_bits());
+        }
+        self.u64(u64::from(joint.count));
     }
 
     fn persistent_dimension(&mut self, dimension: &PersistentDimension) {
@@ -2178,6 +2218,16 @@ impl StableDigest {
                     self.byte(0);
                 }
             }
+            AuthoritativeDependency::DowelJoint(id) => {
+                self.byte(40);
+                self.u64(id.0);
+                if let Some(joint) = product.dowel_joints.get(&id) {
+                    self.byte(1);
+                    self.dowel_joint(joint);
+                } else {
+                    self.byte(0);
+                }
+            }
             AuthoritativeDependency::PersistentDimension(id) => {
                 self.byte(15);
                 self.u64(id.0);
@@ -3306,6 +3356,14 @@ impl StableDigest {
             }
             CanonicalCommand::DeleteCamPlan { id } => {
                 self.byte(113);
+                self.u64(id.0);
+            }
+            CanonicalCommand::UpsertDowelJoint(joint) => {
+                self.byte(114);
+                self.dowel_joint(joint);
+            }
+            CanonicalCommand::DeleteDowelJoint { id } => {
+                self.byte(115);
                 self.u64(id.0);
             }
             CanonicalCommand::UpsertPersistentDimension(dimension) => {

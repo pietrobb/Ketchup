@@ -8,17 +8,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::document::{Snapshot, UnitSystem};
 use crate::graph::sha256_hex;
-use crate::persistence::{self, PersistenceError};
+use crate::persistence::{self, ContainerData, PersistenceError};
 
 pub const LOCAL_PDM_RELEASE_SCHEMA_V1: &str = "ketchup.local-pdm.release.v1";
 pub const MAX_RELEASE_DEPENDENCIES: usize = 256;
 pub const MAX_RELEASE_DEPENDENCY_BYTES: usize = 256 * 1024 * 1024;
+pub const MAX_RELEASE_TOTAL_DEPENDENCY_BYTES: usize = 256 * 1024 * 1024;
 const MAX_RELEASE_MANIFEST_BYTES: usize = 1024 * 1024;
 const MAX_LOGICAL_PATH_BYTES: usize = 512;
 const MAX_AUDIT_ACTOR_BYTES: usize = 128;
 const MAX_AUDIT_NOTE_BYTES: usize = 2_048;
 const MAX_RELEASE_CATALOG_ENTRIES: usize = 4_096;
 const MAX_RELEASE_LINEAGE_DEPTH: usize = 256;
+
+pub type ReleaseSource<'a> = (&'a Snapshot, &'a ContainerData);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReleaseDependencyInput {
@@ -120,6 +123,7 @@ impl ReleaseManifest {
 pub struct VerifiedRelease {
     pub manifest: ReleaseManifest,
     pub snapshot: Snapshot,
+    pub container_data: ContainerData,
     pub dependency_objects: BTreeMap<String, ReleaseObjectIdentity>,
 }
 
@@ -190,6 +194,7 @@ pub enum LocalPdmError {
     InvalidLogicalPath,
     DuplicateLogicalPath,
     DependencyTooLarge,
+    DependenciesTooLarge,
     InvalidReleaseId,
     ManifestTooLarge,
     InvalidManifest,
@@ -230,6 +235,9 @@ impl fmt::Display for LocalPdmError {
             }
             Self::DependencyTooLarge => {
                 formatter.write_str("release dependency exceeds its resource bound")
+            }
+            Self::DependenciesTooLarge => {
+                formatter.write_str("release dependencies exceed their aggregate resource bound")
             }
             Self::InvalidReleaseId => formatter.write_str("release identifier is invalid"),
             Self::ManifestTooLarge => {
@@ -302,10 +310,29 @@ pub fn create_release(
     dependencies: &[ReleaseDependencyInput],
     audit: ReleaseAudit,
 ) -> Result<ReleaseManifest, LocalPdmError> {
+    let container_data = ContainerData::default();
+    create_release_with_container(
+        repository,
+        (snapshot, &container_data),
+        expected_revision,
+        expected_canonical_digest,
+        dependencies,
+        audit,
+    )
+}
+
+pub fn create_release_with_container(
+    repository: impl AsRef<Path>,
+    source: ReleaseSource<'_>,
+    expected_revision: u64,
+    expected_canonical_digest: &str,
+    dependencies: &[ReleaseDependencyInput],
+    audit: ReleaseAudit,
+) -> Result<ReleaseManifest, LocalPdmError> {
     create_release_internal(
         repository.as_ref(),
         None,
-        snapshot,
+        source,
         expected_revision,
         expected_canonical_digest,
         dependencies,
@@ -322,15 +349,11 @@ pub fn create_child_release(
     dependencies: &[ReleaseDependencyInput],
     audit: ReleaseAudit,
 ) -> Result<ReleaseManifest, LocalPdmError> {
-    let repository = repository.as_ref();
-    let parent = open_release(repository, parent_release_id)?.manifest;
-    if parent.document.document_id != snapshot.document_id().0 {
-        return Err(LocalPdmError::ParentDocumentMismatch);
-    }
-    create_release_internal(
+    let container_data = ContainerData::default();
+    create_child_release_with_container(
         repository,
-        Some(&parent),
-        snapshot,
+        parent_release_id,
+        (snapshot, &container_data),
         expected_revision,
         expected_canonical_digest,
         dependencies,
@@ -338,15 +361,76 @@ pub fn create_child_release(
     )
 }
 
-fn create_release_internal(
-    repository: &Path,
-    parent: Option<&ReleaseManifest>,
-    snapshot: &Snapshot,
+pub fn create_child_release_with_container(
+    repository: impl AsRef<Path>,
+    parent_release_id: &str,
+    source: ReleaseSource<'_>,
     expected_revision: u64,
     expected_canonical_digest: &str,
     dependencies: &[ReleaseDependencyInput],
     audit: ReleaseAudit,
 ) -> Result<ReleaseManifest, LocalPdmError> {
+    let repository = repository.as_ref();
+    let (snapshot, _) = source;
+    let parent = open_release(repository, parent_release_id)?.manifest;
+    if parent.document.document_id != snapshot.document_id().0 {
+        return Err(LocalPdmError::ParentDocumentMismatch);
+    }
+    create_release_internal(
+        repository,
+        Some(&parent),
+        source,
+        expected_revision,
+        expected_canonical_digest,
+        dependencies,
+        audit,
+    )
+}
+
+fn read_release_dependencies(
+    dependencies: &[ReleaseDependencyInput],
+    maximum_dependency_bytes: usize,
+    maximum_total_bytes: usize,
+) -> Result<Vec<(ReleasedDependency, Vec<u8>)>, LocalPdmError> {
+    let mut dependency_objects = Vec::with_capacity(dependencies.len());
+    let mut logical_paths = BTreeSet::new();
+    let mut total_bytes = 0_usize;
+    for dependency in dependencies {
+        validate_logical_path(&dependency.logical_path)?;
+        if !logical_paths.insert(dependency.logical_path.clone()) {
+            return Err(LocalPdmError::DuplicateLogicalPath);
+        }
+        let remaining_bytes = maximum_total_bytes.saturating_sub(total_bytes);
+        let read_limit = maximum_dependency_bytes.min(remaining_bytes);
+        let limit_error = if maximum_dependency_bytes <= remaining_bytes {
+            LocalPdmError::DependencyTooLarge
+        } else {
+            LocalPdmError::DependenciesTooLarge
+        };
+        let bytes = read_bounded_file(&dependency.source_path, read_limit, limit_error)?;
+        total_bytes += bytes.len();
+        dependency_objects.push((
+            ReleasedDependency {
+                logical_path: dependency.logical_path.clone(),
+                object: identity(&bytes),
+            },
+            bytes,
+        ));
+    }
+    dependency_objects.sort_by(|left, right| left.0.logical_path.cmp(&right.0.logical_path));
+    Ok(dependency_objects)
+}
+
+fn create_release_internal(
+    repository: &Path,
+    parent: Option<&ReleaseManifest>,
+    source: ReleaseSource<'_>,
+    expected_revision: u64,
+    expected_canonical_digest: &str,
+    dependencies: &[ReleaseDependencyInput],
+    audit: ReleaseAudit,
+) -> Result<ReleaseManifest, LocalPdmError> {
+    let (snapshot, container_data) = source;
     if snapshot.revision_id() != expected_revision
         || snapshot.canonical_digest() != expected_canonical_digest
     {
@@ -357,29 +441,13 @@ fn create_release_internal(
         return Err(LocalPdmError::TooManyDependencies);
     }
 
-    let document_bytes = persistence::save(snapshot);
+    let document_bytes = persistence::save_container(snapshot, container_data)?;
     let document_object = identity(&document_bytes);
-    let mut dependency_objects = Vec::with_capacity(dependencies.len());
-    let mut logical_paths = BTreeSet::new();
-    for dependency in dependencies {
-        validate_logical_path(&dependency.logical_path)?;
-        if !logical_paths.insert(dependency.logical_path.clone()) {
-            return Err(LocalPdmError::DuplicateLogicalPath);
-        }
-        let bytes = read_bounded_file(
-            &dependency.source_path,
-            MAX_RELEASE_DEPENDENCY_BYTES,
-            LocalPdmError::DependencyTooLarge,
-        )?;
-        dependency_objects.push((
-            ReleasedDependency {
-                logical_path: dependency.logical_path.clone(),
-                object: identity(&bytes),
-            },
-            bytes,
-        ));
-    }
-    dependency_objects.sort_by(|left, right| left.0.logical_path.cmp(&right.0.logical_path));
+    let dependency_objects = read_release_dependencies(
+        dependencies,
+        MAX_RELEASE_DEPENDENCY_BYTES,
+        MAX_RELEASE_TOTAL_DEPENDENCY_BYTES,
+    )?;
 
     let payload = ReleasePayload {
         schema: LOCAL_PDM_RELEASE_SCHEMA_V1.to_owned(),
@@ -437,6 +505,7 @@ pub fn open_release(
     let document_bytes = read_object(repository, &manifest.document.object)?;
     let loaded = persistence::load(&document_bytes)?;
     let snapshot = loaded.snapshot().clone();
+    let container_data = loaded.container_data().clone();
     if snapshot.document_id().0 != manifest.document.document_id
         || snapshot.revision_id() != manifest.document.revision
         || snapshot.canonical_digest() != manifest.document.canonical_digest
@@ -453,6 +522,7 @@ pub fn open_release(
     Ok(VerifiedRelease {
         manifest,
         snapshot,
+        container_data,
         dependency_objects,
     })
 }
@@ -728,9 +798,16 @@ fn validate_manifest(
     validate_audit(&manifest.audit)?;
     validate_object_identity(&manifest.document.object)?;
     let mut previous = None;
+    let mut total_dependency_bytes = 0_u64;
     for dependency in &manifest.dependencies {
         validate_logical_path(&dependency.logical_path)?;
         validate_object_identity(&dependency.object)?;
+        total_dependency_bytes = total_dependency_bytes
+            .checked_add(dependency.object.byte_len)
+            .ok_or(LocalPdmError::DependenciesTooLarge)?;
+        if total_dependency_bytes > MAX_RELEASE_TOTAL_DEPENDENCY_BYTES as u64 {
+            return Err(LocalPdmError::DependenciesTooLarge);
+        }
         if previous.is_some_and(|path: &str| path >= dependency.logical_path.as_str()) {
             return Err(LocalPdmError::InvalidManifest);
         }
@@ -1001,4 +1078,92 @@ fn read_object(
         });
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dependency_collection_rejects_aggregate_bytes_before_retaining_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("first.step");
+        let second = directory.path().join("second.step");
+        fs::write(&first, b"first!").unwrap();
+        fs::write(&second, b"second").unwrap();
+        let dependencies = [
+            ReleaseDependencyInput::new("parts/first.step", first),
+            ReleaseDependencyInput::new("parts/second.step", second),
+        ];
+
+        assert!(matches!(
+            read_release_dependencies(&dependencies, 8, 8),
+            Err(LocalPdmError::DependenciesTooLarge)
+        ));
+    }
+
+    fn aggregate_oversized_manifest() -> ReleaseManifest {
+        let repeated_object = ReleaseObjectIdentity {
+            sha256: "a".repeat(64),
+            byte_len: MAX_RELEASE_TOTAL_DEPENDENCY_BYTES as u64 / 2 + 1,
+        };
+        let payload = ReleasePayload {
+            schema: LOCAL_PDM_RELEASE_SCHEMA_V1.to_owned(),
+            parent_release_id: None,
+            document: ReleasedDocument {
+                document_id: 1,
+                revision: 0,
+                canonical_digest: "digest".to_owned(),
+                units: "millimetres".to_owned(),
+                object: ReleaseObjectIdentity {
+                    sha256: "b".repeat(64),
+                    byte_len: 1,
+                },
+            },
+            dependencies: vec![
+                ReleasedDependency {
+                    logical_path: "parts/first.step".to_owned(),
+                    object: repeated_object.clone(),
+                },
+                ReleasedDependency {
+                    logical_path: "parts/second.step".to_owned(),
+                    object: repeated_object,
+                },
+            ],
+            audit: ReleaseAudit::new("test", 1, "aggregate bound"),
+        };
+        let release_id = canonical_payload_identity(&payload).unwrap();
+        ReleaseManifest {
+            schema: payload.schema,
+            release_id,
+            parent_release_id: payload.parent_release_id,
+            document: payload.document,
+            dependencies: payload.dependencies,
+            audit: payload.audit,
+        }
+    }
+
+    #[test]
+    fn manifest_rejects_aggregate_dependency_bytes_from_metadata() {
+        let manifest = aggregate_oversized_manifest();
+
+        assert!(matches!(
+            validate_manifest(&manifest, &manifest.release_id),
+            Err(LocalPdmError::DependenciesTooLarge)
+        ));
+    }
+
+    #[test]
+    fn open_rejects_aggregate_dependency_bytes_before_object_io() {
+        let directory = tempfile::tempdir().unwrap();
+        let manifest = aggregate_oversized_manifest();
+        let manifest_path = release_manifest_path(directory.path(), &manifest.release_id).unwrap();
+        fs::create_dir_all(manifest_path.parent().unwrap()).unwrap();
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+
+        assert!(matches!(
+            open_release(directory.path(), &manifest.release_id),
+            Err(LocalPdmError::DependenciesTooLarge)
+        ));
+    }
 }

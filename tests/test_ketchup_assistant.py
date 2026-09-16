@@ -449,6 +449,67 @@ def test_project_memory_is_bounded_scope_checked_and_tamper_evident():
             )
 
 
+def test_malformed_project_memory_unicode_is_bounded_and_loop_continues():
+    malformed_context = project_context()
+    malformed_context["project_memory"].update(
+        {
+            "stored_count": 1,
+            "retrieved_count": 1,
+            "byte_length": 0,
+            "entries": [
+                {
+                    "sequence": 1,
+                    "user": "\ud800",
+                    "assistant": "answer",
+                    "sha256": "0" * 64,
+                }
+            ],
+        }
+    )
+    calls = []
+    sidecar = assistant.PublicAssistantSidecar(
+        lambda *_args: calls.append(True)
+        or json.dumps({"message": "still running", "model_intent": None})
+    )
+    lines = iter(
+        (
+            (json.dumps(hello()) + "\n").encode(),
+            (
+                json.dumps(
+                    {
+                        "type": "chat",
+                        "request_id": "malformed-unicode",
+                        "message": "hello",
+                        "context": malformed_context,
+                    }
+                )
+                + "\n"
+            ).encode(),
+            (
+                json.dumps(
+                    {
+                        "type": "chat",
+                        "request_id": "valid-after-malformed",
+                        "message": "hello again",
+                        "context": project_context(),
+                    }
+                )
+                + "\n"
+            ).encode(),
+        )
+    )
+    responses = []
+
+    assert sidecar.serve(lambda: next(lines, b""), responses.append) == 0
+    assert json.loads(responses[1]) == {
+        "type": "error",
+        "error": "project memory entry is invalid",
+    }
+    assert json.loads(responses[2])["request_id"] == "valid-after-malformed"
+    assert calls == [True]
+    assert all(len(response.encode()) <= assistant.MAX_LINE_BYTES for response in responses)
+
+
 def test_public_sidecar_has_no_shell_filesystem_browser_or_agent_authority():
     source = MODULE_PATH.read_text(encoding="utf-8")
     for forbidden in (
@@ -2712,6 +2773,83 @@ def test_provider_protocol_failure_is_returned_as_a_wire_error_without_sidecar_c
         "type": "error",
         "error": "OpenAI returned an invalid usage object",
     }
+
+
+def test_malformed_provider_unicode_is_bounded_and_loop_continues():
+    answers = iter(
+        (
+            json.dumps({"message": "\ud800", "model_intent": None}),
+            json.dumps({"message": "still running", "model_intent": None}),
+        )
+    )
+    sidecar = assistant.PublicAssistantSidecar(lambda *_args: next(answers))
+    lines = iter(
+        (
+            (json.dumps(hello("openai-api")) + "\n").encode(),
+            (
+                json.dumps(
+                    {
+                        "type": "chat",
+                        "request_id": "malformed-provider-unicode",
+                        "message": "hello",
+                        "context": project_context(),
+                    }
+                )
+                + "\n"
+            ).encode(),
+            (
+                json.dumps(
+                    {
+                        "type": "chat",
+                        "request_id": "valid-after-malformed-provider",
+                        "message": "hello again",
+                        "context": project_context(),
+                    }
+                )
+                + "\n"
+            ).encode(),
+        )
+    )
+    responses = []
+
+    assert sidecar.serve(lambda: next(lines, b""), responses.append) == 0
+    assert json.loads(responses[1]) == {
+        "type": "error",
+        "error": "provider CAD result contains invalid Unicode",
+    }
+    assert json.loads(responses[2])["request_id"] == "valid-after-malformed-provider"
+    assert all(len(response.encode()) <= assistant.MAX_LINE_BYTES for response in responses)
+
+
+def test_provider_result_exceeding_wire_limit_is_returned_as_bounded_error():
+    oversized_answer = json.dumps(
+        {"message": "x" * assistant.MAX_LINE_BYTES, "model_intent": None}
+    )
+    sidecar = assistant.PublicAssistantSidecar(lambda *_args: oversized_answer)
+    lines = iter(
+        (
+            (json.dumps(hello("openai-api")) + "\n").encode(),
+            (
+                json.dumps(
+                    {
+                        "type": "chat",
+                        "request_id": "oversized-result-1",
+                        "message": "hello",
+                        "context": project_context(),
+                    }
+                )
+                + "\n"
+            ).encode(),
+        )
+    )
+    responses = []
+
+    assert sidecar.serve(lambda: next(lines, b""), responses.append) == 0
+    assert json.loads(responses[1]) == {
+        "type": "error",
+        "error": "assistant response exceeds the byte limit",
+    }
+    assert all(len(response.encode()) <= assistant.MAX_LINE_BYTES for response in responses)
 
 
 @pytest.mark.parametrize(

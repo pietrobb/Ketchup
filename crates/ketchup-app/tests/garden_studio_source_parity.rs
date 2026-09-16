@@ -1,13 +1,13 @@
 //! Independent parity against meshes exported by background Blender from the original
 //! generator. No model geometry is constructed here. Requires local artifacts and a
-//! native exact worker built beside the test executable (or in target/debug).
+//! native exact worker provisioned by Cargo for the selected test profile.
 //! Run: cargo test -p ketchup-app --test garden_studio_source_parity -- --ignored --nocapture
 
 use ketchup_application::{DocumentSession, SessionSettings};
 use ketchup_core::exact_product::ExactBodyPackage;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 type Point = [f64; 3];
@@ -63,28 +63,7 @@ fn garden_studio_source_parity() {
     );
     assert_eq!(reference.objects.len(), OBJECT_COUNT);
 
-    // Same colocated-worker discovery and debug fallback as timber_frame_house.rs.
-    let worker_name = if cfg!(windows) {
-        "ketchup-exact-worker.exe"
-    } else {
-        "ketchup-exact-worker"
-    };
-    let colocated = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .and_then(Path::parent)
-        .unwrap()
-        .join(worker_name);
-    let worker = if colocated.is_file() {
-        colocated
-    } else {
-        root.join("target/debug").join(worker_name)
-    };
-    assert!(
-        worker.is_file(),
-        "missing exact worker: {}",
-        worker.display()
-    );
+    let worker = PathBuf::from(env!("CARGO_BIN_EXE_ketchup-performance-exact-worker"));
     let mut session = DocumentSession::open(
         &model,
         SessionSettings {

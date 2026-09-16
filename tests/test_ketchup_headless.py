@@ -69,7 +69,8 @@ class FakeProcess:
         method = request["method"]
         if method in {"new", "open", "apply", "undo", "redo", "set_grounded"}:
             self.revision += 1
-        state = {"document_id": 1, "revision": self.revision, "canonical_digest": str(self.revision),
+        state = {"document_id": 1, "revision": self.revision, "canonical_digest": f"{self.revision:016x}",
+                 "mutation_epoch": self.revision,
                  "definitions": [], "features": [], "occurrences": [], "grounded_occurrence_ids": [],
                  "undo_steps": 0, "redo_steps": 0}
         return self.result(request, {"state": state, "created": {"definition_ids": [11], "occurrence_ids": [22], "feature_ids": [33]}})
@@ -165,7 +166,7 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(operation["entities"], rectangle(10, 20))
             self.assertEqual(operation["feature"], {"type": "extrusion", "distance_mm": 3})
             doc.move([22], [0, 0, 10])
-            self.assertEqual(process.requests[-1]["params"]["expected_digest"], "2")
+            self.assertEqual(process.requests[-1]["params"]["expected_digest"], "0000000000000002")
         self.assertTrue(process.stopped and process.waited)
         with self.assertRaises(SessionClosedError):
             doc.undo()
@@ -262,7 +263,7 @@ class ClientTests(unittest.TestCase):
         doc.cam_export("cam-review-token", "program.json", confirmed=True)
         export = process.requests[-1]
         self.assertEqual(export["method"], "cam_export")
-        self.assertEqual(export["params"]["expected_digest"], "1")
+        self.assertEqual(export["params"]["expected_digest"], "0000000000000001")
         self.assertTrue(export["params"]["confirmed"])
         self.assertNotIn("overwrite", export["params"])
 
@@ -326,7 +327,7 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(process.requests[-1]["method"], "pdm_catalog")
         doc.pdm_compare("local-pdm", "a" * 64, "b" * 64)
         self.assertEqual(process.requests[-1]["method"], "pdm_compare")
-        self.assertEqual(process.requests[-1]["params"]["expected_digest"], "1")
+        self.assertEqual(process.requests[-1]["params"]["expected_digest"], "0000000000000001")
 
         with self.assertRaises(ValueError):
             doc.pdm_release("local-pdm", actor="", created_unix_ms=1, confirmed=True)
@@ -406,7 +407,7 @@ class ClientTests(unittest.TestCase):
                             self.assertEqual(process.requests[count]["method"], "summary")
                             params = process.requests[count + 1]["params"]
                             self.assertEqual(params["expected_revision"], current_revision)
-                            self.assertEqual(params["expected_digest"], str(current_revision))
+                            self.assertEqual(params["expected_digest"], f"{current_revision:016x}")
                             self.assertFalse(params["discard_unsaved"])
                             self.assertEqual(fresh.summary()["state"]["document_id"], 2 if applied else old_state["document_id"])
                             with self.assertRaises(SessionClosedError):
@@ -504,6 +505,41 @@ class ClientTests(unittest.TestCase):
                 with self.assertRaises(ProtocolError):
                     session.capabilities()
                 self.assertTrue(session._closed)
+
+    def test_malformed_normalized_state_guards_close_and_reap(self):
+        valid = {"document_id": 1, "revision": 0,
+                 "canonical_digest": "0123456789abcdef", "mutation_epoch": 0}
+        invalid = [
+            {**valid, "document_id": []},
+            {**valid, "document_id": -1},
+            {**valid, "document_id": 1 << 64},
+            {**valid, "document_id": True},
+            {**valid, "revision": -1},
+            {**valid, "revision": 1 << 64},
+            {**valid, "revision": True},
+            {**valid, "canonical_digest": ""},
+            {**valid, "canonical_digest": "0123456789abcdeg"},
+            {**valid, "canonical_digest": "0123456789ABCDEF"},
+            {**valid, "mutation_epoch": -1},
+            {**valid, "mutation_epoch": 1 << 64},
+            {**valid, "mutation_epoch": True},
+        ]
+        for state in invalid:
+            with self.subTest(state=state):
+                def answer(request, state=state):
+                    return FakeProcess.result(request, {"state": state})
+                process = FakeProcess(answer)
+                session = self.session(process)
+                with self.assertRaises(ProtocolError):
+                    session.new_document()
+                self.assertTrue(session._closed)
+                self.assertTrue(process.stopped and process.waited)
+
+    def test_boolean_timeout_is_rejected_before_process_launch(self):
+        with patch("ketchup.client.subprocess.Popen") as popen:
+            with self.assertRaises(ValueError):
+                Session(executable=sys.executable, timeout=True)
+        popen.assert_not_called()
 
     def test_timeout_closes_and_reaps(self):
         process = FakeProcess(lambda req: None)

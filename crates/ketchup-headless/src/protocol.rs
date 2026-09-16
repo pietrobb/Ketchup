@@ -10,7 +10,7 @@ use ketchup_application::fea_workflow::{
     FeaReviewSummary, FeaReviewWorkflow, FeaStudyRequest,
 };
 use ketchup_application::pdm_workflow::{
-    LocalPdmWorkflow, PdmCreateReleaseRequest, PdmSourceIdentity, PdmWorkflowError,
+    LocalPdmWorkflow, PdmCreateReleaseRequest, PdmDocumentState, PdmWorkflowError,
 };
 mod model_tools;
 use ketchup_application::batch_task::{
@@ -83,6 +83,29 @@ const METHODS: &[&str] = &[
     "redo",
     "save",
 ];
+const GUARDED_METHODS: &[&str] = &[
+    "new",
+    "open",
+    "apply",
+    "cam_preview",
+    "cam_export",
+    "fea_review",
+    "pdm_release_create",
+    "pdm_release_open",
+    "pdm_catalog",
+    "pdm_compare",
+    "verify_job_start",
+    "batch_job_start",
+    "batch_job_step",
+    "set_grounded",
+    "undo",
+    "redo",
+    "save",
+];
+
+fn method_requires_guard(method: &str) -> bool {
+    GUARDED_METHODS.contains(&method)
+}
 
 #[derive(Debug)]
 struct Error {
@@ -150,9 +173,9 @@ impl From<PdmWorkflowError> for Error {
                 }
                 LocalPdmError::StaleSnapshot => "stale_state",
                 LocalPdmError::InvalidAudit => "pdm_audit_invalid",
-                LocalPdmError::TooManyDependencies | LocalPdmError::DependencyTooLarge => {
-                    "pdm_dependency_limit"
-                }
+                LocalPdmError::TooManyDependencies
+                | LocalPdmError::DependencyTooLarge
+                | LocalPdmError::DependenciesTooLarge => "pdm_dependency_limit",
                 LocalPdmError::TooManyReleases | LocalPdmError::LineageTooDeep => "pdm_limit",
                 LocalPdmError::ParentDocumentMismatch => "pdm_parent_document_mismatch",
                 LocalPdmError::NoChangesAgainstParent => "pdm_no_changes",
@@ -497,6 +520,9 @@ impl Server {
         timeout_ms: u64,
     ) -> Result<Value> {
         if self.verify_jobs.len() == MAX_VERIFY_JOBS {
+            for index in 0..self.verify_jobs.len() {
+                self.refresh_verify_job(index);
+            }
             let terminal = self
                 .verify_jobs
                 .iter()
@@ -659,6 +685,7 @@ impl Server {
     fn state(&self) -> Value {
         let s = self.session.snapshot();
         json!({"document_id":s.document_id().0,"revision":s.revision_id(),"canonical_digest":s.canonical_digest(),
+            "mutation_epoch":self.session.mutation_epoch(),
             "undo_steps":self.session.visible_undo_steps(),"redo_steps":self.session.visible_redo_steps(),
             "definitions":s.definitions().map(|d| json!({"id":d.id().0,"name":d.name(),"feature_ids":d.feature_ids().iter().map(|id|id.0).collect::<Vec<_>>()})).collect::<Vec<_>>(),
             "occurrences":s.occurrences().map(|o| json!({"id":o.id().0,"definition_id":o.definition_id().0,"name":o.name(),"transform":o.transform().matrix(),"color":o.color()})).collect::<Vec<_>>(),
@@ -680,13 +707,18 @@ impl Server {
     fn guard(&self, p: &Map<String, Value>) -> Result<()> {
         let revision = uint(p, "expected_revision")?;
         let digest = string(p, "expected_digest")?;
+        let mutation_epoch = uint(p, "expected_mutation_epoch")?;
         let s = self.session.snapshot();
-        if revision != s.revision_id() || digest != s.canonical_digest() {
+        if revision != s.revision_id()
+            || digest != s.canonical_digest()
+            || mutation_epoch != self.session.mutation_epoch()
+        {
             return Err(Error {
                 code: "stale_state".into(),
-                message: "expected revision/digest does not match observed document".into(),
+                message: "expected revision/digest/mutation_epoch does not match observed document"
+                    .into(),
                 details: Some(
-                    json!({"revision":s.revision_id(),"canonical_digest":s.canonical_digest(),"repair_hint":"Read state and explicitly re-plan; do not blindly retry a mutation."}),
+                    json!({"revision":s.revision_id(),"canonical_digest":s.canonical_digest(),"mutation_epoch":self.session.mutation_epoch(),"repair_hint":"Read state and explicitly re-plan; do not blindly retry a mutation."}),
                 ),
             });
         }
@@ -757,20 +789,24 @@ impl Server {
         };
         for key in p.keys() {
             if !fields.contains(&key.as_str())
-                && !(mutation && ["expected_revision", "expected_digest"].contains(&key.as_str()))
+                && !(mutation
+                    && [
+                        "expected_revision",
+                        "expected_digest",
+                        "expected_mutation_epoch",
+                    ]
+                    .contains(&key.as_str()))
             {
                 return Err(Error::invalid(format!("unknown field {key}")));
             }
         }
-        if mutation {
-            self.guard(p)?;
-        }
+        debug_assert_eq!(mutation, method_requires_guard(method));
         match method {
             "capabilities" => Ok(
-                json!({"methods":METHODS.iter().map(|name| json!({"name":name,"mutates":matches!(*name,"new"|"open"|"apply"|"batch_job_step"|"set_grounded"|"undo"|"redo"|"save"|"cam_export"|"pdm_release_create")})).collect::<Vec<_>>(),
+                json!({"methods":METHODS.iter().map(|name| json!({"name":name,"mutates":method_requires_guard(name)})).collect::<Vec<_>>(),
                 "cad_program_schema":serde_json::from_str::<Value>(include_str!(concat!(env!("OUT_DIR"),"/cad-program-schema.json"))).expect("build-generated schema"),
                 "bounds":{"max_line_bytes":MAX_LINE_BYTES,"max_output_bytes":MAX_LINE_BYTES,"max_selection":100,"max_operations":64,"max_batch_jobs":MAX_BATCH_JOBS,"max_verify_jobs":MAX_VERIFY_JOBS,"evaluation_timeout_ms":{"default":30000,"min":1,"max":300000}},
-                "mutation_preconditions":["expected_revision","expected_digest"],"units":"mm","transform":"row-major 4x4 local occurrence transform","transactions":"one apply = one atomic CAD program; newly allocated Definition, Sketch and body references use zero-based earlier operation_index plus a typed output, never guessed IDs","protocol":PROTOCOL}),
+                "mutation_preconditions":["expected_revision","expected_digest","expected_mutation_epoch"],"units":"mm","transform":"row-major 4x4 local occurrence transform","transactions":"one apply = one atomic CAD program; newly allocated Definition, Sketch and body references use zero-based earlier operation_index plus a typed output, never guessed IDs","protocol":PROTOCOL}),
             ),
             "state" => Ok(self.state_result()),
             "new" => {
@@ -823,19 +859,28 @@ impl Server {
             "cam_preview" => {
                 let request = cam_review_request(p)?;
                 let snapshot = self.session.snapshot();
+                let mutation_epoch = self.session.mutation_epoch();
                 let cancelled = AtomicBool::new(false);
-                let review = self.cam_reviews.preview(&snapshot, request, &cancelled)?;
+                let review =
+                    self.cam_reviews
+                        .preview(&snapshot, mutation_epoch, request, &cancelled)?;
                 Ok(cam_review_value(&review))
             }
             "cam_export" => {
                 let snapshot = self.session.snapshot();
+                let mutation_epoch = self.session.mutation_epoch();
                 let token = string(p, "review_token")?;
                 let path = Path::new(string(p, "path")?);
                 let confirmed = boolean(p, "confirmed", false)?;
                 let cancelled = AtomicBool::new(false);
-                let review = self
-                    .cam_reviews
-                    .export(&snapshot, token, path, confirmed, &cancelled)?;
+                let review = self.cam_reviews.export(
+                    &snapshot,
+                    mutation_epoch,
+                    token,
+                    path,
+                    confirmed,
+                    &cancelled,
+                )?;
                 Ok(json!({"exported":true,"path":path,"review":cam_review_value(&review)}))
             }
             "fea_review" => {
@@ -848,11 +893,15 @@ impl Server {
                 Ok(fea_review_value(&review))
             }
             "pdm_release_create" => {
-                let snapshot = self.session.snapshot();
-                let source = PdmSourceIdentity::observed(&snapshot);
+                let current = PdmDocumentState::observed(
+                    self.session.snapshot(),
+                    self.session.mutation_epoch(),
+                );
+                let source = current.source_identity();
                 let request = pdm_create_request(p)?;
                 let manifest = self.pdm.create(
-                    &snapshot,
+                    &current,
+                    self.session.container_data(),
                     &source,
                     &request,
                     boolean(p, "confirmed", false)?,
@@ -863,22 +912,28 @@ impl Server {
                 )
             }
             "pdm_release_open" => {
-                let snapshot = self.session.snapshot();
-                let source = PdmSourceIdentity::observed(&snapshot);
+                let current = PdmDocumentState::observed(
+                    self.session.snapshot(),
+                    self.session.mutation_epoch(),
+                );
+                let source = current.source_identity();
                 let release = self.pdm.open(
-                    &snapshot,
+                    &current,
                     &source,
                     string(p, "repository")?,
                     string(p, "release_id")?,
                     &AtomicBool::new(false),
                 )?;
-                Ok(pdm_verified_release_value(&release, &snapshot))
+                Ok(pdm_verified_release_value(&release, current.snapshot()))
             }
             "pdm_catalog" => {
-                let snapshot = self.session.snapshot();
-                let source = PdmSourceIdentity::observed(&snapshot);
+                let current = PdmDocumentState::observed(
+                    self.session.snapshot(),
+                    self.session.mutation_epoch(),
+                );
+                let source = current.source_identity();
                 let catalog = self.pdm.catalog(
-                    &snapshot,
+                    &current,
                     &source,
                     string(p, "repository")?,
                     &AtomicBool::new(false),
@@ -888,10 +943,13 @@ impl Server {
                 )
             }
             "pdm_compare" => {
-                let snapshot = self.session.snapshot();
-                let source = PdmSourceIdentity::observed(&snapshot);
+                let current = PdmDocumentState::observed(
+                    self.session.snapshot(),
+                    self.session.mutation_epoch(),
+                );
+                let source = current.source_identity();
                 let comparison = self.pdm.compare(
-                    &snapshot,
+                    &current,
                     &source,
                     string(p, "repository")?,
                     string(p, "left_release_id")?,
@@ -1316,7 +1374,7 @@ fn pdm_comparison_value(comparison: &ReleaseComparison) -> Value {
 fn cam_review_value(review: &CamReviewSummary) -> Value {
     json!({
         "review_token":review.token,
-        "source":{"document_id":review.document_id.0,"revision":review.revision,"canonical_digest":review.canonical_digest},
+        "source":{"document_id":review.document_id.0,"revision":review.revision,"canonical_digest":review.canonical_digest,"mutation_epoch":review.mutation_epoch},
         "plan_digest":review.plan_digest,
         "toolpath_digest":review.toolpath_digest,
         "simulation_fingerprint":review.simulation_fingerprint,
@@ -1467,7 +1525,12 @@ pub fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn request(server: &mut Server, method: &str, params: Value) -> Value {
+    fn request(server: &mut Server, method: &str, mut params: Value) -> Value {
+        if params.get("expected_revision").is_some()
+            && params.get("expected_mutation_epoch").is_none()
+        {
+            params["expected_mutation_epoch"] = json!(server.session.mutation_epoch());
+        }
         server.handle(
             serde_json::to_string(
                 &json!({"protocol":PROTOCOL,"id":7,"method":method,"params":params}),
@@ -1481,6 +1544,33 @@ mod tests {
     fn invalid_pdm_repository_path_has_a_stable_protocol_code() {
         let error = Error::from(PdmWorkflowError::Core(LocalPdmError::InvalidRepositoryPath));
         assert_eq!(error.code, "pdm_repository_invalid");
+    }
+
+    #[test]
+    fn capabilities_mark_every_guarded_method_as_mutating() {
+        let mut server = Server::new(SessionSettings::default());
+        let capabilities = request(&mut server, "capabilities", json!({}));
+        let methods = capabilities["result"]["methods"].as_array().unwrap();
+        for name in [
+            "cam_preview",
+            "fea_review",
+            "pdm_release_open",
+            "pdm_catalog",
+            "pdm_compare",
+            "batch_job_start",
+            "verify_job_start",
+        ] {
+            let advertised = methods
+                .iter()
+                .find(|method| method["name"] == name)
+                .unwrap();
+            assert_eq!(advertised["mutates"], true, "{name}");
+            assert_eq!(
+                request(&mut server, name, json!({}))["error"]["code"],
+                "invalid_params",
+                "{name} is guarded and must advertise that precondition"
+            );
+        }
     }
 
     #[test]
@@ -1504,6 +1594,63 @@ mod tests {
         );
         assert_eq!(s.handle(br#"{"protocol":"ketchup.headless.v1","id":1,"method":"state","params":{"x":1e999}}"#)["error"]["code"],"invalid_json");
     }
+    #[test]
+    fn undo_rejects_the_original_revision_digest_guard_without_destroying_redo() {
+        let mut server = Server::new(SessionSettings::default());
+        let initial = request(&mut server, "state", json!({}))["result"]["state"].clone();
+        let program = json!({"operations":[{
+            "operation":"create_part",
+            "name":"Undo ABA probe",
+            "workplane":{"type":"principal","plane":"xy"},
+            "entities":[{"type":"circle","id":1,"center_mm":[0,0],"radius_mm":5}],
+            "constraints":[],
+            "feature":{"type":"extrusion","distance_mm":10},
+            "translation_mm":[0,0,0]
+        }]});
+        let applied = request(
+            &mut server,
+            "apply",
+            json!({
+                "expected_revision":initial["revision"],
+                "expected_digest":initial["canonical_digest"],
+                "expected_mutation_epoch":initial["mutation_epoch"],
+                "program":program,
+                "selection":[]
+            }),
+        );
+        let applied_state = applied["result"]["state"].clone();
+        let undone = request(
+            &mut server,
+            "undo",
+            json!({
+                "expected_revision":applied_state["revision"],
+                "expected_digest":applied_state["canonical_digest"],
+                "expected_mutation_epoch":applied_state["mutation_epoch"]
+            }),
+        );
+        assert_eq!(
+            undone["result"]["state"]["canonical_digest"],
+            initial["canonical_digest"]
+        );
+        assert_eq!(undone["result"]["state"]["redo_steps"], 1);
+
+        let replayed = request(
+            &mut server,
+            "apply",
+            json!({
+                "expected_revision":initial["revision"],
+                "expected_digest":initial["canonical_digest"],
+                "expected_mutation_epoch":initial["mutation_epoch"],
+                "program":program,
+                "selection":[]
+            }),
+        );
+        assert_eq!(replayed["error"]["code"], "stale_state", "{replayed}");
+        let after = request(&mut server, "state", json!({}))["result"]["state"].clone();
+        assert_eq!(after, undone["result"]["state"]);
+        assert_eq!(after["redo_steps"], 1);
+    }
+
     #[test]
     fn verify_jobs_start_publish_status_and_cancel_through_native_task() {
         let mut server = Server::new(SessionSettings::default());
@@ -1584,6 +1731,33 @@ mod tests {
         );
         let unknown = request(&mut server, "verify_job_status", json!({"handle":"forged"}));
         assert_eq!(unknown["error"]["code"], "verify_job_not_found");
+    }
+
+    #[test]
+    fn completed_verify_jobs_are_reclaimed_without_status_polling() {
+        let mut server = Server::new(SessionSettings::default());
+        let state = request(&mut server, "state", json!({}))["result"]["state"].clone();
+        let start = || {
+            json!({"expected_revision":state["revision"],
+                "expected_digest":state["canonical_digest"],"timeout_ms":30_000})
+        };
+        for _ in 0..MAX_VERIFY_JOBS {
+            let started = request(&mut server, "verify_job_start", start());
+            assert_eq!(started["result"]["state"], "running", "{started}");
+        }
+
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while server.verify_jobs.iter().any(|job| {
+            matches!(&job.state, VerifyJobState::Running(task)
+                if !task.finished.load(std::sync::atomic::Ordering::Acquire))
+        }) {
+            assert!(Instant::now() < deadline, "Verify jobs did not finish");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+
+        let replacement = request(&mut server, "verify_job_start", start());
+        assert_eq!(replacement["result"]["state"], "running", "{replacement}");
+        assert_eq!(server.verify_jobs.len(), MAX_VERIFY_JOBS);
     }
 
     #[test]
@@ -1905,22 +2079,17 @@ mod tests {
                 1,
                 "open",
                 json!({"path":path,"discard_unsaved":false,
-                "expected_revision":before["revision"],"expected_digest":before["canonical_digest"]}),
+                "expected_revision":before["revision"],"expected_digest":before["canonical_digest"],
+                "expected_mutation_epoch":before["mutation_epoch"]}),
             ),
             (2, "summary", json!({})),
             (
                 3,
                 "new",
                 json!({"discard_unsaved":false,"response":"compact",
-                "expected_revision":before["revision"],"expected_digest":before["canonical_digest"]}),
+                "expected_revision":before["revision"],"expected_digest":before["canonical_digest"],
+                "expected_mutation_epoch":before["mutation_epoch"]}),
             ),
-            (
-                4,
-                "open",
-                json!({"path":path,"discard_unsaved":false,"response":"compact",
-                "expected_revision":loaded["revision"],"expected_digest":loaded["canonical_digest"]}),
-            ),
-            (5, "summary", json!({})),
         ] {
             serde_json::to_writer(
                 &mut input,
@@ -1939,17 +2108,20 @@ mod tests {
                 serde_json::from_str(line).unwrap()
             })
             .collect();
-        assert_eq!(responses.len(), 5);
+        assert_eq!(responses.len(), 3);
         assert_eq!(responses[0]["error"]["code"], "output_too_large");
         assert_eq!(
             responses[0]["error"]["details"]["mutation_outcome"],
             "possibly_applied"
         );
-        assert_eq!(responses[1]["result"]["state"], loaded);
+        let mut observed = responses[1]["result"]["state"].clone();
+        observed["mutation_epoch"] = loaded["mutation_epoch"].clone();
+        assert_eq!(observed, loaded);
         assert_eq!(responses[2]["error"]["code"], "stale_state");
-        assert_eq!(responses[3]["result"]["response"], "compact");
-        assert_eq!(responses[3]["result"]["state"], loaded);
-        assert_eq!(responses[4]["result"]["state"], loaded);
+        assert_eq!(
+            responses[2]["error"]["details"]["mutation_epoch"],
+            responses[1]["result"]["state"]["mutation_epoch"]
+        );
     }
 
     #[test]
@@ -2057,6 +2229,10 @@ mod tests {
         assert_eq!(preview["result"]["units"], "mm");
         assert_eq!(preview["result"]["work_offset"], "G54");
         assert_eq!(preview["result"]["tool_number"], 1);
+        assert_eq!(
+            preview["result"]["source"]["mutation_epoch"],
+            state["mutation_epoch"]
+        );
         assert!((preview["result"]["removed_stock_mm3"].as_f64().unwrap() - 400.0).abs() < 1.0e-5);
         assert!(preview["result"]["residual_stock_mm3"].as_f64().unwrap() < 1.0e-5);
         assert!(preview["result"]["gouge_mm3"].as_f64().unwrap() < 1.0e-5);
@@ -2156,6 +2332,55 @@ mod tests {
         );
         assert_eq!(stale["error"]["code"], "stale_state");
         assert!(!directory.path().join("stale.nc").exists());
+        for _ in 0..14 {
+            let preview = request(
+                &mut server,
+                "cam_preview",
+                json!({
+                    "expected_revision":current["revision"],
+                    "expected_digest":current["canonical_digest"],
+                    "expected_mutation_epoch":current["mutation_epoch"],
+                    "plan_id":95,
+                    "operations":[{"type":"face","id":1,"minimum_mm":[1.0,1.0],"maximum_mm":[19.0,9.0],"target_z_mm":5.0}],
+                    "fixtures":[],
+                    "dialect":"iso_metric_gcode"
+                }),
+            );
+            assert!(preview.get("error").is_none(), "{preview}");
+        }
+
+        server.session.undo().unwrap();
+        let restored = server.state();
+        assert_eq!(restored["revision"], state["revision"]);
+        assert_eq!(restored["canonical_digest"], state["canonical_digest"]);
+        assert_ne!(restored["mutation_epoch"], state["mutation_epoch"]);
+        let undo_stale_path = directory.path().join("undo-stale.nc");
+        let undo_stale = request(
+            &mut server,
+            "cam_export",
+            json!({"expected_revision":restored["revision"],"expected_digest":restored["canonical_digest"],
+                "expected_mutation_epoch":restored["mutation_epoch"],"review_token":third_token,
+                "path":undo_stale_path,"confirmed":true}),
+        );
+        assert_eq!(undo_stale["error"]["code"], "cam_review_token_invalid");
+        assert!(!undo_stale_path.exists());
+        let fresh_after_stale_reviews = request(
+            &mut server,
+            "cam_preview",
+            json!({
+                "expected_revision":restored["revision"],
+                "expected_digest":restored["canonical_digest"],
+                "expected_mutation_epoch":restored["mutation_epoch"],
+                "plan_id":95,
+                "operations":[{"type":"face","id":1,"minimum_mm":[1.0,1.0],"maximum_mm":[19.0,9.0],"target_z_mm":5.0}],
+                "fixtures":[],
+                "dialect":"iso_metric_gcode"
+            }),
+        );
+        assert!(
+            fresh_after_stale_reviews.get("error").is_none(),
+            "{fresh_after_stale_reviews}"
+        );
     }
 
     #[test]

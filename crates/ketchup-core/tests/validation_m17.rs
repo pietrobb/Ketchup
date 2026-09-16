@@ -1249,6 +1249,48 @@ fn exact_profile_cut_projects_btl_ready_timber_stock_and_circular_drilling() {
     assert!(export.contains(
         "kind=circular-drill;frame=definition-local;inputs=42,43;length_mm=100;width_mm=50;height_mm=1000;machining=circular-drill:frame(0,0,0/1,0,0/0,1,0/0,0,1):center(50,25):diameter(10):interval(0,50)"
     ));
+    let mpr =
+        String::from_utf8(projection.woodwop_mpr_4_0_drill_export(&snapshot).unwrap()).unwrap();
+    assert!(mpr.starts_with("[H\nVERSION=\"4.0\"\n"));
+    assert!(
+        mpr.contains("_BSX=1000\n_BSY=100\n_BSZ=50\n\\ketchup.woodwop-mpr-4.0-drill-export.v1\\\n")
+    );
+    assert!(mpr.contains("<100 \\WerkStck\\\nLA=\"1000\"\nBR=\"100\"\nDI=\"50\"\n"));
+    assert!(mpr.contains(
+        "<103 \\BohrHoriz\\\nXA=\"0\"\nYA=\"50\"\nZA=\"25\"\nBM=\"XP\"\nTI=\"50\"\nDU=\"10\"\n"
+    ));
+    assert_eq!(mpr.matches("<103 \\BohrHoriz\\").count(), 1);
+    assert!(mpr.ends_with("!\n"));
+
+    let package = projection
+        .woodwop_mpr_4_0_production_package(
+            &snapshot,
+            ketchup_core::fabrication::WoodwopMprOptions::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        package.len(),
+        2,
+        "expected one program per physical instance"
+    );
+    assert_ne!(package[0].program_name, package[1].program_name);
+    for program in &package {
+        assert_eq!(program.program_name.len(), 12);
+        assert!(
+            program
+                .program_name
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        );
+        assert!(
+            String::from_utf8(program.mpr.clone())
+                .unwrap()
+                .contains("\\ketchup.homag-bhx-production-package.v1\\")
+        );
+        let label = String::from_utf8(program.barcode_svg.clone()).unwrap();
+        assert!(label.contains("ketchup.homag-code128-label.v1"));
+        assert!(label.contains(&format!(">{}</text>", program.program_name)));
+    }
 
     assert_eq!(
         projection.drawings.drawings[0].machining_operations,

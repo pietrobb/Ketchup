@@ -421,6 +421,29 @@ fn per_user_registry_lists_only_nonce_verified_live_window_metadata() {
 }
 
 #[test]
+fn consent_broker_cleanup_preserves_an_externally_replaced_registry_entry() {
+    let directory = tempfile::tempdir().unwrap();
+    let registry_path;
+    {
+        let mut shell = Shell::new();
+        shell
+            .app_mut()
+            .enable_live_consent_broker_in(&eframe::egui::Context::default(), directory.path())
+            .unwrap();
+        let instance_id = shell.app().live_consent_instance_id().unwrap();
+        registry_path = directory.path().join(format!("{instance_id}.json"));
+        std::fs::remove_file(&registry_path).unwrap();
+        std::fs::write(&registry_path, b"external replacement").unwrap();
+    }
+
+    assert_eq!(
+        std::fs::read(&registry_path).unwrap(),
+        b"external replacement",
+        "broker shutdown must not delete a registry path it no longer owns"
+    );
+}
+
+#[test]
 fn consent_broker_request_deadline_is_cumulative_across_slow_bytes() {
     let directory = tempfile::tempdir().unwrap();
     let mut shell = Shell::new();
@@ -600,6 +623,44 @@ fn in_window_consent_is_required_and_disconnect_revokes_the_automatic_credential
     assert!(!shell.app().live_consent_attached());
     assert!(shell.app().live_bridge_credentials().is_none());
     assert_eq!(shell.app().live_consent_address(), Some(consent_address));
+}
+
+#[test]
+fn disconnected_attach_requester_cannot_leave_window_busy() {
+    let mut shell = Shell::new();
+    shell.enable_live_consent_broker();
+    let consent_address = shell.app().live_consent_address().unwrap();
+    let mut abandoned = TcpStream::connect(consent_address).unwrap();
+    writeln!(
+        abandoned,
+        "{}",
+        serde_json::json!({
+            "version": 1,
+            "action": "attach",
+            "nonce": "a".repeat(64),
+        })
+    )
+    .unwrap();
+    wait_for_consent(&mut shell);
+    abandoned.shutdown(std::net::Shutdown::Both).unwrap();
+    drop(abandoned);
+    std::thread::sleep(Duration::from_millis(100));
+
+    for _ in 0..100 {
+        shell.step();
+        if !shell.app().live_consent_pending() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!shell.app().live_consent_pending());
+    assert!(!shell.app().live_consent_attached());
+    assert!(shell.app().live_bridge_credentials().is_none());
+
+    let client = std::thread::spawn(move || request_consent(consent_address, &"b".repeat(64)));
+    wait_for_consent(&mut shell);
+    shell.click_button_label(&shell.catalog().text("live-consent-reject"));
+    assert_eq!(client.join().unwrap()["status"], "rejected");
 }
 
 #[test]

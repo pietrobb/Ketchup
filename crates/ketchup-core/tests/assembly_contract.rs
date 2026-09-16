@@ -690,6 +690,76 @@ fn repeated_component_mate_endpoints_keep_full_instance_paths_through_solve_and_
         &copy_path
     );
 
+    let mut recompute_document = persistence::load(&persistence::save(&document.current()))
+        .unwrap()
+        .into_editable()
+        .unwrap_or_else(|_| panic!("current schema must remain editable"));
+    let recompute_source = recompute_document.current();
+    let registry = ExactResultRegistry::accept(
+        &recompute_source,
+        [current_exact_package(&recompute_source, "nested-recompute")],
+    )
+    .unwrap();
+    let recomputed = recompute_rigid_assembly(
+        &recompute_document,
+        &registry,
+        AssemblySolverPolicy::default(),
+    )
+    .unwrap();
+    assert_eq!(recomputed.status(), AssemblyRecomputeStatus::Solved);
+    let expected_nested_transform = recomputed
+        .solve()
+        .unwrap()
+        .occurrence_at_path(&copy_path)
+        .unwrap()
+        .transform();
+    let expected_root_transform = recomputed
+        .solve()
+        .unwrap()
+        .occurrence(copy_path.root_occurrence())
+        .unwrap()
+        .transform();
+    let before_recompute = store_stamp(&recompute_document);
+    let proposal = recomputed.prepare_publication(&recompute_document).unwrap();
+    recompute_document.commit_proposal(&proposal).unwrap();
+    let recompute_published = recompute_document.current();
+    let recompute_digest = recompute_published.canonical_digest();
+    assert_eq!(
+        recompute_published
+            .occurrence(copy_path.root_occurrence())
+            .unwrap()
+            .transform(),
+        expected_root_transform
+    );
+    assert_eq!(
+        recompute_published
+            .resolve_instance_path(&copy_path)
+            .unwrap()
+            .local_transform,
+        expected_nested_transform
+    );
+    assert_eq!(
+        recompute_document.visible_undo_steps(),
+        before_recompute.undo_steps + 1
+    );
+    let reopened_recompute = persistence::load(&persistence::save(&recompute_published)).unwrap();
+    assert_eq!(
+        reopened_recompute
+            .snapshot()
+            .resolve_instance_path(&copy_path)
+            .unwrap()
+            .local_transform,
+        expected_nested_transform
+    );
+    assert_eq!(
+        recompute_document.undo().unwrap().canonical_digest(),
+        before_recompute.digest
+    );
+    assert_eq!(
+        recompute_document.redo().unwrap().canonical_digest(),
+        recompute_digest
+    );
+
     let solved =
         solve_rigid_assembly(&document.current(), AssemblySolverPolicy::default()).unwrap();
     assert!(matches!(

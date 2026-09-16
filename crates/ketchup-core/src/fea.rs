@@ -4,6 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const FEA_MODEL_SCHEMA_V1: &str = "ketchup.fea-model.v1";
 pub const FEA_SOLUTION_SCHEMA_V1: &str = "ketchup.fea-solution.v1";
 pub const FEA_SOLVER_VERSION_V1: &str = "ketchup.linear-static-fem.v1";
+pub const MAX_FEA_MATERIALS: usize = 4_096;
+pub const MAX_FEA_ELEMENTS: usize = 4_096;
+pub const MAX_FEA_CONSTRAINTS: usize = 768;
+pub const MAX_FEA_LOADS: usize = 16_384;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FeaNode {
@@ -95,6 +99,7 @@ pub enum FeaError {
     DuplicateMaterialId,
     InvalidMaterial,
     DuplicateElementId,
+    DuplicateElement,
     InvalidElementNode,
     RepeatedElementNode,
     DegenerateElement,
@@ -186,8 +191,31 @@ pub enum FeaConvergenceError {
     DomainMismatch,
     MaterialMismatch,
     LoadMismatch,
+    ConstraintMismatch,
     Solve(FeaError),
 }
+
+#[derive(Default)]
+struct GeometricMoments {
+    measure: f64,
+    first: [f64; 3],
+    second: [f64; 9],
+}
+
+#[derive(Default)]
+struct LoadDefinition {
+    nodal: Vec<([u64; 3], [u64; 3])>,
+    surface: BTreeMap<[u64; 3], GeometricMoments>,
+}
+
+#[derive(Default)]
+struct ConstraintSupport {
+    lines: GeometricMoments,
+    surfaces: GeometricMoments,
+    points: Vec<[u64; 3]>,
+}
+
+type ConstraintDefinition = BTreeMap<(usize, u64), ConstraintSupport>;
 
 impl FeaModel {
     pub fn solve(&self, settings: FeaSolveSettings) -> Result<FeaSolution, FeaError> {
@@ -311,6 +339,10 @@ impl FeaModel {
         if settings.maximum_nodes == 0
             || self.nodes.len() > settings.maximum_nodes
             || self.nodes.len() > 256
+            || self.materials.len() > MAX_FEA_MATERIALS
+            || self.elements.len() > MAX_FEA_ELEMENTS
+            || self.constraints.len() > MAX_FEA_CONSTRAINTS
+            || self.loads.len() > MAX_FEA_LOADS
         {
             return Err(FeaError::ModelTooLarge);
         }
@@ -349,6 +381,8 @@ impl FeaModel {
         }
 
         let mut element_ids = BTreeSet::new();
+        let mut truss_connectivities = BTreeSet::new();
+        let mut tetrahedron_connectivities = BTreeSet::new();
         let mut tetrahedron_faces = BTreeMap::<[usize; 3], usize>::new();
         for element in &self.elements {
             if !element_ids.insert(element.id) {
@@ -366,6 +400,11 @@ impl FeaModel {
                     if nodes[0] == nodes[1] {
                         return Err(FeaError::RepeatedElementNode);
                     }
+                    let mut canonical_nodes = nodes;
+                    canonical_nodes.sort_unstable();
+                    if !truss_connectivities.insert(canonical_nodes) {
+                        return Err(FeaError::DuplicateElement);
+                    }
                     if self.truss_geometry(nodes).is_none() {
                         return Err(FeaError::DegenerateElement);
                     }
@@ -374,6 +413,11 @@ impl FeaModel {
                 FeaElementKind::LinearTetrahedron4 { nodes, material_id } => {
                     if nodes.iter().copied().collect::<BTreeSet<_>>().len() != 4 {
                         return Err(FeaError::RepeatedElementNode);
+                    }
+                    let mut canonical_nodes = nodes;
+                    canonical_nodes.sort_unstable();
+                    if !tetrahedron_connectivities.insert(canonical_nodes) {
+                        return Err(FeaError::DuplicateElement);
                     }
                     if self.tetrahedron_geometry(nodes).is_none() {
                         return Err(FeaError::DegenerateElement);
@@ -459,6 +503,31 @@ impl FeaModel {
             .iter()
             .find(|material| material.id == id)
             .expect("validated material reference")
+    }
+
+    fn material_distribution(&self) -> BTreeMap<u64, GeometricMoments> {
+        let mut distribution = BTreeMap::<u64, GeometricMoments>::new();
+        for element in &self.elements {
+            match element.kind {
+                FeaElementKind::LinearTruss2 {
+                    nodes,
+                    material_id,
+                    area_mm2,
+                } => distribution
+                    .entry(material_id)
+                    .or_default()
+                    .add_weighted_segment(
+                        self.nodes[nodes[0]].position_mm,
+                        self.nodes[nodes[1]].position_mm,
+                        area_mm2,
+                    ),
+                FeaElementKind::LinearTetrahedron4 { nodes, material_id } => distribution
+                    .entry(material_id)
+                    .or_default()
+                    .add_tetrahedron(nodes.map(|node| self.nodes[node].position_mm)),
+            }
+        }
+        distribution
     }
 
     fn truss_geometry(&self, nodes: [usize; 2]) -> Option<(f64, [f64; 3])> {
@@ -685,10 +754,121 @@ impl FeaModel {
         (minimum, maximum)
     }
 
-    fn resultant_load(&self) -> [f64; 3] {
-        let mut forces = vec![0.0; self.nodes.len() * 3];
-        self.assemble_loads(&mut forces);
-        vector_sum(&forces)
+    fn load_definition(&self) -> LoadDefinition {
+        let mut definition = LoadDefinition::default();
+        for load in &self.loads {
+            match *load {
+                FeaLoad::NodalForce { node, force_n } => definition.nodal.push((
+                    self.nodes[node].position_mm.map(f64::to_bits),
+                    force_n.map(f64::to_bits),
+                )),
+                FeaLoad::SurfaceTraction {
+                    nodes,
+                    traction_n_per_mm2,
+                } => {
+                    definition
+                        .surface
+                        .entry(traction_n_per_mm2.map(f64::to_bits))
+                        .or_default()
+                        .add_triangle(
+                            self.nodes[nodes[0]].position_mm,
+                            self.nodes[nodes[1]].position_mm,
+                            self.nodes[nodes[2]].position_mm,
+                        );
+                }
+            }
+        }
+        definition.nodal.sort_unstable();
+        definition
+    }
+
+    fn constraint_definition(&self) -> ConstraintDefinition {
+        let mut prescribed = vec![[None; 3]; self.nodes.len()];
+        let mut definition = ConstraintDefinition::new();
+        for constraint in &self.constraints {
+            for (axis, value) in constraint.displacement_mm.iter().copied().enumerate() {
+                if let Some(value) = value {
+                    prescribed[constraint.node][axis] = Some(value);
+                    definition.entry((axis, value.to_bits())).or_default();
+                }
+            }
+        }
+
+        let mut covered = BTreeSet::new();
+        for element in &self.elements {
+            if let FeaElementKind::LinearTruss2 { nodes, .. } = element.kind {
+                for (axis, left) in prescribed[nodes[0]].iter().copied().enumerate() {
+                    if let (Some(left), Some(right)) = (left, prescribed[nodes[1]][axis])
+                        && left.to_bits() == right.to_bits()
+                    {
+                        definition
+                            .get_mut(&(axis, left.to_bits()))
+                            .expect("constraint definition exists")
+                            .lines
+                            .add_segment(
+                                self.nodes[nodes[0]].position_mm,
+                                self.nodes[nodes[1]].position_mm,
+                            );
+                        covered.insert((nodes[0], axis));
+                        covered.insert((nodes[1], axis));
+                    }
+                }
+            }
+        }
+
+        let mut face_counts = BTreeMap::<[usize; 3], usize>::new();
+        for element in &self.elements {
+            if let FeaElementKind::LinearTetrahedron4 { nodes, .. } = element.kind {
+                for face in tetrahedron_faces_of(nodes) {
+                    *face_counts.entry(face).or_default() += 1;
+                }
+            }
+        }
+        for (nodes, count) in face_counts {
+            if count != 1 {
+                continue;
+            }
+            for (axis, first) in prescribed[nodes[0]].iter().copied().enumerate() {
+                if let (Some(first), Some(second), Some(third)) = (
+                    first,
+                    prescribed[nodes[1]][axis],
+                    prescribed[nodes[2]][axis],
+                ) && first.to_bits() == second.to_bits()
+                    && first.to_bits() == third.to_bits()
+                {
+                    definition
+                        .get_mut(&(axis, first.to_bits()))
+                        .expect("constraint definition exists")
+                        .surfaces
+                        .add_triangle(
+                            self.nodes[nodes[0]].position_mm,
+                            self.nodes[nodes[1]].position_mm,
+                            self.nodes[nodes[2]].position_mm,
+                        );
+                    for node in nodes {
+                        covered.insert((node, axis));
+                    }
+                }
+            }
+        }
+
+        for (node, values) in prescribed.into_iter().enumerate() {
+            for (axis, value) in values.into_iter().enumerate() {
+                if let Some(value) = value
+                    && !covered.contains(&(node, axis))
+                {
+                    definition
+                        .get_mut(&(axis, value.to_bits()))
+                        .expect("constraint definition exists")
+                        .points
+                        .push(self.nodes[node].position_mm.map(f64::to_bits));
+                }
+            }
+        }
+        for support in definition.values_mut() {
+            support.points.sort_unstable();
+        }
+        definition
     }
 
     #[must_use]
@@ -787,7 +967,8 @@ pub fn solve_convergence_study(
     let case_id = levels[0].case_id.clone();
     let bounds = levels[0].bounds();
     let materials = &levels[0].materials;
-    let resultant_load = levels[0].resultant_load();
+    let load_definition = levels[0].load_definition();
+    let constraint_definition = levels[0].constraint_definition();
     for pair in levels.windows(2) {
         if pair[1].case_id != case_id {
             return Err(FeaConvergenceError::CaseMismatch);
@@ -810,12 +991,29 @@ pub fn solve_convergence_study(
     {
         return Err(FeaConvergenceError::MaterialMismatch);
     }
+    let material_distribution = levels[0].material_distribution();
+    if levels.iter().skip(1).any(|level| {
+        let candidate = level.material_distribution();
+        candidate.len() != material_distribution.len()
+            || candidate.iter().any(|(material_id, moments)| {
+                material_distribution
+                    .get(material_id)
+                    .is_none_or(|expected| !same_geometric_moments(moments, expected))
+            })
+    }) {
+        return Err(FeaConvergenceError::MaterialMismatch);
+    }
     if levels
         .iter()
         .skip(1)
-        .any(|level| !near3(level.resultant_load(), resultant_load, 1.0e-9))
+        .any(|level| !same_load_definition(&level.load_definition(), &load_definition))
     {
         return Err(FeaConvergenceError::LoadMismatch);
+    }
+    if levels.iter().skip(1).any(|level| {
+        !same_constraint_definition(&level.constraint_definition(), &constraint_definition)
+    }) {
+        return Err(FeaConvergenceError::ConstraintMismatch);
     }
     let solutions = levels
         .iter()
@@ -1043,6 +1241,107 @@ fn von_mises(stress: [f64; 6]) -> f64 {
 
 fn triangle_area(first: [f64; 3], second: [f64; 3], third: [f64; 3]) -> f64 {
     norm(cross(sub3(second, first), sub3(third, first))) * 0.5
+}
+
+impl GeometricMoments {
+    fn add_segment(&mut self, first: [f64; 3], second: [f64; 3]) {
+        self.add_weighted_segment(first, second, 1.0);
+    }
+
+    fn add_weighted_segment(&mut self, first: [f64; 3], second: [f64; 3], weight: f64) {
+        let measure = norm(sub3(second, first)) * weight;
+        self.measure += measure;
+        for axis in 0..3 {
+            self.first[axis] += measure * (first[axis] + second[axis]) / 2.0;
+            for other in 0..3 {
+                self.second[axis * 3 + other] += measure
+                    * (2.0 * first[axis] * first[other]
+                        + first[axis] * second[other]
+                        + second[axis] * first[other]
+                        + 2.0 * second[axis] * second[other])
+                    / 6.0;
+            }
+        }
+    }
+
+    fn add_tetrahedron(&mut self, vertices: [[f64; 3]; 4]) {
+        let volume = determinant3([
+            sub3(vertices[1], vertices[0]),
+            sub3(vertices[2], vertices[0]),
+            sub3(vertices[3], vertices[0]),
+        ])
+        .abs()
+            / 6.0;
+        self.measure += volume;
+        for axis in 0..3 {
+            let sum = vertices.iter().map(|vertex| vertex[axis]).sum::<f64>();
+            self.first[axis] += volume * sum / 4.0;
+            for other in 0..3 {
+                let other_sum = vertices.iter().map(|vertex| vertex[other]).sum::<f64>();
+                let diagonal = vertices
+                    .iter()
+                    .map(|vertex| vertex[axis] * vertex[other])
+                    .sum::<f64>();
+                self.second[axis * 3 + other] += volume * (sum * other_sum + diagonal) / 20.0;
+            }
+        }
+    }
+
+    fn add_triangle(&mut self, first: [f64; 3], second: [f64; 3], third: [f64; 3]) {
+        let measure = triangle_area(first, second, third);
+        self.measure += measure;
+        for axis in 0..3 {
+            let sum = first[axis] + second[axis] + third[axis];
+            self.first[axis] += measure * sum / 3.0;
+            for other in 0..3 {
+                let other_sum = first[other] + second[other] + third[other];
+                let diagonal = first[axis] * first[other]
+                    + second[axis] * second[other]
+                    + third[axis] * third[other];
+                self.second[axis * 3 + other] += measure * (sum * other_sum + diagonal) / 12.0;
+            }
+        }
+    }
+}
+
+fn same_load_definition(left: &LoadDefinition, right: &LoadDefinition) -> bool {
+    left.nodal == right.nodal
+        && left.surface.len() == right.surface.len()
+        && left.surface.iter().all(|(traction, moments)| {
+            right
+                .surface
+                .get(traction)
+                .is_some_and(|other| same_geometric_moments(moments, other))
+        })
+}
+
+fn same_constraint_definition(left: &ConstraintDefinition, right: &ConstraintDefinition) -> bool {
+    left.len() == right.len()
+        && left.iter().all(|(key, support)| {
+            right.get(key).is_some_and(|other| {
+                support.points == other.points
+                    && same_geometric_moments(&support.lines, &other.lines)
+                    && same_geometric_moments(&support.surfaces, &other.surfaces)
+            })
+        })
+}
+
+fn same_geometric_moments(left: &GeometricMoments, right: &GeometricMoments) -> bool {
+    near_relative(left.measure, right.measure)
+        && left
+            .first
+            .into_iter()
+            .zip(right.first)
+            .all(|(left, right)| near_relative(left, right))
+        && left
+            .second
+            .into_iter()
+            .zip(right.second)
+            .all(|(left, right)| near_relative(left, right))
+}
+
+fn near_relative(left: f64, right: f64) -> bool {
+    (left - right).abs() <= 1.0e-9 * left.abs().max(right.abs()).max(1.0)
 }
 
 fn relative_change(previous: f64, current: f64) -> f64 {

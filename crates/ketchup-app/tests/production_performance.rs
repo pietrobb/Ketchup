@@ -5,7 +5,6 @@ use ketchup_application::{DocumentSession, SessionSettings};
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-#[cfg(windows)]
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -14,6 +13,9 @@ const EXACT_REBUILD_BUDGET: Duration = Duration::from_secs(180);
 const UI_FRAMES: usize = 20;
 const UI_FRAME_BUDGET: Duration = Duration::from_secs(5);
 const MEMORY_GROWTH_BUDGET_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const MEMORY_PROBE_MARGIN_BYTES: u64 = 16 * 1024 * 1024;
+const MEMORY_PROBE_MAX_ALLOCATION_BYTES: u64 = 512 * 1024 * 1024;
+const MEMORY_PROBE_ENV: &str = "KETCHUP_MEMORY_HIGH_WATER_PROBE";
 
 #[derive(Clone, Copy)]
 struct CorpusEntry {
@@ -66,7 +68,7 @@ struct FixtureMetrics {
     offscreen_ui_open_ms: f64,
     offscreen_ui_20_frames_ms: f64,
     offscreen_ui_frame_p95_ms: f64,
-    private_bytes_after: u64,
+    memory_high_water_bytes_after: u64,
 }
 
 #[derive(Serialize)]
@@ -78,10 +80,10 @@ struct CorpusMetrics {
     total_definitions: usize,
     total_features: usize,
     total_occurrences: usize,
-    private_bytes_before: u64,
-    peak_private_bytes: u64,
-    private_bytes_growth: u64,
-    limitations: [&'static str; 4],
+    memory_high_water_bytes_before: u64,
+    memory_high_water_bytes_after: u64,
+    memory_high_water_growth_bytes: u64,
+    limitations: [&'static str; 5],
 }
 
 fn workspace_path(relative: &str) -> PathBuf {
@@ -91,20 +93,46 @@ fn workspace_path(relative: &str) -> PathBuf {
 }
 
 fn exact_worker_path() -> PathBuf {
-    std::env::current_exe()
-        .expect("test executable path")
-        .parent()
-        .and_then(Path::parent)
-        .expect("target profile directory")
-        .join(if cfg!(windows) {
-            "ketchup-exact-worker.exe"
-        } else {
-            "ketchup-exact-worker"
-        })
+    PathBuf::from(env!("CARGO_BIN_EXE_ketchup-performance-exact-worker"))
 }
 
 #[cfg(windows)]
-fn process_private_bytes() -> u64 {
+fn process_memory_high_water_bytes() -> u64 {
+    let command = format!(
+        "[Console]::Write((Get-Process -Id {}).PeakPagedMemorySize64)",
+        std::process::id()
+    );
+    let output = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &command])
+        .output()
+        .expect("PowerShell must measure memory high-water");
+    assert!(output.status.success(), "memory high-water query failed");
+    String::from_utf8(output.stdout)
+        .expect("memory high-water must be UTF-8 digits")
+        .trim()
+        .parse()
+        .expect("memory high-water must be numeric")
+}
+
+#[cfg(target_os = "linux")]
+fn process_memory_high_water_bytes() -> u64 {
+    let status = std::fs::read_to_string("/proc/self/status").expect("read /proc/self/status");
+    let kib = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmHWM:"))
+        .and_then(|value| value.split_whitespace().next())
+        .and_then(|value| value.parse::<u64>().ok())
+        .expect("VmHWM must be present");
+    kib * 1024
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn process_memory_high_water_bytes() -> u64 {
+    panic!("memory high-water measurement is unsupported on this platform")
+}
+
+#[cfg(windows)]
+fn process_current_memory_bytes() -> u64 {
     let command = format!(
         "[Console]::Write((Get-Process -Id {}).PrivateMemorySize64)",
         std::process::id()
@@ -112,17 +140,17 @@ fn process_private_bytes() -> u64 {
     let output = Command::new("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-Command", &command])
         .output()
-        .expect("PowerShell must measure private bytes");
-    assert!(output.status.success(), "private-byte query failed");
+        .expect("PowerShell must measure current memory");
+    assert!(output.status.success(), "current-memory query failed");
     String::from_utf8(output.stdout)
-        .expect("private bytes must be UTF-8 digits")
+        .expect("current memory must be UTF-8 digits")
         .trim()
         .parse()
-        .expect("private bytes must be numeric")
+        .expect("current memory must be numeric")
 }
 
 #[cfg(target_os = "linux")]
-fn process_private_bytes() -> u64 {
+fn process_current_memory_bytes() -> u64 {
     let status = std::fs::read_to_string("/proc/self/status").expect("read /proc/self/status");
     let kib = status
         .lines()
@@ -134,8 +162,8 @@ fn process_private_bytes() -> u64 {
 }
 
 #[cfg(not(any(windows, target_os = "linux")))]
-fn process_private_bytes() -> u64 {
-    0
+fn process_current_memory_bytes() -> u64 {
+    panic!("current-memory measurement is unsupported on this platform")
 }
 
 fn milliseconds(duration: Duration) -> f64 {
@@ -149,6 +177,54 @@ fn p95(samples: &[Duration]) -> Duration {
 }
 
 #[test]
+fn memory_high_water_probe_child() {
+    if std::env::var_os(MEMORY_PROBE_ENV).as_deref() != Some(std::ffi::OsStr::new("1")) {
+        return;
+    }
+
+    let high_water_before = process_memory_high_water_bytes();
+    let current_before = process_current_memory_bytes();
+    let allocation_bytes = high_water_before
+        .saturating_sub(current_before)
+        .checked_add(MEMORY_PROBE_MARGIN_BYTES)
+        .expect("memory probe allocation size");
+    assert!(
+        allocation_bytes <= MEMORY_PROBE_MAX_ALLOCATION_BYTES,
+        "memory probe would require an unsafe {allocation_bytes}-byte allocation"
+    );
+    let mut allocation = vec![0_u8; usize::try_from(allocation_bytes).unwrap()];
+    for page in allocation.chunks_mut(4096) {
+        page[0] = 1;
+    }
+    std::hint::black_box(&allocation);
+    let high_water_while_live = process_memory_high_water_bytes();
+    assert!(
+        high_water_while_live >= high_water_before.saturating_add(MEMORY_PROBE_MARGIN_BYTES / 2),
+        "memory high-water missed a live {allocation_bytes}-byte transient allocation"
+    );
+    drop(allocation);
+    let high_water_after_drop = process_memory_high_water_bytes();
+    assert!(
+        high_water_after_drop >= high_water_while_live,
+        "memory high-water regressed after releasing a transient allocation"
+    );
+}
+
+fn verify_memory_high_water_observes_transient_allocation() {
+    let output = Command::new(std::env::current_exe().expect("test executable path"))
+        .args(["--exact", "memory_high_water_probe_child", "--nocapture"])
+        .env(MEMORY_PROBE_ENV, "1")
+        .output()
+        .expect("spawn isolated memory high-water probe");
+    assert!(
+        output.status.success(),
+        "isolated memory high-water probe failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn realistic_heterogeneous_corpus_measures_open_exact_ui_and_memory_without_parity_claims() {
     let worker = exact_worker_path();
     assert!(
@@ -156,8 +232,9 @@ fn realistic_heterogeneous_corpus_measures_open_exact_ui_and_memory_without_pari
         "missing exact worker: {}",
         worker.display()
     );
-    let private_bytes_before = process_private_bytes();
-    let mut peak_private_bytes = private_bytes_before;
+    verify_memory_high_water_observes_transient_allocation();
+    let memory_high_water_bytes_before = process_memory_high_water_bytes();
+    let mut memory_high_water_bytes_after = memory_high_water_bytes_before;
     let mut fixtures = Vec::with_capacity(CORPUS.len());
 
     for entry in CORPUS {
@@ -261,8 +338,9 @@ fn realistic_heterogeneous_corpus_measures_open_exact_ui_and_memory_without_pari
         assert!(!shell.app().is_dirty());
         drop(shell);
 
-        let private_bytes_after = process_private_bytes();
-        peak_private_bytes = peak_private_bytes.max(private_bytes_after);
+        let fixture_memory_high_water = process_memory_high_water_bytes();
+        memory_high_water_bytes_after =
+            memory_high_water_bytes_after.max(fixture_memory_high_water);
         fixtures.push(FixtureMetrics {
             name: entry.name,
             file_bytes,
@@ -278,7 +356,7 @@ fn realistic_heterogeneous_corpus_measures_open_exact_ui_and_memory_without_pari
             offscreen_ui_open_ms: milliseconds(offscreen_ui_open),
             offscreen_ui_20_frames_ms: milliseconds(ui_frames_total),
             offscreen_ui_frame_p95_ms: milliseconds(p95(&frame_samples)),
-            private_bytes_after,
+            memory_high_water_bytes_after: fixture_memory_high_water,
         });
     }
 
@@ -298,14 +376,15 @@ fn realistic_heterogeneous_corpus_measures_open_exact_ui_and_memory_without_pari
         fixtures.iter().any(|entry| entry.feature_kind_count >= 3),
         "corpus lost multi-family feature coverage"
     );
-    let private_bytes_growth = peak_private_bytes.saturating_sub(private_bytes_before);
+    let memory_high_water_growth_bytes =
+        memory_high_water_bytes_after.saturating_sub(memory_high_water_bytes_before);
     assert!(
-        private_bytes_growth < MEMORY_GROWTH_BUDGET_BYTES,
-        "corpus private-byte growth was {private_bytes_growth} bytes"
+        memory_high_water_growth_bytes < MEMORY_GROWTH_BUDGET_BYTES,
+        "corpus memory high-water growth was {memory_high_water_growth_bytes} bytes"
     );
 
     let metrics = CorpusMetrics {
-        schema: "ketchup.production-performance-corpus.v1",
+        schema: "ketchup.production-performance-corpus.v2",
         build_profile: if cfg!(debug_assertions) {
             "debug"
         } else {
@@ -316,13 +395,14 @@ fn realistic_heterogeneous_corpus_measures_open_exact_ui_and_memory_without_pari
         total_definitions,
         total_features,
         total_occurrences,
-        private_bytes_before,
-        peak_private_bytes,
-        private_bytes_growth,
+        memory_high_water_bytes_before,
+        memory_high_water_bytes_after,
+        memory_high_water_growth_bytes,
         limitations: [
             "timings are wall-clock samples from one local run, not a cross-product benchmark",
             "UI samples are deterministic offscreen egui frames and do not claim native-window or hardware-GPU latency",
             "legacy documents with unsupported producers report exact incompleteness instead of being skipped",
+            "memory is the process OS high-water: peak page-file usage on Windows and VmHWM on Linux",
             "regression budgets are generous failure ceilings, not advertised performance targets",
         ],
     };

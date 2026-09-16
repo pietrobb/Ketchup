@@ -109,35 +109,40 @@ def test_registration_schema_and_real_decorator_calls(monkeypatch):
         assert "plan_mode" not in schema["input_schema"]["properties"]
         json.dumps(schema)
     required = registered["KetchupEdit"].to_dict()["input_schema"]["required"]
-    assert {"expected_revision", "expected_digest"} <= set(required)
+    assert {"expected_revision", "expected_digest", "expected_mutation_epoch"} <= set(required)
     async def scenario():
         assert (await call(registered, "KetchupDiscover"))["result"]["backend_compact"]
         for name in ("KetchupSession", "KetchupInspect", "KetchupEdit", "KetchupVerify"):
             args = {"action": "invalid", "handle": "bad"}
             if name == "KetchupEdit":
-                args.update(expected_revision=0, expected_digest="x")
+                args.update(expected_revision=0, expected_digest="x", expected_mutation_epoch=0)
             assert (await call(registered, name, **args))["error"]["code"] == "invalid_action"
         assert (await call(registered, "KetchupInspect", handle="bad"))["error"]["code"] == "invalid_handle"
     asyncio.run(scenario())
 
 
 def test_preconditions_check_observed_and_fresh_identity():
-    identity = {"document_id": 1, "revision": 2, "canonical_digest": "abc"}
+    identity = {"document_id": 1, "revision": 2, "canonical_digest": "abc", "mutation_epoch": 7}
     entry = {"document_id": 1, "observed": identity}
-    skill._precondition(entry, identity, 2, "abc")
-    for fresh, rev, digest in ((identity, -1, ""), ({**identity, "revision": 3}, 2, "abc"),
-                               ({**identity, "document_id": 4}, 2, "abc"), (identity, 2, "old")):
+    skill._precondition(entry, identity, 2, "abc", 7)
+    for fresh, rev, digest, epoch in (
+        (identity, -1, "", -1),
+        ({**identity, "revision": 3}, 2, "abc", 7),
+        ({**identity, "document_id": 4}, 2, "abc", 7),
+        ({**identity, "mutation_epoch": 8}, 2, "abc", 7),
+        (identity, 2, "old", 7),
+    ):
         with pytest.raises(skill.Rejection):
-            skill._precondition(entry, fresh, rev, digest)
+            skill._precondition(entry, fresh, rev, digest, epoch)
     entry["observed"] = None
     with pytest.raises(skill.Rejection):
-        skill._precondition(entry, identity, 2, "abc")
+        skill._precondition(entry, identity, 2, "abc", 7)
 
 
 def test_summary_preserves_authoritative_recovery_provenance():
     runtime = skill.Runtime(SimpleNamespace(active=False))
     state = {"document_id": "doc", "revision": 2, "canonical_digest": "abc",
-             "undo_steps": 1, "redo_steps": 0}
+             "mutation_epoch": 7, "undo_steps": 1, "redo_steps": 0}
     requested = {"text": "C:/models/primary.ketchup", "original_bytes": 25, "truncated": False}
     source = {"text": "C:/models/.primary.ketchup.recovery", "original_bytes": 35, "truncated": False}
     recovery = {"requested_path": requested, "source_path": source, "save_as_required": True}
@@ -157,7 +162,7 @@ def test_summary_preserves_authoritative_recovery_provenance():
 class SafetyDocument:
     def __init__(self):
         self.snapshot = {"document_id": str(uuid.uuid4()), "revision": 0, "canonical_digest": "zero",
-                         "undo_steps": 0, "redo_steps": 0}
+                         "mutation_epoch": 0, "undo_steps": 0, "redo_steps": 0}
         self.modified = True
         self.calls = []
         self.batch_states = {}
@@ -212,14 +217,14 @@ class SafetyDocument:
         if self.batch_states[handle] == "cancelled":
             raise skill._sdk().HeadlessError("batch_cancelled", "batch job cancelled")
         self.batch_states[handle] = "completed"
-        self.snapshot.update(revision=1, canonical_digest="batch", undo_steps=1)
+        self.snapshot.update(revision=1, canonical_digest="batch", mutation_epoch=1, undo_steps=1)
         self.modified = True
         return {"job_handle": handle, "status": {"state": "completed"},
                 "receipt": {"applied_count": 1, "after": skill._identity(self.snapshot)}}
 
     def apply(self, program, *, selection):
         self.calls.append(("apply", program, selection))
-        self.snapshot.update(revision=1, canonical_digest="one", undo_steps=1)
+        self.snapshot.update(revision=1, canonical_digest="one", mutation_epoch=1, undo_steps=1)
         self.modified = True
         return {**self.summary(), "created": {}}
 
@@ -269,7 +274,8 @@ def doubles(monkeypatch):
 
 def expected(result):
     identity = result["identity"]
-    return {"expected_revision": identity["revision"], "expected_digest": identity["canonical_digest"]}
+    return {"expected_revision": identity["revision"], "expected_digest": identity["canonical_digest"],
+            "expected_mutation_epoch": identity["mutation_epoch"]}
 
 
 def test_tool_lifecycle_stale_save_close_and_bounds(monkeypatch, doubles, tmp_path):
@@ -351,6 +357,7 @@ def test_verify_start_status_cancel_use_native_job_contract(monkeypatch, doubles
             action="start",
             expected_revision=opened["identity"]["revision"] + 1,
             expected_digest=opened["identity"]["canonical_digest"],
+            expected_mutation_epoch=opened["identity"]["mutation_epoch"],
         )
         assert stale["error"]["code"] == "stale_precondition"
         invalid = await call(

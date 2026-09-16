@@ -47,24 +47,7 @@ const CONSTRUCTION_SKETCH: FeatureId = FeatureId(73);
 const CONSTRUCTION_PAD: FeatureId = FeatureId(74);
 
 fn exact_worker_path() -> PathBuf {
-    let name = if cfg!(windows) {
-        "ketchup-exact-worker.exe"
-    } else {
-        "ketchup-exact-worker"
-    };
-    let colocated = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .and_then(Path::parent)
-        .unwrap()
-        .join(name);
-    if colocated.is_file() {
-        colocated
-    } else {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/debug")
-            .join(name)
-    }
+    PathBuf::from(env!("CARGO_BIN_EXE_ketchup-performance-exact-worker"))
 }
 
 fn wait_for_exact_body(shell: &mut Shell) {

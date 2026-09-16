@@ -96,6 +96,15 @@ def _finite(value: Any) -> None:
             _finite(item)
 
 
+def _is_u64(value: Any) -> bool:
+    return type(value) is int and 0 <= value <= (1 << 64) - 1
+
+
+def _is_canonical_digest(value: Any) -> bool:
+    return (isinstance(value, str) and len(value) == 16
+            and all(character in "0123456789abcdef" for character in value))
+
+
 class Session:
     """Own one ketchup-headless process. Use as a context manager.
 
@@ -108,7 +117,7 @@ class Session:
     discard_unsaved check protect any remaining work. No automatic retry occurs.
     """
     def __init__(self, executable=None, worker=None, *, timeout=30.0, env=None, compact=False):
-        if not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or not 0 < timeout <= 600:
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or not 0 < timeout <= 600:
             raise ValueError("timeout must be finite and in (0, 600] seconds")
         self.timeout = float(timeout)
         self._lock = threading.RLock()
@@ -256,8 +265,11 @@ class Session:
 
     def _observe(self, result):
         state = result.get("state")
-        if (not isinstance(state, dict) or not isinstance(state.get("canonical_digest"), str)
-                or type(state.get("revision")) is not int or "document_id" not in state):
+        if (not isinstance(state, dict)
+                or not _is_u64(state.get("document_id"))
+                or not _is_u64(state.get("revision"))
+                or not _is_canonical_digest(state.get("canonical_digest"))
+                or not _is_u64(state.get("mutation_epoch"))):
             self.close()
             raise ProtocolError("missing or invalid normalized state")
         self._state = copy.deepcopy(state)
@@ -267,7 +279,8 @@ class Session:
         if self._state is None:
             self._observe(self._request("summary"))
         return {"expected_revision": self._state["revision"],
-                "expected_digest": self._state["canonical_digest"]}
+                "expected_digest": self._state["canonical_digest"],
+                "expected_mutation_epoch": self._state["mutation_epoch"]}
 
     def _replace(self, method, *, discard_unsaved=False, **params):
         with self._lock:
