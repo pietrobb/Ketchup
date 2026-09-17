@@ -166,7 +166,8 @@ const SURFACE_THICKEN_SCHEMA: u16 = 87;
 const IMPORTED_EXACT_BODY_KIND_SCHEMA: u16 = 88;
 const CAM_PLAN_SCHEMA: u16 = 89;
 const DOWEL_JOINERY_SCHEMA: u16 = 90;
-pub const CURRENT_SCHEMA: u16 = DOWEL_JOINERY_SCHEMA;
+const PRODUCTION_CODE_SCHEMA: u16 = 91;
+pub const CURRENT_SCHEMA: u16 = PRODUCTION_CODE_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -272,6 +273,7 @@ struct ProductSchemaCapabilities {
     surface_thicken: bool,
     cam_plans: bool,
     dowel_joinery: bool,
+    production_codes: bool,
 }
 
 impl ProductSchemaCapabilities {
@@ -362,6 +364,7 @@ impl ProductSchemaCapabilities {
         surface_thicken: false,
         cam_plans: false,
         dowel_joinery: false,
+        production_codes: false,
     };
 
     const fn current(schema: u16) -> Self {
@@ -452,6 +455,7 @@ impl ProductSchemaCapabilities {
             surface_thicken: schema >= SURFACE_THICKEN_SCHEMA,
             cam_plans: schema >= CAM_PLAN_SCHEMA,
             dowel_joinery: schema >= DOWEL_JOINERY_SCHEMA,
+            production_codes: schema >= PRODUCTION_CODE_SCHEMA,
         }
     }
 }
@@ -1026,7 +1030,8 @@ fn save_with_schema(snapshot: &Snapshot, schema: u16) -> Vec<u8> {
     if capabilities.cam_plans
         && (!product.cam_plans.is_empty()
             || !product.instance_transform_overrides.is_empty()
-            || !product.dowel_joints.is_empty())
+            || !product.dowel_joints.is_empty()
+            || !product.production_codes.is_empty())
     {
         push_u32(&mut payload, product.cam_plans.len() as u32);
         for plan in product.cam_plans.values() {
@@ -1034,7 +1039,9 @@ fn save_with_schema(snapshot: &Snapshot, schema: u16) -> Vec<u8> {
         }
     }
     if capabilities.nested_instance_transforms
-        && (!product.instance_transform_overrides.is_empty() || !product.dowel_joints.is_empty())
+        && (!product.instance_transform_overrides.is_empty()
+            || !product.dowel_joints.is_empty()
+            || !product.production_codes.is_empty())
     {
         push_u32(
             &mut payload,
@@ -1045,13 +1052,22 @@ fn save_with_schema(snapshot: &Snapshot, schema: u16) -> Vec<u8> {
             push_transform(&mut payload, *transform);
         }
     }
-    if capabilities.dowel_joinery {
+    if capabilities.dowel_joinery
+        && (!product.dowel_joints.is_empty() || !product.production_codes.is_empty())
+    {
         push_u32(&mut payload, product.dowel_joints.len() as u32);
         for joint in product.dowel_joints.values() {
             write_dowel_joint(&mut payload, joint);
         }
     }
 
+    if capabilities.production_codes && !product.production_codes.is_empty() {
+        push_u32(&mut payload, product.production_codes.len() as u32);
+        for (path, code) in &product.production_codes {
+            write_instance_path(&mut payload, path);
+            push_string(&mut payload, code);
+        }
+    }
     let mut manifest = Vec::new();
     push_u64(&mut manifest, payload.len() as u64);
     manifest.extend_from_slice(&crate::graph::sha256_bytes(&payload));
@@ -4205,6 +4221,8 @@ fn load_document(
             | SURFACE_KNIT_SCHEMA
             | SURFACE_THICKEN_SCHEMA
             | IMPORTED_EXACT_BODY_KIND_SCHEMA
+            | CAM_PLAN_SCHEMA
+            | DOWEL_JOINERY_SCHEMA
             | CURRENT_SCHEMA
     ) {
         return Err(PersistenceError::UnsupportedSchema(schema));
@@ -7475,6 +7493,31 @@ fn read_product(
             }
         }
     }
+    if capabilities.production_codes && !reader.is_finished() {
+        let mut codes = BTreeSet::new();
+        for _ in 0..reader.count_with_limit(MAX_COLLECTION_ITEMS)? {
+            let path = read_instance_path(reader)?;
+            let length = reader.count_with_limit(64)? as usize;
+            let code = std::str::from_utf8(reader.take(length)?)
+                .map_err(|_| PersistenceError::InvalidUtf8)?
+                .to_owned();
+            crate::document::validate_production_code(&code)?;
+            if !codes.insert(code.to_ascii_uppercase()) {
+                return Err(PersistenceError::InvalidCanonicalData(
+                    CanonicalError::DuplicateProductionCode(code),
+                ));
+            }
+            if product
+                .production_codes
+                .insert(path.clone(), code)
+                .is_some()
+            {
+                return Err(PersistenceError::InvalidCanonicalData(
+                    CanonicalError::InvalidProductionCodePath(path),
+                ));
+            }
+        }
+    }
     if !capabilities.body_contract {
         crate::document::migrate_legacy_body_contract(&mut product)?;
     }
@@ -8207,6 +8250,25 @@ mod tests {
             !save_passed_comparison,
             "a save passed identity comparison while work recovery was still being published"
         );
+    }
+
+    #[test]
+    fn pre_production_code_schemas_remain_loadable() {
+        let document = DocumentStore::new();
+        for schema in [
+            IMPORTED_EXACT_BODY_KIND_SCHEMA,
+            CAM_PLAN_SCHEMA,
+            DOWEL_JOINERY_SCHEMA,
+        ] {
+            let bytes = save_with_schema(&document.current(), schema);
+            let loaded = load(&bytes).unwrap();
+            assert_eq!(loaded.source_schema(), schema);
+            assert_eq!(loaded.snapshot().production_codes().count(), 0);
+            assert_eq!(
+                loaded.snapshot().canonical_digest(),
+                document.current().canonical_digest()
+            );
+        }
     }
 
     #[test]

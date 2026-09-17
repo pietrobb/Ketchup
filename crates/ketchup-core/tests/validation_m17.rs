@@ -1196,6 +1196,96 @@ fn exact_brep_graph_boolean_cut_emits_host_neutral_manufacturing_evidence() {
 }
 
 #[test]
+fn production_adapters_share_saved_codes_and_are_opt_in() {
+    use ketchup_core::fabrication::production::{HomagWoodwopAdapter, ProductionAdapter};
+    let (snapshot, projection) = circular_drill_fabrication_projection();
+    let neutral = projection.production_job(&snapshot, &[]).unwrap();
+    assert_eq!(neutral["outputs"], serde_json::json!({}));
+    assert_eq!(neutral["parts"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        neutral["parts"][0]["dimensions_mm"],
+        serde_json::json!([1000.0, 100.0, 50.0])
+    );
+    assert_eq!(
+        neutral["parts"][0]["operations"][1]["geometry"]["kind"],
+        "circular_drill"
+    );
+    let homag = HomagWoodwopAdapter {
+        options: Default::default(),
+    };
+    let job = projection.production_job(&snapshot, &[&homag]).unwrap();
+    for (part, output) in job["parts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(job["outputs"][homag.id()].as_array().unwrap())
+    {
+        assert_eq!(part["code"], output["code"]);
+        assert_eq!(
+            output["filename"],
+            format!("{}.mpr", part["code"].as_str().unwrap())
+        );
+    }
+    assert!(
+        projection
+            .production_job(&snapshot, &[&homag, &homag])
+            .is_err()
+    );
+    struct OtherMachine;
+    impl ProductionAdapter for OtherMachine {
+        fn id(&self) -> &str {
+            "other-machine"
+        }
+        fn render(
+            &self,
+            _: &GeneralFabricationProjection,
+            snapshot: &Snapshot,
+        ) -> Result<serde_json::Value, GeneralFabricationError> {
+            Ok(
+                serde_json::json!({"codes": snapshot.production_codes().map(|(_, code)| code).collect::<Vec<_>>()}),
+            )
+        }
+    }
+    let other = projection
+        .production_job(&snapshot, &[&OtherMachine])
+        .unwrap();
+    assert!(other["outputs"].get("homag-woodwop4").is_none());
+    assert_eq!(
+        other["outputs"]["other-machine"]["codes"][0],
+        "000000000046"
+    );
+    let (missing_snapshot, missing_projection) = exact_graph_document_fabrication_projection(
+        circular_drill_document(),
+        "m17-circular-drill-result",
+        GRAPH_BOOLEAN,
+    );
+    assert!(
+        missing_projection
+            .production_job(&missing_snapshot, &[])
+            .is_err()
+    );
+    assert!(
+        missing_projection
+            .woodwop_mpr_4_0_production_package(&missing_snapshot, Default::default())
+            .is_err()
+    );
+    let mut changed = persistence::load(&persistence::save(&snapshot))
+        .unwrap()
+        .into_editable()
+        .ok()
+        .unwrap();
+    changed
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetProductionCode {
+                instance_path: InstancePath::root(GRAPH_LEFT),
+                code: Some("ANOTHER-CODE".to_owned()),
+            },
+        ]))
+        .unwrap();
+    assert!(projection.production_job(&changed.current(), &[]).is_err());
+}
+
+#[test]
 fn exact_profile_cut_projects_btl_ready_timber_stock_and_circular_drilling() {
     let (snapshot, projection) = circular_drill_fabrication_projection();
     assert_eq!(projection.manufacturing.operations.len(), 2);
@@ -1703,8 +1793,21 @@ fn graph_fabrication_projection(
 }
 
 fn circular_drill_fabrication_projection() -> (Snapshot, GeneralFabricationProjection) {
+    let mut document = circular_drill_document();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetProductionCode {
+                instance_path: InstancePath::root(GRAPH_LEFT),
+                code: Some("000000000046".to_owned()),
+            },
+            CanonicalCommand::SetProductionCode {
+                instance_path: InstancePath::root(GRAPH_RIGHT),
+                code: Some("000000000047".to_owned()),
+            },
+        ]))
+        .unwrap();
     exact_graph_document_fabrication_projection(
-        circular_drill_document(),
+        document,
         "m17-circular-drill-result",
         GRAPH_BOOLEAN,
     )

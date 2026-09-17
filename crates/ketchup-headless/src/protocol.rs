@@ -13,6 +13,7 @@ use ketchup_application::pdm_workflow::{
     LocalPdmWorkflow, PdmCreateReleaseRequest, PdmDocumentState, PdmWorkflowError,
 };
 mod model_tools;
+mod production;
 use ketchup_application::batch_task::{
     OccurrenceBatchError, OccurrenceBatchOperation, OccurrenceBatchState, OccurrenceBatchTask,
 };
@@ -55,6 +56,7 @@ const METHODS: &[&str] = &[
     "new",
     "open",
     "state",
+    "production_codes",
     "summary",
     "query",
     "detail",
@@ -65,6 +67,8 @@ const METHODS: &[&str] = &[
     "batch_job_step",
     "batch_job_cancel",
     "apply",
+    "set_production_codes",
+    "production_job",
     "cam_preview",
     "cam_export",
     "fea_review",
@@ -87,6 +91,8 @@ const GUARDED_METHODS: &[&str] = &[
     "new",
     "open",
     "apply",
+    "set_production_codes",
+    "production_job",
     "cam_preview",
     "cam_export",
     "fea_review",
@@ -741,10 +747,15 @@ impl Server {
             .as_object()
             .ok_or_else(|| Error::invalid("params must be an object"))?;
         let (fields, mutation): (&[&str], bool) = match method {
-            "capabilities" | "state" | "list_validators" => (&[], false),
+            "capabilities" | "state" | "production_codes" | "list_validators" => (&[], false),
             "new" => (&["discard_unsaved"], true),
             "open" => (&["path", "discard_unsaved"], true),
             "apply" => (&["program", "selection"], true),
+            "set_production_codes" => (&["assignments"], true),
+            "production_job" => (
+                &["adapters", "vertical_pocket_tool_number", "timeout_ms"],
+                true,
+            ),
             "cam_preview" => (&["plan_id", "operations", "fixtures", "dialect"], true),
             "cam_export" => (&["review_token", "path", "confirmed"], true),
             "fea_review" => (
@@ -809,6 +820,9 @@ impl Server {
                 "mutation_preconditions":["expected_revision","expected_digest","expected_mutation_epoch"],"units":"mm","transform":"row-major 4x4 local occurrence transform","transactions":"one apply = one atomic CAD program; newly allocated Definition, Sketch and body references use zero-based earlier operation_index plus a typed output, never guessed IDs","protocol":PROTOCOL}),
             ),
             "state" => Ok(self.state_result()),
+            "production_codes" => Ok(self.production_codes()),
+            "set_production_codes" => self.set_production_codes(p),
+            "production_job" => self.production_job(p),
             "new" => {
                 self.discard_guard(p)?;
                 self.session = DocumentSession::new(self.settings.clone());

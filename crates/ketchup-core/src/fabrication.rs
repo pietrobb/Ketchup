@@ -25,6 +25,8 @@ use crate::validation::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+pub mod production;
+
 pub const FABRICATION_PROJECTION_V1: &str = "ketchup.fabrication-projection.v1";
 pub const BEAM_FABRICATION_EVALUATOR_V1: &str = "ketchup.beam-fabrication-evaluator.v1";
 pub const EXACT_DIMENSION_EVALUATOR_V1: &str = "ketchup.exact-dimension-evaluator.v1";
@@ -513,7 +515,7 @@ impl GeneralManufacturingKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
 pub struct GeneralMachiningFrame {
     pub origin_mm: [f64; 3],
     pub x_axis: [f64; 3],
@@ -521,7 +523,8 @@ pub struct GeneralMachiningFrame {
     pub normal: [f64; 3],
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GeneralMachiningSegment {
     Line {
         start_mm: [f64; 2],
@@ -535,7 +538,8 @@ pub enum GeneralMachiningSegment {
     },
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GeneralMachiningGeometry {
     TimberStock {
         frame: GeneralMachiningFrame,
@@ -1161,7 +1165,7 @@ impl GeneralFabricationProjection {
                         .collect::<Option<Vec<_>>>()
                         .ok_or(GeneralFabricationError::ExportBlocked)?,
                 );
-                let program_name = homag_program_name(snapshot, instance_path);
+                let program_name = homag_program_name(snapshot, instance_path)?;
                 if !program_names.insert(program_name.clone()) {
                     return Err(GeneralFabricationError::ExportBlocked);
                 }
@@ -1917,23 +1921,15 @@ fn woodwop_coordinate(definition_coordinate: [f64; 3], stock_frame: WoodwopStock
         .map(|axis| definition_coordinate[axis])
 }
 
-fn homag_program_name(snapshot: &Snapshot, instance_path: &InstancePath) -> String {
-    let mut identity = Vec::new();
-    identity.extend_from_slice(&snapshot.document_id().0.to_le_bytes());
-    identity.extend_from_slice(&instance_path.root_occurrence().0.to_le_bytes());
-    for step in instance_path.steps() {
-        match step {
-            InstancePathStep::Group(id) => {
-                identity.push(0);
-                identity.extend_from_slice(&id.0.to_le_bytes());
-            }
-            InstancePathStep::Occurrence(id) => {
-                identity.push(1);
-                identity.extend_from_slice(&id.0.to_le_bytes());
-            }
-        }
-    }
-    sha256_hex(&identity)[..12].to_ascii_uppercase()
+fn homag_program_name(
+    snapshot: &Snapshot,
+    instance_path: &InstancePath,
+) -> Result<String, GeneralFabricationError> {
+    snapshot
+        .production_code(instance_path)
+        .filter(|code| code.len() == 12)
+        .map(str::to_owned)
+        .ok_or(GeneralFabricationError::ExportBlocked)
 }
 
 fn woodwop_mpr_output(

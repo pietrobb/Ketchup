@@ -461,6 +461,42 @@ class Document:
             "thickness_mm": thickness_mm, "direction": direction,
         })
 
+    def production_codes(self):
+        """Read codes keyed by complete physical-instance paths."""
+        return self._call("production_codes")["assignments"]
+
+    def set_production_codes(self, assignments):
+        """Persist explicit per-piece codes atomically; code=None removes a binding."""
+        return self._call("set_production_codes", {
+            "assignments": [dict(item) for item in assignments],
+        }, mutation=True, state=True)
+
+    def production_job(self, *, machine_adapters=(), vertical_pocket_tool_number=None,
+                       timeout_ms=30000):
+        """Prepare a revision-bound job from a saved document and exact geometry."""
+        if isinstance(machine_adapters, str):
+            raise ValueError("machine_adapters must be a sequence of adapter IDs")
+        if type(timeout_ms) is not int or not 1 <= timeout_ms <= 300000:
+            raise ValueError("timeout_ms must be 1..300000")
+        return self._call("production_job", {
+            "adapters": list(machine_adapters),
+            "vertical_pocket_tool_number": vertical_pocket_tool_number,
+            "timeout_ms": timeout_ms,
+        }, guarded=True, timeout=timeout_ms / 1000 + 10)
+
+    def export_production(self, destination, adapters, *, machine_adapters=(),
+                          vertical_pocket_tool_number=None, timeout_ms=30000,
+                          confirmed=False):
+        """Export a fresh job through explicitly enabled, trusted Python adapters."""
+        if confirmed is not True:
+            raise ValueError("production export requires confirmed=True")
+        from .manufacturing import export_job
+        with self._session._lock:
+            job = self.production_job(machine_adapters=machine_adapters,
+                                      vertical_pocket_tool_number=vertical_pocket_tool_number,
+                                      timeout_ms=timeout_ms)
+            return export_job(job, destination, adapters, confirmed=True)
+
     def cam_setup(self, plan_id, name, target_definition_id, target_feature_id, *,
                   stock_minimum_mm, stock_maximum_mm, tool_number, tool_kind,
                   tool_diameter_mm, flute_length_mm, overall_length_mm,

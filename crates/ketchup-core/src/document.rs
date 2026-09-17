@@ -1938,6 +1938,7 @@ pub(crate) struct ProductModel {
     pub(crate) groups: BTreeMap<GroupId, Arc<Group>>,
     pub(crate) local_occurrences: BTreeMap<LocalOccurrenceKey, Arc<LocalOccurrence>>,
     pub(crate) local_groups: BTreeMap<LocalGroupKey, Arc<LocalGroup>>,
+    pub(crate) production_codes: BTreeMap<InstancePath, String>,
     pub(crate) instance_transform_overrides: BTreeMap<InstancePath, Transform>,
     pub(crate) canonical_digest: DigestCache,
 }
@@ -1994,6 +1995,7 @@ impl Default for ProductModel {
             groups: BTreeMap::new(),
             local_occurrences: BTreeMap::new(),
             local_groups: BTreeMap::new(),
+            production_codes: BTreeMap::new(),
             instance_transform_overrides: BTreeMap::new(),
             canonical_digest: DigestCache::default(),
         }
@@ -2316,6 +2318,11 @@ pub struct PersistentDimensionProjection {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum CanonicalCommand {
+    /// Assign a document-unique, machine-neutral code to one physical instance.
+    SetProductionCode {
+        instance_path: InstancePath,
+        code: Option<String>,
+    },
     CreateEvaluatorNode {
         id: NodeId,
         name: String,
@@ -2801,6 +2808,7 @@ pub enum AuthoritativeDependency {
     ClearanceVolume(ClearanceVolumeId),
     CamPlan(CamPlanId),
     DowelJoint(DowelJointId),
+    ProductionCodes,
     PersistentDimension(PersistentDimensionId),
     Tag(TagId),
     ClassificationDimension(ClassificationDimensionId),
@@ -3305,6 +3313,18 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    #[must_use]
+    pub fn production_code(&self, path: &InstancePath) -> Option<&str> {
+        self.product.production_codes.get(path).map(String::as_str)
+    }
+
+    pub fn production_codes(&self) -> impl Iterator<Item = (&InstancePath, &str)> {
+        self.product
+            .production_codes
+            .iter()
+            .map(|(path, code)| (path, code.as_str()))
+    }
+
     pub fn preview_batch(&self, batch: &CommandBatch) -> Result<Self, CanonicalError> {
         self.preview_batch_at_revision(
             batch,
@@ -5271,9 +5291,42 @@ impl DocumentStore {
         let mut explicit_dirty_features = BTreeSet::new();
         let mut evaluation_identity = EvaluationIdentity::default();
         let mut previous_evaluation = self.revisions[self.cursor].evaluation.clone();
+        let mut production_anchors = product
+            .production_codes
+            .keys()
+            .map(|path| (path.clone(), production_code_identity(&product, path)))
+            .collect::<BTreeMap<_, _>>();
+        let mut rebound_production_paths = BTreeSet::new();
 
         for command in &batch.commands {
             match command {
+                CanonicalCommand::SetProductionCode {
+                    instance_path,
+                    code,
+                } => {
+                    if let Some(code) = code {
+                        validate_production_code(code)?;
+                        let identity = production_code_identity(&product, instance_path)
+                            .ok_or_else(|| {
+                                CanonicalError::InvalidProductionCodePath(instance_path.clone())
+                            })?;
+                        if product.production_codes.iter().any(|(path, assigned)| {
+                            path != instance_path && assigned.eq_ignore_ascii_case(code)
+                        }) {
+                            return Err(CanonicalError::DuplicateProductionCode(code.clone()));
+                        }
+                        production_anchors
+                            .entry(instance_path.clone())
+                            .or_insert(Some(identity));
+                        product
+                            .production_codes
+                            .insert(instance_path.clone(), code.clone());
+                    } else {
+                        product.production_codes.remove(instance_path);
+                        production_anchors.remove(instance_path);
+                        rebound_production_paths.remove(instance_path);
+                    }
+                }
                 CanonicalCommand::CreateEvaluatorNode {
                     id,
                     name,
@@ -7345,6 +7398,14 @@ impl DocumentStore {
                     apply_solid_tool(&mut product, plan)?;
                 }
             }
+            for (path, identity) in &production_anchors {
+                if production_code_identity(&product, path).as_ref() != identity.as_ref() {
+                    rebound_production_paths.insert(path.clone());
+                }
+            }
+        }
+        if let Some(path) = rebound_production_paths.first() {
+            return Err(CanonicalError::InvalidProductionCodePath(path.clone()));
         }
 
         refresh_supported_planar_face_frames(&mut product, Some(&current))?;
@@ -9276,6 +9337,9 @@ pub enum CanonicalError {
     OccurrenceDefinitionMismatch,
     InvalidLocalGraph,
     InvalidInstancePath,
+    InvalidProductionCode,
+    DuplicateProductionCode(String),
+    InvalidProductionCodePath(InstancePath),
     IdExhausted,
     WrongNodeKind(NodeId),
     OverrideAlreadyExists(u64),
@@ -9443,6 +9507,9 @@ impl CanonicalError {
             Self::OccurrenceDefinitionMismatch => "canonical.occurrence_definition_mismatch",
             Self::InvalidLocalGraph => "canonical.invalid_local_graph",
             Self::InvalidInstancePath => "canonical.invalid_instance_path",
+            Self::InvalidProductionCode => "canonical.invalid_production_code",
+            Self::DuplicateProductionCode(_) => "canonical.duplicate_production_code",
+            Self::InvalidProductionCodePath(_) => "canonical.invalid_production_code_path",
             Self::IdExhausted => "canonical.id_exhausted",
             Self::WrongNodeKind(..) => "canonical.wrong_node_kind",
             Self::OverrideAlreadyExists(..) => "canonical.override_already_exists",
@@ -9765,6 +9832,9 @@ impl fmt::Display for CanonicalError {
             }
             Self::InvalidLocalGraph => formatter.write_str("definition-local graph is invalid"),
             Self::InvalidInstancePath => formatter.write_str("instance path is unresolved"),
+            Self::InvalidProductionCode => formatter.write_str("production code must be 1..64 bytes of A-Z, 0-9, underscore or hyphen"),
+            Self::DuplicateProductionCode(code) => write!(formatter, "production code {code} is already assigned in this document"),
+            Self::InvalidProductionCodePath(path) => write!(formatter, "production code path {path:?} is not a physical instance or has been rebound; clear its code first"),
             Self::IdExhausted => formatter.write_str("canonical ID space is exhausted"),
             Self::WrongNodeKind(id) => write!(formatter, "node {} has the wrong kind", id.0),
             Self::OverrideAlreadyExists(id) => write!(formatter, "override {id} already exists"),
@@ -15821,6 +15891,44 @@ fn validate_assembly_joint_motion_publication(
     Ok(())
 }
 
+pub(crate) fn validate_production_code(code: &str) -> Result<(), CanonicalError> {
+    if code.is_empty()
+        || code.len() > 64
+        || !code
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-'))
+    {
+        return Err(CanonicalError::InvalidProductionCode);
+    }
+    Ok(())
+}
+
+// Include every owning definition, not merely the leaf: reused local IDs must not rebind codes.
+fn production_code_identity(
+    product: &ProductModel,
+    path: &InstancePath,
+) -> Option<Vec<DefinitionId>> {
+    if path.steps().len() > 256 || matches!(path.steps().last(), Some(InstancePathStep::Group(_))) {
+        return None;
+    }
+    let mut prefix = InstancePath::root(path.root_occurrence());
+    let mut identity = vec![resolve_product_instance_path(product, &prefix)?];
+    for step in path.steps() {
+        prefix = prefix.with_step(*step);
+        identity.push(resolve_product_instance_path(product, &prefix)?);
+    }
+    let definition = product.definitions.get(identity.last()?)?;
+    if !definition.feature_ids.iter().any(|id| {
+        product
+            .features
+            .get(id)
+            .is_some_and(|feature| feature.kind.produces_body())
+    }) {
+        return None;
+    }
+    Some(identity)
+}
+
 fn validate_product(product: &ProductModel) -> Result<(), CanonicalError> {
     validate_product_with_drawing_sources(product, true)
 }
@@ -15830,6 +15938,16 @@ fn validate_product_with_drawing_sources(
     validate_drawing_sources: bool,
 ) -> Result<(), CanonicalError> {
     ensure_product_id(product.document_id.0)?;
+    let mut assigned_codes = BTreeSet::new();
+    for (path, code) in &product.production_codes {
+        validate_production_code(code)?;
+        if !assigned_codes.insert(code.to_ascii_uppercase()) {
+            return Err(CanonicalError::DuplicateProductionCode(code.clone()));
+        }
+        if production_code_identity(product, path).is_none() {
+            return Err(CanonicalError::InvalidProductionCodePath(path.clone()));
+        }
+    }
     if product
         .instance_transform_overrides
         .iter()
@@ -17878,6 +17996,9 @@ fn authoritative_writes(
     let mut writes = BTreeSet::new();
     for command in &batch.commands {
         match command {
+            CanonicalCommand::SetProductionCode { .. } => {
+                writes.insert(AuthoritativeDependency::ProductionCodes);
+            }
             CanonicalCommand::CreateEvaluatorNode { id, .. }
             | CanonicalCommand::SetEvaluatorDimension { id, .. }
             | CanonicalCommand::RenameEvaluatorNode { id, .. }
@@ -18165,6 +18286,16 @@ fn authoritative_dependencies(
     let mut dependencies = BTreeSet::new();
     for command in &batch.commands {
         match command {
+            CanonicalCommand::SetProductionCode { instance_path, .. } => {
+                dependencies.insert(AuthoritativeDependency::ProductionCodes);
+                dependencies.insert(AuthoritativeDependency::Occurrence(
+                    instance_path.root_occurrence(),
+                ));
+                if let Some(owners) = production_code_identity(&snapshot.product, instance_path) {
+                    dependencies
+                        .extend(owners.into_iter().map(AuthoritativeDependency::Definition));
+                }
+            }
             CanonicalCommand::CreateEvaluatorNode {
                 id,
                 dependencies: node_dependencies,

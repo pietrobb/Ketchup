@@ -177,6 +177,14 @@ pub(super) fn digest_snapshot(snapshot: &Snapshot) -> String {
             digest.transform(*transform);
         }
     }
+    if !snapshot.product.production_codes.is_empty() {
+        digest.bytes(b"canonical-production-codes.v1");
+        digest.u64(snapshot.product.production_codes.len() as u64);
+        for (path, code) in &snapshot.product.production_codes {
+            digest.instance_path(path);
+            digest.bytes(code.as_bytes());
+        }
+    }
     digest.finish()
 }
 
@@ -2331,6 +2339,14 @@ impl StableDigest {
                     self.byte(0);
                 }
             }
+            AuthoritativeDependency::ProductionCodes => {
+                self.bytes(b"production-codes.v1");
+                self.u64(product.production_codes.len() as u64);
+                for (path, code) in &product.production_codes {
+                    self.instance_path(path);
+                    self.bytes(code.as_bytes());
+                }
+            }
             AuthoritativeDependency::Occurrence(id) => {
                 self.byte(4);
                 self.u64(id.0);
@@ -2638,6 +2654,17 @@ impl StableDigest {
 
     pub(super) fn command(&mut self, command: &CanonicalCommand) {
         match command {
+            CanonicalCommand::SetProductionCode {
+                instance_path,
+                code,
+            } => {
+                self.bytes(b"set-production-code.v1");
+                self.instance_path(instance_path);
+                self.byte(u8::from(code.is_some()));
+                if let Some(code) = code {
+                    self.bytes(code.as_bytes());
+                }
+            }
             CanonicalCommand::CreateEvaluatorNode {
                 id,
                 name,

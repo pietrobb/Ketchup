@@ -105,7 +105,10 @@ fn canonical_cam_plan_is_persisted_deterministic_and_undoable() {
     assert_eq!(canonical.health(&committed), CamPlanHealth::Current);
 
     let bytes = persistence::save(&committed);
-    assert_eq!(u16::from_le_bytes(bytes[10..12].try_into().unwrap()), 89);
+    assert_eq!(
+        u16::from_le_bytes(bytes[10..12].try_into().unwrap()),
+        persistence::CURRENT_SCHEMA
+    );
     let reopened = persistence::load(&bytes).unwrap();
     assert_eq!(
         reopened.snapshot().canonical_digest(),
