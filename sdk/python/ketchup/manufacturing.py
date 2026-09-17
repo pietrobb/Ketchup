@@ -9,7 +9,6 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
 import ctypes
-import errno
 import hashlib
 import io
 import json
@@ -68,9 +67,23 @@ def _validate_job(job):
         if code in codes:
             raise ManufacturingError(f"duplicate part code: {code}")
         codes.add(code)
-        if not isinstance(part.get("instance_path"), dict):
-            raise ManufacturingError("instance_path must be an object")
-        path = _json(part["instance_path"])
+        identity = part.get("instance_path")
+        if not isinstance(identity, dict) or set(identity) != {"root_occurrence_id", "steps"}:
+            raise ManufacturingError("instance_path requires root_occurrence_id and steps")
+        root = identity["root_occurrence_id"]
+        if type(root) is not int or not 1 <= root <= (1 << 64) - 1:
+            raise ManufacturingError("instance_path root must be a positive u64")
+        steps = identity["steps"]
+        if not isinstance(steps, list) or len(steps) > 256:
+            raise ManufacturingError("instance_path steps must be a list of at most 256 steps")
+        for step in steps:
+            if (not isinstance(step, dict) or set(step) != {"kind", "id"}
+                    or step["kind"] not in ("group", "occurrence")
+                    or type(step["id"]) is not int or not 1 <= step["id"] <= (1 << 64) - 1):
+                raise ManufacturingError("invalid instance_path step")
+        if steps and steps[-1]["kind"] != "occurrence":
+            raise ManufacturingError("instance_path must end at a physical occurrence, not a group")
+        path = _json(identity)
         if path in paths:
             raise ManufacturingError("duplicate physical instance_path")
         paths.add(path)
@@ -192,16 +205,28 @@ def export_job(job: dict, destination, adapters: Iterable[ManufacturingAdapter],
 class HomagWoodwopAdapter:
     """Pass through explicitly requested ASCII MPRs, without rewriting any byte.
 
-    Validates the transport envelope, identity and ASCII content, not machine
-    toolpaths or physical machine safety. Outputs may be a subset of the parts.
+    Validates the transport envelope, per-piece coverage and ASCII content, not
+    toolpaths or physical machine safety. Only unmachined parts omit programs.
     """
     id = "homag-woodwop4"
 
     def render(self, job: dict) -> Mapping[str, bytes]:
         _validate_job(job)
-        parts = {p["code"]: p for p in job["parts"]}
-        if any(not re.fullmatch(r"[A-Z0-9_-]{12}", code) for code in parts):
-            raise ManufacturingError("HOMAG requires exact12 character part codes")
+        required = set()
+        for part in job["parts"]:
+            operations, holes = part.get("operations"), part.get("dowel_holes")
+            if (not isinstance(operations, list) or not operations
+                    or any(not isinstance(op, dict) or not isinstance(op.get("kind"), str)
+                           or not op["kind"].strip() for op in operations)
+                    or operations[0]["kind"] != "stock"
+                    or any(op["kind"] == "stock" for op in operations[1:])
+                    or not isinstance(holes, list) or any(not isinstance(h, dict) for h in holes)):
+                raise ManufacturingError("HOMAG requires explicit stock, operations and dowel_holes")
+            if len(operations) > 1 or holes:
+                code = part["code"]
+                if not re.fullmatch(r"[A-Z0-9_-]{12}", code):
+                    raise ManufacturingError("HOMAG requires exactly 12 character machined part codes")
+                required.add(code)
         outputs = job["outputs"].get(self.id)
         if not isinstance(outputs, list):
             raise ManufacturingError("explicit homag-woodwop4 outputs list is required")
@@ -210,8 +235,8 @@ class HomagWoodwopAdapter:
             if not isinstance(output, dict):
                 raise ManufacturingError("HOMAG output must be an object")
             code = output.get("code")
-            if not isinstance(code, str) or code not in parts or code in seen:
-                raise ManufacturingError("unknown or duplicate HOMAG output code")
+            if not isinstance(code, str) or code not in required or code in seen:
+                raise ManufacturingError("unexpected or duplicate HOMAG output code")
             seen.add(code)
             name = output.get("filename")
             if name != code + ".mpr":
@@ -222,6 +247,8 @@ class HomagWoodwopAdapter:
                    or ord(ch) == 127 for ch in content):
                 raise ManufacturingError("MPR content must be ASCII text without control characters")
             result[name] = content.encode("ascii")
+        if seen != required:
+            raise ManufacturingError(f"missing HOMAG programs for part codes: {', '.join(sorted(required - seen))}")
         return result
 
 
@@ -274,6 +301,8 @@ class JafWebCutAdapter:
             group, position, last_group = 0, 0, None
             for offset, part in enumerate(job["parts"]):
                 code = part["code"]
+                if part.get("stock_shape") != "rectangular_prism":
+                    raise ManufacturingError("JAF requires explicit rectangular stock; profile bounds are not a cut piece")
                 if len(code) > 40:
                     raise ManufacturingError("JAF template barcode accepts at most 40 characters")
                 material = self.material_mapping.get(part["material_key"])

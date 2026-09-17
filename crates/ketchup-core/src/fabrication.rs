@@ -1132,6 +1132,14 @@ impl GeneralFabricationProjection {
             let stock_frame = woodwop_stock_frame(&stock.machining)
                 .ok_or(GeneralFabricationError::ExportBlocked)?;
             for instance_path in &row.instances {
+                let resolved = snapshot
+                    .resolve_instance_path(instance_path)
+                    .map_err(|_| GeneralFabricationError::ExportBlocked)?;
+                if resolved.definition_id != row.definition_id
+                    || !is_production_transform(resolved.world_transform)
+                {
+                    return Err(GeneralFabricationError::ExportBlocked);
+                }
                 let instance_holes = holes
                     .iter()
                     .filter(|hole| hole.instance_path == *instance_path)
@@ -2308,14 +2316,27 @@ fn rectangular_timber_stock_dimensions(
     if *frame != identity_machining_frame()
         || *start_mm != [0.0, 0.0, 0.0]
         || *length_axis != [0.0, 0.0, 1.0]
-        || cross_section.len() != 4
-        || [
-            *length_mm,
-            *cross_section_width_mm,
-            *cross_section_height_mm,
-        ]
-        .into_iter()
-        .any(|value| !value.is_finite() || value <= 0.0)
+    {
+        return None;
+    }
+    rectangular_stock_profile_dimensions(
+        cross_section,
+        *length_mm,
+        *cross_section_width_mm,
+        *cross_section_height_mm,
+    )
+}
+
+fn rectangular_stock_profile_dimensions(
+    cross_section: &[GeneralMachiningSegment],
+    length_mm: f64,
+    cross_section_width_mm: f64,
+    cross_section_height_mm: f64,
+) -> Option<(f64, f64, f64)> {
+    if cross_section.len() != 4
+        || [length_mm, cross_section_width_mm, cross_section_height_mm]
+            .into_iter()
+            .any(|value| !value.is_finite() || value <= 0.0)
     {
         return None;
     }
@@ -2382,8 +2403,8 @@ fn rectangular_timber_stock_dimensions(
     }
     let width_mm = maximum[0] - minimum[0];
     let height_mm = maximum[1] - minimum[1];
-    (width_mm == *cross_section_width_mm && height_mm == *cross_section_height_mm)
-        .then_some((*length_mm, width_mm, height_mm))
+    (width_mm == cross_section_width_mm && height_mm == cross_section_height_mm)
+        .then_some((length_mm, width_mm, height_mm))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -3006,7 +3027,31 @@ fn rectangle_manufacturing_operations(
         semantic_inputs: Vec::new(),
         frame: "definition-local",
         bounds: row.dimensions,
-        machining: legacy_stock_geometry(row.dimensions),
+        machining: {
+            let graph = ExactBRepGraph::from_snapshot(
+                snapshot,
+                row.definition_id,
+                source.producer_feature_id,
+            )
+            .map_err(|_| GeneralFabricationError::UnsupportedOrUnavailableGeometry)?;
+            let Some(stock) = graph.nodes.first() else {
+                return Ok(None);
+            };
+            let ExactBRepOperation::Extrude {
+                profile, interval, ..
+            } = stock.operation
+            else {
+                return Ok(None);
+            };
+            let Some(geometry) = graph
+                .profiles
+                .get(profile.0 as usize)
+                .and_then(|profile| timber_stock_geometry(profile, interval))
+            else {
+                return Ok(None);
+            };
+            geometry
+        },
         source: source.clone(),
     }];
     for feature_id in definition.feature_ids() {
@@ -3197,42 +3242,6 @@ fn graph_manufacturing_operations(
         source: source.clone(),
     });
     Some(operations)
-}
-
-fn rectangle_machining_segments(
-    minimum: [f64; 2],
-    maximum: [f64; 2],
-) -> Vec<GeneralMachiningSegment> {
-    let points = [
-        minimum,
-        [maximum[0], minimum[1]],
-        maximum,
-        [minimum[0], maximum[1]],
-    ];
-    points
-        .iter()
-        .zip(points.iter().cycle().skip(1))
-        .take(points.len())
-        .map(|(start_mm, end_mm)| GeneralMachiningSegment::Line {
-            start_mm: *start_mm,
-            end_mm: *end_mm,
-        })
-        .collect()
-}
-
-fn legacy_stock_geometry(dimensions: PieceDimensions) -> GeneralMachiningGeometry {
-    GeneralMachiningGeometry::TimberStock {
-        frame: identity_machining_frame(),
-        cross_section: rectangle_machining_segments(
-            [0.0, 0.0],
-            [dimensions.length_mm, dimensions.width_mm],
-        ),
-        start_mm: [0.0, 0.0, 0.0],
-        length_axis: [0.0, 0.0, 1.0],
-        length_mm: dimensions.height_mm,
-        cross_section_width_mm: dimensions.length_mm,
-        cross_section_height_mm: dimensions.width_mm,
-    }
 }
 
 fn legacy_profile_cut_geometry(
@@ -3964,6 +3973,12 @@ fn general_envelope_is_current(
         && envelope.is_current(snapshot)
 }
 
+fn is_production_transform(transform: Transform) -> bool {
+    let m = transform.matrix();
+    let determinant = m[0] * (m[5] * m[10] - m[6] * m[9]) - m[1] * (m[4] * m[10] - m[6] * m[8])
+        + m[2] * (m[4] * m[9] - m[5] * m[8]);
+    is_rigid_transform(transform) && (determinant - 1.0).abs() <= 1.0e-12
+}
 fn is_rigid_transform(transform: Transform) -> bool {
     let matrix = transform.matrix();
     if matrix[12] != 0.0 || matrix[13] != 0.0 || matrix[14] != 0.0 || matrix[15] != 1.0 {

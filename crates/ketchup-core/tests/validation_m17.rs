@@ -1195,6 +1195,107 @@ fn exact_brep_graph_boolean_cut_emits_host_neutral_manufacturing_evidence() {
     assert!(drawing.contains("boolean-cut: width=2 mm, height=10 mm, depth=10 mm"));
 }
 
+fn transformed_production_fixture(
+    linear: [f64; 9],
+    inherited: bool,
+) -> (Snapshot, GeneralFabricationProjection) {
+    let mut document = circular_drill_document_at([20.0, 15.0]);
+    let transform = Transform::from_matrix([
+        linear[0], linear[1], linear[2], 5000.0, linear[3], linear[4], linear[5], 0.0, linear[6],
+        linear[7], linear[8], 0.0, 0.0, 0.0, 0.0, 1.0,
+    ])
+    .unwrap();
+    let mut commands = vec![
+        CanonicalCommand::SetProductionCode {
+            instance_path: InstancePath::root(GRAPH_LEFT),
+            code: Some("000000000046".into()),
+        },
+        CanonicalCommand::SetProductionCode {
+            instance_path: InstancePath::root(GRAPH_RIGHT),
+            code: Some("000000000047".into()),
+        },
+    ];
+    if inherited {
+        commands.extend([
+            CanonicalCommand::CreateGroup {
+                id: NESTED_GROUP,
+                name: "Transformed parent".into(),
+                transform,
+                parent: None,
+            },
+            CanonicalCommand::SetOccurrenceParent {
+                id: GRAPH_RIGHT,
+                parent: Some(NESTED_GROUP),
+            },
+        ]);
+    } else {
+        commands.push(CanonicalCommand::SetOccurrenceTransform {
+            id: GRAPH_RIGHT,
+            transform,
+        });
+    }
+    document.apply_batch(&CommandBatch::new(commands)).unwrap();
+    exact_graph_document_fabrication_projection(
+        document,
+        "production-transform-result",
+        GRAPH_BOOLEAN,
+    )
+}
+#[test]
+fn neutral_production_rejects_reflected_blind_drilling() {
+    for axis in 0..3 {
+        for inherited in [false, true] {
+            let mut linear = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+            linear[axis * 4] = -1.0;
+            let (snapshot, projection) = transformed_production_fixture(linear, inherited);
+            assert!(projection.bom_export(&snapshot).is_ok());
+            assert!(projection.manufacturing_export(&snapshot).is_ok());
+            assert_eq!(
+                projection.production_job(&snapshot, &[]),
+                Err(GeneralFabricationError::ExportBlocked),
+                "axis={axis}, inherited={inherited}"
+            );
+        }
+    }
+}
+#[test]
+fn homag_production_rejects_reflected_blind_drilling() {
+    for axis in 0..3 {
+        for inherited in [false, true] {
+            let mut linear = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+            linear[axis * 4] = -1.0;
+            let (snapshot, projection) = transformed_production_fixture(linear, inherited);
+            assert!(
+                matches!(
+                    projection.woodwop_mpr_4_0_production_package(&snapshot, Default::default()),
+                    Err(GeneralFabricationError::ExportBlocked)
+                ),
+                "axis={axis}, inherited={inherited}"
+            );
+        }
+    }
+}
+#[test]
+fn production_preserves_proper_rotations_and_translations() {
+    for linear in [
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+        [0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        [-1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0],
+    ] {
+        for inherited in [false, true] {
+            let (snapshot, projection) = transformed_production_fixture(linear, inherited);
+            let job = projection.production_job(&snapshot, &[]).unwrap();
+            assert_eq!(job["parts"][0]["operations"], job["parts"][1]["operations"]);
+            assert_eq!(
+                projection
+                    .woodwop_mpr_4_0_production_package(&snapshot, Default::default())
+                    .unwrap()
+                    .len(),
+                2
+            );
+        }
+    }
+}
 #[test]
 fn production_adapters_share_saved_codes_and_are_opt_in() {
     use ketchup_core::fabrication::production::{HomagWoodwopAdapter, ProductionAdapter};
@@ -1889,11 +1990,13 @@ fn exact_graph_document_fabrication_projection(
 }
 
 fn circular_drill_document() -> DocumentStore {
-    let center = [50.0, 25.0];
-    let east = [55.0, 25.0];
-    let north = [50.0, 30.0];
-    let west = [45.0, 25.0];
-    let south = [50.0, 20.0];
+    circular_drill_document_at([50.0, 25.0])
+}
+fn circular_drill_document_at(center: [f64; 2]) -> DocumentStore {
+    let east = [center[0] + 5.0, center[1]];
+    let north = [center[0], center[1] + 5.0];
+    let west = [center[0] - 5.0, center[1]];
+    let south = [center[0], center[1] - 5.0];
     let arc = |start_mm, end_mm| ProfileSegment::CircularArc {
         start_mm,
         end_mm,

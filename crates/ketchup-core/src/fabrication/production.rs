@@ -56,7 +56,10 @@ pub fn instance_path_value(path: &InstancePath) -> Value {
 
 impl GeneralFabricationProjection {
     /// One physical piece per entry, with definition-local machining coordinates.
-    /// The stock axis map relates cutting-list L/W/T to these coordinates.
+    /// dimensions_mm are descending stock-frame bounding extents, not necessarily a cut piece.
+    /// stock_frame maps those axes and their minimum corner to definition-local mm;
+    /// its sorted axes may be left-handed. Only rectangular_prism denotes a rectangular blank.
+    /// Original profiles and machining frames remain unchanged in operations.
     pub fn production_job(
         &self,
         snapshot: &Snapshot,
@@ -114,8 +117,55 @@ impl GeneralFabricationProjection {
             if stock.kind != GeneralManufacturingKind::Stock || !stock.semantic_inputs.is_empty() {
                 return Err(GeneralFabricationError::ExportBlocked);
             }
-            let stock_frame = woodwop_stock_frame(&stock.machining)
-                .ok_or(GeneralFabricationError::ExportBlocked)?;
+            let GeneralMachiningGeometry::TimberStock {
+                frame,
+                cross_section,
+                start_mm,
+                length_axis,
+                length_mm,
+                cross_section_width_mm,
+                cross_section_height_mm,
+            } = &stock.machining
+            else {
+                return Err(GeneralFabricationError::ExportBlocked);
+            };
+            let stock_dimensions = [
+                *cross_section_width_mm,
+                *cross_section_height_mm,
+                *length_mm,
+            ];
+            let mut order = [0, 1, 2];
+            order.sort_by(|left, right| {
+                stock_dimensions[*right]
+                    .total_cmp(&stock_dimensions[*left])
+                    .then(left.cmp(right))
+            });
+            let dimensions_mm = order.map(|axis| stock_dimensions[axis]);
+            let axes = [frame.x_axis, frame.y_axis, *length_axis];
+            let mut minimum = [f64::INFINITY; 2];
+            for segment in cross_section {
+                let GeneralMachiningSegment::Line { start_mm, end_mm } = segment else {
+                    return Err(GeneralFabricationError::ExportBlocked);
+                };
+                for axis in 0..2 {
+                    minimum[axis] = minimum[axis].min(start_mm[axis]).min(end_mm[axis]);
+                }
+            }
+            let origin_mm: [f64; 3] = std::array::from_fn(|axis| {
+                start_mm[axis] + frame.x_axis[axis] * minimum[0] + frame.y_axis[axis] * minimum[1]
+            });
+            let stock_shape = if rectangular_stock_profile_dimensions(
+                cross_section,
+                *length_mm,
+                *cross_section_width_mm,
+                *cross_section_height_mm,
+            )
+            .is_some()
+            {
+                "rectangular_prism"
+            } else {
+                "profile_extrusion"
+            };
             for (index, _) in &matching {
                 matched_operations.insert(*index);
             }
@@ -129,7 +179,9 @@ impl GeneralFabricationProjection {
                 let resolved = snapshot
                     .resolve_instance_path(path)
                     .map_err(|_| GeneralFabricationError::ExportBlocked)?;
-                if resolved.definition_id != row.definition_id {
+                if resolved.definition_id != row.definition_id
+                    || !is_production_transform(resolved.world_transform)
+                {
                     return Err(GeneralFabricationError::ExportBlocked);
                 }
                 let definition = snapshot
@@ -150,8 +202,9 @@ impl GeneralFabricationProjection {
                     "definition_id": row.definition_id.0,
                     "code": code, "name": definition.name(),
                     "material_key": row.material_key,
-                    "dimensions_mm": stock_frame.dimensions_mm,
-                    "stock_definition_axes": stock_frame.definition_axes,
+                    "dimensions_mm": dimensions_mm,
+                    "stock_frame": {"origin_mm": origin_mm, "axes": order.map(|axis| axes[axis])},
+                    "stock_shape": stock_shape,
                     "coordinate_frame": "definition_local_mm",
                     "operations": operations,
                     "dowel_holes": dowels.remove(path).unwrap_or_default(),

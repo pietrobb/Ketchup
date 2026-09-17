@@ -18,9 +18,9 @@ from ketchup.manufacturing import (
 
 
 def job(count=2):
-    parts = [{"instance_path": {"occurrences": [i]}, "code": f"{i:012d}",
-              "name": "=not_a_formula", "material_key": "oak",
-              "dimensions_mm": [600, 400, 18]} for i in range(count)]
+    parts = [{"instance_path": {"root_occurrence_id": i + 1, "steps": []}, "code": f"{i:012d}",
+              "name": "=not_a_formula", "material_key": "oak", "dowel_holes": [], "stock_shape": "rectangular_prism",
+              "dimensions_mm": [600, 400, 18], "operations": [{"kind": "stock"}] + ([{"kind": "circular-drill"}] if i == 0 else [])} for i in range(count)]
     return {"schema": "ketchup.production-job.v1", "document_id": 1,
             "source_revision": 2, "source_digest": "source-hash", "parts": parts,
             "outputs": {"homag-woodwop4": [
@@ -112,7 +112,7 @@ def test_invalid_job(tmp_path, change):
 
 
 @pytest.mark.parametrize("change", [
-    lambda j: j["parts"][1].update(code="SHORT"),
+    lambda j: j["parts"][0].update(code="SHORT"),
     lambda j: j["outputs"].clear(),
     lambda j: j["outputs"]["homag-woodwop4"].append(j["outputs"]["homag-woodwop4"][0]),
     lambda j: j["outputs"]["homag-woodwop4"][0].update(code="UNKNOWN00000"),
