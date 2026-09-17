@@ -47,9 +47,66 @@ def _json(value):
         raise ManufacturingError("job must contain finite JSON data") from exc
 
 
+def _code(value, label):
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Z0-9_-]{1,64}", value):
+        raise ManufacturingError(f"{label} must be 1..64 uppercase A-Z0-9_- characters")
+    return value
+
+
+def _ids(values, label):
+    if not isinstance(values, list):
+        raise ManufacturingError(f"{label} must be a list")
+    result = set()
+    for value in values:
+        _text(value, label)
+        if value in result:
+            raise ManufacturingError(f"duplicate {label}: {value}")
+        result.add(value)
+    return result
+
+
+def _validate_setups(part, program_codes):
+    operations, holes = part.get("operations"), part.get("dowel_holes")
+    if (not isinstance(operations, list) or not operations
+            or any(not isinstance(op, dict) or not isinstance(op.get("kind"), str)
+                   or not op["kind"].strip() for op in operations)
+            or operations[0]["kind"] != "stock"
+            or any(op["kind"] == "stock" for op in operations[1:])
+            or not isinstance(holes, list) or any(not isinstance(h, dict) for h in holes)):
+        raise ManufacturingError("production job requires explicit stock, operations and dowel_holes")
+    operation_ids = _ids([op.get("operation_id") for op in operations[1:]], "operation IDs")
+    hole_ids = _ids([hole.get("hole_id") for hole in holes], "dowel hole IDs")
+    setups = part.get("machining_setups")
+    if not isinstance(setups, list):
+        raise ManufacturingError("machining_setups must be an explicit list")
+    setup_ids, assigned_ops, assigned_holes = set(), set(), set()
+    for setup in setups:
+        if not isinstance(setup, dict):
+            raise ManufacturingError("machining setup must be an object")
+        ident = setup.get("id")
+        if not isinstance(ident, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", ident):
+            raise ManufacturingError("invalid machining setup id")
+        if ident in setup_ids:
+            raise ManufacturingError("duplicate machining setup id")
+        setup_ids.add(ident)
+        code = _code(setup.get("code"), "setup program code")
+        if code in program_codes:
+            raise ManufacturingError(f"duplicate setup program code: {code}")
+        program_codes.add(code)
+        ops = _ids(setup.get("operation_ids"), "setup operation IDs")
+        dowels = _ids(setup.get("dowel_hole_ids"), "setup dowel hole IDs")
+        if (not (ops or dowels) or not ops <= operation_ids or not dowels <= hole_ids
+                or ops & assigned_ops or dowels & assigned_holes):
+            raise ManufacturingError("setup partition has empty, unknown or repeated machining")
+        assigned_ops.update(ops)
+        assigned_holes.update(dowels)
+    if assigned_ops != operation_ids or assigned_holes != hole_ids:
+        raise ManufacturingError("machining setups must cover every operation and dowel hole exactly once")
+
+
 def _validate_job(job):
-    if not isinstance(job, dict) or job.get("schema") != "ketchup.production-job.v1":
-        raise ManufacturingError("expected ketchup.production-job.v1 job")
+    if not isinstance(job, dict) or job.get("schema") != "ketchup.production-job.v2":
+        raise ManufacturingError("expected ketchup.production-job.v2 job")
     for key in ("document_id", "source_revision"):
         if type(job.get(key)) is not int or job[key] < 0:
             raise ManufacturingError(f"{key} must be a nonnegative integer")
@@ -57,13 +114,11 @@ def _validate_job(job):
     parts = job.get("parts")
     if not isinstance(parts, list) or not parts:
         raise ManufacturingError("parts must be a nonempty list")
-    codes, paths = set(), set()
+    codes, paths, program_codes = set(), set(), set()
     for part in parts:
         if not isinstance(part, dict):
             raise ManufacturingError("part must be an object")
-        code = part.get("code")
-        if not isinstance(code, str) or not re.fullmatch(r"[A-Z0-9_-]{1,64}", code):
-            raise ManufacturingError("part code must be 1..64 uppercase A-Z0-9_- characters")
+        code = _code(part.get("code"), "part code")
         if code in codes:
             raise ManufacturingError(f"duplicate part code: {code}")
         codes.add(code)
@@ -94,11 +149,47 @@ def _validate_job(job):
                 or any(type(d) not in (int, float) or not math.isfinite(d) or d <= 0
                        for d in dims)):
             raise ManufacturingError("dimensions_mm must contain positive finite length, width, thickness")
+        _validate_setups(part, program_codes)
     if not isinstance(job.get("outputs"), dict):
         raise ManufacturingError("outputs must be an object keyed by adapter id")
     for adapter_id in job["outputs"]:
         _text(adapter_id, "output adapter id")
     _json(job)
+
+
+def assign_setup_codes(job: dict, assignments: Mapping[str, Mapping[str, str]]) -> dict:
+    """Rename existing setup codes, never split machining or infer a flip transform.
+
+    assignments maps persistent part code -> setup id -> program code. Codes and
+    bindings are saved in the immutable export manifest, NOT back into the CAD
+    document. Built-in HOMAG outputs may be renamed (MPR bytes stay unchanged);
+    other machine outputs must be regenerated by their trusted adapter.
+    """
+    _validate_job(job)
+    if not isinstance(assignments, Mapping):
+        raise ManufacturingError("setup code assignments must be a mapping")
+    result = deepcopy(job)
+    parts = {part["code"]: part for part in result["parts"]}
+    for part_code, changes in assignments.items():
+        if part_code not in parts or not isinstance(changes, Mapping):
+            raise ManufacturingError("unknown part or invalid setup code mapping")
+        setups = {setup["id"]: setup for setup in parts[part_code]["machining_setups"]}
+        for setup_id, code in changes.items():
+            if setup_id not in setups:
+                raise ManufacturingError("unknown setup; assigning a code cannot create an orientation/program")
+            setups[setup_id]["code"] = _code(code, "setup program code")
+    _validate_job(result)
+    if any(key != HomagWoodwopAdapter.id for key in result["outputs"]):
+        raise ManufacturingError("assign codes before rendering other machine outputs")
+    if HomagWoodwopAdapter.id in result["outputs"]:
+        _homag_outputs(job)
+        for output in result["outputs"][HomagWoodwopAdapter.id]:
+            setup = next(s for s in parts[output["part_code"]]["machining_setups"]
+                         if s["id"] == output["setup_id"])
+            output["code"] = setup["code"]
+            output["filename"] = setup["code"] + ".mpr"
+        _homag_outputs(result)
+    return result
 
 
 def _filename(name):
@@ -202,77 +293,82 @@ def export_job(job: dict, destination, adapters: Iterable[ManufacturingAdapter],
     return manifest
 
 
-class HomagWoodwopAdapter:
-    """Pass through explicitly requested ASCII MPRs, without rewriting any byte.
+def _homag_outputs(job, program_code_length=None):
+    required = {(part["code"], setup["id"]): setup["code"]
+                for part in job["parts"] for setup in part["machining_setups"]}
+    if program_code_length is not None and any(len(code) != program_code_length for code in required.values()):
+        raise ManufacturingError(f"HOMAG requires exactly {program_code_length} character setup program codes")
+    outputs = job["outputs"].get(HomagWoodwopAdapter.id)
+    if not isinstance(outputs, list):
+        raise ManufacturingError("explicit homag-woodwop4 outputs list is required")
+    result, seen = {}, set()
+    for output in outputs:
+        if not isinstance(output, dict):
+            raise ManufacturingError("HOMAG output must be an object")
+        part_code, setup_id = output.get("part_code"), output.get("setup_id")
+        if not isinstance(part_code, str) or not isinstance(setup_id, str):
+            raise ManufacturingError("unexpected HOMAG output without part_code and setup_id")
+        key = part_code, setup_id
+        if key not in required or key in seen or output.get("code") != required[key]:
+            raise ManufacturingError("unexpected or duplicate HOMAG output setup/code binding")
+        seen.add(key)
+        name = output.get("filename")
+        if name != required[key] + ".mpr":
+            raise ManufacturingError("HOMAG filename must equal setup program code + .mpr")
+        _filename(name)
+        content = _text(output.get("content"), "MPR content")
+        if any(ord(ch) > 127 or (ord(ch) < 32 and ch not in "\r\n\t")
+               or ord(ch) == 127 for ch in content):
+            raise ManufacturingError("MPR content must be ASCII text without control characters")
+        result[name] = content.encode("ascii")
+    if seen != required.keys():
+        raise ManufacturingError(f"missing HOMAG programs for setups: {sorted(required.keys() - seen)}")
+    return result
 
-    Validates the transport envelope, per-piece coverage and ASCII content, not
-    toolpaths or physical machine safety. Only unmachined parts omit programs.
+
+class HomagWoodwopAdapter:
+    """Transport validated per-setup ASCII MPRs without rewriting their contents.
+
+    Length is a destination rule, not a physical identity rule. Default remains
+    12 until the operator explicitly selects another length confirmed by JAF.
+    Coverage checks do not validate flip orientation, tools or machine safety.
     """
     id = "homag-woodwop4"
 
+    def __init__(self, *, program_code_length: int = 12):
+        if type(program_code_length) is not int or not 1 <= program_code_length <= 64:
+            raise ManufacturingError("program_code_length must be 1..64")
+        self.program_code_length = program_code_length
+
     def render(self, job: dict) -> Mapping[str, bytes]:
         _validate_job(job)
-        required = set()
-        for part in job["parts"]:
-            operations, holes = part.get("operations"), part.get("dowel_holes")
-            if (not isinstance(operations, list) or not operations
-                    or any(not isinstance(op, dict) or not isinstance(op.get("kind"), str)
-                           or not op["kind"].strip() for op in operations)
-                    or operations[0]["kind"] != "stock"
-                    or any(op["kind"] == "stock" for op in operations[1:])
-                    or not isinstance(holes, list) or any(not isinstance(h, dict) for h in holes)):
-                raise ManufacturingError("HOMAG requires explicit stock, operations and dowel_holes")
-            if len(operations) > 1 or holes:
-                code = part["code"]
-                if not re.fullmatch(r"[A-Z0-9_-]{12}", code):
-                    raise ManufacturingError("HOMAG requires exactly 12 character machined part codes")
-                required.add(code)
-        outputs = job["outputs"].get(self.id)
-        if not isinstance(outputs, list):
-            raise ManufacturingError("explicit homag-woodwop4 outputs list is required")
-        result, seen = {}, set()
-        for output in outputs:
-            if not isinstance(output, dict):
-                raise ManufacturingError("HOMAG output must be an object")
-            code = output.get("code")
-            if not isinstance(code, str) or code not in required or code in seen:
-                raise ManufacturingError("unexpected or duplicate HOMAG output code")
-            seen.add(code)
-            name = output.get("filename")
-            if name != code + ".mpr":
-                raise ManufacturingError("HOMAG filename must equal part code + .mpr")
-            _filename(name)
-            content = _text(output.get("content"), "MPR content")
-            if any(ord(ch) > 127 or (ord(ch) < 32 and ch not in "\r\n\t")
-                   or ord(ch) == 127 for ch in content):
-                raise ManufacturingError("MPR content must be ASCII text without control characters")
-            result[name] = content.encode("ascii")
-        if seen != required:
-            raise ManufacturingError(f"missing HOMAG programs for part codes: {', '.join(sorted(required - seen))}")
-        return result
+        return _homag_outputs(job, self.program_code_length)
 
 
 class JafWebCutAdapter:
-    """FurniGen's original D..U template mapping, one physical part per row.
+    """FurniGen template: S/N = physical ID, T/O = setup A, U/P = setup B.
 
-    material_mapping is material_key -> exact JAF material string (no guessing).
-    allow_rotation is an explicit bool: True leaves L blank (Export H=1), False
-    writes x (Export H=0). Dimensions retain their order and fractional mm; this
-    template has no integer-only dimension validation. Codes are limited to 40
-    characters by the template. Export formulas are materialized as values, so
-    this is a finalized order snapshot, not an automatically recalculating form.
+    One physical part per row, including two-sided pieces. The second barcode
+    field is opt-in pending confirmation of JAF's interpretation of U/P. Setup
+    names other than A/B are not silently flattened. Cut-only rows have no
+    machining barcode. This adapter neither plans nor transforms toolpaths.
+    Export formulas are materialized as values, preserving leading zeroes.
     """
     id = "jaf-webcut"
     filename = "JAF_WebCut_v50.xlsx"
 
-    def __init__(self, material_mapping: Mapping[str, str], *, allow_rotation: bool):
+    def __init__(self, material_mapping: Mapping[str, str], *, allow_rotation: bool,
+                 second_barcode_confirmed: bool = False):
         if not isinstance(material_mapping, Mapping) or type(allow_rotation) is not bool:
             raise ManufacturingError("explicit material mapping and boolean allow_rotation required")
+        if type(second_barcode_confirmed) is not bool:
+            raise ManufacturingError("second_barcode_confirmed must be a boolean")
         self.material_mapping = dict(material_mapping)
         for key, value in self.material_mapping.items():
             _text(key, "material key")
             _text(value, "JAF material")
         self.allow_rotation = allow_rotation
+        self.second_barcode_confirmed = second_barcode_confirmed
 
     def render(self, job: dict) -> Mapping[str, bytes]:
         _validate_job(job)
@@ -301,10 +397,15 @@ class JafWebCutAdapter:
             group, position, last_group = 0, 0, None
             for offset, part in enumerate(job["parts"]):
                 code = part["code"]
+                setups = {setup["id"]: setup["code"] for setup in part["machining_setups"]}
+                if not set(setups) <= {"A", "B"} or ("B" in setups and "A" not in setups):
+                    raise ManufacturingError("JAF supports only setup A or A/B")
+                if "B" in setups and not self.second_barcode_confirmed:
+                    raise ManufacturingError("JAF second barcode U/P requires explicit destination confirmation")
                 if part.get("stock_shape") != "rectangular_prism":
                     raise ManufacturingError("JAF requires explicit rectangular stock; profile bounds are not a cut piece")
-                if len(code) > 40:
-                    raise ManufacturingError("JAF template barcode accepts at most 40 characters")
+                if any(len(value) > 40 for value in [code, *setups.values()]):
+                    raise ManufacturingError("JAF template ID/barcode accepts at most 40 characters")
                 material = self.material_mapping.get(part["material_key"])
                 if material is None:
                     raise ManufacturingError(f"missing JAF material mapping: {part['material_key']}")
@@ -316,13 +417,15 @@ class JafWebCutAdapter:
                 r = 18 + offset
                 values = {4: group, 5: str(position), 6: material, 7: thickness,
                           8: part["name"], 9: 1, 10: length, 11: width,
-                          12: None if self.allow_rotation else "x", 19: code, 20: code}
+                          12: None if self.allow_rotation else "x", 19: code,
+                          20: setups.get("A"), 21: setups.get("B")}
                 for column, value in values.items():
                     self._cell(sheet.cell(r, column), value)
                 # Exact equivalents of the original Export A..P formulas for these inputs.
                 combined = material + " " + format(thickness, ".15g")
                 out = [group, str(position), combined, part["name"], 1, length, width,
-                       int(self.allow_rotation), None, None, None, None, None, code, code, None]
+                       int(self.allow_rotation), None, None, None, None, None,
+                       code, setups.get("A"), setups.get("B")]
                 for column, value in enumerate(out, 1):
                     self._cell(export.cell(offset + 2, column), value)
             buffer = io.BytesIO()

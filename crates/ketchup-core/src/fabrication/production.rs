@@ -1,7 +1,7 @@
 use super::*;
 use serde_json::{Value, json};
 
-pub const PRODUCTION_JOB_V1: &str = "ketchup.production-job.v1";
+pub const PRODUCTION_JOB_V2: &str = "ketchup.production-job.v2";
 
 /// Explicitly selected, trusted postprocessor. No machine is selected by default.
 pub trait ProductionAdapter {
@@ -27,19 +27,21 @@ impl ProductionAdapter for HomagWoodwopAdapter {
         projection: &GeneralFabricationProjection,
         snapshot: &Snapshot,
     ) -> Result<Value, GeneralFabricationError> {
-        let programs = projection.woodwop_mpr_4_0_production_package(snapshot, self.options)?;
-        Ok(Value::Array(
-            programs
-                .into_iter()
-                .map(|program| {
-                    json!({
-                        "filename": format!("{}.mpr", program.program_name),
-                        "code": program.program_name,
-                        "content": String::from_utf8(program.mpr).expect("woodWOP output is ASCII"),
-                    })
-                })
-                .collect(),
-        ))
+        let programs = projection.woodwop_mpr_4_0_setup_a_programs(snapshot, self.options)?;
+        programs
+            .into_iter()
+            .map(|(path, mpr)| {
+                let code = snapshot
+                    .production_code(&path)
+                    .ok_or(GeneralFabricationError::ExportBlocked)?;
+                Ok(json!({
+                    "filename": format!("{code}.mpr"),
+                    "part_code": code, "setup_id": "A", "code": code,
+                    "content": String::from_utf8(mpr).expect("woodWOP output is ASCII"),
+                }))
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::Array)
     }
 }
 
@@ -60,6 +62,8 @@ impl GeneralFabricationProjection {
     /// stock_frame maps those axes and their minimum corner to definition-local mm;
     /// its sorted axes may be left-handed. Only rectangular_prism denotes a rectangular blank.
     /// Original profiles and machining frames remain unchanged in operations.
+    /// Setup A initially groups all machining; only a chosen postprocessor can validate
+    /// that it fits one fixture. No opposite-face orientation or toolpath is inferred.
     pub fn production_job(
         &self,
         snapshot: &Snapshot,
@@ -197,6 +201,18 @@ impl GeneralFabricationProjection {
                         })
                     })
                     .collect::<Vec<_>>();
+                let holes = dowels.remove(path).unwrap_or_default();
+                let setups = if operations.len() > 1 || !holes.is_empty() {
+                    vec![json!({
+                        "id": "A", "code": code,
+                        "operation_ids": operations.iter().skip(1)
+                            .map(|op| op["operation_id"].clone()).collect::<Vec<_>>(),
+                        "dowel_hole_ids": holes.iter()
+                            .map(|hole| hole["hole_id"].clone()).collect::<Vec<_>>(),
+                    })]
+                } else {
+                    vec![]
+                };
                 parts.push(json!({
                     "instance_path": instance_path_value(path),
                     "definition_id": row.definition_id.0,
@@ -207,7 +223,8 @@ impl GeneralFabricationProjection {
                     "stock_shape": stock_shape,
                     "coordinate_frame": "definition_local_mm",
                     "operations": operations,
-                    "dowel_holes": dowels.remove(path).unwrap_or_default(),
+                    "dowel_holes": holes,
+                    "machining_setups": setups,
                 }));
             }
         }
@@ -225,7 +242,7 @@ impl GeneralFabricationProjection {
             outputs.insert(adapter.id().to_owned(), adapter.render(self, snapshot)?);
         }
         Ok(json!({
-            "schema": PRODUCTION_JOB_V1,
+            "schema": PRODUCTION_JOB_V2,
             "document_id": snapshot.document_id().0,
             "source_revision": snapshot.revision_id(),
             "source_digest": snapshot.canonical_digest(),

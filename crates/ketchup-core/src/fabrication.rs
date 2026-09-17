@@ -1078,6 +1078,30 @@ impl GeneralFabricationProjection {
         snapshot: &Snapshot,
         options: WoodwopMprOptions,
     ) -> Result<Vec<HomagProductionProgram>, GeneralFabricationError> {
+        self.woodwop_mpr_4_0_setup_a_programs(snapshot, options)?
+            .into_iter()
+            .map(|(instance_path, mpr)| {
+                let program_name = homag_program_name(snapshot, &instance_path)?;
+                let barcode_svg = homag_code128_svg(&program_name)
+                    .ok_or(GeneralFabricationError::ExportBlocked)?;
+                Ok(HomagProductionProgram {
+                    schema: HOMAG_BHX_PRODUCTION_PACKAGE_V1,
+                    program_name,
+                    instance_path,
+                    mpr,
+                    barcode_svg,
+                })
+            })
+            .collect()
+    }
+
+    /// Only the existing top-face/edge setup; no inferred workpiece flip or labels.
+    /// Program identifiers belong to the destination adapter, not physical identity.
+    pub fn woodwop_mpr_4_0_setup_a_programs(
+        &self,
+        snapshot: &Snapshot,
+        options: WoodwopMprOptions,
+    ) -> Result<Vec<(InstancePath, Vec<u8>)>, GeneralFabricationError> {
         self.bom_export(snapshot)?;
         self.manufacturing_export(snapshot)?;
         if options
@@ -1096,7 +1120,7 @@ impl GeneralFabricationProjection {
             }
         }
         let mut programs = Vec::new();
-        let mut program_names = BTreeSet::new();
+        let mut program_paths = BTreeSet::new();
         for row in self
             .bom
             .rows
@@ -1173,21 +1197,12 @@ impl GeneralFabricationProjection {
                         .collect::<Option<Vec<_>>>()
                         .ok_or(GeneralFabricationError::ExportBlocked)?,
                 );
-                let program_name = homag_program_name(snapshot, instance_path)?;
-                if !program_names.insert(program_name.clone()) {
+                if !program_paths.insert(instance_path.clone()) {
                     return Err(GeneralFabricationError::ExportBlocked);
                 }
                 let mpr =
                     woodwop_mpr_output(stock_frame, &macros, HOMAG_BHX_PRODUCTION_PACKAGE_V1)?;
-                let barcode_svg = homag_code128_svg(&program_name)
-                    .ok_or(GeneralFabricationError::ExportBlocked)?;
-                programs.push(HomagProductionProgram {
-                    schema: HOMAG_BHX_PRODUCTION_PACKAGE_V1,
-                    program_name,
-                    instance_path: instance_path.clone(),
-                    mpr,
-                    barcode_svg,
-                });
+                programs.push((instance_path.clone(), mpr));
             }
         }
         if programs.is_empty() {
@@ -4443,6 +4458,29 @@ fn format_number(value: f64) -> String {
 mod tests {
     use super::*;
 
+    fn test_stock_geometry(dimensions: PieceDimensions) -> GeneralMachiningGeometry {
+        let points = [
+            [0.0, 0.0],
+            [dimensions.length_mm, 0.0],
+            [dimensions.length_mm, dimensions.width_mm],
+            [0.0, dimensions.width_mm],
+        ];
+        GeneralMachiningGeometry::TimberStock {
+            frame: identity_machining_frame(),
+            cross_section: (0..4)
+                .map(|i| GeneralMachiningSegment::Line {
+                    start_mm: points[i],
+                    end_mm: points[(i + 1) % 4],
+                })
+                .collect(),
+            start_mm: [0.0; 3],
+            length_axis: [0.0, 0.0, 1.0],
+            length_mm: dimensions.height_mm,
+            cross_section_width_mm: dimensions.length_mm,
+            cross_section_height_mm: dimensions.width_mm,
+        }
+    }
+
     #[test]
     fn btlx_numeric_values_follow_supported_xsd_ranges() {
         assert_eq!(btlx_component_identifiers(1, 0), Some((1, 1)));
@@ -4468,7 +4506,7 @@ mod tests {
 
     #[test]
     fn btlx_stock_dimensions_require_a_closed_axis_aligned_rectangle() {
-        let valid = legacy_stock_geometry(PieceDimensions {
+        let valid = test_stock_geometry(PieceDimensions {
             length_mm: 100.0,
             width_mm: 50.0,
             height_mm: 1000.0,
@@ -4516,7 +4554,7 @@ mod tests {
 
     #[test]
     fn woodwop_drilling_maps_horizontal_and_top_vertical_axes_and_rejects_unsafe_axes() {
-        let beam_stock = woodwop_stock_frame(&legacy_stock_geometry(PieceDimensions {
+        let beam_stock = woodwop_stock_frame(&test_stock_geometry(PieceDimensions {
             length_mm: 100.0,
             width_mm: 50.0,
             height_mm: 1000.0,
@@ -4536,7 +4574,7 @@ mod tests {
             "<103 \\BohrHoriz\\\nXA=\"0\"\nYA=\"50\"\nZA=\"25\"\nBM=\"XP\"\nTI=\"50\"\nDU=\"10\"\n"
         ));
 
-        let panel_stock = woodwop_stock_frame(&legacy_stock_geometry(PieceDimensions {
+        let panel_stock = woodwop_stock_frame(&test_stock_geometry(PieceDimensions {
             length_mm: 600.0,
             width_mm: 400.0,
             height_mm: 19.0,
@@ -4594,7 +4632,7 @@ mod tests {
 
     #[test]
     fn woodwop_vertical_pocket_requires_top_rectangular_geometry_and_explicit_tool() {
-        let stock = woodwop_stock_frame(&legacy_stock_geometry(PieceDimensions {
+        let stock = woodwop_stock_frame(&test_stock_geometry(PieceDimensions {
             length_mm: 600.0,
             width_mm: 400.0,
             height_mm: 19.0,
@@ -4656,7 +4694,7 @@ mod tests {
 
     #[test]
     fn homag_dowel_macro_and_code128_label_share_the_machine_program_identity() {
-        let stock = woodwop_stock_frame(&legacy_stock_geometry(PieceDimensions {
+        let stock = woodwop_stock_frame(&test_stock_geometry(PieceDimensions {
             length_mm: 600.0,
             width_mm: 400.0,
             height_mm: 19.0,

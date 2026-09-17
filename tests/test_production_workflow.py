@@ -74,8 +74,10 @@ def test_saved_codes_drive_excel_and_mpr_via_optional_plugins(tmp_path):
         workbook = load_workbook(io.BytesIO((tmp_path / "order" / "JAF_WebCut_v50.xlsx").read_bytes()), data_only=True)
         try:
             for row, assignment in enumerate(assignments, 18):
-                assert workbook["všeobecný"].cell(row, 20).value == assignment["code"]
-                assert workbook["Export"].cell(row - 16, 15).value == assignment["code"]
+                assert workbook["všeobecný"].cell(row, 19).value == assignment["code"]
+                assert workbook["Export"].cell(row - 16, 14).value == assignment["code"]
+                assert workbook["všeobecný"].cell(row, 20).value == (assignment["code"] if row == 18 else None)
+                assert workbook["Export"].cell(row - 16, 15).value == (assignment["code"] if row == 18 else None)
                 assert workbook["všeobecný"].cell(row, 9).value == 1
         finally:
             workbook.close()

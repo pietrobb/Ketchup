@@ -50,7 +50,8 @@ def test_missing_machining_program_never_publishes(tmp_path, dowel_only):
     source = job()
     if dowel_only:
         source["parts"][0]["operations"] = [{"kind": "stock"}]
-        source["parts"][0]["dowel_holes"] = [{"kind": "dowel_drill"}]
+        source["parts"][0]["dowel_holes"] = [{"kind": "dowel_drill", "hole_id": "dowel-1"}]
+        source["parts"][0]["machining_setups"][0].update(operation_ids=[], dowel_hole_ids=["dowel-1"])
     source["outputs"]["homag-woodwop4"] = []
     with pytest.raises(ManufacturingError, match="missing HOMAG programs"):
         export_job(source, tmp_path / "order", [HomagWoodwopAdapter()], confirmed=True)
@@ -71,6 +72,7 @@ def test_short_cut_only_code_does_not_inherit_machine_restrictions():
     source["parts"][1]["code"] = "CUT-ONLY"
     assert list(HomagWoodwopAdapter().render(source)) == ["000000000000.mpr"]
     source["parts"][0]["operations"] = [{"kind": "stock"}]
+    source["parts"][0]["machining_setups"] = []
     source["outputs"]["homag-woodwop4"] = []
     assert HomagWoodwopAdapter().render(source) == {}
 

@@ -20,11 +20,12 @@ from ketchup.manufacturing import (
 def job(count=2):
     parts = [{"instance_path": {"root_occurrence_id": i + 1, "steps": []}, "code": f"{i:012d}",
               "name": "=not_a_formula", "material_key": "oak", "dowel_holes": [], "stock_shape": "rectangular_prism",
-              "dimensions_mm": [600, 400, 18], "operations": [{"kind": "stock"}] + ([{"kind": "circular-drill"}] if i == 0 else [])} for i in range(count)]
-    return {"schema": "ketchup.production-job.v1", "document_id": 1,
+              "dimensions_mm": [600, 400, 18], "operations": [{"kind": "stock"}] + ([{"kind": "circular-drill", "operation_id": "drill-A"}] if i == 0 else []),
+              "machining_setups": [{"id": "A", "code": f"{i:012d}", "operation_ids": ["drill-A"], "dowel_hole_ids": []}] if i == 0 else []} for i in range(count)]
+    return {"schema": "ketchup.production-job.v2", "document_id": 1,
             "source_revision": 2, "source_digest": "source-hash", "parts": parts,
             "outputs": {"homag-woodwop4": [
-                {"code": parts[0]["code"], "filename": parts[0]["code"] + ".mpr",
+                {"part_code": parts[0]["code"], "setup_id": "A", "code": parts[0]["code"], "filename": parts[0]["code"] + ".mpr",
                  "content": '[H\r\nVERSION="4.0 Alpha"\r\n]\r\n'}] if parts else []}}
 
 
@@ -220,9 +221,10 @@ def test_excel_physical_rows_text_codes_formulas_and_fractional_mm(tmp_path, rot
         ws, ex = wb["všeobecný"], wb["Export"]
         for i in range(2):
             code = source["parts"][i]["code"]
-            for cell in (ws.cell(18+i, 19), ws.cell(18+i, 20),
-                         ex.cell(2+i, 14), ex.cell(2+i, 15)):
+            for cell in (ws.cell(18+i, 19), ex.cell(2+i, 14)):
                 assert cell.value == code and cell.data_type == "s"
+            for cell in (ws.cell(18+i, 20), ex.cell(2+i, 15)):
+                assert cell.value == (code if i == 0 else None)
             assert ws.cell(18+i, 9).value == ex.cell(2+i, 5).value == 1
             assert ex.cell(2+i, 8).value == int(rotation)
             assert ws.cell(18+i, 8).data_type == "s"
@@ -249,7 +251,7 @@ def test_jaf_configuration_limits_and_capacity():
         adapter.render(too_long)
     data = adapter.render(job(220))[adapter.filename]
     wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
-    assert wb["Export"]["O221"].value == "000000000219"
+    assert wb["Export"]["N221"].value == "000000000219"
     wb.close()
     with pytest.raises(ManufacturingError, match="capacity"):
         adapter.render(job(221))

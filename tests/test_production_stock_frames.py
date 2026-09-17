@@ -98,7 +98,7 @@ def test_native_neutral_preserves_stock_frame_and_profile(tmp_path, polygon, fra
             doc.export_production(tmp_path / "jaf", [jaf], confirmed=True)
             workbook = load_workbook(io.BytesIO((tmp_path / "jaf" / jaf.filename).read_bytes()), data_only=True)
             try:
-                assert [workbook["všeobecný"].cell(18, c).value for c in [10, 11, 7, 20]] == [400, 200, 18, part["code"]]
+                assert [workbook["všeobecný"].cell(18, c).value for c in [10, 11, 7, 19, 20]] == [400, 200, 18, part["code"], None]
             finally:
                 workbook.close()
         with pytest.raises(HeadlessError) as rejected:
