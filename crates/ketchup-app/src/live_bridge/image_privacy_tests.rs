@@ -3,6 +3,21 @@ use super::*;
 use egui_kittest::Harness;
 use std::sync::atomic::AtomicUsize;
 
+static GPU_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn gpu_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    GPU_TEST.lock().unwrap_or_else(|error| error.into_inner())
+}
+
+fn settle_exact(h: &mut Harness<'_, KetchupApp>) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while h.state().exact_task.is_some() {
+        assert!(Instant::now() < deadline, "exact scene did not settle");
+        h.step();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 fn queue_with_options(
     h: &mut Harness<'_, KetchupApp>,
     session: u64,
@@ -72,6 +87,7 @@ fn render_private_capture(h: &mut Harness<'_, KetchupApp>, description: &str) {
 }
 #[test]
 fn isolated_pixels_exclude_late_transformed_and_same_layer_sentinels() {
+    let _gpu = gpu_test_guard();
     let mut app = KetchupApp::new();
     app.set_assistant_workspace_mode(crate::AssistantWorkspaceMode::Dock);
     let mut h = Harness::builder()
@@ -81,6 +97,7 @@ fn isolated_pixels_exclude_late_transformed_and_same_layer_sentinels() {
     for _ in 0..30 {
         h.step();
     }
+    settle_exact(&mut h);
     h.render().expect("initialize actual offscreen renderer");
     let ctx = h.ctx.clone();
     h.state_mut().enable_live_bridge(&ctx).unwrap();
@@ -165,6 +182,7 @@ fn isolated_pixels_exclude_late_transformed_and_same_layer_sentinels() {
 }
 #[test]
 fn discarded_capture_and_session_replacement_never_reuse_authority() {
+    let _gpu = gpu_test_guard();
     let mut app = KetchupApp::new();
     app.set_assistant_workspace_mode(crate::AssistantWorkspaceMode::Dock);
     let mut h = Harness::builder()
@@ -239,6 +257,7 @@ fn native_harness_with_size(ppp: f32, size: egui::Vec2) -> Harness<'static, Ketc
     for _ in 0..30 {
         h.step();
     }
+    settle_exact(&mut h);
     h.render()
         .expect("native offscreen wgpu is required, not skipped");
     let ctx = h.ctx.clone();
@@ -416,11 +435,13 @@ fn native_pixel_proof(ppp: f32) -> Value {
 
 #[test]
 fn native_scene_callback_draws_default_box_pixels() {
+    let _gpu = gpu_test_guard();
     native_pixel_proof(1.0);
 }
 
 #[test]
 fn selection_framing_crops_real_cad_pixels_without_mutating_view_or_selection() {
+    let _gpu = gpu_test_guard();
     let mut h = native_harness(1.0);
     h.state_mut().selection.clear();
     h.state_mut()
@@ -469,6 +490,7 @@ fn selection_framing_crops_real_cad_pixels_without_mutating_view_or_selection() 
 
 #[test]
 fn host_topology_detail_framing_crops_real_pixels_without_gui_selection() {
+    let _gpu = gpu_test_guard();
     let mut h = native_harness_with_size(1.0, egui::vec2(2200.0, 1200.0));
     let viewport_rx =
         queue_with_options(&mut h, 40, ImageFraming::Viewport, None, MAX_IMAGE_SIDE_PX);
@@ -555,6 +577,7 @@ fn host_topology_detail_framing_crops_real_pixels_without_gui_selection() {
 
 #[test]
 fn native_scene_callback_hidpi_source_crop_and_samples_are_consistent() {
+    let _gpu = gpu_test_guard();
     let one = native_pixel_proof(1.0);
     let two = native_pixel_proof(2.0);
     assert_eq!(one["width"], two["width"]);
@@ -579,6 +602,7 @@ fn native_scene_callback_hidpi_source_crop_and_samples_are_consistent() {
 
 #[test]
 fn pending_native_capture_rejects_exact_registry_replacement_without_document_mutation() {
+    let _gpu = gpu_test_guard();
     use ketchup_core::exact_brep_graph::ExactBRepGraph;
     use ketchup_core::exact_product::{
         ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence, ExactBodyPackage,

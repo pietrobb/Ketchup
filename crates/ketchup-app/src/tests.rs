@@ -5807,10 +5807,8 @@ fn gui_exact_publication_rolls_back_when_work_recovery_finalization_fails() {
     let context = egui::Context::default();
 
     app.refresh_exact_products(&context);
-    for _ in 0..200 {
-        if app.exact_task.is_none() {
-            break;
-        }
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while app.exact_task.is_some() && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
         app.refresh_exact_products(&context);
     }
@@ -5826,11 +5824,9 @@ fn gui_exact_publication_rolls_back_when_work_recovery_finalization_fails() {
     assert!(app.topology_results.is_empty());
 
     std::fs::remove_dir(&recovery).unwrap();
-    for _ in 0..300 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while app.exact_results.is_empty() && std::time::Instant::now() < deadline {
         app.refresh_exact_products(&context);
-        if !app.exact_results.is_empty() {
-            break;
-        }
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(!app.exact_results.is_empty());

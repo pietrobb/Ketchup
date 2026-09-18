@@ -32922,6 +32922,9 @@ impl KetchupApp {
                 self.menu_command(ui, AppCommand::Ungroup);
                 self.menu_command(ui, AppCommand::MakeComponent);
                 self.menu_command(ui, AppCommand::MakeUnique);
+                self.menu_command(ui, AppCommand::HideOthers);
+                self.menu_command(ui, AppCommand::UnhideAll);
+                self.menu_command(ui, AppCommand::PurgeUnused);
                 self.menu_command(ui, AppCommand::ConvertSelectedMeshToExact);
                 self.menu_command(ui, AppCommand::ReplaceComponent);
                 self.menu_command(ui, AppCommand::SelectAllInstances);
@@ -32933,9 +32936,6 @@ impl KetchupApp {
                 self.menu_command(ui, AppCommand::RenameOccurrence);
                 self.menu_command(ui, AppCommand::RenameDefinition);
                 ui.separator();
-                self.menu_command(ui, AppCommand::HideOthers);
-                self.menu_command(ui, AppCommand::UnhideAll);
-                self.menu_command(ui, AppCommand::PurgeUnused);
             });
             ui.menu_button(self.catalog.text("menu-window"), |ui| {
                 if ui
