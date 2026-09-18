@@ -9280,6 +9280,38 @@ fn rectangle_sketch_creates_a_profile_then_push_pull_adds_the_extrusion() {
 }
 
 #[test]
+fn push_pull_prioritizes_a_standalone_rectangle_over_an_occluding_solid() {
+    let mut app = KetchupApp::new();
+    assert!(app.complete_rectangle_sketch(Vec3::new(40.0, 25.0, 0.0), Vec3::new(10.0, 5.0, 0.0),));
+    let profile = app
+        .active_boxes()
+        .into_iter()
+        .find(|item| item.extrusion_feature_id.is_none())
+        .unwrap();
+    select_initial_top_face(&mut app);
+    app.dispatch_command(AppCommand::PushPull);
+
+    let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1_000.0, 800.0));
+    let pointer = app.project(Vec3::new(25.0, 15.0, 0.0), rect);
+    app.update_viewport_inference(Some(pointer), rect);
+
+    assert!(
+        app.hovered_overlap_choice()
+            .is_some_and(|(index, count)| index == 0 && count >= 2)
+    );
+    assert_eq!(
+        app.hovered_selection()
+            .map(|selection| &selection.instance_path),
+        Some(&profile.instance_path)
+    );
+    assert_eq!(
+        app.push_pull_pointer_target()
+            .map(|selection| selection.instance_path),
+        Some(profile.instance_path)
+    );
+}
+
+#[test]
 fn contained_slanted_polygon_solid_tools_round_trip_atomically() {
     fn add_polygon_tool(app: &mut KetchupApp, points: &[[f64; 2]]) {
         let mut segments = points

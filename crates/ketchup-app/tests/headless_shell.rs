@@ -39,6 +39,7 @@ use ketchup_core::persistence;
 use ketchup_core::topology::TopologicalElementKind;
 use ketchup_interaction::{
     Axis, ElementId, LocaleCatalog, Side, SnapKind, Vec3, exact_projection::TopologicalPickLocator,
+    mesh_projection::MeshInteractionProjection,
 };
 use ketchup_scheduler::ExactWorkerSupervisor;
 
@@ -3138,6 +3139,82 @@ fn group_ungroup_is_localized_atomic_and_context_bound() {
         assert_eq!(context_shell.app().undo_step_count(), context_undo_steps);
         assert_eq!(context_shell.app().action_digest(), context_action_digest);
     }
+}
+
+#[test]
+fn nested_group_component_context_is_visible_shared_and_selection_safe() {
+    let mut shell = Shell::new();
+    let outside = shell.catalog().text("viewport-context-outside");
+    assert!(shell.has_visible_label(&outside));
+
+    shell.click_at(shell.top_face_centre(1));
+    assert!(shell.app_mut().copy_selected(Vec3::new(150.0, 25.0, 0.0)));
+    shell.settle();
+    shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+    shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+    shell.click_menu_command("menu-model", AppCommand::Group);
+    assert_eq!(shell.app().group_count(), 1);
+    assert_eq!(shell.app().definition_count(), 1);
+
+    shell.double_click_at(shell.top_face_centre(1));
+    assert_eq!(shell.app().edit_context_depth(), 1);
+    let group_context = shell.app().edit_context_readout();
+    assert!(group_context.contains("Model > Group 1"), "{group_context}");
+    assert!(shell.has_visible_label(&group_context));
+
+    shell.double_click_at(shell.top_face_centre(1));
+    assert_eq!(shell.app().edit_context_depth(), 2);
+    let component_context = shell.app().edit_context_readout();
+    assert!(
+        component_context.contains("Model > Group 1 > Box-1"),
+        "{component_context}"
+    );
+    assert!(shell.has_visible_label(&component_context));
+    let shared = shell.catalog().format(
+        "viewport-context-shared",
+        &BTreeMap::from([("count", "2".to_owned())]),
+    );
+    assert!(shell.has_visible_label(&shared));
+    assert!(!shell.app().command_is_enabled(AppCommand::MakeUnique));
+
+    let (origin, size) = shell.app().occurrence_box_geometry(2).unwrap();
+    let external_midpoint = shell
+        .app()
+        .viewport_position(origin + Vec3::new(size.x * 0.5, 0.0, size.z))
+        .unwrap();
+    shell.move_pointer(external_midpoint);
+    assert_eq!(shell.app().hovered_snap_kind(), Some(SnapKind::Midpoint));
+    assert!(shell.app().hovered_selection().is_none());
+    shell.click_at(shell.top_face_centre(2));
+    assert_eq!(shell.app().selected_occurrence_count(), 0);
+
+    shell.press_key(Key::Escape);
+    assert_eq!(shell.app().edit_context_depth(), 1);
+    assert!(shell.has_visible_label(&group_context));
+    shell.press_key(Key::Escape);
+    assert_eq!(shell.app().edit_context_depth(), 0);
+    assert!(shell.has_visible_label(&outside));
+
+    shell.click_at(shell.top_face_centre(2));
+    assert!(shell.app().command_is_enabled(AppCommand::Ungroup));
+    shell.click_menu_command("menu-model", AppCommand::Ungroup);
+    shell.click_at(shell.top_face_centre(2));
+    assert!(shell.app().command_is_enabled(AppCommand::MakeUnique));
+    let shared_definition = shell.app().occurrence_definition_id(OccurrenceId(1));
+    shell.click_menu_command("menu-model", AppCommand::MakeUnique);
+    assert_ne!(
+        shell.app().occurrence_definition_id(OccurrenceId(2)),
+        shared_definition
+    );
+
+    shell.double_click_at(shell.top_face_centre(2));
+    assert_eq!(shell.app().edit_context_depth(), 1);
+    let unique = shell.catalog().format(
+        "viewport-context-unique",
+        &BTreeMap::from([("count", "1".to_owned())]),
+    );
+    assert!(shell.has_visible_label(&shell.app().edit_context_readout()));
+    assert!(shell.has_visible_label(&unique));
 }
 
 #[test]
@@ -9654,6 +9731,13 @@ fn circular_profile_cuts_a_cylindrical_host_as_pocket_and_through_cut() {
     assert_eq!(shell.app().undo_step_count(), profile_undo_steps);
 
     shell.click_command(AppCommand::Select);
+    let mesh_projection =
+        MeshInteractionProjection::from_snapshot(&shell.app().document_snapshot());
+    assert!(
+        mesh_projection.contains_occurrence(&InstancePath::root(OccurrenceId(3))),
+        "profile occurrence is missing from mesh projection; count={}",
+        mesh_projection.occurrence_count()
+    );
     let hole_edge = shell
         .app()
         .viewport_position(hole_center + Vec3::new(5.0, 0.0, 0.0))
@@ -9669,6 +9753,15 @@ fn circular_profile_cuts_a_cylindrical_host_as_pocket_and_through_cut() {
         }
         shell.press_key(Key::Tab);
     }
+    assert!(
+        shell
+            .app()
+            .hovered_selection()
+            .is_some_and(|selection| selection.instance_path.root_occurrence() == OccurrenceId(3)),
+        "profile occurrence was not reachable in overlap cycle: hovered={:?}, overlap={:?}",
+        shell.app().hovered_selection(),
+        shell.app().hovered_overlap_choice()
+    );
     shell.click_at(hole_edge);
     assert!(shell.app().occurrence_is_selected(OccurrenceId(3)));
     shell.click_command(AppCommand::PushPull);
@@ -10625,6 +10718,20 @@ fn viewport_snap_hysteresis_acquires_retains_and_releases_an_endpoint() {
     );
     shell.move_pointer(endpoint + eframe::egui::Vec2::new(14.0, 0.0));
     assert_eq!(shell.app().hovered_snap_kind(), Some(SnapKind::Face));
+    shell.move_pointer(endpoint + eframe::egui::Vec2::new(10.0, 0.0));
+    assert_ne!(
+        shell.app().hovered_snap_kind(),
+        Some(SnapKind::Endpoint),
+        "an unlocked point outside the acquire radius must not reacquire"
+    );
+    let midpoint_world = Vec3::new(50.0, 0.0, 20.0);
+    let midpoint = shell.app().viewport_position(midpoint_world).unwrap();
+    shell.move_pointer(midpoint + Vec2::new(7.0, 0.0));
+    assert_eq!(shell.app().hovered_snap_kind(), Some(SnapKind::Midpoint));
+    shell.move_pointer(midpoint + Vec2::new(10.0, 0.0));
+    assert_eq!(shell.app().hovered_snap_position(), Some(midpoint_world));
+    shell.move_pointer(midpoint + Vec2::new(14.0, 0.0));
+    assert_ne!(shell.app().hovered_snap_kind(), Some(SnapKind::Midpoint));
 }
 
 #[test]
@@ -10776,10 +10883,22 @@ fn ctrl_copy_drag_snaps_source_endpoint_exactly_to_target_endpoint() {
     let before_digest = shell.app().canonical_digest();
     let source_geometry = shell.app().occurrence_box_geometry(1).unwrap();
     let target_geometry = shell.app().occurrence_box_geometry(2).unwrap();
+    shell.click_at_with(source_anchor, ctrl());
+    shell.move_pointer(target_anchor);
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    shell.press_key(Key::Escape);
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    assert_eq!(shell.app().document_revision(), before_revision);
+    shell.click_command(AppCommand::Move);
     shell.drag_with(source_anchor, target_anchor, ctrl());
 
     let snapped_digest = shell.app().canonical_digest();
-    assert_eq!(shell.app().document_revision(), before_revision + 1);
+    assert_eq!(
+        shell.app().document_revision(),
+        before_revision + 1,
+        "Ctrl-copy from {source_point:?} to {target_point:?}: {}",
+        shell.app().action_digest()
+    );
     assert_eq!(shell.app().active_box_count(), 3);
     assert_eq!(shell.app().definition_count(), 1);
     assert_eq!(

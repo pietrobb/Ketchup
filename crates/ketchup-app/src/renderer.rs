@@ -3,7 +3,9 @@ use ketchup_core::document::{
     DefinitionId, DocumentId, FeatureKind, InstancePath, ProfileSegment, Snapshot, Transform,
 };
 use ketchup_core::exact_product::ExactResultRegistry;
-use ketchup_interaction::projection::CanonicalInteractionProjection;
+use ketchup_interaction::{
+    mesh_projection::canonical_sketch_profile_mesh, projection::CanonicalInteractionProjection,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use wgpu::util::DeviceExt as _;
@@ -399,44 +401,61 @@ pub(crate) fn canonical_planar_profile_mesh(
 ) -> Option<PlanarProfileMesh> {
     let definition = snapshot.definition(definition_id)?;
     let feature = snapshot.feature(*definition.feature_ids().last()?)?;
-    let FeatureKind::SegmentProfile {
-        segments,
-        closed: true,
-    } = feature.kind()
-    else {
-        return None;
-    };
-    segment_profile_mesh(segments)
+    match feature.kind() {
+        FeatureKind::SegmentProfile {
+            segments,
+            closed: true,
+        } => segment_profile_mesh(segments),
+        FeatureKind::Sketch(_) => canonical_sketch_profile_mesh(snapshot, definition_id)
+            .map(|(_, positions, triangles)| (positions, triangles)),
+        _ => None,
+    }
 }
 
 pub(crate) fn extrude_planar_profile_mesh(
-    (positions, face_triangles): PlanarProfileMesh,
+    mesh: PlanarProfileMesh,
     signed_extent_mm: f64,
 ) -> Option<PlanarProfileMesh> {
-    if !signed_extent_mm.is_finite() || signed_extent_mm.abs() <= 1.0e-9 {
+    extrude_planar_profile_mesh_along(mesh, [0.0, 0.0, signed_extent_mm])
+}
+
+pub(crate) fn extrude_planar_profile_mesh_along(
+    (positions, face_triangles): PlanarProfileMesh,
+    offset_mm: [f64; 3],
+) -> Option<PlanarProfileMesh> {
+    if offset_mm.iter().any(|value| !value.is_finite())
+        || offset_mm.iter().map(|value| value * value).sum::<f64>() <= 1.0e-18
+    {
         return None;
     }
     let count = u32::try_from(positions.len()).ok()?;
-    let minimum_z = signed_extent_mm.min(0.0);
-    let maximum_z = signed_extent_mm.max(0.0);
     let mut solid_positions = Vec::with_capacity(positions.len() * 2);
-    solid_positions.extend(
-        positions
-            .iter()
-            .map(|position| [position[0], position[1], minimum_z]),
-    );
-    solid_positions.extend(
-        positions
-            .iter()
-            .map(|position| [position[0], position[1], maximum_z]),
-    );
+    solid_positions.extend(positions.iter().copied());
+    solid_positions.extend(positions.iter().map(|position| {
+        [
+            position[0] + offset_mm[0],
+            position[1] + offset_mm[1],
+            position[2] + offset_mm[2],
+        ]
+    }));
 
-    let boundary_area = positions
+    let boundary_normal = positions
         .iter()
         .zip(positions.iter().cycle().skip(1))
         .take(positions.len())
-        .map(|(left, right)| left[0] * right[1] - right[0] * left[1])
-        .sum::<f64>();
+        .fold([0.0; 3], |normal, (left, right)| {
+            [
+                normal[0] + (left[1] - right[1]) * (left[2] + right[2]),
+                normal[1] + (left[2] - right[2]) * (left[0] + right[0]),
+                normal[2] + (left[0] - right[0]) * (left[1] + right[1]),
+            ]
+        });
+    let follows_boundary_normal = boundary_normal
+        .iter()
+        .zip(offset_mm)
+        .map(|(normal, offset)| normal * offset)
+        .sum::<f64>()
+        >= 0.0;
     let mut triangles = Vec::with_capacity(face_triangles.len() * 2 + positions.len() * 2);
     triangles.extend(
         face_triangles
@@ -450,7 +469,7 @@ pub(crate) fn extrude_planar_profile_mesh(
     );
     for index in 0..count {
         let next = (index + 1) % count;
-        if boundary_area >= 0.0 {
+        if follows_boundary_normal {
             triangles.push([index, next, index + count]);
             triangles.push([next, next + count, index + count]);
         } else {

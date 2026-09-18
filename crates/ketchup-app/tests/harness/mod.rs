@@ -360,6 +360,25 @@ impl Shell {
         size
     }
 
+    pub fn render_viewport_pixels(&mut self) -> Vec<u8> {
+        let rect = self.viewport_rect();
+        let image = self
+            .harness
+            .render()
+            .expect("render the complete headless Ketchup window");
+        let x_min = rect.min.x.max(0.0).floor() as u32;
+        let y_min = rect.min.y.max(0.0).floor() as u32;
+        let x_max = rect.max.x.min(image.width() as f32).ceil() as u32;
+        let y_max = rect.max.y.min(image.height() as f32).ceil() as u32;
+        let mut pixels = Vec::with_capacity(((x_max - x_min) * (y_max - y_min) * 4) as usize);
+        for y in y_min..y_max {
+            for x in x_min..x_max {
+                pixels.extend_from_slice(&image.get_pixel(x, y).0);
+            }
+        }
+        pixels
+    }
+
     pub fn has_paint_callback(&self) -> bool {
         fn contains(shape: &egui::Shape) -> bool {
             match shape {
@@ -439,6 +458,13 @@ impl Shell {
             .get_by_role_and_label(Role::TextInput, label)
             .focus();
         self.harness.run();
+    }
+
+    pub fn focus_text_input_once(&mut self, label: &str) {
+        self.harness
+            .get_by_role_and_label(Role::TextInput, label)
+            .focus();
+        self.harness.step();
     }
 
     pub fn focus_combo_box(&mut self, label: &str) {
@@ -755,6 +781,12 @@ impl Shell {
         self.harness.step();
     }
 
+    /// Hold or release keyboard modifiers for one rendered interaction state.
+    pub fn set_modifiers(&mut self, modifiers: Modifiers) {
+        self.harness.input_mut().modifiers = modifiers;
+        self.harness.run();
+    }
+
     /// Send the native event emitted by egui-winit for Ctrl+C.
     pub fn native_copy(&mut self) {
         self.event(egui::Event::Copy);
@@ -777,6 +809,10 @@ impl Shell {
     pub fn type_text(&mut self, text: &str) {
         self.event(egui::Event::Text(text.to_owned()));
         self.harness.run();
+    }
+
+    pub fn type_text_once(&mut self, text: &str) {
+        self.event(egui::Event::Text(text.to_owned()));
     }
 
     fn button(&mut self, position: Pos2, modifiers: Modifiers, pressed: bool) {

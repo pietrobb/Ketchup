@@ -169,6 +169,9 @@ pub(super) enum AssemblyPreviewSource {
         mate: AssemblyMate,
         editing: bool,
     },
+    Place {
+        mate: AssemblyMate,
+    },
     RemoveMate(AssemblyMateId),
     Joint {
         joint: AssemblyJoint,
@@ -205,6 +208,7 @@ impl AssemblyPreviewSource {
             Self::SelectionDrawing { .. } => "assembly-action-selection-drawing",
             Self::Mate { editing: true, .. } => "assembly-action-edit-mate",
             Self::Mate { editing: false, .. } => "assembly-action-create-mate",
+            Self::Place { .. } => "assembly-action-place",
             Self::RemoveMate(_) => "assembly-action-remove-mate",
             Self::Joint { editing: true, .. } => "assembly-action-edit-joint",
             Self::Joint { editing: false, .. } => "assembly-action-create-joint",
@@ -320,6 +324,7 @@ enum AssemblyUiAction {
     EditMate(AssemblyMateId),
     RemoveMate(AssemblyMateId),
     PreviewMate,
+    PreviewPlacement,
     PreviewJoint,
     PreviewCoupling,
     EditCoupling(AssemblyMotionCouplingId),
@@ -600,6 +605,161 @@ impl KetchupApp {
             .map_err(|error| error.to_string())
     }
 
+    fn placement_point(transform: Transform, local: [f64; 3]) -> Vec3 {
+        let matrix = transform.matrix();
+        Vec3::new(
+            matrix[0] * local[0] + matrix[1] * local[1] + matrix[2] * local[2] + matrix[3],
+            matrix[4] * local[0] + matrix[5] * local[1] + matrix[6] * local[2] + matrix[7],
+            matrix[8] * local[0] + matrix[9] * local[1] + matrix[10] * local[2] + matrix[11],
+        )
+    }
+
+    fn placement_direction(transform: Transform, local: [f64; 3]) -> Option<Vec3> {
+        let matrix = transform.matrix();
+        let direction = Vec3::new(
+            matrix[0] * local[0] + matrix[1] * local[1] + matrix[2] * local[2],
+            matrix[4] * local[0] + matrix[5] * local[1] + matrix[6] * local[2],
+            matrix[8] * local[0] + matrix[9] * local[1] + matrix[10] * local[2],
+        );
+        let length = vector_length(direction);
+        (length.is_finite() && length > f64::EPSILON).then_some(direction * (1.0 / length))
+    }
+
+    fn derive_one_time_placement_proposal(&self, mate: &AssemblyMate) -> Result<Proposal, String> {
+        let snapshot = self.document.current();
+        let reference_id = mate.endpoint_a().occurrence_id();
+        let moving_id = mate.endpoint_b().occurrence_id();
+        let (Some(_reference), Some(moving)) = (
+            snapshot.occurrence(reference_id),
+            snapshot.occurrence(moving_id),
+        ) else {
+            return Err(self.catalog.text("assembly-error-endpoints"));
+        };
+        if reference_id == moving_id || snapshot.assembly_mate(mate.id()).is_some() {
+            return Err(self.catalog.text("assembly-error-endpoints"));
+        }
+        if snapshot.occurrence_is_grounded(moving_id) {
+            return Err(self.catalog.text("assembly-error-place-grounded"));
+        }
+        if snapshot.assembly_mates().any(|existing| {
+            existing.endpoint_a().occurrence_id() == moving_id
+                || existing.endpoint_b().occurrence_id() == moving_id
+        }) {
+            return Err(self.catalog.text("assembly-error-place-constrained"));
+        }
+        let (
+            AssemblyMateKind::CoincidentPlanar {
+                offset_mm,
+                reversed,
+            },
+            Some(target),
+            Some(source),
+        ) = (
+            mate.kind(),
+            mate.endpoint_a().planar_face_attachment(),
+            mate.endpoint_b().planar_face_attachment(),
+        )
+        else {
+            return Err(self.catalog.text("assembly-error-references"));
+        };
+        if self
+            .exact_results
+            .planar_face_attachment(&snapshot, target.reference())
+            != Some(target)
+            || self
+                .exact_results
+                .planar_face_attachment(&snapshot, source.reference())
+                != Some(source)
+        {
+            return Err(self.catalog.text("assembly-error-references"));
+        }
+        let target_world = snapshot
+            .world_transform_for_occurrence(reference_id)
+            .ok_or_else(|| self.catalog.text("assembly-error-endpoints"))?;
+        let moving_world = snapshot
+            .world_transform_for_occurrence(moving_id)
+            .ok_or_else(|| self.catalog.text("assembly-error-endpoints"))?;
+        let target_origin = Self::placement_point(target_world, target.local_origin_mm());
+        let moving_origin = Self::placement_point(moving_world, source.local_origin_mm());
+        let target_normal = Self::placement_direction(target_world, target.local_unit_normal())
+            .ok_or_else(|| self.catalog.text("assembly-error-references"))?;
+        let moving_normal = Self::placement_direction(moving_world, source.local_unit_normal())
+            .ok_or_else(|| self.catalog.text("assembly-error-references"))?;
+        let desired_normal = target_normal * if reversed { 1.0 } else { -1.0 };
+        let cross = Vec3::new(
+            moving_normal.y * desired_normal.z - moving_normal.z * desired_normal.y,
+            moving_normal.z * desired_normal.x - moving_normal.x * desired_normal.z,
+            moving_normal.x * desired_normal.y - moving_normal.y * desired_normal.x,
+        );
+        let dot = (moving_normal.x * desired_normal.x
+            + moving_normal.y * desired_normal.y
+            + moving_normal.z * desired_normal.z)
+            .clamp(-1.0, 1.0);
+        let cross_length = vector_length(cross);
+        let rotated_local = if cross_length > 1.0e-12 {
+            let rotation = world_axis_rotation_transform(
+                moving_origin,
+                cross,
+                cross_length.atan2(dot).to_degrees(),
+            )
+            .map_err(|error| error.to_string())?;
+            let parent_world = moving
+                .parent()
+                .map_or(Some(Transform::identity()), |parent| {
+                    snapshot.world_transform_for_group(parent)
+                });
+            rotation_in_parent_space(
+                rotation,
+                parent_world.ok_or_else(|| self.catalog.text("assembly-error-endpoints"))?,
+                moving.transform(),
+            )
+            .ok_or_else(|| self.catalog.text("assembly-error-endpoints"))?
+        } else if dot < 0.0 {
+            let basis = if moving_normal.x.abs() < 0.9 {
+                Vec3::new(1.0, 0.0, 0.0)
+            } else {
+                Vec3::new(0.0, 1.0, 0.0)
+            };
+            let axis = Vec3::new(
+                moving_normal.y * basis.z - moving_normal.z * basis.y,
+                moving_normal.z * basis.x - moving_normal.x * basis.z,
+                moving_normal.x * basis.y - moving_normal.y * basis.x,
+            );
+            let rotation = world_axis_rotation_transform(moving_origin, axis, 180.0)
+                .map_err(|error| error.to_string())?;
+            let parent_world = moving
+                .parent()
+                .map_or(Some(Transform::identity()), |parent| {
+                    snapshot.world_transform_for_group(parent)
+                });
+            rotation_in_parent_space(
+                rotation,
+                parent_world.ok_or_else(|| self.catalog.text("assembly-error-endpoints"))?,
+                moving.transform(),
+            )
+            .ok_or_else(|| self.catalog.text("assembly-error-endpoints"))?
+        } else {
+            moving.transform()
+        };
+        let target_position = target_origin + target_normal * offset_mm;
+        let delta = target_position - moving_origin;
+        let transform =
+            translated_in_parent_space(&snapshot, moving.parent(), rotated_local, delta)
+                .ok_or_else(|| self.catalog.text("assembly-error-endpoints"))?;
+        if moving.transform() == transform {
+            return Err(self.catalog.text("assembly-error-place-no-change"));
+        }
+        self.document
+            .prepare_proposal_with_context(
+                CommandBatch::new(vec![CanonicalCommand::SetOccurrenceTransform {
+                    id: moving_id,
+                    transform,
+                }]),
+                ProposalContext::canonical_preview(),
+            )
+            .map_err(|error| error.to_string())
+    }
+
     pub(super) fn derive_assembly_preview_proposal(
         &self,
         source: &AssemblyPreviewSource,
@@ -661,6 +821,9 @@ impl KetchupApp {
                     vec![CanonicalCommand::CreateAssemblyMate(mate.clone())]
                 };
                 CommandBatch::new(commands)
+            }
+            AssemblyPreviewSource::Place { mate } => {
+                return self.derive_one_time_placement_proposal(mate);
             }
             AssemblyPreviewSource::RemoveMate(id) => {
                 CommandBatch::new(vec![CanonicalCommand::DeleteAssemblyMate { id: *id }])
@@ -1758,6 +1921,29 @@ impl KetchupApp {
         })
     }
 
+    fn preview_editor_placement(&mut self) -> bool {
+        if self.assembly_editor.selected_mate.is_some() {
+            self.assembly_error(self.catalog.text("assembly-error-place-editing-mate"));
+            return false;
+        }
+        if !self.preview_editor_mate() {
+            return false;
+        }
+        let Some(preview) = self.assembly_editor.preview.take() else {
+            return false;
+        };
+        let AssemblyPreviewSource::Mate {
+            mate,
+            editing: false,
+        } = preview.plan.source
+        else {
+            self.assembly_error(self.catalog.text("error-preview-stale"));
+            return false;
+        };
+        self.assembly_editor.solve_result = None;
+        self.prepare_assembly_preview(AssemblyPreviewSource::Place { mate })
+    }
+
     fn edit_assembly_mate(&mut self, id: AssemblyMateId) {
         let snapshot = self.document.current();
         let Some(mate) = snapshot.assembly_mate(id) else {
@@ -1883,6 +2069,38 @@ impl KetchupApp {
         self.assembly_editor.preview = None;
         self.assembly_editor.solve_result = None;
         self.digest = self.catalog.text("assembly-cancelled");
+    }
+
+    pub(super) fn assembly_preview_transform_overrides(&self) -> BTreeMap<InstancePath, Transform> {
+        let Some(preview) = self.assembly_editor.preview.as_ref() else {
+            return BTreeMap::new();
+        };
+        let current = self.document.current();
+        let proposal = &preview.plan.proposal;
+        if proposal.document_id() != current.document_id()
+            || proposal.provenance_revision() != current.revision_id()
+            || proposal.provenance_digest() != current.canonical_digest()
+        {
+            return BTreeMap::new();
+        }
+        let Ok(candidate) = self.document.preview_batch(proposal.batch()) else {
+            return BTreeMap::new();
+        };
+        let current_transforms = current
+            .scene_query()
+            .into_iter()
+            .map(|occurrence| (occurrence.instance_path, occurrence.transform))
+            .collect::<BTreeMap<_, _>>();
+        candidate
+            .scene_query()
+            .into_iter()
+            .filter_map(|occurrence| {
+                current_transforms
+                    .get(&occurrence.instance_path)
+                    .is_some_and(|current| *current != occurrence.transform)
+                    .then_some((occurrence.instance_path, occurrence.transform))
+            })
+            .collect()
     }
 
     fn show_assembly_solve_diagnostic(
@@ -2607,6 +2825,18 @@ impl KetchupApp {
             && self.assembly_editor.endpoint_b.is_some()
             && self.assembly_editor.reference_a.is_some()
             && self.assembly_editor.reference_b.is_some();
+        ui.label(self.catalog.text("assembly-placement-semantics"));
+        if ui
+            .add_enabled(
+                can_preview_mate
+                    && self.assembly_editor.selected_mate.is_none()
+                    && self.assembly_editor.kind == MateKindChoice::CoincidentPlanar,
+                egui::Button::new(self.catalog.text("assembly-preview-placement")),
+            )
+            .clicked()
+        {
+            action = Some(AssemblyUiAction::PreviewPlacement);
+        }
         if ui
             .add_enabled(
                 can_preview_mate,
@@ -2690,6 +2920,9 @@ impl KetchupApp {
             Some(AssemblyUiAction::PreviewMate) => {
                 self.preview_editor_mate();
             }
+            Some(AssemblyUiAction::PreviewPlacement) => {
+                self.preview_editor_placement();
+            }
             Some(AssemblyUiAction::PreviewJoint) => {
                 self.preview_assembly_joint_from_selection();
             }
@@ -2715,6 +2948,13 @@ impl KetchupApp {
     #[must_use]
     pub fn assembly_preview_pending(&self) -> bool {
         self.assembly_editor.preview.is_some()
+    }
+
+    #[must_use]
+    pub fn assembly_preview_world_transform(&self, id: OccurrenceId) -> Option<Transform> {
+        self.assembly_preview_transform_overrides()
+            .get(&InstancePath::root(id))
+            .copied()
     }
 
     #[must_use]
@@ -2790,6 +3030,38 @@ impl KetchupApp {
     #[must_use]
     pub fn grounded_occurrence_count(&self) -> usize {
         self.document.current().grounded_occurrences().count()
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn assembly_planar_placement_frames(&self) -> Option<(Vec3, Vec3, Vec3, Vec3)> {
+        let snapshot = self.document.current();
+        let target_id = self.assembly_editor.endpoint_a?;
+        let source_id = self.assembly_editor.endpoint_b?;
+        let target_reference = self.selected_assembly_reference(
+            &snapshot,
+            target_id,
+            self.assembly_editor.reference_a.as_deref()?,
+        )?;
+        let source_reference = self.selected_assembly_reference(
+            &snapshot,
+            source_id,
+            self.assembly_editor.reference_b.as_deref()?,
+        )?;
+        let target = self
+            .exact_results
+            .planar_face_attachment(&snapshot, &target_reference)?;
+        let source = self
+            .exact_results
+            .planar_face_attachment(&snapshot, &source_reference)?;
+        let target_world = snapshot.world_transform_for_occurrence(target_id)?;
+        let source_world = snapshot.world_transform_for_occurrence(source_id)?;
+        Some((
+            Self::placement_point(target_world, target.local_origin_mm()),
+            Self::placement_direction(target_world, target.local_unit_normal())?,
+            Self::placement_point(source_world, source.local_origin_mm()),
+            Self::placement_direction(source_world, source.local_unit_normal())?,
+        ))
     }
 
     #[must_use]

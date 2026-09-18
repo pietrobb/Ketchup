@@ -7,8 +7,18 @@ pub use ketchup_core::assistant_sidecar::{
 };
 use ketchup_core::assistant_sidecar::{AssistantCadEditOperation, AssistantCadEditProgram};
 use ketchup_core::document::SpatialPathSegment;
-use ketchup_interaction::Vec3;
+use ketchup_interaction::{
+    ElementId, Vec3,
+    projection::{CanonicalInteractionProjection, definition_requires_evaluated_geometry},
+};
 use std::collections::BTreeMap;
+
+#[derive(Clone, Copy)]
+enum ConstructionKind {
+    Point,
+    Axis,
+    Plane,
+}
 
 #[derive(Clone, Debug)]
 pub(super) struct HelixThreadUiState {
@@ -92,6 +102,175 @@ pub fn helix_segments(parameters: &HelixToolParameters) -> Result<Vec<SpatialPat
 }
 
 impl KetchupApp {
+    fn selected_edge_axis(&self) -> Option<([f64; 3], [f64; 3])> {
+        const EDGE_ENDPOINTS: [(usize, usize); 12] = [
+            (0, 1),
+            (2, 3),
+            (4, 5),
+            (6, 7),
+            (0, 2),
+            (1, 3),
+            (4, 6),
+            (5, 7),
+            (0, 4),
+            (1, 5),
+            (2, 6),
+            (3, 7),
+        ];
+        let selection = self.selection.primary.as_ref()?;
+        let ordinal = match selection.element {
+            ElementId::Edge(ordinal) | ElementId::EdgeMidpoint(ordinal) => usize::from(ordinal),
+            _ => return None,
+        };
+        let snapshot = self.document.current();
+        let projection = CanonicalInteractionProjection::from_snapshot(&snapshot);
+        let occurrence = projection
+            .occurrences()
+            .iter()
+            .find(|occurrence| occurrence.instance_path == selection.instance_path)?;
+        if definition_requires_evaluated_geometry(&snapshot, occurrence.body.definition_id) {
+            return None;
+        }
+        let local_box = occurrence.local_box?;
+        let minimum = local_box.origin_mm;
+        let maximum = minimum + local_box.size_mm;
+        let corners = [
+            Vec3::new(minimum.x, minimum.y, minimum.z),
+            Vec3::new(maximum.x, minimum.y, minimum.z),
+            Vec3::new(minimum.x, maximum.y, minimum.z),
+            Vec3::new(maximum.x, maximum.y, minimum.z),
+            Vec3::new(minimum.x, minimum.y, maximum.z),
+            Vec3::new(maximum.x, minimum.y, maximum.z),
+            Vec3::new(minimum.x, maximum.y, maximum.z),
+            maximum,
+        ];
+        let (start, end) = *EDGE_ENDPOINTS.get(ordinal)?;
+        let transform = occurrence.canonical_world_transform;
+        let start = super::transform_model_point(transform, corners[start]);
+        let end = super::transform_model_point(transform, corners[end]);
+        let direction = end - start;
+        (direction.distance(Vec3::ZERO) > 1.0e-9).then_some((
+            [start.x, start.y, start.z],
+            [direction.x, direction.y, direction.z],
+        ))
+    }
+
+    fn use_selected_edge_axis(&mut self) -> bool {
+        let Some((origin, direction)) = self.selected_edge_axis() else {
+            self.digest = self.catalog.text("digest-helix-axis-selection-required");
+            return false;
+        };
+        self.helix_thread.origin = origin.map(format_coordinate);
+        self.helix_thread.axis = direction.map(format_coordinate);
+        self.helix_thread
+            .refresh(self.active_tool == ActiveTool::Thread);
+        self.digest = self.catalog.text("digest-helix-axis-selected");
+        true
+    }
+
+    fn construction_input(&self) -> Option<([f64; 3], [f64; 3])> {
+        let origin = HelixThreadUiState::parse_vector(&self.helix_thread.origin)?;
+        let direction = HelixThreadUiState::parse_vector(&self.helix_thread.axis)?;
+        let length_squared = direction.iter().map(|value| value * value).sum::<f64>();
+        (origin
+            .iter()
+            .chain(&direction)
+            .all(|value| value.is_finite())
+            && length_squared > 1.0e-18)
+            .then_some((origin, direction))
+    }
+
+    fn create_construction_geometry(&mut self, kind: ConstructionKind) -> bool {
+        let origin = HelixThreadUiState::parse_vector(&self.helix_thread.origin)
+            .filter(|origin| origin.iter().all(|value| value.is_finite()));
+        let direction = self.construction_input().map(|(_, direction)| direction);
+        let Some(origin) = origin else {
+            self.digest = self.catalog.text("digest-construction-invalid");
+            return false;
+        };
+        let number = self
+            .document
+            .current()
+            .definitions()
+            .map(|definition| definition.id().0)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        let name = self.catalog.format(
+            match kind {
+                ConstructionKind::Point => "model-construction-point-definition",
+                ConstructionKind::Axis => "model-construction-axis-definition",
+                ConstructionKind::Plane => "model-construction-plane-definition",
+            },
+            &BTreeMap::from([("number", number.to_string())]),
+        );
+        let operation = match kind {
+            ConstructionKind::Point => AssistantCadEditOperation::CreateConstructionPoint {
+                name,
+                position_mm: origin,
+            },
+            ConstructionKind::Axis => {
+                let Some(direction) = direction else {
+                    self.digest = self.catalog.text("digest-construction-invalid");
+                    return false;
+                };
+                AssistantCadEditOperation::CreateConstructionAxis {
+                    name,
+                    origin_mm: origin,
+                    direction,
+                }
+            }
+            ConstructionKind::Plane => {
+                let Some(direction) = direction else {
+                    self.digest = self.catalog.text("digest-construction-invalid");
+                    return false;
+                };
+                let reference = if direction[0].abs() < direction[2].abs() {
+                    [1.0, 0.0, 0.0]
+                } else {
+                    [0.0, 0.0, 1.0]
+                };
+                let x_direction = [
+                    reference[1] * direction[2] - reference[2] * direction[1],
+                    reference[2] * direction[0] - reference[0] * direction[2],
+                    reference[0] * direction[1] - reference[1] * direction[0],
+                ];
+                AssistantCadEditOperation::CreateConstructionPlane {
+                    name,
+                    origin_mm: origin,
+                    normal: direction,
+                    x_direction,
+                }
+            }
+        };
+        let program = AssistantCadEditProgram {
+            operations: vec![operation],
+        };
+        let batch = match self.plan_assistant_cad_edit_program(&program) {
+            Ok(batch) => batch,
+            Err(error) => {
+                self.digest = self.catalog.format(
+                    "digest-construction-refused",
+                    &BTreeMap::from([("reason", error.failed_invariant)]),
+                );
+                return false;
+            }
+        };
+        if let Err(error) = self.apply_batch_with_work_recovery(&batch) {
+            self.digest = self.catalog.format(
+                "digest-construction-refused",
+                &BTreeMap::from([("reason", error.to_string())]),
+            );
+            return false;
+        }
+        self.digest = self.catalog.text(match kind {
+            ConstructionKind::Point => "digest-construction-point-committed",
+            ConstructionKind::Axis => "digest-construction-axis-committed",
+            ConstructionKind::Plane => "digest-construction-plane-committed",
+        });
+        true
+    }
+
     pub(super) fn begin_helix_thread_tool(&mut self, tool: ActiveTool) {
         self.helix_thread = HelixThreadUiState::default();
         self.helix_thread.refresh(tool == ActiveTool::Thread);
@@ -227,6 +406,21 @@ impl KetchupApp {
             "helix-panel-title"
         }));
         ui.small(self.catalog.text("helix-panel-help"));
+        let selected_edge_available = self.selected_edge_axis().is_some();
+        if ui
+            .add_enabled(
+                selected_edge_available,
+                egui::Button::new(self.catalog.text("helix-use-selected-edge")),
+            )
+            .clicked()
+        {
+            self.use_selected_edge_axis();
+        }
+        ui.small(self.catalog.text(if selected_edge_available {
+            "helix-selected-edge-ready"
+        } else {
+            "helix-selected-edge-missing"
+        }));
         ui.separator();
 
         let mut changed = false;
@@ -240,6 +434,43 @@ impl KetchupApp {
             self.catalog.text("helix-axis"),
             &mut self.helix_thread.axis,
         );
+        ui.label(self.catalog.text("construction-tools"));
+        let point_valid = HelixThreadUiState::parse_vector(&self.helix_thread.origin)
+            .is_some_and(|origin| origin.iter().all(|value| value.is_finite()));
+        let axis_valid = self.construction_input().is_some();
+        let mut construction = None;
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .add_enabled(
+                    point_valid,
+                    egui::Button::new(self.catalog.text("action-create-construction-point")),
+                )
+                .clicked()
+            {
+                construction = Some(ConstructionKind::Point);
+            }
+            if ui
+                .add_enabled(
+                    axis_valid,
+                    egui::Button::new(self.catalog.text("action-create-construction-axis")),
+                )
+                .clicked()
+            {
+                construction = Some(ConstructionKind::Axis);
+            }
+            if ui
+                .add_enabled(
+                    axis_valid,
+                    egui::Button::new(self.catalog.text("action-create-construction-plane")),
+                )
+                .clicked()
+            {
+                construction = Some(ConstructionKind::Plane);
+            }
+        });
+        if let Some(kind) = construction {
+            self.create_construction_geometry(kind);
+        }
         changed |= scalar_row(
             ui,
             self.catalog.text("helix-radius"),
@@ -260,22 +491,25 @@ impl KetchupApp {
             self.catalog.text("helix-start-angle"),
             &mut self.helix_thread.start_angle,
         );
-        ui.label(self.catalog.text("helix-handedness"));
+        let handedness_label = self.catalog.text("helix-handedness");
+        ui.label(&handedness_label);
         ui.horizontal(|ui| {
-            changed |= ui
-                .selectable_value(
-                    &mut self.helix_thread.handedness,
-                    HelixHandedness::Right,
-                    self.catalog.text("helix-right-handed"),
-                )
-                .changed();
-            changed |= ui
-                .selectable_value(
-                    &mut self.helix_thread.handedness,
-                    HelixHandedness::Left,
-                    self.catalog.text("helix-left-handed"),
-                )
-                .changed();
+            let right_label = self.catalog.text("helix-right-handed");
+            let right = ui.selectable_value(
+                &mut self.helix_thread.handedness,
+                HelixHandedness::Right,
+                &right_label,
+            );
+            super::name_widget(&right, true, &format!("{handedness_label}: {right_label}"));
+            changed |= right.changed();
+            let left_label = self.catalog.text("helix-left-handed");
+            let left = ui.selectable_value(
+                &mut self.helix_thread.handedness,
+                HelixHandedness::Left,
+                &left_label,
+            );
+            super::name_widget(&left, true, &format!("{handedness_label}: {left_label}"));
+            changed |= left.changed();
         });
         if thread {
             changed |= scalar_row(
@@ -355,15 +589,28 @@ impl KetchupApp {
     }
 }
 
+fn format_coordinate(value: f64) -> String {
+    let formatted = format!("{value:.6}");
+    let trimmed = formatted.trim_end_matches('0').trim_end_matches('.');
+    if trimmed == "-0" {
+        "0".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
+}
+
 fn vector_row(ui: &mut egui::Ui, label: String, values: &mut [String; 3]) -> bool {
-    ui.label(label);
+    ui.label(&label);
     let mut changed = false;
     ui.horizontal(|ui| {
         for (axis, value) in ["X", "Y", "Z"].into_iter().zip(values.iter_mut()) {
             ui.label(axis);
-            changed |= ui
-                .add(egui::TextEdit::singleline(value).desired_width(52.0))
-                .changed();
+            let accessible_name = format!("{label} {axis}");
+            let response = ui.add(egui::TextEdit::singleline(value).desired_width(52.0));
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, accessible_name.clone())
+            });
+            changed |= response.changed();
         }
     });
     changed
@@ -371,9 +618,12 @@ fn vector_row(ui: &mut egui::Ui, label: String, values: &mut [String; 3]) -> boo
 
 fn scalar_row(ui: &mut egui::Ui, label: String, value: &mut String) -> bool {
     ui.horizontal(|ui| {
-        ui.label(label);
-        ui.add(egui::TextEdit::singleline(value).desired_width(84.0))
-            .changed()
+        ui.label(&label);
+        let response = ui.add(egui::TextEdit::singleline(value).desired_width(84.0));
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, label.clone())
+        });
+        response.changed()
     })
     .inner
 }

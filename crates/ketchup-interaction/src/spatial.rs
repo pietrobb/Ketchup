@@ -133,11 +133,19 @@ impl SpatialBounds {
         }
     }
 
-    fn intersects_ray(self, ray: Ray) -> bool {
+    fn intersects_ray_with_tolerance(self, ray: Ray, tolerance: f64) -> bool {
         let origins = [ray.origin.x, ray.origin.y, ray.origin.z];
         let directions = [ray.direction.x, ray.direction.y, ray.direction.z];
-        let minimum = [self.min.x, self.min.y, self.min.z];
-        let maximum = [self.max.x, self.max.y, self.max.z];
+        let minimum = [
+            self.min.x - tolerance,
+            self.min.y - tolerance,
+            self.min.z - tolerance,
+        ];
+        let maximum = [
+            self.max.x + tolerance,
+            self.max.y + tolerance,
+            self.max.z + tolerance,
+        ];
         let mut near = f64::NEG_INFINITY;
         let mut far = f64::INFINITY;
         for axis in 0..3 {
@@ -216,10 +224,18 @@ impl SpatialIndex {
     }
 
     pub(crate) fn query_ray(&self, ray: Ray) -> (Vec<usize>, SpatialQueryStats) {
+        self.query_ray_with_tolerance(ray, 0.0)
+    }
+
+    pub(crate) fn query_ray_with_tolerance(
+        &self,
+        ray: Ray,
+        tolerance: f64,
+    ) -> (Vec<usize>, SpatialQueryStats) {
         let mut candidates = Vec::new();
         let mut bounds_tested = 0;
         if let Some(root) = &self.root {
-            query_ray_node(root, ray, &mut candidates, &mut bounds_tested);
+            query_ray_node(root, ray, tolerance, &mut candidates, &mut bounds_tested);
         }
         candidates.sort_unstable();
         candidates.dedup();
@@ -393,25 +409,26 @@ fn build_node(items: &mut [SpatialItem]) -> SpatialNode {
 fn query_ray_node(
     node: &SpatialNode,
     ray: Ray,
+    tolerance: f64,
     candidates: &mut Vec<usize>,
     bounds_tested: &mut usize,
 ) {
     *bounds_tested += 1;
-    if !node.bounds().intersects_ray(ray) {
+    if !node.bounds().intersects_ray_with_tolerance(ray, tolerance) {
         return;
     }
     match node {
         SpatialNode::Leaf { items, .. } => {
             for item in items {
                 *bounds_tested += 1;
-                if item.bounds.intersects_ray(ray) {
+                if item.bounds.intersects_ray_with_tolerance(ray, tolerance) {
                     candidates.push(item.source_index);
                 }
             }
         }
         SpatialNode::Branch { left, right, .. } => {
-            query_ray_node(left, ray, candidates, bounds_tested);
-            query_ray_node(right, ray, candidates, bounds_tested);
+            query_ray_node(left, ray, tolerance, candidates, bounds_tested);
+            query_ray_node(right, ray, tolerance, candidates, bounds_tested);
         }
     }
 }

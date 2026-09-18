@@ -2,7 +2,7 @@
 
 mod harness;
 
-use eframe::egui::{Key, Vec2, accesskit::Role};
+use eframe::egui::{Key, Modifiers, Vec2, accesskit::Role};
 use harness::{Shell, alt};
 use ketchup_app::{
     AppCommand, HeadlessFaceWorkflowFailure,
@@ -397,13 +397,20 @@ fn deliberate_alt_pick_through_has_transient_xray_feedback_without_mutation() {
     let revision = shell.app().document_revision();
     let digest = shell.app().canonical_digest();
     let undo = shell.app().undo_step_count();
-    shell.key(Key::Tab, alt());
+    shell.set_modifiers(alt());
 
     assert_eq!(shell.app().hovered_overlap_choice(), Some((1, 2)));
     assert!(shell.app().face_workflow_xray_active());
     assert_eq!(shell.app().document_revision(), revision);
     assert_eq!(shell.app().canonical_digest(), digest);
     assert_eq!(shell.app().undo_step_count(), undo);
+
+    shell.set_modifiers(Modifiers::NONE);
+    assert!(!shell.app().face_workflow_xray_active());
+    assert_eq!(shell.app().hovered_overlap_choice(), Some((1, 2)));
+    let next = shell.catalog().text("viewport-next-target");
+    shell.click_role_and_label(Role::Button, &next);
+    assert_eq!(shell.app().hovered_overlap_choice(), Some((0, 2)));
 
     shell.press_key(Key::Escape);
     assert!(!shell.app().face_workflow_xray_active());
@@ -686,7 +693,7 @@ fn line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical() {
         .hovered_selection()
         .is_some_and(|selection| selection.definition_id != closed_definition_id)
     {
-        shell.key(Key::Tab, alt());
+        shell.press_key(Key::Tab);
     }
     shell.click_at(profile_face);
     assert_eq!(

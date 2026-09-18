@@ -316,9 +316,10 @@ impl SharedBoxGeometry {
         if !size_mm.x.is_finite()
             || !size_mm.y.is_finite()
             || !size_mm.z.is_finite()
-            || size_mm.x <= 0.0
-            || size_mm.y <= 0.0
+            || size_mm.x < 0.0
+            || size_mm.y < 0.0
             || size_mm.z < 0.0
+            || (size_mm.x == 0.0 && size_mm.y == 0.0 && size_mm.z == 0.0)
         {
             return Err(InteractionError::InvalidBox);
         }

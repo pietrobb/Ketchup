@@ -41,6 +41,7 @@ pub(super) struct FaceWorkflowUiState {
     datum: FaceWorkflowDatum,
     snaps_enabled: bool,
     xray_preview: bool,
+    alt_pick_through_held: bool,
     headless_failure: Option<HeadlessFaceWorkflowFailure>,
 }
 
@@ -50,6 +51,7 @@ impl Default for FaceWorkflowUiState {
             datum: FaceWorkflowDatum::Xy,
             snaps_enabled: true,
             xray_preview: false,
+            alt_pick_through_held: false,
             headless_failure: None,
         }
     }
@@ -71,6 +73,12 @@ impl FaceWorkflowUiState {
 
     pub(super) fn set_xray_preview(&mut self, active: bool) {
         self.xray_preview = active;
+    }
+
+    pub(super) fn update_alt_pick_through(&mut self, held: bool) -> bool {
+        let pressed = held && !self.alt_pick_through_held;
+        self.alt_pick_through_held = held;
+        pressed
     }
 
     pub(super) fn take_headless_failure(&mut self) -> Option<HeadlessFaceWorkflowFailure> {

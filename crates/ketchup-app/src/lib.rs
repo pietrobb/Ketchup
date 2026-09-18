@@ -143,14 +143,10 @@ use ketchup_interaction::{
     exact_projection::{
         ExactInteractionProjection, SnapshotBoundTopologicalSelection, TopologicalPickLocator,
     },
-    face_intent::{FaceIntentTarget, TransientFaceIntent},
-    mesh_projection::MeshInteractionProjection,
+    mesh_projection::{MeshInteractionProjection, canonical_sketch_profile_mesh},
     projection::{
         CanonicalInteractionProjection, InteractionProjection, ProjectedBox,
         definition_requires_evaluated_geometry,
-    },
-    rectangle_face_authoring::{
-        RectangleDirection, RectangleFaceAuthoring, RectangleFeatureIds, RectangleSize,
     },
 };
 use ketchup_scheduler::{ExactWorkerSupervisor, assistant::AssistantCancellation};
@@ -170,6 +166,7 @@ mod occurrence_color_ui;
 #[cfg(feature = "named-product-fixtures")]
 mod part_authoring_ui;
 mod validator_ui;
+mod viewport_feedback;
 use assistant_runtime::ProcessAssistantTransport;
 pub use assistant_runtime::{
     private_assistant_launch, private_assistant_launch_for_executable,
@@ -181,8 +178,10 @@ pub use helix_thread_ui::{
     helix_segments,
 };
 pub use native_document_inspection::{NativeDocumentInspection, inspect_native_document};
+mod line_geometry;
+mod rectangle_authoring;
+mod rectangle_snapping;
 pub mod theme;
-
 use theme::{Icon, Palette, ThemeKind};
 pub mod renderer;
 
@@ -6705,6 +6704,7 @@ pub struct KetchupApp {
     snap_tracker: SnapTracker,
     interaction_projection_cache: RefCell<Option<InteractionProjectionCache>>,
     active_tool: ActiveTool,
+    command_search: String,
     digest: String,
     assistant_provider: AssistantProvider,
     assistant_model: String,
@@ -6760,6 +6760,7 @@ pub struct KetchupApp {
     line_chain_origin: Option<Vec3>,
     line_chain_points: Vec<Vec3>,
     line_chain_items: Vec<(DefinitionId, OccurrenceId)>,
+    line_axis_lock: Option<Axis>,
     value_input: String,
     focus_value_box: bool,
     occurrence_clipboard: Vec<OccurrenceId>,
@@ -6987,6 +6988,7 @@ impl KetchupApp {
             snap_tracker: SnapTracker::default(),
             interaction_projection_cache: RefCell::new(None),
             active_tool: ActiveTool::Select,
+            command_search: String::new(),
             digest,
             assistant_provider: AssistantProvider::initial(),
             assistant_model: AssistantProvider::initial().default_model().to_owned(),
@@ -7038,6 +7040,7 @@ impl KetchupApp {
             line_chain_origin: None,
             line_chain_points: Vec::new(),
             line_chain_items: Vec::new(),
+            line_axis_lock: None,
             value_input: String::new(),
             focus_value_box: false,
             occurrence_clipboard: Vec::new(),
@@ -7289,6 +7292,7 @@ impl KetchupApp {
         self.line_chain_origin = None;
         self.line_chain_points.clear();
         self.line_chain_items.clear();
+        self.line_axis_lock = None;
         self.clear_measurement();
         self.value_input.clear();
         self.focus_value_box = false;
@@ -10801,6 +10805,11 @@ impl KetchupApp {
     #[must_use]
     pub fn hovered_snap_position(&self) -> Option<Vec3> {
         self.hover_snap.as_ref().map(|snap| snap.position_mm)
+    }
+
+    #[must_use]
+    pub const fn line_axis_lock(&self) -> Option<Axis> {
+        self.line_axis_lock
     }
 
     #[must_use]
@@ -21316,7 +21325,8 @@ impl KetchupApp {
             return false;
         }
         self.create_segment_profile_at(
-            origin_mm,
+            Transform::from_translation(origin_mm.x, origin_mm.y, origin_mm.z)
+                .expect("validated profile origin is canonical"),
             segments,
             true,
             "model-default-arc",
@@ -21624,7 +21634,7 @@ impl KetchupApp {
 
     fn create_segment_profile_at(
         &mut self,
-        origin_mm: Vec3,
+        transform: Transform,
         segments: Vec<ProfileSegment>,
         closed: bool,
         default_name_key: &str,
@@ -21684,8 +21694,8 @@ impl KetchupApp {
                 id: occurrence_id,
                 definition_id,
                 name: occurrence_name,
-                transform: Transform::from_translation(origin_mm.x, origin_mm.y, origin_mm.z)
-                    .expect("validated profile origin is canonical"),
+                transform,
+
                 parent: None,
                 tag: None,
                 visible: true,
@@ -21910,7 +21920,9 @@ impl KetchupApp {
         let Some(group) = snapshot.group(group_id) else {
             return false;
         };
-        let Ok(transform) = translated_transform(group.transform(), delta_mm) else {
+        let Some(transform) =
+            translated_in_parent_space(&snapshot, group.parent(), group.transform(), delta_mm)
+        else {
             return false;
         };
         if self
@@ -22008,7 +22020,11 @@ impl KetchupApp {
         let Ok(rotation) = world_rotation_transform(centre_mm, axis, angle_degrees) else {
             return false;
         };
-        let transform = rotation.compose(group.transform());
+        let Some(transform) =
+            world_edit_in_parent_space(&snapshot, group.parent(), group.transform(), rotation)
+        else {
+            return false;
+        };
         if self
             .apply_batch_with_work_recovery(&CommandBatch::new(vec![
                 CanonicalCommand::SetGroupTransform {
@@ -22073,7 +22089,11 @@ impl KetchupApp {
         let Ok(rotation) = world_rotation_transform(centre_mm, axis, angle_degrees) else {
             return false;
         };
-        let transform = rotation.compose(source.transform());
+        let Some(transform) =
+            world_edit_in_parent_space(&snapshot, source.parent(), source.transform(), rotation)
+        else {
+            return false;
+        };
         let target_id = if copy {
             OccurrenceId(
                 snapshot
@@ -22239,7 +22259,15 @@ impl KetchupApp {
                 };
                 CanonicalCommand::SetGroupTransform {
                     id: group_id,
-                    transform: rotation.compose(group.transform()),
+                    transform: match world_edit_in_parent_space(
+                        base,
+                        group.parent(),
+                        group.transform(),
+                        rotation,
+                    ) {
+                        Some(transform) => transform,
+                        None => return false,
+                    },
                 }
             }
             RotateTarget::Occurrence(occurrence_id) => {
@@ -22248,7 +22276,15 @@ impl KetchupApp {
                 };
                 CanonicalCommand::SetOccurrenceTransform {
                     id: occurrence_id,
-                    transform: rotation.compose(occurrence.transform()),
+                    transform: match world_edit_in_parent_space(
+                        base,
+                        occurrence.parent(),
+                        occurrence.transform(),
+                        rotation,
+                    ) {
+                        Some(transform) => transform,
+                        None => return false,
+                    },
                 }
             }
         };
@@ -22316,7 +22352,9 @@ impl KetchupApp {
         if definition_id != selection.definition_id {
             return false;
         }
-        let Ok(transform) = translated_transform(source.transform(), delta_mm) else {
+        let Some(transform) =
+            translated_in_parent_space(&snapshot, source.parent(), source.transform(), delta_mm)
+        else {
             return false;
         };
         let target_id = if copy {
@@ -22439,7 +22477,12 @@ impl KetchupApp {
             return None;
         }
         let delta_mm = axis_vector(axis, offset_mm);
-        let transform = translated_transform(source.moving_transform, delta_mm).ok()?;
+        let transform = translated_in_parent_space(
+            &self.document.current(),
+            source.moving_parent,
+            source.moving_transform,
+            delta_mm,
+        )?;
         let command = CanonicalCommand::SetOccurrenceTransform {
             id: source.moving_id,
             transform,
@@ -27004,19 +27047,23 @@ impl KetchupApp {
     }
 
     fn push_pull_pointer_target(&self) -> Option<SelectionId> {
-        let selected = self.selection.primary.as_ref().filter(|selection| {
-            matches!(selection.element, ElementId::Face { .. })
-                && self.hover_pick.as_ref().is_some_and(|pick| {
-                    pick.overlapping
-                        .iter()
-                        .any(|hit| hit.reference == **selection)
-                })
-        });
-        selected.cloned().or_else(|| {
-            self.hovered
-                .clone()
-                .filter(|selection| matches!(selection.element, ElementId::Face { .. }))
-        })
+        self.hovered
+            .clone()
+            .filter(|selection| matches!(selection.element, ElementId::Face { .. }))
+            .or_else(|| {
+                self.selection
+                    .primary
+                    .as_ref()
+                    .filter(|selection| {
+                        matches!(selection.element, ElementId::Face { .. })
+                            && self.hover_pick.as_ref().is_some_and(|pick| {
+                                pick.overlapping
+                                    .iter()
+                                    .any(|hit| hit.reference == **selection)
+                            })
+                    })
+                    .cloned()
+            })
     }
 
     fn push_pull_screen_projection(
@@ -27441,8 +27488,11 @@ impl KetchupApp {
 
     fn begin_move_drag_at(&mut self, pointer: Pos2, rect: Rect, copy: bool) -> bool {
         let Some(selection) = self
-            .hovered
-            .clone()
+            .hover_snap
+            .as_ref()
+            .filter(|snap| snap.kind == SnapKind::Endpoint)
+            .map(|snap| snap.reference.clone())
+            .or_else(|| self.hovered.clone())
             .filter(|selection| self.occurrence_in_active_context(&selection.instance_path))
         else {
             self.digest = self.catalog.text("digest-move-start-missed");
@@ -27494,7 +27544,7 @@ impl KetchupApp {
             group_id,
             profile_target,
             pointer_start_world,
-            plane_z,
+            plane_z: pointer_start_world.z,
             axis: self.move_axis_lock,
             axis_reference,
             delta_mm: Vec3::ZERO,
@@ -27614,7 +27664,8 @@ impl KetchupApp {
     /// Only one of the two gestures can be running at a time, so this is a
     /// plain union rather than a composition.
     fn preview_transform_overrides(&self) -> BTreeMap<InstancePath, Transform> {
-        let mut overrides = self.move_preview_transform_overrides();
+        let mut overrides = self.assembly_preview_transform_overrides();
+        overrides.extend(self.move_preview_transform_overrides());
         overrides.extend(self.rotate_preview_transform_overrides());
         overrides
     }
@@ -27687,6 +27738,13 @@ impl KetchupApp {
                             .map(|vertex| Vec3::new(vertex[0], vertex[1], vertex[2])),
                     );
                 }
+            }
+            if let Some((_, vertices, _)) = canonical_sketch_profile_mesh(snapshot, definition_id) {
+                return bounds_of(
+                    vertices
+                        .into_iter()
+                        .map(|vertex| Vec3::new(vertex[0], vertex[1], vertex[2])),
+                );
             }
         }
         local_box.map(|item| [item.origin_mm, item.origin_mm + item.size_mm])
@@ -28011,10 +28069,23 @@ impl KetchupApp {
             .as_ref()
             .filter(|preview| preview.plan.source.target.instance_path == item.instance_path)
         {
-            Some(preview) => renderer::extrude_planar_profile_mesh(
-                mesh,
-                f64::from_bits(preview.plan.new_extent_mm_bits),
-            ),
+            Some(preview) => {
+                let extent = f64::from_bits(preview.plan.new_extent_mm_bits);
+                match snapshot.feature(item.profile_feature_id)?.kind() {
+                    FeatureKind::Sketch(sketch) => {
+                        let FeatureKind::Workplane(workplane) =
+                            snapshot.feature(sketch.workplane)?.kind()
+                        else {
+                            return None;
+                        };
+                        renderer::extrude_planar_profile_mesh_along(
+                            mesh,
+                            workplane.frame.normal.map(|component| component * extent),
+                        )
+                    }
+                    _ => renderer::extrude_planar_profile_mesh(mesh, extent),
+                }
+            }
             None => Some(mesh),
         }
     }
@@ -28223,6 +28294,7 @@ impl KetchupApp {
         self.line_chain_origin = None;
         self.line_chain_points.clear();
         self.line_chain_items.clear();
+        self.line_axis_lock = None;
         self.status_key = "status-ready";
     }
 
@@ -28664,16 +28736,18 @@ impl KetchupApp {
             }
         }
 
-        let delta = end - start;
-        let length_mm = vector_length(Vec3::new(delta.x, delta.y, 0.0));
+        let length_mm = vector_length(end - start);
         if !length_mm.is_finite() || length_mm <= 0.01 {
             return false;
         }
+        let Some((transform, points)) = line_geometry::planar_points(&[start, end]) else {
+            return false;
+        };
         let created = self.create_segment_profile_at(
-            start,
+            transform,
             vec![ProfileSegment::Line {
                 start_mm: [0.0, 0.0],
-                end_mm: [delta.x, delta.y],
+                end_mm: [points[1].x, points[1].y],
             }],
             false,
             "model-default-line",
@@ -28701,31 +28775,32 @@ impl KetchupApp {
     }
 
     fn close_line_chain(&mut self) -> bool {
-        let Some(origin) = self.line_chain_origin else {
+        let Some((transform, points)) = line_geometry::planar_points(&self.line_chain_points)
+        else {
             return false;
         };
         let mut twice_area = 0.0;
-        for edge in self.line_chain_points.windows(2) {
+        for edge in points.windows(2) {
             twice_area += edge[0].x * edge[1].y - edge[1].x * edge[0].y;
         }
-        if let Some(last) = self.line_chain_points.last() {
-            twice_area += last.x * origin.y - origin.x * last.y;
+        if let Some(last) = points.last() {
+            twice_area += last.x * points[0].y - points[0].x * last.y;
         }
         if !twice_area.is_finite() || twice_area.abs() <= 1.0e-6 {
             return false;
         }
 
-        let mut segments = self
-            .line_chain_points
+        let mut segments = points
+            .as_slice()
             .windows(2)
             .map(|edge| ProfileSegment::Line {
-                start_mm: [edge[0].x - origin.x, edge[0].y - origin.y],
-                end_mm: [edge[1].x - origin.x, edge[1].y - origin.y],
+                start_mm: [edge[0].x, edge[0].y],
+                end_mm: [edge[1].x, edge[1].y],
             })
             .collect::<Vec<_>>();
-        let last = *self.line_chain_points.last().expect("validated line chain");
+        let last = *points.last().expect("validated line chain");
         segments.push(ProfileSegment::Line {
-            start_mm: [last.x - origin.x, last.y - origin.y],
+            start_mm: [last.x, last.y],
             end_mm: [0.0, 0.0],
         });
 
@@ -28807,8 +28882,8 @@ impl KetchupApp {
                 id: occurrence_id,
                 definition_id,
                 name: occurrence_name,
-                transform: Transform::from_translation(origin.x, origin.y, origin.z)
-                    .expect("validated line-chain origin is canonical"),
+                transform,
+
                 parent: None,
                 tag: None,
                 visible: true,
@@ -28860,12 +28935,12 @@ impl KetchupApp {
             .sketch_cursor
             .map(|cursor| cursor - start)
             .unwrap_or(Vec3::new(1.0, 0.0, 0.0));
-        let direction_length = vector_length(Vec3::new(direction.x, direction.y, 0.0));
+        let direction_length = vector_length(direction);
         let unit = if direction_length > 0.01 {
             Vec3::new(
                 direction.x / direction_length,
                 direction.y / direction_length,
-                0.0,
+                direction.z / direction_length,
             )
         } else {
             Vec3::new(1.0, 0.0, 0.0)
@@ -28895,7 +28970,8 @@ impl KetchupApp {
         let radial = [unit.x * radius_mm, unit.y * radius_mm];
         let opposite = [-radial[0], -radial[1]];
         let created = self.create_segment_profile_at(
-            center,
+            Transform::from_translation(center.x, center.y, center.z)
+                .expect("validated profile origin is canonical"),
             vec![
                 ProfileSegment::CircularArc {
                     start_mm: radial,
@@ -28950,7 +29026,8 @@ impl KetchupApp {
         let local_end = [end.x - start.x, end.y - start.y];
         let local_center = [arc.center.x - start.x, arc.center.y - start.y];
         let created = self.create_segment_profile_at(
-            start,
+            Transform::from_translation(start.x, start.y, start.z)
+                .expect("validated profile origin is canonical"),
             vec![
                 ProfileSegment::CircularArc {
                     start_mm: [0.0, 0.0],
@@ -29014,27 +29091,10 @@ impl KetchupApp {
     }
 
     fn complete_datum_rectangle(&mut self, start: Vec3, end: Vec3) -> bool {
-        let snapshot = self.document.current();
-        let definition_id = self
-            .selection
-            .primary
-            .as_ref()
-            .map(|selection| selection.definition_id)
-            .or_else(|| {
-                snapshot
-                    .definitions()
-                    .next()
-                    .map(|definition| definition.id())
-            });
-        let Some(definition_id) = definition_id else {
+        let Some(batch) = self.datum_rectangle_batch(start, end) else {
             return false;
         };
-        let Some(definition) = snapshot.definition(definition_id) else {
-            return false;
-        };
-        let body_id = definition.active_body_id();
-        let plane = self.face_workflow_datum();
-        let frame = WorkplaneFrame::principal(plane);
+        let frame = self.rectangle_frame(Some(start));
         let frame_origin = Vec3::new(frame.origin_mm[0], frame.origin_mm[1], frame.origin_mm[2]);
         let frame_x = Vec3::new(frame.x_axis[0], frame.x_axis[1], frame.x_axis[2]);
         let frame_y = Vec3::new(frame.y_axis[0], frame.y_axis[1], frame.y_axis[2]);
@@ -29048,58 +29108,7 @@ impl KetchupApp {
         ];
         let width_mm = (end_uv[0] - start_uv[0]).abs();
         let depth_mm = (end_uv[1] - start_uv[1]).abs();
-        let Ok(size) = RectangleSize::exact(
-            Dimension::new(format_height(width_mm), width_mm)
-                .expect("validated rectangle width is canonical"),
-            Dimension::new(format_height(depth_mm), depth_mm)
-                .expect("validated rectangle depth is canonical"),
-        ) else {
-            return false;
-        };
-        let Ok(intent) = TransientFaceIntent::new(
-            &snapshot,
-            definition_id,
-            Vec::new(),
-            Some(FaceIntentTarget::datum(definition_id, body_id, plane)),
-        ) else {
-            return false;
-        };
-        let Ok(authoring) = RectangleFaceAuthoring::begin(&snapshot, &intent, 0, start_uv) else {
-            return false;
-        };
-        let Ok(preview) = authoring.preview_exact(
-            &snapshot,
-            size,
-            RectangleDirection {
-                positive_x: end_uv[0] >= start_uv[0],
-                positive_y: end_uv[1] >= start_uv[1],
-            },
-        ) else {
-            return false;
-        };
-        let first_feature_id = snapshot
-            .features()
-            .map(|feature| feature.id().0)
-            .max()
-            .unwrap_or(0)
-            .checked_add(1);
-        let Some(first_feature_id) = first_feature_id else {
-            return false;
-        };
-        let Some(sketch_id) = first_feature_id.checked_add(1).map(FeatureId) else {
-            return false;
-        };
-        let Ok(proposal) = authoring.plan_proposal(
-            &self.document,
-            RectangleFeatureIds {
-                workplane: FeatureId(first_feature_id),
-                sketch: sketch_id,
-            },
-            &preview,
-        ) else {
-            return false;
-        };
-        if self.commit_proposal_with_work_recovery(&proposal).is_err() {
+        if self.apply_batch_with_work_recovery(&batch).is_err() {
             self.digest = self.catalog.text("error-preview-stale");
             return false;
         }
@@ -29571,14 +29580,18 @@ impl KetchupApp {
     }
 
     fn rectangle_point_at_screen(&self, pointer: Pos2, rect: Rect) -> Option<Vec3> {
-        if self.face_workflow_datum() == PrincipalPlane::Xy {
-            let plane_z = self
-                .sketch_start
-                .map_or_else(|| self.rectangle_plane_z(pointer, rect), |start| start.z);
-            self.viewport_point_at_screen(pointer, rect, plane_z)
-        } else {
-            self.screen_to_workplane(pointer, rect, self.rectangle_frame(None))
+        self.rectangle_input_point(pointer, rect)
+    }
+
+    fn sketch_point_at_screen(&self, pointer: Pos2, rect: Rect, plane_z: f64) -> Option<Vec3> {
+        if self.active_tool == ActiveTool::Line
+            && let (Some(start), Some(axis)) = (self.sketch_start, self.line_axis_lock)
+        {
+            let ray = self.view_ray(pointer, rect)?;
+            let travel = axis_travel_along(&ray, start, axis)?;
+            return Some(start + axis_direction(axis) * travel);
         }
+        self.viewport_point_at_screen(pointer, rect, plane_z)
     }
 
     pub fn zoom_at_screen(&mut self, pointer: Pos2, rect: Rect, scroll: f32) {
@@ -29731,20 +29744,27 @@ impl KetchupApp {
             hover_galley,
             text,
         );
-        if self.face_workflow.xray_preview()
-            && let Some((index, count)) = self.hovered_overlap_choice()
+        if let Some((index, count)) = self
+            .hovered_overlap_choice()
+            .filter(|(_, count)| *count > 1)
         {
-            painter.rect_stroke(
-                hover_rect.expand(3.0),
-                10.0,
-                Stroke::new(2.0_f32, palette.accent),
-                egui::StrokeKind::Outside,
-            );
+            if self.face_workflow.xray_preview() {
+                painter.rect_stroke(
+                    hover_rect.expand(3.0),
+                    10.0,
+                    Stroke::new(2.0_f32, palette.accent),
+                    egui::StrokeKind::Outside,
+                );
+            }
             painter.text(
                 hover_rect.left_bottom() + Vec2::new(0.0, 8.0),
                 egui::Align2::LEFT_TOP,
                 self.catalog.format(
-                    "face-workflow-xray",
+                    if self.face_workflow.xray_preview() {
+                        "face-workflow-xray"
+                    } else {
+                        "face-workflow-overlap-hint"
+                    },
                     &BTreeMap::from([
                         ("index", (index + 1).to_string()),
                         ("count", count.to_string()),
@@ -29921,6 +29941,7 @@ impl KetchupApp {
     }
 
     fn viewport(&mut self, ui: &mut egui::Ui) {
+        let preserve_hover = self.show_edit_context_bar(ui);
         self.refresh_camera_distance();
         let desired = ui.available_size().max(Vec2::new(320.0, 280.0));
         let (response, painter) = ui.allocate_painter(desired, Sense::click_and_drag());
@@ -29941,7 +29962,7 @@ impl KetchupApp {
             self.hovered = None;
             self.hover_snap = None;
             self.snap_tracker.clear();
-        } else {
+        } else if !preserve_hover {
             self.update_viewport_inference(response.hover_pos(), response.rect);
         }
 
@@ -29981,7 +30002,7 @@ impl KetchupApp {
                         },
                         |start| start.z,
                     );
-                    self.viewport_point_at_screen(pointer, response.rect, plane_z)
+                    self.sketch_point_at_screen(pointer, response.rect, plane_z)
                 };
                 if let Some(point) = point {
                     if let Some(start) = self.sketch_start {
@@ -30292,7 +30313,7 @@ impl KetchupApp {
                     self.sketch_cursor = if self.active_tool == ActiveTool::Rectangle {
                         self.rectangle_point_at_screen(pointer, response.rect)
                     } else {
-                        self.screen_to_plane(pointer, response.rect, start.z)
+                        self.sketch_point_at_screen(pointer, response.rect, start.z)
                     };
                 }
             } else if let (Some(mut drag), Some(pointer)) =
@@ -30408,7 +30429,7 @@ impl KetchupApp {
                 self.rectangle_point_at_screen(pointer, response.rect)
             } else {
                 let plane_z = self.sketch_start.map_or(0.0, |start| start.z);
-                self.viewport_point_at_screen(pointer, response.rect, plane_z)
+                self.sketch_point_at_screen(pointer, response.rect, plane_z)
             };
             // Once the user starts typing, the value box owns the value: the
             // focus request only takes effect next frame, so the freshly typed
@@ -30421,7 +30442,7 @@ impl KetchupApp {
                     ActiveTool::Line => format_height(vector_length(Vec3::new(
                         cursor.x - start.x,
                         cursor.y - start.y,
-                        0.0,
+                        cursor.z - start.z,
                     ))),
                     ActiveTool::Circle => format_height(vector_length(Vec3::new(
                         cursor.x - start.x,
@@ -30496,7 +30517,7 @@ impl KetchupApp {
         let move_transform_overrides = self.preview_transform_overrides();
         let use_wgpu_scene = self.wgpu_target_format.is_some()
             && !self.has_occurrence_operation_preview()
-            && !self.xray_visible
+            && !(self.xray_visible || self.face_workflow.xray_preview())
             && !self.wireframe_visible
             && !self.monochrome_visible
             && !self.hidden_line_visible;
@@ -30545,6 +30566,7 @@ impl KetchupApp {
             })
             .collect::<BTreeMap<_, _>>();
         let mut faces = Vec::new();
+        let mut feedback_faces = Vec::new();
         let mut edges = Vec::new();
         let viewport_boxes = self.viewport_boxes(&snapshot, exact_projection);
         for item in viewport_boxes.iter().cloned() {
@@ -30616,7 +30638,7 @@ impl KetchupApp {
                         dominant_axis: dominant_edge_axis(points_mm),
                     });
                 }
-                if needs_cpu_fill {
+                if needs_cpu_fill || needs_cpu_overlay {
                     for triangle in triangles {
                         let points_mm = triangle.map(|index| positions_mm[index as usize]);
                         let normal = triangle_normal(points_mm);
@@ -30627,7 +30649,12 @@ impl KetchupApp {
                         if !projected_polygon_has_area(&projected) {
                             continue;
                         }
-                        faces.push(ProjectedFace {
+                        (if needs_cpu_fill {
+                            &mut faces
+                        } else {
+                            &mut feedback_faces
+                        })
+                        .push(ProjectedFace {
                             selection: selection.clone(),
                             polygon: ProjectedPolygon::Triangle(projected),
                             color: occurrence_color
@@ -30680,8 +30707,13 @@ impl KetchupApp {
                     .map(|index| point_depth(corners[*index], forward))
                     .sum::<f64>()
                     / 4.0;
-                if needs_cpu_fill {
-                    faces.push(ProjectedFace {
+                if needs_cpu_fill || needs_cpu_overlay {
+                    (if needs_cpu_fill {
+                        &mut faces
+                    } else {
+                        &mut feedback_faces
+                    })
+                    .push(ProjectedFace {
                         selection,
                         polygon: ProjectedPolygon::Quad(points),
                         color: occurrence_color.unwrap_or(face.color),
@@ -30844,8 +30876,13 @@ impl KetchupApp {
                     .face_role
                     .and_then(exact_face_element)
                     .unwrap_or_else(|| face_element_from_normal(normal));
-                if needs_cpu_fill {
-                    faces.push(ProjectedFace {
+                if needs_cpu_fill || needs_cpu_overlay {
+                    (if needs_cpu_fill {
+                        &mut faces
+                    } else {
+                        &mut feedback_faces
+                    })
+                    .push(ProjectedFace {
                         selection: SelectionId {
                             definition_id: occurrence.body.definition_id,
                             instance_path: occurrence.instance_path.clone(),
@@ -30948,7 +30985,7 @@ impl KetchupApp {
                     });
                 }
             }
-            if !needs_cpu_fill {
+            if !needs_cpu_fill && !needs_cpu_overlay {
                 continue;
             }
             for triangle in &mesh.triangles {
@@ -30961,7 +30998,12 @@ impl KetchupApp {
                 if !projected_polygon_has_area(&projected) {
                     continue;
                 }
-                faces.push(ProjectedFace {
+                (if needs_cpu_fill {
+                    &mut faces
+                } else {
+                    &mut feedback_faces
+                })
+                .push(ProjectedFace {
                     selection: SelectionId {
                         definition_id: occurrence.body.definition_id,
                         instance_path: occurrence.instance_path.clone(),
@@ -31045,6 +31087,7 @@ impl KetchupApp {
             );
         }
 
+        self.paint_face_feedback(&painter, faces.iter().chain(&feedback_faces));
         self.paint_projected_selection(&painter, &edges);
 
         let profile_move_stroke = Stroke::new(2.4_f32, Color32::from_rgb(255, 199, 68));
@@ -31063,19 +31106,26 @@ impl KetchupApp {
             if self.active_tool == ActiveTool::Line {
                 let from = self.project(start, response.rect);
                 let to = self.project(cursor, response.rect);
-                painter.line_segment(
-                    [from, to],
-                    Stroke::new(2.0_f32, Color32::from_rgb(255, 199, 68)),
-                );
+                let color = match self.line_axis_lock {
+                    Some(Axis::X) => Color32::from_rgb(230, 80, 80),
+                    Some(Axis::Y) => Color32::from_rgb(80, 205, 120),
+                    Some(Axis::Z) => Color32::from_rgb(80, 145, 255),
+                    None => Color32::from_rgb(255, 199, 68),
+                };
+                painter.line_segment([from, to], Stroke::new(2.5_f32, color));
+                let axis_label = self
+                    .line_axis_lock
+                    .map(|axis| format!("{} · ", self.catalog.text(axis_name_key(axis))))
+                    .unwrap_or_default();
                 painter.text(
                     from.lerp(to, 0.5) - Vec2::new(0.0, 14.0),
                     egui::Align2::CENTER_CENTER,
                     format!(
-                        "{} mm",
+                        "{axis_label}{} mm",
                         format_height(vector_length(Vec3::new(
                             cursor.x - start.x,
                             cursor.y - start.y,
-                            0.0,
+                            cursor.z - start.z,
                         )))
                     ),
                     egui::FontId::proportional(14.0),
@@ -31222,6 +31272,7 @@ impl KetchupApp {
             );
         }
 
+        self.paint_origin_snap(&painter, response.hover_pos(), response.rect);
         self.paint_rotation_guide(&painter, response.rect);
 
         if let Some((start, end)) = self.measure_span() {
@@ -31402,7 +31453,9 @@ impl KetchupApp {
         let cache = cache.as_ref().expect("interaction cache was built");
         let scale = f64::from(self.zoom) * f64::from(rect.width().min(rect.height())) / 420.0;
         let exact_hit = cache.exact.exact_surface_pick(ray);
-        let mesh_hit = cache.mesh.exact_surface_pick(ray);
+        let mesh_hit = cache
+            .mesh
+            .surface_pick_with_tolerance(ray, tolerance_px / scale);
         let box_pick = cache.boxes.exact_pick(ray, tolerance_px / scale);
         let prefer_exact = exact_hit.as_ref().is_some_and(|exact| {
             mesh_hit
@@ -31449,6 +31502,26 @@ impl KetchupApp {
                     candidate.reference.instance_path != primary.reference.instance_path
                 }));
             }
+            if let Some(mesh) = mesh_hit.as_ref().filter(|mesh| {
+                mesh.instance_path != primary.reference.instance_path
+                    && mesh.ray_distance_mm <= primary.ray_distance_mm + 1.0e-6
+            }) {
+                overlapping.push(ExactHit {
+                    reference: SelectionId {
+                        definition_id: mesh.definition_id,
+                        instance_path: mesh.instance_path.clone(),
+                        element: face_element_from_normal(mesh.outward_normal),
+                    },
+                    position_mm: mesh.position_mm,
+                    ray_distance_mm: mesh.ray_distance_mm,
+                });
+            }
+            overlapping.sort_by(|left, right| {
+                left.ray_distance_mm
+                    .total_cmp(&right.ray_distance_mm)
+                    .then_with(|| left.reference.cmp(&right.reference))
+            });
+            overlapping.dedup_by(|left, right| left.reference == right.reference);
             return Some(PickResult {
                 primary,
                 overlapping,
@@ -31541,8 +31614,49 @@ impl KetchupApp {
         ))
     }
 
+    fn prioritize_push_pull_profile_pick(&self, pick: &mut PickResult) {
+        if self.active_tool != ActiveTool::PushPull {
+            return;
+        }
+        let snapshot = self.document.current();
+        let profiles = self
+            .active_boxes()
+            .into_iter()
+            .filter(|item| {
+                item.extrusion_feature_id.is_none()
+                    && snapshot.feature(item.profile_feature_id).is_some_and(
+                        |feature| match feature.kind() {
+                            FeatureKind::Profile { points_mm } => points_mm.len() >= 3,
+                            FeatureKind::SegmentProfile { closed, .. } => *closed,
+                            FeatureKind::SplineProfile { control_points_mm } => {
+                                control_points_mm.len() >= 3
+                            }
+                            FeatureKind::Sketch(_) => true,
+                            _ => false,
+                        },
+                    )
+            })
+            .map(|item| item.instance_path)
+            .collect::<BTreeSet<_>>();
+        let Some(index) = pick.overlapping.iter().position(|hit| {
+            matches!(hit.reference.element, ElementId::Face { .. })
+                && profiles.contains(&hit.reference.instance_path)
+        }) else {
+            return;
+        };
+        pick.overlapping.rotate_left(index);
+        pick.primary = pick.overlapping[0].clone();
+        if pick.snap.kind == SnapKind::Face {
+            pick.snap.reference = pick.primary.reference.clone();
+            pick.snap.position_mm = pick.primary.position_mm;
+        }
+    }
+
     fn update_viewport_inference(&mut self, pointer: Option<Pos2>, rect: Rect) {
-        let pick = pointer.and_then(|pointer| self.pick_result_at_screen(pointer, rect, 12.0));
+        let mut pick = pointer.and_then(|pointer| self.pick_result_at_screen(pointer, rect, 12.0));
+        if let Some(pick) = pick.as_mut() {
+            self.prioritize_push_pull_profile_pick(pick);
+        }
         let previous = self.hover_pick.as_ref().map(overlap_signature);
         let current = pick.as_ref().map(overlap_signature);
         if previous != current {
@@ -31551,23 +31665,32 @@ impl KetchupApp {
             // choice the user just cycled to with Tab and select whatever is
             // frontmost instead, so the choice is carried over whenever the
             // chosen body is still under the pointer.
-            self.hover_overlap_index = self
-                .hovered
-                .as_ref()
-                .and_then(|chosen| {
-                    current
-                        .as_ref()?
-                        .iter()
-                        .position(|candidate| candidate == chosen)
-                })
-                .unwrap_or(0);
-            self.face_workflow.set_xray_preview(false);
+            self.hover_overlap_index =
+                if self.active_tool == ActiveTool::PushPull && self.hover_overlap_index == 0 {
+                    0
+                } else {
+                    self.hovered
+                        .as_ref()
+                        .and_then(|chosen| {
+                            current
+                                .as_ref()?
+                                .iter()
+                                .position(|candidate| candidate == chosen)
+                        })
+                        .unwrap_or(0)
+                };
+            if current.is_none() {
+                self.face_workflow.set_xray_preview(false);
+            }
         }
         let scale = f64::from(self.zoom) * f64::from(rect.width().min(rect.height())) / 420.0;
         let policy = SnapPolicy::new(8.0 / scale, 12.0 / scale)
             .expect("positive viewport snap tolerances are valid");
         let box_snap = pointer.and_then(|pointer| self.box_snap_at_screen(pointer, rect, 8.0));
-        self.hover_snap = if self.face_workflow.snaps_enabled() {
+        self.hover_snap = if self.active_tool == ActiveTool::Rectangle {
+            self.snap_tracker.clear();
+            pointer.and_then(|pointer| self.rectangle_snap_at_screen(pointer, rect))
+        } else if self.face_workflow.snaps_enabled() {
             if box_snap.is_some() {
                 self.snap_tracker.clear();
             }
@@ -31630,6 +31753,16 @@ impl KetchupApp {
         rect: Rect,
         tolerance_px: f32,
     ) -> Option<SnapResult> {
+        self.box_snap_on_plane(pointer, rect, tolerance_px, None)
+    }
+
+    fn box_snap_on_plane(
+        &self,
+        pointer: Pos2,
+        rect: Rect,
+        tolerance_px: f32,
+        frame: Option<WorkplaneFrame>,
+    ) -> Option<SnapResult> {
         const EDGE_ENDPOINTS: [(usize, usize); 12] = [
             (0, 1),
             (2, 3),
@@ -31648,6 +31781,11 @@ impl KetchupApp {
         let snapshot = self.document.current();
         self.refresh_interaction_projection_cache(&snapshot);
         let cache = self.interaction_projection_cache.borrow();
+        let retained = self
+            .hover_snap
+            .as_ref()
+            .filter(|_| self.active_tool != ActiveTool::Rectangle)
+            .map(|snap| &snap.reference);
         cache
             .as_ref()
             .expect("interaction cache was built")
@@ -31722,18 +31860,33 @@ impl KetchupApp {
                     });
                 endpoints.chain(midpoints)
             })
-            .filter(|snap| snap.distance_mm <= f64::from(tolerance_px))
+            .filter(|snap| {
+                snap.distance_mm
+                    <= f64::from(if retained == Some(&snap.reference) {
+                        tolerance_px * 1.5
+                    } else {
+                        tolerance_px
+                    })
+                    && frame.is_none_or(|frame| {
+                        rectangle_snapping::point_in_frame(snap.position_mm, frame)
+                    })
+            })
             .min_by(|left, right| {
-                left.distance_mm
-                    .total_cmp(&right.distance_mm)
+                (retained == Some(&right.reference))
+                    .cmp(&(retained == Some(&left.reference)))
+                    .then_with(|| left.distance_mm.total_cmp(&right.distance_mm))
                     .then_with(|| left.score().kind_rank.cmp(&right.score().kind_rank))
                     .then_with(|| left.reference.cmp(&right.reference))
             })
     }
 
     fn viewport_point_at_screen(&self, pointer: Pos2, rect: Rect, plane_z: f64) -> Option<Vec3> {
-        if !self.face_workflow.snaps_enabled() {
-            return self.screen_to_plane(pointer, rect, plane_z);
+        if !self.face_workflow.snaps_enabled()
+            || self.origin_snap_at_screen(pointer, rect, plane_z).is_some()
+        {
+            return self
+                .origin_snap_at_screen(pointer, rect, plane_z)
+                .or_else(|| self.screen_to_plane(pointer, rect, plane_z));
         }
         self.box_snap_at_screen(pointer, rect, 8.0)
             .or_else(|| {
@@ -31988,14 +32141,14 @@ impl KetchupApp {
     }
 
     fn handle_shortcuts(&mut self, context: &egui::Context) {
-        let xray_preview = context.input(|input| input.modifiers.alt)
+        let alt_pick_through = !context.wants_keyboard_input()
+            && context.input(|input| input.modifiers.alt)
             && self
                 .hover_pick
                 .as_ref()
                 .is_some_and(|pick| pick.overlapping.len() > 1);
-        if xray_preview {
-            self.face_workflow.set_xray_preview(true);
-        }
+        let cycle_with_alt = self.face_workflow.update_alt_pick_through(alt_pick_through);
+        self.face_workflow.set_xray_preview(alt_pick_through);
         let new_document = context.input(|input| {
             input.modifiers.command && !input.modifiers.shift && input.key_pressed(egui::Key::N)
         });
@@ -32071,12 +32224,7 @@ impl KetchupApp {
         let zoom_out = !context.wants_keyboard_input()
             && context
                 .input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::Minus));
-        let deliberate_pick_through = !context.wants_keyboard_input()
-            && context.input_mut(|input| input.consume_key(egui::Modifiers::ALT, egui::Key::Tab));
-        if deliberate_pick_through {
-            self.face_workflow.set_xray_preview(true);
-        }
-        let cycle_overlap = deliberate_pick_through
+        let cycle_overlap = cycle_with_alt
             || (!context.wants_keyboard_input()
                 && context
                     .input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Tab)));
@@ -32136,11 +32284,13 @@ impl KetchupApp {
             }
         }
 
-        // SketchUp pins the protractor to a coloured axis with the arrow keys.
-        // The lock is read before the command chain because an arrow must never
-        // fall through to a tool shortcut.
-        if matches!(self.active_tool, ActiveTool::Rotate | ActiveTool::Move)
-            && !context.wants_keyboard_input()
+        // Drawing and transform tools pin their direction to a coloured axis
+        // with the arrow keys. Read the lock before the command chain so an
+        // arrow never falls through to a tool shortcut.
+        if matches!(
+            self.active_tool,
+            ActiveTool::Rotate | ActiveTool::Move | ActiveTool::Line
+        ) && !context.wants_keyboard_input()
         {
             let requested = [
                 (egui::Key::ArrowRight, Some(Axis::X)),
@@ -32153,10 +32303,10 @@ impl KetchupApp {
                 context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, *key))
             });
             if let Some((_, axis)) = requested {
-                let held = if self.active_tool == ActiveTool::Move {
-                    self.move_axis_lock
-                } else {
-                    self.rotate_axis_lock
+                let held = match self.active_tool {
+                    ActiveTool::Move => self.move_axis_lock,
+                    ActiveTool::Line => self.line_axis_lock,
+                    _ => self.rotate_axis_lock,
                 };
                 // Pressing the axis already held releases it, so one key both
                 // locks and unlocks.
@@ -32165,10 +32315,20 @@ impl KetchupApp {
                 } else {
                     axis
                 };
-                if self.active_tool == ActiveTool::Move {
-                    self.set_move_axis_lock(axis);
-                } else {
-                    self.set_rotate_axis_lock(axis);
+                match self.active_tool {
+                    ActiveTool::Move => self.set_move_axis_lock(axis),
+                    ActiveTool::Line => {
+                        self.line_axis_lock = axis;
+                        self.digest = self.catalog.format(
+                            "digest-line-axis-locked",
+                            &BTreeMap::from([(
+                                "axis",
+                                self.catalog
+                                    .text(axis.map_or("axis-name-plane", axis_name_key)),
+                            )]),
+                        );
+                    }
+                    _ => self.set_rotate_axis_lock(axis),
                 }
             }
         }
@@ -32534,6 +32694,57 @@ impl KetchupApp {
         }
     }
 
+    fn show_command_search(&mut self, ui: &mut egui::Ui) {
+        let label = self.catalog.text("command-search");
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut self.command_search)
+                .hint_text(self.catalog.text("command-search-placeholder"))
+                .desired_width(170.0),
+        );
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, label.clone())
+        });
+        let query = self.command_search.trim().to_lowercase();
+        if query.is_empty() {
+            return;
+        }
+        let matches = CommandRegistry::COMMANDS
+            .iter()
+            .filter(|spec| spec.implemented)
+            .filter_map(|spec| {
+                let label = self.catalog.text(spec.label_key);
+                label.to_lowercase().contains(&query).then_some((
+                    spec.id,
+                    label,
+                    self.command_enabled(spec.id),
+                ))
+            })
+            .take(8)
+            .collect::<Vec<_>>();
+        let mut chosen = None;
+        egui::Area::new(egui::Id::new("command-search-results"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(response.rect.left_bottom())
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_min_width(response.rect.width().max(220.0));
+                    if matches.is_empty() {
+                        ui.label(self.catalog.text("command-search-empty"));
+                    }
+                    for (command, label, enabled) in matches {
+                        if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
+                            chosen = Some(command);
+                        }
+                    }
+                });
+            });
+        if let Some(command) = chosen {
+            ui.memory_mut(|memory| memory.surrender_focus(response.id));
+            self.command_search.clear();
+            self.dispatch_command(command);
+        }
+    }
+
     fn show_menu_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             // A menu bar is not a row of buttons: the top-level entries stay
@@ -32759,6 +32970,8 @@ impl KetchupApp {
                 self.menu_command(ui, AppCommand::Shortcuts);
                 self.menu_command(ui, AppCommand::About);
             });
+            ui.separator();
+            self.show_command_search(ui);
         });
     }
 
@@ -33100,13 +33313,13 @@ impl KetchupApp {
             } else {
                 face.color
             };
-            let color = if self.xray_visible {
+            let color = if self.xray_visible || self.face_workflow.xray_preview() {
                 Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 72)
             } else {
                 color
             };
             fills.push(color);
-            if self.xray_visible {
+            if self.xray_visible || self.face_workflow.xray_preview() {
                 continue;
             }
             let base = u32::try_from(underlay.vertices.len())
@@ -33121,7 +33334,8 @@ impl KetchupApp {
             }
         }
         // Xray must blend each face once, not both the seam underlay and fill.
-        if !self.xray_visible && !underlay.indices.is_empty() {
+        if !(self.xray_visible || self.face_workflow.xray_preview()) && !underlay.indices.is_empty()
+        {
             painter.add(egui::Shape::mesh(underlay));
         }
         for (face, color) in faces.iter().zip(fills) {
@@ -38886,8 +39100,32 @@ const fn axis_direction(axis: Axis) -> Vec3 {
     }
 }
 
-/// The world transform that turns `angle_degrees` about `axis` through
-/// `centre_mm`, ready to be composed in front of an occurrence transform.
+/// Conjugate the world-space edit through the complete parent chain before
+/// storing it in a group's or occurrence's parent-local transform.
+fn world_edit_in_parent_space(
+    snapshot: &Snapshot,
+    parent: Option<GroupId>,
+    local: Transform,
+    world_edit: Transform,
+) -> Option<Transform> {
+    let parent_world = parent.map_or(Some(Transform::identity()), |id| {
+        snapshot.world_transform_for_group(id)
+    })?;
+    rotation_in_parent_space(world_edit, parent_world, local)
+}
+fn translated_in_parent_space(
+    snapshot: &Snapshot,
+    parent: Option<GroupId>,
+    local: Transform,
+    delta: Vec3,
+) -> Option<Transform> {
+    world_edit_in_parent_space(
+        snapshot,
+        parent,
+        local,
+        Transform::from_translation(delta.x, delta.y, delta.z).ok()?,
+    )
+}
 fn world_rotation_transform(
     centre_mm: Vec3,
     axis: Axis,
@@ -39090,6 +39328,49 @@ fn push_pull_batch(
     let ElementId::Face { axis, side } = selection.element else {
         return None;
     };
+    if let FeatureKind::Sketch(sketch) = profile.kind() {
+        if item.extrusion_feature_id.is_some() || new_extent_mm <= 0.01 {
+            return None;
+        }
+        let workplane = snapshot.feature(sketch.workplane)?;
+        if workplane.definition_id() != selection.definition_id {
+            return None;
+        }
+        let FeatureKind::Workplane(workplane) = workplane.kind() else {
+            return None;
+        };
+        let expected_face = face_element_from_normal(Vec3::new(
+            workplane.frame.normal[0],
+            workplane.frame.normal[1],
+            workplane.frame.normal[2],
+        ));
+        if selection.element != expected_face {
+            return None;
+        }
+        let [region] = sketch.solved_regions().ok()?.try_into().ok()?;
+        if !region.holes.is_empty() {
+            return None;
+        }
+        let id = FeatureId(
+            snapshot
+                .features()
+                .map(|feature| feature.id().0)
+                .max()
+                .unwrap_or(0)
+                .checked_add(1)?,
+        );
+        return Some(CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+            id,
+            definition_id: selection.definition_id,
+            name: "Pad".to_owned(),
+            kind: FeatureKind::Pad(PadSpec {
+                sketch: item.profile_feature_id,
+                region: region.id,
+                direction: FeatureDirection::AlongNormal,
+                extent: FeatureExtent::Blind(Dimension::new(source_token, new_extent_mm).ok()?),
+            }),
+        }]));
+    }
     let mut commands = Vec::new();
     match axis {
         Axis::Z => {
@@ -40817,5 +41098,7 @@ fn box_corners(width: f64, depth: f64, height: f64) -> [Vec3; 8] {
     ]
 }
 
+#[cfg(test)]
+mod nested_transform_tests;
 #[cfg(test)]
 mod tests;

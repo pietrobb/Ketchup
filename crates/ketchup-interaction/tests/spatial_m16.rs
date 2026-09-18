@@ -304,6 +304,27 @@ fn canonical_mesh_projection_shares_geometry_and_uses_the_same_stale_safe_bvh() 
     );
     assert_sublinear(stats);
 
+    let target_transform = grid_transform(target);
+    let matrix = target_transform.matrix();
+    let near_edge = Ray::new(
+        Vec3::new(matrix[3] - 0.25, matrix[7] + 2.0, 30.0),
+        Vec3::new(0.0, 0.0, -1.0),
+    )
+    .unwrap();
+    assert!(projection.exact_surface_pick(near_edge).is_none());
+    assert!(
+        projection
+            .surface_pick_with_tolerance(near_edge, 0.2)
+            .is_none()
+    );
+    assert_eq!(
+        projection
+            .surface_pick_with_tolerance(near_edge, 0.3)
+            .unwrap()
+            .instance_path,
+        InstancePath::root(OccurrenceId(target as u64 + 1))
+    );
+
     store
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::SetOccurrenceVisibility {
