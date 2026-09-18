@@ -27,7 +27,7 @@ pub(super) struct HelixThreadUiState {
 
 impl Default for HelixThreadUiState {
     fn default() -> Self {
-        let mut state = Self {
+        Self {
             origin: ["0".into(), "0".into(), "0".into()],
             axis: ["0".into(), "0".into(), "1".into()],
             radius: "10".into(),
@@ -39,9 +39,7 @@ impl Default for HelixThreadUiState {
             profile: ThreadProfile::Round,
             preview_segments: Vec::new(),
             valid: false,
-        };
-        state.refresh(false);
-        state
+        }
     }
 }
 

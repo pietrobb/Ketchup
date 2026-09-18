@@ -3653,6 +3653,23 @@ fn new_and_open_cancel_active_assistant_requests() {
 }
 
 #[test]
+fn new_document_starts_empty_without_an_inactive_tool_preview() {
+    let mut app = KetchupApp::new();
+    app.begin_helix_thread_tool(ActiveTool::Helix);
+    assert!(!app.helix_thread_preview_points().is_empty());
+
+    app.new_document();
+
+    let snapshot = app.document.current();
+    assert_eq!(snapshot.definitions().count(), 0);
+    assert_eq!(snapshot.occurrences().count(), 0);
+    assert_eq!(snapshot.features().count(), 0);
+    assert_eq!(app.document.visible_undo_steps(), 0);
+    assert!(app.helix_thread_preview_points().is_empty());
+    assert_eq!(app.active_tool, ActiveTool::Select);
+}
+
+#[test]
 fn assistant_progress_phases_are_accessible_with_deterministic_channels() {
     let mut app = KetchupApp::new();
     let requesting = app.catalog.text("assistant-progress-requesting");
@@ -12669,6 +12686,59 @@ fn closed_polyline_path_preserves_points_and_rejects_invalid_input_atomically() 
     assert!(!app.create_closed_polyline(vec![[0.0, 0.0], [0.0, 10.0], [10.0, 10.0], [10.0, 0.0],]));
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.document_revision(), revision);
+}
+
+#[test]
+fn drawing_snap_acquires_box_corners_and_edge_midpoints_in_screen_space() {
+    let mut app = KetchupApp::new();
+    let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
+    let face_center = app.project(Vec3::new(50.0, 30.0, 20.0), rect);
+
+    let corner = Vec3::new(0.0, 0.0, 20.0);
+    let corner_screen = app.project(corner, rect);
+    let corner_pointer = corner_screen + (corner_screen - face_center).normalized() * 6.0;
+    let corner_snap = app
+        .box_snap_at_screen(corner_pointer, rect, 8.0)
+        .expect("a nearby pointer must acquire the corner");
+    assert_eq!(corner_snap.kind, SnapKind::Endpoint);
+    assert_eq!(corner_snap.position_mm, corner);
+    assert_eq!(
+        app.viewport_point_at_screen(corner_pointer, rect, corner.z),
+        Some(corner)
+    );
+
+    let midpoint = Vec3::new(50.0, 0.0, 20.0);
+    let midpoint_screen = app.project(midpoint, rect);
+    let midpoint_pointer = midpoint_screen + (midpoint_screen - face_center).normalized() * 6.0;
+    let midpoint_snap = app
+        .box_snap_at_screen(midpoint_pointer, rect, 8.0)
+        .expect("a nearby pointer must acquire the edge midpoint");
+    assert_eq!(midpoint_snap.kind, SnapKind::Midpoint);
+    assert_eq!(midpoint_snap.position_mm, midpoint);
+
+    app.face_workflow.set_snaps_enabled(false);
+    assert_ne!(
+        app.viewport_point_at_screen(corner_pointer, rect, corner.z),
+        Some(corner),
+        "turning snaps off must also disable snapping during drawing"
+    );
+
+    app.face_workflow.set_snaps_enabled(true);
+    select_initial_top_face(&mut app);
+    app.set_rotate_axis_lock(Some(Axis::Z));
+    assert!(app.rotate_selected(30.0));
+    let transform = app.document.current().scene_query()[0].transform;
+    let rotated_corner = transform_model_point(transform, corner);
+    let rotated_center = transform_model_point(transform, Vec3::new(50.0, 30.0, 20.0));
+    let rotated_corner_screen = app.project(rotated_corner, rect);
+    let rotated_center_screen = app.project(rotated_center, rect);
+    let rotated_pointer =
+        rotated_corner_screen + (rotated_corner_screen - rotated_center_screen).normalized() * 6.0;
+    let rotated_snap = app
+        .box_snap_at_screen(rotated_pointer, rect, 8.0)
+        .expect("a rotated canonical corner must remain snappable");
+    assert_eq!(rotated_snap.kind, SnapKind::Endpoint);
+    assert_eq!(rotated_snap.position_mm, rotated_corner);
 }
 
 #[test]

@@ -190,6 +190,38 @@ fn localized_serial_rectangle_to_hover_bound_push_pull_uses_the_viewport_value_b
 }
 
 #[test]
+fn typed_push_pull_value_keeps_priority_over_the_hovering_pointer() {
+    let mut shell = Shell::new();
+    let top = shell.top_face_centre(1);
+    let projected_up = shell
+        .app()
+        .viewport_position(Vec3::new(50.0, 30.0, 21.0))
+        .unwrap();
+    let drag_direction = (projected_up - top).normalized();
+    shell.move_pointer(top);
+    shell.press_key(Key::P);
+    shell.click_at(top);
+    assert!(shell.app().push_pull_click_anchor_active());
+
+    shell.move_pointer(top + drag_direction * 80.0);
+    assert_ne!(shell.app().value_input(), "7");
+    shell.type_text("7");
+    assert_eq!(shell.app().value_input(), "7");
+
+    shell.move_pointer(top + drag_direction * 120.0);
+    assert_eq!(
+        shell.app().value_input(),
+        "7",
+        "pointer motion must not overwrite an exact value while the value box owns the keyboard"
+    );
+    shell.press_key(Key::Enter);
+
+    assert!(!shell.app().push_pull_click_anchor_active());
+    assert_eq!(shell.app().document_height_mm(), 27.0);
+    assert_eq!(shell.app().undo_step_count(), 1);
+}
+
+#[test]
 fn press_drag_release_preserves_live_preview_and_commits_one_reviewed_step() {
     let mut shell = Shell::new();
     let top = shell.top_face_centre(1);

@@ -6842,6 +6842,10 @@ impl KetchupApp {
 
     #[must_use]
     pub fn with_catalog(catalog: LocaleCatalog) -> Self {
+        Self::with_catalog_and_initial_box(catalog, true)
+    }
+
+    fn with_catalog_and_initial_box(catalog: LocaleCatalog, include_initial_box: bool) -> Self {
         catalog
             .validate_complete_against(&LocaleCatalog::english())
             .expect("the active locale must match the complete English key set");
@@ -6854,30 +6858,32 @@ impl KetchupApp {
         document
             .configure_human_confirmation_policy(confirmation_surface.verifying_key(), 1)
             .expect("a fresh document accepts the application confirmation policy");
-        let box_name = catalog.format(
-            "model-default-box",
-            &BTreeMap::from([("number", "1".to_owned())]),
-        );
-        let occurrence_name = catalog.format(
-            "model-default-occurrence",
-            &BTreeMap::from([("name", box_name.clone())]),
-        );
-        document
-            .apply_batch(&create_box_batch(
-                DefinitionId(1),
-                [FeatureId(1), FeatureId(2)],
-                OccurrenceId(1),
-                [
-                    &box_name,
-                    &catalog.text("model-default-profile"),
-                    &catalog.text("model-default-extrusion"),
-                    &occurrence_name,
-                ],
-                Vec3::ZERO,
-                Vec3::new(BOX_WIDTH_MM, BOX_DEPTH_MM, 20.0),
-            ))
-            .expect("the built-in initial document is valid");
-        document.discard_history_before_current();
+        if include_initial_box {
+            let box_name = catalog.format(
+                "model-default-box",
+                &BTreeMap::from([("number", "1".to_owned())]),
+            );
+            let occurrence_name = catalog.format(
+                "model-default-occurrence",
+                &BTreeMap::from([("name", box_name.clone())]),
+            );
+            document
+                .apply_batch(&create_box_batch(
+                    DefinitionId(1),
+                    [FeatureId(1), FeatureId(2)],
+                    OccurrenceId(1),
+                    [
+                        &box_name,
+                        &catalog.text("model-default-profile"),
+                        &catalog.text("model-default-extrusion"),
+                        &occurrence_name,
+                    ],
+                    Vec3::ZERO,
+                    Vec3::new(BOX_WIDTH_MM, BOX_DEPTH_MM, 20.0),
+                ))
+                .expect("the built-in initial document is valid");
+            document.discard_history_before_current();
+        }
         let assistant_memory = AssistantProjectMemory::empty(document.current().document_id().0);
         let saved_digest = document.history_digest();
         let digest = catalog.text("status-ready");
@@ -7103,7 +7109,7 @@ impl KetchupApp {
 
     #[must_use]
     pub fn from_creation_context(context: &eframe::CreationContext<'_>) -> Self {
-        let mut app = Self::new();
+        let mut app = Self::with_catalog_and_initial_box(LocaleCatalog::english(), false);
         app.dialogs = Box::new(NativeFileDialogs::with_parent(
             DialogParentWindow::from_creation_context(context),
         ));
@@ -7325,7 +7331,7 @@ impl KetchupApp {
         let wgpu_target_format = self.wgpu_target_format;
         let wgpu_device = self.wgpu_device.clone();
         let wgpu_queue = self.wgpu_queue.clone();
-        *self = Self::with_catalog(catalog)
+        *self = Self::with_catalog_and_initial_box(catalog, false)
             .with_dialogs(dialogs)
             .with_assistant_transport(assistant_transport);
         self.live_bridge = live_bridge;
@@ -30253,6 +30259,7 @@ impl KetchupApp {
 
         if self.active_tool == ActiveTool::PushPull
             && self.push_pull_drag.is_none()
+            && !self.value_box_is_being_typed_into(ui.ctx())
             && let Some(anchor) = self.push_pull_anchor.clone()
             && let Some(pointer) = response.hover_pos()
         {
@@ -31559,8 +31566,12 @@ impl KetchupApp {
         let scale = f64::from(self.zoom) * f64::from(rect.width().min(rect.height())) / 420.0;
         let policy = SnapPolicy::new(8.0 / scale, 12.0 / scale)
             .expect("positive viewport snap tolerances are valid");
+        let box_snap = pointer.and_then(|pointer| self.box_snap_at_screen(pointer, rect, 8.0));
         self.hover_snap = if self.face_workflow.snaps_enabled() {
-            self.snap_tracker.update(pick.as_ref(), policy).cloned()
+            if box_snap.is_some() {
+                self.snap_tracker.clear();
+            }
+            box_snap.or_else(|| self.snap_tracker.update(pick.as_ref(), policy).cloned())
         } else {
             self.snap_tracker.clear();
             None
@@ -31613,10 +31624,123 @@ impl KetchupApp {
         true
     }
 
+    fn box_snap_at_screen(
+        &self,
+        pointer: Pos2,
+        rect: Rect,
+        tolerance_px: f32,
+    ) -> Option<SnapResult> {
+        const EDGE_ENDPOINTS: [(usize, usize); 12] = [
+            (0, 1),
+            (2, 3),
+            (4, 5),
+            (6, 7),
+            (0, 2),
+            (1, 3),
+            (4, 6),
+            (5, 7),
+            (0, 4),
+            (1, 5),
+            (2, 6),
+            (3, 7),
+        ];
+
+        let snapshot = self.document.current();
+        self.refresh_interaction_projection_cache(&snapshot);
+        let cache = self.interaction_projection_cache.borrow();
+        cache
+            .as_ref()
+            .expect("interaction cache was built")
+            .canonical
+            .occurrences()
+            .iter()
+            .filter(|occurrence| occurrence.visible)
+            .filter_map(|occurrence| {
+                let profile_id = occurrence.body.profile_feature_id?;
+                let FeatureKind::Profile { points_mm } = snapshot.feature(profile_id)?.kind()
+                else {
+                    return None;
+                };
+                let rectangular = points_mm.len() == 4
+                    && points_mm[0][1] == points_mm[1][1]
+                    && points_mm[1][0] == points_mm[2][0]
+                    && points_mm[2][1] == points_mm[3][1]
+                    && points_mm[3][0] == points_mm[0][0];
+                if !rectangular {
+                    return None;
+                }
+                let local_box = occurrence.local_box?;
+                let corners = box_corners(
+                    local_box.size_mm.x,
+                    local_box.size_mm.y,
+                    local_box.size_mm.z,
+                )
+                .map(|corner| {
+                    transform_model_point(
+                        occurrence.canonical_world_transform,
+                        corner + local_box.origin_mm,
+                    )
+                });
+                Some((
+                    occurrence.body.definition_id,
+                    occurrence.instance_path.clone(),
+                    corners,
+                ))
+            })
+            .flat_map(|(definition_id, instance_path, corners)| {
+                let endpoint_path = instance_path.clone();
+                let midpoint_path = instance_path;
+                let endpoints =
+                    corners
+                        .into_iter()
+                        .enumerate()
+                        .map(move |(index, point)| SnapResult {
+                            kind: SnapKind::Endpoint,
+                            reference: SelectionId {
+                                definition_id,
+                                instance_path: endpoint_path.clone(),
+                                element: ElementId::Endpoint(index as u8),
+                            },
+                            position_mm: point,
+                            distance_mm: f64::from(self.project(point, rect).distance(pointer)),
+                        });
+                let midpoints = EDGE_ENDPOINTS
+                    .into_iter()
+                    .enumerate()
+                    .map(move |(index, edge)| {
+                        let point = (corners[edge.0] + corners[edge.1]) * 0.5;
+                        SnapResult {
+                            kind: SnapKind::Midpoint,
+                            reference: SelectionId {
+                                definition_id,
+                                instance_path: midpoint_path.clone(),
+                                element: ElementId::EdgeMidpoint(index as u8),
+                            },
+                            position_mm: point,
+                            distance_mm: f64::from(self.project(point, rect).distance(pointer)),
+                        }
+                    });
+                endpoints.chain(midpoints)
+            })
+            .filter(|snap| snap.distance_mm <= f64::from(tolerance_px))
+            .min_by(|left, right| {
+                left.distance_mm
+                    .total_cmp(&right.distance_mm)
+                    .then_with(|| left.score().kind_rank.cmp(&right.score().kind_rank))
+                    .then_with(|| left.reference.cmp(&right.reference))
+            })
+    }
+
     fn viewport_point_at_screen(&self, pointer: Pos2, rect: Rect, plane_z: f64) -> Option<Vec3> {
-        self.pick_result_at_screen(pointer, rect, 8.0)
-            .map(|pick| pick.snap)
-            .filter(|snap| snap.kind != SnapKind::Face)
+        if !self.face_workflow.snaps_enabled() {
+            return self.screen_to_plane(pointer, rect, plane_z);
+        }
+        self.box_snap_at_screen(pointer, rect, 8.0)
+            .or_else(|| {
+                self.pick_result_at_screen(pointer, rect, 8.0)
+                    .map(|pick| pick.snap)
+                    .filter(|snap| snap.kind != SnapKind::Face)
+            })
             .map(|snap| snap.position_mm)
             .or_else(|| {
                 self.profile_special_snap_at_screen(pointer, rect, plane_z)

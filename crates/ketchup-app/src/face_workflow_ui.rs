@@ -60,6 +60,11 @@ impl FaceWorkflowUiState {
         self.snaps_enabled
     }
 
+    #[cfg(test)]
+    pub(super) fn set_snaps_enabled(&mut self, enabled: bool) {
+        self.snaps_enabled = enabled;
+    }
+
     pub(super) const fn xray_preview(&self) -> bool {
         self.xray_preview
     }
