@@ -127,15 +127,44 @@ impl AssistantTransport for ProcessAssistantTransport {
     }
 }
 
+fn first_existing_assistant_path(
+    candidates: impl IntoIterator<Item = Option<PathBuf>>,
+) -> Option<PathBuf> {
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|path| path.is_absolute() && path.is_file())
+}
+
+#[cfg(windows)]
+fn persistent_user_environment_path(name: &str) -> Option<PathBuf> {
+    use winreg::RegKey;
+    use winreg::enums::HKEY_CURRENT_USER;
+
+    RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey("Environment")
+        .ok()?
+        .get_value::<String, _>(name)
+        .ok()
+        .map(PathBuf::from)
+}
+
+#[cfg(not(windows))]
+fn persistent_user_environment_path(_name: &str) -> Option<PathBuf> {
+    None
+}
+
 pub fn private_assistant_launch() -> Result<AssistantProcessLaunch, String> {
-    let executable = std::env::current_exe()
-        .map_err(|error| format!("current executable is unavailable: {error}"))?
-        .parent()
-        .map(|parent| parent.join("KetchupPrivateAssistant.exe"))
-        .ok_or_else(|| "application install root is unavailable".to_owned())?;
-    if !executable.is_file() {
-        return Err("KetchupPrivateAssistant.exe was not found beside the application".to_owned());
-    }
+    let beside_app = std::env::current_exe().ok().and_then(|path| {
+        path.parent()
+            .map(|parent| parent.join("KetchupPrivateAssistant.exe"))
+    });
+    let executable = first_existing_assistant_path([
+        std::env::var_os("KETCHUP_PRIVATE_ASSISTANT").map(PathBuf::from),
+        beside_app,
+        persistent_user_environment_path("KETCHUP_PRIVATE_ASSISTANT"),
+    ])
+    .ok_or_else(|| "KetchupPrivateAssistant.exe was not found in a trusted location".to_owned())?;
     private_assistant_launch_for_executable(&executable)
 }
 
@@ -438,9 +467,49 @@ fn verified_runtime_file(root: &Path, relative: &Path, expected: &[u8]) -> Resul
 
 #[cfg(test)]
 mod tests {
-    use super::{public_assistant_environment, read_bounded_regular_file};
+    use super::{
+        first_existing_assistant_path, public_assistant_environment, read_bounded_regular_file,
+    };
     use std::collections::BTreeMap;
     use std::ffi::OsString;
+
+    #[test]
+    fn private_assistant_discovery_skips_invalid_candidates_in_precedence_order() {
+        let directory = tempfile::tempdir().unwrap();
+        let process = directory.path().join("process.exe");
+        let beside = directory.path().join("beside.exe");
+        let persistent = directory.path().join("persistent.exe");
+        for path in [&process, &beside, &persistent] {
+            std::fs::write(path, b"sidecar").unwrap();
+        }
+
+        assert_eq!(
+            first_existing_assistant_path([
+                Some(process.clone()),
+                Some(beside.clone()),
+                Some(persistent.clone()),
+            ]),
+            Some(process.clone())
+        );
+        std::fs::remove_file(&process).unwrap();
+        assert_eq!(
+            first_existing_assistant_path([
+                Some(process),
+                Some(beside.clone()),
+                Some(persistent.clone()),
+            ]),
+            Some(beside.clone())
+        );
+        std::fs::remove_file(&beside).unwrap();
+        assert_eq!(
+            first_existing_assistant_path([
+                Some(std::path::PathBuf::from("relative.exe")),
+                Some(beside),
+                Some(persistent.clone()),
+            ]),
+            Some(persistent)
+        );
+    }
 
     #[test]
     fn runtime_identity_reader_rejects_oversized_regular_files() {

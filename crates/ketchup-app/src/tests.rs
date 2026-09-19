@@ -6023,8 +6023,25 @@ fn push_pull_drag_is_signed_along_the_face_normal() {
         -10.0
     );
     assert_eq!(
+        push_pull_distance_from_pointer(&drag, Pos2::new(115.0, 100.0), true),
+        7.5
+    );
+    assert_eq!(
+        push_pull_distance_from_pointer(&drag, Pos2::new(119.2, 100.0), true),
+        10.0
+    );
+    assert_eq!(
         push_pull_distance_from_pointer(&drag, Pos2::new(115.0, 100.0), false),
         7.5
+    );
+
+    let profile_drag = PushPullDrag {
+        extent_start_mm: 0.0,
+        ..drag
+    };
+    assert_eq!(
+        push_pull_distance_from_pointer(&profile_drag, Pos2::new(80.0, 100.0), true),
+        -10.0
     );
 }
 
@@ -9271,8 +9288,26 @@ fn rectangle_sketch_creates_a_profile_then_push_pull_adds_the_extrusion() {
     assert!(app.undo());
     assert_eq!(app.canonical_digest(), profile_digest);
     assert_eq!(app.active_boxes()[1].size_mm.z, 0.0);
-    assert!(app.redo());
+
+    app.set_push_pull_distance_input("-30");
+    assert!(app.start_preview());
+    assert_eq!(
+        app.preview_box
+            .as_ref()
+            .unwrap()
+            .plan
+            .preview_box
+            .origin_mm
+            .z,
+        -30.0
+    );
+    assert!(app.confirm_preview());
+    assert_eq!(app.active_boxes()[1].origin_mm.z, -30.0);
     assert_eq!(app.active_boxes()[1].size_mm.z, 30.0);
+    assert!(app.undo());
+    assert_eq!(app.canonical_digest(), profile_digest);
+    assert!(app.redo());
+    assert_eq!(app.active_boxes()[1].origin_mm.z, -30.0);
 }
 
 #[test]
@@ -12744,6 +12779,15 @@ fn drawing_snap_acquires_box_corners_and_edge_midpoints_in_screen_space() {
     assert_eq!(midpoint_snap.kind, SnapKind::Midpoint);
     assert_eq!(midpoint_snap.position_mm, midpoint);
 
+    let edge_point = Vec3::new(25.0, 0.0, 20.0);
+    let edge_pointer = app.project(edge_point, rect);
+    let edge_snap = app
+        .box_snap_at_screen(edge_pointer, rect, 8.0)
+        .expect("a pointer anywhere along the edge must acquire the edge");
+    assert_eq!(edge_snap.kind, SnapKind::Edge);
+    assert_eq!(edge_snap.position_mm, edge_point);
+    assert!(matches!(edge_snap.reference.element, ElementId::Edge(_)));
+
     app.face_workflow.set_snaps_enabled(false);
     assert_ne!(
         app.viewport_point_at_screen(corner_pointer, rect, corner.z),
@@ -13033,8 +13077,8 @@ fn group_and_ungroup_fail_closed_for_exact_incomplete_and_stale_selection() {
     let exact_revision = app.document_revision();
     let exact_digest = app.canonical_digest();
     let exact_undo_steps = app.document.visible_undo_steps();
-    assert!(!app.command_enabled(AppCommand::Group));
-    assert!(!app.group_selected());
+    assert!(app.command_enabled(AppCommand::Group));
+    assert!(app.group_selection_source_plan().is_some());
     assert_eq!(app.document_revision(), exact_revision);
     assert_eq!(app.canonical_digest(), exact_digest);
     assert_eq!(app.document.visible_undo_steps(), exact_undo_steps);
@@ -13362,6 +13406,64 @@ fn standard_orthographic_views_match_the_drawing_axes_without_document_mutation(
         assert_eq!(app.document_revision(), revision);
         assert_eq!(app.canonical_digest(), digest);
         assert_eq!(app.undo_step_count(), undo_steps);
+    }
+}
+
+#[test]
+fn camera_clearance_keeps_every_mesh_bound_in_front_during_orbit() {
+    let mut app = KetchupApp::new();
+    let definition_id = DefinitionId(100);
+    let feature_id = FeatureId(100);
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition_id,
+                name: "Large mesh".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: feature_id,
+                definition_id,
+                name: "Large mesh body".to_owned(),
+                kind: FeatureKind::MeshBody(MeshBodySpec {
+                    schema: MESH_BODY_SCHEMA_V1.to_owned(),
+                    vertices_mm: vec![
+                        [-1_000.0, -800.0, -600.0],
+                        [1_200.0, -800.0, -600.0],
+                        [-1_000.0, 1_400.0, -600.0],
+                        [-1_000.0, -800.0, 1_600.0],
+                    ],
+                    triangles: vec![[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]],
+                    authority: MeshAuthority::Authored {
+                        provenance: "camera-clearance-regression".to_owned(),
+                    },
+                }),
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(100),
+                definition_id,
+                name: "Large mesh occurrence".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    app.projection_mode = ProjectionMode::Perspective;
+    app.zoom = MAX_CAMERA_ZOOM;
+
+    for yaw in [-2.8_f32, -1.4, 0.0, 1.4, 2.8] {
+        app.yaw = yaw;
+        app.pitch = 0.45;
+        app.refresh_camera_distance();
+        let (_, _, forward) = app.camera_basis();
+        let target = app.camera_target();
+        let minimum = Vec3::new(-1_000.0, -800.0, -600.0);
+        let size = Vec3::new(2_200.0, 2_200.0, 2_200.0);
+        for corner in box_corners(size.x, size.y, size.z) {
+            let depth = app.camera_distance() + dot(minimum + corner - target, forward);
+            assert!(depth > PERSPECTIVE_NEAR_MM, "yaw {yaw}: depth {depth}");
+        }
     }
 }
 
@@ -15102,15 +15204,39 @@ fn adjacent_projected_triangles_share_a_fill_underlay_and_keep_antialiased_outli
 }
 
 #[test]
-fn move_drag_snaps_to_grid_and_shift_constrains_dominant_axis() {
+fn move_drag_is_continuous_and_shift_constrains_dominant_axis() {
     let start = Vec3::new(3.0, 4.0, 20.0);
     assert_eq!(
-        snapped_move_delta(start, Vec3::new(31.0, 28.0, 20.0), false),
-        Vec3::new(30.0, 20.0, 0.0)
+        continuous_move_delta(start, Vec3::new(31.25, 28.75, 20.0), false),
+        Vec3::new(28.25, 24.75, 0.0)
     );
     assert_eq!(
-        snapped_move_delta(start, Vec3::new(31.0, 28.0, 20.0), true),
-        Vec3::new(30.0, 0.0, 0.0)
+        continuous_move_delta(start, Vec3::new(31.25, 28.75, 20.0), true),
+        Vec3::new(28.25, 0.0, 0.0)
+    );
+}
+
+#[test]
+fn move_inference_targets_origin_and_world_axes_only_with_snapping_enabled() {
+    let mut app = KetchupApp::new();
+    let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 700.0));
+    let near_y_axis = Vec3::new(0.2, 40.0, 0.0);
+    let pointer = app.project(near_y_axis, rect);
+    assert_eq!(
+        app.move_inference_target_at_screen(pointer, rect, near_y_axis),
+        Some(Vec3::new(0.0, 40.0, 0.0))
+    );
+
+    let origin_pointer = app.project(Vec3::ZERO, rect);
+    assert_eq!(
+        app.move_inference_target_at_screen(origin_pointer, rect, Vec3::new(20.0, 20.0, 20.0)),
+        Some(Vec3::ZERO)
+    );
+
+    app.face_workflow.set_snaps_enabled(false);
+    assert_eq!(
+        app.move_inference_target_at_screen(pointer, rect, near_y_axis),
+        None
     );
 }
 

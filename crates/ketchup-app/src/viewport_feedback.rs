@@ -168,29 +168,19 @@ impl KetchupApp {
                     continue;
                 }
                 let selected = self.selection.primary.as_ref() == Some(&face.selection);
-                let (fill, stroke) =
-                    if face.out_of_context && !self.selection.edit_context.is_empty() {
-                        (
-                            Color32::from_rgba_unmultiplied(190, 195, 205, 95),
-                            Stroke::NONE,
-                        )
-                    } else if hovered {
-                        (
-                            HOVER_FILL,
-                            Stroke::new(2.5_f32, Color32::from_rgb(80, 210, 255)),
-                        )
-                    } else if selected {
-                        (
-                            SELECTED_FILL,
-                            Stroke::new(2.0_f32, Color32::from_rgb(255, 185, 70)),
-                        )
-                    } else {
-                        continue;
-                    };
+                let fill = if face.out_of_context && !self.selection.edit_context.is_empty() {
+                    Color32::from_rgba_unmultiplied(190, 195, 205, 95)
+                } else if hovered {
+                    HOVER_FILL
+                } else if selected {
+                    SELECTED_FILL
+                } else {
+                    continue;
+                };
                 painter.add(egui::Shape::convex_polygon(
                     face.polygon.points().to_vec(),
                     fill,
-                    stroke,
+                    Stroke::NONE,
                 ));
             }
         }
@@ -342,9 +332,10 @@ mod tests {
         let overlay = output
             .shapes
             .iter()
-            .position(
-                |shape| matches!(&shape.shape, egui::Shape::Path(path) if path.fill == HOVER_FILL),
-            )
+            .position(|shape| {
+                matches!(&shape.shape, egui::Shape::Path(path)
+                    if path.fill == HOVER_FILL && path.stroke.is_empty())
+            })
             .expect("visible face fill, not just internal hover state");
         assert!(overlay > callback);
 
@@ -353,7 +344,8 @@ mod tests {
         raw.events.push(egui::Event::PointerGone);
         let output = context.run(raw, |context| app.ui(context));
         assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
-            egui::Shape::Path(path) if path.fill == SELECTED_FILL)));
+            egui::Shape::Path(path)
+                if path.fill == SELECTED_FILL && path.stroke.is_empty())));
 
         assert!(app.copy_selected(Vec3::new(10.0, 0.0, 0.0)));
         app.active_tool = ActiveTool::PushPull;
@@ -392,6 +384,49 @@ mod tests {
                 .any(|shape| matches!(shape.shape, egui::Shape::Callback(_)))
         );
         assert_eq!(app.document_revision(), revision);
+    }
+
+    #[test]
+    fn cycled_back_face_emits_a_filled_hover_overlay() {
+        let mut app = KetchupApp::new();
+        app.wgpu_target_format = Some(eframe::wgpu::TextureFormat::Rgba8Unorm);
+        let context = egui::Context::default();
+        let input = || egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1600.0, 1000.0))),
+            ..Default::default()
+        };
+        let _ = context.run(input(), |context| app.ui(context));
+        let pointer = app.viewport_position(Vec3::new(50.0, 30.0, 20.0)).unwrap();
+        let mut raw = input();
+        raw.events.push(egui::Event::PointerMoved(pointer));
+        let _ = context.run(raw, |context| app.ui(context));
+
+        let forward = Vec3::new(
+            -f64::from(app.yaw.sin() * app.pitch.sin()),
+            -f64::from(app.yaw.cos() * app.pitch.sin()),
+            -f64::from(app.pitch.cos()),
+        );
+        let (hidden_index, hidden) = app
+            .hover_pick
+            .as_ref()
+            .expect("the box must be pickable")
+            .overlapping
+            .iter()
+            .enumerate()
+            .find(|(_, hit)| !face_is_visible(&hit.reference.element, forward))
+            .map(|(index, hit)| (index, hit.reference.clone()))
+            .expect("the ray must expose a back face for overlap cycling");
+        app.hover_overlap_index = hidden_index;
+        app.refresh_hover_choice();
+        assert_eq!(app.hovered.as_ref(), Some(&hidden));
+
+        let output = context.run(input(), |context| app.ui(context));
+        assert_eq!(app.hovered.as_ref(), Some(&hidden));
+        assert!(
+            output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Path(path) if path.fill == HOVER_FILL && path.stroke.is_empty())),
+            "a cycled back face must remain visibly highlighted"
+        );
     }
 
     #[test]

@@ -4,6 +4,7 @@ use crate::document::{
     FeatureParameterTarget, Proposal, ProposalAssumption, ProposalConfirmation, ProposalContext,
     ProposalGoal, ProposalPrepareError, ProposalPrincipal, ProposalRisk, Snapshot,
 };
+use crate::exact_brep_graph::ExactBRepGraph;
 use crate::exact_product::{
     BodySubshapeRef, ExactFeatureChainRequest, ExactReferenceQuarantineReason,
     ExactReferenceResolution, ExactResultRegistry,
@@ -447,10 +448,18 @@ pub fn prepare_body_profile_translation(
                     tool,
                     ..
                 } => snapshot.feature(*tool).is_some_and(|tool| {
-                    matches!(
-                        tool.kind(),
-                        FeatureKind::Extrusion { profile, .. } if *profile == request.profile_id
-                    )
+                    let extrusion = match tool.kind() {
+                        FeatureKind::RigidTransform { target, .. } => snapshot.feature(*target),
+                        FeatureKind::Extrusion { .. } => Some(tool),
+                        _ => None,
+                    };
+                    extrusion.is_some_and(|extrusion| {
+                        matches!(
+                            extrusion.kind(),
+                            FeatureKind::Extrusion { profile, .. }
+                                if *profile == request.profile_id
+                        )
+                    })
                 }),
                 _ => false,
             })
@@ -498,12 +507,28 @@ pub fn prepare_body_profile_translation(
     let candidate = document.preview_batch(proposal.batch()).map_err(|error| {
         BodyParameterEditError::Proposal(ProposalPrepareError::Canonical(error))
     })?;
-    ExactFeatureChainRequest::from_snapshot_for_body(
+    let exact_feature_chain = ExactFeatureChainRequest::from_snapshot_for_body(
         &candidate,
         request.definition_id,
         request.body_id,
     )
-    .map_err(|_| BodyParameterEditError::InvalidCutPosition)?;
+    .is_ok();
+    let exact_brep_graph = definition
+        .feature_ids()
+        .iter()
+        .rev()
+        .find(|feature_id| {
+            definition
+                .feature_body_ownership(**feature_id)
+                .and_then(|ownership| ownership.output_body_id())
+                == Some(request.body_id)
+        })
+        .is_some_and(|producer_id| {
+            ExactBRepGraph::from_snapshot(&candidate, request.definition_id, *producer_id).is_ok()
+        });
+    if !exact_feature_chain && !exact_brep_graph {
+        return Err(BodyParameterEditError::InvalidCutPosition);
+    }
     Ok(BodyParameterEditPreview {
         source_revision: snapshot.revision_id(),
         source_digest: snapshot.canonical_digest(),

@@ -529,7 +529,7 @@ fn empty_document_manual_ux_capstone_has_rendered_and_native_exact_evidence() {
         .expect("overlapping solids must publish a visible selection")
         .instance_path
         .root_occurrence();
-    assert_eq!(shell.app().hovered_overlap_choice(), Some((0, 2)));
+    assert_eq!(shell.app().hovered_overlap_choice(), Some((0, 4)));
     shell.press_key(Key::Tab);
     let second = shell
         .app()

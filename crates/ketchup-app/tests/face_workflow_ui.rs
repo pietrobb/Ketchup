@@ -257,6 +257,38 @@ fn press_drag_release_preserves_live_preview_and_commits_one_reviewed_step() {
 }
 
 #[test]
+fn push_pull_cycles_to_a_hidden_parallel_face_on_another_object() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.viewport_rect().center());
+    assert!(shell.app_mut().copy_selected(Vec3::new(150.0, 0.0, 40.0)));
+    shell.settle();
+    shell.click_menu_command("menu-model", AppCommand::MakeUnique);
+    shell.click_command(AppCommand::ZoomFit);
+
+    let source_top = shell.top_face_centre(1);
+    let target_top = shell.top_face_centre(2);
+    shell.move_pointer(source_top);
+    shell.press_key(Key::P);
+    shell.click_at(source_top);
+    assert!(shell.app().push_pull_click_anchor_active());
+
+    shell.move_pointer(target_top);
+    assert_eq!(shell.app().hovered_snap_kind(), Some(SnapKind::Face));
+    assert_eq!(shell.app().hovered_overlap_choice(), Some((0, 2)));
+    assert_eq!(shell.app().value_input(), "40");
+    assert!(shell.app().preview_action_digest().is_some());
+
+    shell.press_key(Key::Tab);
+    assert_eq!(shell.app().hovered_overlap_choice(), Some((1, 2)));
+    assert_eq!(shell.app().value_input(), "20");
+    shell.click_at(target_top);
+
+    assert!(!shell.app().push_pull_click_anchor_active());
+    assert_eq!(shell.app().occurrence_box_geometry(1).unwrap().1.z, 40.0);
+    assert_eq!(shell.app().occurrence_box_geometry(2).unwrap().1.z, 20.0);
+}
+
+#[test]
 fn stale_anchor_hidden_selection_and_invalid_extent_fail_closed() {
     let mut shell = Shell::new();
     let top = shell.top_face_centre(1);
@@ -392,14 +424,19 @@ fn deliberate_alt_pick_through_has_transient_xray_feedback_without_mutation() {
     assert!(shell.app_mut().move_selected(Vec3::new(-100.0, 0.0, 0.0)));
     shell.settle();
     shell.move_pointer(centre);
-    assert_eq!(shell.app().hovered_overlap_choice(), Some((0, 2)));
+    let (initial_index, overlap_count) = shell.app().hovered_overlap_choice().unwrap();
+    assert_eq!(initial_index, 0);
+    assert!(overlap_count >= 2);
 
     let revision = shell.app().document_revision();
     let digest = shell.app().canonical_digest();
     let undo = shell.app().undo_step_count();
     shell.set_modifiers(alt());
 
-    assert_eq!(shell.app().hovered_overlap_choice(), Some((1, 2)));
+    assert_eq!(
+        shell.app().hovered_overlap_choice(),
+        Some((1, overlap_count))
+    );
     assert!(shell.app().face_workflow_xray_active());
     assert_eq!(shell.app().document_revision(), revision);
     assert_eq!(shell.app().canonical_digest(), digest);
@@ -407,10 +444,16 @@ fn deliberate_alt_pick_through_has_transient_xray_feedback_without_mutation() {
 
     shell.set_modifiers(Modifiers::NONE);
     assert!(!shell.app().face_workflow_xray_active());
-    assert_eq!(shell.app().hovered_overlap_choice(), Some((1, 2)));
+    assert_eq!(
+        shell.app().hovered_overlap_choice(),
+        Some((1, overlap_count))
+    );
     let next = shell.catalog().text("viewport-next-target");
     shell.click_role_and_label(Role::Button, &next);
-    assert_eq!(shell.app().hovered_overlap_choice(), Some((0, 2)));
+    assert_eq!(
+        shell.app().hovered_overlap_choice(),
+        Some((2 % overlap_count, overlap_count))
+    );
 
     shell.press_key(Key::Escape);
     assert!(!shell.app().face_workflow_xray_active());
@@ -508,6 +551,47 @@ fn undo_and_redo_cancel_an_active_two_segment_line_chain() {
         feature.kind(),
         FeatureKind::SegmentProfile { closed: true, .. }
     )));
+}
+
+#[test]
+fn line_shortcut_keeps_a_surface_line_visible_and_snappable_after_commit() {
+    let mut shell = Shell::new();
+    let start = Vec3::new(18.0, 20.0, 20.0);
+    let end = Vec3::new(42.0, 20.0, 20.0);
+    let start_screen = shell.app().viewport_position(start).unwrap();
+    let end_screen = shell.app().viewport_position(end).unwrap();
+    let revision = shell.app().document_revision();
+    let undo_steps = shell.app().undo_step_count();
+
+    shell.press_key(Key::L);
+    shell.click_at(start_screen);
+    shell.click_at(end_screen);
+
+    assert_eq!(shell.app().document_revision(), revision + 1);
+    assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+    let visible_lines = shell.app().open_profile_line_segments();
+    let stored_line = visible_lines
+        .iter()
+        .find(|(_, points)| {
+            (points[0] - start).length() < 1.0e-5 && (points[1] - end).length() < 1.0e-5
+        })
+        .expect("the committed surface line must remain in the viewport projection");
+
+    shell.move_pointer(start_screen + eframe::egui::Vec2::new(4.0, 0.0));
+    assert_eq!(shell.app().hovered_snap_position(), Some(stored_line.1[0]));
+
+    shell.press_key(Key::Space);
+    shell.move_pointer(start_screen.lerp(end_screen, 0.5));
+    shell.click_at(start_screen.lerp(end_screen, 0.5));
+    assert_eq!(
+        shell
+            .app()
+            .selected_reference()
+            .unwrap()
+            .instance_path
+            .root_occurrence(),
+        OccurrenceId(2)
+    );
 }
 
 #[test]
@@ -730,6 +814,11 @@ fn line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical() {
     assert_eq!(shell.app().document_revision(), before_push.0 + 1);
     assert_eq!(shell.app().undo_step_count(), before_push.2 + 1);
     let pushed_snapshot = shell.app().document_snapshot();
+    assert_eq!(
+        canonical_render_triangle_count(&shell),
+        20,
+        "the default box plus triangular prism must render 12 + 8 triangles instead of two boxes"
+    );
     assert!(
         pushed_snapshot
             .definition(closed_definition_id)

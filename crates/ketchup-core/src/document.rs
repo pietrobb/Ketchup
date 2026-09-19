@@ -2740,7 +2740,7 @@ pub struct ConvertGroupPlan {
 }
 
 impl ConvertGroupPlan {
-    pub(crate) fn new(
+    pub fn new(
         group_id: GroupId,
         new_definition_id: DefinitionId,
         new_occurrence_id: OccurrenceId,

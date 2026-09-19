@@ -54,7 +54,10 @@ impl KetchupApp {
                     .filter(in_plane)
             })
             .or_else(|| {
-                self.profile_special_snap_at_screen(pointer, rect, frame.origin_mm[2])
+                self.open_profile_line_snap_at_screen(pointer, rect, frame.origin_mm[2])
+                    .or_else(|| {
+                        self.profile_special_snap_at_screen(pointer, rect, frame.origin_mm[2])
+                    })
                     .filter(in_plane)
             })
     }

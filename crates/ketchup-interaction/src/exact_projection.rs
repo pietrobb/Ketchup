@@ -386,23 +386,43 @@ impl ExactInteractionProjection {
         &self,
         ray: Ray,
     ) -> (Option<ExactSurfaceHit>, SpatialQueryStats) {
+        let (hits, stats) = self.exact_surface_picks_with_stats(ray);
+        (hits.into_iter().next(), stats)
+    }
+
+    #[must_use]
+    pub fn exact_surface_picks(&self, ray: Ray) -> Vec<ExactSurfaceHit> {
+        self.exact_surface_picks_with_stats(ray).0
+    }
+
+    #[must_use]
+    pub fn exact_surface_picks_with_stats(
+        &self,
+        ray: Ray,
+    ) -> (Vec<ExactSurfaceHit>, SpatialQueryStats) {
         let (candidate_indices, stats) = self.spatial_index.query_ray(ray);
-        let hit = candidate_indices
+        let mut hits = candidate_indices
             .into_iter()
-            .filter_map(|index| hit_occurrence(ray, &self.occurrences[index]))
-            .min_by(|left, right| {
-                left.ray_distance_mm
-                    .total_cmp(&right.ray_distance_mm)
-                    .then_with(|| {
-                        left.occurrence
-                            .instance_path
-                            .cmp(&right.occurrence.instance_path)
-                    })
-                    .then_with(|| left.triangle_index.cmp(&right.triangle_index))
-            });
-        let Some(hit) = hit else {
-            return (None, stats);
-        };
+            .flat_map(|index| physical_hits(ray, &self.occurrences[index]))
+            .collect::<Vec<_>>();
+        hits.sort_by(|left, right| {
+            left.ray_distance_mm
+                .total_cmp(&right.ray_distance_mm)
+                .then_with(|| {
+                    left.occurrence
+                        .instance_path
+                        .cmp(&right.occurrence.instance_path)
+                })
+                .then_with(|| left.triangle_index.cmp(&right.triangle_index))
+        });
+        let hits = hits
+            .into_iter()
+            .filter_map(|hit| self.surface_hit(ray, hit))
+            .collect();
+        (hits, stats)
+    }
+
+    fn surface_hit(&self, ray: Ray, hit: PhysicalTriangleHit<'_>) -> Option<ExactSurfaceHit> {
         let triangle = &hit.occurrence.package.triangles()[hit.triangle_index];
         let [first, second, third] = triangle.vertex_indices.map(|index| {
             let position = hit.occurrence.package.vertices()[index as usize].position_mm;
@@ -414,7 +434,7 @@ impl ExactInteractionProjection {
         let normal = cross(second - first, third - first);
         let normal_length = normal.length();
         if normal_length <= RAY_EPSILON {
-            return (None, stats);
+            return None;
         }
         let outward_normal = Vec3::new(
             normal.x / normal_length,
@@ -442,18 +462,15 @@ impl ExactInteractionProjection {
                     reference,
                 },
             });
-        (
-            Some(ExactSurfaceHit {
-                definition_id: hit.occurrence.package.definition_id(),
-                instance_path: hit.occurrence.instance_path.clone(),
-                durable_target,
-                topological_target,
-                position_mm: ray.at(hit.ray_distance_mm),
-                outward_normal,
-                ray_distance_mm: hit.ray_distance_mm,
-            }),
-            stats,
-        )
+        Some(ExactSurfaceHit {
+            definition_id: hit.occurrence.package.definition_id(),
+            instance_path: hit.occurrence.instance_path.clone(),
+            durable_target,
+            topological_target,
+            position_mm: ray.at(hit.ray_distance_mm),
+            outward_normal,
+            ray_distance_mm: hit.ray_distance_mm,
+        })
     }
 
     pub fn exact_surface_pick_current(
@@ -478,15 +495,26 @@ impl ExactInteractionProjection {
     }
 }
 
+#[cfg(test)]
 fn hit_occurrence<'a>(
     ray: Ray,
     occurrence: &'a ExactOccurrence,
 ) -> Option<PhysicalTriangleHit<'a>> {
+    physical_hits(ray, occurrence)
+        .into_iter()
+        .min_by(|left, right| {
+            left.ray_distance_mm
+                .total_cmp(&right.ray_distance_mm)
+                .then_with(|| left.triangle_index.cmp(&right.triangle_index))
+        })
+}
+
+fn physical_hits<'a>(ray: Ray, occurrence: &'a ExactOccurrence) -> Vec<PhysicalTriangleHit<'a>> {
     if !ray_intersects_bounds(
         ray,
         transformed_bounds(occurrence.transform, occurrence.package.bounds_mm()),
     ) {
-        return None;
+        return Vec::new();
     }
     occurrence
         .package
@@ -508,11 +536,7 @@ fn hit_occurrence<'a>(
                 ray_distance_mm,
             })
         })
-        .min_by(|left, right| {
-            left.ray_distance_mm
-                .total_cmp(&right.ray_distance_mm)
-                .then_with(|| left.triangle_index.cmp(&right.triangle_index))
-        })
+        .collect()
 }
 
 fn transformed_bounds(transform: Transform, bounds: [[f64; 3]; 2]) -> [[f64; 3]; 2] {
@@ -724,6 +748,37 @@ mod tests {
     fn projection(snapshot: &Snapshot, package: ExactRenderPackage) -> ExactInteractionProjection {
         let results = ExactResultRegistry::accept(snapshot, [Arc::new(package.into())]).unwrap();
         ExactInteractionProjection::from_snapshot(snapshot, &results)
+    }
+
+    #[test]
+    fn exact_pick_through_returns_front_and_rear_faces_in_depth_order() {
+        let store = through_cut_document();
+        let snapshot = store.current();
+        let projection = projection(&snapshot, render_package(&snapshot));
+        let ray = Ray::new(Vec3::new(1.0, 1.0, 20.0), Vec3::new(0.0, 0.0, -1.0)).unwrap();
+
+        let hits = projection.exact_surface_picks(ray);
+        let roles = hits
+            .iter()
+            .filter_map(|hit| hit.durable_target.as_ref()?.body.role())
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            hits.first()
+                .unwrap()
+                .durable_target
+                .as_ref()
+                .unwrap()
+                .body
+                .role(),
+            Some(ExactFaceRole::Top)
+        );
+        assert!(roles.contains(&ExactFaceRole::Top));
+        assert!(roles.contains(&ExactFaceRole::Bottom));
+        assert!(
+            hits.windows(2)
+                .all(|pair| pair[0].ray_distance_mm <= pair[1].ray_distance_mm)
+        );
     }
 
     #[test]

@@ -4,8 +4,9 @@ use ketchup_core::document::{
 };
 use ketchup_interaction::projection::CanonicalInteractionProjection;
 use ketchup_interaction::{
-    ElementId, InteractionError, InteractionScene, LocaleCatalog, PreviewError, PreviewSession,
-    Ray, Side, SmartPushPullOutcome, SnapKind, SnapPolicy, SnapTracker, Vec3, plan_smart_push_pull,
+    Axis, ElementId, InteractionError, InteractionScene, LocaleCatalog, PreviewError,
+    PreviewSession, Ray, Side, SmartPushPullOutcome, SnapKind, SnapPolicy, SnapTracker, Vec3,
+    plan_smart_push_pull,
 };
 
 #[derive(Clone, Copy)]
@@ -240,11 +241,42 @@ fn overlapping_candidates_are_stable_and_nearest_first() {
         result
             .overlapping
             .iter()
-            .map(|hit| hit.reference.instance_path.clone())
+            .map(|hit| {
+                (
+                    hit.reference.instance_path.clone(),
+                    hit.reference.element.clone(),
+                )
+            })
             .collect::<Vec<_>>(),
         vec![
-            InstancePath::root(OccurrenceId(1)),
-            InstancePath::root(OccurrenceId(2)),
+            (
+                InstancePath::root(OccurrenceId(1)),
+                ElementId::Face {
+                    axis: Axis::Z,
+                    side: Side::Maximum,
+                },
+            ),
+            (
+                InstancePath::root(OccurrenceId(1)),
+                ElementId::Face {
+                    axis: Axis::Z,
+                    side: Side::Minimum,
+                },
+            ),
+            (
+                InstancePath::root(OccurrenceId(2)),
+                ElementId::Face {
+                    axis: Axis::Z,
+                    side: Side::Maximum,
+                },
+            ),
+            (
+                InstancePath::root(OccurrenceId(2)),
+                ElementId::Face {
+                    axis: Axis::Z,
+                    side: Side::Minimum,
+                },
+            ),
         ]
     );
     assert_eq!(

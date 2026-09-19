@@ -3053,7 +3053,10 @@ fn group_ungroup_is_localized_atomic_and_context_bound() {
         shell.click_at(shell.top_face_centre(1));
         shell.click_menu_command("menu-edit", AppCommand::Copy);
         shell.click_menu_command("menu-edit", AppCommand::Paste);
-        shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+        shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+        shell.click_at(shell.top_face_centre(1));
+        shell.click_at_with(shell.top_face_centre(2), shift());
+        assert_eq!(shell.app().selected_occurrence_count(), 2);
         assert!(shell.app().command_is_enabled(AppCommand::Group));
         let ungrouped = shell.app().canonical_digest();
         let group_revision = shell.app().document_revision();
@@ -3139,6 +3142,43 @@ fn group_ungroup_is_localized_atomic_and_context_bound() {
         assert_eq!(context_shell.app().undo_step_count(), context_undo_steps);
         assert_eq!(context_shell.app().action_digest(), context_action_digest);
     }
+}
+
+#[test]
+fn make_component_directly_from_shift_selected_objects_is_atomic() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.top_face_centre(1));
+    shell.click_menu_command("menu-edit", AppCommand::Copy);
+    shell.click_menu_command("menu-edit", AppCommand::Paste);
+    shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+    shell.click_at(shell.top_face_centre(1));
+    shell.click_at_with(shell.top_face_centre(2), shift());
+
+    assert_eq!(shell.app().selected_occurrence_count(), 2);
+    assert!(shell.app().command_is_enabled(AppCommand::Group));
+    assert!(shell.app().command_is_enabled(AppCommand::MakeComponent));
+    let before = shell.app().canonical_digest();
+    let revision = shell.app().document_revision();
+    let undo_steps = shell.app().undo_step_count();
+
+    shell.click_menu_command("menu-model", AppCommand::MakeComponent);
+
+    assert_eq!(shell.app().group_count(), 0);
+    assert_eq!(shell.app().occurrence_count(), 1);
+    assert_eq!(shell.app().definition_count(), 2);
+    assert!(shell.app().occurrence_is_selected(OccurrenceId(3)));
+    assert_eq!(shell.app().document_revision(), revision + 1);
+    assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+    let converted = shell.app().canonical_digest();
+
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().group_count(), 0);
+    assert_eq!(shell.app().occurrence_count(), 2);
+    assert_eq!(shell.app().canonical_digest(), before);
+    shell.click_menu_command("menu-edit", AppCommand::Redo);
+    assert_eq!(shell.app().group_count(), 0);
+    assert_eq!(shell.app().occurrence_count(), 1);
+    assert_eq!(shell.app().canonical_digest(), converted);
 }
 
 #[test]
@@ -9359,6 +9399,29 @@ fn localized_smart_push_pull_chooser_cancels_without_mutation_through_accesskit(
 }
 
 #[test]
+fn push_pull_drag_is_continuous_between_grid_inference_targets() {
+    let mut shell = Shell::new();
+    let (origin, size) = shell.app().occurrence_box_geometry(1).unwrap();
+    let center = origin + Vec3::new(size.x * 0.5, size.y * 0.5, size.z);
+    let drag_start = shell.app().viewport_position(center).unwrap();
+    let projected_up = shell
+        .app()
+        .viewport_position(center + Vec3::new(0.0, 0.0, 1.0))
+        .unwrap();
+    let projected_unit = projected_up - drag_start;
+    let drag_end = drag_start + projected_unit.normalized() * projected_unit.length() * 7.5;
+
+    shell.click_command(AppCommand::PushPull);
+    shell.drag(drag_start, drag_end);
+
+    assert!(
+        (shell.app().document_height_mm() - 27.5).abs() < 1.0e-4,
+        "Push/Pull must preserve the 7.5 mm pointer distance: {}",
+        shell.app().action_digest()
+    );
+}
+
+#[test]
 fn circle_push_pull_drag_renders_a_curved_solid_preview_and_commits_once() {
     let mut shell = Shell::new();
     let center = Vec3::new(75.0, 25.0, 20.0);
@@ -9401,7 +9464,7 @@ fn circle_push_pull_drag_renders_a_curved_solid_preview_and_commits_once() {
 }
 
 #[test]
-fn circle_push_pull_correction_chooser_and_preview_are_atomic_through_accesskit() {
+fn circle_push_pull_negative_correction_directly_creates_a_hole_through_accesskit() {
     let mut shell = Shell::new();
     let center = Vec3::new(35.0, 25.0, 20.0);
     shell.click_command(AppCommand::Circle);
@@ -9422,50 +9485,108 @@ fn circle_push_pull_correction_chooser_and_preview_are_atomic_through_accesskit(
     let original_digest = shell.app().canonical_digest();
     assert_eq!(original_revision, profile_revision + 1);
 
-    let cut_target_label = shell.catalog().format(
-        "choice-smart-push-pull-cut-target",
-        &BTreeMap::from([
-            ("feature", "Extrusion".to_owned()),
-            ("feature_id", "2".to_owned()),
-            ("occurrence", "Box-1 #1".to_owned()),
-            ("occurrence_id", "1".to_owned()),
-        ]),
-    );
-    let continue_label = shell.catalog().text("choice-smart-push-pull-continue");
-    let cancel_label = shell.catalog().text("choice-smart-push-pull-cancel");
-
     shell.type_text("-20");
     shell.press_key(Key::Enter);
-    assert!(shell.app().has_smart_push_pull_chooser());
-    assert_eq!(shell.app().document_revision(), original_revision);
-    assert_eq!(shell.app().canonical_digest(), original_digest);
-    shell.click_role_and_label(Role::Button, &cancel_label);
-    assert_eq!(shell.app().document_revision(), original_revision);
-    assert_eq!(shell.app().canonical_digest(), original_digest);
 
-    shell.type_text("-20");
-    shell.press_key(Key::Enter);
-    shell.click_role_and_label(Role::RadioButton, &cut_target_label);
-    shell.click_role_and_label(Role::Button, &continue_label);
-    assert!(shell.app().has_occurrence_operation_preview());
-    assert_eq!(shell.app().document_revision(), original_revision);
-    assert_eq!(shell.app().canonical_digest(), original_digest);
-    shell.press_key(Key::Escape);
-    assert_eq!(shell.app().document_revision(), original_revision);
-    assert_eq!(shell.app().canonical_digest(), original_digest);
-
-    shell.type_text("-20");
-    shell.press_key(Key::Enter);
-    shell.click_role_and_label(Role::RadioButton, &cut_target_label);
-    shell.click_role_and_label(Role::Button, &continue_label);
-    shell.press_key(Key::Enter);
+    assert!(!shell.app().has_smart_push_pull_chooser());
+    assert!(!shell.app().has_occurrence_operation_preview());
     assert_eq!(shell.app().document_revision(), original_revision + 1);
     assert_ne!(shell.app().canonical_digest(), original_digest);
+    assert_eq!(shell.app().active_box_count(), 1);
 
     shell.key(Key::Z, ctrl());
     assert_eq!(shell.app().document_revision(), profile_revision);
     assert_eq!(shell.app().canonical_digest(), profile_digest);
     assert_eq!(shell.app().circle_profile_count(), 1);
+}
+
+#[test]
+fn circle_through_hole_moves_by_dragging_its_inner_wall() {
+    let mut shell = Shell::new();
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    let center = Vec3::new(35.0, 25.0, 20.0);
+    shell.click_command(AppCommand::Circle);
+    shell.click_at(shell.app().viewport_position(center).unwrap());
+    shell.click_at(
+        shell
+            .app()
+            .viewport_position(center + Vec3::new(10.0, 0.0, 0.0))
+            .unwrap(),
+    );
+    shell.click_command(AppCommand::PushPull);
+    shell.type_text("-20");
+    shell.press_key(Key::Enter);
+    wait_for_exact_bodies(&mut shell, 1);
+
+    let before = shell.app().document_snapshot();
+    let occurrence_transform = before.scene_query().into_iter().next().unwrap().transform;
+    let profile_id = before
+        .features()
+        .find_map(|feature| match feature.kind() {
+            FeatureKind::SegmentProfile {
+                segments,
+                closed: true,
+            } if segments.len() == 2
+                && segments.iter().all(|segment| {
+                    matches!(
+                        segment,
+                        ketchup_core::document::ProfileSegment::CircularArc { .. }
+                    )
+                }) =>
+            {
+                Some(feature.id())
+            }
+            _ => None,
+        })
+        .expect("the through hole must retain its circular driving profile");
+    let revision = shell.app().document_revision();
+    let undo_steps = shell.app().undo_step_count();
+
+    let inner_wall = shell
+        .app()
+        .viewport_position(center + Vec3::new(7.0, -7.0, 0.0))
+        .unwrap();
+    shell.click_command(AppCommand::Move);
+    shell.move_pointer(inner_wall);
+    shell.click_at(inner_wall);
+    assert!(
+        !shell.app().move_profile_preview_paths().is_empty(),
+        "Move on the circular rim must target the hole profile"
+    );
+    let value_label = shell.catalog().text("value-label-distance");
+    shell.focus_text_input(&value_label);
+    shell.key(Key::A, ctrl());
+    shell.type_text("5,0,0");
+    shell.press_key(Key::Enter);
+
+    assert_eq!(
+        shell.app().document_revision(),
+        revision + 1,
+        "{}",
+        shell.app().action_digest()
+    );
+    assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+    let moved = shell.app().document_snapshot();
+    assert_eq!(
+        moved.scene_query().into_iter().next().unwrap().transform,
+        occurrence_transform,
+        "moving the hole must not move the host box"
+    );
+    let FeatureKind::SegmentProfile { segments, .. } = moved.feature(profile_id).unwrap().kind()
+    else {
+        panic!("the moved circular profile must remain canonical")
+    };
+    assert!(segments.iter().all(|segment| matches!(
+        segment,
+        ketchup_core::document::ProfileSegment::CircularArc { center_mm, .. }
+            if *center_mm == [5.0, 0.0]
+    )));
+
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().document_revision(), revision);
 }
 
 #[test]
@@ -9608,11 +9729,8 @@ fn circle_push_pull_creates_an_exact_cylinder_and_circular_hole_with_one_step_hi
     shell.click_command(AppCommand::PushPull);
     shell.type_text("-20");
     shell.press_key(Key::Enter);
-    assert!(shell.app().has_smart_push_pull_chooser());
-    shell.click_role_and_label(Role::RadioButton, &cut_target_label);
-    shell.click_role_and_label(Role::Button, &continue_label);
-    assert!(shell.app().has_occurrence_operation_preview());
-    shell.press_key(Key::Enter);
+    assert!(!shell.app().has_smart_push_pull_chooser());
+    assert!(!shell.app().has_occurrence_operation_preview());
     let hole_digest = shell.app().canonical_digest();
     assert!(shell.app().document_revision() > hole_profile_revision);
     assert_eq!(shell.app().active_box_count(), 2);
@@ -10717,7 +10835,7 @@ fn viewport_snap_hysteresis_acquires_retains_and_releases_an_endpoint() {
         "the release radius must prevent flicker outside the acquire radius"
     );
     shell.move_pointer(endpoint + eframe::egui::Vec2::new(14.0, 0.0));
-    assert_eq!(shell.app().hovered_snap_kind(), Some(SnapKind::Face));
+    assert_ne!(shell.app().hovered_snap_kind(), Some(SnapKind::Endpoint));
     shell.move_pointer(endpoint + eframe::egui::Vec2::new(10.0, 0.0));
     assert_ne!(
         shell.app().hovered_snap_kind(),
@@ -10735,6 +10853,78 @@ fn viewport_snap_hysteresis_acquires_retains_and_releases_an_endpoint() {
 }
 
 #[test]
+fn tab_pick_through_selects_the_rear_face_of_one_solid() {
+    let mut shell = Shell::new();
+    let top_centre = shell
+        .app()
+        .viewport_position(Vec3::new(50.0, 30.0, 20.0))
+        .unwrap();
+    shell.move_pointer(top_centre);
+
+    assert_eq!(shell.app().hovered_overlap_choice(), Some((0, 2)));
+    assert!(matches!(
+        shell.app().hovered_selection().unwrap().element,
+        ElementId::Face {
+            axis: Axis::Z,
+            side: Side::Maximum,
+        }
+    ));
+    shell.press_key(Key::Tab);
+    assert_eq!(shell.app().hovered_overlap_choice(), Some((1, 2)));
+    assert!(matches!(
+        shell.app().hovered_selection().unwrap().element,
+        ElementId::Face {
+            axis: Axis::Z,
+            side: Side::Minimum,
+        }
+    ));
+    shell.click_at(top_centre);
+    assert!(matches!(
+        shell.app().selected_reference().unwrap().element,
+        ElementId::Face {
+            axis: Axis::Z,
+            side: Side::Minimum,
+        }
+    ));
+}
+
+#[test]
+fn shift_click_selects_two_edges_away_from_their_midpoints() {
+    let mut shell = Shell::new();
+    install_general_finish_graph_result(&mut shell, FeatureId(2));
+    shell.settle();
+    let first = shell
+        .app()
+        .viewport_position(Vec3::new(25.0, 0.0, 20.0))
+        .unwrap();
+    let second = shell
+        .app()
+        .viewport_position(Vec3::new(100.0, 15.0, 20.0))
+        .unwrap();
+
+    shell.move_pointer(first);
+    assert_eq!(shell.app().hovered_snap_kind(), Some(SnapKind::Edge));
+    shell.click_at(first);
+    assert!(matches!(
+        shell.app().selected_reference().unwrap().element,
+        ElementId::Edge(_)
+    ));
+    shell.move_pointer(second);
+    assert_eq!(shell.app().hovered_snap_kind(), Some(SnapKind::Edge));
+    shell.click_at_with(second, shift());
+
+    shell.secondary_click_at(second);
+    assert!(shell.offers(AppCommand::Fillet));
+    assert!(shell.offers(AppCommand::Chamfer));
+    shell.click_command(AppCommand::Fillet);
+    let preview = shell
+        .app()
+        .general_finish_preview_selection_parameters()
+        .expect("two Shift-clicked edges must open one Fillet preview");
+    assert_eq!(preview.1.len(), 2);
+}
+
+#[test]
 fn tab_cycles_overlapping_occurrences_and_click_selects_the_visible_choice() {
     let mut shell = Shell::new();
     shell
@@ -10747,13 +10937,13 @@ fn tab_cycles_overlapping_occurrences_and_click_selects_the_visible_choice() {
     assert!(shell.app_mut().move_selected(Vec3::new(-100.0, 0.0, 0.0)));
     shell.move_pointer(centre);
 
-    assert_eq!(shell.app().hovered_overlap_choice(), Some((0, 2)));
+    assert_eq!(shell.app().hovered_overlap_choice(), Some((0, 4)));
     assert_eq!(
         shell.app().hovered_selection().unwrap().instance_path,
         InstancePath::root(OccurrenceId(1))
     );
     shell.press_key(Key::Tab);
-    assert_eq!(shell.app().hovered_overlap_choice(), Some((1, 2)));
+    assert_eq!(shell.app().hovered_overlap_choice(), Some((1, 4)));
     assert_eq!(
         shell.app().hovered_selection().unwrap().instance_path,
         InstancePath::root(OccurrenceId(2))
@@ -11162,6 +11352,67 @@ fn a_viewport_drag_in_move_commits_exactly_one_canonical_batch() {
     );
 }
 
+#[test]
+fn move_drag_preserves_submillimetre_pointer_motion_between_inference_targets() {
+    let mut shell = Shell::new();
+    let rect = shell.viewport_rect();
+    let (origin, size) = shell.app().occurrence_box_geometry(1).unwrap();
+    let grabbed = origin + Vec3::new(size.x * 0.5, size.y * 0.5, size.z);
+    let delta = Vec3::new(7.5, 3.25, 0.0);
+
+    shell.click_command(AppCommand::Move);
+    shell.drag(
+        shell.app().project_to_screen(grabbed, rect),
+        shell.app().project_to_screen(grabbed + delta, rect),
+    );
+
+    let moved = shell.app().occurrence_box_geometry(1).unwrap().0;
+    assert!(
+        (moved.x - origin.x - delta.x).abs() < 1.0e-4,
+        "continuous X delta was {:?}; expected {:?}",
+        moved.x - origin.x,
+        delta.x
+    );
+    assert!(
+        (moved.y - origin.y - delta.y).abs() < 1.0e-4,
+        "continuous Y delta was {:?}; expected {:?}",
+        moved.y - origin.y,
+        delta.y
+    );
+    assert!((moved.z - origin.z).abs() < 1.0e-4);
+}
+
+#[test]
+fn move_drag_snaps_the_grabbed_corner_to_the_world_origin() {
+    let mut shell = Shell::new();
+    let rect = shell.viewport_rect();
+    let (origin, size) = shell.app().occurrence_box_geometry(1).unwrap();
+    let (grabbed, from) = [
+        Vec3::new(0.0, 0.0, 0.0),
+        Vec3::new(size.x, 0.0, 0.0),
+        Vec3::new(0.0, size.y, 0.0),
+        Vec3::new(size.x, size.y, 0.0),
+        Vec3::new(0.0, 0.0, size.z),
+        Vec3::new(size.x, 0.0, size.z),
+        Vec3::new(0.0, size.y, size.z),
+        Vec3::new(size.x, size.y, size.z),
+    ]
+    .into_iter()
+    .find_map(|corner| {
+        let world = origin + corner;
+        let screen = shell.app().project_to_screen(world, rect);
+        shell.move_pointer(screen);
+        (shell.app().hovered_snap_position() == Some(world)).then_some((world, screen))
+    })
+    .expect("one box corner must be available as the Move anchor");
+
+    shell.click_command(AppCommand::Move);
+    shell.drag(from, shell.app().project_to_screen(Vec3::ZERO, rect));
+
+    let moved_origin = shell.app().occurrence_box_geometry(1).unwrap().0;
+    assert!((moved_origin - (origin - grabbed)).length() < 1.0e-4);
+}
+
 fn count_rotation_rings(shape: &eframe::egui::Shape) -> usize {
     match shape {
         eframe::egui::Shape::Path(path)
@@ -11449,9 +11700,14 @@ fn a_pinned_move_travels_along_the_blue_axis_and_the_arrow_releases_the_pin() {
     );
     let raised = shell.app().occurrence_box_geometry(1).unwrap().0;
     assert_eq!(
-        (raised.x, raised.y, raised.z),
-        (origin.x, origin.y, 40.0),
+        (raised.x, raised.y),
+        (origin.x, origin.y),
         "a Move pinned to blue Z must travel only along it"
+    );
+    assert!(
+        (raised.z - 40.0).abs() < 1.0e-4,
+        "continuous blue-axis travel was {} mm",
+        raised.z
     );
 
     // The pin outlives the gesture, so a typed distance is read along the same
@@ -11468,9 +11724,8 @@ fn a_pinned_move_travels_along_the_blue_axis_and_the_arrow_releases_the_pin() {
         "a typed distance along the pinned axis must commit: {:?}",
         shell.app().action_digest()
     );
-    assert_eq!(
-        shell.app().occurrence_box_geometry(1).unwrap().0.z,
-        65.0,
+    assert!(
+        (shell.app().occurrence_box_geometry(1).unwrap().0.z - 65.0).abs() < 1.0e-4,
         "a typed distance must be read along the pinned axis"
     );
 
@@ -11481,9 +11736,8 @@ fn a_pinned_move_travels_along_the_blue_axis_and_the_arrow_releases_the_pin() {
     shell.type_text("0,0,-15");
     shell.press_key(Key::Enter);
     assert_eq!(shell.app().undo_step_count(), before_steps + 1);
-    assert_eq!(
-        shell.app().occurrence_box_geometry(1).unwrap().0.z,
-        50.0,
+    assert!(
+        (shell.app().occurrence_box_geometry(1).unwrap().0.z - 50.0).abs() < 1.0e-4,
         "an exact x,y,z vector must move in Z with no pin at all"
     );
 }

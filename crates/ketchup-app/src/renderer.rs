@@ -1,6 +1,7 @@
 use eframe::egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use ketchup_core::document::{
-    DefinitionId, DocumentId, FeatureKind, InstancePath, ProfileSegment, Snapshot, Transform,
+    DefinitionId, DocumentId, FeatureId, FeatureKind, InstancePath, ProfileSegment, Snapshot,
+    Transform,
 };
 use ketchup_core::exact_product::ExactResultRegistry;
 use ketchup_interaction::{
@@ -324,16 +325,18 @@ fn geometry_sources(
             )];
         }
     }
-    if let Some((positions, triangles)) = canonical_planar_profile_mesh(snapshot, definition_id) {
+    if let Some((positions, triangles)) =
+        canonical_definition_fallback_mesh(snapshot, definition_id)
+    {
         let positions = positions
             .into_iter()
             .map(|vertex| vertex.map(|value| value as f32))
             .collect::<Vec<_>>();
         return vec![build_render_geometry(
-            "canonical-planar-profile",
+            "canonical-feature-mesh",
             &positions,
             &triangles,
-            &vec![Some(0_u8); triangles.len()],
+            &vec![None::<u8>; triangles.len()],
         )];
     }
 
@@ -395,20 +398,35 @@ fn geometry_sources(
     )]
 }
 
-pub(crate) fn canonical_planar_profile_mesh(
+pub(crate) fn canonical_profile_feature_mesh(
+    snapshot: &Snapshot,
+    feature_id: FeatureId,
+) -> Option<PlanarProfileMesh> {
+    let feature = snapshot.feature(feature_id)?;
+    match feature.kind() {
+        FeatureKind::SegmentProfile {
+            segments,
+            closed: true,
+        } => segment_profile_mesh(segments),
+        FeatureKind::Sketch(_) => canonical_sketch_profile_mesh(snapshot, feature.definition_id())
+            .filter(|(candidate, _, _)| *candidate == feature_id)
+            .map(|(_, positions, triangles)| (positions, triangles)),
+        _ => None,
+    }
+}
+
+pub(crate) fn canonical_definition_fallback_mesh(
     snapshot: &Snapshot,
     definition_id: DefinitionId,
 ) -> Option<PlanarProfileMesh> {
     let definition = snapshot.definition(definition_id)?;
     let feature = snapshot.feature(*definition.feature_ids().last()?)?;
     match feature.kind() {
-        FeatureKind::SegmentProfile {
-            segments,
-            closed: true,
-        } => segment_profile_mesh(segments),
-        FeatureKind::Sketch(_) => canonical_sketch_profile_mesh(snapshot, definition_id)
-            .map(|(_, positions, triangles)| (positions, triangles)),
-        _ => None,
+        FeatureKind::Extrusion { profile, height } => extrude_planar_profile_mesh(
+            canonical_profile_feature_mesh(snapshot, *profile)?,
+            height.millimetres(),
+        ),
+        _ => canonical_profile_feature_mesh(snapshot, feature.id()),
     }
 }
 

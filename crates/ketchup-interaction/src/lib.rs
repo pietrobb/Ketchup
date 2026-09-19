@@ -181,6 +181,7 @@ pub enum SnapKind {
     Midpoint,
     Center,
     Tangent,
+    Edge,
     Face,
 }
 
@@ -192,7 +193,8 @@ impl SnapKind {
             Self::Midpoint => 2,
             Self::Center => 3,
             Self::Tangent => 4,
-            Self::Face => 5,
+            Self::Edge => 5,
+            Self::Face => 6,
         }
     }
 }
@@ -497,13 +499,21 @@ impl InteractionScene {
         }
         let mut hits = candidate_indices
             .into_iter()
-            .filter_map(|index| {
+            .flat_map(|index| {
                 let occurrence = &self.occurrences[index];
-                let mut hit = hit_occurrence(ray, occurrence)?;
-                let face = hit.reference.element.clone();
-                hit.reference.element =
-                    filtered_element(occurrence, hit.position_mm, snap_tolerance_mm, filter, face)?;
-                Some(hit)
+                hit_occurrence_faces(ray, occurrence)
+                    .into_iter()
+                    .filter_map(move |mut hit| {
+                        let face = hit.reference.element.clone();
+                        hit.reference.element = filtered_element(
+                            occurrence,
+                            hit.position_mm,
+                            snap_tolerance_mm,
+                            filter,
+                            face,
+                        )?;
+                        Some(hit)
+                    })
             })
             .collect::<Vec<_>>();
         hits.sort_by(|left, right| {
@@ -595,7 +605,7 @@ fn point_segment_distance(point: Vec3, start: Vec3, end: Vec3) -> f64 {
     point.distance(closest)
 }
 
-fn hit_occurrence(ray: Ray, occurrence: &Occurrence) -> Option<ExactHit> {
+fn hit_occurrence_faces(ray: Ray, occurrence: &Occurrence) -> Vec<ExactHit> {
     let local_origin = ray.origin - occurrence.origin_mm;
     let size = occurrence.geometry.size_mm;
     let mut near = f64::NEG_INFINITY;
@@ -609,7 +619,7 @@ fn hit_occurrence(ray: Ray, occurrence: &Occurrence) -> Option<ExactHit> {
         let maximum = size.component(axis);
         if direction.abs() <= RAY_EPSILON {
             if origin < 0.0 || origin > maximum {
-                return None;
+                return Vec::new();
             }
             continue;
         }
@@ -633,29 +643,32 @@ fn hit_occurrence(ray: Ray, occurrence: &Occurrence) -> Option<ExactHit> {
             far_face = (axis, axis_far_side);
         }
         if far < near {
-            return None;
+            return Vec::new();
         }
     }
 
-    let (distance, face) = if near >= 0.0 {
-        (near, near_face)
-    } else if far >= 0.0 {
-        (far, far_face)
-    } else {
-        return None;
-    };
-    Some(ExactHit {
-        reference: SelectionId {
-            definition_id: occurrence.definition_id,
-            instance_path: occurrence.instance_path.clone(),
-            element: ElementId::Face {
-                axis: face.0,
-                side: face.1,
+    let mut crossings = Vec::with_capacity(2);
+    if near >= 0.0 {
+        crossings.push((near, near_face));
+    }
+    if far >= 0.0 && (far - near).abs() > RAY_EPSILON {
+        crossings.push((far, far_face));
+    }
+    crossings
+        .into_iter()
+        .map(|(distance, face)| ExactHit {
+            reference: SelectionId {
+                definition_id: occurrence.definition_id,
+                instance_path: occurrence.instance_path.clone(),
+                element: ElementId::Face {
+                    axis: face.0,
+                    side: face.1,
+                },
             },
-        },
-        position_mm: ray.at(distance),
-        ray_distance_mm: distance,
-    })
+            position_mm: ray.at(distance),
+            ray_distance_mm: distance,
+        })
+        .collect()
 }
 
 fn resolve_snap(primary: &ExactHit, occurrence: &Occurrence, tolerance: f64) -> SnapResult {
