@@ -134,8 +134,8 @@ impl KetchupApp {
         let plane_z = self
             .sketch_start
             .map_or_else(|| self.rectangle_plane_z(pointer, rect), |start| start.z);
-        let frame = if self.active_tool == ActiveTool::Rectangle {
-            self.rectangle_input_frame(pointer, rect)
+        let frame = if self.uses_drawing_plane() {
+            self.drawing_input_frame(pointer, rect)
         } else {
             WorkplaneFrame {
                 origin_mm: [0.0, 0.0, plane_z],
@@ -144,7 +144,9 @@ impl KetchupApp {
                 normal: [0.0, 0.0, 1.0],
             }
         };
-        let frame = (self.active_tool != ActiveTool::Line).then_some(frame);
+        let frame = (self.active_tool != ActiveTool::Line
+            && (!self.uses_drawing_plane() || self.sketch_start.is_some()))
+        .then_some(frame);
         let Some((origin, axis)) = self.datum_snap_at_screen(pointer, rect, frame) else {
             return;
         };
@@ -223,7 +225,7 @@ mod tests {
                 app.viewport_point_at_screen(pointer, rect, 0.0),
                 Some(origin)
             );
-            assert_eq!(app.rectangle_point_at_screen(pointer, rect), Some(origin));
+            assert_eq!(app.drawing_input_point(pointer, rect), Some(origin));
             assert_eq!(app.origin_snap_at_screen(pointer, rect, 20.0), None);
             assert_eq!(
                 app.origin_snap_at_screen(pointer + Vec2::new(10.0, 0.0), rect, 0.0),

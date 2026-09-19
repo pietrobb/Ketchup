@@ -522,7 +522,12 @@ fn viewport_direct_drag_commits_slanted_face_without_initial_box() {
         .events
         .push(egui::Event::PointerMoved(drag_target));
     harness.step();
-    assert!(harness.state().preview_action_digest().is_some());
+    assert!(
+        harness.state().preview_action_digest().is_some(),
+        "snap={:?}, distance={}, source={face:?}",
+        harness.state().hover_snap,
+        harness.state().push_pull_distance_input
+    );
     for distance in [4.0, -2.0, 8.0] {
         let position = harness
             .state()

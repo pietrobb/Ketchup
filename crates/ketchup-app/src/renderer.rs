@@ -496,7 +496,7 @@ pub(crate) fn feature_edge_triangles<G: Copy + Ord>(
             } else {
                 uses.iter()
                     .skip(1)
-                    .any(|index| dot(normals[first], normals[*index as usize]).abs() < 0.95)
+                    .any(|index| dot(normals[first], normals[*index as usize]) < 0.95)
             }
         })
         .collect()

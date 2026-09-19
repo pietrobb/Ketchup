@@ -179,9 +179,9 @@ pub use helix_thread_ui::{
     helix_segments,
 };
 pub use native_document_inspection::{NativeDocumentInspection, inspect_native_document};
+mod drawing_plane;
 mod line_geometry;
 mod rectangle_authoring;
-mod rectangle_snapping;
 mod scene_snapping;
 pub mod theme;
 use theme::{Icon, Palette, ThemeKind};
@@ -777,9 +777,8 @@ struct RotateDrag {
     axis: Axis,
     /// The starting arm, measured from `centre_mm` inside the rotation plane.
     ///
-    /// A press that lands on the centre of the body has no arm to measure yet,
-    /// so this is established by the first pointer sample far enough out. Until
-    /// then the gesture reads zero rather than refusing to start.
+    /// The first click chooses the pivot; a second click establishes this arm.
+    /// Until then the gesture reads zero and accepts a typed angle.
     reference_mm: Option<Vec3>,
     angle_degrees: f64,
     copy: bool,
@@ -19817,12 +19816,20 @@ impl KetchupApp {
     #[must_use]
     pub fn arc_preview_geometry(&self) -> Option<(Vec3, Vec3, Vec3, bool)> {
         (self.active_tool == ActiveTool::Arc)
-            .then_some(arc_geometry(
+            .then_some(self.drawing_arc(
                 self.sketch_start?,
                 self.sketch_end?,
                 self.sketch_cursor?,
             )?)
-            .map(|arc| (arc.start, arc.end, arc.center, arc.clockwise))
+            .map(|arc| {
+                let start = self.sketch_start.unwrap();
+                (
+                    start,
+                    self.drawing_world_delta(start, arc.end),
+                    self.drawing_world_delta(start, arc.center),
+                    arc.clockwise,
+                )
+            })
     }
 
     /// Number of canonical closed Arc-plus-chord profiles in the document.
@@ -26174,7 +26181,7 @@ impl KetchupApp {
             source.topological_reference.as_ref(),
             distance_mm,
             new_extent_mm,
-            format_height(new_extent_mm),
+            new_extent_mm.to_string(),
         )?;
         let proposal = if principal == ProposalPrincipal::ManualClient {
             self.prepare_manual_push_pull_proposal(batch.clone())
@@ -27006,17 +27013,41 @@ impl KetchupApp {
             && self.selection.primary.as_ref() == Some(&drag.selection)
     }
 
-    fn push_pull_face_snap_distance(&self, drag: &PushPullDrag) -> Option<f64> {
+    fn push_pull_target_snap(&self) -> Option<SnapResult> {
         if !self.face_workflow.snaps_enabled() {
             return None;
         }
+        if self.hover_overlap_index == 0
+            && let Some(snap) = self
+                .hover_snap
+                .as_ref()
+                .filter(|snap| snap.kind != SnapKind::Face)
+        {
+            return Some(snap.clone());
+        }
+        let hit = self
+            .hover_pick
+            .as_ref()?
+            .overlap_choice(self.hover_overlap_index)?;
+        Some(SnapResult {
+            kind: SnapKind::Face,
+            reference: hit.reference.clone(),
+            position_mm: hit.position_mm,
+            distance_mm: 0.0,
+        })
+    }
+
+    fn push_pull_snap_distance(&self, drag: &PushPullDrag) -> Option<f64> {
+        let target = self.push_pull_target_snap()?;
+        if target.kind == SnapKind::Face && target.reference == drag.selection {
+            return None;
+        }
         if let Some(face) = self.selected_planar_face(&drag.selection) {
-            let hit = self
-                .hover_pick
-                .as_ref()?
-                .overlap_choice(self.hover_overlap_index)?;
-            return (hit.reference.instance_path != drag.selection.instance_path)
-                .then(|| dot(hit.position_mm - face.origin, face.normal));
+            let distance = dot(target.position_mm - face.origin, face.normal);
+            return (distance.is_finite()
+                && (target.reference.instance_path != drag.selection.instance_path
+                    || distance.abs() >= 0.01))
+                .then_some(distance);
         }
         let ElementId::Face {
             axis: source_axis,
@@ -27025,18 +27056,6 @@ impl KetchupApp {
         else {
             return None;
         };
-        let hit = self
-            .hover_pick
-            .as_ref()?
-            .overlap_choice(self.hover_overlap_index)?;
-        if hit.reference.instance_path == drag.selection.instance_path
-            || !matches!(
-                hit.reference.element,
-                ElementId::Face { axis, .. } if axis == source_axis
-            )
-        {
-            return None;
-        }
         let source = self
             .active_boxes()
             .into_iter()
@@ -27049,7 +27068,7 @@ impl KetchupApp {
                     } else {
                         0.0
                     },
-                hit.position_mm.x,
+                target.position_mm.x,
             ),
             Axis::Y => (
                 source.origin_mm.y
@@ -27058,7 +27077,7 @@ impl KetchupApp {
                     } else {
                         0.0
                     },
-                hit.position_mm.y,
+                target.position_mm.y,
             ),
             Axis::Z => (
                 source.origin_mm.z
@@ -27067,7 +27086,7 @@ impl KetchupApp {
                     } else {
                         0.0
                     },
-                hit.position_mm.z,
+                target.position_mm.z,
             ),
         };
         let outward_sign = if source_side == Side::Maximum {
@@ -27076,7 +27095,11 @@ impl KetchupApp {
             -1.0
         };
         let distance = (target_coordinate - source_coordinate) * outward_sign;
-        (distance.is_finite() && distance > -drag.extent_start_mm + 0.01).then_some(distance)
+        (distance.is_finite()
+            && (target.reference.instance_path != drag.selection.instance_path
+                || distance.abs() >= 0.01)
+            && (drag.extent_start_mm <= 0.01 || distance > -drag.extent_start_mm + 0.01))
+            .then_some(distance)
     }
 
     fn update_push_pull_gesture(&mut self, drag: &PushPullDrag, pointer: Pos2) -> bool {
@@ -27086,10 +27109,12 @@ impl KetchupApp {
             self.digest = self.catalog.text("error-preview-stale");
             return false;
         }
-        let distance = self.push_pull_face_snap_distance(drag).unwrap_or_else(|| {
+        let snapped = self.push_pull_snap_distance(drag);
+        let distance = snapped.unwrap_or_else(|| {
             push_pull_distance_from_pointer(drag, pointer, self.face_workflow.snaps_enabled())
         });
-        self.push_pull_distance_input = format_height(distance);
+        self.push_pull_distance_input =
+            snapped.map_or_else(|| format_height(distance), |value| value.to_string());
         self.value_input = self.push_pull_distance_input.clone();
         if distance.abs() >= 0.01 {
             let prepared = self.start_preview();
@@ -28115,7 +28140,14 @@ impl KetchupApp {
     }
 
     fn rotate_preview_transform_overrides(&self) -> BTreeMap<InstancePath, Transform> {
-        let Some(drag) = self.active_rotate_gesture().filter(|drag| !drag.copy) else {
+        self.rotation_preview_transforms(false)
+    }
+
+    fn rotation_preview_transforms(&self, copy: bool) -> BTreeMap<InstancePath, Transform> {
+        let Some(drag) = self
+            .active_rotate_gesture()
+            .filter(|drag| drag.copy == copy)
+        else {
             return BTreeMap::new();
         };
         let Ok(rotation) = world_rotation_transform(drag.centre_mm, drag.axis, drag.angle_degrees)
@@ -28284,9 +28316,8 @@ impl KetchupApp {
         (distance >= 0.0 && distance.is_finite()).then(|| ray.origin + ray.direction * distance)
     }
 
-    /// Re-read the live angle from where the pointer meets the rotation plane,
-    /// establishing the starting arm the first time the pointer is far enough
-    /// from the centre to define one.
+    /// Re-read the live angle in the chosen plane. Only a click establishes
+    /// the starting arm; hovering after choosing a pivot never starts a turn.
     fn advance_rotation(&self, drag: &mut RotateDrag, pointer: Pos2, rect: Rect, free: bool) {
         let Some(world) = self.screen_to_rotation_plane(pointer, rect, drag.centre_mm, drag.axis)
         else {
@@ -28294,10 +28325,6 @@ impl KetchupApp {
         };
         let arm = world - drag.centre_mm;
         let Some(reference_mm) = drag.reference_mm else {
-            if vector_length(arm) >= ROTATION_MIN_ARM_MM {
-                drag.reference_mm = Some(arm);
-            }
-            drag.angle_degrees = 0.0;
             return;
         };
         if let Some(angle) = rotation_angle_degrees(reference_mm, arm, drag.axis) {
@@ -28306,15 +28333,20 @@ impl KetchupApp {
     }
 
     fn begin_rotate_drag_at(&mut self, pointer: Pos2, rect: Rect, copy: bool) -> bool {
-        let Some(selection) = self
-            .hovered
-            .clone()
-            .filter(|selection| self.occurrence_in_active_context(&selection.instance_path))
-        else {
+        let selected = self.selected_move_reference();
+        let Some(selection) = selected.clone().or_else(|| {
+            self.hover_snap
+                .as_ref()
+                .map(|snap| snap.reference.clone())
+                .or_else(|| self.hovered.clone())
+                .filter(|selection| self.occurrence_in_active_context(&selection.instance_path))
+        }) else {
             self.digest = self.catalog.text("digest-rotate-start-missed");
             return false;
         };
-        self.select_from_viewport(Some(selection.clone()), false);
+        if selected.is_none() {
+            self.select_from_viewport(Some(selection.clone()), false);
+        }
         let snapshot = self.document.current();
         let group_id = self.selection.selected_group;
         let axis = self.rotate_axis_lock.unwrap_or(Axis::Z);
@@ -28330,13 +28362,26 @@ impl KetchupApp {
                 Box::new(move |path: &InstancePath| *path == target)
             }
         };
-        let Some(centre_mm) = self.rotation_centre_for(&applies) else {
+        let centre_mm = self
+            .scene_snap_at_screen(pointer, rect, 8.0, None)
+            .map(|snap| snap.position_mm)
+            .or_else(|| {
+                self.datum_snap_at_screen(pointer, rect, None)
+                    .map(|(point, _)| point)
+            })
+            .or_else(|| self.surface_point_at_screen(pointer, rect))
+            .or_else(|| {
+                self.screen_to_rotation_plane(
+                    pointer,
+                    rect,
+                    self.rotation_centre_for(&applies)?,
+                    axis,
+                )
+            });
+        let Some(centre_mm) = centre_mm else {
             return false;
         };
-        let reference_mm = self
-            .screen_to_rotation_plane(pointer, rect, centre_mm, axis)
-            .map(|world| world - centre_mm)
-            .filter(|arm| vector_length(*arm) >= ROTATION_MIN_ARM_MM);
+        let reference_mm = None;
         self.value_input = "0".to_owned();
         self.rotate_drag = Some(RotateDrag {
             source_document_id: snapshot.document_id(),
@@ -28355,8 +28400,7 @@ impl KetchupApp {
     /// Pin the Rotate tool to `axis`, or release the pin when `axis` is `None`.
     ///
     /// A live gesture keeps its centre but drops its starting arm, so the next
-    /// pointer sample re-establishes one in the new plane and the body does not
-    /// jump when the axis changes mid-gesture.
+    /// click establishes one in the new plane without a hover-induced turn.
     fn set_rotate_axis_lock(&mut self, axis: Option<Axis>) {
         self.rotate_axis_lock = axis;
         let resolved = axis.unwrap_or(Axis::Z);
@@ -28540,7 +28584,26 @@ impl KetchupApp {
         snapshot: &Snapshot,
         item: &RenderBox,
     ) -> Option<renderer::PlanarProfileMesh> {
-        let mesh = renderer::canonical_profile_feature_mesh(snapshot, item.profile_feature_id)?;
+        let mesh = renderer::canonical_profile_feature_mesh(snapshot, item.profile_feature_id)
+            .or_else(|| {
+                if self.proxy_preview_is_active(item) {
+                    return None;
+                }
+                let FeatureKind::Profile { points_mm } =
+                    snapshot.feature(item.profile_feature_id)?.kind()
+                else {
+                    return None;
+                };
+                let segments = points_mm
+                    .iter()
+                    .enumerate()
+                    .map(|(i, start)| ProfileSegment::Line {
+                        start_mm: *start,
+                        end_mm: points_mm[(i + 1) % points_mm.len()],
+                    })
+                    .collect::<Vec<_>>();
+                ketchup_interaction::mesh_projection::segment_profile_mesh(&segments)
+            })?;
         let extent = self
             .preview_box
             .as_ref()
@@ -28592,9 +28655,7 @@ impl KetchupApp {
                     && drag.profile_target.is_none()
                     && self.move_drag_applies_to_path(drag, &item.instance_path)
             });
-        let rotate_preview = self
-            .active_rotate_gesture()
-            .is_some_and(|drag| self.rotate_drag_applies_to_path(drag, &item.instance_path));
+
         let occurrence_preview = self.has_occurrence_operation_preview()
             && item.instance_path.is_root()
             && self
@@ -28605,7 +28666,7 @@ impl KetchupApp {
                         .boxes
                         .contains_key(&item.instance_path.root_occurrence())
                 });
-        push_pull_preview || move_preview || rotate_preview || occurrence_preview
+        push_pull_preview || move_preview || occurrence_preview
     }
 
     fn viewport_boxes(
@@ -28625,48 +28686,6 @@ impl KetchupApp {
             {
                 let mut preview = item.clone();
                 preview.origin_mm = preview.origin_mm + drag.delta_mm;
-                if drag.copy && drag.group_id.is_none() {
-                    copies.push(preview);
-                } else {
-                    *item = preview;
-                }
-            }
-            boxes.extend(copies);
-        }
-        if let Some(drag) = self.active_rotate_gesture()
-            && let Ok(rotation) =
-                world_rotation_transform(drag.centre_mm, drag.axis, drag.angle_degrees)
-        {
-            let mut copies = Vec::new();
-            for item in boxes
-                .iter_mut()
-                .filter(|item| self.rotate_drag_applies_to_path(drag, &item.instance_path))
-            {
-                let mut preview = item.clone();
-                let corners = box_corners(preview.size_mm.x, preview.size_mm.y, preview.size_mm.z)
-                    .map(|corner| transform_model_point(rotation, corner + preview.origin_mm));
-                let (minimum, maximum) = corners.into_iter().fold(
-                    (
-                        Vec3::new(f64::MAX, f64::MAX, f64::MAX),
-                        Vec3::new(f64::MIN, f64::MIN, f64::MIN),
-                    ),
-                    |(minimum, maximum), corner| {
-                        (
-                            Vec3::new(
-                                minimum.x.min(corner.x),
-                                minimum.y.min(corner.y),
-                                minimum.z.min(corner.z),
-                            ),
-                            Vec3::new(
-                                maximum.x.max(corner.x),
-                                maximum.y.max(corner.y),
-                                maximum.z.max(corner.z),
-                            ),
-                        )
-                    },
-                );
-                preview.origin_mm = minimum;
-                preview.size_mm = maximum - minimum;
                 if drag.copy && drag.group_id.is_none() {
                     copies.push(preview);
                 } else {
@@ -29451,7 +29470,7 @@ impl KetchupApp {
     }
 
     fn complete_circle_sketch(&mut self, center: Vec3, radial_point: Vec3) -> bool {
-        let direction = Vec3::new(radial_point.x - center.x, radial_point.y - center.y, 0.0);
+        let direction = radial_point - center;
         self.complete_circle(center, vector_length(direction), direction)
     }
 
@@ -29459,6 +29478,7 @@ impl KetchupApp {
         if !radius_mm.is_finite() || radius_mm <= 0.01 {
             return false;
         }
+        let direction = self.drawing_local_delta(center, center + direction);
         let direction_length = vector_length(direction);
         let unit = if direction_length > 0.01 {
             Vec3::new(
@@ -29472,8 +29492,7 @@ impl KetchupApp {
         let radial = [unit.x * radius_mm, unit.y * radius_mm];
         let opposite = [-radial[0], -radial[1]];
         let created = self.create_segment_profile_at(
-            Transform::from_translation(center.x, center.y, center.z)
-                .expect("validated profile origin is canonical"),
+            self.drawing_transform(center),
             vec![
                 ProfileSegment::CircularArc {
                     start_mm: radial,
@@ -29493,7 +29512,7 @@ impl KetchupApp {
             "model-circle-profile",
         );
         if created {
-            self.sketch_mode = false;
+            self.sketch_mode = self.uses_drawing_plane();
             self.sketch_start = None;
             self.sketch_cursor = None;
             self.value_input = format_height(radius_mm);
@@ -29522,14 +29541,13 @@ impl KetchupApp {
     }
 
     fn complete_arc_sketch(&mut self, start: Vec3, end: Vec3, bulge_point: Vec3) -> bool {
-        let Some(arc) = arc_geometry(start, end, bulge_point) else {
+        let Some(arc) = self.drawing_arc(start, end, bulge_point) else {
             return false;
         };
-        let local_end = [end.x - start.x, end.y - start.y];
-        let local_center = [arc.center.x - start.x, arc.center.y - start.y];
+        let local_end = [arc.end.x, arc.end.y];
+        let local_center = [arc.center.x, arc.center.y];
         let created = self.create_segment_profile_at(
-            Transform::from_translation(start.x, start.y, start.z)
-                .expect("validated profile origin is canonical"),
+            self.drawing_transform(start),
             vec![
                 ProfileSegment::CircularArc {
                     start_mm: [0.0, 0.0],
@@ -29547,8 +29565,8 @@ impl KetchupApp {
             "model-arc-profile",
         );
         if created {
-            let bulge_mm = point_line_signed_distance(bulge_point, start, end).abs();
-            self.sketch_mode = false;
+            let bulge_mm = self.drawing_bulge(start, end, bulge_point).abs();
+            self.sketch_mode = self.uses_drawing_plane();
             self.sketch_start = None;
             self.sketch_end = None;
             self.sketch_cursor = None;
@@ -29572,14 +29590,22 @@ impl KetchupApp {
             return false;
         };
         let chord = end - start;
-        let chord_length = vector_length(Vec3::new(chord.x, chord.y, 0.0));
+        let local_chord = self.drawing_local_delta(start, end);
+        let chord_length = vector_length(local_chord);
         if chord_length <= 0.01 {
             return false;
         }
         let midpoint = (start + end) * 0.5;
-        let normal = Vec3::new(-chord.y / chord_length, chord.x / chord_length, 0.0);
+        let normal = self.drawing_world_delta(
+            Vec3::ZERO,
+            Vec3::new(
+                -local_chord.y / chord_length,
+                local_chord.x / chord_length,
+                0.0,
+            ),
+        );
         let cursor_side = self.sketch_cursor.map_or(1.0, |cursor| {
-            if point_line_signed_distance(cursor, start, end) < 0.0 {
+            if self.drawing_bulge(start, end, cursor) < 0.0 {
                 -1.0
             } else {
                 1.0
@@ -29596,7 +29622,7 @@ impl KetchupApp {
         let Some(batch) = self.datum_rectangle_batch(start, end) else {
             return false;
         };
-        let frame = self.rectangle_frame(Some(start));
+        let frame = self.drawing_frame(Some(start));
         let frame_origin = Vec3::new(frame.origin_mm[0], frame.origin_mm[1], frame.origin_mm[2]);
         let frame_x = Vec3::new(frame.x_axis[0], frame.x_axis[1], frame.x_axis[2]);
         let frame_y = Vec3::new(frame.y_axis[0], frame.y_axis[1], frame.y_axis[2]);
@@ -29615,11 +29641,11 @@ impl KetchupApp {
             return false;
         }
         self.clear_ephemeral_edit_state();
-        self.sketch_mode = false;
+        self.sketch_mode = self.uses_drawing_plane();
         self.sketch_start = None;
         self.sketch_cursor = None;
         self.value_input.clear();
-        self.status_key = "status-sketch-created";
+        self.status_key = "status-sketch-first-point";
         self.digest = self.catalog.format(
             "digest-exact-rectangle",
             &BTreeMap::from([
@@ -29643,7 +29669,7 @@ impl KetchupApp {
         if self.face_workflow_datum() != PrincipalPlane::Xy {
             return self.complete_datum_rectangle(start, end);
         }
-        let frame = self.rectangle_frame(Some(start));
+        let frame = self.drawing_frame(Some(start));
         let frame_origin = Vec3::new(frame.origin_mm[0], frame.origin_mm[1], frame.origin_mm[2]);
         let frame_x = Vec3::new(frame.x_axis[0], frame.x_axis[1], frame.x_axis[2]);
         let frame_y = Vec3::new(frame.y_axis[0], frame.y_axis[1], frame.y_axis[2]);
@@ -29667,11 +29693,11 @@ impl KetchupApp {
             vec![[0.0, 0.0], [size.x, 0.0], [size.x, size.y], [0.0, size.y]],
         );
         if created {
-            self.sketch_mode = false;
+            self.sketch_mode = self.uses_drawing_plane();
             self.sketch_start = None;
             self.sketch_cursor = None;
             self.value_input.clear();
-            self.status_key = "status-sketch-created";
+            self.status_key = "status-sketch-first-point";
             self.digest = self.catalog.format(
                 "digest-exact-rectangle",
                 &BTreeMap::from([
@@ -29690,7 +29716,7 @@ impl KetchupApp {
         let Some([width, depth]) = parse_rectangle_dimensions(&self.value_input) else {
             return false;
         };
-        let frame = self.rectangle_frame(Some(start));
+        let frame = self.drawing_frame(Some(start));
         let frame_x = Vec3::new(frame.x_axis[0], frame.x_axis[1], frame.x_axis[2]);
         let frame_y = Vec3::new(frame.y_axis[0], frame.y_axis[1], frame.y_axis[2]);
         let cursor = self.sketch_cursor.unwrap_or(start + frame_x + frame_y);
@@ -30052,13 +30078,13 @@ impl KetchupApp {
         (distance >= 0.0).then(|| ray.origin + ray.direction * distance)
     }
 
-    fn rectangle_frame(&self, point: Option<Vec3>) -> WorkplaneFrame {
+    fn drawing_frame(&self, point: Option<Vec3>) -> WorkplaneFrame {
         let plane = self.face_workflow_datum();
         let mut frame = WorkplaneFrame::principal(plane);
-        if plane == PrincipalPlane::Xy
-            && let Some(point) = point
-        {
-            frame.origin_mm[2] = point.z;
+        if let Some(point) = point {
+            let n = frame.normal;
+            let offset = dot(point, Vec3::new(n[0], n[1], n[2]));
+            frame.origin_mm = n.map(|v| v * offset);
         }
         frame
     }
@@ -30078,10 +30104,6 @@ impl KetchupApp {
         }
         let distance = dot(origin - ray.origin, normal) / denominator;
         (distance >= 0.0).then(|| ray.origin + ray.direction * distance)
-    }
-
-    fn rectangle_point_at_screen(&self, pointer: Pos2, rect: Rect) -> Option<Vec3> {
-        self.rectangle_input_point(pointer, rect)
     }
 
     fn sketch_point_at_screen(&self, pointer: Pos2, rect: Rect, plane_z: f64) -> Option<Vec3> {
@@ -30420,7 +30442,7 @@ impl KetchupApp {
             .put(
                 input_rect,
                 egui::TextEdit::singleline(&mut self.value_input)
-                    .id_salt("value-box-input")
+                    .id(egui::Id::new("value-box-input"))
                     .hint_text(self.catalog.text("value-placeholder"))
                     .font(egui::FontId::monospace(15.0))
                     .text_color(palette.accent)
@@ -30489,8 +30511,8 @@ impl KetchupApp {
                 self.zoom_window_start = Some(pointer);
                 self.zoom_window_cursor = Some(pointer);
             } else if self.sketch_mode {
-                let point = if self.active_tool == ActiveTool::Rectangle {
-                    self.rectangle_point_at_screen(pointer, response.rect)
+                let point = if self.uses_drawing_plane() {
+                    self.drawing_input_point(pointer, response.rect)
                 } else {
                     let plane_z = self.sketch_start.map_or_else(
                         || {
@@ -30690,6 +30712,17 @@ impl KetchupApp {
                 if let Some(mut anchor) = self.rotate_anchor.take() {
                     if !self.rotate_preview_is_current(&anchor) {
                         self.digest = self.catalog.text("error-preview-stale");
+                    } else if anchor.reference_mm.is_none() {
+                        anchor.reference_mm = self
+                            .screen_to_rotation_plane(
+                                pointer,
+                                response.rect,
+                                anchor.centre_mm,
+                                anchor.axis,
+                            )
+                            .map(|point| point - anchor.centre_mm)
+                            .filter(|arm| vector_length(*arm) >= ROTATION_MIN_ARM_MM);
+                        self.rotate_drag = Some(anchor);
                     } else {
                         self.advance_rotation(
                             &mut anchor,
@@ -30785,7 +30818,12 @@ impl KetchupApp {
                 self.value_input = format_angle(angle);
             }
             self.digest = self.catalog.format(
-                if copy {
+                if self
+                    .active_rotate_gesture()
+                    .is_some_and(|drag| drag.reference_mm.is_none())
+                {
+                    "digest-rotate-anchor-set"
+                } else if copy {
                     "digest-rotate-copy-live"
                 } else {
                     "digest-rotate-live"
@@ -30829,8 +30867,8 @@ impl KetchupApp {
                 if let (Some(start), Some(pointer)) =
                     (self.sketch_start, response.interact_pointer_pos())
                 {
-                    self.sketch_cursor = if self.active_tool == ActiveTool::Rectangle {
-                        self.rectangle_point_at_screen(pointer, response.rect)
+                    self.sketch_cursor = if self.uses_drawing_plane() {
+                        self.drawing_input_point(pointer, response.rect)
                     } else {
                         self.sketch_point_at_screen(pointer, response.rect, start.z)
                     };
@@ -30944,8 +30982,8 @@ impl KetchupApp {
             && response.hovered()
             && let Some(pointer) = ui.input(|input| input.pointer.hover_pos())
         {
-            self.sketch_cursor = if self.active_tool == ActiveTool::Rectangle {
-                self.rectangle_point_at_screen(pointer, response.rect)
+            self.sketch_cursor = if self.uses_drawing_plane() {
+                self.drawing_input_point(pointer, response.rect)
             } else {
                 let plane_z = self.sketch_start.map_or(0.0, |start| start.z);
                 self.sketch_point_at_screen(pointer, response.rect, plane_z)
@@ -30966,14 +31004,14 @@ impl KetchupApp {
                     ActiveTool::Circle => format_height(vector_length(Vec3::new(
                         cursor.x - start.x,
                         cursor.y - start.y,
-                        0.0,
+                        cursor.z - start.z,
                     ))),
                     ActiveTool::Arc => self.sketch_end.map_or_else(
                         || format_height(vector_length(cursor - start)),
-                        |end| format_height(point_line_signed_distance(cursor, start, end).abs()),
+                        |end| format_height(self.drawing_bulge(start, end, cursor).abs()),
                     ),
                     ActiveTool::Rectangle => {
-                        let frame = self.rectangle_frame(Some(start));
+                        let frame = self.drawing_frame(Some(start));
                         let frame_x = Vec3::new(frame.x_axis[0], frame.x_axis[1], frame.x_axis[2]);
                         let frame_y = Vec3::new(frame.y_axis[0], frame.y_axis[1], frame.y_axis[2]);
                         format!(
@@ -31034,6 +31072,7 @@ impl KetchupApp {
         let snapshot = self.document.current();
         self.rebind_exact_results(&snapshot);
         let move_transform_overrides = self.preview_transform_overrides();
+        let rotate_copies = self.rotation_preview_transforms(true);
         let use_wgpu_scene = self.face_offset_evaluation.is_none()
             && self.wgpu_target_format.is_some()
             && !self.has_occurrence_operation_preview()
@@ -31102,7 +31141,11 @@ impl KetchupApp {
             })
             .collect::<Vec<_>>();
         let viewport_boxes = self.viewport_boxes(&snapshot, exact_projection);
-        for item in viewport_boxes.iter().cloned() {
+        for (item, copy_transform) in viewport_boxes.iter().cloned().flat_map(|item| {
+            let copy = rotate_copies.get(&item.instance_path).copied();
+            std::iter::once((item.clone(), None))
+                .chain(copy.map(|transform| (item, Some(transform))))
+        }) {
             let item = self.render_box(item);
             let proxy_preview = self.proxy_preview_is_active(&item);
             let occurrence_color = occurrence_colors.get(&item.instance_path).copied();
@@ -31115,8 +31158,8 @@ impl KetchupApp {
                         .is_some_and(|hovered| hovered.instance_path == item.instance_path)
                     || proxy_preview
                     || out_of_context);
-            let needs_cpu_fill = !use_wgpu_scene || proxy_preview;
-            if use_wgpu_scene && !needs_cpu_overlay {
+            let needs_cpu_fill = !use_wgpu_scene || proxy_preview || copy_transform.is_some();
+            if use_wgpu_scene && !needs_cpu_overlay && !needs_cpu_fill {
                 continue;
             }
             let profile_mesh = self.canonical_profile_viewport_mesh(&snapshot, &item);
@@ -31131,9 +31174,8 @@ impl KetchupApp {
                 else {
                     continue;
                 };
-                let transform = move_transform_overrides
-                    .get(&item.instance_path)
-                    .copied()
+                let transform = copy_transform
+                    .or_else(|| move_transform_overrides.get(&item.instance_path).copied())
                     .unwrap_or(occurrence.canonical_world_transform);
                 let positions_mm = local_positions
                     .iter()
@@ -31298,7 +31340,7 @@ impl KetchupApp {
                 }
             }
         }
-        for occurrence in interaction_projection_cache
+        for (occurrence, copy_transform) in interaction_projection_cache
             .as_ref()
             .expect("interaction cache was built")
             .canonical
@@ -31318,6 +31360,14 @@ impl KetchupApp {
                                     || preview.hidden_occurrences.contains(&occurrence_id)
                             }))
             })
+            .flat_map(|occurrence| {
+                std::iter::once((occurrence, None)).chain(
+                    rotate_copies
+                        .get(&occurrence.instance_path)
+                        .copied()
+                        .map(|transform| (occurrence, Some(transform))),
+                )
+            })
         {
             let occurrence_color = occurrence_colors.get(&occurrence.instance_path).copied();
             let out_of_context = !active_context_paths.contains(&occurrence.instance_path);
@@ -31328,8 +31378,8 @@ impl KetchupApp {
                         .as_ref()
                         .is_some_and(|hovered| hovered.instance_path == occurrence.instance_path)
                     || out_of_context);
-            let needs_cpu_fill = !use_wgpu_scene;
-            if use_wgpu_scene && !needs_cpu_overlay {
+            let needs_cpu_fill = !use_wgpu_scene || copy_transform.is_some();
+            if use_wgpu_scene && !needs_cpu_overlay && !needs_cpu_fill {
                 continue;
             }
             let combined = self.interaction_exact_registry(&snapshot);
@@ -31342,9 +31392,12 @@ impl KetchupApp {
             }) else {
                 continue;
             };
-            let transform = move_transform_overrides
-                .get(&occurrence.instance_path)
-                .copied()
+            let transform = copy_transform
+                .or_else(|| {
+                    move_transform_overrides
+                        .get(&occurrence.instance_path)
+                        .copied()
+                })
                 .unwrap_or(occurrence.canonical_world_transform);
             let overlay_edges = self.overlay_feature_edges(
                 occurrence.body.definition_id,
@@ -31468,7 +31521,7 @@ impl KetchupApp {
         // Canonical mesh bodies are drawn by the instanced scene, but hover and
         // selection feedback is a CPU overlay: without this loop a grooved beam
         // is visible yet never highlights, so it reads as if it were not there.
-        for occurrence in interaction_projection_cache
+        for (occurrence, copy_transform) in interaction_projection_cache
             .as_ref()
             .expect("interaction cache was built")
             .canonical
@@ -31482,6 +31535,14 @@ impl KetchupApp {
                         .mesh
                         .contains_occurrence(&occurrence.instance_path)
             })
+            .flat_map(|occurrence| {
+                std::iter::once((occurrence, None)).chain(
+                    rotate_copies
+                        .get(&occurrence.instance_path)
+                        .copied()
+                        .map(|transform| (occurrence, Some(transform))),
+                )
+            })
         {
             let occurrence_color = occurrence_colors.get(&occurrence.instance_path).copied();
             let out_of_context = !active_context_paths.contains(&occurrence.instance_path);
@@ -31492,16 +31553,19 @@ impl KetchupApp {
                         .as_ref()
                         .is_some_and(|hovered| hovered.instance_path == occurrence.instance_path)
                     || out_of_context);
-            let needs_cpu_fill = !use_wgpu_scene;
-            if use_wgpu_scene && !needs_cpu_overlay {
+            let needs_cpu_fill = !use_wgpu_scene || copy_transform.is_some();
+            if use_wgpu_scene && !needs_cpu_overlay && !needs_cpu_fill {
                 continue;
             }
             let Some(mesh) = definition_mesh_body(&snapshot, occurrence.body.definition_id) else {
                 continue;
             };
-            let transform = move_transform_overrides
-                .get(&occurrence.instance_path)
-                .copied()
+            let transform = copy_transform
+                .or_else(|| {
+                    move_transform_overrides
+                        .get(&occurrence.instance_path)
+                        .copied()
+                })
                 .unwrap_or(occurrence.canonical_world_transform);
             let points_mm = mesh
                 .vertices_mm
@@ -31697,12 +31761,14 @@ impl KetchupApp {
                 );
             } else if self.active_tool == ActiveTool::Arc {
                 if let Some(end) = self.sketch_end
-                    && let Some(arc) = arc_geometry(start, end, cursor)
+                    && let Some(arc) = self.drawing_arc(start, end, cursor)
                 {
                     let stroke = Stroke::new(2.0_f32, Color32::from_rgb(255, 199, 68));
                     let points = arc_polyline(arc, 64)
                         .into_iter()
-                        .map(|point| self.project(point, response.rect))
+                        .map(|point| {
+                            self.project(self.drawing_world_delta(start, point), response.rect)
+                        })
                         .collect();
                     painter.add(egui::Shape::line(points, stroke));
                     painter.line_segment(
@@ -31717,23 +31783,22 @@ impl KetchupApp {
                         egui::Align2::CENTER_CENTER,
                         format!(
                             "B {} mm",
-                            format_height(point_line_signed_distance(cursor, start, end).abs())
+                            format_height(self.drawing_bulge(start, end, cursor).abs())
                         ),
                         egui::FontId::proportional(14.0),
                         Color32::WHITE,
                     );
                 }
             } else if self.active_tool == ActiveTool::Circle {
-                let radius = vector_length(Vec3::new(cursor.x - start.x, cursor.y - start.y, 0.0));
+                let radius = vector_length(cursor - start);
                 let stroke = Stroke::new(2.0_f32, Color32::from_rgb(255, 199, 68));
                 let mut points = Vec::with_capacity(65);
                 for segment in 0..=64 {
                     let angle = std::f64::consts::TAU * segment as f64 / 64.0;
                     points.push(self.project(
-                        Vec3::new(
-                            start.x + radius * angle.cos(),
-                            start.y + radius * angle.sin(),
-                            start.z,
+                        self.drawing_world_delta(
+                            start,
+                            Vec3::new(radius * angle.cos(), radius * angle.sin(), 0.0),
                         ),
                         response.rect,
                     ));
@@ -31747,12 +31812,16 @@ impl KetchupApp {
                     Color32::WHITE,
                 );
             } else {
-                let ground = [
-                    start,
-                    Vec3::new(cursor.x, start.y, start.z),
-                    cursor,
-                    Vec3::new(start.x, cursor.y, start.z),
-                ];
+                let ground = if self.uses_drawing_plane() {
+                    self.drawing_rectangle_corners(start, cursor)
+                } else {
+                    [
+                        start,
+                        Vec3::new(cursor.x, start.y, start.z),
+                        cursor,
+                        Vec3::new(start.x, cursor.y, start.z),
+                    ]
+                };
                 let points = ground.map(|point| self.project(point, response.rect));
                 let stroke = Stroke::new(2.0_f32, Color32::from_rgb(255, 199, 68));
                 for edge in 0..points.len() {
@@ -31766,8 +31835,16 @@ impl KetchupApp {
                     egui::Align2::CENTER_CENTER,
                     format!(
                         "{} × {} mm",
-                        format_height((cursor.x - start.x).abs()),
-                        format_height((cursor.y - start.y).abs())
+                        format_height(if self.uses_drawing_plane() {
+                            self.drawing_local_delta(start, cursor).x.abs()
+                        } else {
+                            (cursor.x - start.x).abs()
+                        }),
+                        format_height(if self.uses_drawing_plane() {
+                            self.drawing_local_delta(start, cursor).y.abs()
+                        } else {
+                            (cursor.y - start.y).abs()
+                        })
                     ),
                     egui::FontId::proportional(14.0),
                     Color32::WHITE,
@@ -32364,8 +32441,8 @@ impl KetchupApp {
             }
         }
         self.hover_snap = pointer.and_then(|pointer| {
-            if self.active_tool == ActiveTool::Rectangle {
-                self.rectangle_snap_at_screen(pointer, rect)
+            if self.uses_drawing_plane() {
+                self.drawing_snap_at_screen(pointer, rect)
             } else {
                 self.scene_snap_at_screen(pointer, rect, 8.0, None)
                     .or_else(|| {
@@ -32393,6 +32470,17 @@ impl KetchupApp {
             .as_ref()
             .and_then(|pick| pick.overlap_choice(self.hover_overlap_index))
             .map(|hit| hit.reference.clone());
+        if self.active_tool == ActiveTool::PushPull {
+            self.hover_snap = self.push_pull_target_snap();
+            if let Some(drag) = self
+                .push_pull_drag
+                .as_ref()
+                .or(self.push_pull_anchor.as_ref())
+                && self.push_pull_snap_distance(drag).is_none()
+            {
+                self.hover_snap = None;
+            }
+        }
     }
 
     pub fn cycle_hover_overlap(&mut self) -> bool {
@@ -32417,7 +32505,7 @@ impl KetchupApp {
             .push_pull_drag
             .clone()
             .or_else(|| self.push_pull_anchor.clone())
-            && self.push_pull_face_snap_distance(&drag).is_some()
+            && self.push_pull_snap_distance(&drag).is_some()
         {
             self.update_push_pull_gesture(&drag, drag.pointer_start);
         }
@@ -32425,6 +32513,9 @@ impl KetchupApp {
     }
 
     fn viewport_point_at_screen(&self, pointer: Pos2, rect: Rect, plane_z: f64) -> Option<Vec3> {
+        if self.uses_drawing_plane() {
+            return self.drawing_input_point(pointer, rect);
+        }
         if !self.face_workflow.snaps_enabled()
             || self.origin_snap_at_screen(pointer, rect, plane_z).is_some()
         {
@@ -32740,8 +32831,14 @@ impl KetchupApp {
         // arrow never falls through to a tool shortcut.
         if matches!(
             self.active_tool,
-            ActiveTool::Rotate | ActiveTool::Move | ActiveTool::Line
-        ) && !context.wants_keyboard_input()
+            ActiveTool::Rotate
+                | ActiveTool::Move
+                | ActiveTool::Line
+                | ActiveTool::Rectangle
+                | ActiveTool::Circle
+                | ActiveTool::Arc
+        ) && (!context.wants_keyboard_input()
+            || context.memory(|memory| memory.has_focus(egui::Id::new("value-box-input"))))
         {
             let requested = [
                 (egui::Key::ArrowRight, Some(Axis::X)),
@@ -32754,9 +32851,17 @@ impl KetchupApp {
                 context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, *key))
             });
             if let Some((_, axis)) = requested {
+                let typed_value = context
+                    .memory(|memory| memory.has_focus(egui::Id::new("value-box-input")))
+                    .then(|| self.value_input.clone());
                 let held = match self.active_tool {
                     ActiveTool::Move => self.move_axis_lock,
                     ActiveTool::Line => self.line_axis_lock,
+                    _ if self.uses_drawing_plane() => Some(match self.face_workflow_datum() {
+                        PrincipalPlane::Xy => Axis::Z,
+                        PrincipalPlane::Xz => Axis::Y,
+                        PrincipalPlane::Yz => Axis::X,
+                    }),
                     _ => self.rotate_axis_lock,
                 };
                 // Pressing the axis already held releases it, so one key both
@@ -32779,7 +32884,15 @@ impl KetchupApp {
                             )]),
                         );
                     }
+                    _ if self.uses_drawing_plane() => self.set_drawing_plane(match axis {
+                        Some(Axis::X) => PrincipalPlane::Yz,
+                        Some(Axis::Y) => PrincipalPlane::Xz,
+                        _ => PrincipalPlane::Xy,
+                    }),
                     _ => self.set_rotate_axis_lock(axis),
+                }
+                if let Some(value) = typed_value {
+                    self.value_input = value;
                 }
             }
         }
@@ -32895,6 +33008,8 @@ impl KetchupApp {
                 || self.push_pull_anchor.is_some()
                 || self.move_drag.is_some()
                 || self.move_anchor.is_some()
+                || self.rotate_drag.is_some()
+                || self.rotate_anchor.is_some()
                 || self.sketch_mode
             {
                 self.clear_ephemeral_edit_state();
@@ -39764,7 +39879,7 @@ fn push_pull_batch(
                 kind: FeatureKind::TopologyFaceOffset {
                     target: reference.producer_feature_id,
                     face: reference.clone(),
-                    distance: Dimension::new(format_height(distance_mm), distance_mm).ok()?,
+                    distance: Dimension::new(distance_mm.to_string(), distance_mm).ok()?,
                 },
             }]));
         }
@@ -41493,7 +41608,15 @@ fn box_corners(width: f64, depth: f64, height: f64) -> [Vec3; 8] {
 }
 
 #[cfg(test)]
+mod drawing_plane_tests;
+#[cfg(test)]
+mod mesh_snapping_tests;
+#[cfg(test)]
 mod nested_transform_tests;
+#[cfg(test)]
+mod push_pull_snapping_tests;
+#[cfg(test)]
+mod rotation_input_tests;
 #[cfg(test)]
 mod scene_snapping_tests;
 #[cfg(test)]

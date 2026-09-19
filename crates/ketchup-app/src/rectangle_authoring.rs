@@ -7,7 +7,7 @@ use ketchup_core::sketch::{
 impl KetchupApp {
     pub(super) fn datum_rectangle_batch(&self, start: Vec3, end: Vec3) -> Option<CommandBatch> {
         let snapshot = self.document.current();
-        let frame = self.rectangle_frame(Some(start));
+        let frame = self.drawing_frame(Some(start));
         let origin = Vec3::new(frame.origin_mm[0], frame.origin_mm[1], frame.origin_mm[2]);
         let x = Vec3::new(frame.x_axis[0], frame.x_axis[1], frame.x_axis[2]);
         let y = Vec3::new(frame.y_axis[0], frame.y_axis[1], frame.y_axis[2]);

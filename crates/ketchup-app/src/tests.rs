@@ -5587,6 +5587,7 @@ fn the_armed_rotate_tool_paints_a_protractor_on_the_axis_it_will_turn_about() {
     app.update_viewport_inference(Some(grab), rect);
     assert!(app.begin_rotate_drag_at(grab, rect, false));
     let mut drag = app.rotate_drag.take().expect("the gesture has started");
+    drag.reference_mm = Some(Vec3::new(40.0, 0.0, 0.0));
     app.advance_rotation(
         &mut drag,
         app.project(Vec3::new(50.0, 90.0, 20.0), rect),

@@ -32,7 +32,7 @@ fn boundary_paths(
         let b = positions[n[1] as usize];
         let a = Vec3::new(a[0] - p[0], a[1] - p[1], a[2] - p[2]);
         let b = Vec3::new(b[0] - p[0], b[1] - p[1], b[2] - p[2]);
-        dot(a, b).abs() < 0.95 * a.length() * b.length()
+        dot(a, b) > -0.95 * a.length() * b.length()
     };
     let mut starts: Vec<_> = neighbors.keys().copied().filter(|v| corner(*v)).collect();
     starts.extend(neighbors.keys().copied());
@@ -367,7 +367,12 @@ impl KetchupApp {
             let Some(definition) = snapshot.definition(occurrence.definition_id) else {
                 continue;
             };
-            let Some(&id) = definition.feature_ids().last() else {
+            let Some(&id) = definition
+                .feature_ids()
+                .iter()
+                .rev()
+                .find(|id| !snapshot.feature_is_suppressed(**id))
+            else {
                 continue;
             };
             let reference = SelectionId {
@@ -494,20 +499,15 @@ impl KetchupApp {
         });
         let pointer_ray = self.view_ray(pointer, rect)?;
         let frame = frame.or_else(|| {
-            matches!(self.active_tool, ActiveTool::Circle | ActiveTool::Arc)
-                .then(|| {
-                    self.sketch_start
-                        .map(|p| WorkplaneFrame::principal(PrincipalPlane::Xy).offset(p.z))
-                })
+            self.uses_drawing_plane()
+                .then(|| self.sketch_start.map(|p| self.drawing_frame(Some(p))))
                 .flatten()
         });
         let line_axis = (self.active_tool == ActiveTool::Line)
             .then(|| self.sketch_start.zip(self.line_axis_lock))
             .flatten();
         let move_drag = self.move_drag.as_ref().or(self.move_anchor.as_ref());
-        if self.active_tool == ActiveTool::Rotate
-            || (self.active_tool == ActiveTool::Move && move_drag.is_some_and(|d| d.axis.is_some()))
-        {
+        if self.active_tool == ActiveTool::Move && move_drag.is_some_and(|d| d.axis.is_some()) {
             return None;
         }
         let mut candidates = Vec::new();
@@ -520,7 +520,7 @@ impl KetchupApp {
                 return;
             }
             if dot(point - pointer_ray.origin, pointer_ray.direction) < 0.0
-                || frame.is_some_and(|f| !rectangle_snapping::point_in_frame(point, f))
+                || frame.is_some_and(|f| !drawing_plane::point_in_frame(point, f))
             {
                 return;
             }
@@ -645,7 +645,7 @@ impl KetchupApp {
         if !self.face_workflow.snaps_enabled() {
             return None;
         }
-        let in_plane = |p| frame.is_none_or(|f| rectangle_snapping::point_in_frame(p, f));
+        let in_plane = |p| frame.is_none_or(|f| drawing_plane::point_in_frame(p, f));
         if in_plane(Vec3::ZERO) && self.project(Vec3::ZERO, rect).distance(pointer) <= 8.0 {
             return Some((Vec3::ZERO, None));
         }

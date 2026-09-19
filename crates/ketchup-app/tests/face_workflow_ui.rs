@@ -280,6 +280,7 @@ fn push_pull_cycles_to_a_hidden_parallel_face_on_another_object() {
 
     shell.press_key(Key::Tab);
     assert_eq!(shell.app().hovered_overlap_choice(), Some((1, 2)));
+    assert!((shell.app().hovered_snap_position().unwrap().z - 40.0).abs() < 1e-8);
     assert_eq!(shell.app().value_input(), "20");
     shell.click_at(target_top);
 

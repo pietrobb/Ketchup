@@ -35,7 +35,7 @@ fn own_polygon_snap_is_shared_by_hover_rectangle_and_point_input() {
                 assert_eq!(app.hovered_snap_kind(), Some(kind), "{tool:?} {point:?}");
                 assert_eq!(app.hovered_snap_position(), Some(point));
                 let input = if tool == ActiveTool::Rectangle {
-                    app.rectangle_input_point(pointer, rect)
+                    app.drawing_input_point(pointer, rect)
                 } else {
                     app.viewport_point_at_screen(pointer, rect, 0.0)
                 };
@@ -53,7 +53,7 @@ fn rectangle_acquires_world_axis_away_from_origin() {
     let rect = viewport();
     for point in [Vec3::new(110.0, 0.0, 0.0), Vec3::new(0.0, 110.0, 0.0)] {
         let pointer = app.project(point, rect) + Vec2::new(2.0, 1.0);
-        let actual = app.rectangle_input_point(pointer, rect).unwrap();
+        let actual = app.drawing_input_point(pointer, rect).unwrap();
         assert!(
             actual.x.abs() < 1e-8 || actual.y.abs() < 1e-8,
             "axis input {actual:?}"
@@ -69,7 +69,7 @@ fn rectangle_acquires_world_axis_away_from_origin() {
             .datum_snap_at_screen(pointer, rect, Some(frame))
             .unwrap();
         assert!(axis.is_some());
-        assert!(rectangle_snapping::point_in_frame(actual, frame));
+        assert!(drawing_plane::point_in_frame(actual, frame));
         assert!(cross(actual, point).length() < 1e-7);
     }
     app.active_tool = ActiveTool::Line;
@@ -139,11 +139,11 @@ fn exact_prism_uses_native_edges_not_bounding_box_or_triangle_diagonals() {
         (Vec3::new(52.5, 30.0, 12.0), SnapKind::Midpoint),
     ] {
         let pointer = app.project(point, rect) + Vec2::new(2.0, 1.0);
-        let snap = app.rectangle_snap_at_screen(pointer, rect).unwrap();
+        let snap = app.drawing_snap_at_screen(pointer, rect).unwrap();
         assert_eq!(snap.kind, kind);
         assert!(snap.position_mm.distance(point) < 1e-7);
         assert!(
-            app.rectangle_input_point(pointer, rect)
+            app.drawing_input_point(pointer, rect)
                 .unwrap()
                 .distance(point)
                 < 1e-7
@@ -196,6 +196,73 @@ fn curve_tessellation_never_becomes_endpoint_or_midpoint_and_center_survives_ext
             "circle snap must not lie on a tessellation chord"
         );
     }
+}
+
+#[test]
+fn suppressed_extrusion_does_not_offer_phantom_snap_points() {
+    let mut app = KetchupApp::new();
+    app.new_document();
+    assert!(app.create_profile_at(Vec3::ZERO, vec![[30.0, 25.0], [110.0, 25.0], [55.0, 85.0]],));
+    let snapshot = app.document.current();
+    let profile = snapshot.features().last().unwrap();
+    let definition_id = profile.definition_id();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+            id: FeatureId(100),
+            definition_id,
+            name: "Extrusion to suppress".into(),
+            kind: FeatureKind::Extrusion {
+                profile: profile.id(),
+                height: Dimension::new("150", 150.0).unwrap(),
+            },
+        }]))
+        .unwrap();
+    let rect = viewport();
+    let top = Vec3::new(55.0, 85.0, 150.0);
+    let bottom = Vec3::new(55.0, 85.0, 0.0);
+    let snap = |app: &KetchupApp, point: Vec3| {
+        app.scene_snap_at_screen(
+            app.project(point, rect),
+            rect,
+            8.0,
+            Some(WorkplaneFrame::principal(PrincipalPlane::Xy).offset(point.z)),
+        )
+    };
+    assert_eq!(snap(&app, top).unwrap().position_mm, top);
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetBodyFeatureSuppression {
+                definition_id,
+                body_id: BodyId(1),
+                suppressed_feature_ids: vec![FeatureId(100)],
+            },
+        ]))
+        .unwrap();
+    assert!(app.document.current().feature_is_suppressed(FeatureId(100)));
+    assert!(
+        snap(&app, top).is_none(),
+        "suppressed extrusion still snaps"
+    );
+    assert_eq!(snap(&app, bottom).unwrap().position_mm, bottom);
+    app.document.undo().unwrap();
+    assert_eq!(snap(&app, top).unwrap().position_mm, top);
+    app.document.redo().unwrap();
+    assert!(snap(&app, top).is_none());
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetBodyFeatureSuppression {
+                definition_id,
+                body_id: BodyId(1),
+                suppressed_feature_ids: vec![profile.id(), FeatureId(100)],
+            },
+        ]))
+        .unwrap();
+    assert!(
+        snap(&app, bottom).is_none(),
+        "fully suppressed body still snaps"
+    );
+    app.document.undo().unwrap();
+    assert_eq!(snap(&app, bottom).unwrap().position_mm, bottom);
 }
 
 #[test]

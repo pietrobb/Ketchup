@@ -58,6 +58,13 @@ impl Default for FaceWorkflowUiState {
 }
 
 impl FaceWorkflowUiState {
+    pub(super) fn set_datum(&mut self, plane: PrincipalPlane) {
+        self.datum = match plane {
+            PrincipalPlane::Xy => FaceWorkflowDatum::Xy,
+            PrincipalPlane::Xz => FaceWorkflowDatum::Xz,
+            PrincipalPlane::Yz => FaceWorkflowDatum::Yz,
+        };
+    }
     pub(super) const fn snaps_enabled(&self) -> bool {
         self.snaps_enabled
     }
@@ -88,10 +95,7 @@ impl FaceWorkflowUiState {
 
 impl KetchupApp {
     pub(super) fn show_face_workflow_ui(&mut self, ui: &mut egui::Ui) {
-        if !matches!(
-            self.active_tool,
-            ActiveTool::Rectangle | ActiveTool::PushPull
-        ) {
+        if !(self.uses_drawing_plane() || matches!(self.active_tool, ActiveTool::PushPull)) {
             return;
         }
         let title = self.catalog.text("face-workflow-title");
@@ -138,7 +142,7 @@ impl KetchupApp {
             });
 
         if datum != self.face_workflow.datum {
-            self.face_workflow.datum = datum;
+            self.set_drawing_plane(datum.plane());
             self.digest = self.catalog.format(
                 "digest-face-workflow-datum",
                 &BTreeMap::from([("datum", self.catalog.text(datum.label_key()))]),

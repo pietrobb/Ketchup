@@ -11540,7 +11540,8 @@ fn a_viewport_drag_in_rotate_turns_the_occurrence_and_the_arrow_keys_pick_the_ax
     );
     let before_revision = shell.app().document_revision();
     let before_digest = shell.app().canonical_digest();
-    // Grab an arm on the top face and swing it a quarter turn.
+    // Choose the pivot, then grab an arm and swing it a quarter turn.
+    shell.click_at(shell.app().project_to_screen(centre, rect));
     let from = shell.app().project_to_screen(
         Vec3::new(centre.x + size.x * 0.25, centre.y, centre.z),
         rect,
