@@ -1,12 +1,9 @@
 use eframe::egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use ketchup_core::document::{
-    DefinitionId, DocumentId, FeatureId, FeatureKind, InstancePath, ProfileSegment, Snapshot,
-    Transform,
+    DefinitionId, DocumentId, FeatureId, FeatureKind, InstancePath, Snapshot, Transform,
 };
 use ketchup_core::exact_product::ExactResultRegistry;
-use ketchup_interaction::{
-    mesh_projection::canonical_sketch_profile_mesh, projection::CanonicalInteractionProjection,
-};
+use ketchup_interaction::projection::CanonicalInteractionProjection;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use wgpu::util::DeviceExt as _;
@@ -307,6 +304,19 @@ fn geometry_sources(
     let Some(definition) = snapshot.definition(definition_id) else {
         return Vec::new();
     };
+    if definition
+        .feature_ids()
+        .last()
+        .and_then(|id| snapshot.feature(*id))
+        .is_some_and(|feature| {
+            matches!(
+                feature.kind(),
+                FeatureKind::SegmentProfile { closed: false, .. }
+            )
+        })
+    {
+        return Vec::new();
+    }
     for feature_id in definition.feature_ids() {
         let Some(feature) = snapshot.feature(*feature_id) else {
             return Vec::new();
@@ -402,32 +412,16 @@ pub(crate) fn canonical_profile_feature_mesh(
     snapshot: &Snapshot,
     feature_id: FeatureId,
 ) -> Option<PlanarProfileMesh> {
-    let feature = snapshot.feature(feature_id)?;
-    match feature.kind() {
-        FeatureKind::SegmentProfile {
-            segments,
-            closed: true,
-        } => segment_profile_mesh(segments),
-        FeatureKind::Sketch(_) => canonical_sketch_profile_mesh(snapshot, feature.definition_id())
-            .filter(|(candidate, _, _)| *candidate == feature_id)
-            .map(|(_, positions, triangles)| (positions, triangles)),
-        _ => None,
-    }
+    ketchup_interaction::mesh_projection::canonical_profile_feature_mesh(snapshot, feature_id)
+        .map(|(_, positions, triangles)| (positions, triangles))
 }
 
 pub(crate) fn canonical_definition_fallback_mesh(
     snapshot: &Snapshot,
     definition_id: DefinitionId,
 ) -> Option<PlanarProfileMesh> {
-    let definition = snapshot.definition(definition_id)?;
-    let feature = snapshot.feature(*definition.feature_ids().last()?)?;
-    match feature.kind() {
-        FeatureKind::Extrusion { profile, height } => extrude_planar_profile_mesh(
-            canonical_profile_feature_mesh(snapshot, *profile)?,
-            height.millimetres(),
-        ),
-        _ => canonical_profile_feature_mesh(snapshot, feature.id()),
-    }
+    ketchup_interaction::profile_surface::canonical_definition_surface(snapshot, definition_id)
+        .map(|(_, positions, triangles)| (positions, triangles))
 }
 
 pub(crate) fn extrude_planar_profile_mesh(
@@ -441,246 +435,10 @@ pub(crate) fn extrude_planar_profile_mesh_along(
     (positions, face_triangles): PlanarProfileMesh,
     offset_mm: [f64; 3],
 ) -> Option<PlanarProfileMesh> {
-    if offset_mm.iter().any(|value| !value.is_finite())
-        || offset_mm.iter().map(|value| value * value).sum::<f64>() <= 1.0e-18
-    {
-        return None;
-    }
-    let count = u32::try_from(positions.len()).ok()?;
-    let mut solid_positions = Vec::with_capacity(positions.len() * 2);
-    solid_positions.extend(positions.iter().copied());
-    solid_positions.extend(positions.iter().map(|position| {
-        [
-            position[0] + offset_mm[0],
-            position[1] + offset_mm[1],
-            position[2] + offset_mm[2],
-        ]
-    }));
-
-    let boundary_normal = positions
-        .iter()
-        .zip(positions.iter().cycle().skip(1))
-        .take(positions.len())
-        .fold([0.0; 3], |normal, (left, right)| {
-            [
-                normal[0] + (left[1] - right[1]) * (left[2] + right[2]),
-                normal[1] + (left[2] - right[2]) * (left[0] + right[0]),
-                normal[2] + (left[0] - right[0]) * (left[1] + right[1]),
-            ]
-        });
-    let follows_boundary_normal = boundary_normal
-        .iter()
-        .zip(offset_mm)
-        .map(|(normal, offset)| normal * offset)
-        .sum::<f64>()
-        >= 0.0;
-    let mut triangles = Vec::with_capacity(face_triangles.len() * 2 + positions.len() * 2);
-    triangles.extend(
-        face_triangles
-            .iter()
-            .map(|triangle| [triangle[0], triangle[2], triangle[1]]),
-    );
-    triangles.extend(
-        face_triangles
-            .iter()
-            .map(|triangle| triangle.map(|index| index + count)),
-    );
-    for index in 0..count {
-        let next = (index + 1) % count;
-        if follows_boundary_normal {
-            triangles.push([index, next, index + count]);
-            triangles.push([next, next + count, index + count]);
-        } else {
-            triangles.push([index, index + count, next]);
-            triangles.push([next, index + count, next + count]);
-        }
-    }
-    Some((solid_positions, triangles))
-}
-
-fn segment_profile_mesh(segments: &[ProfileSegment]) -> Option<PlanarProfileMesh> {
-    let mut boundary = Vec::<[f64; 2]>::new();
-    for segment in segments {
-        let sampled = match segment {
-            ProfileSegment::Line { start_mm, end_mm } => vec![*start_mm, *end_mm],
-            ProfileSegment::CircularArc {
-                start_mm,
-                end_mm,
-                center_mm,
-                clockwise,
-            } => sample_profile_arc(*start_mm, *end_mm, *center_mm, *clockwise)?,
-            ProfileSegment::CubicBezier {
-                start_mm,
-                control_1_mm,
-                control_2_mm,
-                end_mm,
-            } => (0..=32)
-                .map(|step| {
-                    let t = f64::from(step) / 32.0;
-                    let inverse = 1.0 - t;
-                    [
-                        inverse.powi(3) * start_mm[0]
-                            + 3.0 * inverse.powi(2) * t * control_1_mm[0]
-                            + 3.0 * inverse * t.powi(2) * control_2_mm[0]
-                            + t.powi(3) * end_mm[0],
-                        inverse.powi(3) * start_mm[1]
-                            + 3.0 * inverse.powi(2) * t * control_1_mm[1]
-                            + 3.0 * inverse * t.powi(2) * control_2_mm[1]
-                            + t.powi(3) * end_mm[1],
-                    ]
-                })
-                .collect(),
-        };
-        if boundary.is_empty() {
-            boundary.extend(sampled);
-        } else {
-            if !same_profile_point(*boundary.last()?, sampled[0]) {
-                return None;
-            }
-            boundary.extend(sampled.into_iter().skip(1));
-        }
-    }
-    if boundary.len() < 4 || !same_profile_point(boundary[0], *boundary.last()?) {
-        return None;
-    }
-    boundary.pop();
-    boundary.dedup_by(|left, right| same_profile_point(*left, *right));
-    let mut triangles = triangulate_profile_polygon(&boundary)?;
-    if profile_polygon_area(&boundary) < 0.0 {
-        for triangle in &mut triangles {
-            triangle.swap(1, 2);
-        }
-    }
-    Some((
-        boundary
-            .into_iter()
-            .map(|point| [point[0], point[1], 0.0])
-            .collect(),
-        triangles,
-    ))
-}
-
-fn sample_profile_arc(
-    start_mm: [f64; 2],
-    end_mm: [f64; 2],
-    center_mm: [f64; 2],
-    clockwise: bool,
-) -> Option<Vec<[f64; 2]>> {
-    let start_radius = [start_mm[0] - center_mm[0], start_mm[1] - center_mm[1]];
-    let end_radius = [end_mm[0] - center_mm[0], end_mm[1] - center_mm[1]];
-    let radius = start_radius[0].hypot(start_radius[1]);
-    let end_length = end_radius[0].hypot(end_radius[1]);
-    if !radius.is_finite()
-        || radius <= 1.0e-9
-        || (radius - end_length).abs() > 1.0e-8 * radius.max(end_length).max(1.0)
-    {
-        return None;
-    }
-    let start_angle = start_radius[1].atan2(start_radius[0]);
-    let end_angle = end_radius[1].atan2(end_radius[0]);
-    let mut sweep = end_angle - start_angle;
-    if clockwise {
-        while sweep >= 0.0 {
-            sweep -= std::f64::consts::TAU;
-        }
-    } else {
-        while sweep <= 0.0 {
-            sweep += std::f64::consts::TAU;
-        }
-    }
-    let ideal_steps = sweep.abs() / std::f64::consts::TAU * 64.0;
-    let steps = ((ideal_steps - 1.0e-9).ceil() as usize).max(1);
-    Some(
-        (0..=steps)
-            .map(|step| {
-                let angle = start_angle + sweep * step as f64 / steps as f64;
-                [
-                    center_mm[0] + radius * angle.cos(),
-                    center_mm[1] + radius * angle.sin(),
-                ]
-            })
-            .collect(),
+    ketchup_interaction::profile_surface::extrude_profile_surface(
+        (positions, face_triangles),
+        offset_mm,
     )
-}
-
-fn same_profile_point(left: [f64; 2], right: [f64; 2]) -> bool {
-    (left[0] - right[0]).abs() <= 1.0e-8 && (left[1] - right[1]).abs() <= 1.0e-8
-}
-
-fn profile_polygon_area(points: &[[f64; 2]]) -> f64 {
-    points
-        .iter()
-        .zip(points.iter().cycle().skip(1))
-        .take(points.len())
-        .map(|(left, right)| left[0] * right[1] - right[0] * left[1])
-        .sum::<f64>()
-        * 0.5
-}
-
-fn triangulate_profile_polygon(points: &[[f64; 2]]) -> Option<Vec<[u32; 3]>> {
-    let orientation = profile_polygon_area(points).signum();
-    if orientation == 0.0 {
-        return None;
-    }
-    let mut remaining = (0..points.len()).collect::<Vec<_>>();
-    let mut triangles = Vec::with_capacity(points.len() - 2);
-    while remaining.len() > 3 {
-        let mut ear = None;
-        for index in 0..remaining.len() {
-            let previous = remaining[(index + remaining.len() - 1) % remaining.len()];
-            let current = remaining[index];
-            let next = remaining[(index + 1) % remaining.len()];
-            if profile_triangle_cross(points[previous], points[current], points[next]) * orientation
-                <= 1.0e-12
-            {
-                continue;
-            }
-            if remaining.iter().copied().any(|candidate| {
-                candidate != previous
-                    && candidate != current
-                    && candidate != next
-                    && profile_point_in_triangle(
-                        points[candidate],
-                        points[previous],
-                        points[current],
-                        points[next],
-                    )
-            }) {
-                continue;
-            }
-            ear = Some((index, [previous as u32, current as u32, next as u32]));
-            break;
-        }
-        let (index, triangle) = ear?;
-        triangles.push(triangle);
-        remaining.remove(index);
-    }
-    triangles.push([
-        remaining[0] as u32,
-        remaining[1] as u32,
-        remaining[2] as u32,
-    ]);
-    Some(triangles)
-}
-
-fn profile_triangle_cross(left: [f64; 2], middle: [f64; 2], right: [f64; 2]) -> f64 {
-    (middle[0] - left[0]) * (right[1] - left[1]) - (middle[1] - left[1]) * (right[0] - left[0])
-}
-
-fn profile_point_in_triangle(
-    point: [f64; 2],
-    first: [f64; 2],
-    second: [f64; 2],
-    third: [f64; 2],
-) -> bool {
-    let crosses = [
-        profile_triangle_cross(first, second, point),
-        profile_triangle_cross(second, third, point),
-        profile_triangle_cross(third, first, point),
-    ];
-    let has_negative = crosses.iter().any(|value| *value < -1.0e-12);
-    let has_positive = crosses.iter().any(|value| *value > 1.0e-12);
-    !(has_negative && has_positive)
 }
 
 pub(crate) fn feature_edges<G: Copy + Ord>(
@@ -1479,9 +1237,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{extrude_planar_profile_mesh, feature_edges, segment_profile_mesh};
+    use super::{extrude_planar_profile_mesh, feature_edges};
     use ketchup_core::document::ProfileSegment;
     use ketchup_core::exact_product::ExactFaceRole;
+    use ketchup_interaction::mesh_projection::segment_profile_mesh;
     use std::collections::BTreeSet;
 
     const POSITIONS: [[f32; 3]; 4] = [

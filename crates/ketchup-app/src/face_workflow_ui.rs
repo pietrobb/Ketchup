@@ -146,7 +146,6 @@ impl KetchupApp {
         }
         if snaps_enabled != self.face_workflow.snaps_enabled {
             self.face_workflow.snaps_enabled = snaps_enabled;
-            self.snap_tracker.clear();
             self.hover_snap = None;
             self.digest = self.catalog.text(if snaps_enabled {
                 "digest-face-workflow-snaps-on"

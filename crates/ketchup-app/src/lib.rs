@@ -139,7 +139,7 @@ use ketchup_core::validation::ValidationReport;
 use ketchup_core::validation::ValidatorRoleIndex;
 use ketchup_interaction::{
     Axis, ElementId, ExactHit, LocaleCatalog, PickResult, Ray, SelectionId, Side, SnapKind,
-    SnapPolicy, SnapResult, SnapTracker, Vec3,
+    SnapResult, Vec3,
     exact_projection::{
         ExactInteractionProjection, SnapshotBoundTopologicalSelection, TopologicalPickLocator,
     },
@@ -165,6 +165,7 @@ mod native_document_inspection;
 mod occurrence_color_ui;
 #[cfg(feature = "named-product-fixtures")]
 mod part_authoring_ui;
+mod planar_push_pull;
 mod validator_ui;
 mod viewport_feedback;
 use assistant_runtime::ProcessAssistantTransport;
@@ -181,6 +182,7 @@ pub use native_document_inspection::{NativeDocumentInspection, inspect_native_do
 mod line_geometry;
 mod rectangle_authoring;
 mod rectangle_snapping;
+mod scene_snapping;
 pub mod theme;
 use theme::{Icon, Palette, ThemeKind};
 pub mod renderer;
@@ -4333,7 +4335,7 @@ struct InteractionProjectionCache {
     revision_id: u64,
     canonical_digest: String,
     edit_context: Vec<EditContext>,
-    exact_results_stamp: u64,
+    exact_results_stamp: (u64, u64),
     canonical: ketchup_interaction::projection::InteractionProjection,
     exact: ExactInteractionProjection,
     mesh: MeshInteractionProjection,
@@ -4341,6 +4343,7 @@ struct InteractionProjectionCache {
     proxies: ketchup_interaction::InteractionScene,
     render_boxes: std::cell::OnceCell<Vec<RenderBox>>,
     frame_bounds: std::cell::OnceCell<Vec<(Vec3, Vec3)>>,
+    snap_geometry: std::cell::OnceCell<scene_snapping::SceneSnapGeometry>,
 }
 
 #[derive(Default)]
@@ -6636,6 +6639,8 @@ pub struct KetchupApp {
     push_pull_distance_input: String,
     preview: Option<CommandBatch>,
     preview_box: Option<EphemeralBoxPreview>,
+    face_offset_evaluation: Option<planar_push_pull::FaceOffsetEvaluation>,
+    face_offset_preview_due: Option<Instant>,
     preview_definition_id: Option<DefinitionId>,
     smart_push_pull_proposal: Option<SmartPushPullProposal>,
     smart_push_pull_planning: Option<SmartPushPullPlanning>,
@@ -6702,7 +6707,7 @@ pub struct KetchupApp {
     hover_pick: Option<PickResult>,
     hover_snap: Option<SnapResult>,
     hover_overlap_index: usize,
-    snap_tracker: SnapTracker,
+    hover_pointer: Option<Pos2>,
     interaction_projection_cache: RefCell<Option<InteractionProjectionCache>>,
     active_tool: ActiveTool,
     command_search: String,
@@ -6920,6 +6925,8 @@ impl KetchupApp {
             push_pull_distance_input: String::new(),
             preview: None,
             preview_box: None,
+            face_offset_evaluation: None,
+            face_offset_preview_due: None,
             preview_definition_id: None,
             smart_push_pull_proposal: None,
             smart_push_pull_planning: None,
@@ -6986,7 +6993,7 @@ impl KetchupApp {
             hover_pick: None,
             hover_snap: None,
             hover_overlap_index: 0,
-            snap_tracker: SnapTracker::default(),
+            hover_pointer: None,
             interaction_projection_cache: RefCell::new(None),
             active_tool: ActiveTool::Select,
             command_search: String::new(),
@@ -7260,7 +7267,7 @@ impl KetchupApp {
         self.hover_pick = None;
         self.hover_snap = None;
         self.hover_overlap_index = 0;
-        self.snap_tracker.clear();
+        self.hover_pointer = None;
         self.interaction_projection_cache.get_mut().take();
         self.zoom_window_start = None;
         self.zoom_window_cursor = None;
@@ -14142,6 +14149,7 @@ impl KetchupApp {
     }
 
     fn refresh_exact_products(&mut self, context: &egui::Context) {
+        self.poll_face_offset_evaluation(context);
         let snapshot = self.document.current();
         let source = ketchup_application::evaluation::exact_source(&snapshot);
         if self
@@ -14451,7 +14459,11 @@ impl KetchupApp {
         } else {
             self.exact_results_for_snapshot(snapshot)
         };
-        let exact_results_stamp = exact_results.map_or(0, ExactResultRegistry::contents_stamp);
+        let exact_results_stamp = (
+            exact_results.map_or(0, ExactResultRegistry::contents_stamp),
+            self.topology_results_for_snapshot(snapshot)
+                .map_or(0, ExactResultRegistry::contents_stamp),
+        );
         let rebuild = cache.as_ref().is_none_or(|cache| {
             cache.document_id != snapshot.document_id()
                 || cache.revision_id != snapshot.revision_id()
@@ -14467,8 +14479,8 @@ impl KetchupApp {
                 .map(|occurrence| occurrence.instance_path)
                 .collect::<BTreeSet<_>>();
             let canonical = CanonicalInteractionProjection::from_snapshot(snapshot);
-            let empty_exact_results = ExactResultRegistry::default();
-            let exact_results = exact_results.unwrap_or(&empty_exact_results);
+            let combined = self.interaction_exact_registry(snapshot);
+            let exact_results = &combined;
             let exact =
                 ExactInteractionProjection::from_snapshot_where(snapshot, exact_results, |path| {
                     active_context_paths.contains(path)
@@ -14508,6 +14520,7 @@ impl KetchupApp {
                     proxies,
                     render_boxes: std::cell::OnceCell::new(),
                     frame_bounds: std::cell::OnceCell::new(),
+                    snap_geometry: std::cell::OnceCell::new(),
                 });
             }
         }
@@ -15544,7 +15557,7 @@ impl KetchupApp {
         if package.producer_feature_id() != reference.producer_feature_id {
             return None;
         }
-        axis_aligned_topological_face_element(package.as_ref(), reference)
+        planar_push_pull::face_ordinal(package.as_ref(), reference).map(ElementId::TopologicalFace)
     }
 
     #[doc(hidden)]
@@ -17396,17 +17409,25 @@ impl KetchupApp {
             self.cancel_rectangle_sketch();
             self.active_tool = tool;
             if tool == ActiveTool::PushPull {
-                let target =
-                    self.hovered
-                        .clone()
-                        .filter(|selection| matches!(selection.element, ElementId::Face { .. }))
-                        .or_else(|| {
-                            self.selection.primary.clone().filter(|selection| {
-                                matches!(selection.element, ElementId::Face { .. })
-                            })
-                        });
+                let target = self
+                    .hovered
+                    .clone()
+                    .filter(|selection| {
+                        matches!(
+                            selection.element,
+                            ElementId::Face { .. } | ElementId::TopologicalFace(_)
+                        )
+                    })
+                    .or_else(|| {
+                        self.selection.primary.clone().filter(|selection| {
+                            matches!(
+                                selection.element,
+                                ElementId::Face { .. } | ElementId::TopologicalFace(_)
+                            )
+                        })
+                    });
                 if let Some(target) = target {
-                    self.selection.select_exact(target, false);
+                    self.select_push_pull_reference(target);
                 }
             }
             self.value_input.clear();
@@ -25214,7 +25235,7 @@ impl KetchupApp {
                 .primary
                 .as_ref()
                 .map(|selection| selection.element.clone()),
-            Some(ElementId::Face { .. })
+            Some(ElementId::Face { .. } | ElementId::TopologicalFace(_))
         )
     }
 
@@ -26025,6 +26046,7 @@ impl KetchupApp {
             return true;
         }
         if distance_mm < -0.01
+            && item.extrusion_feature_id.is_none()
             && planning_snapshot
                 .feature(item.profile_feature_id)
                 .is_some_and(|feature| matches!(feature.kind(), FeatureKind::SegmentProfile { .. }))
@@ -26077,13 +26099,18 @@ impl KetchupApp {
                 }
                 _ => return None,
             };
-        let target_box = self
-            .active_boxes_for_snapshot(&planning_snapshot)
-            .into_iter()
-            .find(|item| item.instance_path == target.instance_path)
-            .or_else(|| {
-                self.topological_push_pull_box(&snapshot, target, topological_reference.as_ref()?)
-            })?;
+        let target_box = self.planar_source_box(target).or_else(|| {
+            self.active_boxes_for_snapshot(&planning_snapshot)
+                .into_iter()
+                .find(|item| item.instance_path == target.instance_path)
+                .or_else(|| {
+                    self.topological_push_pull_box(
+                        &snapshot,
+                        target,
+                        topological_reference.as_ref()?,
+                    )
+                })
+        })?;
         if target_box.definition_id != target.definition_id {
             return None;
         }
@@ -26116,6 +26143,9 @@ impl KetchupApp {
             || !distance_mm.is_finite()
         {
             return None;
+        }
+        if source.topological_reference.is_some() {
+            return self.derive_planar_preview(source, principal, distance_expression, distance_mm);
         }
         let current_extent_mm = face_extent(&source.target_box, Some(&source.target.element))?;
         let new_extent_mm = current_extent_mm + distance_mm;
@@ -26213,6 +26243,14 @@ impl KetchupApp {
         self.preview = Some(batch.clone());
         self.smart_push_pull_proposal = Some(proposal);
         self.smart_push_pull_chooser = None;
+        if plan.source.topological_reference.is_some()
+            && self
+                .preview_box
+                .as_ref()
+                .is_none_or(|preview| preview.plan != plan)
+        {
+            self.face_offset_preview_due = Some(Instant::now() + Duration::from_millis(150));
+        }
         self.preview_box = Some(EphemeralBoxPreview { plan, batch });
         self.preview_definition_id = Some(selection.definition_id);
         self.status_key = "status-preview";
@@ -26225,7 +26263,7 @@ impl KetchupApp {
                     ("count", shared_count.to_string()),
                 ]),
             ),
-            ElementId::Face { .. } => self.catalog.format(
+            ElementId::Face { .. } | ElementId::TopologicalFace(_) => self.catalog.format(
                 "digest-push-pull-profile-live",
                 &BTreeMap::from([
                     ("distance", format_signed_mm(distance_mm)),
@@ -26529,6 +26567,8 @@ impl KetchupApp {
     }
 
     fn clear_ephemeral_edit_state(&mut self) {
+        self.face_offset_evaluation = None;
+        self.face_offset_preview_due = None;
         self.preview = None;
         self.preview_box = None;
         self.preview_definition_id = None;
@@ -26832,6 +26872,15 @@ impl KetchupApp {
     }
 
     pub fn confirm_preview(&mut self) -> bool {
+        if self.face_offset_evaluation.is_some() {
+            return self.confirm_face_offset_preview();
+        }
+        if self.has_preview() && self.preview_requires_face_offset_evaluation() {
+            if !self.request_face_offset_confirmation() {
+                self.status_key = "error-preview-stale";
+            }
+            return false;
+        }
         if !self.has_preview() {
             self.preview = None;
             self.preview_box = None;
@@ -26914,6 +26963,13 @@ impl KetchupApp {
             return None;
         }
         let definition = snapshot.definition(resolved.definition_id)?;
+        if matches!(selection.element, ElementId::TopologicalFace(_)) {
+            return Some(format!(
+                "{}: {}",
+                definition.name(),
+                format_signed_mm(parse_distance_mm(&self.push_pull_distance_input)?)
+            ));
+        }
         let from = self
             .active_boxes()
             .into_iter()
@@ -26933,15 +26989,13 @@ impl KetchupApp {
         ))
     }
 
-    fn selected_face_extent_mm(&self) -> f64 {
-        self.selection
-            .primary
-            .as_ref()
-            .and_then(|selection| {
-                self.selected_box()
-                    .and_then(|item| face_extent(&item, Some(&selection.element)))
-            })
-            .unwrap_or_else(|| self.document_height_mm())
+    fn selected_face_extent_mm(&self) -> Option<f64> {
+        let selection = self.selection.primary.as_ref()?;
+        if matches!(selection.element, ElementId::TopologicalFace(_)) {
+            return Some(0.0);
+        }
+        self.selected_box()
+            .and_then(|item| face_extent(&item, Some(&selection.element)))
     }
 
     fn push_pull_gesture_is_current(&self, drag: &PushPullDrag) -> bool {
@@ -26955,6 +27009,14 @@ impl KetchupApp {
     fn push_pull_face_snap_distance(&self, drag: &PushPullDrag) -> Option<f64> {
         if !self.face_workflow.snaps_enabled() {
             return None;
+        }
+        if let Some(face) = self.selected_planar_face(&drag.selection) {
+            let hit = self
+                .hover_pick
+                .as_ref()?
+                .overlap_choice(self.hover_overlap_index)?;
+            return (hit.reference.instance_path != drag.selection.instance_path)
+                .then(|| dot(hit.position_mm - face.origin, face.normal));
         }
         let ElementId::Face {
             axis: source_axis,
@@ -27226,18 +27288,25 @@ impl KetchupApp {
     fn push_pull_pointer_target(&self) -> Option<SelectionId> {
         self.hovered
             .clone()
-            .filter(|selection| matches!(selection.element, ElementId::Face { .. }))
+            .filter(|selection| {
+                matches!(
+                    selection.element,
+                    ElementId::Face { .. } | ElementId::TopologicalFace(_)
+                )
+            })
             .or_else(|| {
                 self.selection
                     .primary
                     .as_ref()
                     .filter(|selection| {
-                        matches!(selection.element, ElementId::Face { .. })
-                            && self.hover_pick.as_ref().is_some_and(|pick| {
-                                pick.overlapping
-                                    .iter()
-                                    .any(|hit| hit.reference == **selection)
-                            })
+                        matches!(
+                            selection.element,
+                            ElementId::Face { .. } | ElementId::TopologicalFace(_)
+                        ) && self.hover_pick.as_ref().is_some_and(|pick| {
+                            pick.overlapping
+                                .iter()
+                                .any(|hit| hit.reference == **selection)
+                        })
                     })
                     .cloned()
             })
@@ -27246,8 +27315,12 @@ impl KetchupApp {
     fn push_pull_screen_projection(
         &self,
         selection: &SelectionId,
+        pointer: Pos2,
         rect: Rect,
     ) -> Option<(Vec2, f32)> {
+        if matches!(selection.element, ElementId::TopologicalFace(_)) {
+            return self.planar_screen_projection(selection, pointer, rect);
+        }
         let item = self
             .active_boxes()
             .into_iter()
@@ -27313,6 +27386,9 @@ impl KetchupApp {
         let selection = &ephemeral.plan.source.target;
         if preview.definition_id != item.definition_id {
             return item;
+        }
+        if item.instance_path == selection.instance_path {
+            return preview.clone();
         }
         let preview_element = match &selection.element {
             ElementId::Face {
@@ -27867,7 +27943,7 @@ impl KetchupApp {
             .or_else(|| {
                 self.hover_snap
                     .as_ref()
-                    .filter(|snap| snap.kind == SnapKind::Endpoint)
+                    .filter(|snap| snap.kind != SnapKind::Face)
                     .map(|snap| snap.reference.clone())
                     .or_else(|| self.hovered.clone())
                     .filter(|selection| self.occurrence_in_active_context(&selection.instance_path))
@@ -27902,7 +27978,7 @@ impl KetchupApp {
                 self.hover_snap
                     .as_ref()
                     .filter(|snap| {
-                        snap.kind == SnapKind::Endpoint
+                        snap.kind != SnapKind::Face
                             && snap.reference.instance_path == selection.instance_path
                     })
                     .map(|snap| snap.position_mm)
@@ -27950,7 +28026,7 @@ impl KetchupApp {
     fn advance_move(&self, drag: &mut MoveDrag, pointer: Pos2, rect: Rect, free: bool) {
         let Some(axis) = drag.axis else {
             if let Some(snap) = self.hover_snap.as_ref().filter(|snap| {
-                snap.kind == SnapKind::Endpoint
+                snap.kind != SnapKind::Face
                     && snap.reference.instance_path != drag.selection.instance_path
             }) {
                 drag.delta_mm = snap.position_mm - drag.pointer_start_world;
@@ -27987,20 +28063,8 @@ impl KetchupApp {
         rect: Rect,
         destination: Vec3,
     ) -> Option<Vec3> {
-        if !self.face_workflow.snaps_enabled() {
-            return None;
-        }
-        [
-            Vec3::ZERO,
-            Vec3::new(destination.x, 0.0, 0.0),
-            Vec3::new(0.0, destination.y, 0.0),
-            Vec3::new(0.0, 0.0, destination.z),
-        ]
-        .into_iter()
-        .map(|target| (self.project(target, rect).distance(pointer), target))
-        .filter(|(distance, _)| *distance <= PRECISE_SNAP_SCREEN_TOLERANCE_PX as f32)
-        .min_by(|left, right| left.0.total_cmp(&right.0))
-        .map(|(_, target)| target)
+        self.datum_snap_with_position(pointer, rect, None, Some(destination))
+            .map(|(point, _)| point)
     }
 
     /// Whether the value box currently owns the keyboard, either because it
@@ -28480,7 +28544,10 @@ impl KetchupApp {
         let extent = self
             .preview_box
             .as_ref()
-            .filter(|preview| preview.plan.source.target.instance_path == item.instance_path)
+            .filter(|preview| {
+                preview.plan.source.target.instance_path == item.instance_path
+                    && preview.plan.source.topological_reference.is_none()
+            })
             .map(|preview| f64::from_bits(preview.plan.new_extent_mm_bits))
             .or_else(|| {
                 let FeatureKind::Extrusion { height, .. } =
@@ -28509,8 +28576,13 @@ impl KetchupApp {
     }
 
     fn proxy_preview_is_active(&self, item: &RenderBox) -> bool {
-        let push_pull_preview =
-            self.has_preview() && self.preview_definition_id == Some(item.definition_id);
+        let push_pull_preview = self.has_preview()
+            && self.face_offset_evaluation.is_none()
+            && self
+                .preview_box
+                .as_ref()
+                .is_some_and(|preview| preview.plan.source.topological_reference.is_none())
+            && self.preview_definition_id == Some(item.definition_id);
         let move_preview = self
             .move_drag
             .as_ref()
@@ -28626,6 +28698,18 @@ impl KetchupApp {
             });
         }
         boxes.retain(|item| {
+            if item.extrusion_feature_id.is_none()
+                && snapshot
+                    .feature(item.profile_feature_id)
+                    .is_some_and(|feature| {
+                        matches!(
+                            feature.kind(),
+                            FeatureKind::SegmentProfile { closed: false, .. }
+                        )
+                    })
+            {
+                return false;
+            }
             let proxy_preview = self.proxy_preview_is_active(item);
             (!Self::definition_is_imported_exact_body(snapshot, item.definition_id)
                 || proxy_preview)
@@ -29723,7 +29807,6 @@ impl KetchupApp {
                 .map_or(SmartPushPullPlanning::Append, |parent| {
                     SmartPushPullPlanning::TipReplacement(parent)
                 });
-            self.selection.select_exact(selection.clone(), false);
             self.push_pull_drag = None;
             self.push_pull_anchor = None;
             self.push_pull_distance_input = self.value_input.clone();
@@ -29825,6 +29908,9 @@ impl KetchupApp {
                     return true;
                 }
             }
+        }
+        if self.face_offset_confirmation_pending() {
+            return true;
         }
         self.digest = self.catalog.text("digest-nothing-to-apply");
         false
@@ -30004,7 +30090,10 @@ impl KetchupApp {
         {
             let ray = self.view_ray(pointer, rect)?;
             let travel = axis_travel_along(&ray, start, axis)?;
-            return Some(start + axis_direction(axis) * travel);
+            return self
+                .scene_snap_at_screen(pointer, rect, 8.0, None)
+                .map(|snap| snap.position_mm)
+                .or(Some(start + axis_direction(axis) * travel));
         }
         self.viewport_point_at_screen(pointer, rect, plane_z)
     }
@@ -30377,7 +30466,6 @@ impl KetchupApp {
             self.hover_pick = None;
             self.hovered = None;
             self.hover_snap = None;
-            self.snap_tracker.clear();
         } else if !preserve_hover {
             self.update_viewport_inference(response.hover_pos(), response.rect);
         }
@@ -30479,7 +30567,16 @@ impl KetchupApp {
                         matches!(
                             snap.reference.element,
                             ElementId::Edge(_) | ElementId::EdgeMidpoint(_)
-                        )
+                        ) || (matches!(snap.reference.element, ElementId::TopologicalEdge { .. })
+                            && matches!(snap.kind, SnapKind::Edge | SnapKind::Midpoint)
+                            && self
+                                .project(snap.position_mm, response.rect)
+                                .distance(pointer)
+                                <= 3.0)
+                            || (matches!(snap.reference.element, ElementId::Snap { .. })
+                                && self.hovered.as_ref().is_none_or(|hit| {
+                                    hit.instance_path != snap.reference.instance_path
+                                }))
                     })
                     .map(|snap| snap.reference.clone())
                     .or_else(|| self.hovered.clone());
@@ -30542,12 +30639,13 @@ impl KetchupApp {
                     }
                 } {
                     if let Some(target) = self.push_pull_pointer_target() {
-                        self.select_from_viewport(Some(target), false);
+                        self.select_push_pull_target(target, pointer, response.rect);
                     }
                     if self.push_pull_face_selected()
                         && let Some(selection) = self.selection.primary.clone()
                         && let Some((screen_normal, pixels_per_mm)) =
-                            self.push_pull_screen_projection(&selection, response.rect)
+                            self.push_pull_screen_projection(&selection, pointer, response.rect)
+                        && let Some(extent_start_mm) = self.selected_face_extent_mm()
                     {
                         let snapshot = self.document.current();
                         self.push_pull_distance_input = "0".to_owned();
@@ -30558,7 +30656,7 @@ impl KetchupApp {
                             source_digest: snapshot.canonical_digest(),
                             selection,
                             pointer_start: pointer,
-                            extent_start_mm: self.selected_face_extent_mm(),
+                            extent_start_mm,
                             screen_normal,
                             pixels_per_mm,
                         });
@@ -30936,7 +31034,8 @@ impl KetchupApp {
         let snapshot = self.document.current();
         self.rebind_exact_results(&snapshot);
         let move_transform_overrides = self.preview_transform_overrides();
-        let use_wgpu_scene = self.wgpu_target_format.is_some()
+        let use_wgpu_scene = self.face_offset_evaluation.is_none()
+            && self.wgpu_target_format.is_some()
             && !self.has_occurrence_operation_preview()
             && !(self.xray_visible || self.face_workflow.xray_preview())
             && !self.wireframe_visible
@@ -31046,7 +31145,7 @@ impl KetchupApp {
                     .iter()
                     .map(|point| point.map(|value| value as f32))
                     .collect::<Vec<_>>();
-                let boundary_edges = renderer::feature_edges(
+                let boundary_edges = renderer::feature_edge_triangles(
                     &local_positions_f32,
                     &triangles,
                     &vec![None::<u8>; triangles.len()],
@@ -31059,23 +31158,40 @@ impl KetchupApp {
                         side: Side::Maximum,
                     },
                 };
-                for edge in boundary_edges {
+                for (edge, uses) in boundary_edges {
                     let points_mm = edge.map(|index| positions_mm[index as usize]);
-                    edges.push(ProjectedEdge {
-                        selection: selection.clone(),
-                        points: points_mm.map(|point| self.project(point, response.rect)),
-                        depth: points_mm
-                            .into_iter()
-                            .map(|point| point_depth(point, forward))
-                            .sum::<f64>()
-                            / 2.0,
-                        dominant_axis: dominant_edge_axis(points_mm),
-                    });
+                    let elements = uses
+                        .iter()
+                        .map(|index| {
+                            let points = triangles[*index as usize]
+                                .map(|vertex| positions_mm[vertex as usize]);
+                            face_element_from_normal(triangle_normal(points))
+                        })
+                        .collect::<BTreeSet<_>>();
+                    for element in elements {
+                        edges.push(ProjectedEdge {
+                            selection: SelectionId {
+                                element,
+                                ..selection.clone()
+                            },
+                            points: points_mm.map(|point| self.project(point, response.rect)),
+                            depth: points_mm
+                                .into_iter()
+                                .map(|point| point_depth(point, forward))
+                                .sum::<f64>()
+                                / 2.0,
+                            dominant_axis: dominant_edge_axis(points_mm),
+                        });
+                    }
                 }
                 if needs_cpu_fill || needs_cpu_overlay {
                     for triangle in triangles {
                         let points_mm = triangle.map(|index| positions_mm[index as usize]);
                         let normal = triangle_normal(points_mm);
+                        let selection = SelectionId {
+                            element: face_element_from_normal(normal),
+                            ..selection.clone()
+                        };
                         if point_depth(normal, forward) >= -1.0e-9
                             && self.hovered.as_ref() != Some(&selection)
                         {
@@ -31216,10 +31332,14 @@ impl KetchupApp {
             if use_wgpu_scene && !needs_cpu_overlay {
                 continue;
             }
-            let Some(package) = self
-                .exact_results
-                .get_render(&snapshot, occurrence.body.definition_id)
-            else {
+            let combined = self.interaction_exact_registry(&snapshot);
+            let preview_package = self.face_offset_preview_package(occurrence.body.definition_id);
+            let previewed = preview_package.is_some();
+            let Some(package) = preview_package.or_else(|| {
+                combined
+                    .get_render(&snapshot, occurrence.body.definition_id)
+                    .cloned()
+            }) else {
                 continue;
             };
             let transform = move_transform_overrides
@@ -31297,7 +31417,7 @@ impl KetchupApp {
                     });
                 }
             }
-            for triangle in package.triangles() {
+            for (triangle_index, triangle) in package.triangles().iter().enumerate() {
                 let points_mm = triangle.vertex_indices.map(|index| {
                     let position = package.vertices()[index as usize].position_mm;
                     transform_model_point(
@@ -31306,15 +31426,13 @@ impl KetchupApp {
                     )
                 });
                 let normal = triangle_normal(points_mm);
-                let element = triangle
-                    .face_role
-                    .and_then(exact_face_element)
-                    .unwrap_or_else(|| face_element_from_normal(normal));
-                let hovered = self.hovered.as_ref().is_some_and(|hovered| {
-                    hovered.definition_id == occurrence.body.definition_id
-                        && hovered.instance_path == occurrence.instance_path
-                        && hovered.element == element
-                });
+                let element = planar_push_pull::triangle_element(&package, triangle_index, normal);
+                let hovered = !previewed
+                    && self.hovered.as_ref().is_some_and(|hovered| {
+                        hovered.definition_id == occurrence.body.definition_id
+                            && hovered.instance_path == occurrence.instance_path
+                            && hovered.element == element
+                    });
                 if point_depth(normal, forward) >= -1.0e-9 && !hovered {
                     continue;
                 }
@@ -31341,7 +31459,7 @@ impl KetchupApp {
                             .map(|point| point_depth(point, forward))
                             .sum::<f64>()
                             / 3.0,
-                        previewed: false,
+                        previewed,
                         out_of_context,
                     });
                 }
@@ -31747,7 +31865,8 @@ impl KetchupApp {
             .then(|| {
                 ui.input(|input| input.pointer.hover_pos())
                     .and_then(|pointer| {
-                        self.nearest_model_vertex_at_screen(pointer, response.rect, 12.0)
+                        self.scene_snap_at_screen(pointer, response.rect, 8.0, None)
+                            .map(|snap| snap.position_mm)
                     })
             })
             .flatten();
@@ -31776,6 +31895,7 @@ impl KetchupApp {
             self.select_from_viewport(Some(target), false);
         }
         response.context_menu(|ui| self.show_viewport_context_menu(ui));
+        self.paint_face_offset_guide(&painter, response.rect);
         self.viewport_overlays(ui, response.rect);
     }
 
@@ -31903,9 +32023,12 @@ impl KetchupApp {
         let scale = f64::from(self.zoom) * f64::from(rect.width().min(rect.height())) / 420.0;
         let exact_hits = cache.exact.exact_surface_picks(ray);
         let exact_hit = exact_hits.first().cloned();
-        let mesh_hit = cache
-            .mesh
-            .surface_pick_with_tolerance(ray, tolerance_px / scale);
+        let mesh_hits = cache.mesh.exact_surface_picks(ray);
+        let mesh_hit = mesh_hits.first().cloned().or_else(|| {
+            cache
+                .mesh
+                .surface_pick_with_tolerance(ray, tolerance_px / scale)
+        });
         let box_pick = cache.boxes.exact_pick(ray, tolerance_px / scale);
         let prefer_exact = exact_hit.as_ref().is_some_and(|exact| {
             mesh_hit
@@ -31916,12 +32039,7 @@ impl KetchupApp {
                     .is_none_or(|pick| exact.ray_distance_mm <= pick.primary.ray_distance_mm)
         });
         if prefer_exact && let Some(hit) = exact_hit {
-            let element = hit
-                .durable_target
-                .as_ref()
-                .and_then(|target| target.body.role())
-                .and_then(exact_face_element)
-                .or_else(|| exact_surface_element(hit.outward_normal))?;
+            let element = self.exact_hit_element(&hit)?;
             let reference = SelectionId {
                 definition_id: hit.definition_id,
                 instance_path: hit.instance_path,
@@ -31934,12 +32052,9 @@ impl KetchupApp {
             };
             let scale = f64::from(self.zoom) * f64::from(rect.width().min(rect.height())) / 420.0;
             let proxy_pick = cache.proxies.exact_pick(ray, tolerance_px / scale);
-            let snap = proxy_pick
-                .as_ref()
-                .filter(|pick| {
-                    pick.primary.reference.instance_path == primary.reference.instance_path
-                })
-                .map(|pick| pick.snap.clone())
+            let snap = self
+                .scene_snap_at_screen(pointer, rect, tolerance_px as f32, None)
+                .filter(|snap| snap.reference.instance_path == primary.reference.instance_path)
                 .unwrap_or(SnapResult {
                     kind: SnapKind::Face,
                     reference,
@@ -31948,12 +32063,7 @@ impl KetchupApp {
                 });
             let mut overlapping = vec![primary.clone()];
             overlapping.extend(exact_hits.into_iter().skip(1).filter_map(|hit| {
-                let element = hit
-                    .durable_target
-                    .as_ref()
-                    .and_then(|target| target.body.role())
-                    .and_then(exact_face_element)
-                    .or_else(|| exact_surface_element(hit.outward_normal))?;
+                let element = self.exact_hit_element(&hit)?;
                 Some(ExactHit {
                     reference: SelectionId {
                         definition_id: hit.definition_id,
@@ -31998,7 +32108,7 @@ impl KetchupApp {
         let prefer_mesh = mesh_hit.as_ref().is_some_and(|mesh| {
             box_pick
                 .as_ref()
-                .is_none_or(|pick| mesh.ray_distance_mm <= pick.primary.ray_distance_mm)
+                .is_none_or(|pick| mesh.ray_distance_mm <= pick.primary.ray_distance_mm + 1.0e-6)
         });
         if prefer_mesh && let Some(hit) = mesh_hit {
             let reference = SelectionId {
@@ -32011,9 +32121,47 @@ impl KetchupApp {
                 position_mm: hit.position_mm,
                 ray_distance_mm: hit.ray_distance_mm,
             };
+            let mut overlapping = vec![primary.clone()];
+            if let Some(pick) = box_pick {
+                overlapping.extend(pick.overlapping);
+            }
+            overlapping.extend(
+                mesh_hits
+                    .into_iter()
+                    .filter(|candidate| candidate.instance_path != primary.reference.instance_path)
+                    .map(|candidate| ExactHit {
+                        reference: SelectionId {
+                            definition_id: candidate.definition_id,
+                            instance_path: candidate.instance_path,
+                            element: face_element_from_normal(candidate.outward_normal),
+                        },
+                        position_mm: candidate.position_mm,
+                        ray_distance_mm: candidate.ray_distance_mm,
+                    }),
+            );
+            overlapping.extend(exact_hits.into_iter().map(|candidate| {
+                let element = self
+                    .exact_hit_element(&candidate)
+                    .unwrap_or_else(|| face_element_from_normal(candidate.outward_normal));
+                ExactHit {
+                    reference: SelectionId {
+                        definition_id: candidate.definition_id,
+                        instance_path: candidate.instance_path,
+                        element,
+                    },
+                    position_mm: candidate.position_mm,
+                    ray_distance_mm: candidate.ray_distance_mm,
+                }
+            }));
+            overlapping.sort_by(|a, b| {
+                a.ray_distance_mm
+                    .total_cmp(&b.ray_distance_mm)
+                    .then_with(|| a.reference.cmp(&b.reference))
+            });
+            overlapping.dedup_by(|a, b| a.reference == b.reference);
             return Some(PickResult {
-                primary: primary.clone(),
-                overlapping: vec![primary],
+                primary,
+                overlapping,
                 snap: SnapResult {
                     kind: SnapKind::Face,
                     reference,
@@ -32023,7 +32171,44 @@ impl KetchupApp {
             });
         }
 
-        box_pick
+        box_pick.map(|mut pick| {
+            pick.overlapping
+                .extend(mesh_hits.into_iter().map(|candidate| ExactHit {
+                    reference: SelectionId {
+                        definition_id: candidate.definition_id,
+                        instance_path: candidate.instance_path,
+                        element: face_element_from_normal(candidate.outward_normal),
+                    },
+                    position_mm: candidate.position_mm,
+                    ray_distance_mm: candidate.ray_distance_mm,
+                }));
+            pick.overlapping
+                .extend(exact_hits.into_iter().map(|candidate| {
+                    ExactHit {
+                        reference: SelectionId {
+                            definition_id: candidate.definition_id,
+                            instance_path: candidate.instance_path,
+                            element: candidate
+                                .durable_target
+                                .as_ref()
+                                .and_then(|target| target.body.role())
+                                .and_then(exact_face_element)
+                                .unwrap_or_else(|| {
+                                    face_element_from_normal(candidate.outward_normal)
+                                }),
+                        },
+                        position_mm: candidate.position_mm,
+                        ray_distance_mm: candidate.ray_distance_mm,
+                    }
+                }));
+            pick.overlapping.sort_by(|a, b| {
+                a.ray_distance_mm
+                    .total_cmp(&b.ray_distance_mm)
+                    .then_with(|| a.reference.cmp(&b.reference))
+            });
+            pick.overlapping.dedup_by(|a, b| a.reference == b.reference);
+            pick
+        })
     }
 
     fn topological_selection_at_screen(
@@ -32036,23 +32221,38 @@ impl KetchupApp {
         let snapshot = self.document.current();
         let topology_results = self.topology_results_for_snapshot(&snapshot)?;
         let projection = ExactInteractionProjection::from_snapshot(&snapshot, topology_results);
+        if let ElementId::TopologicalEdge {
+            feature_id,
+            ordinal,
+        } = selection.element
+        {
+            return projection
+                .topological_pick_current(
+                    &snapshot,
+                    topology_results,
+                    &TopologicalPickLocator {
+                        instance_path: selection.instance_path.clone(),
+                        producer_feature_id: feature_id,
+                        kind: TopologicalElementKind::Edge,
+                        ordinal,
+                    },
+                )
+                .ok();
+        }
         let hit = projection
             .exact_surface_picks(ray)
             .into_iter()
             .find(|hit| {
-                let element = hit
-                    .durable_target
-                    .as_ref()
-                    .and_then(|target| target.body.role())
-                    .and_then(exact_face_element)
-                    .or_else(|| exact_surface_element(hit.outward_normal));
+                let element = self.exact_hit_element(hit);
                 hit.definition_id == selection.definition_id
                     && hit.instance_path == selection.instance_path
-                    && (!matches!(selection.element, ElementId::Face { .. })
-                        || element.as_ref() == Some(&selection.element))
+                    && (!matches!(
+                        selection.element,
+                        ElementId::Face { .. } | ElementId::TopologicalFace(_)
+                    ) || element.as_ref() == Some(&selection.element))
             })?;
         match selection.element {
-            ElementId::Face { .. } => hit.topological_target,
+            ElementId::Face { .. } | ElementId::TopologicalFace(_) => hit.topological_target,
             ElementId::Edge(ordinal) | ElementId::EdgeMidpoint(ordinal) => {
                 let producer_feature_id = topology_results
                     .get_render(&snapshot, selection.definition_id)?
@@ -32135,7 +32335,11 @@ impl KetchupApp {
         }
         let previous = self.hover_pick.as_ref().map(overlap_signature);
         let current = pick.as_ref().map(overlap_signature);
-        if previous != current {
+        let pointer_moved = self.hover_pointer != pointer;
+        self.hover_pointer = pointer;
+        if pointer_moved {
+            self.hover_overlap_index = 0;
+        } else if previous != current {
             // A background recompute can republish the same stack of bodies
             // under an unmoved pointer. Resetting blindly would throw away the
             // choice the user just cycled to with Tab and select whatever is
@@ -32159,47 +32363,26 @@ impl KetchupApp {
                 self.face_workflow.set_xray_preview(false);
             }
         }
-        let scale = f64::from(self.zoom) * f64::from(rect.width().min(rect.height())) / 420.0;
-        let policy = SnapPolicy::new(8.0 / scale, 12.0 / scale)
-            .expect("positive viewport snap tolerances are valid");
-        let box_snap = pointer.and_then(|pointer| self.box_snap_at_screen(pointer, rect, 8.0));
-        self.hover_snap = if self.active_tool == ActiveTool::Rectangle {
-            self.snap_tracker.clear();
-            pointer.and_then(|pointer| self.rectangle_snap_at_screen(pointer, rect))
-        } else if self.face_workflow.snaps_enabled() {
-            if box_snap.is_some() {
-                self.snap_tracker.clear();
+        self.hover_snap = pointer.and_then(|pointer| {
+            if self.active_tool == ActiveTool::Rectangle {
+                self.rectangle_snap_at_screen(pointer, rect)
+            } else {
+                self.scene_snap_at_screen(pointer, rect, 8.0, None)
+                    .or_else(|| {
+                        self.face_workflow
+                            .snaps_enabled()
+                            .then(|| {
+                                pick.as_ref().map(|p| SnapResult {
+                                    kind: SnapKind::Face,
+                                    reference: p.primary.reference.clone(),
+                                    position_mm: p.primary.position_mm,
+                                    distance_mm: 0.0,
+                                })
+                            })
+                            .flatten()
+                    })
             }
-            box_snap.or_else(|| self.snap_tracker.update(pick.as_ref(), policy).cloned())
-        } else {
-            self.snap_tracker.clear();
-            None
-        };
-        if self.face_workflow.snaps_enabled()
-            && matches!(
-                self.active_tool,
-                ActiveTool::Select
-                    | ActiveTool::Line
-                    | ActiveTool::Rectangle
-                    | ActiveTool::Circle
-                    | ActiveTool::Arc
-            )
-            && self
-                .hover_snap
-                .as_ref()
-                .is_none_or(|snap| snap.kind == SnapKind::Face)
-            && let Some(pointer) = pointer
-        {
-            let plane_z = self
-                .sketch_start
-                .map_or_else(|| self.rectangle_plane_z(pointer, rect), |start| start.z);
-            if let Some(snap) = self
-                .open_profile_line_snap_at_screen(pointer, rect, plane_z)
-                .or_else(|| self.profile_special_snap_at_screen(pointer, rect, plane_z))
-            {
-                self.hover_snap = Some(snap);
-            }
-        }
+        });
         self.hover_pick = pick;
         self.refresh_hover_choice();
     }
@@ -32241,173 +32424,6 @@ impl KetchupApp {
         true
     }
 
-    fn box_snap_at_screen(
-        &self,
-        pointer: Pos2,
-        rect: Rect,
-        tolerance_px: f32,
-    ) -> Option<SnapResult> {
-        self.box_snap_on_plane(pointer, rect, tolerance_px, None)
-    }
-
-    fn box_snap_on_plane(
-        &self,
-        pointer: Pos2,
-        rect: Rect,
-        tolerance_px: f32,
-        frame: Option<WorkplaneFrame>,
-    ) -> Option<SnapResult> {
-        const EDGE_ENDPOINTS: [(usize, usize); 12] = [
-            (0, 1),
-            (2, 3),
-            (4, 5),
-            (6, 7),
-            (0, 2),
-            (1, 3),
-            (4, 6),
-            (5, 7),
-            (0, 4),
-            (1, 5),
-            (2, 6),
-            (3, 7),
-        ];
-
-        let snapshot = self.document.current();
-        self.refresh_interaction_projection_cache(&snapshot);
-        let cache = self.interaction_projection_cache.borrow();
-        let retained = self
-            .hover_snap
-            .as_ref()
-            .filter(|_| self.active_tool != ActiveTool::Rectangle)
-            .map(|snap| &snap.reference);
-        cache
-            .as_ref()
-            .expect("interaction cache was built")
-            .canonical
-            .occurrences()
-            .iter()
-            .filter(|occurrence| occurrence.visible)
-            .filter_map(|occurrence| {
-                let profile_id = occurrence.body.profile_feature_id?;
-                let FeatureKind::Profile { points_mm } = snapshot.feature(profile_id)?.kind()
-                else {
-                    return None;
-                };
-                let rectangular = points_mm.len() == 4
-                    && points_mm[0][1] == points_mm[1][1]
-                    && points_mm[1][0] == points_mm[2][0]
-                    && points_mm[2][1] == points_mm[3][1]
-                    && points_mm[3][0] == points_mm[0][0];
-                if !rectangular {
-                    return None;
-                }
-                let local_box = occurrence.local_box?;
-                let corners = box_corners(
-                    local_box.size_mm.x,
-                    local_box.size_mm.y,
-                    local_box.size_mm.z,
-                )
-                .map(|corner| {
-                    transform_model_point(
-                        occurrence.canonical_world_transform,
-                        corner + local_box.origin_mm,
-                    )
-                });
-                Some((
-                    occurrence.body.definition_id,
-                    occurrence.instance_path.clone(),
-                    corners,
-                ))
-            })
-            .flat_map(|(definition_id, instance_path, corners)| {
-                let endpoint_path = instance_path.clone();
-                let midpoint_path = instance_path.clone();
-                let edge_path = instance_path;
-                let endpoints =
-                    corners
-                        .into_iter()
-                        .enumerate()
-                        .map(move |(index, point)| SnapResult {
-                            kind: SnapKind::Endpoint,
-                            reference: SelectionId {
-                                definition_id,
-                                instance_path: endpoint_path.clone(),
-                                element: ElementId::Endpoint(index as u8),
-                            },
-                            position_mm: point,
-                            distance_mm: f64::from(self.project(point, rect).distance(pointer)),
-                        });
-                let midpoints = EDGE_ENDPOINTS
-                    .into_iter()
-                    .enumerate()
-                    .map(move |(index, edge)| {
-                        let point = (corners[edge.0] + corners[edge.1]) * 0.5;
-                        SnapResult {
-                            kind: SnapKind::Midpoint,
-                            reference: SelectionId {
-                                definition_id,
-                                instance_path: midpoint_path.clone(),
-                                element: ElementId::EdgeMidpoint(index as u8),
-                            },
-                            position_mm: point,
-                            distance_mm: f64::from(self.project(point, rect).distance(pointer)),
-                        }
-                    });
-                let edges =
-                    EDGE_ENDPOINTS
-                        .into_iter()
-                        .enumerate()
-                        .filter_map(move |(index, edge)| {
-                            let start_screen = self.project(corners[edge.0], rect);
-                            let end_screen = self.project(corners[edge.1], rect);
-                            let segment = end_screen - start_screen;
-                            let length_squared = segment.length_sq();
-                            if length_squared <= f32::EPSILON
-                                || [start_screen, end_screen, start_screen.lerp(end_screen, 0.5)]
-                                    .into_iter()
-                                    .any(|snap_point| snap_point.distance(pointer) <= tolerance_px)
-                            {
-                                return None;
-                            }
-                            let factor = ((pointer - start_screen).dot(segment) / length_squared)
-                                .clamp(0.0, 1.0);
-                            let position_mm = corners[edge.0]
-                                + (corners[edge.1] - corners[edge.0]) * f64::from(factor);
-                            Some(SnapResult {
-                                kind: SnapKind::Edge,
-                                reference: SelectionId {
-                                    definition_id,
-                                    instance_path: edge_path.clone(),
-                                    element: ElementId::Edge(index as u8),
-                                },
-                                position_mm,
-                                distance_mm: f64::from(
-                                    start_screen.lerp(end_screen, factor).distance(pointer),
-                                ),
-                            })
-                        });
-                endpoints.chain(midpoints).chain(edges)
-            })
-            .filter(|snap| {
-                snap.distance_mm
-                    <= f64::from(if retained == Some(&snap.reference) {
-                        tolerance_px * 1.5
-                    } else {
-                        tolerance_px
-                    })
-                    && frame.is_none_or(|frame| {
-                        rectangle_snapping::point_in_frame(snap.position_mm, frame)
-                    })
-            })
-            .min_by(|left, right| {
-                (retained == Some(&right.reference))
-                    .cmp(&(retained == Some(&left.reference)))
-                    .then_with(|| left.distance_mm.total_cmp(&right.distance_mm))
-                    .then_with(|| left.score().kind_rank.cmp(&right.score().kind_rank))
-                    .then_with(|| left.reference.cmp(&right.reference))
-            })
-    }
-
     fn viewport_point_at_screen(&self, pointer: Pos2, rect: Rect, plane_z: f64) -> Option<Vec3> {
         if !self.face_workflow.snaps_enabled()
             || self.origin_snap_at_screen(pointer, rect, plane_z).is_some()
@@ -32416,17 +32432,24 @@ impl KetchupApp {
                 .origin_snap_at_screen(pointer, rect, plane_z)
                 .or_else(|| self.screen_to_plane(pointer, rect, plane_z));
         }
-        self.box_snap_at_screen(pointer, rect, 8.0)
-            .or_else(|| {
-                self.pick_result_at_screen(pointer, rect, 8.0)
-                    .map(|pick| pick.snap)
-                    .filter(|snap| snap.kind != SnapKind::Face)
-            })
+        self.scene_snap_at_screen(pointer, rect, 8.0, None)
             .map(|snap| snap.position_mm)
             .or_else(|| {
-                self.open_profile_line_snap_at_screen(pointer, rect, plane_z)
-                    .or_else(|| self.profile_special_snap_at_screen(pointer, rect, plane_z))
-                    .map(|snap| snap.position_mm)
+                self.datum_snap_at_screen(
+                    pointer,
+                    rect,
+                    if self.active_tool == ActiveTool::Line {
+                        None
+                    } else {
+                        Some(WorkplaneFrame {
+                            origin_mm: [0.0, 0.0, plane_z],
+                            x_axis: [1.0, 0.0, 0.0],
+                            y_axis: [0.0, 1.0, 0.0],
+                            normal: [0.0, 0.0, 1.0],
+                        })
+                    },
+                )
+                .map(|(point, _)| point)
             })
             .or_else(|| self.screen_to_plane(pointer, rect, plane_z))
     }
@@ -32437,183 +32460,10 @@ impl KetchupApp {
         rect: Rect,
         plane_z: f64,
     ) -> Option<Vec3> {
-        self.nearest_model_vertex_at_screen(pointer, rect, 12.0)
+        self.scene_snap_at_screen(pointer, rect, 8.0, None)
+            .map(|snap| snap.position_mm)
             .or_else(|| self.viewport_point_at_screen(pointer, rect, plane_z))
             .or_else(|| self.surface_point_at_screen(pointer, rect))
-    }
-
-    fn nearest_model_vertex_at_screen(
-        &self,
-        pointer: Pos2,
-        rect: Rect,
-        tolerance_px: f32,
-    ) -> Option<Vec3> {
-        let snapshot = self.document.current();
-        snapshot
-            .scene_query()
-            .into_iter()
-            .filter(|occurrence| occurrence.visible)
-            .filter_map(|occurrence| {
-                let definition = snapshot.definition(occurrence.definition_id)?;
-                let vertices = definition.feature_ids().iter().find_map(|feature_id| {
-                    let FeatureKind::MeshBody(mesh) = snapshot.feature(*feature_id)?.kind() else {
-                        return None;
-                    };
-                    Some(&mesh.vertices_mm)
-                })?;
-                Some((occurrence.transform, vertices))
-            })
-            .flat_map(|(transform, vertices)| {
-                vertices.iter().map(move |point| {
-                    transform_model_point(transform, Vec3::new(point[0], point[1], point[2]))
-                })
-            })
-            .map(|point| (self.project(point, rect).distance(pointer), point))
-            .filter(|(distance, _)| *distance <= tolerance_px)
-            .min_by(|left, right| left.0.total_cmp(&right.0))
-            .map(|(_, point)| point)
-    }
-
-    fn open_profile_line_snap_at_screen(
-        &self,
-        pointer: Pos2,
-        rect: Rect,
-        plane_z: f64,
-    ) -> Option<SnapResult> {
-        let mut candidates = Vec::new();
-        for (selection, points) in self.open_profile_line_segments() {
-            if points
-                .iter()
-                .any(|point| (point.z - plane_z).abs() > 1.0e-6)
-            {
-                continue;
-            }
-            let projected = points.map(|point| self.project(point, rect));
-            for (index, position_mm) in points.into_iter().enumerate() {
-                let distance = projected[index].distance(pointer);
-                candidates.push((
-                    distance,
-                    SnapResult {
-                        kind: SnapKind::Endpoint,
-                        reference: selection.clone(),
-                        position_mm,
-                        distance_mm: f64::from(distance),
-                    },
-                ));
-            }
-            let midpoint = (points[0] + points[1]) * 0.5;
-            let midpoint_distance = self.project(midpoint, rect).distance(pointer);
-            candidates.push((
-                midpoint_distance,
-                SnapResult {
-                    kind: SnapKind::Midpoint,
-                    reference: selection.clone(),
-                    position_mm: midpoint,
-                    distance_mm: f64::from(midpoint_distance),
-                },
-            ));
-            let screen_segment = projected[1] - projected[0];
-            let length_squared = screen_segment.length_sq();
-            if length_squared > f32::EPSILON {
-                let factor =
-                    ((pointer - projected[0]).dot(screen_segment) / length_squared).clamp(0.0, 1.0);
-                let position_mm = points[0] + (points[1] - points[0]) * f64::from(factor);
-                let distance = projected[0].lerp(projected[1], factor).distance(pointer);
-                candidates.push((
-                    distance,
-                    SnapResult {
-                        kind: SnapKind::Edge,
-                        reference: selection,
-                        position_mm,
-                        distance_mm: f64::from(distance),
-                    },
-                ));
-            }
-        }
-        candidates
-            .into_iter()
-            .filter(|(distance, _)| *distance <= 8.0)
-            .min_by(|left, right| {
-                left.1
-                    .score()
-                    .kind_rank
-                    .cmp(&right.1.score().kind_rank)
-                    .then_with(|| left.0.total_cmp(&right.0))
-                    .then_with(|| left.1.reference.cmp(&right.1.reference))
-            })
-            .map(|(_, snap)| snap)
-    }
-
-    fn profile_special_snap_at_screen(
-        &self,
-        pointer: Pos2,
-        rect: Rect,
-        plane_z: f64,
-    ) -> Option<SnapResult> {
-        let snapshot = self.document.current();
-        snapshot
-            .occurrences()
-            .filter_map(|occurrence| {
-                let definition = snapshot.definition(occurrence.definition_id())?;
-                let (center, radius) = definition.feature_ids().iter().find_map(|feature_id| {
-                    let FeatureKind::SegmentProfile { segments, closed } =
-                        snapshot.feature(*feature_id)?.kind()
-                    else {
-                        return None;
-                    };
-                    exact_circle_geometry(segments, *closed)
-                })?;
-                let transform = occurrence.transform();
-                let matrix = transform.matrix();
-                let world_center = Vec3::new(
-                    matrix[0] * center[0] + matrix[1] * center[1] + matrix[3],
-                    matrix[4] * center[0] + matrix[5] * center[1] + matrix[7],
-                    matrix[8] * center[0] + matrix[9] * center[1] + matrix[11],
-                );
-                if (world_center.z - plane_z).abs() > 1.0e-6 {
-                    return None;
-                }
-                let world_radius = radius * matrix[0].hypot(matrix[4]).hypot(matrix[8]);
-                let reference = SelectionId {
-                    definition_id: occurrence.definition_id(),
-                    instance_path: InstancePath::root(occurrence.id()),
-                    element: ElementId::Face {
-                        axis: Axis::Z,
-                        side: Side::Maximum,
-                    },
-                };
-                Some((world_center, world_radius, reference))
-            })
-            .flat_map(|(center, radius, reference)| {
-                let mut candidates = vec![(SnapKind::Center, center)];
-                if self.active_tool == ActiveTool::Arc
-                    && self.sketch_end.is_none()
-                    && let Some(anchor) = self.sketch_start
-                {
-                    candidates.extend(
-                        tangent_points(anchor, center, radius)
-                            .into_iter()
-                            .map(|point| (SnapKind::Tangent, point)),
-                    );
-                }
-                candidates
-                    .into_iter()
-                    .map(move |(kind, position_mm)| (kind, position_mm, reference.clone()))
-            })
-            .filter_map(|(kind, position_mm, reference)| {
-                let distance_px = self.project(position_mm, rect).distance(pointer);
-                (distance_px <= 8.0).then_some((
-                    distance_px,
-                    SnapResult {
-                        kind,
-                        reference,
-                        position_mm,
-                        distance_mm: 0.0,
-                    },
-                ))
-            })
-            .min_by(|left, right| left.0.total_cmp(&right.0))
-            .map(|(_, snap)| snap)
     }
 
     fn world_to_clip(&self, rect: Rect) -> [f32; 16] {
@@ -33897,12 +33747,13 @@ impl KetchupApp {
             let color = if face.out_of_context {
                 Color32::from_rgb(43, 47, 54)
             } else if self.active_tool == ActiveTool::PushPull
+                && !face.previewed
                 && self.selection.primary.as_ref() == Some(&face.selection)
             {
                 Color32::from_rgb(194, 89, 48)
-            } else if self.selection.contains(&face.selection.instance_path) {
+            } else if !face.previewed && self.selection.contains(&face.selection.instance_path) {
                 Color32::from_rgb(154, 91, 67)
-            } else if self.hovered.as_ref() == Some(&face.selection) {
+            } else if !face.previewed && self.hovered.as_ref() == Some(&face.selection) {
                 Color32::from_rgb(76, 111, 158)
             } else if face.previewed {
                 Color32::from_rgb(58, 126, 174)
@@ -39890,7 +39741,11 @@ fn push_pull_batch(
         let producer = snapshot.feature(reference.producer_feature_id)?;
         if producer.definition_id() == selection.definition_id
             && producer.kind().produces_body()
-            && item.profile_feature_id == reference.producer_feature_id
+            && snapshot
+                .definition(selection.definition_id)?
+                .feature_ids()
+                .last()
+                == Some(&reference.producer_feature_id)
             && reference.definition_id == selection.definition_id
             && reference.kind == TopologicalElementKind::Face
         {
@@ -41310,7 +41165,9 @@ fn push_pull_distance_from_pointer(drag: &PushPullDrag, pointer: Pos2, snaps_ena
     } else {
         raw_distance
     };
-    if drag.extent_start_mm > 0.01 {
+    if !matches!(drag.selection.element, ElementId::TopologicalFace(_))
+        && drag.extent_start_mm > 0.01
+    {
         distance.max(-drag.extent_start_mm + 0.01)
     } else {
         distance
@@ -41571,80 +41428,6 @@ fn format_height(height: f64) -> String {
         .to_owned()
 }
 
-fn axis_aligned_topological_face_element(
-    package: &ExactBodyPackage,
-    reference: &TopologicalElementRef,
-) -> Option<ElementId> {
-    let face_ordinal = package
-        .topological_references()
-        .iter()
-        .filter(|candidate| candidate.kind == TopologicalElementKind::Face)
-        .position(|candidate| candidate == reference)
-        .and_then(|ordinal| u32::try_from(ordinal).ok())?;
-    let (bounds, vertices, triangles, triangle_face_ordinals) = match package {
-        ExactBodyPackage::Graph(package) => (
-            package.bounds_mm,
-            package.vertices.as_slice(),
-            package.triangles.as_slice(),
-            package.triangle_face_ordinals.as_slice(),
-        ),
-        ExactBodyPackage::Imported(package) => (
-            package.bounds_mm,
-            package.vertices.as_slice(),
-            package.triangles.as_slice(),
-            package.triangle_face_ordinals.as_slice(),
-        ),
-        ExactBodyPackage::Rectangle(_) | ExactBodyPackage::Revolve(_) => return None,
-    };
-    if triangles.len() != triangle_face_ordinals.len() {
-        return None;
-    }
-    let vertex_indices = triangles
-        .iter()
-        .zip(triangle_face_ordinals)
-        .filter(|(_, ordinal)| **ordinal == face_ordinal)
-        .flat_map(|(triangle, _)| triangle.vertex_indices)
-        .collect::<BTreeSet<_>>();
-    if vertex_indices.len() < 3 {
-        return None;
-    }
-    let mut face_bounds = [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]];
-    for index in vertex_indices {
-        let vertex = vertices.get(index as usize)?.position_mm;
-        for axis in 0..3 {
-            face_bounds[0][axis] = face_bounds[0][axis].min(vertex[axis]);
-            face_bounds[1][axis] = face_bounds[1][axis].max(vertex[axis]);
-        }
-    }
-    let scale = (0..3)
-        .map(|axis| bounds[1][axis] - bounds[0][axis])
-        .fold(1.0_f64, f64::max);
-    let tolerance = (scale * 1.0e-8).max(1.0e-6);
-    let planar_axes = (0..3)
-        .filter(|axis| face_bounds[1][*axis] - face_bounds[0][*axis] <= tolerance)
-        .collect::<Vec<_>>();
-    let [axis] = planar_axes.as_slice() else {
-        return None;
-    };
-    let coordinate = (face_bounds[0][*axis] + face_bounds[1][*axis]) * 0.5;
-    let at_minimum = (coordinate - bounds[0][*axis]).abs() <= tolerance;
-    let at_maximum = (coordinate - bounds[1][*axis]).abs() <= tolerance;
-    let side = match (at_minimum, at_maximum) {
-        (true, false) => Side::Minimum,
-        (false, true) => Side::Maximum,
-        _ => return None,
-    };
-    Some(ElementId::Face {
-        axis: match axis {
-            0 => Axis::X,
-            1 => Axis::Y,
-            2 => Axis::Z,
-            _ => unreachable!(),
-        },
-        side,
-    })
-}
-
 fn face_extent(item: &RenderBox, element: Option<&ElementId>) -> Option<f64> {
     match element? {
         ElementId::Face { axis: Axis::X, .. } => Some(item.size_mm.x),
@@ -41711,5 +41494,7 @@ fn box_corners(width: f64, depth: f64, height: f64) -> [Vec3; 8] {
 
 #[cfg(test)]
 mod nested_transform_tests;
+#[cfg(test)]
+mod scene_snapping_tests;
 #[cfg(test)]
 mod tests;

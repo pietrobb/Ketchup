@@ -20,7 +20,7 @@ use ketchup_core::exact_product::{
     ExactResultRegistry,
 };
 use ketchup_core::sketch::{PrincipalPlane, WorkplaneSupport};
-use ketchup_interaction::{SnapKind, Vec3};
+use ketchup_interaction::{ElementId, SnapKind, Vec3};
 use std::collections::BTreeMap;
 
 fn open_face_workflow(shell: &mut Shell) {
@@ -660,6 +660,26 @@ fn line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical() {
         .last()
         .expect("Line must create one open canonical segment profile");
     assert_eq!(line_start, [0.0, 0.0]);
+    assert_eq!(
+        canonical_render_triangle_count(&shell),
+        12,
+        "an open line must not add filled triangles"
+    );
+    let selected_fill = eframe::egui::Color32::from_rgb(154, 91, 67);
+    assert!(
+        !shell
+            .output_shapes()
+            .iter()
+            .any(|shape| match &shape.shape {
+                eframe::egui::Shape::Path(path) => path.fill == selected_fill,
+                eframe::egui::Shape::Mesh(mesh) => mesh
+                    .vertices
+                    .iter()
+                    .any(|vertex| vertex.color == selected_fill),
+                _ => false,
+            }),
+        "CPU viewport must not paint a selected bounding rectangle for an open line"
+    );
     assert!((line_end[0].hypot(line_end[1]) - 15.0).abs() < 1.0e-9);
     let first_origin = snapshot
         .occurrences()
@@ -811,6 +831,16 @@ fn line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical() {
     shell.click_command(AppCommand::PushPull);
     shell.type_text("8");
     shell.press_key(Key::Enter);
+    let first_push_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while shell.app().document_revision() == before_push.0 {
+        assert!(
+            std::time::Instant::now() < first_push_deadline,
+            "initial triangle Push/Pull exact result timed out: {}",
+            shell.app().action_digest()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        shell.step();
+    }
     assert_eq!(shell.app().document_revision(), before_push.0 + 1);
     assert_eq!(shell.app().undo_step_count(), before_push.2 + 1);
     let pushed_snapshot = shell.app().document_snapshot();
@@ -837,6 +867,159 @@ fn line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical() {
         EXACT_LINEAR_PROFILE_EVALUATOR_V1
     );
     let pushed_digest = shell.app().canonical_digest();
+    let exact_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while shell.app().exact_render_body_count() < 2 {
+        assert!(
+            std::time::Instant::now() < exact_deadline,
+            "triangle extrusion exact result timed out: {}",
+            shell.app().action_digest()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        shell.step();
+    }
+    let (side, drag_target) = closed_segments
+        .iter()
+        .find_map(|segment| {
+            let start = segment.start_mm();
+            let end = segment.end_mm();
+            let midpoint = [(start[0] + end[0]) * 0.5, (start[1] + end[1]) * 0.5];
+            let point = Vec3::new(
+                closed_origin.matrix()[3] + midpoint[0],
+                closed_origin.matrix()[7] + midpoint[1],
+                closed_origin.matrix()[11] + 4.0,
+            );
+            let pointer = shell.app().viewport_position(point).unwrap();
+            shell.move_pointer(pointer);
+            shell
+                .app()
+                .hovered_selection()
+                .filter(|selection| {
+                    selection.definition_id == closed_definition_id
+                        && matches!(selection.element, ElementId::TopologicalFace(_))
+                })
+                .map(|_| {
+                    let outward = Vec3::new(
+                        midpoint[0] - local_centroid[0],
+                        midpoint[1] - local_centroid[1],
+                        0.0,
+                    );
+                    let outward = outward * (20.0 / outward.length());
+                    let projected = shell.app().viewport_position(point + outward).unwrap();
+                    let direction = (projected - pointer).normalized();
+                    (pointer, pointer + direction * 80.0)
+                })
+        })
+        .expect("one physical triangular-prism side must be pickable");
+    shell.move_pointer(side);
+    shell.press_key(Key::P);
+    assert!(matches!(
+        shell.app().selected_reference().unwrap().element,
+        ElementId::TopologicalFace(_)
+    ));
+    let before_side_offset = shell.app().document_revision();
+    let mut saw_side_preview = false;
+    shell.drag_observing(side, drag_target, |app| {
+        saw_side_preview |= app.preview_action_digest().is_some();
+    });
+    assert!(
+        saw_side_preview,
+        "side drag must publish a reviewed preview"
+    );
+    let offset_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while shell.app().document_revision() == before_side_offset {
+        assert!(
+            std::time::Instant::now() < offset_deadline,
+            "triangular-prism side Push/Pull timed out: {}",
+            shell.app().action_digest()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        shell.step();
+    }
+    assert_eq!(shell.app().document_revision(), before_side_offset + 1);
+    assert!(shell.app().document_snapshot().features().any(|feature| {
+        feature.definition_id() == closed_definition_id
+            && matches!(feature.kind(), FeatureKind::TopologyFaceOffset { .. })
+    }));
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), pushed_digest);
+
+    shell.move_pointer(side);
+    shell.press_key(Key::P);
+    shell.click_at(side);
+    assert!(shell.app().push_pull_click_anchor_active());
+    shell.move_pointer(drag_target);
+    assert!(shell.app().preview_action_digest().is_some());
+    let before_click_offset = shell.app().document_revision();
+    shell.click_at(drag_target);
+    let click_offset_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while shell.app().document_revision() == before_click_offset {
+        assert!(
+            std::time::Instant::now() < click_offset_deadline,
+            "triangular-prism click-click side Push/Pull timed out: {}",
+            shell.app().action_digest()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        shell.step();
+    }
+    assert!(shell.app().document_snapshot().features().any(|feature| {
+        feature.definition_id() == closed_definition_id
+            && matches!(feature.kind(), FeatureKind::TopologyFaceOffset { .. })
+    }));
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert_eq!(shell.app().canonical_digest(), pushed_digest);
+
+    for distance in [3.0, -3.0] {
+        shell.click_command(AppCommand::Select);
+        let cap = shell
+            .app()
+            .viewport_position(Vec3::new(
+                closed_origin.matrix()[3] + local_centroid[0],
+                closed_origin.matrix()[7] + local_centroid[1],
+                closed_origin.matrix()[11] + 8.0,
+            ))
+            .unwrap();
+        shell.move_pointer(cap);
+        shell.click_at(cap);
+        assert_eq!(
+            shell.app().selected_reference().unwrap().definition_id,
+            closed_definition_id
+        );
+        shell
+            .app_mut()
+            .set_push_pull_distance_input(&distance.to_string());
+        let started = shell.app_mut().start_preview();
+        assert!(
+            started,
+            "existing prism cap must accept signed distance {distance}: selected={:?}, digest={}",
+            shell.app().selected_reference(),
+            shell.app().action_digest()
+        );
+        let before_cap_offset = (
+            shell.app().document_revision(),
+            shell.app().undo_step_count(),
+        );
+        shell.app_mut().confirm_preview();
+        let cap_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while shell.app().document_revision() == before_cap_offset.0 {
+            assert!(
+                std::time::Instant::now() < cap_deadline,
+                "triangular-prism cap Push/Pull timed out: {}",
+                shell.app().action_digest()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            shell.step();
+        }
+        assert_eq!(shell.app().undo_step_count(), before_cap_offset.1 + 1);
+        assert_eq!(shell.app().exact_render_body_count(), 2);
+        assert!(shell.app().exact_render_triangle_count() > 12);
+        let changed = shell.app().document_snapshot();
+        assert!(changed.features().any(|feature| {
+            feature.definition_id() == closed_definition_id
+                && matches!(feature.kind(), FeatureKind::TopologyFaceOffset { distance: offset, .. } if (offset.millimetres() - distance).abs() < 1.0e-9)
+        }));
+        shell.click_menu_command("menu-edit", AppCommand::Undo);
+        assert_eq!(shell.app().canonical_digest(), pushed_digest);
+    }
     shell.click_menu_command("menu-edit", AppCommand::Undo);
     assert_eq!(shell.app().canonical_digest(), closed_digest);
     shell.click_menu_command("menu-edit", AppCommand::Redo);
@@ -1783,10 +1966,16 @@ fn circular_profile_positive_push_pull_creates_exact_extrusion_atomically() {
 
     shell.app_mut().set_push_pull_distance_input("7");
     assert!(shell.app_mut().start_preview());
+    let definition_id = shell.app().selected_reference().unwrap().definition_id;
     shell.press_key(Key::Enter);
+    let extrusion_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while shell.app().document_revision() == before.0 {
+        assert!(std::time::Instant::now() < extrusion_deadline);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        shell.step();
+    }
     assert_eq!(shell.app().document_revision(), before.0 + 1);
     assert_eq!(shell.app().undo_step_count(), before.1 + 1);
-    let definition_id = shell.app().selected_reference().unwrap().definition_id;
     let request =
         ExactFeatureChainRequest::from_snapshot(&shell.app().document_snapshot(), definition_id)
             .unwrap();
@@ -1872,10 +2061,16 @@ fn semicircular_arc_profile_positive_push_pull_creates_exact_extrusion_atomicall
 
     shell.app_mut().set_push_pull_distance_input("7");
     assert!(shell.app_mut().start_preview());
+    let definition_id = shell.app().selected_reference().unwrap().definition_id;
     shell.press_key(Key::Enter);
+    let extrusion_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while shell.app().document_revision() == before.0 {
+        assert!(std::time::Instant::now() < extrusion_deadline);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        shell.step();
+    }
     assert_eq!(shell.app().document_revision(), before.0 + 1);
     assert_eq!(shell.app().undo_step_count(), before.1 + 1);
-    let definition_id = shell.app().selected_reference().unwrap().definition_id;
     let request =
         ExactFeatureChainRequest::from_snapshot(&shell.app().document_snapshot(), definition_id)
             .unwrap();

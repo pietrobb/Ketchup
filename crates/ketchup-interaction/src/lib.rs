@@ -3,6 +3,7 @@
 pub mod exact_projection;
 pub mod face_intent;
 pub mod mesh_projection;
+pub mod profile_surface;
 pub mod projection;
 pub mod push_pull_gesture;
 pub mod rectangle_face_authoring;
@@ -148,6 +149,15 @@ pub enum ElementId {
     Face {
         axis: Axis,
         side: Side,
+    },
+    TopologicalFace(u32),
+    TopologicalEdge {
+        feature_id: ketchup_core::document::FeatureId,
+        ordinal: u32,
+    },
+    Snap {
+        feature_id: ketchup_core::document::FeatureId,
+        index: u32,
     },
     Edge(u8),
     EdgeMidpoint(u8),

@@ -9,6 +9,8 @@
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_FindPlane.hxx>
+#include <GeomLib_IsPlanarSurface.hxx>
+#include <Geom_RectangularTrimmedSurface.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeSolid.hxx>
@@ -247,6 +249,34 @@ std::unique_ptr<NativeOperationResult> error_result(
   }
 }
 
+bool oriented_planar_face_normal(const TopoDS_Face& face, gp_Dir& normal) {
+  double u0, u1, v0, v1;
+  BRepTools::UVBounds(face, u0, u1, v0, v1);
+  if (!std::isfinite(u0) || !std::isfinite(u1) || !std::isfinite(v0)
+      || !std::isfinite(v1) || u1 <= u0 || v1 <= v0) {
+    return false;
+  }
+  const auto surface = BRep_Tool::Surface(face);
+  const occ::handle<Geom_Surface> trimmed =
+      new Geom_RectangularTrimmedSurface(surface, u0, u1, v0, v1);
+  const GeomLib_IsPlanarSurface planar(trimmed, 1.0e-7);
+  if (!planar.IsPlanar()) {
+    return false;
+  }
+  gp_Pnt point;
+  gp_Vec du, dv;
+  surface->D1((u0 + u1) * 0.5, (v0 + v1) * 0.5, point, du, dv);
+  const gp_Vec cross = du.Crossed(dv);
+  if (cross.SquareMagnitude() <= 1.0e-24) {
+    return false;
+  }
+  normal = gp_Dir(cross);
+  if (face.Orientation() == TopAbs_REVERSED) {
+    normal.Reverse();
+  }
+  return true;
+}
+
 NativeFaceEvidence inspect_face(const TopoDS_Face& face, std::uint32_t ordinal) {
   GProp_GProps properties;
   BRepGProp::SurfaceProperties(face, properties);
@@ -273,13 +303,9 @@ NativeFaceEvidence inspect_face(const TopoDS_Face& face, std::uint32_t ordinal) 
   double axis_direction_x = 0.0;
   double axis_direction_y = 0.0;
   double axis_direction_z = 0.0;
-  BRepBuilderAPI_FindPlane plane_finder(face);
-  if (plane_finder.Found()) {
+  gp_Dir normal;
+  if (oriented_planar_face_normal(face, normal)) {
     surface_kind = "plane";
-    gp_Dir normal = plane_finder.Plane()->Pln().Axis().Direction();
-    if (face.Orientation() == TopAbs_REVERSED) {
-      normal.Reverse();
-    }
     normal_x = normal.X();
     normal_y = normal.Y();
     normal_z = normal.Z();
@@ -4753,13 +4779,9 @@ std::unique_ptr<NativeOperationResult> offset_body_face_native(
     if (face.IsNull()) {
       return error_result(STATUS_INVALID_SHAPE, "Body face offset selected face is absent");
     }
-    const BRepAdaptor_Surface surface(face);
-    if (surface.GetType() != GeomAbs_Plane) {
+    gp_Dir normal;
+    if (!oriented_planar_face_normal(face, normal)) {
       return error_result(STATUS_INVALID_PARAMETER, "Body face offset requires a planar face");
-    }
-    gp_Dir normal = surface.Plane().Axis().Direction();
-    if (face.Orientation() == TopAbs_REVERSED) {
-      normal.Reverse();
     }
     const gp_Vec vector(normal.X() * distance, normal.Y() * distance, normal.Z() * distance);
     BRepPrimAPI_MakePrism prism(face, vector, true, false);

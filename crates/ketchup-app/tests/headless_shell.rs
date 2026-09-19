@@ -10297,14 +10297,31 @@ fn select_general_finish_topology(
 #[test]
 fn topology_bound_push_pull_edits_a_non_top_planar_face_through_headless_ui() {
     let mut shell = Shell::new();
-    install_general_finish_graph_result(&mut shell, FeatureId(2));
-    select_general_finish_topology(&mut shell, FeatureId(2), TopologicalElementKind::Face, 3);
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    let mut selected = false;
+    for _ in 0..150 {
+        shell.settle();
+        if shell
+            .app_mut()
+            .select_topological_locator(TopologicalPickLocator {
+                instance_path: InstancePath::root(OccurrenceId(1)),
+                producer_feature_id: FeatureId(2),
+                kind: TopologicalElementKind::Face,
+                ordinal: 3,
+            })
+        {
+            selected = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(selected, "{}", shell.app().action_digest());
     assert_eq!(
         shell.app().selected_reference().unwrap().element,
-        ElementId::Face {
-            axis: Axis::Y,
-            side: Side::Maximum,
-        }
+        ElementId::TopologicalFace(3)
     );
     let before_revision = shell.app().document_revision();
     let before_digest = shell.app().canonical_digest();
@@ -10312,13 +10329,20 @@ fn topology_bound_push_pull_edits_a_non_top_planar_face_through_headless_ui() {
     shell.click_command(AppCommand::PushPull);
     shell.type_text("5");
     shell.press_key(Key::Enter);
+    for _ in 0..300 {
+        shell.step();
+        if shell.app().document_revision() > before_revision {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
 
     assert_eq!(shell.app().document_revision(), before_revision + 1);
     let committed_digest = shell.app().canonical_digest();
     assert_ne!(committed_digest, before_digest);
     assert_eq!(
         shell.app().occurrence_box_geometry(1),
-        Some((Vec3::new(0.0, 0.0, 0.0), Vec3::new(100.0, 65.0, 20.0)))
+        Some((Vec3::new(-5.0, 0.0, 0.0), Vec3::new(105.0, 60.0, 20.0),))
     );
     shell.key(Key::Z, ctrl());
     assert_eq!(shell.app().canonical_digest(), before_digest);
@@ -10492,9 +10516,20 @@ fn imported_exact_finishes_and_face_push_pull_recompute_through_headless_ui() {
     assert!(shell.app_mut().start_preview());
     assert_eq!(shell.app().document_revision(), before_revision);
     assert_eq!(shell.app().canonical_digest(), before_digest);
-    assert!(shell.app_mut().confirm_preview());
+    let _ = shell.app_mut().confirm_preview();
+    for _ in 0..300 {
+        shell.step();
+        if shell.app().document_revision() > before_revision {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
 
-    assert!(shell.app().document_revision() > before_revision);
+    assert!(
+        shell.app().document_revision() > before_revision,
+        "{}",
+        shell.app().action_digest()
+    );
     assert_eq!(shell.app().undo_step_count(), before_undo_steps + 1);
     let committed_digest = shell.app().canonical_digest();
     let snapshot = shell.app().document_snapshot();
@@ -10891,8 +10926,11 @@ fn tab_pick_through_selects_the_rear_face_of_one_solid() {
 #[test]
 fn shift_click_selects_two_edges_away_from_their_midpoints() {
     let mut shell = Shell::new();
-    install_general_finish_graph_result(&mut shell, FeatureId(2));
-    shell.settle();
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .unwrap();
+    wait_for_one_exact_body(&mut shell);
     let first = shell
         .app()
         .viewport_position(Vec3::new(25.0, 0.0, 20.0))
@@ -10905,10 +10943,14 @@ fn shift_click_selects_two_edges_away_from_their_midpoints() {
     shell.move_pointer(first);
     assert_eq!(shell.app().hovered_snap_kind(), Some(SnapKind::Edge));
     shell.click_at(first);
-    assert!(matches!(
-        shell.app().selected_reference().unwrap().element,
-        ElementId::Edge(_)
-    ));
+    assert!(
+        matches!(
+            shell.app().selected_reference().unwrap().element,
+            ElementId::TopologicalEdge { .. }
+        ),
+        "{:?}",
+        shell.app().selected_reference()
+    );
     shell.move_pointer(second);
     assert_eq!(shell.app().hovered_snap_kind(), Some(SnapKind::Edge));
     shell.click_at_with(second, shift());

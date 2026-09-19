@@ -2347,12 +2347,12 @@ fn interaction_projection_refresh_defers_while_the_current_frame_reads_the_cache
     let snapshot = app.document.current();
     app.refresh_interaction_projection_cache(&snapshot);
     let expected_revision = snapshot.revision_id();
-    let expected_exact_stamp = app.exact_results.contents_stamp();
+    let expected_exact_stamp = (app.exact_results.contents_stamp(), 0);
     {
         let mut cache = app.interaction_projection_cache.borrow_mut();
         let cache = cache.as_mut().expect("the initial projection is cached");
         cache.revision_id = expected_revision.wrapping_add(1);
-        cache.exact_results_stamp = expected_exact_stamp.wrapping_add(1);
+        cache.exact_results_stamp = (expected_exact_stamp.0.wrapping_add(1), 0);
     }
 
     let current_frame = app.interaction_projection_cache.borrow();
@@ -9265,6 +9265,86 @@ fn circular_pattern_plan_rejects_tamper_and_replay_atomically() {
 }
 
 #[test]
+fn rectangle_drag_preview_preserves_signed_bounds_until_release() {
+    let mut app = KetchupApp::new();
+    app.new_document();
+    assert!(
+        app.complete_rectangle_sketch(Vec3::new(-20.0, -15.0, 7.0), Vec3::new(20.0, 15.0, 7.0),)
+    );
+    let profile = app.active_boxes()[0].clone();
+    let digest = app.canonical_digest();
+    let steps = app.undo_step_count();
+    app.dispatch_command(AppCommand::PushPull);
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(Vec2::new(1600.0, 1000.0))
+        .with_step_dt(1.0 / 60.0)
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+    harness.step();
+    let pointer = harness
+        .state()
+        .viewport_position(Vec3::new(0.0, 0.0, 7.0))
+        .unwrap();
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::PointerMoved(pointer));
+    harness.step();
+    harness.input_mut().events.push(egui::Event::PointerButton {
+        pos: pointer,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.step();
+    let drag = harness.state().push_pull_drag.as_ref().unwrap();
+    let screen_delta = drag.screen_normal * drag.pixels_per_mm;
+    let mut release = pointer;
+    for distance in [15.0_f64, -20.0, 10.0, -30.0] {
+        release = pointer + screen_delta * distance as f32;
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::PointerMoved(release));
+        harness.step();
+        let state = harness.state();
+        assert!(state.has_preview());
+        assert_eq!(state.canonical_digest(), digest);
+        let rendered = state.render_box(profile.clone());
+        let mut expected = profile.clone();
+        expected.origin_mm.z += distance.min(0.0);
+        expected.size_mm.z = distance.abs();
+        assert_eq!(rendered.origin_mm, expected.origin_mm);
+        assert_eq!(rendered.size_mm, expected.size_mm);
+        let rect = state.viewport_rect().unwrap();
+        let projected = box_corners(expected.size_mm.x, expected.size_mm.y, expected.size_mm.z)
+            .map(|point| state.project(point + expected.origin_mm, rect));
+        assert!(box_faces().into_iter().filter(|face| matches!(
+            face.element, ElementId::Face { axis: Axis::X | Axis::Y, .. }
+        )).any(|face| {
+            let points = face.corners.map(|index| projected[index]).to_vec();
+            harness.output().shapes.iter().any(|shape| matches!(
+                &shape.shape,
+                egui::Shape::Path(path) if path.points == points && path.fill != Color32::TRANSPARENT
+            ))
+        }), "painted side walls must span the signed interval, not its positive mirror");
+    }
+    let preview = harness.state().render_box(profile);
+    harness.input_mut().events.push(egui::Event::PointerButton {
+        pos: release,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.step();
+    let committed = harness.state().active_boxes()[0].clone();
+    assert_eq!(committed.origin_mm, preview.origin_mm);
+    assert_eq!(committed.size_mm, preview.size_mm);
+    assert_eq!(harness.state().undo_step_count(), steps + 1);
+    assert!(harness.state_mut().undo());
+    assert_eq!(harness.state().canonical_digest(), digest);
+}
+
+#[test]
 fn rectangle_sketch_creates_a_profile_then_push_pull_adds_the_extrusion() {
     let mut app = KetchupApp::new();
 
@@ -9301,8 +9381,15 @@ fn rectangle_sketch_creates_a_profile_then_push_pull_adds_the_extrusion() {
             .z,
         -30.0
     );
+    let rendered = app.render_box(app.active_boxes()[1].clone());
+    assert_eq!(
+        rendered.origin_mm.z, -30.0,
+        "viewport preview must extend below the profile"
+    );
+    assert_eq!(rendered.size_mm.z, 30.0);
     assert!(app.confirm_preview());
-    assert_eq!(app.active_boxes()[1].origin_mm.z, -30.0);
+    assert_eq!(app.active_boxes()[1].origin_mm, rendered.origin_mm);
+    assert_eq!(app.active_boxes()[1].size_mm, rendered.size_mm);
     assert_eq!(app.active_boxes()[1].size_mm.z, 30.0);
     assert!(app.undo());
     assert_eq!(app.canonical_digest(), profile_digest);
@@ -11747,15 +11834,12 @@ fn cut_through_adds_a_bounded_profile_to_the_selected_solid_as_one_undo_step() {
 
 #[test]
 fn topology_bound_push_pull_uses_the_selected_planar_face_and_rejects_tamper() {
-    let mut app = KetchupApp::new();
-    install_initial_graph_result(&mut app);
-    select_initial_topological(&mut app, TopologicalElementKind::Face, 3);
+    let points = [[0.0, 0.0], [100.0, 0.0], [100.0, 60.0], [0.0, 60.0]];
+    let mut app = planar_push_pull::tests::prism(&points, Transform::identity());
+    select_initial_topological(&mut app, TopologicalElementKind::Face, 2);
     assert_eq!(
         app.selected_reference().unwrap().element,
-        ElementId::Face {
-            axis: Axis::Y,
-            side: Side::Maximum,
-        }
+        ElementId::TopologicalFace(2)
     );
     let source_digest = app.canonical_digest();
     let source_revision = app.document_revision();
@@ -11764,8 +11848,13 @@ fn topology_bound_push_pull_uses_the_selected_planar_face_and_rejects_tamper() {
     assert_eq!(app.document_revision(), source_revision);
     assert_eq!(app.canonical_digest(), source_digest);
     let preview = app.preview_box.as_ref().unwrap();
-    assert_eq!(preview.plan.preview_box.size_mm.y, 65.0);
-    assert_eq!(preview.plan.preview_box.size_mm.z, 20.0);
+    assert!(matches!(
+        preview.batch.commands(),
+        [CanonicalCommand::CreateFeature {
+            kind: FeatureKind::TopologyFaceOffset { .. },
+            ..
+        }]
+    ));
     let topology = preview.plan.source.topological_selection.as_ref().unwrap();
     assert_eq!(
         preview.plan.source.topological_reference.as_ref(),
@@ -11781,11 +11870,14 @@ fn topology_bound_push_pull_uses_the_selected_planar_face_and_rejects_tamper() {
         assistant_proposal.principal(),
         ProposalPrincipal::LocalAssistant
     );
+    planar_push_pull::tests::wait_preview(&mut app);
+    let preview_bounds = app
+        .face_offset_preview_package(planar_push_pull::tests::TEST_PRISM_DEFINITION)
+        .unwrap()
+        .bounds_mm();
+    assert!((preview_bounds[1][1] - 65.0).abs() < 1.0e-5);
     assert!(app.confirm_preview());
-    assert_eq!(
-        app.active_boxes().into_iter().next().unwrap().size_mm.y,
-        65.0
-    );
+    assert!((app.active_boxes().into_iter().next().unwrap().size_mm.y - 65.0).abs() < 1.0e-5);
     let committed_digest = app.canonical_digest();
     let reopened =
         ketchup_core::persistence::load(&ketchup_core::persistence::save(&app.document.current()))
@@ -11797,21 +11889,21 @@ fn topology_bound_push_pull_uses_the_selected_planar_face_and_rejects_tamper() {
     assert!(app.redo());
     assert_eq!(app.canonical_digest(), committed_digest);
 
-    let mut minimum_face = KetchupApp::new();
-    install_initial_graph_result(&mut minimum_face);
-    select_initial_topological(&mut minimum_face, TopologicalElementKind::Face, 4);
+    let mut minimum_face = planar_push_pull::tests::prism(&points, Transform::identity());
+    select_initial_topological(&mut minimum_face, TopologicalElementKind::Face, 3);
     assert_eq!(
         minimum_face.selected_reference().unwrap().element,
-        ElementId::Face {
-            axis: Axis::X,
-            side: Side::Minimum,
-        }
+        ElementId::TopologicalFace(3)
     );
     minimum_face.set_push_pull_distance_input("5");
     assert!(minimum_face.start_preview());
-    let box_preview = &minimum_face.preview_box.as_ref().unwrap().plan.preview_box;
-    assert_eq!(box_preview.origin_mm.x, -5.0);
-    assert_eq!(box_preview.size_mm.x, 105.0);
+    planar_push_pull::tests::wait_preview(&mut minimum_face);
+    let bounds = minimum_face
+        .face_offset_preview_package(planar_push_pull::tests::TEST_PRISM_DEFINITION)
+        .unwrap()
+        .bounds_mm();
+    assert!((bounds[0][0] + 5.0).abs() < 1.0e-5);
+    assert!((bounds[1][0] - 100.0).abs() < 1.0e-5);
 
     let revision = minimum_face.document_revision();
     let digest = minimum_face.canonical_digest();
@@ -12761,7 +12853,7 @@ fn drawing_snap_acquires_box_corners_and_edge_midpoints_in_screen_space() {
     let corner_screen = app.project(corner, rect);
     let corner_pointer = corner_screen + (corner_screen - face_center).normalized() * 6.0;
     let corner_snap = app
-        .box_snap_at_screen(corner_pointer, rect, 8.0)
+        .scene_snap_at_screen(corner_pointer, rect, 8.0, None)
         .expect("a nearby pointer must acquire the corner");
     assert_eq!(corner_snap.kind, SnapKind::Endpoint);
     assert_eq!(corner_snap.position_mm, corner);
@@ -12774,7 +12866,7 @@ fn drawing_snap_acquires_box_corners_and_edge_midpoints_in_screen_space() {
     let midpoint_screen = app.project(midpoint, rect);
     let midpoint_pointer = midpoint_screen + (midpoint_screen - face_center).normalized() * 6.0;
     let midpoint_snap = app
-        .box_snap_at_screen(midpoint_pointer, rect, 8.0)
+        .scene_snap_at_screen(midpoint_pointer, rect, 8.0, None)
         .expect("a nearby pointer must acquire the edge midpoint");
     assert_eq!(midpoint_snap.kind, SnapKind::Midpoint);
     assert_eq!(midpoint_snap.position_mm, midpoint);
@@ -12782,11 +12874,14 @@ fn drawing_snap_acquires_box_corners_and_edge_midpoints_in_screen_space() {
     let edge_point = Vec3::new(25.0, 0.0, 20.0);
     let edge_pointer = app.project(edge_point, rect);
     let edge_snap = app
-        .box_snap_at_screen(edge_pointer, rect, 8.0)
+        .scene_snap_at_screen(edge_pointer, rect, 8.0, None)
         .expect("a pointer anywhere along the edge must acquire the edge");
     assert_eq!(edge_snap.kind, SnapKind::Edge);
     assert_eq!(edge_snap.position_mm, edge_point);
-    assert!(matches!(edge_snap.reference.element, ElementId::Edge(_)));
+    assert!(matches!(
+        edge_snap.reference.element,
+        ElementId::Snap { .. }
+    ));
 
     app.face_workflow.set_snaps_enabled(false);
     assert_ne!(
@@ -12807,7 +12902,7 @@ fn drawing_snap_acquires_box_corners_and_edge_midpoints_in_screen_space() {
     let rotated_pointer =
         rotated_corner_screen + (rotated_corner_screen - rotated_center_screen).normalized() * 6.0;
     let rotated_snap = app
-        .box_snap_at_screen(rotated_pointer, rect, 8.0)
+        .scene_snap_at_screen(rotated_pointer, rect, 8.0, None)
         .expect("a rotated canonical corner must remain snappable");
     assert_eq!(rotated_snap.kind, SnapKind::Endpoint);
     assert_eq!(rotated_snap.position_mm, rotated_corner);

@@ -116,11 +116,9 @@ impl KetchupApp {
         rect: Rect,
         plane_z: f64,
     ) -> Option<Vec3> {
-        let origin = Vec3::new(0.0, 0.0, 0.0);
-        (self.face_workflow.snaps_enabled()
-            && plane_z.abs() < 1.0e-6
-            && self.project(origin, rect).distance(pointer) <= 8.0)
-            .then_some(origin)
+        self.datum_snap_at_screen(pointer, rect, None)
+            .filter(|(_, axis)| plane_z.abs() < 1e-6 && axis.is_none())
+            .map(|(point, _)| point)
     }
 
     pub(super) fn paint_origin_snap(
@@ -136,19 +134,37 @@ impl KetchupApp {
         let plane_z = self
             .sketch_start
             .map_or_else(|| self.rectangle_plane_z(pointer, rect), |start| start.z);
-        let origin = if self.active_tool == ActiveTool::Rectangle {
-            self.rectangle_origin_snap(pointer, rect)
+        let frame = if self.active_tool == ActiveTool::Rectangle {
+            self.rectangle_input_frame(pointer, rect)
         } else {
-            self.origin_snap_at_screen(pointer, rect, plane_z)
+            WorkplaneFrame {
+                origin_mm: [0.0, 0.0, plane_z],
+                x_axis: [1.0, 0.0, 0.0],
+                y_axis: [0.0, 1.0, 0.0],
+                normal: [0.0, 0.0, 1.0],
+            }
         };
-        let Some(origin) = origin else { return };
+        let frame = (self.active_tool != ActiveTool::Line).then_some(frame);
+        let Some((origin, axis)) = self.datum_snap_at_screen(pointer, rect, frame) else {
+            return;
+        };
+        if axis.is_some()
+            && self
+                .scene_snap_at_screen(pointer, rect, 8.0, frame)
+                .is_some()
+        {
+            return;
+        }
         let point = self.project(origin, rect);
         painter.circle_filled(point, 4.0, Color32::from_rgb(80, 230, 190));
         painter.circle_stroke(point, 9.0, Stroke::new(2.0_f32, Color32::WHITE));
         painter.text(
             point + Vec2::new(14.0, -14.0),
             egui::Align2::LEFT_BOTTOM,
-            self.catalog.text("viewport-snap-origin"),
+            axis.map_or_else(
+                || self.catalog.text("viewport-snap-origin"),
+                |axis| format!("{axis:?}"),
+            ),
             egui::FontId::proportional(13.0),
             Color32::from_rgb(80, 230, 190),
         );
@@ -163,6 +179,9 @@ impl KetchupApp {
         // Draw the hovered target last, including when it is behind another body.
         for hovered_pass in [false, true] {
             for face in &faces {
+                if face.previewed {
+                    continue;
+                }
                 let hovered = self.hovered.as_ref() == Some(&face.selection);
                 if hovered != hovered_pass {
                     continue;

@@ -83,8 +83,9 @@ impl MeshInteractionProjection {
                     },
                     _ => None,
                 };
-                let (feature_id, vertices_mm, triangles) = canonical_mesh
-                    .or_else(|| canonical_planar_profile_mesh(snapshot, definition.id()))?;
+                let (feature_id, vertices_mm, triangles) = canonical_mesh.or_else(|| {
+                    crate::profile_surface::canonical_definition_surface(snapshot, definition.id())
+                })?;
                 let bounds_mm = mesh_bounds(&vertices_mm)?;
                 Some((
                     definition.id(),
@@ -241,6 +242,39 @@ impl MeshInteractionProjection {
         )
     }
 
+    pub fn exact_surface_picks(&self, ray: Ray) -> Vec<MeshSurfaceHit> {
+        let (candidates, _) = self.spatial_index.query_ray_with_tolerance(ray, 0.0);
+        let mut hits = candidates
+            .into_iter()
+            .filter_map(|index| {
+                let hit = hit_occurrence(ray, &self.occurrences[index], 0.0)?;
+                let triangle = hit.occurrence.geometry.triangles[hit.triangle_index];
+                let [a, b, c] = triangle.map(|index| {
+                    let p = hit.occurrence.geometry.vertices_mm[index as usize];
+                    transform_point(hit.occurrence.transform, Vec3::new(p[0], p[1], p[2]))
+                });
+                let normal = cross(b - a, c - a);
+                let length = normal.length();
+                (length > NORMAL_EPSILON).then(|| MeshSurfaceHit {
+                    definition_id: hit.occurrence.geometry.definition_id,
+                    feature_id: hit.occurrence.geometry.feature_id,
+                    instance_path: hit.occurrence.instance_path.clone(),
+                    triangle_index: hit.triangle_index,
+                    position_mm: ray.at(hit.ray_distance_mm),
+                    outward_normal: normal * (1.0 / length),
+                    ray_distance_mm: hit.ray_distance_mm,
+                })
+            })
+            .collect::<Vec<_>>();
+        hits.sort_by(|a, b| {
+            a.ray_distance_mm
+                .total_cmp(&b.ray_distance_mm)
+                .then_with(|| a.instance_path.cmp(&b.instance_path))
+                .then_with(|| a.triangle_index.cmp(&b.triangle_index))
+        });
+        hits
+    }
+
     pub fn exact_surface_pick_current(
         &self,
         snapshot: &Snapshot,
@@ -259,24 +293,23 @@ pub fn canonical_planar_profile_mesh(
 ) -> Option<CanonicalPlanarProfileMesh> {
     let definition = snapshot.definition(definition_id)?;
     let feature_id = *definition.feature_ids().last()?;
+    canonical_profile_feature_mesh(snapshot, feature_id)
+}
+
+pub fn canonical_profile_feature_mesh(
+    snapshot: &Snapshot,
+    feature_id: FeatureId,
+) -> Option<CanonicalPlanarProfileMesh> {
     let feature = snapshot.feature(feature_id)?;
     match feature.kind() {
         FeatureKind::SegmentProfile {
             segments,
             closed: true,
         } => {
-            let points = segment_profile_boundary(segments)?;
-            let triangles = oriented_triangles(&points)?;
-            Some((
-                feature_id,
-                points
-                    .into_iter()
-                    .map(|point| [point[0], point[1], 0.0])
-                    .collect(),
-                triangles,
-            ))
+            let (positions, triangles) = segment_profile_mesh(segments)?;
+            Some((feature_id, positions, triangles))
         }
-        FeatureKind::Sketch(_) => canonical_sketch_profile_mesh(snapshot, definition_id),
+        FeatureKind::Sketch(_) => canonical_sketch_feature_mesh(snapshot, feature_id),
         _ => None,
     }
 }
@@ -287,7 +320,16 @@ pub fn canonical_sketch_profile_mesh(
 ) -> Option<CanonicalPlanarProfileMesh> {
     let definition = snapshot.definition(definition_id)?;
     let sketch_feature_id = *definition.feature_ids().last()?;
-    let FeatureKind::Sketch(sketch) = snapshot.feature(sketch_feature_id)?.kind() else {
+    canonical_sketch_feature_mesh(snapshot, sketch_feature_id)
+}
+
+fn canonical_sketch_feature_mesh(
+    snapshot: &Snapshot,
+    sketch_feature_id: FeatureId,
+) -> Option<CanonicalPlanarProfileMesh> {
+    let feature = snapshot.feature(sketch_feature_id)?;
+    let definition_id = feature.definition_id();
+    let FeatureKind::Sketch(sketch) = feature.kind() else {
         return None;
     };
     let workplane = snapshot.feature(sketch.workplane)?;
@@ -317,6 +359,20 @@ pub fn canonical_sketch_profile_mesh(
         })
         .collect();
     Some((sketch_feature_id, vertices, triangles))
+}
+
+pub fn segment_profile_mesh(
+    segments: &[ProfileSegment],
+) -> Option<crate::profile_surface::SurfaceMesh> {
+    let points = segment_profile_boundary(segments)?;
+    let triangles = oriented_triangles(&points)?;
+    Some((
+        points
+            .into_iter()
+            .map(|point| [point[0], point[1], 0.0])
+            .collect(),
+        triangles,
+    ))
 }
 
 fn segment_profile_boundary(segments: &[ProfileSegment]) -> Option<Vec<[f64; 2]>> {
