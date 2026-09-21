@@ -54,13 +54,14 @@ use ketchup_core::document::{
     CanonicalCommand, CanonicalError, ClassificationCategoryId, ClassificationDimensionId,
     CloneDefinitionPlan, CollectionId, CommandBatch, ConvertGroupPlan, DefinitionId, Dimension,
     DimensionDisplayUnit, DimensionPresentation, DocumentId, DocumentStore, EdgeFinishKind,
-    EvaluationIdentity, FeatureId, FeatureKind, FeatureParameterTarget, GroupId, HighRiskClass,
-    HighRiskScope, InstancePath, LoftContinuity, LoftSection, MAX_HUMAN_CONFIRMATION_LIFETIME_MS,
-    MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, NodeId, OccurrenceId, PersistentDimensionId,
-    ProfileSegment, Proposal, ProposalCommitError, ProposalContext, ProposalGoal,
-    ProposalPrepareError, ProposalPrincipal, ProposalValue, SceneOccurrence, SceneQueryContext,
-    SideEffectAuthorizationReceipt, SlotPath, Snapshot, SolidToolPlan, SpatialPathSegment, TagId,
-    TipReplacementParent, TipReplacementProposal, Transform, TrustedConfirmationSurface,
+    EvaluationIdentity, EvaluatorParameterEdit, FeatureId, FeatureKind, FeatureParameterTarget,
+    GroupId, HighRiskClass, HighRiskScope, InstancePath, LoftContinuity, LoftSection,
+    MAX_HUMAN_CONFIRMATION_LIFETIME_MS, MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, NodeId,
+    OccurrenceId, PersistentDimensionId, ProfileSegment, Proposal, ProposalCommitError,
+    ProposalContext, ProposalGoal, ProposalPrepareError, ProposalPrincipal, ProposalValue,
+    SceneOccurrence, SceneQueryContext, SideEffectAuthorizationReceipt, SlotPath, Snapshot,
+    SolidToolPlan, SpatialPathSegment, TagId, TipReplacementParent, TipReplacementProposal,
+    Transform, TrustedConfirmationSurface,
 };
 #[cfg(feature = "named-product-fixtures")]
 use ketchup_core::document::{
@@ -10749,11 +10750,7 @@ impl KetchupApp {
             return;
         };
         let snapshot = workspace.snapshot();
-        let source = (
-            snapshot.document_id(),
-            snapshot.revision_id(),
-            snapshot.canonical_digest(),
-        );
+        let source = ketchup_application::evaluation::exact_source(&snapshot);
         if self
             .beam_m5_source
             .as_ref()
@@ -14275,16 +14272,16 @@ impl KetchupApp {
             return;
         };
         let key = first.result_key();
-        let source = (
+        let source = ExactSource::from_source(
             key.document_id,
             key.source_revision,
             key.source_digest.clone(),
         );
         if packages.all(|package| {
             let key = package.result_key();
-            key.document_id == source.0
-                && key.source_revision == source.1
-                && key.source_digest == source.2
+            key.document_id == source.document_id()
+                && key.source_revision == source.source_revision()
+                && key.source_digest == source.source_digest()
         }) {
             history.insert(source, registry.clone());
         }
@@ -14330,24 +14327,18 @@ impl KetchupApp {
                 Ok(result) => {
                     let task = self.exact_task.take().expect("completed task exists");
                     let published = match result {
-                        Ok(products) => {
-                            let mut exact_results = self.exact_results.clone();
-                            let mut topology_results = self.topology_results.clone();
-                            let published = self.mutate_document_with_work_recovery(|document| {
-                                ketchup_application::evaluation::publish_exact_products(
-                                    document,
-                                    &mut exact_results,
-                                    &mut topology_results,
-                                    &task,
-                                    products,
-                                )
-                            });
-                            if published.is_ok() {
-                                self.exact_results = exact_results;
-                                self.topology_results = topology_results;
-                            }
-                            published
-                        }
+                        Ok(products) => self
+                            .complete_mutation_and_exact_results_with_work_recovery(
+                                |document, exact_results, topology_results| {
+                                    ketchup_application::evaluation::publish_exact_products(
+                                        document,
+                                        exact_results,
+                                        topology_results,
+                                        &task,
+                                        products,
+                                    )
+                                },
+                            ),
                         Err(error) => Err(WorkRecoveryMutationError::Mutation(error)),
                     };
                     match published {
@@ -14421,11 +14412,7 @@ impl KetchupApp {
             task.cancelled.store(true, Ordering::Release);
         }
         let snapshot = self.document.current();
-        let source = (
-            snapshot.document_id(),
-            snapshot.revision_id(),
-            snapshot.canonical_digest(),
-        );
+        let source = ketchup_application::evaluation::exact_source(&snapshot);
         let package = Arc::new(package);
         let mut exact_results = ExactResultRegistry::default();
         let mut topology_results = ExactResultRegistry::default();
@@ -15608,6 +15595,46 @@ impl KetchupApp {
             return None;
         };
         Some((session.selection.clone(), operation.clone()))
+    }
+
+    fn correction_transform_plan(
+        &self,
+        parent: &TipReplacementParent,
+        selection: &CorrectionSelection,
+        world_edit: Transform,
+    ) -> Option<TransformPlan> {
+        let base = parent.snapshot();
+        let (target, primary_occurrence_id) = match selection {
+            CorrectionSelection::Occurrences {
+                occurrence_ids,
+                primary_occurrence_id,
+            } => (
+                TransformTarget::Occurrences(
+                    occurrence_ids
+                        .iter()
+                        .copied()
+                        .map(InstancePath::root)
+                        .collect(),
+                ),
+                (*primary_occurrence_id).or_else(|| occurrence_ids.iter().next().copied())?,
+            ),
+            CorrectionSelection::Group(group_id) => (
+                TransformTarget::Group(*group_id),
+                self.selection.occurrences.iter().next()?.root_occurrence(),
+            ),
+        };
+        let primary = base.occurrence(primary_occurrence_id)?;
+        TransformPlan::prepare(
+            base,
+            TransformRequest {
+                source_document_id: base.document_id(),
+                source_revision: base.revision_id(),
+                primary_occurrence: primary_occurrence_id,
+                primary_definition: primary.definition_id(),
+                target,
+                world_edit,
+            },
+        )
     }
 
     fn set_move_vector_correction_enabled(&mut self, enabled: bool) {
@@ -22605,52 +22632,6 @@ impl KetchupApp {
         })
     }
 
-    fn translate_group(&mut self, group_id: GroupId, delta_mm: Vec3) -> bool {
-        let distance_mm = vector_length(delta_mm);
-        if !delta_mm.x.is_finite()
-            || !delta_mm.y.is_finite()
-            || !delta_mm.z.is_finite()
-            || distance_mm <= 0.0
-        {
-            return false;
-        }
-        let snapshot = self.document.current();
-        let Some(group) = snapshot.group(group_id) else {
-            return false;
-        };
-        let Some(transform) =
-            translated_in_parent_space(&snapshot, group.parent(), group.transform(), delta_mm)
-        else {
-            return false;
-        };
-        if self
-            .apply_batch_with_work_recovery(&CommandBatch::new(vec![
-                CanonicalCommand::SetGroupTransform {
-                    id: group_id,
-                    transform,
-                },
-            ]))
-            .is_err()
-        {
-            return false;
-        }
-        self.select_group(group_id);
-        self.record_transform_correction(
-            CorrectionSelection::Group(group_id),
-            CorrectionOperation::Move(MoveCorrection {
-                direction: delta_mm * (1.0 / distance_mm),
-                applied_distance_mm: distance_mm,
-                accepts_vector_correction: false,
-            }),
-        );
-        self.status_key = "status-object-moved";
-        self.digest = self.catalog.format(
-            "digest-move-committed",
-            &BTreeMap::from([("distance", format_height(distance_mm))]),
-        );
-        true
-    }
-
     fn commit_move_drag(&mut self, drag: &MoveDrag) -> bool {
         self.move_copy_mode = false;
         self.transform_input.reset();
@@ -22698,47 +22679,61 @@ impl KetchupApp {
             );
             true
         } else if drag.copy {
-            self.translate_occurrences(&drag.selection, &drag.occurrence_paths, drag.delta_mm, true)
+            self.copy_occurrences(&drag.selection, &drag.occurrence_paths, drag.delta_mm)
         } else {
-            let distance_mm = vector_length(drag.delta_mm);
-            let Some(plan) = (distance_mm.is_finite() && distance_mm > 0.0)
-                .then(|| self.move_transform_plan(drag))
-                .flatten()
-            else {
+            let Some(plan) = self.move_transform_plan(drag) else {
                 return false;
             };
-            let Ok(target) = self.commit_transform_plan(plan) else {
-                return false;
-            };
-            let selection = match target {
-                TransformTarget::Occurrences(paths) => {
-                    self.selection.select_exact(drag.selection.clone(), false);
-                    self.selection.occurrences.extend(paths.iter().cloned());
-                    CorrectionSelection::Occurrences {
-                        occurrence_ids: paths.iter().map(InstancePath::root_occurrence).collect(),
-                        primary_occurrence_id: None,
-                    }
-                }
-                TransformTarget::Group(group_id) => {
-                    self.select_group(group_id);
-                    CorrectionSelection::Group(group_id)
-                }
-            };
-            self.record_transform_correction(
-                selection,
-                CorrectionOperation::Move(MoveCorrection {
-                    direction: drag.delta_mm * (1.0 / distance_mm),
-                    applied_distance_mm: distance_mm,
-                    accepts_vector_correction: false,
-                }),
-            );
-            self.status_key = "status-object-moved";
-            self.digest = self.catalog.format(
-                "digest-move-committed",
-                &BTreeMap::from([("distance", format_height(distance_mm))]),
-            );
-            true
+            self.commit_move_transform(plan, &drag.selection, drag.delta_mm)
         }
+    }
+
+    fn commit_move_transform(
+        &mut self,
+        plan: TransformPlan,
+        primary_selection: &SelectionId,
+        delta_mm: Vec3,
+    ) -> bool {
+        let distance_mm = vector_length(delta_mm);
+        if !delta_mm.x.is_finite()
+            || !delta_mm.y.is_finite()
+            || !delta_mm.z.is_finite()
+            || distance_mm <= 0.0
+        {
+            return false;
+        }
+        let Ok(target) = self.commit_transform_plan(plan) else {
+            return false;
+        };
+        let selection = match target {
+            TransformTarget::Occurrences(paths) => {
+                self.selection
+                    .select_exact(primary_selection.clone(), false);
+                self.selection.occurrences.extend(paths.iter().cloned());
+                CorrectionSelection::Occurrences {
+                    occurrence_ids: paths.iter().map(InstancePath::root_occurrence).collect(),
+                    primary_occurrence_id: None,
+                }
+            }
+            TransformTarget::Group(group_id) => {
+                self.select_group(group_id);
+                CorrectionSelection::Group(group_id)
+            }
+        };
+        self.record_transform_correction(
+            selection,
+            CorrectionOperation::Move(MoveCorrection {
+                direction: delta_mm * (1.0 / distance_mm),
+                applied_distance_mm: distance_mm,
+                accepts_vector_correction: false,
+            }),
+        );
+        self.status_key = "status-object-moved";
+        self.digest = self.catalog.format(
+            "digest-move-committed",
+            &BTreeMap::from([("distance", format_height(distance_mm))]),
+        );
+        true
     }
 
     fn commit_rotate_drag(&mut self, drag: &RotateDrag) -> bool {
@@ -22749,13 +22744,12 @@ impl KetchupApp {
             return false;
         }
         if drag.copy {
-            return self.rotate_occurrences(
+            return self.rotate_copy_occurrences(
                 &drag.selection,
                 &drag.occurrence_paths,
                 drag.centre_mm,
                 drag.axis,
                 drag.angle_degrees,
-                true,
             );
         }
         if !rotation_is_meaningful(drag.angle_degrees) {
@@ -22764,12 +22758,30 @@ impl KetchupApp {
         let Some(plan) = self.rotate_transform_plan(drag) else {
             return false;
         };
+        self.commit_rotate_transform(
+            plan,
+            &drag.selection,
+            drag.centre_mm,
+            drag.axis,
+            drag.angle_degrees,
+        )
+    }
+
+    fn commit_rotate_transform(
+        &mut self,
+        plan: TransformPlan,
+        primary_selection: &SelectionId,
+        centre_mm: Vec3,
+        axis: Axis,
+        angle_degrees: f64,
+    ) -> bool {
         let Ok(target) = self.commit_transform_plan(plan) else {
             return false;
         };
         let selection = match target {
             TransformTarget::Occurrences(paths) => {
-                self.selection.select_exact(drag.selection.clone(), false);
+                self.selection
+                    .select_exact(primary_selection.clone(), false);
                 self.selection.occurrences = paths.clone();
                 CorrectionSelection::Occurrences {
                     occurrence_ids: paths.iter().map(InstancePath::root_occurrence).collect(),
@@ -22783,59 +22795,6 @@ impl KetchupApp {
         };
         self.record_transform_correction(
             selection,
-            CorrectionOperation::Rotate(RotateCorrection {
-                copy_source_occurrence_ids: None,
-                centre_mm: drag.centre_mm,
-                axis: drag.axis,
-            }),
-        );
-        self.status_key = "status-object-rotated";
-        self.digest = self.catalog.format(
-            "digest-rotate-committed",
-            &BTreeMap::from([
-                ("angle", format_angle(drag.angle_degrees)),
-                ("axis", self.catalog.text(axis_name_key(drag.axis))),
-            ]),
-        );
-        true
-    }
-
-    fn rotate_group(
-        &mut self,
-        group_id: GroupId,
-        centre_mm: Vec3,
-        axis: Axis,
-        angle_degrees: f64,
-    ) -> bool {
-        if !rotation_is_meaningful(angle_degrees) {
-            return false;
-        }
-        let snapshot = self.document.current();
-        let Some(group) = snapshot.group(group_id) else {
-            return false;
-        };
-        let Ok(rotation) = world_rotation_transform(centre_mm, axis, angle_degrees) else {
-            return false;
-        };
-        let Some(transform) =
-            world_edit_in_parent_space(&snapshot, group.parent(), group.transform(), rotation)
-        else {
-            return false;
-        };
-        if self
-            .apply_batch_with_work_recovery(&CommandBatch::new(vec![
-                CanonicalCommand::SetGroupTransform {
-                    id: group_id,
-                    transform,
-                },
-            ]))
-            .is_err()
-        {
-            return false;
-        }
-        self.select_group(group_id);
-        self.record_transform_correction(
-            CorrectionSelection::Group(group_id),
             CorrectionOperation::Rotate(RotateCorrection {
                 copy_source_occurrence_ids: None,
                 centre_mm,
@@ -22853,14 +22812,13 @@ impl KetchupApp {
         true
     }
 
-    fn rotate_occurrences(
+    fn rotate_copy_occurrences(
         &mut self,
         selection: &SelectionId,
         occurrence_paths: &BTreeSet<InstancePath>,
         centre_mm: Vec3,
         axis: Axis,
         angle_degrees: f64,
-        copy: bool,
     ) -> bool {
         if !rotation_is_meaningful(angle_degrees)
             || occurrence_paths.is_empty()
@@ -22896,15 +22854,15 @@ impl KetchupApp {
         let Ok(rotation) = world_rotation_transform(centre_mm, axis, angle_degrees) else {
             return false;
         };
-        let first_new_id = snapshot
+        let Some(first_new_id) = snapshot
             .occurrences()
             .map(|occurrence| occurrence.id().0)
             .max()
             .unwrap_or(0)
-            .checked_add(1);
-        if copy && first_new_id.is_none() {
+            .checked_add(1)
+        else {
             return false;
-        }
+        };
         let mut commands = Vec::new();
         let mut targets = Vec::with_capacity(source_ids.len());
         let mut created_per_definition = BTreeMap::<DefinitionId, usize>::new();
@@ -22921,53 +22879,38 @@ impl KetchupApp {
             ) else {
                 return false;
             };
-            let target_id = if copy {
-                let Some(id) = first_new_id
-                    .and_then(|id| id.checked_add(index as u64))
-                    .map(OccurrenceId)
-                else {
-                    return false;
-                };
-                id
-            } else {
-                source_id
+            let Some(target_id) = first_new_id.checked_add(index as u64).map(OccurrenceId) else {
+                return false;
             };
-            if copy {
-                let Some(definition) = snapshot.definition(definition_id) else {
-                    return false;
-                };
-                let existing = snapshot
-                    .scene_query()
-                    .into_iter()
-                    .filter(|item| item.definition_id == definition_id)
-                    .count();
-                let created = created_per_definition.entry(definition_id).or_default();
-                *created += 1;
-                commands.push(CanonicalCommand::CreateOccurrence {
+            let Some(definition) = snapshot.definition(definition_id) else {
+                return false;
+            };
+            let existing = snapshot
+                .scene_query()
+                .into_iter()
+                .filter(|item| item.definition_id == definition_id)
+                .count();
+            let created = created_per_definition.entry(definition_id).or_default();
+            *created += 1;
+            commands.push(CanonicalCommand::CreateOccurrence {
+                id: target_id,
+                definition_id,
+                name: self.catalog.format(
+                    "model-copy-occurrence",
+                    &BTreeMap::from([
+                        ("name", definition.name().to_owned()),
+                        ("number", (existing + *created).to_string()),
+                    ]),
+                ),
+                transform,
+                parent: source.parent(),
+                tag: source.tag(),
+                visible: source.visible(),
+            });
+            if let Some(color) = source.color() {
+                commands.push(CanonicalCommand::SetOccurrenceColor {
                     id: target_id,
-                    definition_id,
-                    name: self.catalog.format(
-                        "model-copy-occurrence",
-                        &BTreeMap::from([
-                            ("name", definition.name().to_owned()),
-                            ("number", (existing + *created).to_string()),
-                        ]),
-                    ),
-                    transform,
-                    parent: source.parent(),
-                    tag: source.tag(),
-                    visible: source.visible(),
-                });
-                if let Some(color) = source.color() {
-                    commands.push(CanonicalCommand::SetOccurrenceColor {
-                        id: target_id,
-                        color: Some(color),
-                    });
-                }
-            } else {
-                commands.push(CanonicalCommand::SetOccurrenceTransform {
-                    id: target_id,
-                    transform,
+                    color: Some(color),
                 });
             }
             targets.push((target_id, definition_id));
@@ -23002,7 +22945,7 @@ impl KetchupApp {
                 primary_occurrence_id: None,
             },
             CorrectionOperation::Rotate(RotateCorrection {
-                copy_source_occurrence_ids: copy.then_some(source_ids),
+                copy_source_occurrence_ids: Some(source_ids),
                 centre_mm,
                 axis,
             }),
@@ -23023,33 +22966,54 @@ impl KetchupApp {
     /// This is the same commit the viewport gesture performs, exposed so a
     /// typed angle and the headless shell reach it without synthesising a drag.
     pub fn rotate_selected(&mut self, angle_degrees: f64) -> bool {
-        let axis = self.rotate_axis_lock.unwrap_or(Axis::Z);
-        if let Some(group_id) = self.selection.selected_group {
-            let snapshot = self.document.current();
-            let applies = move |path: &InstancePath| {
+        let snapshot = self.document.current();
+        let group_id = self.selection.selected_group;
+        let occurrence_paths = self.selected_instance_paths();
+        let applies: Box<dyn Fn(&InstancePath) -> bool> = match group_id {
+            Some(group_id) => Box::new(move |path: &InstancePath| {
                 Self::group_contains_occurrence(&snapshot, group_id, path.root_occurrence())
-            };
-            let Some(centre_mm) = self.rotation_centre_for(&applies) else {
-                return false;
-            };
-            return self.rotate_group(group_id, centre_mm, axis, angle_degrees);
+            }),
+            None => {
+                let occurrence_paths = occurrence_paths.clone();
+                Box::new(move |path: &InstancePath| occurrence_paths.contains(path))
+            }
+        };
+        let Some(centre_mm) = self.rotation_centre_for(&applies) else {
+            return false;
+        };
+        self.rotate_selected_around(
+            centre_mm,
+            self.rotate_axis_lock.unwrap_or(Axis::Z),
+            angle_degrees,
+        )
+    }
+
+    fn rotate_selected_around(&mut self, centre_mm: Vec3, axis: Axis, angle_degrees: f64) -> bool {
+        if !rotation_is_meaningful(angle_degrees) {
+            return false;
         }
+        let snapshot = self.document.current();
         let Some(selection) = self.selected_move_reference() else {
             return false;
         };
         let occurrence_paths = self.selected_instance_paths();
-        let applies = |path: &InstancePath| occurrence_paths.contains(path);
-        let Some(centre_mm) = self.rotation_centre_for(&applies) else {
+        let Ok(world_edit) = world_rotation_transform(centre_mm, axis, angle_degrees) else {
             return false;
         };
-        self.rotate_occurrences(
+        let Some(request) = self.transform_request(
+            snapshot.document_id(),
+            snapshot.revision_id(),
             &selection,
             &occurrence_paths,
-            centre_mm,
-            axis,
-            angle_degrees,
-            false,
-        )
+            self.selection.selected_group,
+            world_edit,
+        ) else {
+            return false;
+        };
+        let Some(plan) = TransformPlan::prepare(&snapshot, request) else {
+            return false;
+        };
+        self.commit_rotate_transform(plan, &selection, centre_mm, axis, angle_degrees)
     }
 
     /// Re-turn the last rotation to `angle_degrees` instead of adding to it.
@@ -23076,7 +23040,7 @@ impl KetchupApp {
             return false;
         };
         let base = parent.snapshot();
-        let commands = if let Some(source_ids) = &previous.copy_source_occurrence_ids {
+        let batch = if let Some(source_ids) = &previous.copy_source_occurrence_ids {
             let CorrectionSelection::Occurrences {
                 occurrence_ids: target_ids,
                 ..
@@ -23155,58 +23119,23 @@ impl KetchupApp {
                     });
                 }
             }
-            commands
+            CommandBatch::new(commands)
         } else {
-            match &selection {
-                CorrectionSelection::Group(group_id) => {
-                    let Some(group) = base.group(*group_id) else {
-                        return false;
-                    };
-                    vec![CanonicalCommand::SetGroupTransform {
-                        id: *group_id,
-                        transform: match world_edit_in_parent_space(
-                            base,
-                            group.parent(),
-                            group.transform(),
-                            rotation,
-                        ) {
-                            Some(transform) => transform,
-                            None => return false,
-                        },
-                    }]
-                }
-                CorrectionSelection::Occurrences { occurrence_ids, .. } => {
-                    let mut commands = Vec::with_capacity(occurrence_ids.len());
-                    for occurrence_id in occurrence_ids {
-                        let Some(occurrence) = base.occurrence(*occurrence_id) else {
-                            return false;
-                        };
-                        commands.push(CanonicalCommand::SetOccurrenceTransform {
-                            id: *occurrence_id,
-                            transform: match world_edit_in_parent_space(
-                                base,
-                                occurrence.parent(),
-                                occurrence.transform(),
-                                rotation,
-                            ) {
-                                Some(transform) => transform,
-                                None => return false,
-                            },
-                        });
-                    }
-                    commands
-                }
-            }
+            let Some(plan) = self.correction_transform_plan(&parent, &selection, rotation) else {
+                return false;
+            };
+            let (_, batch) = plan.into_commit();
+            batch
         };
         let Ok(proposal) = self.document.prepare_tip_replacement_proposal(
             &parent,
-            CommandBatch::new(commands),
+            batch,
             ProposalContext::canonical_preview(),
         ) else {
             return false;
         };
         if self
-            .mutate_document_with_work_recovery(|document| {
+            .complete_mutation_with_work_recovery(|document| {
                 document.commit_tip_replacement_proposal(&proposal)
             })
             .is_err()
@@ -23242,57 +23171,10 @@ impl KetchupApp {
         let Ok(scale) = world_scale_transform(previous.centre_mm, factor, previous.axis) else {
             return false;
         };
-        let base = parent.snapshot();
-        let commands = match &selection {
-            CorrectionSelection::Occurrences { occurrence_ids, .. } => {
-                let mut commands = Vec::with_capacity(occurrence_ids.len());
-                for occurrence_id in occurrence_ids {
-                    let Some(occurrence) = base.occurrence(*occurrence_id) else {
-                        return false;
-                    };
-                    let Some(transform) = world_edit_in_parent_space(
-                        base,
-                        occurrence.parent(),
-                        occurrence.transform(),
-                        scale,
-                    ) else {
-                        return false;
-                    };
-                    commands.push(CanonicalCommand::SetOccurrenceTransform {
-                        id: *occurrence_id,
-                        transform,
-                    });
-                }
-                commands
-            }
-            CorrectionSelection::Group(group_id) => {
-                let Some(group) = base.group(*group_id) else {
-                    return false;
-                };
-                let Some(transform) =
-                    world_edit_in_parent_space(base, group.parent(), group.transform(), scale)
-                else {
-                    return false;
-                };
-                vec![CanonicalCommand::SetGroupTransform {
-                    id: *group_id,
-                    transform,
-                }]
-            }
-        };
-        let Ok(proposal) = self.document.prepare_tip_replacement_proposal(
-            &parent,
-            CommandBatch::new(commands),
-            ProposalContext::canonical_preview(),
-        ) else {
+        let Some(plan) = self.correction_transform_plan(&parent, &selection, scale) else {
             return false;
         };
-        if self
-            .mutate_document_with_work_recovery(|document| {
-                document.commit_tip_replacement_proposal(&proposal)
-            })
-            .is_err()
-        {
+        if !self.commit_transform_correction(&parent, plan) {
             return false;
         }
         self.record_transform_correction(selection, CorrectionOperation::Scale(previous.clone()));
@@ -23325,65 +23207,23 @@ impl KetchupApp {
         let Ok(parent) = self.document.tip_replacement_parent() else {
             return false;
         };
-        let base = parent.snapshot();
-        let commands = match &selection {
-            CorrectionSelection::Occurrences { occurrence_ids, .. } => {
-                let mut commands = Vec::with_capacity(occurrence_ids.len());
-                for occurrence_id in occurrence_ids {
-                    let Some(occurrence) = base.occurrence(*occurrence_id) else {
-                        return false;
-                    };
-                    let Some(transform) = translated_in_parent_space(
-                        base,
-                        occurrence.parent(),
-                        occurrence.transform(),
-                        delta_mm,
-                    ) else {
-                        return false;
-                    };
-                    commands.push(CanonicalCommand::SetOccurrenceTransform {
-                        id: *occurrence_id,
-                        transform,
-                    });
-                }
-                commands
-            }
-            CorrectionSelection::Group(group_id) => {
-                let Some(group) = base.group(*group_id) else {
-                    return false;
-                };
-                let Some(transform) =
-                    translated_in_parent_space(base, group.parent(), group.transform(), delta_mm)
-                else {
-                    return false;
-                };
-                vec![CanonicalCommand::SetGroupTransform {
-                    id: *group_id,
-                    transform,
-                }]
-            }
-        };
-        let Ok(proposal) = self.document.prepare_tip_replacement_proposal(
-            &parent,
-            CommandBatch::new(commands),
-            ProposalContext::canonical_preview(),
-        ) else {
+        let Ok(world_edit) = Transform::from_translation(delta_mm.x, delta_mm.y, delta_mm.z) else {
             return false;
         };
-        if self
-            .mutate_document_with_work_recovery(|document| {
-                document.commit_tip_replacement_proposal(&proposal)
-            })
-            .is_err()
-        {
+        let Some(plan) = self.correction_transform_plan(&parent, &selection, world_edit) else {
+            return false;
+        };
+        if !self.commit_transform_correction(&parent, plan) {
             return false;
         }
         self.record_transform_correction(
             selection,
             CorrectionOperation::Move(MoveCorrection {
-                direction: (distance_mm > 0.0)
-                    .then(|| delta_mm * (1.0 / distance_mm))
-                    .unwrap_or(previous.direction),
+                direction: if distance_mm > 0.0 {
+                    delta_mm * (1.0 / distance_mm)
+                } else {
+                    previous.direction
+                },
                 applied_distance_mm: distance_mm,
                 accepts_vector_correction,
             }),
@@ -23392,12 +23232,11 @@ impl KetchupApp {
         true
     }
 
-    fn translate_occurrences(
+    fn copy_occurrences(
         &mut self,
         selection: &SelectionId,
         occurrence_paths: &BTreeSet<InstancePath>,
         delta_mm: Vec3,
-        copy: bool,
     ) -> bool {
         let distance_mm = vector_length(delta_mm);
         if !delta_mm.x.is_finite()
@@ -23459,50 +23298,38 @@ impl KetchupApp {
             ) else {
                 return false;
             };
-            let target_id = if copy {
-                let Some(id) = first_new_id.checked_add(index as u64).map(OccurrenceId) else {
-                    return false;
-                };
-                id
-            } else {
-                source_id
+            let Some(target_id) = first_new_id.checked_add(index as u64).map(OccurrenceId) else {
+                return false;
             };
-            if copy {
-                let Some(definition) = snapshot.definition(definition_id) else {
-                    return false;
-                };
-                let existing = snapshot
-                    .scene_query()
-                    .into_iter()
-                    .filter(|item| item.definition_id == definition_id)
-                    .count();
-                let created = created_per_definition.entry(definition_id).or_default();
-                *created += 1;
-                commands.push(CanonicalCommand::CreateOccurrence {
+            let Some(definition) = snapshot.definition(definition_id) else {
+                return false;
+            };
+            let existing = snapshot
+                .scene_query()
+                .into_iter()
+                .filter(|item| item.definition_id == definition_id)
+                .count();
+            let created = created_per_definition.entry(definition_id).or_default();
+            *created += 1;
+            commands.push(CanonicalCommand::CreateOccurrence {
+                id: target_id,
+                definition_id,
+                name: self.catalog.format(
+                    "model-copy-occurrence",
+                    &BTreeMap::from([
+                        ("name", definition.name().to_owned()),
+                        ("number", (existing + *created).to_string()),
+                    ]),
+                ),
+                transform,
+                parent: source.parent(),
+                tag: source.tag(),
+                visible: source.visible(),
+            });
+            if let Some(color) = source.color() {
+                commands.push(CanonicalCommand::SetOccurrenceColor {
                     id: target_id,
-                    definition_id,
-                    name: self.catalog.format(
-                        "model-copy-occurrence",
-                        &BTreeMap::from([
-                            ("name", definition.name().to_owned()),
-                            ("number", (existing + *created).to_string()),
-                        ]),
-                    ),
-                    transform,
-                    parent: source.parent(),
-                    tag: source.tag(),
-                    visible: source.visible(),
-                });
-                if let Some(color) = source.color() {
-                    commands.push(CanonicalCommand::SetOccurrenceColor {
-                        id: target_id,
-                        color: Some(color),
-                    });
-                }
-            } else {
-                commands.push(CanonicalCommand::SetOccurrenceTransform {
-                    id: target_id,
-                    transform,
+                    color: Some(color),
                 });
             }
             targets.push((target_id, definition_id));
@@ -23533,51 +23360,49 @@ impl KetchupApp {
             .collect::<BTreeSet<_>>();
         let correction_selection = CorrectionSelection::Occurrences {
             occurrence_ids: target_ids,
-            primary_occurrence_id: copy.then_some(primary_target_id),
+            primary_occurrence_id: Some(primary_target_id),
         };
-        let correction = if copy {
-            CorrectionOperation::MoveCopy(MoveCopyCorrection {
-                source_occurrence_ids: source_ids,
-                first_copy_occurrence_id: targets[0].0,
-                primary_source_index,
-                element: selection.element.clone(),
-                delta_mm,
-                array_mode: MoveCopyArrayMode::Multiply,
-                array_count: 1,
-            })
-        } else {
-            CorrectionOperation::Move(MoveCorrection {
-                direction: delta_mm * (1.0 / distance_mm),
-                applied_distance_mm: distance_mm,
-                accepts_vector_correction: false,
-            })
-        };
+        let correction = CorrectionOperation::MoveCopy(MoveCopyCorrection {
+            source_occurrence_ids: source_ids,
+            first_copy_occurrence_id: targets[0].0,
+            primary_source_index,
+            element: selection.element.clone(),
+            delta_mm,
+            array_mode: MoveCopyArrayMode::Multiply,
+            array_count: 1,
+        });
         self.record_transform_correction(correction_selection, correction);
-        self.status_key = if copy {
-            "status-object-copied"
-        } else {
-            "status-object-moved"
-        };
+        self.status_key = "status-object-copied";
         self.digest = self.catalog.format(
-            if copy {
-                "digest-copy-committed"
-            } else {
-                "digest-move-committed"
-            },
+            "digest-copy-committed",
             &BTreeMap::from([("distance", format_height(distance_mm))]),
         );
         true
     }
 
     pub fn move_selected(&mut self, delta_mm: Vec3) -> bool {
-        if let Some(group_id) = self.selection.selected_group {
-            return self.translate_group(group_id, delta_mm);
-        }
+        let snapshot = self.document.current();
         let Some(selection) = self.selected_move_reference() else {
             return false;
         };
         let occurrence_paths = self.selected_instance_paths();
-        self.translate_occurrences(&selection, &occurrence_paths, delta_mm, false)
+        let Ok(world_edit) = Transform::from_translation(delta_mm.x, delta_mm.y, delta_mm.z) else {
+            return false;
+        };
+        let Some(request) = self.transform_request(
+            snapshot.document_id(),
+            snapshot.revision_id(),
+            &selection,
+            &occurrence_paths,
+            self.selection.selected_group,
+            world_edit,
+        ) else {
+            return false;
+        };
+        let Some(plan) = TransformPlan::prepare(&snapshot, request) else {
+            return false;
+        };
+        self.commit_move_transform(plan, &selection, delta_mm)
     }
 
     pub fn copy_selected(&mut self, delta_mm: Vec3) -> bool {
@@ -23585,7 +23410,7 @@ impl KetchupApp {
             return false;
         };
         let occurrence_paths = self.selected_instance_paths();
-        self.translate_occurrences(&selection, &occurrence_paths, delta_mm, true)
+        self.copy_occurrences(&selection, &occurrence_paths, delta_mm)
     }
 
     fn correct_move_copy_delta(&mut self, delta_mm: Vec3) -> bool {
@@ -23709,7 +23534,7 @@ impl KetchupApp {
             return false;
         };
         if self
-            .mutate_document_with_work_recovery(|document| {
+            .complete_mutation_with_work_recovery(|document| {
                 document.commit_tip_replacement_proposal(&proposal)
             })
             .is_err()
@@ -27755,7 +27580,7 @@ impl KetchupApp {
             return false;
         }
         if self
-            .mutate_document_with_work_recovery(|document| proposal.commit(document))
+            .complete_mutation_with_work_recovery(|document| proposal.commit(document))
             .is_err()
         {
             self.status_key = "error-preview-stale";
@@ -27983,25 +27808,67 @@ impl KetchupApp {
         }
     }
 
-    fn mutate_document_and_exact_results_with_work_recovery<T, E>(
+    fn complete_mutation_with_publication<T, P, E>(
         &mut self,
-        mutate: impl FnOnce(&mut DocumentStore, &mut ExactResultRegistry) -> Result<T, E>,
+        mutate: impl FnOnce(&mut DocumentStore) -> Result<(T, P), E>,
+        publish: impl FnOnce(&mut Self, P),
     ) -> Result<T, WorkRecoveryMutationError<E>> {
-        let mut staged_exact_results = self.exact_results.clone();
-        let result = self.mutate_document_with_work_recovery(|document| {
-            mutate(document, &mut staged_exact_results)
-        });
-        if result.is_ok() {
-            self.exact_results = staged_exact_results;
+        self.mutation_readiness = MutationReadiness::Pending;
+        let result = self.mutate_document_with_work_recovery(mutate);
+        match result {
+            Ok((value, publication)) => {
+                publish(self, publication);
+                let snapshot = self.document.current();
+                self.rebind_exact_results(&snapshot);
+                self.mutation_readiness = MutationReadiness::Ready;
+                Ok(value)
+            }
+            Err(error) => {
+                self.mutation_readiness = MutationReadiness::Ready;
+                Err(error)
+            }
         }
-        result
+    }
+
+    fn complete_mutation_with_work_recovery<T, E>(
+        &mut self,
+        mutate: impl FnOnce(&mut DocumentStore) -> Result<T, E>,
+    ) -> Result<T, WorkRecoveryMutationError<E>> {
+        self.complete_mutation_with_publication(
+            |document| mutate(document).map(|value| (value, ())),
+            |_, ()| {},
+        )
+    }
+
+    fn complete_mutation_and_exact_results_with_work_recovery<T, E>(
+        &mut self,
+        mutate: impl FnOnce(
+            &mut DocumentStore,
+            &mut ExactResultRegistry,
+            &mut ExactResultRegistry,
+        ) -> Result<T, E>,
+    ) -> Result<T, WorkRecoveryMutationError<E>> {
+        let mut exact_results = self.exact_results.clone();
+        let mut topology_results = self.topology_results.clone();
+        self.complete_mutation_with_publication(
+            move |document| {
+                let value = mutate(document, &mut exact_results, &mut topology_results)?;
+                Ok((value, (exact_results, topology_results)))
+            },
+            |app, (exact_results, topology_results)| {
+                app.exact_results = exact_results;
+                app.topology_results = topology_results;
+            },
+        )
     }
 
     fn apply_batch_with_work_recovery(
         &mut self,
         batch: &CommandBatch,
     ) -> Result<(), WorkRecoveryMutationError<CanonicalError>> {
-        self.mutate_document_with_work_recovery(|document| document.apply_batch(batch).map(|_| ()))
+        self.complete_mutation_with_work_recovery(|document| {
+            document.apply_batch(batch).map(|_| ())
+        })
     }
 
     fn commit_transform_plan(
@@ -28013,11 +27880,30 @@ impl KetchupApp {
         Ok(target)
     }
 
+    fn commit_transform_correction(
+        &mut self,
+        parent: &TipReplacementParent,
+        plan: TransformPlan,
+    ) -> bool {
+        let (_, batch) = plan.into_commit();
+        let Ok(proposal) = self.document.prepare_tip_replacement_proposal(
+            parent,
+            batch,
+            ProposalContext::canonical_preview(),
+        ) else {
+            return false;
+        };
+        self.complete_mutation_with_work_recovery(|document| {
+            document.commit_tip_replacement_proposal(&proposal)
+        })
+        .is_ok()
+    }
+
     fn commit_proposal_with_work_recovery(
         &mut self,
         proposal: &Proposal,
     ) -> Result<(), WorkRecoveryMutationError<ProposalCommitError>> {
-        self.mutate_document_with_work_recovery(|document| {
+        self.complete_mutation_with_work_recovery(|document| {
             document.commit_proposal(proposal).map(|_| ())
         })
     }
@@ -28029,7 +27915,7 @@ impl KetchupApp {
         ketchup_core::document::VerifiedProposalCommit,
         WorkRecoveryMutationError<ProposalCommitError>,
     > {
-        self.mutate_document_with_work_recovery(|document| {
+        self.complete_mutation_with_work_recovery(|document| {
             document.commit_verified_proposal(proposal)
         })
     }
@@ -28054,19 +27940,8 @@ impl KetchupApp {
         &mut self,
         mutate: impl FnOnce(&mut DocumentStore) -> Option<Snapshot>,
     ) -> bool {
-        self.mutation_readiness = MutationReadiness::Pending;
-        match self.mutate_document_with_work_recovery(|document| Ok::<_, String>(mutate(document)))
-        {
-            Ok(Some(snapshot)) => {
-                self.rebind_exact_results(&snapshot);
-                self.mutation_readiness = MutationReadiness::Ready;
-                true
-            }
-            Ok(None) | Err(_) => {
-                self.mutation_readiness = MutationReadiness::Ready;
-                false
-            }
-        }
+        self.complete_mutation_with_work_recovery(|document| Ok::<_, String>(mutate(document)))
+            .is_ok_and(|snapshot| snapshot.is_some())
     }
 
     pub fn undo(&mut self) -> bool {
@@ -28147,7 +28022,7 @@ impl KetchupApp {
         if plan != preview.plan
             || batch != preview.batch
             || self
-                .mutate_document_with_work_recovery(|document| proposal.commit(document))
+                .complete_mutation_with_work_recovery(|document| proposal.commit(document))
                 .is_err()
         {
             self.preview = None;
@@ -32704,18 +32579,16 @@ impl KetchupApp {
                     drag.copy = drag.group_id.is_none();
                     self.move_copy_mode = drag.copy;
                 }
-                if !self.move_preview_is_current(&drag) {
-                    self.commit_move_drag(&drag);
-                } else if vector_length(drag.delta_mm) >= 0.01 {
+                if !self.move_preview_is_current(&drag) || vector_length(drag.delta_mm) >= 0.01 {
                     self.commit_move_drag(&drag);
                 } else {
                     self.set_move_session(ToolSessionPhase::Anchor, drag);
                     self.digest = self.catalog.text("digest-move-anchor-set");
                 }
             } else if let Some(drag) = self.take_rotate_session(Some(ToolSessionPhase::Gesture)) {
-                if !self.rotate_preview_is_current(&drag) {
-                    self.commit_rotate_drag(&drag);
-                } else if rotation_is_meaningful(drag.angle_degrees) {
+                if !self.rotate_preview_is_current(&drag)
+                    || rotation_is_meaningful(drag.angle_degrees)
+                {
                     self.commit_rotate_drag(&drag);
                 } else {
                     self.set_rotate_session(ToolSessionPhase::Anchor, drag);
@@ -37928,15 +37801,13 @@ impl KetchupApp {
             self.digest = self.catalog.text("error-parameter-stale");
             return false;
         }
-        let batch = CommandBatch::new(vec![
-            CanonicalCommand::SetNodeExpression {
+        let batch = CommandBatch::edit_evaluator_and_recompute_affected(
+            EvaluatorParameterEdit::SetExpression {
                 id: node_id,
                 expression: self.parameter_expression_input.clone(),
             },
-            CanonicalCommand::RecomputeFeatureParameters {
-                identity: EvaluationIdentity::default(),
-            },
-        ]);
+            EvaluationIdentity::default(),
+        );
         let proposal = match self.document.prepare_proposal(batch) {
             Ok(proposal) => proposal,
             Err(error) => {

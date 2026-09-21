@@ -6,8 +6,9 @@ use ketchup_core::document::{
 use ketchup_core::document::{
     BooleanOperation, CanonicalCommand, CanonicalError, CollectionId, CommandBatch,
     ConvertedEntityId, DefinitionId, DerivedIdentity, Dimension, DimensionDisplayUnit,
-    DimensionPresentation, DimensionReferenceHealth, DocumentStore, EvaluationIdentity, FeatureId,
-    FeatureKind, FeatureParameterBinding, FeatureParameterFreshness, FeatureParameterStaleReason,
+    DimensionPresentation, DimensionReferenceHealth, DocumentStore, EvaluationIdentity,
+    EvaluatorParameterEdit, FeatureId, FeatureKind, FeatureParameterBinding,
+    FeatureParameterFreshness, FeatureParameterRecomputeScope, FeatureParameterStaleReason,
     FeatureParameterTarget, GroupId, InstancePath, InstancePathStep, LocalGroupId, LocalGroupKey,
     LocalOccurrenceId, LocalOccurrenceKey, LoftContinuity, LoftSection, MappingResolution, NodeId,
     OccurrenceId, ParameterPath, ParameterPathError, ParameterValueType, PersistentDimension,
@@ -1697,6 +1698,7 @@ fn sketch_constraint_parameters_use_the_generic_binding_and_recompute_contract()
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::RecomputeFeatureParameters {
                 identity: EvaluationIdentity::default(),
+                scope: FeatureParameterRecomputeScope::All,
             },
         ]))
         .unwrap();
@@ -1903,12 +1905,14 @@ fn explicit_feature_parameter_recompute_is_deterministic_undoable_and_identity_b
     let identity = EvaluationIdentity::default();
     let recompute = CommandBatch::new(vec![CanonicalCommand::RecomputeFeatureParameters {
         identity: identity.clone(),
+        scope: FeatureParameterRecomputeScope::All,
     }]);
     let alternate = CommandBatch::new(vec![CanonicalCommand::RecomputeFeatureParameters {
         identity: EvaluationIdentity {
             backend: Some("alternate-backend".to_owned()),
             ..identity.clone()
         },
+        scope: FeatureParameterRecomputeScope::All,
     }]);
     assert_ne!(recompute.digest(), alternate.digest());
 
@@ -2119,6 +2123,7 @@ fn feature_parameter_recompute_rolls_back_every_target_when_one_value_is_invalid
         document.apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::RecomputeFeatureParameters {
                 identity: EvaluationIdentity::default(),
+                scope: FeatureParameterRecomputeScope::All,
             },
         ])),
         Err(CanonicalError::DimensionOutsideEnvelope)
@@ -2222,6 +2227,7 @@ fn rectangle_numeric_constraints_are_persisted_dependent_only_and_atomic() {
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::RecomputeFeatureParameters {
                 identity: EvaluationIdentity::default(),
+                scope: FeatureParameterRecomputeScope::All,
             },
         ]))
         .unwrap();
@@ -2234,15 +2240,13 @@ fn rectangle_numeric_constraints_are_persisted_dependent_only_and_atomic() {
         .clone();
 
     let revision = document
-        .apply_batch(&CommandBatch::new(vec![
-            CanonicalCommand::SetEvaluatorDimension {
+        .apply_batch(&CommandBatch::edit_evaluator_and_recompute_affected(
+            EvaluatorParameterEdit::SetDimension {
                 id: WIDTH_SOURCE,
                 dimension: height("650"),
             },
-            CanonicalCommand::RecomputeFeatureParameters {
-                identity: EvaluationIdentity::default(),
-            },
-        ]))
+            EvaluationIdentity::default(),
+        ))
         .unwrap();
     let resized_digest = revision.snapshot().canonical_digest();
     assert_eq!(
@@ -2288,18 +2292,17 @@ fn rectangle_numeric_constraints_are_persisted_dependent_only_and_atomic() {
     assert_eq!(document.redo().unwrap().canonical_digest(), resized_digest);
 
     let undo_before_invalid = document.visible_undo_steps();
-    let invalid_dimension_error = match document.apply_batch(&CommandBatch::new(vec![
-        CanonicalCommand::SetEvaluatorDimension {
-            id: WIDTH_SOURCE,
-            dimension: height("-1"),
-        },
-        CanonicalCommand::RecomputeFeatureParameters {
-            identity: EvaluationIdentity::default(),
-        },
-    ])) {
-        Ok(_) => panic!("negative width constraint must fail"),
-        Err(error) => error,
-    };
+    let invalid_dimension_error =
+        match document.apply_batch(&CommandBatch::edit_evaluator_and_recompute_affected(
+            EvaluatorParameterEdit::SetDimension {
+                id: WIDTH_SOURCE,
+                dimension: height("-1"),
+            },
+            EvaluationIdentity::default(),
+        )) {
+            Ok(_) => panic!("negative width constraint must fail"),
+            Err(error) => error,
+        };
     assert_eq!(
         invalid_dimension_error,
         CanonicalError::DimensionOutsideEnvelope

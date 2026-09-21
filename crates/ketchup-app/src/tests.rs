@@ -1429,26 +1429,23 @@ fn cad_edit_append_sweep_rejects_unsupported_inputs_without_mutation() {
     let spline = app
         .plan_assistant_cad_edit_program(&program(5, 4))
         .unwrap_err();
-    assert_eq!(spline.code, "planning.cad_feature_input_unsupported");
+    assert_eq!(spline.code, "canonical.invalid_sweep");
     let invalid_path = app
         .plan_assistant_cad_edit_program(&program(3, 1))
         .unwrap_err();
-    assert_eq!(invalid_path.code, "planning.cad_feature_input_unsupported");
+    assert_eq!(invalid_path.code, "canonical.invalid_sweep");
     let zero_area = app
         .plan_assistant_cad_edit_program(&program(7, 4))
         .unwrap_err();
-    assert_eq!(zero_area.code, "planning.cad_feature_input_unsupported");
+    assert_eq!(zero_area.code, "canonical.invalid_sweep");
     let overlong_path = app
         .plan_assistant_cad_edit_program(&program(3, 8))
         .unwrap_err();
-    assert_eq!(overlong_path.code, "planning.cad_feature_input_unsupported");
+    assert_eq!(overlong_path.code, "canonical.invalid_sweep");
     let sub_minimum_arc = app
         .plan_assistant_cad_edit_program(&program(9, 4))
         .unwrap_err();
-    assert_eq!(
-        sub_minimum_arc.code,
-        "planning.cad_feature_input_unsupported"
-    );
+    assert_eq!(sub_minimum_arc.code, "canonical.invalid_sweep");
     assert_eq!(app.document.current().revision_id(), baseline_revision);
     assert_eq!(app.document.current().canonical_digest(), baseline_digest);
     assert_eq!(app.document.visible_undo_steps(), baseline_undo);
@@ -2247,16 +2244,16 @@ fn historical_exact_geometry_is_bound_to_its_own_snapshot() {
     assert!(app.headless_install_exact_package((*current_box_package(&app)).clone().into()));
     let parent = app.document.current();
 
-    app.document
-        .apply_batch(&CommandBatch::new(vec![
+    assert!(
+        app.apply_batch_with_work_recovery(&CommandBatch::new(vec![
             CanonicalCommand::SetFeatureDimension {
                 id: FeatureId(2),
                 dimension: Dimension::from_decimal("40").unwrap(),
             },
         ]))
-        .unwrap();
+        .is_ok()
+    );
     let tip = app.document.current();
-    app.rebind_exact_results(&tip);
     assert!(app.headless_install_exact_package((*current_box_package(&app)).clone().into()));
 
     assert_eq!(
@@ -2323,11 +2320,9 @@ fn historical_exact_geometry_is_bound_to_its_own_snapshot() {
         );
     }
 
-    app.document.undo().unwrap();
-    app.rebind_exact_results(&parent);
+    assert!(app.undo());
     assert_eq!(app.active_boxes()[0].size_mm.z, 20.0);
-    app.document.redo().unwrap();
-    app.rebind_exact_results(&tip);
+    assert!(app.redo());
     assert_eq!(app.active_boxes()[0].size_mm.z, 40.0);
 
     assert!(
@@ -14220,14 +14215,7 @@ fn rotate_copy_copies_the_entire_multi_selection_in_one_undo_step() {
     let base_digest = snapshot.canonical_digest();
     let base_steps = app.undo_step_count();
 
-    assert!(app.rotate_occurrences(
-        &selection,
-        &occurrence_paths,
-        centre_mm,
-        Axis::Z,
-        90.0,
-        true,
-    ));
+    assert!(app.rotate_copy_occurrences(&selection, &occurrence_paths, centre_mm, Axis::Z, 90.0,));
     assert_eq!(app.document.current().occurrences().count(), 4);
     assert_eq!(
         app.selected_occurrence_ids(),

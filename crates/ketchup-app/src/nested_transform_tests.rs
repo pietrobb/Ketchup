@@ -192,7 +192,7 @@ fn nested_group_world_move_and_rotate_preserve_siblings_and_history() {
         let delta = Vec3::new(37.0, -19.0, 53.0);
         let centre = Vec3::new(26.0, 44.0, -17.0);
         let edit = if rotate {
-            assert!(app.rotate_group(GroupId(30), centre, Axis::Y, 35.0));
+            assert!(app.rotate_selected_around(centre, Axis::Y, 35.0));
             world_rotation_transform(centre, Axis::Y, 35.0).unwrap()
         } else {
             assert!(app.move_selected(delta));
@@ -229,20 +229,23 @@ fn nested_world_rotate_copy_and_angle_correction_use_the_same_pivot() {
             app.rotate_axis_lock = Some(Axis::Y);
             if group {
                 assert!(app.select_group(GroupId(30)));
-                assert!(app.rotate_group(GroupId(30), centre, Axis::Y, 35.0));
+                assert!(app.rotate_selected_around(centre, Axis::Y, 35.0));
             } else {
                 assert!(app.enter_group_context(GroupId(30)));
                 app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
                 let selection = app.selected_move_reference().unwrap();
                 let occurrence_paths = app.selected_instance_paths();
-                assert!(app.rotate_occurrences(
-                    &selection,
-                    &occurrence_paths,
-                    centre,
-                    Axis::Y,
-                    35.0,
-                    copy,
-                ));
+                assert!(if copy {
+                    app.rotate_copy_occurrences(
+                        &selection,
+                        &occurrence_paths,
+                        centre,
+                        Axis::Y,
+                        35.0,
+                    )
+                } else {
+                    app.rotate_selected_around(centre, Axis::Y, 35.0)
+                });
             }
             assert_transform(
                 world(&app, if copy { 4 } else { 1 }),

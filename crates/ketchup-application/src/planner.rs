@@ -50,87 +50,110 @@ const MAX_AXIS_INSTANCE_OCCURRENCES: usize = 10_000;
 const MAX_AXIS_INSTANCE_PATH_STEPS: usize = 256;
 const MAX_AXIS_INSTANCE_TEXT_BYTES: usize = 4 * 1024 * 1024;
 
-fn resolve_assistant_cad_selector(
-    current_selection: &BTreeSet<OccurrenceId>,
-    snapshot: &Snapshot,
-    selector: &AssistantCadEntitySelector,
-    operation: &str,
-) -> AssistantPlanningResult<Vec<OccurrenceId>> {
-    let ids = match selector {
-        AssistantCadEntitySelector::CurrentSelection {} => {
-            current_selection.iter().copied().collect::<Vec<_>>()
-        }
-        AssistantCadEntitySelector::Occurrences { occurrence_ids } => occurrence_ids
-            .iter()
-            .copied()
-            .map(OccurrenceId)
-            .collect::<Vec<_>>(),
-    };
-    selector
-        .validate_resolved_target_count(ids.len())
-        .map_err(|error| {
-            assistant_planning_rejection(
-                "planning.cad_selector_invalid",
-                operation,
-                "occurrence_selection",
-                error,
-                "Select between one and 100 root occurrences that still exist, then retry.",
-            )
-        })?;
-    if let Some(id) = ids.iter().find(|id| snapshot.occurrence(**id).is_none()) {
-        return Err(assistant_canonical_rejection(
-            CanonicalError::OccurrenceNotFound(*id),
-            operation,
-            &format!("occurrence:{}", id.0),
-        ));
-    }
-    Ok(ids)
+#[derive(Default)]
+struct StagedProgramOutputs {
+    definition: Option<DefinitionId>,
+    sketch_feature: Option<FeatureId>,
+    body_feature: Option<FeatureId>,
+    construction_feature: Option<FeatureId>,
 }
 
-fn resolve_program_feature_reference(
-    reference: AssistantCadFeatureReference,
-    original_snapshot: &Snapshot,
-    operation_outputs: &BTreeMap<(usize, AssistantCadProgramFeatureOutput), u64>,
-    expected_output: AssistantCadProgramFeatureOutput,
-    operation: &str,
-) -> AssistantPlanningResult<u64> {
-    match reference {
-        AssistantCadFeatureReference::Existing(id)
-            if original_snapshot.feature(FeatureId(id)).is_some() =>
-        {
-            Ok(id)
-        }
-        AssistantCadFeatureReference::Existing(id) => Err(assistant_canonical_rejection(
-            CanonicalError::FeatureNotFound(FeatureId(id)),
-            operation,
-            &format!("feature:{id}"),
-        )),
-        AssistantCadFeatureReference::ProgramOutput(reference) => operation_outputs
-            .get(&(reference.operation_index as usize, expected_output))
-            .copied()
-            .ok_or_else(|| {
-                assistant_planning_rejection(
-                    "planning.cad_program_feature_reference_unavailable",
-                    operation,
-                    &format!("operation:{}", reference.operation_index),
-                    "The referenced earlier operation did not produce the required typed feature.",
-                    "Reference a compatible typed output from an earlier operation in this CAD program.",
-                )
-            }),
-    }
+enum StagedProgramOutput {
+    Definition(DefinitionId),
+    SketchFeature(FeatureId),
+    BodyFeature(FeatureId),
+    ConstructionFeature(FeatureId),
 }
 
-fn resolve_program_output_reference(
-    reference: AssistantCadProgramFeatureReference,
-    operation_outputs: &BTreeMap<(usize, AssistantCadProgramFeatureOutput), u64>,
-    expected_output: AssistantCadProgramFeatureOutput,
-    operation: &str,
-) -> AssistantPlanningResult<u64> {
-    operation_outputs
-        .get(&(reference.operation_index as usize, expected_output))
-        .copied()
-        .filter(|_| reference.output == expected_output)
-        .ok_or_else(|| {
+struct StagedPlanningContext {
+    base_snapshot: Snapshot,
+    staged_snapshot: Snapshot,
+    commands: Vec<CanonicalCommand>,
+    staged_command_count: usize,
+    operation_outputs: BTreeMap<usize, StagedProgramOutputs>,
+}
+
+impl StagedPlanningContext {
+    fn new(base_snapshot: &Snapshot) -> Self {
+        Self {
+            base_snapshot: base_snapshot.clone(),
+            staged_snapshot: base_snapshot.clone(),
+            commands: Vec::new(),
+            staged_command_count: 0,
+            operation_outputs: BTreeMap::new(),
+        }
+    }
+
+    fn refresh(&mut self, operation: &str, target: &str) -> AssistantPlanningResult<()> {
+        debug_assert!(self.commands.len() >= self.staged_command_count);
+        if self.commands.len() == self.staged_command_count {
+            return Ok(());
+        }
+        self.staged_snapshot = self
+            .staged_snapshot
+            .preview_batch(&CommandBatch::new(
+                self.commands[self.staged_command_count..].to_vec(),
+            ))
+            .map_err(|error| assistant_canonical_rejection(error, operation, target))?;
+        self.staged_command_count = self.commands.len();
+        Ok(())
+    }
+
+    fn push(&mut self, command: CanonicalCommand) {
+        self.commands.push(command);
+    }
+
+    fn extend(&mut self, commands: impl IntoIterator<Item = CanonicalCommand>) {
+        self.commands.extend(commands);
+    }
+
+    fn into_final_batch(self) -> CommandBatch {
+        CommandBatch::new(self.commands)
+    }
+
+    fn base_snapshot(&self) -> &Snapshot {
+        &self.base_snapshot
+    }
+
+    fn staged_snapshot(&self) -> &Snapshot {
+        &self.staged_snapshot
+    }
+
+    fn record_output(&mut self, operation_index: usize, output: StagedProgramOutput) {
+        let outputs = self.operation_outputs.entry(operation_index).or_default();
+        match output {
+            StagedProgramOutput::Definition(id) => outputs.definition = Some(id),
+            StagedProgramOutput::SketchFeature(id) => outputs.sketch_feature = Some(id),
+            StagedProgramOutput::BodyFeature(id) => outputs.body_feature = Some(id),
+            StagedProgramOutput::ConstructionFeature(id) => {
+                outputs.construction_feature = Some(id);
+            }
+        }
+    }
+
+    fn resolve_program_output(
+        &self,
+        reference: AssistantCadProgramFeatureReference,
+        expected_output: AssistantCadProgramFeatureOutput,
+        operation: &str,
+    ) -> AssistantPlanningResult<u64> {
+        let output = self
+            .operation_outputs
+            .get(&(reference.operation_index as usize))
+            .and_then(|outputs| match expected_output {
+                AssistantCadProgramFeatureOutput::Definition => outputs.definition.map(|id| id.0),
+                AssistantCadProgramFeatureOutput::SketchFeature => {
+                    outputs.sketch_feature.map(|id| id.0)
+                }
+                AssistantCadProgramFeatureOutput::BodyFeature => {
+                    outputs.body_feature.map(|id| id.0)
+                }
+                AssistantCadProgramFeatureOutput::ConstructionFeature => {
+                    outputs.construction_feature.map(|id| id.0)
+                }
+            })
+            .filter(|_| reference.output == expected_output);
+        output.ok_or_else(|| {
             assistant_planning_rejection(
                 "planning.cad_program_feature_reference_unavailable",
                 operation,
@@ -139,6 +162,88 @@ fn resolve_program_output_reference(
                 "Reference a compatible typed output from an earlier operation in this CAD program.",
             )
         })
+    }
+
+    fn resolve_program_feature(
+        &self,
+        reference: AssistantCadFeatureReference,
+        expected_output: AssistantCadProgramFeatureOutput,
+        operation: &str,
+    ) -> AssistantPlanningResult<u64> {
+        match reference {
+            AssistantCadFeatureReference::Existing(id)
+                if self.base_snapshot.feature(FeatureId(id)).is_some() =>
+            {
+                Ok(id)
+            }
+            AssistantCadFeatureReference::Existing(id) => Err(assistant_canonical_rejection(
+                CanonicalError::FeatureNotFound(FeatureId(id)),
+                operation,
+                &format!("feature:{id}"),
+            )),
+            AssistantCadFeatureReference::ProgramOutput(reference) => self
+                .resolve_program_output(reference, expected_output, operation)
+                .map_err(|_| {
+                    assistant_planning_rejection(
+                        "planning.cad_program_feature_reference_unavailable",
+                        operation,
+                        &format!("operation:{}", reference.operation_index),
+                        "The referenced earlier operation did not produce the required typed feature.",
+                        "Reference a compatible typed output from an earlier operation in this CAD program.",
+                    )
+                }),
+        }
+    }
+
+    fn resolve_base_selector(
+        &self,
+        current_selection: &BTreeSet<OccurrenceId>,
+        selector: &AssistantCadEntitySelector,
+        operation: &str,
+    ) -> AssistantPlanningResult<Vec<OccurrenceId>> {
+        let ids = match selector {
+            AssistantCadEntitySelector::CurrentSelection {} => {
+                current_selection.iter().copied().collect::<Vec<_>>()
+            }
+            AssistantCadEntitySelector::Occurrences { occurrence_ids } => occurrence_ids
+                .iter()
+                .copied()
+                .map(OccurrenceId)
+                .collect::<Vec<_>>(),
+        };
+        selector
+            .validate_resolved_target_count(ids.len())
+            .map_err(|error| {
+                assistant_planning_rejection(
+                    "planning.cad_selector_invalid",
+                    operation,
+                    "occurrence_selection",
+                    error,
+                    "Select between one and 100 root occurrences that still exist, then retry.",
+                )
+            })?;
+        if let Some(id) = ids
+            .iter()
+            .find(|id| self.base_snapshot().occurrence(**id).is_none())
+        {
+            return Err(assistant_canonical_rejection(
+                CanonicalError::OccurrenceNotFound(*id),
+                operation,
+                &format!("occurrence:{}", id.0),
+            ));
+        }
+        Ok(ids)
+    }
+
+    fn topology(&self, base_topology: &ExactResultRegistry) -> ExactResultRegistry {
+        if self.staged_command_count == 0 {
+            base_topology.clone()
+        } else if base_topology.is_bound_to(&self.base_snapshot) {
+            ExactResultRegistry::carried_forward(&self.staged_snapshot, base_topology)
+        } else {
+            ExactResultRegistry::default()
+        }
+    }
 }
 
 fn resolve_assistant_instance_path(
@@ -279,7 +384,7 @@ fn resolve_assistant_axis_spec(
     axis: &AssistantAxisSpec,
     original_snapshot: &Snapshot,
     topology_results: &ExactResultRegistry,
-    operation_outputs: &BTreeMap<(usize, AssistantCadProgramFeatureOutput), u64>,
+    staged_planning: &StagedPlanningContext,
     operations: &[AssistantCadEditOperation],
     operation: &str,
 ) -> AssistantPlanningResult<([f64; 3], [f64; 3])> {
@@ -436,9 +541,8 @@ fn resolve_assistant_axis_spec(
             (feature_id, feature.kind())
         }
         AssistantCadFeatureReference::ProgramOutput(reference) => {
-            let id = resolve_program_output_reference(
+            let id = staged_planning.resolve_program_output(
                 *reference,
-                operation_outputs,
                 AssistantCadProgramFeatureOutput::ConstructionFeature,
                 operation,
             )?;
@@ -475,10 +579,9 @@ fn resolve_assistant_axis_spec(
     Ok((*origin_mm, *direction))
 }
 
-fn resolve_program_feature_references(
+fn resolve_staged_program_feature_references(
     feature: &AssistantCadBodyFeature,
-    original_snapshot: &Snapshot,
-    operation_outputs: &BTreeMap<(usize, AssistantCadProgramFeatureOutput), u64>,
+    staged_planning: &StagedPlanningContext,
     operation: &str,
 ) -> AssistantPlanningResult<AssistantCadBodyFeature> {
     let mut feature = feature.clone();
@@ -488,17 +591,13 @@ fn resolve_program_feature_references(
         ..
     } = &mut feature
     {
-        let target = resolve_program_feature_reference(
+        let target = staged_planning.resolve_program_feature(
             *target_feature_id,
-            original_snapshot,
-            operation_outputs,
             AssistantCadProgramFeatureOutput::BodyFeature,
             operation,
         )?;
-        let tool = resolve_program_feature_reference(
+        let tool = staged_planning.resolve_program_feature(
             *tool_feature_id,
-            original_snapshot,
-            operation_outputs,
             AssistantCadProgramFeatureOutput::BodyFeature,
             operation,
         )?;
@@ -520,17 +619,13 @@ fn resolve_program_feature_references(
         ..
     } = &mut feature
     {
-        let first = resolve_program_feature_reference(
+        let first = staged_planning.resolve_program_feature(
             *first_member_id,
-            original_snapshot,
-            operation_outputs,
             AssistantCadProgramFeatureOutput::BodyFeature,
             operation,
         )?;
-        let second = resolve_program_feature_reference(
+        let second = staged_planning.resolve_program_feature(
             *second_member_id,
-            original_snapshot,
-            operation_outputs,
             AssistantCadProgramFeatureOutput::BodyFeature,
             operation,
         )?;
@@ -553,37 +648,34 @@ fn resolve_program_feature_references(
     } = &mut feature
     {
         for section in sections {
-            section.profile_feature_id = resolve_program_feature_reference(
-                section.profile_feature_id,
-                original_snapshot,
-                operation_outputs,
-                AssistantCadProgramFeatureOutput::SketchFeature,
-                operation,
-            )?
-            .into();
+            section.profile_feature_id = staged_planning
+                .resolve_program_feature(
+                    section.profile_feature_id,
+                    AssistantCadProgramFeatureOutput::SketchFeature,
+                    operation,
+                )?
+                .into();
         }
         if let Some(guide) = guide_feature_id {
-            *guide = resolve_program_feature_reference(
-                *guide,
-                original_snapshot,
-                operation_outputs,
-                AssistantCadProgramFeatureOutput::ConstructionFeature,
-                operation,
-            )?
-            .into();
+            *guide = staged_planning
+                .resolve_program_feature(
+                    *guide,
+                    AssistantCadProgramFeatureOutput::ConstructionFeature,
+                    operation,
+                )?
+                .into();
         }
     }
     match &mut feature {
         AssistantCadBodyFeature::SurfaceBody { source } => match source {
             AssistantCadSurfaceBodySource::Planar { profile_feature_id } => {
-                *profile_feature_id = resolve_program_feature_reference(
-                    *profile_feature_id,
-                    original_snapshot,
-                    operation_outputs,
-                    AssistantCadProgramFeatureOutput::SketchFeature,
-                    operation,
-                )?
-                .into();
+                *profile_feature_id = staged_planning
+                    .resolve_program_feature(
+                        *profile_feature_id,
+                        AssistantCadProgramFeatureOutput::SketchFeature,
+                        operation,
+                    )?
+                    .into();
             }
             AssistantCadSurfaceBodySource::Loft {
                 sections,
@@ -591,24 +683,22 @@ fn resolve_program_feature_references(
                 ..
             } => {
                 for section in sections {
-                    section.profile_feature_id = resolve_program_feature_reference(
-                        section.profile_feature_id,
-                        original_snapshot,
-                        operation_outputs,
-                        AssistantCadProgramFeatureOutput::SketchFeature,
-                        operation,
-                    )?
-                    .into();
+                    section.profile_feature_id = staged_planning
+                        .resolve_program_feature(
+                            section.profile_feature_id,
+                            AssistantCadProgramFeatureOutput::SketchFeature,
+                            operation,
+                        )?
+                        .into();
                 }
                 if let Some(guide) = guide_feature_id {
-                    *guide = resolve_program_feature_reference(
-                        *guide,
-                        original_snapshot,
-                        operation_outputs,
-                        AssistantCadProgramFeatureOutput::ConstructionFeature,
-                        operation,
-                    )?
-                    .into();
+                    *guide = staged_planning
+                        .resolve_program_feature(
+                            *guide,
+                            AssistantCadProgramFeatureOutput::ConstructionFeature,
+                            operation,
+                        )?
+                        .into();
                 }
             }
         },
@@ -616,22 +706,20 @@ fn resolve_program_feature_references(
             target_feature_id,
             cutter_feature_id,
         } => {
-            *target_feature_id = resolve_program_feature_reference(
-                *target_feature_id,
-                original_snapshot,
-                operation_outputs,
-                AssistantCadProgramFeatureOutput::BodyFeature,
-                operation,
-            )?
-            .into();
-            *cutter_feature_id = resolve_program_feature_reference(
-                *cutter_feature_id,
-                original_snapshot,
-                operation_outputs,
-                AssistantCadProgramFeatureOutput::BodyFeature,
-                operation,
-            )?
-            .into();
+            *target_feature_id = staged_planning
+                .resolve_program_feature(
+                    *target_feature_id,
+                    AssistantCadProgramFeatureOutput::BodyFeature,
+                    operation,
+                )?
+                .into();
+            *cutter_feature_id = staged_planning
+                .resolve_program_feature(
+                    *cutter_feature_id,
+                    AssistantCadProgramFeatureOutput::BodyFeature,
+                    operation,
+                )?
+                .into();
         }
         AssistantCadBodyFeature::SurfaceExtend {
             target_feature_id, ..
@@ -639,28 +727,26 @@ fn resolve_program_feature_references(
         | AssistantCadBodyFeature::SurfaceThicken {
             target_feature_id, ..
         } => {
-            *target_feature_id = resolve_program_feature_reference(
-                *target_feature_id,
-                original_snapshot,
-                operation_outputs,
-                AssistantCadProgramFeatureOutput::BodyFeature,
-                operation,
-            )?
-            .into();
+            *target_feature_id = staged_planning
+                .resolve_program_feature(
+                    *target_feature_id,
+                    AssistantCadProgramFeatureOutput::BodyFeature,
+                    operation,
+                )?
+                .into();
         }
         AssistantCadBodyFeature::SurfaceKnit {
             surface_feature_ids,
             ..
         } => {
             for reference in surface_feature_ids {
-                *reference = resolve_program_feature_reference(
-                    *reference,
-                    original_snapshot,
-                    operation_outputs,
-                    AssistantCadProgramFeatureOutput::BodyFeature,
-                    operation,
-                )?
-                .into();
+                *reference = staged_planning
+                    .resolve_program_feature(
+                        *reference,
+                        AssistantCadProgramFeatureOutput::BodyFeature,
+                        operation,
+                    )?
+                    .into();
             }
         }
         _ => {}
@@ -793,8 +879,10 @@ fn plan_assistant_helix_thread_creation(
 /// Plans against the current document and explicit host-provided context without mutation.
 ///
 /// An empty selection is valid unless an operation uses `CurrentSelection`.
-/// Explicit selectors never fall back to selection. Topology references must be
-/// current in the supplied registry. The returned batch still requires canonical
+/// Host selection and explicit occurrence selectors are resolved only against the
+/// base snapshot; references to outputs of earlier program operations resolve only
+/// against the staged context. Topology references must be current in the supplied
+/// registry. The returned batch still requires canonical
 /// preview/proposal validation before commit; this function retains the existing
 /// appended-feature exact graph and planar-offset preflight gates, not worker execution.
 pub fn plan_assistant_cad_edit_program(
@@ -817,35 +905,9 @@ pub fn plan_assistant_cad_edit_program(
         )
     })?;
 
-    let mut commands = Vec::new();
-    let mut operation_outputs = BTreeMap::new();
+    let mut staged_planning = StagedPlanningContext::new(&snapshot);
     let mut appended_exact_features = Vec::new();
     let mut appended_planar_offsets = Vec::new();
-    let mut working_transforms = snapshot
-        .occurrences()
-        .map(|occurrence| (occurrence.id(), occurrence.transform()))
-        .collect::<BTreeMap<_, _>>();
-    let mut collection_members = snapshot
-        .collections()
-        .map(|collection| {
-            (
-                collection.id(),
-                collection.occurrence_ids().collect::<Vec<_>>(),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-    let mut mate_endpoints = snapshot
-        .assembly_mates()
-        .map(|mate| {
-            (
-                mate.id(),
-                (
-                    mate.endpoint_a().occurrence_id(),
-                    mate.endpoint_b().occurrence_id(),
-                ),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
     let mut next_definition = snapshot
         .definitions()
         .map(|definition| definition.id().0)
@@ -877,10 +939,6 @@ pub fn plan_assistant_cad_edit_program(
         .unwrap_or(0)
         .checked_add(1);
 
-    let mut working_colors = snapshot
-        .occurrences()
-        .map(|o| (o.id(), o.color()))
-        .collect::<BTreeMap<_, _>>();
     for (operation_index, operation) in program.operations.iter().enumerate() {
         let operation_name = match operation {
             AssistantCadEditOperation::CreateSketch { .. } => "create_sketch",
@@ -924,6 +982,7 @@ pub fn plan_assistant_cad_edit_program(
             AssistantCadEditOperation::CircularPattern { .. } => "circular_pattern_occurrence",
             AssistantCadEditOperation::Mirror { .. } => "mirror_occurrence",
         };
+        staged_planning.refresh(operation_name, &document_target)?;
         let normalized_operation = match operation {
             AssistantCadEditOperation::CreatePart {
                 feature: AssistantCadPartFeature::Revolve { axis, .. },
@@ -933,7 +992,7 @@ pub fn plan_assistant_cad_edit_program(
                     axis,
                     &snapshot,
                     topology_results,
-                    &operation_outputs,
+                    &staged_planning,
                     &program.operations,
                     operation_name,
                 )?;
@@ -956,7 +1015,7 @@ pub fn plan_assistant_cad_edit_program(
                     axis,
                     &snapshot,
                     topology_results,
-                    &operation_outputs,
+                    &staged_planning,
                     &program.operations,
                     operation_name,
                 )?;
@@ -1041,17 +1100,12 @@ pub fn plan_assistant_cad_edit_program(
         let targets = selector.map_or_else(
             || Ok(Vec::new()),
             |selector| {
-                resolve_assistant_cad_selector(
-                    current_selection,
-                    &snapshot,
-                    selector,
-                    operation_name,
-                )
+                staged_planning.resolve_base_selector(current_selection, selector, operation_name)
             },
         )?;
         if let Some(id) = targets
             .iter()
-            .find(|id| !working_transforms.contains_key(id))
+            .find(|id| staged_planning.staged_snapshot().occurrence(**id).is_none())
         {
             return Err(assistant_planning_rejection(
                 "planning.cad_target_deleted",
@@ -1076,12 +1130,9 @@ pub fn plan_assistant_cad_edit_program(
                 for command in &creation_commands {
                     match command {
                         CanonicalCommand::CreateDefinition { id, .. } => {
-                            operation_outputs.insert(
-                                (
-                                    operation_index,
-                                    AssistantCadProgramFeatureOutput::Definition,
-                                ),
-                                id.0,
+                            staged_planning.record_output(
+                                operation_index,
+                                StagedProgramOutput::Definition(*id),
                             );
                         }
                         CanonicalCommand::CreateFeature {
@@ -1089,12 +1140,9 @@ pub fn plan_assistant_cad_edit_program(
                             kind: ketchup_core::document::FeatureKind::Sketch(_),
                             ..
                         } => {
-                            operation_outputs.insert(
-                                (
-                                    operation_index,
-                                    AssistantCadProgramFeatureOutput::SketchFeature,
-                                ),
-                                id.0,
+                            staged_planning.record_output(
+                                operation_index,
+                                StagedProgramOutput::SketchFeature(*id),
                             );
                         }
                         CanonicalCommand::CreateFeature { id, kind, .. }
@@ -1107,18 +1155,15 @@ pub fn plan_assistant_cad_edit_program(
                                     | ketchup_core::document::FeatureKind::Sketch(_)
                             ) =>
                         {
-                            operation_outputs.insert(
-                                (
-                                    operation_index,
-                                    AssistantCadProgramFeatureOutput::BodyFeature,
-                                ),
-                                id.0,
+                            staged_planning.record_output(
+                                operation_index,
+                                StagedProgramOutput::BodyFeature(*id),
                             );
                         }
                         _ => {}
                     }
                 }
-                commands.extend(creation_commands);
+                staged_planning.extend(creation_commands);
             }
             AssistantCadEditOperation::CreateSpatialPath { name, segments } => {
                 let path_segments = validated_spatial_path_segments(segments).map_err(|error| {
@@ -1142,28 +1187,22 @@ pub fn plan_assistant_cad_edit_program(
                         &mut next_occurrence,
                         (operation_name, &document_target),
                     )?;
-                operation_outputs.insert(
-                    (
-                        operation_index,
-                        AssistantCadProgramFeatureOutput::Definition,
-                    ),
-                    definition_id.0,
+                staged_planning.record_output(
+                    operation_index,
+                    StagedProgramOutput::Definition(definition_id),
                 );
-                operation_outputs.insert(
-                    (
-                        operation_index,
-                        AssistantCadProgramFeatureOutput::ConstructionFeature,
-                    ),
-                    feature_id.0,
+                staged_planning.record_output(
+                    operation_index,
+                    StagedProgramOutput::ConstructionFeature(feature_id),
                 );
-                commands.extend(creation_commands);
+                staged_planning.extend(creation_commands);
             }
             AssistantCadEditOperation::CreateHelixPath { name, parameters } => {
                 let axis = resolve_assistant_axis_spec(
                     &parameters.axis,
                     &snapshot,
                     topology_results,
-                    &operation_outputs,
+                    &staged_planning,
                     &program.operations,
                     operation_name,
                 )?;
@@ -1191,21 +1230,15 @@ pub fn plan_assistant_cad_edit_program(
                         &mut next_occurrence,
                         (operation_name, &document_target),
                     )?;
-                operation_outputs.insert(
-                    (
-                        operation_index,
-                        AssistantCadProgramFeatureOutput::Definition,
-                    ),
-                    definition_id.0,
+                staged_planning.record_output(
+                    operation_index,
+                    StagedProgramOutput::Definition(definition_id),
                 );
-                operation_outputs.insert(
-                    (
-                        operation_index,
-                        AssistantCadProgramFeatureOutput::ConstructionFeature,
-                    ),
-                    feature_id.0,
+                staged_planning.record_output(
+                    operation_index,
+                    StagedProgramOutput::ConstructionFeature(feature_id),
                 );
-                commands.extend(creation_commands);
+                staged_planning.extend(creation_commands);
             }
             AssistantCadEditOperation::CreateConstructionPoint { name, position_mm } => {
                 let (creation_commands, definition_id, feature_id) =
@@ -1220,21 +1253,15 @@ pub fn plan_assistant_cad_edit_program(
                         &mut next_occurrence,
                         (operation_name, &document_target),
                     )?;
-                operation_outputs.insert(
-                    (
-                        operation_index,
-                        AssistantCadProgramFeatureOutput::Definition,
-                    ),
-                    definition_id.0,
+                staged_planning.record_output(
+                    operation_index,
+                    StagedProgramOutput::Definition(definition_id),
                 );
-                operation_outputs.insert(
-                    (
-                        operation_index,
-                        AssistantCadProgramFeatureOutput::ConstructionFeature,
-                    ),
-                    feature_id.0,
+                staged_planning.record_output(
+                    operation_index,
+                    StagedProgramOutput::ConstructionFeature(feature_id),
                 );
-                commands.extend(creation_commands);
+                staged_planning.extend(creation_commands);
             }
             AssistantCadEditOperation::CreateConstructionAxis {
                 name,
@@ -1254,21 +1281,15 @@ pub fn plan_assistant_cad_edit_program(
                         &mut next_occurrence,
                         (operation_name, &document_target),
                     )?;
-                operation_outputs.insert(
-                    (
-                        operation_index,
-                        AssistantCadProgramFeatureOutput::Definition,
-                    ),
-                    definition_id.0,
+                staged_planning.record_output(
+                    operation_index,
+                    StagedProgramOutput::Definition(definition_id),
                 );
-                operation_outputs.insert(
-                    (
-                        operation_index,
-                        AssistantCadProgramFeatureOutput::ConstructionFeature,
-                    ),
-                    feature_id.0,
+                staged_planning.record_output(
+                    operation_index,
+                    StagedProgramOutput::ConstructionFeature(feature_id),
                 );
-                commands.extend(creation_commands);
+                staged_planning.extend(creation_commands);
             }
             AssistantCadEditOperation::CreateConstructionPlane {
                 name,
@@ -1290,28 +1311,22 @@ pub fn plan_assistant_cad_edit_program(
                         &mut next_occurrence,
                         (operation_name, &document_target),
                     )?;
-                operation_outputs.insert(
-                    (
-                        operation_index,
-                        AssistantCadProgramFeatureOutput::Definition,
-                    ),
-                    definition_id.0,
+                staged_planning.record_output(
+                    operation_index,
+                    StagedProgramOutput::Definition(definition_id),
                 );
-                operation_outputs.insert(
-                    (
-                        operation_index,
-                        AssistantCadProgramFeatureOutput::ConstructionFeature,
-                    ),
-                    feature_id.0,
+                staged_planning.record_output(
+                    operation_index,
+                    StagedProgramOutput::ConstructionFeature(feature_id),
                 );
-                commands.extend(creation_commands);
+                staged_planning.extend(creation_commands);
             }
             AssistantCadEditOperation::CreateHelix { name, parameters } => {
                 let axis = resolve_assistant_axis_spec(
                     &parameters.axis,
                     &snapshot,
                     topology_results,
-                    &operation_outputs,
+                    &staged_planning,
                     &program.operations,
                     operation_name,
                 )?;
@@ -1354,29 +1369,23 @@ pub fn plan_assistant_cad_edit_program(
                         &mut next_occurrence,
                         (operation_name, &document_target),
                     )?;
-                operation_outputs.insert(
-                    (
-                        operation_index,
-                        AssistantCadProgramFeatureOutput::Definition,
-                    ),
-                    definition_id.0,
+                staged_planning.record_output(
+                    operation_index,
+                    StagedProgramOutput::Definition(definition_id),
                 );
-                operation_outputs.insert(
-                    (
-                        operation_index,
-                        AssistantCadProgramFeatureOutput::BodyFeature,
-                    ),
-                    body_feature_id.0,
+                staged_planning.record_output(
+                    operation_index,
+                    StagedProgramOutput::BodyFeature(body_feature_id),
                 );
                 appended_exact_features.push((definition_id, body_feature_id));
-                commands.extend(creation_commands);
+                staged_planning.extend(creation_commands);
             }
             AssistantCadEditOperation::CreateThread { name, parameters } => {
                 let axis = resolve_assistant_axis_spec(
                     &parameters.helix.axis,
                     &snapshot,
                     topology_results,
-                    &operation_outputs,
+                    &staged_planning,
                     &program.operations,
                     operation_name,
                 )?;
@@ -1411,22 +1420,16 @@ pub fn plan_assistant_cad_edit_program(
                         &mut next_occurrence,
                         (operation_name, &document_target),
                     )?;
-                operation_outputs.insert(
-                    (
-                        operation_index,
-                        AssistantCadProgramFeatureOutput::Definition,
-                    ),
-                    definition_id.0,
+                staged_planning.record_output(
+                    operation_index,
+                    StagedProgramOutput::Definition(definition_id),
                 );
-                operation_outputs.insert(
-                    (
-                        operation_index,
-                        AssistantCadProgramFeatureOutput::BodyFeature,
-                    ),
-                    body_feature_id.0,
+                staged_planning.record_output(
+                    operation_index,
+                    StagedProgramOutput::BodyFeature(body_feature_id),
                 );
                 appended_exact_features.push((definition_id, body_feature_id));
-                commands.extend(creation_commands);
+                staged_planning.extend(creation_commands);
             }
             AssistantCadEditOperation::CreateProgramSketch {
                 definition,
@@ -1435,25 +1438,20 @@ pub fn plan_assistant_cad_edit_program(
                 entities,
                 constraints,
             } => {
-                let definition_id = resolve_program_output_reference(
+                let definition_id = staged_planning.resolve_program_output(
                     *definition,
-                    &operation_outputs,
                     AssistantCadProgramFeatureOutput::Definition,
                     operation_name,
                 )?;
-                let planning_snapshot = document
-                    .preview_batch(&CommandBatch::new(commands.clone()))
-                    .map_err(|error| {
-                        assistant_canonical_rejection(error, operation_name, &document_target)
-                    })?;
+                staged_planning.refresh(operation_name, &document_target)?;
+                let planning_snapshot = staged_planning.staged_snapshot();
                 let workplane = match workplane {
                     ketchup_core::assistant_sidecar::AssistantWorkplaneSpec::ConstructionPlane {
                         plane: AssistantCadFeatureReference::ProgramOutput(reference),
                     } => ketchup_core::assistant_sidecar::AssistantWorkplaneSpec::ConstructionPlane {
                         plane: AssistantCadFeatureReference::Existing(
-                            resolve_program_output_reference(
+                            staged_planning.resolve_program_output(
                                 *reference,
-                                &operation_outputs,
                                 AssistantCadProgramFeatureOutput::ConstructionFeature,
                                 operation_name,
                             )?,
@@ -1469,7 +1467,7 @@ pub fn plan_assistant_cad_edit_program(
                     constraints: constraints.clone(),
                 };
                 let creation_commands = plan_creation(
-                    &planning_snapshot,
+                    planning_snapshot,
                     &resolved,
                     &mut next_definition,
                     &mut next_feature,
@@ -1485,48 +1483,24 @@ pub fn plan_assistant_cad_edit_program(
                     _ => None,
                 });
                 if let Some(sketch_id) = sketch_id {
-                    operation_outputs.insert(
-                        (
-                            operation_index,
-                            AssistantCadProgramFeatureOutput::SketchFeature,
-                        ),
-                        sketch_id.0,
+                    staged_planning.record_output(
+                        operation_index,
+                        StagedProgramOutput::SketchFeature(sketch_id),
                     );
                 }
-                commands.extend(creation_commands);
+                staged_planning.extend(creation_commands);
             }
             AssistantCadEditOperation::AppendFeature {
                 definition_id,
                 name,
                 feature,
             } => {
-                let prefix_candidate = if commands.is_empty() {
-                    None
-                } else {
-                    Some(
-                        document
-                            .preview_batch(&CommandBatch::new(commands.clone()))
-                            .map_err(|error| {
-                                assistant_canonical_rejection(
-                                    error,
-                                    operation_name,
-                                    &document_target,
-                                )
-                            })?,
-                    )
-                };
-                let planning_snapshot = prefix_candidate.as_ref().unwrap_or(&snapshot);
-                let planning_topology = prefix_candidate.as_ref().map(|candidate| {
-                    if topology_results.is_bound_to(&snapshot) {
-                        ExactResultRegistry::carried_forward(candidate, topology_results)
-                    } else {
-                        ExactResultRegistry::default()
-                    }
-                });
-                let feature = resolve_program_feature_references(
+                staged_planning.refresh(operation_name, &document_target)?;
+                let planning_snapshot = staged_planning.staged_snapshot();
+                let planning_topology = staged_planning.topology(topology_results);
+                let feature = resolve_staged_program_feature_references(
                     feature,
-                    &snapshot,
-                    &operation_outputs,
+                    &staged_planning,
                     operation_name,
                 )?;
                 let definition_id = DefinitionId(*definition_id);
@@ -1539,7 +1513,7 @@ pub fn plan_assistant_cad_edit_program(
                 }
                 let kind = plan_feature_kind(
                     planning_snapshot,
-                    planning_topology.as_ref().unwrap_or(topology_results),
+                    &planning_topology,
                     definition_id,
                     &feature,
                     operation_name,
@@ -1552,20 +1526,15 @@ pub fn plan_assistant_cad_edit_program(
                     )
                 })?;
                 next_feature = id.0.checked_add(1);
-                commands.push(CanonicalCommand::CreateFeature {
+                staged_planning.push(CanonicalCommand::CreateFeature {
                     id,
                     definition_id,
                     name: name.clone(),
                     kind,
                 });
                 if feature.produces_body_feature_output() {
-                    operation_outputs.insert(
-                        (
-                            operation_index,
-                            AssistantCadProgramFeatureOutput::BodyFeature,
-                        ),
-                        id.0,
-                    );
+                    staged_planning
+                        .record_output(operation_index, StagedProgramOutput::BodyFeature(id));
                 }
                 if matches!(feature, AssistantCadBodyFeature::PlanarOffset { .. }) {
                     appended_planar_offsets.push((definition_id, id));
@@ -1580,37 +1549,32 @@ pub fn plan_assistant_cad_edit_program(
                 profile_feature,
                 depth_mm,
             } => {
-                let definition_id = DefinitionId(resolve_program_output_reference(
+                let definition_id = DefinitionId(staged_planning.resolve_program_output(
                     *definition,
-                    &operation_outputs,
                     AssistantCadProgramFeatureOutput::Definition,
                     operation_name,
                 )?);
-                let target_feature_id = resolve_program_output_reference(
+                let target_feature_id = staged_planning.resolve_program_output(
                     *target_feature,
-                    &operation_outputs,
                     AssistantCadProgramFeatureOutput::BodyFeature,
                     operation_name,
                 )?;
-                let profile_feature_id = resolve_program_output_reference(
+                let profile_feature_id = staged_planning.resolve_program_output(
                     *profile_feature,
-                    &operation_outputs,
                     AssistantCadProgramFeatureOutput::SketchFeature,
                     operation_name,
                 )?;
-                let planning_snapshot = document
-                    .preview_batch(&CommandBatch::new(commands.clone()))
-                    .map_err(|error| {
-                        assistant_canonical_rejection(error, operation_name, &document_target)
-                    })?;
+                staged_planning.refresh(operation_name, &document_target)?;
+                let planning_snapshot = staged_planning.staged_snapshot();
+                let planning_topology = staged_planning.topology(topology_results);
                 let feature = AssistantCadBodyFeature::Pocket {
                     target_feature_id,
                     profile_feature_id,
                     depth_mm: *depth_mm,
                 };
                 let kind = plan_feature_kind(
-                    &planning_snapshot,
-                    topology_results,
+                    planning_snapshot,
+                    &planning_topology,
                     definition_id,
                     &feature,
                     operation_name,
@@ -1623,19 +1587,14 @@ pub fn plan_assistant_cad_edit_program(
                     )
                 })?;
                 next_feature = id.0.checked_add(1);
-                commands.push(CanonicalCommand::CreateFeature {
+                staged_planning.push(CanonicalCommand::CreateFeature {
                     id,
                     definition_id,
                     name: name.clone(),
                     kind,
                 });
-                operation_outputs.insert(
-                    (
-                        operation_index,
-                        AssistantCadProgramFeatureOutput::BodyFeature,
-                    ),
-                    id.0,
-                );
+                staged_planning
+                    .record_output(operation_index, StagedProgramOutput::BodyFeature(id));
                 appended_exact_features.push((definition_id, id));
             }
             AssistantCadEditOperation::SetDimension {
@@ -1652,7 +1611,7 @@ pub fn plan_assistant_cad_edit_program(
                             &format!("feature:{}", feature_id.0),
                         )
                     })?;
-                commands.push(if let Some(constraint_id) = constraint_id {
+                staged_planning.push(if let Some(constraint_id) = constraint_id {
                     CanonicalCommand::SetSketchConstraintDimension {
                         id: feature_id,
                         constraint_id: SketchConstraintId(*constraint_id),
@@ -1688,7 +1647,7 @@ pub fn plan_assistant_cad_edit_program(
                         &format!("feature:{}", feature_id.0),
                     )
                 })?;
-                commands.push(CanonicalCommand::SetFeatureParameter {
+                staged_planning.push(CanonicalCommand::SetFeatureParameter {
                     target: FeatureParameterTarget {
                         feature_id,
                         path,
@@ -1734,7 +1693,7 @@ pub fn plan_assistant_cad_edit_program(
                     )
                 })?;
                 next_assembly_joint = id.0.checked_add(1);
-                commands.push(CanonicalCommand::CreateAssemblyJoint(
+                staged_planning.push(CanonicalCommand::CreateAssemblyJoint(
                     AssemblyJoint::new_at_paths(
                         id,
                         parent_instance_path,
@@ -1777,7 +1736,7 @@ pub fn plan_assistant_cad_edit_program(
                                 "Refresh the document state and retry the motion edit.",
                             )
                         })?;
-                commands.extend(publication.commands().iter().cloned());
+                staged_planning.extend(publication.commands().iter().cloned());
             }
             AssistantCadEditOperation::CreateDrawing {
                 name,
@@ -1911,7 +1870,7 @@ pub fn plan_assistant_cad_edit_program(
                         "Use a larger sheet or reduce the assembly extent.",
                     )
                 })?;
-                commands.push(CanonicalCommand::CreateDrawingSheet(sheet));
+                staged_planning.push(CanonicalCommand::CreateDrawingSheet(sheet));
             }
             AssistantCadEditOperation::UpsertCamPlan {
                 plan_id,
@@ -1994,23 +1953,38 @@ pub fn plan_assistant_cad_edit_program(
                         &format!("cam_plan:{plan_id}"),
                     )
                 })?;
-                commands.push(CanonicalCommand::UpsertCamPlan(plan));
+                staged_planning.push(CanonicalCommand::UpsertCamPlan(plan));
             }
             AssistantCadEditOperation::Delete {
                 dependency_policy, ..
             } => {
                 let target_set = targets.iter().copied().collect::<BTreeSet<_>>();
-                let referenced_collections = collection_members
-                    .iter()
-                    .filter(|(_, members)| members.iter().any(|id| target_set.contains(id)))
-                    .map(|(id, _)| *id)
-                    .collect::<Vec<_>>();
-                let incident_mates = mate_endpoints
-                    .iter()
-                    .filter(|(_, (left, right))| {
-                        target_set.contains(left) || target_set.contains(right)
+                let referenced_collections = staged_planning
+                    .staged_snapshot()
+                    .collections()
+                    .filter(|collection| {
+                        collection
+                            .occurrence_ids()
+                            .any(|id| target_set.contains(&id))
                     })
-                    .map(|(id, _)| *id)
+                    .map(|collection| {
+                        (
+                            collection.id(),
+                            collection
+                                .occurrence_ids()
+                                .filter(|id| !target_set.contains(id))
+                                .collect::<Vec<_>>(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let incident_mates = staged_planning
+                    .staged_snapshot()
+                    .assembly_mates()
+                    .filter(|mate| {
+                        target_set.contains(&mate.endpoint_a().occurrence_id())
+                            || target_set.contains(&mate.endpoint_b().occurrence_id())
+                    })
+                    .map(|mate| mate.id())
                     .collect::<Vec<_>>();
                 if *dependency_policy == AssistantCadDeletePolicy::RejectIfReferenced
                     && (!referenced_collections.is_empty() || !incident_mates.is_empty())
@@ -2025,24 +1999,18 @@ pub fn plan_assistant_cad_edit_program(
                     ));
                 }
                 if *dependency_policy == AssistantCadDeletePolicy::RemoveReferences {
-                    for collection_id in referenced_collections {
-                        let members = collection_members
-                            .get_mut(&collection_id)
-                            .expect("referenced collection came from the working map");
-                        members.retain(|id| !target_set.contains(id));
-                        commands.push(CanonicalCommand::SetCollectionOccurrences {
+                    for (collection_id, members) in referenced_collections {
+                        staged_planning.push(CanonicalCommand::SetCollectionOccurrences {
                             id: collection_id,
-                            occurrence_ids: members.clone(),
+                            occurrence_ids: members,
                         });
                     }
                     for mate_id in incident_mates {
-                        mate_endpoints.remove(&mate_id);
-                        commands.push(CanonicalCommand::DeleteAssemblyMate { id: mate_id });
+                        staged_planning.push(CanonicalCommand::DeleteAssemblyMate { id: mate_id });
                     }
                 }
                 for id in targets {
-                    working_transforms.remove(&id);
-                    commands.push(CanonicalCommand::DeleteOccurrence { id });
+                    staged_planning.push(CanonicalCommand::DeleteOccurrence { id });
                 }
             }
             AssistantCadEditOperation::Transform {
@@ -2075,24 +2043,27 @@ pub fn plan_assistant_cad_edit_program(
                         )
                     })?;
                 for id in targets {
-                    let current = working_transforms[&id];
-                    let translated = translated_transform(current, delta).map_err(|_| {
-                        assistant_planning_rejection(
-                            "planning.cad_transform_invalid",
-                            operation_name,
-                            &format!("occurrence:{}", id.0),
-                            "The requested translation could not be represented.",
-                            "Use a finite bounded translation.",
-                        )
-                    })?;
+                    let occurrence = staged_planning
+                        .staged_snapshot()
+                        .occurrence(id)
+                        .expect("resolved CAD selector targets a staged occurrence");
+                    let translated =
+                        translated_transform(occurrence.transform(), delta).map_err(|_| {
+                            assistant_planning_rejection(
+                                "planning.cad_transform_invalid",
+                                operation_name,
+                                &format!("occurrence:{}", id.0),
+                                "The requested translation could not be represented.",
+                                "Use a finite bounded translation.",
+                            )
+                        })?;
                     let transform = if let Some(world_rotation) = world_rotation {
-                        let occurrence = snapshot
-                            .occurrence(id)
-                            .expect("resolved CAD selector targets a snapshot occurrence");
                         let parent_transform = occurrence
                             .parent()
                             .map_or(Some(Transform::identity()), |parent| {
-                                snapshot.world_transform_for_group(parent)
+                                staged_planning
+                                    .staged_snapshot()
+                                    .world_transform_for_group(parent)
                             })
                             .ok_or_else(|| {
                                 assistant_planning_rejection(
@@ -2120,21 +2091,21 @@ pub fn plan_assistant_cad_edit_program(
                     } else {
                         translated
                     };
-                    working_transforms.insert(id, transform);
-                    commands.push(CanonicalCommand::SetOccurrenceTransform { id, transform });
+                    staged_planning
+                        .push(CanonicalCommand::SetOccurrenceTransform { id, transform });
                 }
             }
             AssistantCadEditOperation::SetColor { color, .. } => {
                 for id in targets {
-                    working_colors.insert(id, *color);
-                    commands.push(CanonicalCommand::SetOccurrenceColor { id, color: *color });
+                    staged_planning
+                        .push(CanonicalCommand::SetOccurrenceColor { id, color: *color });
                 }
             }
             AssistantCadEditOperation::UpsertClassificationDimension {
                 dimension_id,
                 name,
                 categories,
-            } => commands.push(CanonicalCommand::UpsertClassificationDimension {
+            } => staged_planning.push(CanonicalCommand::UpsertClassificationDimension {
                 id: ClassificationDimensionId(*dimension_id),
                 name: name.clone(),
                 categories: categories
@@ -2148,7 +2119,7 @@ pub fn plan_assistant_cad_edit_program(
                 ..
             } => {
                 for occurrence_id in targets {
-                    commands.push(CanonicalCommand::SetOccurrenceClassification {
+                    staged_planning.push(CanonicalCommand::SetOccurrenceClassification {
                         occurrence_id,
                         dimension_id: ClassificationDimensionId(*dimension_id),
                         category_id: category_id.map(ClassificationCategoryId),
@@ -2159,7 +2130,7 @@ pub fn plan_assistant_cad_edit_program(
                 node_id,
                 name,
                 value,
-            } => commands.push(CanonicalCommand::CreateEvaluatorNode {
+            } => staged_planning.push(CanonicalCommand::CreateEvaluatorNode {
                 id: NodeId(*node_id),
                 name: name.clone(),
                 dimension: Dimension::new(value.to_string(), *value).map_err(|error| {
@@ -2170,11 +2141,13 @@ pub fn plan_assistant_cad_edit_program(
             AssistantCadEditOperation::Copy { translation_mm, .. } => {
                 let delta = Vec3::new(translation_mm[0], translation_mm[1], translation_mm[2]);
                 for id in targets {
-                    let source = snapshot
+                    let source = staged_planning
+                        .staged_snapshot()
                         .occurrence(id)
-                        .expect("resolved CAD selector targets a snapshot occurrence");
+                        .cloned()
+                        .expect("resolved CAD selector targets a staged occurrence");
                     let transform =
-                        translated_transform(working_transforms[&id], delta).map_err(|_| {
+                        translated_transform(source.transform(), delta).map_err(|_| {
                             assistant_planning_rejection(
                                 "planning.cad_copy_invalid",
                                 operation_name,
@@ -2191,7 +2164,7 @@ pub fn plan_assistant_cad_edit_program(
                         )
                     })?;
                     next_occurrence = occurrence_id.0.checked_add(1);
-                    commands.push(CanonicalCommand::CreateOccurrence {
+                    staged_planning.push(CanonicalCommand::CreateOccurrence {
                         id: occurrence_id,
                         definition_id: source.definition_id(),
                         name: source.name().to_owned(),
@@ -2200,10 +2173,10 @@ pub fn plan_assistant_cad_edit_program(
                         tag: source.tag(),
                         visible: source.visible(),
                     });
-                    if let Some(color) = working_colors[&id] {
-                        commands.push(CanonicalCommand::SetOccurrenceColor {
+                    if source.color().is_some() {
+                        staged_planning.push(CanonicalCommand::SetOccurrenceColor {
                             id: occurrence_id,
-                            color: Some(color),
+                            color: source.color(),
                         });
                     }
                 }
@@ -2215,11 +2188,13 @@ pub fn plan_assistant_cad_edit_program(
                 for instance in 1..*instances {
                     let delta = step * f64::from(instance);
                     for id in &targets {
-                        let source = snapshot
+                        let source = staged_planning
+                            .staged_snapshot()
                             .occurrence(*id)
-                            .expect("resolved CAD selector targets a snapshot occurrence");
-                        let transform = translated_transform(working_transforms[id], delta)
-                            .map_err(|_| {
+                            .cloned()
+                            .expect("resolved CAD selector targets a staged occurrence");
+                        let transform =
+                            translated_transform(source.transform(), delta).map_err(|_| {
                                 assistant_planning_rejection(
                                     "planning.cad_pattern_invalid",
                                     operation_name,
@@ -2236,7 +2211,7 @@ pub fn plan_assistant_cad_edit_program(
                             )
                         })?;
                         next_occurrence = occurrence_id.0.checked_add(1);
-                        commands.push(CanonicalCommand::CreateOccurrence {
+                        staged_planning.push(CanonicalCommand::CreateOccurrence {
                             id: occurrence_id,
                             definition_id: source.definition_id(),
                             name: source.name().to_owned(),
@@ -2245,10 +2220,10 @@ pub fn plan_assistant_cad_edit_program(
                             tag: source.tag(),
                             visible: source.visible(),
                         });
-                        if let Some(color) = working_colors[id] {
-                            commands.push(CanonicalCommand::SetOccurrenceColor {
+                        if source.color().is_some() {
+                            staged_planning.push(CanonicalCommand::SetOccurrenceColor {
                                 id: occurrence_id,
-                                color: Some(color),
+                                color: source.color(),
                             });
                         }
                     }
@@ -2281,13 +2256,17 @@ pub fn plan_assistant_cad_edit_program(
                         )
                     })?;
                     for id in &targets {
-                        let source = snapshot
+                        let source = staged_planning
+                            .staged_snapshot()
                             .occurrence(*id)
-                            .expect("resolved CAD selector targets a snapshot occurrence");
+                            .cloned()
+                            .expect("resolved CAD selector targets a staged occurrence");
                         let parent_transform = source
                             .parent()
                             .map_or(Some(Transform::identity()), |parent| {
-                                snapshot.world_transform_for_group(parent)
+                                staged_planning
+                                    .staged_snapshot()
+                                    .world_transform_for_group(parent)
                             })
                             .ok_or_else(|| {
                                 assistant_planning_rejection(
@@ -2301,7 +2280,7 @@ pub fn plan_assistant_cad_edit_program(
                         let transform = rotation_in_parent_space(
                             world_rotation,
                             parent_transform,
-                            working_transforms[id],
+                            source.transform(),
                         )
                         .ok_or_else(|| {
                             assistant_planning_rejection(
@@ -2320,7 +2299,7 @@ pub fn plan_assistant_cad_edit_program(
                             )
                         })?;
                         next_occurrence = occurrence_id.0.checked_add(1);
-                        commands.push(CanonicalCommand::CreateOccurrence {
+                        staged_planning.push(CanonicalCommand::CreateOccurrence {
                             id: occurrence_id,
                             definition_id: source.definition_id(),
                             name: source.name().to_owned(),
@@ -2329,10 +2308,10 @@ pub fn plan_assistant_cad_edit_program(
                             tag: source.tag(),
                             visible: source.visible(),
                         });
-                        if let Some(color) = working_colors[id] {
-                            commands.push(CanonicalCommand::SetOccurrenceColor {
+                        if source.color().is_some() {
+                            staged_planning.push(CanonicalCommand::SetOccurrenceColor {
                                 id: occurrence_id,
-                                color: Some(color),
+                                color: source.color(),
                             });
                         }
                     }
@@ -2357,13 +2336,17 @@ pub fn plan_assistant_cad_edit_program(
                     )
                 })?;
                 for id in targets {
-                    let source = snapshot
+                    let source = staged_planning
+                        .staged_snapshot()
                         .occurrence(id)
-                        .expect("resolved CAD selector targets a snapshot occurrence");
+                        .cloned()
+                        .expect("resolved CAD selector targets a staged occurrence");
                     let parent_transform = source
                         .parent()
                         .map_or(Some(Transform::identity()), |parent| {
-                            snapshot.world_transform_for_group(parent)
+                            staged_planning
+                                .staged_snapshot()
+                                .world_transform_for_group(parent)
                         })
                         .ok_or_else(|| {
                             assistant_planning_rejection(
@@ -2377,7 +2360,7 @@ pub fn plan_assistant_cad_edit_program(
                     let transform = rotation_in_parent_space(
                         world_mirror,
                         parent_transform,
-                        working_transforms[&id],
+                        source.transform(),
                     )
                     .ok_or_else(|| {
                         assistant_planning_rejection(
@@ -2396,7 +2379,7 @@ pub fn plan_assistant_cad_edit_program(
                         )
                     })?;
                     next_occurrence = occurrence_id.0.checked_add(1);
-                    commands.push(CanonicalCommand::CreateOccurrence {
+                    staged_planning.push(CanonicalCommand::CreateOccurrence {
                         id: occurrence_id,
                         definition_id: source.definition_id(),
                         name: source.name().to_owned(),
@@ -2405,10 +2388,10 @@ pub fn plan_assistant_cad_edit_program(
                         tag: source.tag(),
                         visible: source.visible(),
                     });
-                    if let Some(color) = working_colors[&id] {
-                        commands.push(CanonicalCommand::SetOccurrenceColor {
+                    if source.color().is_some() {
+                        staged_planning.push(CanonicalCommand::SetOccurrenceColor {
                             id: occurrence_id,
-                            color: Some(color),
+                            color: source.color(),
                         });
                     }
                 }
@@ -2419,7 +2402,7 @@ pub fn plan_assistant_cad_edit_program(
             }
         }
     }
-    let batch = CommandBatch::new(commands);
+    let batch = staged_planning.into_final_batch();
     if !appended_exact_features.is_empty() || !appended_planar_offsets.is_empty() {
         let candidate = document.preview_batch(&batch).map_err(|error| {
             assistant_canonical_rejection(error, "append_feature", &document_target)

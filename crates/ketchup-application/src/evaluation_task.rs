@@ -1,13 +1,9 @@
 //! Shared asynchronous execution and publication. No GUI event loop is required.
 use super::*;
 
-pub type ExactSource = (DocumentId, u64, String);
+pub type ExactSource = ExactProducerEvidenceContext;
 pub fn exact_source(snapshot: &Snapshot) -> ExactSource {
-    (
-        snapshot.document_id(),
-        snapshot.revision_id(),
-        snapshot.canonical_digest(),
-    )
+    ExactProducerEvidenceContext::from_snapshot(snapshot)
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]

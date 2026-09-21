@@ -595,25 +595,26 @@ impl KetchupApp {
             }
         }
         if self
-            .mutate_document_with_work_recovery(|document| {
-                proposal
-                    .commit(document)
-                    .map_err(|error| error.to_string())?;
-                document
-                    .register_exact_reference_evidence(&render)
-                    .map_err(|error| error.to_string())?;
-                document
-                    .register_exact_reference_evidence(&topology)
-                    .map_err(|error| error.to_string())
-            })
+            .complete_mutation_and_exact_results_with_work_recovery(
+                move |document, exact_results, topology_results| {
+                    proposal
+                        .commit(document)
+                        .map_err(|error| error.to_string())?;
+                    document
+                        .register_exact_reference_evidence(&render)
+                        .map_err(|error| error.to_string())?;
+                    document
+                        .register_exact_reference_evidence(&topology)
+                        .map_err(|error| error.to_string())?;
+                    *exact_results = render;
+                    *topology_results = topology;
+                    Ok::<(), String>(())
+                },
+            )
             .is_err()
         {
             return false;
         }
-        let snapshot = self.document.current();
-        self.rebind_exact_results(&snapshot);
-        self.exact_results = render;
-        self.topology_results = topology;
         self.clear_ephemeral_edit_state();
         self.selection.clear();
         self.interaction_projection_cache.get_mut().take();

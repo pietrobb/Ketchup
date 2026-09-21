@@ -666,7 +666,7 @@ impl Server {
         let job = &self.verify_jobs[index];
         let mut value = json!({
             "job_handle":job.handle,
-            "source":{"document_id":job.source.0.0,"revision":job.source.1,"canonical_digest":job.source.2},
+            "source":{"document_id":job.source.document_id().0,"revision":job.source.source_revision(),"canonical_digest":job.source.source_digest()},
             "scope":job.scope.as_ref().map(|scope| scope.iter().map(|key| json!({"definition_id":key.definition_id.0,"feature_id":key.feature_id.0})).collect::<Vec<_>>()),
             "progress":{"total_bodies":job.progress.total_producers,"completed_bodies":job.progress.completed_producers,"reused_bodies":job.progress.reused_producers,
                 "active_body":job.progress.active_producer.map(|key| json!({"definition_id":key.definition_id.0,"feature_id":key.feature_id.0,"elapsed_ms":job.progress.active_elapsed_ms}))},
@@ -1420,7 +1420,7 @@ fn evaluation_report(session: &DocumentSession, report: &EvaluationReport) -> Va
         .iter()
         .map(|producer| (producer.key.definition_id.0, producer.key.feature_id.0))
         .collect::<BTreeSet<_>>();
-    json!({"document_id":report.source.0.0,"revision":report.source.1,"canonical_digest":report.source.2,
+    json!({"document_id":report.source.document_id().0,"revision":report.source.source_revision(),"canonical_digest":report.source.source_digest(),
         "complete":report.complete,"topology_complete":report.topology_complete,"not_evaluated":report.not_evaluated,
         "producers":report.producers.iter().map(|p|json!({"definition_id":p.key.definition_id.0,"feature_id":p.key.feature_id.0,"render":status(&p.render),"topology":status(&p.topology)})).collect::<Vec<_>>(),
         "geometry":geometry(session.exact_results(),&snapshot,&producers),"topology_geometry":geometry(session.topology_results(),&snapshot,&producers)})

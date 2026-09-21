@@ -1,9 +1,8 @@
-use ketchup_core::document::{
-    DefinitionId, DocumentId, DocumentStore, FeatureId, FeatureKind, Snapshot,
-};
-use ketchup_core::exact_brep_graph::{ExactBRepGraph, ExactBRepGraphError, ExactBRepOperation};
+use ketchup_core::document::{DefinitionId, DocumentStore, FeatureId, FeatureKind, Snapshot};
+use ketchup_core::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation};
 use ketchup_core::exact_product::{
-    ExactBodyPackage, ExactFeatureChainRequest, ExactResultRegistry, ImportedExactPackage,
+    ExactBodyPackage, ExactFeatureChainRequest, ExactProducerCompilation,
+    ExactProducerEvidenceContext, ExactProducerPlan, ExactResultRegistry, ImportedExactPackage,
 };
 #[cfg(feature = "named-product-fixtures")]
 use ketchup_core::exact_revolve::ExactRevolveRequest;
@@ -155,6 +154,7 @@ fn prepare_requests(
             ),
         })
         .collect::<Vec<_>>();
+    let evidence_context = ExactProducerEvidenceContext::from_snapshot(snapshot);
     for (definition_id, feature_id) in producers {
         let key = ProducerKey {
             definition_id,
@@ -177,154 +177,138 @@ fn prepare_requests(
             continue;
         }
         let compiled = (|| -> Result<Option<(DefinitionId, ExactEvaluationRequest)>, String> {
-            if let Ok(request) = ExactFeatureChainRequest::from_snapshot_for_producer(
+            let producer = ExactProducerCompilation::from_snapshot(
                 snapshot,
+                &evidence_context,
                 definition_id,
                 feature_id,
-            ) {
-                let topology = snapshot
-                    .feature(feature_id)
-                    .filter(|feature| {
-                        matches!(
-                            feature.kind(),
-                            FeatureKind::Extrusion { .. } | FeatureKind::Pad(_)
-                        )
-                    })
-                    .and_then(|_| {
-                        ExactBRepGraph::from_snapshot(snapshot, definition_id, feature_id).ok()
-                    })
-                    .map(Box::new);
-                return Ok(Some((
-                    definition_id,
-                    ExactEvaluationRequest::Rectangle {
-                        request: Box::new(request),
-                        topology,
-                    },
-                )));
-            }
-            #[cfg(feature = "named-product-fixtures")]
-            if let Ok(request) = ExactRevolveRequest::from_snapshot(snapshot, definition_id)
-                && request.producer_feature_id() == feature_id
-            {
-                return Ok(Some((
-                    definition_id,
-                    ExactEvaluationRequest::Revolve(Box::new(request)),
-                )));
-            }
-            let graph = if snapshot
-                .feature(feature_id)
-                .is_some_and(|feature| !matches!(feature.kind(), FeatureKind::ImportedExactBody(_)))
-            {
-                match ExactBRepGraph::from_snapshot(snapshot, definition_id, feature_id) {
-                    Ok(graph) => Some(graph),
-                    Err(
-                        ExactBRepGraphError::UnsupportedFeature(_)
-                        | ExactBRepGraphError::UnsupportedProfile(_),
-                    ) => None,
-                    Err(error) => {
-                        eprintln!(
-                            "exact B-Rep graph compilation rejected producer {}: {error}",
-                            feature_id.0
-                        );
-                        return Err("unsupported or unavailable exact producer/source".to_owned());
-                    }
-                }
-            } else {
-                None
+            )
+            .map_err(|error| error.to_string())?;
+            let Some(plan) = producer
+                .plan(cfg!(feature = "named-product-fixtures"))
+                .map_err(|error| {
+                    eprintln!(
+                        "exact producer compilation rejected producer {}: {error}",
+                        feature_id.0
+                    );
+                    "unsupported or unavailable exact producer/source".to_owned()
+                })?
+            else {
+                return Ok(None);
             };
-            if let Some(graph) = graph {
-                let mut imported_sources = Vec::new();
-                let mut imported_hashes = Vec::new();
-                let mut imported_source_bytes = 0_u64;
-                for node in &graph.nodes {
-                    let ExactBRepOperation::ImportedExact {
-                        source_sha256,
-                        source_byte_len,
-                        ..
-                    } = &node.operation
-                    else {
-                        continue;
-                    };
-                    if imported_hashes.contains(source_sha256) {
-                        continue;
+            match plan {
+                ExactProducerPlan::Rectangle { request, topology } => Ok(Some((
+                    definition_id,
+                    ExactEvaluationRequest::Rectangle { request, topology },
+                ))),
+                #[cfg(feature = "named-product-fixtures")]
+                ExactProducerPlan::Revolve(request) => Ok(Some((
+                    definition_id,
+                    ExactEvaluationRequest::Revolve(request),
+                ))),
+                #[cfg(not(feature = "named-product-fixtures"))]
+                ExactProducerPlan::Revolve(_) => {
+                    unreachable!("legacy revolve planning is disabled")
+                }
+                ExactProducerPlan::Graph(graph) => {
+                    let mut imported_sources = Vec::new();
+                    let mut imported_hashes = Vec::new();
+                    let mut imported_source_bytes = 0_u64;
+                    for node in &graph.nodes {
+                        let ExactBRepOperation::ImportedExact {
+                            source_sha256,
+                            source_byte_len,
+                            ..
+                        } = &node.operation
+                        else {
+                            continue;
+                        };
+                        if imported_hashes.contains(source_sha256) {
+                            continue;
+                        }
+                        let Some(next_source_bytes) =
+                            imported_source_bytes.checked_add(*source_byte_len)
+                        else {
+                            eprintln!(
+                                "exact B-Rep graph producer {} exceeds the imported source byte envelope",
+                                feature_id.0
+                            );
+                            return Err(
+                                "unsupported or unavailable exact producer/source".to_owned()
+                            );
+                        };
+                        if imported_hashes.len() >= MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES
+                            || next_source_bytes > MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES
+                        {
+                            eprintln!(
+                                "exact B-Rep graph producer {} exceeds the imported source envelope",
+                                feature_id.0
+                            );
+                            return Err(
+                                "unsupported or unavailable exact producer/source".to_owned()
+                            );
+                        }
+                        imported_source_bytes = next_source_bytes;
+                        let hash = source_sha256
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect::<String>();
+                        let Some(source) = container_data.blobs().get(&hash).cloned() else {
+                            eprintln!(
+                                "exact B-Rep graph producer {} is missing an imported source blob",
+                                feature_id.0
+                            );
+                            return Err(
+                                "unsupported or unavailable exact producer/source".to_owned()
+                            );
+                        };
+                        if source.len() as u64 != *source_byte_len
+                            || sha256_bytes(&source) != *source_sha256
+                        {
+                            eprintln!(
+                                "exact B-Rep graph producer {} has a mismatched imported source blob",
+                                feature_id.0
+                            );
+                            return Err(
+                                "unsupported or unavailable exact producer/source".to_owned()
+                            );
+                        }
+                        imported_hashes.push(*source_sha256);
+                        imported_sources.push(source);
                     }
-                    let Some(next_source_bytes) =
-                        imported_source_bytes.checked_add(*source_byte_len)
-                    else {
-                        eprintln!(
-                            "exact B-Rep graph producer {} exceeds the imported source byte envelope",
-                            feature_id.0
-                        );
-                        return Err("unsupported or unavailable exact producer/source".to_owned());
-                    };
-                    if imported_hashes.len() >= MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES
-                        || next_source_bytes > MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES
-                    {
-                        eprintln!(
-                            "exact B-Rep graph producer {} exceeds the imported source envelope",
-                            feature_id.0
-                        );
-                        return Err("unsupported or unavailable exact producer/source".to_owned());
-                    }
-                    imported_source_bytes = next_source_bytes;
-                    let hash = source_sha256
+                    Ok(Some((
+                        definition_id,
+                        ExactEvaluationRequest::Graph {
+                            graph,
+                            imported_sources,
+                        },
+                    )))
+                }
+                ExactProducerPlan::Imported(spec) => {
+                    let hash = spec
+                        .source_sha256
                         .iter()
                         .map(|byte| format!("{byte:02x}"))
                         .collect::<String>();
-                    let Some(source) = container_data.blobs().get(&hash).cloned() else {
-                        eprintln!(
-                            "exact B-Rep graph producer {} is missing an imported source blob",
-                            feature_id.0
-                        );
-                        return Err("unsupported or unavailable exact producer/source".to_owned());
-                    };
-                    if source.len() as u64 != *source_byte_len
-                        || sha256_bytes(&source) != *source_sha256
+                    let source = container_data
+                        .blobs()
+                        .get(&hash)
+                        .cloned()
+                        .ok_or_else(|| "imported STEP source blob is missing".to_owned())?;
+                    if source.len() as u64 != spec.source_byte_len
+                        || sha256_bytes(&source) != spec.source_sha256
                     {
-                        eprintln!(
-                            "exact B-Rep graph producer {} has a mismatched imported source blob",
-                            feature_id.0
+                        return Err(
+                            "imported STEP source blob does not match canonical identity"
+                                .to_owned(),
                         );
-                        return Err("unsupported or unavailable exact producer/source".to_owned());
                     }
-                    imported_hashes.push(*source_sha256);
-                    imported_sources.push(source);
+                    Ok(Some((
+                        definition_id,
+                        ExactEvaluationRequest::Imported(definition_id, source),
+                    )))
                 }
-                return Ok(Some((
-                    definition_id,
-                    ExactEvaluationRequest::Graph {
-                        graph: Box::new(graph),
-                        imported_sources,
-                    },
-                )));
             }
-            let Some(feature) = snapshot.feature(feature_id) else {
-                return Err("unsupported or unavailable exact producer/source".to_owned());
-            };
-            let FeatureKind::ImportedExactBody(spec) = feature.kind() else {
-                return Err("unsupported or unavailable exact producer/source".to_owned());
-            };
-            let hash = spec
-                .source_sha256
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>();
-            let source = container_data
-                .blobs()
-                .get(&hash)
-                .cloned()
-                .ok_or_else(|| "imported STEP source blob is missing".to_owned())?;
-            if source.len() as u64 != spec.source_byte_len
-                || sha256_bytes(&source) != spec.source_sha256
-            {
-                return Err(
-                    "imported STEP source blob does not match canonical identity".to_owned(),
-                );
-            }
-            Ok(Some((
-                definition_id,
-                ExactEvaluationRequest::Imported(definition_id, source),
-            )))
         })();
         let compiled = if render_current {
             match compiled {

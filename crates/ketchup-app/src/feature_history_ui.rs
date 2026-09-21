@@ -1392,9 +1392,11 @@ impl KetchupApp {
                 .map(|_| ())
                 .map_err(|error| error.to_string()),
             FeatureHistoryExecutionPlan::Replacement(impact) => self
-                .mutate_document_and_exact_results_with_work_recovery(|document, exact_results| {
-                    commit_component_replacement(document, exact_results, impact)
-                })
+                .complete_mutation_and_exact_results_with_work_recovery(
+                    |document, exact_results, _topology_results| {
+                        commit_component_replacement(document, exact_results, impact)
+                    },
+                )
                 .map(|_| ())
                 .map_err(|error| error.to_string()),
             FeatureHistoryExecutionPlan::Shared(_) | FeatureHistoryExecutionPlan::Fork(_) => {
@@ -1417,8 +1419,8 @@ impl KetchupApp {
                 }
                 match &preview.execution {
                     FeatureHistoryExecutionPlan::Shared(impact) => self
-                        .mutate_document_and_exact_results_with_work_recovery(
-                            |document, exact_results| {
+                        .complete_mutation_and_exact_results_with_work_recovery(
+                            |document, exact_results, _topology_results| {
                                 commit_shared_definition_change(
                                     document,
                                     exact_results,
@@ -1436,8 +1438,8 @@ impl KetchupApp {
                         .map(|_| ())
                         .map_err(|error| error.to_string()),
                     FeatureHistoryExecutionPlan::Fork(impact) => self
-                        .mutate_document_and_exact_results_with_work_recovery(
-                            |document, exact_results| {
+                        .complete_mutation_and_exact_results_with_work_recovery(
+                            |document, exact_results, _topology_results| {
                                 commit_occurrence_fork_change(
                                     document,
                                     exact_results,
@@ -1471,11 +1473,8 @@ impl KetchupApp {
                         &mut self.render_cache,
                     )));
                     self.interaction_projection_cache.get_mut().take();
-                    self.exact_source = Some((
-                        snapshot.document_id(),
-                        snapshot.revision_id(),
-                        snapshot.canonical_digest(),
-                    ));
+                    self.exact_source =
+                        Some(ketchup_application::evaluation::exact_source(&snapshot));
                     self.exact_retry_at = None;
                 }
                 self.digest = self.catalog.format(
@@ -2054,7 +2053,7 @@ impl KetchupApp {
             let expected_revision = current.revision_id();
             let expected_digest = current.canonical_digest();
             let checkpoint = self.feature_history.checkpoint_input.clone();
-            match self.mutate_document_with_work_recovery(|document| {
+            match self.complete_mutation_with_work_recovery(|document| {
                 document.create_checkpoint(expected_revision, &expected_digest, &checkpoint)
             }) {
                 Ok(()) => {
@@ -2207,7 +2206,7 @@ impl KetchupApp {
         {
             let expected_revision = current.revision_id();
             let expected_digest = current.canonical_digest();
-            match self.mutate_document_with_work_recovery(|document| {
+            match self.complete_mutation_with_work_recovery(|document| {
                 document.rollback_to_revision(
                     expected_revision,
                     &expected_digest,

@@ -230,11 +230,7 @@ impl KetchupApp {
             ExactResultRegistry::accept(&snapshot, [package]).map_err(|error| error.to_string())?;
         self.exact_worker_attempted = true;
         self.exact_worker_path = None;
-        self.exact_source = Some((
-            snapshot.document_id(),
-            snapshot.revision_id(),
-            snapshot.canonical_digest(),
-        ));
+        self.exact_source = Some(ketchup_application::evaluation::exact_source(&snapshot));
         Ok(())
     }
 

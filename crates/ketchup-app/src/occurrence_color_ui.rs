@@ -30,13 +30,12 @@ mod tests {
                     "rotate-copy" => {
                         let selection = app.selected_move_reference().unwrap();
                         let occurrence_paths = app.selected_instance_paths();
-                        assert!(app.rotate_occurrences(
+                        assert!(app.rotate_copy_occurrences(
                             &selection,
                             &occurrence_paths,
                             Vec3::ZERO,
                             Axis::Z,
                             90.0,
-                            true,
                         ));
                     }
                     "linear" => {

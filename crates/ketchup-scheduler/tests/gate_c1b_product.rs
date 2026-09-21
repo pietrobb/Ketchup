@@ -5,11 +5,12 @@ use ketchup_core::document::{
     BottleControlDimension, BottleEdgeFinishKind, CanonicalCommand, CanonicalError, CommandBatch,
     DefinitionId, DerivedIdentity, Dimension, DimensionDisplayUnit, DimensionPresentation,
     DimensionReferenceHealth, DocumentId, DocumentStore, EvaluationIdentity, FeatureId,
-    FeatureKind, FeatureParameterBinding, FeatureParameterFreshness, FeatureParameterStaleReason,
-    FeatureParameterTarget, LoftContinuity, LoftSection, MeshAuthority, NodeId, OccurrenceId,
-    ParameterPath, ParameterValueType, PersistentDimension, PersistentDimensionId,
-    PersistentDimensionTarget, PortSpec, ProfileSegment, RuleOutput, SlotPath, SlotSegment,
-    StableEdgeRole, StableFaceRole, Transform,
+    FeatureKind, FeatureParameterBinding, FeatureParameterFreshness,
+    FeatureParameterRecomputeScope, FeatureParameterStaleReason, FeatureParameterTarget,
+    LoftContinuity, LoftSection, MeshAuthority, NodeId, OccurrenceId, ParameterPath,
+    ParameterValueType, PersistentDimension, PersistentDimensionId, PersistentDimensionTarget,
+    PortSpec, ProfileSegment, RuleOutput, SlotPath, SlotSegment, StableEdgeRole, StableFaceRole,
+    Transform,
 };
 use ketchup_core::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V8, ExactBRepGraph, ExactBRepPlanarLoop, ExactBRepPlanarSegment,
@@ -999,6 +1000,7 @@ fn explicit_parameter_recompute_restores_exact_registry_render_pick_and_export()
             }),
             CanonicalCommand::RecomputeFeatureParameters {
                 identity: identity.clone(),
+                scope: FeatureParameterRecomputeScope::All,
             },
         ]))
         .unwrap();
@@ -1038,6 +1040,7 @@ fn explicit_parameter_recompute_restores_exact_registry_render_pick_and_export()
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::RecomputeFeatureParameters {
                 identity: identity.clone(),
+                scope: FeatureParameterRecomputeScope::All,
             },
         ]))
         .unwrap();

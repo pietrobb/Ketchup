@@ -3880,19 +3880,33 @@ fn spatial_sweep_bounds(
         .ok_or(ExactBRepGraphError::InvalidParameter)
 }
 
-pub(crate) fn spatial_sweep_bounds_are_valid(
+fn sweep_profile_geometry(
     profile: &FeatureKind,
-    segments: &[SpatialPathSegment],
-) -> bool {
-    let geometry = match profile {
+) -> Result<ExactBRepPlanarGeometry, ExactBRepGraphError> {
+    match profile {
         FeatureKind::Profile { points_mm } => polygon_geometry(points_mm),
         FeatureKind::SegmentProfile {
             segments,
             closed: true,
         } => boundary_geometry(segments, true),
-        _ => return false,
-    };
-    let (Ok(geometry), Ok(path)) = (geometry, spatial_path(FeatureId(1), segments)) else {
+        _ => Err(ExactBRepGraphError::InvalidParameter),
+    }
+}
+
+pub(crate) fn sweep_profile_is_valid(profile: &FeatureKind) -> bool {
+    sweep_profile_geometry(profile)
+        .and_then(|geometry| planar_geometry_bounds(&geometry))
+        .is_ok()
+}
+
+pub(crate) fn spatial_sweep_bounds_are_valid(
+    profile: &FeatureKind,
+    segments: &[SpatialPathSegment],
+) -> bool {
+    let (Ok(geometry), Ok(path)) = (
+        sweep_profile_geometry(profile),
+        spatial_path(FeatureId(1), segments),
+    ) else {
         return false;
     };
     spatial_sweep_bounds(

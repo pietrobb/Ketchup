@@ -19,15 +19,14 @@ use crate::exact_brep_graph::{
     MAX_EXACT_BREP_LOFT_CONTROL_POINTS, MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS,
     MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM, MAX_EXACT_BREP_SWEEP_PATH_SEGMENTS,
     MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM, MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM,
-    SKETCH_SWEEP_FRAME_EPSILON_MM, spatial_sweep_bounds_are_valid,
+    SKETCH_SWEEP_FRAME_EPSILON_MM, spatial_sweep_bounds_are_valid, sweep_profile_is_valid,
 };
 use crate::exact_product::{
     BodySubshapeRef, EXACT_MIN_LENGTH_MM, ExactFaceRole, ExactFeatureChainRequest,
-    ExactReferenceResolution, ExactResultRegistry, MAX_EXACT_PLANAR_OFFSET_LENGTH_MM,
-    accepts_planar_offset_solved_region, canonical_reference_lineage_digest,
-    exact_planar_offset_profile,
+    ExactProducerCompilation, ExactProducerEvidenceContext, ExactReferenceResolution,
+    ExactResultRegistry, MAX_EXACT_PLANAR_OFFSET_LENGTH_MM, accepts_planar_offset_solved_region,
+    accepts_sweep_segment_profile, canonical_reference_lineage_digest, exact_planar_offset_profile,
 };
-use crate::exact_revolve::{ExactRevolveRequest, reference_matches_revolve_request};
 pub use crate::graph::{
     CanonicalOverride, DerivedIdentity, DerivedOutput, EvaluationIdentity, EvaluationReport,
     EvaluationStatus, EvaluatorNode, EvaluatorNodeKind, GraphError, OverrideMergePolicy,
@@ -403,6 +402,60 @@ impl FeatureParameterTarget {
 pub struct FeatureParameterBinding {
     pub target: FeatureParameterTarget,
     pub derived_from: DerivedIdentity,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum EvaluatorParameterEdit {
+    SetDimension {
+        id: NodeId,
+        dimension: Dimension,
+    },
+    SetExpression {
+        id: NodeId,
+        expression: String,
+    },
+    SetRuleOutputs {
+        id: NodeId,
+        outputs: Vec<RuleOutput>,
+    },
+}
+
+impl EvaluatorParameterEdit {
+    #[must_use]
+    pub const fn affected_node(&self) -> NodeId {
+        match self {
+            Self::SetDimension { id, .. }
+            | Self::SetExpression { id, .. }
+            | Self::SetRuleOutputs { id, .. } => *id,
+        }
+    }
+
+    fn into_command(self) -> CanonicalCommand {
+        match self {
+            Self::SetDimension { id, dimension } => {
+                CanonicalCommand::SetEvaluatorDimension { id, dimension }
+            }
+            Self::SetExpression { id, expression } => {
+                CanonicalCommand::SetNodeExpression { id, expression }
+            }
+            Self::SetRuleOutputs { id, outputs } => {
+                CanonicalCommand::SetRuleOutputs { id, outputs }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FeatureParameterRecomputeScope {
+    All,
+    AffectedBy(BTreeSet<NodeId>),
+}
+
+impl FeatureParameterRecomputeScope {
+    #[must_use]
+    pub fn affected_by(node: NodeId) -> Self {
+        Self::AffectedBy(BTreeSet::from([node]))
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2369,6 +2422,7 @@ pub enum CanonicalCommand {
     },
     RecomputeFeatureParameters {
         identity: EvaluationIdentity,
+        scope: FeatureParameterRecomputeScope,
     },
     UpsertJoint(CanonicalJoint),
     DeleteJoint {
@@ -3274,6 +3328,18 @@ impl CommandBatch {
             schema: COMMAND_SCHEMA_V1,
             commands,
         }
+    }
+
+    #[must_use]
+    pub fn edit_evaluator_and_recompute_affected(
+        edit: EvaluatorParameterEdit,
+        identity: EvaluationIdentity,
+    ) -> Self {
+        let scope = FeatureParameterRecomputeScope::affected_by(edit.affected_node());
+        Self::new(vec![
+            edit.into_command(),
+            CanonicalCommand::RecomputeFeatureParameters { identity, scope },
+        ])
     }
 
     #[must_use]
@@ -4727,23 +4793,14 @@ impl DocumentStore {
                 if producer.definition_id() != reference.definition_id {
                     return Err(ReferenceEvidenceError::ProducerDefinitionMismatch);
                 }
-                let matches_request = ExactFeatureChainRequest::from_snapshot_for_producer(
+                let context = ExactProducerEvidenceContext::from_snapshot(&current.snapshot);
+                let matches_request = ExactProducerCompilation::from_snapshot(
                     &current.snapshot,
+                    &context,
                     reference.definition_id,
                     reference.producer_feature_id,
                 )
-                .is_ok_and(|request| reference.matches_request(&request))
-                    || ExactRevolveRequest::from_snapshot(
-                        &current.snapshot,
-                        reference.definition_id,
-                    )
-                    .is_ok_and(|request| reference_matches_revolve_request(&reference, &request))
-                    || ExactBRepGraph::from_snapshot(
-                        &current.snapshot,
-                        reference.definition_id,
-                        reference.producer_feature_id,
-                    )
-                    .is_ok_and(|graph| reference.matches_exact_brep_graph(&graph));
+                .is_ok_and(|producer| producer.matches_reference(&reference));
                 if !matches_request {
                     return Err(ReferenceEvidenceError::InvalidLineage);
                 }
@@ -4810,19 +4867,21 @@ impl DocumentStore {
             }
             _ => {}
         }
+        let evidence_context = ExactProducerEvidenceContext::from_snapshot(&current.snapshot);
+        let reference_is_current = |reference: &BodySubshapeRef| {
+            ExactProducerCompilation::from_snapshot(
+                &current.snapshot,
+                &evidence_context,
+                reference.definition_id,
+                reference.producer_feature_id,
+            )
+            .is_ok_and(|producer| producer.matches_reference(reference))
+        };
         match &event.payload {
             DerivedResultPayload::Evaluation(key) => {
                 self.evaluation_registry.insert(key.clone(), event);
             }
             DerivedResultPayload::ExactReference(reference) => {
-                let anchor_is_current = |support: &BodySubshapeRef| {
-                    ExactFeatureChainRequest::from_snapshot_for_producer(
-                        &current.snapshot,
-                        support.definition_id,
-                        support.producer_feature_id,
-                    )
-                    .is_ok_and(|request| support.matches_request(&request))
-                };
                 let conflicts_with_anchor = current.snapshot.features().any(|feature| {
                     matches!(
                         feature.kind(),
@@ -4839,7 +4898,7 @@ impl DocumentStore {
                                 || support.semantic_role != reference.semantic_role
                                 || support.source_element_id != reference.source_element_id
                                 || support.expected_type != reference.expected_type
-                                || (anchor_is_current(support) && support.as_ref() != reference))
+                                || (reference_is_current(support) && support.as_ref() != reference))
                     )
                 });
                 if conflicts_with_anchor {
@@ -4873,14 +4932,8 @@ impl DocumentStore {
                 for rebind in rebinds {
                     match &rebind.resolution {
                         ExactReferenceResolution::Resolved { reference } => {
-                            let matches_request =
-                                ExactFeatureChainRequest::from_snapshot_for_producer(
-                                    &current.snapshot,
-                                    reference.definition_id,
-                                    reference.producer_feature_id,
-                                )
-                                .is_ok_and(|request| reference.matches_request(&request));
-                            if !matches_request || reference.lineage_digest != rebind.lineage_digest
+                            if !reference_is_current(reference)
+                                || reference.lineage_digest != rebind.lineage_digest
                             {
                                 return false;
                             }
@@ -5287,7 +5340,6 @@ impl DocumentStore {
         product
             .exact_reference_evidence
             .retain(|lineage, _| anchored_reference_lineages.contains(lineage));
-        let mut changed_evaluator_nodes = BTreeSet::new();
         let mut explicit_dirty_features = BTreeSet::new();
         let mut evaluation_identity = EvaluationIdentity::default();
         let mut previous_evaluation = self.revisions[self.cursor].evaluation.clone();
@@ -5349,7 +5401,6 @@ impl DocumentStore {
                     )
                     .map_err(CanonicalError::Graph)?;
                     product.evaluator_nodes.insert(*id, Arc::new(node));
-                    changed_evaluator_nodes.insert(*id);
                 }
                 CanonicalCommand::SetEvaluatorDimension { id, dimension } => {
                     let existing = product
@@ -5364,7 +5415,6 @@ impl DocumentStore {
                     )
                     .map_err(CanonicalError::Graph)?;
                     product.evaluator_nodes.insert(*id, Arc::new(replacement));
-                    changed_evaluator_nodes.insert(*id);
                 }
                 CanonicalCommand::RenameEvaluatorNode { id, name } => {
                     let existing = product
@@ -5395,7 +5445,6 @@ impl DocumentStore {
                     }
                     .map_err(CanonicalError::Graph)?;
                     product.evaluator_nodes.insert(*id, Arc::new(replacement));
-                    changed_evaluator_nodes.insert(*id);
                 }
                 CanonicalCommand::CreateExpressionNode {
                     id,
@@ -5408,7 +5457,6 @@ impl DocumentStore {
                     let node = EvaluatorNode::expression(*id, name.clone(), expression.clone())
                         .map_err(CanonicalError::Graph)?;
                     product.evaluator_nodes.insert(*id, Arc::new(node));
-                    changed_evaluator_nodes.insert(*id);
                 }
                 CanonicalCommand::CreateRuleNode {
                     id,
@@ -5433,7 +5481,6 @@ impl DocumentStore {
                     )
                     .map_err(CanonicalError::Graph)?;
                     product.evaluator_nodes.insert(*id, Arc::new(node));
-                    changed_evaluator_nodes.insert(*id);
                 }
                 CanonicalCommand::SetNodeExpression { id, expression } => {
                     let existing = product
@@ -5461,7 +5508,6 @@ impl DocumentStore {
                     }
                     .map_err(CanonicalError::Graph)?;
                     product.evaluator_nodes.insert(*id, Arc::new(replacement));
-                    changed_evaluator_nodes.insert(*id);
                 }
                 CanonicalCommand::SetRuleOutputs { id, outputs } => {
                     let existing = product
@@ -5482,7 +5528,6 @@ impl DocumentStore {
                     )
                     .map_err(CanonicalError::Graph)?;
                     product.evaluator_nodes.insert(*id, Arc::new(replacement));
-                    changed_evaluator_nodes.insert(*id);
                 }
                 CanonicalCommand::UpsertOverride(spec) => {
                     let mut canonical = spec.clone();
@@ -5509,14 +5554,12 @@ impl DocumentStore {
                     }
                     product.feature_parameter_provenance.remove(target);
                 }
-                CanonicalCommand::RecomputeFeatureParameters { identity } => {
-                    let affected = if changed_evaluator_nodes.is_empty() {
-                        None
-                    } else {
-                        Some(dependent_closure(
-                            &product.evaluator_nodes,
-                            &changed_evaluator_nodes,
-                        ))
+                CanonicalCommand::RecomputeFeatureParameters { identity, scope } => {
+                    let affected = match scope {
+                        FeatureParameterRecomputeScope::All => None,
+                        FeatureParameterRecomputeScope::AffectedBy(nodes) => {
+                            Some(dependent_closure(&product.evaluator_nodes, nodes))
+                        }
                     };
                     let report = recompute_feature_parameters(
                         &mut product,
@@ -5525,14 +5568,6 @@ impl DocumentStore {
                         previous_evaluation.as_ref(),
                     )?;
                     previous_evaluation = Some(report.clone());
-                    if affected.is_none() {
-                        changed_evaluator_nodes.extend(
-                            product
-                                .feature_parameter_bindings
-                                .values()
-                                .map(|binding| binding.derived_from.root_rule_node_id),
-                        );
-                    }
                     evaluation_identity = report.identity;
                 }
                 CanonicalCommand::UpsertJoint(joint) => {
@@ -7464,8 +7499,33 @@ impl DocumentStore {
         let following_revision_id = revision_id
             .checked_add(1)
             .ok_or(CanonicalError::RevisionExhausted)?;
-        let recomputed_nodes =
-            dependent_closure(&product.evaluator_nodes, &changed_evaluator_nodes);
+        let mut evaluator_roots = BTreeSet::new();
+        for command in &batch.commands {
+            match command {
+                CanonicalCommand::CreateEvaluatorNode { id, .. }
+                | CanonicalCommand::SetEvaluatorDimension { id, .. }
+                | CanonicalCommand::RenameEvaluatorNode { id, .. }
+                | CanonicalCommand::CreateExpressionNode { id, .. }
+                | CanonicalCommand::CreateRuleNode { id, .. }
+                | CanonicalCommand::SetNodeExpression { id, .. }
+                | CanonicalCommand::SetRuleOutputs { id, .. } => {
+                    evaluator_roots.insert(*id);
+                }
+                CanonicalCommand::RecomputeFeatureParameters { scope, .. } => match scope {
+                    FeatureParameterRecomputeScope::All => evaluator_roots.extend(
+                        product
+                            .feature_parameter_bindings
+                            .values()
+                            .map(|binding| binding.derived_from.root_rule_node_id),
+                    ),
+                    FeatureParameterRecomputeScope::AffectedBy(nodes) => {
+                        evaluator_roots.extend(nodes);
+                    }
+                },
+                _ => {}
+            }
+        }
+        let recomputed_nodes = dependent_closure(&product.evaluator_nodes, &evaluator_roots);
         let evaluation = evaluate_affected(
             &product.evaluator_nodes,
             &evaluation_identity,
@@ -12560,6 +12620,176 @@ pub fn solved_sketch_sweep_path(sketch: &SketchSpec) -> Option<Vec<ProfileSegmen
     is_valid_sweep_path(&segments).then_some(segments)
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct ValidatedSweepProfile<'a>(ValidatedSweepProfileKind<'a>);
+
+#[derive(Clone, Copy, Debug)]
+enum ValidatedSweepProfileKind<'a> {
+    Polygon(&'a [[f64; 2]]),
+    LineArcBoundary(&'a [ProfileSegment]),
+    Sketch(&'a SketchSpec),
+}
+
+impl<'a> ValidatedSweepProfile<'a> {
+    #[must_use]
+    pub fn polygon(self) -> Option<&'a [[f64; 2]]> {
+        match self.0 {
+            ValidatedSweepProfileKind::Polygon(points) => Some(points),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn line_arc_boundary(self) -> Option<&'a [ProfileSegment]> {
+        match self.0 {
+            ValidatedSweepProfileKind::LineArcBoundary(segments) => Some(segments),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn sketch(self) -> Option<&'a SketchSpec> {
+        match self.0 {
+            ValidatedSweepProfileKind::Sketch(sketch) => Some(sketch),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn from_feature_kind(kind: &'a FeatureKind) -> Option<Self> {
+        match kind {
+            FeatureKind::Profile { points_mm } if sweep_profile_is_valid(kind) => {
+                Some(Self(ValidatedSweepProfileKind::Polygon(points_mm)))
+            }
+            FeatureKind::SegmentProfile {
+                segments,
+                closed: true,
+            } if accepts_sweep_segment_profile(segments, true) => {
+                Some(Self(ValidatedSweepProfileKind::LineArcBoundary(segments)))
+            }
+            FeatureKind::Sketch(sketch) if valid_sketch_sweep_profile(sketch) => {
+                Some(Self(ValidatedSweepProfileKind::Sketch(sketch)))
+            }
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ValidatedSweepPath<'a>(ValidatedSweepPathKind<'a>);
+
+#[derive(Clone, Copy, Debug)]
+enum ValidatedSweepPathKind<'a> {
+    Planar(&'a [ProfileSegment]),
+    Spatial(&'a [SpatialPathSegment]),
+    Sketch(&'a SketchSpec),
+}
+
+impl<'a> ValidatedSweepPath<'a> {
+    #[must_use]
+    pub fn planar(self) -> Option<&'a [ProfileSegment]> {
+        match self.0 {
+            ValidatedSweepPathKind::Planar(segments) => Some(segments),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn spatial(self) -> Option<&'a [SpatialPathSegment]> {
+        match self.0 {
+            ValidatedSweepPathKind::Spatial(segments) => Some(segments),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn sketch(self) -> Option<&'a SketchSpec> {
+        match self.0 {
+            ValidatedSweepPathKind::Sketch(sketch) => Some(sketch),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn from_feature_kind(kind: &'a FeatureKind) -> Option<Self> {
+        match kind {
+            FeatureKind::SegmentProfile {
+                segments,
+                closed: false,
+            } if is_valid_sweep_path(segments) => {
+                Some(Self(ValidatedSweepPathKind::Planar(segments)))
+            }
+            FeatureKind::SpatialPath { segments } if is_valid_spatial_sweep_path(segments) => {
+                Some(Self(ValidatedSweepPathKind::Spatial(segments)))
+            }
+            FeatureKind::Sketch(sketch) if solved_sketch_sweep_path(sketch).is_some() => {
+                Some(Self(ValidatedSweepPathKind::Sketch(sketch)))
+            }
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ValidatedSweepInputs<'a> {
+    profile: ValidatedSweepProfile<'a>,
+    path: ValidatedSweepPath<'a>,
+}
+
+impl<'a> ValidatedSweepInputs<'a> {
+    #[must_use]
+    pub fn profile(self) -> ValidatedSweepProfile<'a> {
+        self.profile
+    }
+
+    #[must_use]
+    pub fn path(self) -> ValidatedSweepPath<'a> {
+        self.path
+    }
+
+    #[must_use]
+    pub fn from_snapshot(
+        snapshot: &Snapshot,
+        profile_kind: &'a FeatureKind,
+        path_kind: &'a FeatureKind,
+    ) -> Option<Self> {
+        Self::with_workplane_frames(profile_kind, path_kind, |workplane| {
+            snapshot.feature(workplane).and_then(|feature| {
+                if let FeatureKind::Workplane(spec) = feature.kind() {
+                    Some(spec.frame)
+                } else {
+                    None
+                }
+            })
+        })
+    }
+
+    fn with_workplane_frames(
+        profile_kind: &'a FeatureKind,
+        path_kind: &'a FeatureKind,
+        frame: impl FnMut(FeatureId) -> Option<WorkplaneFrame>,
+    ) -> Option<Self> {
+        let profile = ValidatedSweepProfile::from_feature_kind(profile_kind)?;
+        let path = ValidatedSweepPath::from_feature_kind(path_kind)?;
+        let compatible = match (profile.0, path.0) {
+            (ValidatedSweepProfileKind::Sketch(profile), ValidatedSweepPathKind::Sketch(path)) => {
+                valid_sketch_sweep_inputs_with_frames(profile, path, frame)
+            }
+            (ValidatedSweepProfileKind::Sketch(profile), ValidatedSweepPathKind::Spatial(path)) => {
+                valid_sketch_spatial_sweep_inputs_with_frame(profile, path, frame)
+            }
+            (ValidatedSweepProfileKind::Sketch(_), _) | (_, ValidatedSweepPathKind::Sketch(_)) => {
+                false
+            }
+            (_, ValidatedSweepPathKind::Spatial(path)) => {
+                spatial_sweep_bounds_are_valid(profile_kind, path)
+            }
+            _ => true,
+        };
+        compatible.then_some(Self { profile, path })
+    }
+}
+
 pub fn valid_sketch_sweep_profile(profile: &SketchSpec) -> bool {
     let Ok(regions) = profile.solved_regions() else {
         return false;
@@ -12576,38 +12806,6 @@ pub fn valid_sketch_sweep_profile(profile: &SketchSpec) -> bool {
         }
         SolvedSketchRegionProfile::Circle { .. } => true,
     }
-}
-
-pub fn valid_sketch_sweep_inputs(
-    snapshot: &Snapshot,
-    profile: &SketchSpec,
-    path: &SketchSpec,
-) -> bool {
-    valid_sketch_sweep_inputs_with_frames(profile, path, |workplane| {
-        snapshot.feature(workplane).and_then(|feature| {
-            if let FeatureKind::Workplane(spec) = feature.kind() {
-                Some(spec.frame)
-            } else {
-                None
-            }
-        })
-    })
-}
-
-pub fn valid_sketch_spatial_sweep_inputs(
-    snapshot: &Snapshot,
-    profile: &SketchSpec,
-    path: &[SpatialPathSegment],
-) -> bool {
-    valid_sketch_spatial_sweep_inputs_with_frame(profile, path, |workplane| {
-        snapshot.feature(workplane).and_then(|feature| {
-            if let FeatureKind::Workplane(spec) = feature.kind() {
-                Some(spec.frame)
-            } else {
-                None
-            }
-        })
-    })
 }
 
 fn valid_sketch_spatial_sweep_inputs_with_frame(
@@ -16605,65 +16803,20 @@ fn validate_product_with_drawing_sources(
                     .features
                     .get(&path)
                     .ok_or(CanonicalError::FeatureNotFound(path))?;
-                let valid_profile = matches!(
+                let valid_inputs = ValidatedSweepInputs::with_workplane_frames(
                     &profile_source.kind,
-                    FeatureKind::Profile { points_mm } if points_mm.len() >= 3
-                ) || matches!(
-                    &profile_source.kind,
-                    FeatureKind::SegmentProfile {
-                        segments,
-                        closed: true,
-                    } if segments.len() >= 2
-                ) || matches!(
-                    &profile_source.kind,
-                    FeatureKind::Sketch(profile) if valid_sketch_sweep_profile(profile)
-                );
-                let valid_path = matches!(
                     &path_source.kind,
-                    FeatureKind::SegmentProfile {
-                        segments,
-                        closed: false,
-                    } if is_valid_sweep_path(segments)
-                ) || matches!(
-                    &path_source.kind,
-                    FeatureKind::SpatialPath { segments } if is_valid_spatial_sweep_path(segments)
-                ) || matches!(
-                    &path_source.kind,
-                    FeatureKind::Sketch(path) if solved_sketch_sweep_path(path).is_some()
-                );
-                let compatible_frames = match (&profile_source.kind, &path_source.kind) {
-                    (FeatureKind::Sketch(profile), FeatureKind::Sketch(path)) => {
-                        valid_sketch_sweep_inputs_with_frames(profile, path, |workplane| {
-                            product.features.get(&workplane).and_then(|feature| {
-                                if let FeatureKind::Workplane(spec) = &feature.kind {
-                                    Some(spec.frame)
-                                } else {
-                                    None
-                                }
-                            })
+                    |workplane| {
+                        product.features.get(&workplane).and_then(|feature| {
+                            if let FeatureKind::Workplane(spec) = &feature.kind {
+                                Some(spec.frame)
+                            } else {
+                                None
+                            }
                         })
-                    }
-                    (FeatureKind::Sketch(profile), FeatureKind::SpatialPath { segments }) => {
-                        valid_sketch_spatial_sweep_inputs_with_frame(
-                            profile,
-                            segments,
-                            |workplane| {
-                                product.features.get(&workplane).and_then(|feature| {
-                                    if let FeatureKind::Workplane(spec) = &feature.kind {
-                                        Some(spec.frame)
-                                    } else {
-                                        None
-                                    }
-                                })
-                            },
-                        )
-                    }
-                    (FeatureKind::Sketch(_), _) | (_, FeatureKind::Sketch(_)) => false,
-                    (_, FeatureKind::SpatialPath { segments }) => {
-                        spatial_sweep_bounds_are_valid(&profile_source.kind, segments)
-                    }
-                    _ => true,
-                };
+                    },
+                )
+                .is_some();
                 let feature_position = definition
                     .feature_ids
                     .iter()
@@ -16678,7 +16831,7 @@ fn validate_product_with_drawing_sources(
                 });
                 if profile_source.definition_id != feature.definition_id
                     || path_source.definition_id != feature.definition_id
-                    || !(valid_profile && valid_path && compatible_frames)
+                    || !valid_inputs
                     || !sources_precede_sweep
                 {
                     return Err(CanonicalError::InvalidSweep);
@@ -16693,19 +16846,8 @@ fn validate_product_with_drawing_sources(
                     .features
                     .get(&spec.path)
                     .ok_or(CanonicalError::FeatureNotFound(spec.path))?;
-                let valid_profile = matches!(
-                    &profile_source.kind,
-                    FeatureKind::Profile { points_mm } if points_mm.len() >= 3
-                ) || matches!(
-                    &profile_source.kind,
-                    FeatureKind::SegmentProfile {
-                        segments,
-                        closed: true,
-                    } if segments.len() >= 2
-                ) || matches!(
-                    &profile_source.kind,
-                    FeatureKind::Sketch(profile) if valid_sketch_sweep_profile(profile)
-                );
+                let valid_profile =
+                    ValidatedSweepProfile::from_feature_kind(&profile_source.kind).is_some();
                 let valid_path = matches!(
                     &path_source.kind,
                     FeatureKind::SpatialPath { segments }
@@ -17989,6 +18131,22 @@ fn proposal_value(
     }
 }
 
+fn feature_parameter_bindings_in_scope<'a>(
+    snapshot: &'a Snapshot,
+    scope: &FeatureParameterRecomputeScope,
+) -> Vec<&'a FeatureParameterBinding> {
+    match scope {
+        FeatureParameterRecomputeScope::All => snapshot.feature_parameter_bindings().collect(),
+        FeatureParameterRecomputeScope::AffectedBy(nodes) => {
+            let affected = dependent_closure(&snapshot.product.evaluator_nodes, nodes);
+            snapshot
+                .feature_parameter_bindings()
+                .filter(|binding| affected.contains(&binding.derived_from.root_rule_node_id))
+                .collect()
+        }
+    }
+}
+
 fn authoritative_writes(
     snapshot: &Snapshot,
     batch: &CommandBatch,
@@ -18024,10 +18182,10 @@ fn authoritative_writes(
                     target.clone(),
                 ));
             }
-            CanonicalCommand::RecomputeFeatureParameters { .. } => {
+            CanonicalCommand::RecomputeFeatureParameters { scope, .. } => {
                 writes.extend(
-                    snapshot
-                        .feature_parameter_bindings()
+                    feature_parameter_bindings_in_scope(snapshot, scope)
+                        .into_iter()
                         .map(|binding| AuthoritativeDependency::Feature(binding.target.feature_id)),
                 );
             }
@@ -19054,8 +19212,8 @@ fn authoritative_dependencies(
                     target.clone(),
                 ));
             }
-            CanonicalCommand::RecomputeFeatureParameters { .. } => {
-                for binding in snapshot.feature_parameter_bindings() {
+            CanonicalCommand::RecomputeFeatureParameters { scope, .. } => {
+                for binding in feature_parameter_bindings_in_scope(snapshot, scope) {
                     dependencies.insert(AuthoritativeDependency::FeatureParameterBinding(
                         binding.target.clone(),
                     ));

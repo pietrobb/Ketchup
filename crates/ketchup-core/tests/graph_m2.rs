@@ -1,7 +1,7 @@
 use ketchup_core::document::{
     CanonicalCommand, CanonicalError, CanonicalOverride, CommandBatch, Dimension, DocumentStore,
-    EvaluationIdentity, EvaluationStatus, GraphError, NodeId, OverrideParameterSpec, PortSpec,
-    RuleOutput, SlotPath, SlotResolution, SlotSegment,
+    EvaluationIdentity, EvaluationStatus, EvaluatorParameterEdit, GraphError, NodeId,
+    OverrideParameterSpec, PortSpec, RuleOutput, SlotPath, SlotResolution, SlotSegment,
 };
 use ketchup_core::graph::{DiagnosticCode, sha256_reader_hex};
 use ketchup_core::persistence;
@@ -199,15 +199,13 @@ fn affected_recompute_after_open_skips_an_unrelated_uncached_branch() {
         .unwrap();
 
     let revision = reopened
-        .apply_batch(&CommandBatch::new(vec![
-            CanonicalCommand::SetNodeExpression {
+        .apply_batch(&CommandBatch::edit_evaluator_and_recompute_affected(
+            EvaluatorParameterEdit::SetExpression {
                 id: NodeId(4),
                 expression: "$3 / 4".to_owned(),
             },
-            CanonicalCommand::RecomputeFeatureParameters {
-                identity: EvaluationIdentity::default(),
-            },
-        ]))
+            EvaluationIdentity::default(),
+        ))
         .unwrap();
 
     let report = revision.evaluation().unwrap();

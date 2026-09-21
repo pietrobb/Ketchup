@@ -13,13 +13,9 @@ use ketchup_core::document::{
     BooleanOperation, CanonicalError, ChamferEdgeSide, ChamferMode, DefinitionId, Dimension,
     FeatureId, FeatureKind, FilletRadiusStation, LoftContinuity, LoftSection, ShellDirection,
     Snapshot, SurfaceBodySpec, WeldmentJointSpec, WeldmentMemberSpec, is_valid_spatial_sweep_path,
-    is_valid_sweep_path, solved_sketch_sweep_path, valid_sketch_spatial_sweep_inputs,
-    valid_sketch_sweep_inputs, valid_sketch_sweep_profile,
 };
 use ketchup_core::exact_brep_graph::ExactBRepGraph;
-use ketchup_core::exact_product::{
-    ExactResultRegistry, accepts_planar_offset_solved_region, line_arc_profile_bounds,
-};
+use ketchup_core::exact_product::{ExactResultRegistry, accepts_planar_offset_solved_region};
 use ketchup_core::topology::TopologicalElementKind;
 
 pub(crate) fn plan_feature_kind(
@@ -201,47 +197,6 @@ pub(crate) fn plan_feature_kind(
                     "feature_inputs",
                     "The requested Sweep inputs belong to a different definition.",
                     "Target a supported profile and path in the requested definition.",
-                ));
-            }
-            let valid_profile = matches!(
-                profile_source.kind(),
-                FeatureKind::Profile { points_mm } if points_mm.len() >= 3
-            ) || matches!(
-                profile_source.kind(),
-                FeatureKind::SegmentProfile {
-                    segments,
-                    closed: true,
-                } if line_arc_profile_bounds(segments, true).is_some()
-            ) || matches!(
-                profile_source.kind(),
-                FeatureKind::Sketch(profile) if valid_sketch_sweep_profile(profile)
-            );
-            let valid_path = match path_source.kind() {
-                FeatureKind::SegmentProfile {
-                    segments,
-                    closed: false,
-                } => is_valid_sweep_path(segments),
-                FeatureKind::SpatialPath { segments } => is_valid_spatial_sweep_path(segments),
-                FeatureKind::Sketch(path) => solved_sketch_sweep_path(path).is_some(),
-                _ => false,
-            };
-            let compatible_frames = match (profile_source.kind(), path_source.kind()) {
-                (FeatureKind::Sketch(profile), FeatureKind::Sketch(path)) => {
-                    valid_sketch_sweep_inputs(snapshot, profile, path)
-                }
-                (FeatureKind::Sketch(profile), FeatureKind::SpatialPath { segments }) => {
-                    valid_sketch_spatial_sweep_inputs(snapshot, profile, segments)
-                }
-                (FeatureKind::Sketch(_), _) | (_, FeatureKind::Sketch(_)) => false,
-                _ => true,
-            };
-            if !(valid_profile && valid_path && compatible_frames) {
-                return Err(assistant_planning_rejection(
-                    "planning.cad_feature_input_unsupported",
-                    operation_name,
-                    "feature_inputs",
-                    "The requested Sweep profile or path is not supported by exact evaluation.",
-                    "Use a closed polygon or line/arc profile and a bounded open line/arc/cubic path in the same definition.",
                 ));
             }
             FeatureKind::Sweep { profile, path }

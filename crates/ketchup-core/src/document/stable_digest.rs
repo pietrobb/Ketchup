@@ -3340,7 +3340,7 @@ impl StableDigest {
                 self.byte(34);
                 self.feature_parameter_target(target);
             }
-            CanonicalCommand::RecomputeFeatureParameters { identity } => {
+            CanonicalCommand::RecomputeFeatureParameters { identity, scope } => {
                 self.byte(35);
                 self.bytes(identity.evaluator.as_bytes());
                 self.bytes(identity.schema.as_bytes());
@@ -3351,6 +3351,16 @@ impl StableDigest {
                         self.bytes(backend.as_bytes());
                     }
                     None => self.byte(0),
+                }
+                match scope {
+                    FeatureParameterRecomputeScope::All => self.byte(0),
+                    FeatureParameterRecomputeScope::AffectedBy(nodes) => {
+                        self.byte(1);
+                        self.u64(nodes.len() as u64);
+                        for node in nodes {
+                            self.u64(node.0);
+                        }
+                    }
                 }
             }
             CanonicalCommand::UpsertJoint(joint) => {

@@ -173,7 +173,7 @@ impl KetchupApp {
         let Some(pending) = self.mesh_conversion_state.pending.take() else {
             return;
         };
-        match self.mutate_document_with_work_recovery(|document| {
+        match self.complete_mutation_with_work_recovery(|document| {
             commit_mesh_conversion(document, &pending.plan, pending.verification)
         }) {
             Ok(package) => {
@@ -181,7 +181,6 @@ impl KetchupApp {
                     task.cancelled.store(true, Ordering::Release);
                 }
                 let snapshot = self.document.current();
-                self.rebind_exact_results(&snapshot);
                 let package = Arc::new(ExactBodyPackage::from(package));
                 self.exact_results
                     .insert_current(&snapshot, Arc::clone(&package))

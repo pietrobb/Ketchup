@@ -20,8 +20,8 @@ use ketchup_app::{
 use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, DerivedIdentity, Dimension, DocumentStore,
     EdgeFinishKind, EvaluationIdentity, FeatureId, FeatureKind, FeatureParameterBinding,
-    FeatureParameterTarget, InstancePath, NodeId, OccurrenceId, ParameterValueType, PortSpec,
-    RuleOutput, SlotPath, SlotSegment, TagId, Transform,
+    FeatureParameterRecomputeScope, FeatureParameterTarget, InstancePath, NodeId, OccurrenceId,
+    ParameterValueType, PortSpec, RuleOutput, SlotPath, SlotSegment, TagId, Transform,
 };
 use ketchup_core::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry,
@@ -181,6 +181,7 @@ fn write_parametric_fixture(path: &Path) {
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::RecomputeFeatureParameters {
                 identity: EvaluationIdentity::default(),
+                scope: FeatureParameterRecomputeScope::All,
             },
         ]))
         .unwrap();

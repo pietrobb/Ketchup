@@ -944,6 +944,7 @@ pub fn propose_intent(
                 AuthoritativeDependency::Feature(target.feature_id),
                 CanonicalCommand::RecomputeFeatureParameters {
                     identity: EvaluationIdentity::default(),
+                    scope: crate::document::FeatureParameterRecomputeScope::All,
                 },
             )
         }

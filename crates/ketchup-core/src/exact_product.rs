@@ -6,8 +6,8 @@ use crate::beam_m5::{BeamExactPiecePackage, BeamExactResultKey};
 use crate::document::{
     BodyId, BooleanOperation, CanonicalCommand, CommandBatch, DefinitionId, DocumentId,
     EdgeFinishKind, ExactReferenceConversionConsequence, ExactToMeshConversion,
-    FeatureDependencyGraph, FeatureId, FeatureKind, InstancePath, MESH_BODY_SCHEMA_V1,
-    MeshAuthority, MeshBodySpec, ProfileSegment, Snapshot, Transform,
+    FeatureDependencyGraph, FeatureId, FeatureKind, ImportedExactBodySpec, InstancePath,
+    MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, ProfileSegment, Snapshot, Transform,
 };
 use crate::exact_brep_graph::{
     ExactBRepGraph, ExactBRepGraphError, ExactBRepOperation, ExactBRepPlanarLoop,
@@ -15,6 +15,7 @@ use crate::exact_brep_graph::{
     MAX_EXACT_BREP_REGION_HOLES, MAX_EXACT_BREP_REGION_SEGMENTS,
     MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM, MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
 };
+use crate::exact_revolve::{ExactRevolveRequest, reference_matches_revolve_request};
 use crate::graph::{DerivedIdentity, sha256_hex};
 use crate::import::StepImportMesh;
 use crate::sketch::{
@@ -8270,6 +8271,187 @@ impl ExactLoftPackage {
     }
 }
 
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ExactProducerEvidenceContext {
+    document_id: DocumentId,
+    source_revision: u64,
+    source_digest: String,
+}
+
+impl ExactProducerEvidenceContext {
+    #[must_use]
+    pub fn from_snapshot(snapshot: &Snapshot) -> Self {
+        Self::from_source(
+            snapshot.document_id(),
+            snapshot.revision_id(),
+            snapshot.canonical_digest(),
+        )
+    }
+
+    #[must_use]
+    pub fn from_source(
+        document_id: DocumentId,
+        source_revision: u64,
+        source_digest: String,
+    ) -> Self {
+        Self {
+            document_id,
+            source_revision,
+            source_digest,
+        }
+    }
+
+    #[must_use]
+    pub fn is_current(&self, snapshot: &Snapshot) -> bool {
+        self.document_id == snapshot.document_id()
+            && self.source_revision == snapshot.revision_id()
+            && self.source_digest == snapshot.canonical_digest()
+    }
+
+    #[must_use]
+    pub const fn document_id(&self) -> DocumentId {
+        self.document_id
+    }
+
+    #[must_use]
+    pub const fn source_revision(&self) -> u64 {
+        self.source_revision
+    }
+
+    #[must_use]
+    pub fn source_digest(&self) -> &str {
+        &self.source_digest
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum ExactProducerPlan {
+    Rectangle {
+        request: Box<ExactFeatureChainRequest>,
+        topology: Option<Box<ExactBRepGraph>>,
+    },
+    Revolve(Box<ExactRevolveRequest>),
+    Graph(Box<ExactBRepGraph>),
+    Imported(Box<ImportedExactBodySpec>),
+}
+
+#[derive(Clone, Copy)]
+pub struct ExactProducerCompilation<'a> {
+    snapshot: &'a Snapshot,
+    context: &'a ExactProducerEvidenceContext,
+    definition_id: DefinitionId,
+    feature_id: FeatureId,
+}
+
+impl<'a> ExactProducerCompilation<'a> {
+    pub fn from_snapshot(
+        snapshot: &'a Snapshot,
+        context: &'a ExactProducerEvidenceContext,
+        definition_id: DefinitionId,
+        feature_id: FeatureId,
+    ) -> Result<Self, ExactBRepGraphError> {
+        if !context.is_current(snapshot) {
+            return Err(ExactBRepGraphError::InvalidGraph);
+        }
+        let definition = snapshot
+            .definition(definition_id)
+            .ok_or(ExactBRepGraphError::DefinitionNotFound(definition_id))?;
+        let feature = snapshot
+            .feature(feature_id)
+            .ok_or(ExactBRepGraphError::FeatureNotFound(feature_id))?;
+        if feature.definition_id() != definition_id
+            || !definition.feature_ids().contains(&feature_id)
+        {
+            return Err(ExactBRepGraphError::FeatureNotFound(feature_id));
+        }
+        Ok(Self {
+            snapshot,
+            context,
+            definition_id,
+            feature_id,
+        })
+    }
+
+    #[must_use]
+    pub const fn context(&self) -> &ExactProducerEvidenceContext {
+        self.context
+    }
+
+    pub fn plan(
+        &self,
+        include_legacy_revolve: bool,
+    ) -> Result<Option<ExactProducerPlan>, ExactBRepGraphError> {
+        if let Ok(request) = ExactFeatureChainRequest::from_snapshot_for_producer(
+            self.snapshot,
+            self.definition_id,
+            self.feature_id,
+        ) {
+            let topology = self
+                .snapshot
+                .feature(self.feature_id)
+                .filter(|feature| {
+                    matches!(
+                        feature.kind(),
+                        FeatureKind::Extrusion { .. } | FeatureKind::Pad(_)
+                    )
+                })
+                .and_then(|_| {
+                    ExactBRepGraph::from_snapshot(
+                        self.snapshot,
+                        self.definition_id,
+                        self.feature_id,
+                    )
+                    .ok()
+                })
+                .map(Box::new);
+            return Ok(Some(ExactProducerPlan::Rectangle {
+                request: Box::new(request),
+                topology,
+            }));
+        }
+        if include_legacy_revolve
+            && let Ok(request) =
+                ExactRevolveRequest::from_snapshot(self.snapshot, self.definition_id)
+            && request.producer_feature_id() == self.feature_id
+        {
+            return Ok(Some(ExactProducerPlan::Revolve(Box::new(request))));
+        }
+        let feature = self
+            .snapshot
+            .feature(self.feature_id)
+            .expect("producer compilation retains its validated feature");
+        if let FeatureKind::ImportedExactBody(spec) = feature.kind() {
+            return Ok(Some(ExactProducerPlan::Imported(Box::new(spec.clone()))));
+        }
+        match ExactBRepGraph::from_snapshot(self.snapshot, self.definition_id, self.feature_id) {
+            Ok(graph) => Ok(Some(ExactProducerPlan::Graph(Box::new(graph)))),
+            Err(
+                ExactBRepGraphError::UnsupportedFeature(_)
+                | ExactBRepGraphError::UnsupportedProfile(_),
+            ) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    #[must_use]
+    pub fn matches_reference(&self, reference: &BodySubshapeRef) -> bool {
+        ExactFeatureChainRequest::from_snapshot_for_producer(
+            self.snapshot,
+            self.definition_id,
+            self.feature_id,
+        )
+        .is_ok_and(|request| reference.matches_request(&request))
+            || ExactRevolveRequest::from_snapshot(self.snapshot, self.definition_id).is_ok_and(
+                |request| {
+                    request.producer_feature_id() == self.feature_id
+                        && reference_matches_revolve_request(reference, &request)
+                },
+            )
+            || ExactBRepGraph::from_snapshot(self.snapshot, self.definition_id, self.feature_id)
+                .is_ok_and(|graph| reference.matches_exact_brep_graph(&graph))
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExactFeatureChainRequest {
     pub document_id: DocumentId,
@@ -15645,6 +15827,13 @@ pub fn exact_planar_offset_profile(
 #[must_use]
 pub fn line_arc_profile_bounds(segments: &[ProfileSegment], closed: bool) -> Option<[f64; 4]> {
     exact_mixed_profile(segments, closed).map(|profile| profile.bounds_bits.map(f64::from_bits))
+}
+
+#[must_use]
+pub fn accepts_sweep_segment_profile(segments: &[ProfileSegment], closed: bool) -> bool {
+    exact_mixed_profile(segments, closed).is_some()
+        || exact_circle_profile(segments, closed)
+            .is_some_and(|circle| f64::from_bits(circle.radius_bits) >= EXACT_MIN_LENGTH_MM)
 }
 
 #[must_use]
