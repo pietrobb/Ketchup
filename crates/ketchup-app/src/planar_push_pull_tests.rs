@@ -339,7 +339,6 @@ fn every_polygon_face_supports_signed_offset_and_repeated_edit_with_exact_undo()
                 assert_eq!(app.canonical_digest(), original_digest);
                 assert!(app.redo());
                 assert_eq!(app.canonical_digest(), committed);
-                app.rebind_exact_results(&app.document.current());
                 let next = package(&app)
                     .topological_references()
                     .iter()

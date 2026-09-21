@@ -462,10 +462,7 @@ impl LiveBridge {
             || app.assistant_chat_task.is_some()
             || app.push_pull_drag.is_some()
             || app.push_pull_anchor.is_some()
-            || app.move_drag.is_some()
-            || app.move_anchor.is_some()
-            || app.rotate_drag.is_some()
-            || app.rotate_anchor.is_some()
+            || app.transform_gesture_active()
             || app.camera_drag_active
             || app.camera_wheel_active
             || app.zoom_window_start.is_some()

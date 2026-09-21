@@ -565,7 +565,7 @@ impl Shell {
             .first()
             .expect("the open menu must contain the command")
             .1
-            .click();
+            .click_accesskit();
         self.open_menu = None;
         self.harness.run();
     }
@@ -600,7 +600,7 @@ impl Shell {
         let rect = node.rect();
         node.click();
         self.open_menu = Some(rect);
-        self.harness.run();
+        self.harness.step();
     }
 
     /// Open a menu and then click one of its commands.
@@ -616,6 +616,16 @@ impl Shell {
             .get_by_role_and_label(Role::Button, label)
             .click();
         self.harness.run();
+    }
+
+    /// Double-click the outliner row whose accessible name is `label`.
+    pub fn double_click_row(&mut self, label: &str) {
+        let position = self
+            .harness
+            .get_by_role_and_label(Role::Button, label)
+            .rect()
+            .center();
+        self.double_click_at(position);
     }
 
     /// Click the outliner row while holding keyboard modifiers.
@@ -702,6 +712,12 @@ impl Shell {
         self.harness.run();
     }
 
+    /// Press or release the synthetic primary button without completing the gesture.
+    pub fn set_primary_button(&mut self, position: Pos2, modifiers: Modifiers, pressed: bool) {
+        self.harness.input_mut().modifiers = modifiers;
+        self.button(position, modifiers, pressed);
+    }
+
     /// Press at `from`, drag through interpolated steps, and release at `to`.
     pub fn drag(&mut self, from: Pos2, to: Pos2) {
         self.drag_with(from, to, Modifiers::NONE);
@@ -777,7 +793,18 @@ impl Shell {
 
     /// Send a key press and release with the given modifiers held.
     pub fn key(&mut self, key: Key, modifiers: Modifiers) {
-        self.harness.key_press_modifiers(modifiers, key);
+        self.harness.input_mut().modifiers = modifiers;
+        for pressed in [true, false] {
+            self.event(egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers,
+            });
+        }
+        self.harness.step();
+        self.harness.input_mut().modifiers = Modifiers::NONE;
         self.harness.step();
     }
 

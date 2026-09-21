@@ -3670,7 +3670,7 @@ fn new_document_starts_empty_without_an_inactive_tool_preview() {
 }
 
 #[test]
-fn assistant_progress_phases_are_accessible_with_deterministic_channels() {
+fn assistant_panel_progress_phases_are_accessible_with_deterministic_channels() {
     let mut app = KetchupApp::new();
     let requesting = app.catalog.text("assistant-progress-requesting");
     let elapsed = app.catalog.format(
@@ -3698,7 +3698,13 @@ fn assistant_progress_phases_are_accessible_with_deterministic_channels() {
     });
     let mut harness = Harness::builder()
         .with_size(Vec2::new(1600.0, 1000.0))
-        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+        .build_state(
+            |context, app: &mut KetchupApp| {
+                egui::CentralPanel::default().show(context, |ui| app.show_assistant(ui));
+                app.poll_assistant_chat(context);
+            },
+            app,
+        );
 
     harness.step();
 
@@ -4314,10 +4320,12 @@ fn exact_bottle_can_start_preview_and_commit_the_standard_move_tool() {
         Some(&bottle_path)
     );
     assert!(app.begin_move_drag_at(pointer, rect, false));
-    let mut drag = app.move_drag.take().unwrap();
+    let mut drag = app
+        .take_move_session(Some(ToolSessionPhase::Gesture))
+        .unwrap();
     drag.delta_mm = Vec3::new(25.0, 10.0, 0.0);
     let overrides = app.document.current().scene_query();
-    app.move_drag = Some(drag.clone());
+    app.set_move_session(ToolSessionPhase::Gesture, drag.clone());
     let preview = app.move_preview_transform_overrides();
     let original = overrides
         .iter()
@@ -4354,7 +4362,7 @@ fn exact_bottle_can_start_preview_and_commit_the_standard_move_tool() {
         (original.matrix()[7] + 10.0) as f32
     );
 
-    app.move_drag = None;
+    app.take_move_session(Some(ToolSessionPhase::Gesture));
     assert!(app.commit_move_drag(&drag));
     let moved = app
         .document
@@ -5586,7 +5594,9 @@ fn the_armed_rotate_tool_paints_a_protractor_on_the_axis_it_will_turn_about() {
     let grab = app.project(Vec3::new(90.0, 30.0, 20.0), rect);
     app.update_viewport_inference(Some(grab), rect);
     assert!(app.begin_rotate_drag_at(grab, rect, false));
-    let mut drag = app.rotate_drag.take().expect("the gesture has started");
+    let mut drag = app
+        .take_rotate_session(Some(ToolSessionPhase::Gesture))
+        .expect("the gesture has started");
     drag.reference_mm = Some(Vec3::new(40.0, 0.0, 0.0));
     app.advance_rotation(
         &mut drag,
@@ -5594,7 +5604,7 @@ fn the_armed_rotate_tool_paints_a_protractor_on_the_axis_it_will_turn_about() {
         rect,
         false,
     );
-    app.rotate_drag = Some(drag);
+    app.set_rotate_session(ToolSessionPhase::Gesture, drag);
     let guide = app.rotation_guide().expect("a live gesture has a guide");
     assert!(
         guide.start_degrees.is_some(),
@@ -5762,11 +5772,9 @@ fn production_exact_refresh_uses_graph_for_a_general_boolean_chain() {
     app.reset_document_presentation();
     app.connect_exact_worker(&executable).unwrap();
     let context = egui::Context::default();
-    for _ in 0..200 {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while app.exact_results.len() != 1 && Instant::now() < deadline {
         app.refresh_exact_products(&context);
-        if app.exact_results.len() == 1 {
-            break;
-        }
         std::thread::sleep(Duration::from_millis(10));
     }
 
@@ -5952,6 +5960,78 @@ fn creating_a_second_box_has_stable_identity_and_undo_redo_visibility() {
 
     assert!(app.redo());
     assert_eq!(app.active_box_count(), 2);
+}
+
+#[test]
+fn move_selected_moves_every_selected_occurrence_in_one_undo_step() {
+    let mut app = KetchupApp::new();
+    assert!(app.create_box());
+    app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+    app.select_from_outliner(InstancePath::root(OccurrenceId(2)), true);
+    let before = app
+        .active_boxes()
+        .into_iter()
+        .map(|item| (item.instance_path, item.origin_mm))
+        .collect::<BTreeMap<_, _>>();
+    let undo_steps = app.document.visible_undo_steps();
+    let delta = Vec3::new(25.0, -15.0, 8.0);
+
+    assert!(app.move_selected(delta));
+    assert_eq!(app.document.visible_undo_steps(), undo_steps + 1);
+    assert_eq!(app.selected_occurrence_count(), 2);
+    for item in app.active_boxes() {
+        assert_eq!(item.origin_mm, before[&item.instance_path] + delta);
+        assert!(app.occurrence_is_selected(item.instance_path.root_occurrence()));
+    }
+
+    assert!(app.undo());
+    for item in app.active_boxes() {
+        assert_eq!(item.origin_mm, before[&item.instance_path]);
+    }
+}
+
+#[test]
+fn move_drag_keeps_the_existing_multi_selection_for_preview_and_commit() {
+    let mut app = KetchupApp::new();
+    assert!(app.create_box());
+    let first = SelectionId {
+        definition_id: INITIAL_BOX_DEFINITION,
+        instance_path: InstancePath::root(OccurrenceId(1)),
+        element: ElementId::Face {
+            axis: Axis::Z,
+            side: Side::Maximum,
+        },
+    };
+    let second = SelectionId {
+        definition_id: DefinitionId(2),
+        instance_path: InstancePath::root(OccurrenceId(2)),
+        element: ElementId::Face {
+            axis: Axis::Z,
+            side: Side::Maximum,
+        },
+    };
+    app.selection.select_exact(first.clone(), false);
+    app.selection.select_exact(second, true);
+    app.hovered = Some(first);
+    app.hover_snap = None;
+    app.hover_pick = None;
+    let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 700.0));
+    let pointer = app.project(Vec3::new(50.0, 30.0, 20.0), rect);
+
+    assert!(app.begin_move_drag_at(pointer, rect, false));
+    let mut drag = app
+        .take_move_session(Some(ToolSessionPhase::Gesture))
+        .unwrap();
+    assert_eq!(drag.occurrence_paths.len(), 2);
+    drag.delta_mm = Vec3::new(20.0, 10.0, 5.0);
+    app.set_move_session(ToolSessionPhase::Gesture, drag.clone());
+    assert_eq!(app.move_preview_transform_overrides().len(), 2);
+    app.take_move_session(Some(ToolSessionPhase::Gesture));
+
+    assert!(app.commit_move_drag(&drag));
+    assert_eq!(app.selected_occurrence_count(), 2);
+    assert_eq!(app.active_boxes()[0].origin_mm, Vec3::new(20.0, 10.0, 5.0));
+    assert_eq!(app.active_boxes()[1].origin_mm, Vec3::new(55.0, 45.0, 5.0));
 }
 
 #[test]
@@ -12067,6 +12147,118 @@ fn push_pull_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
 }
 
 #[test]
+fn smart_push_pull_unique_cut_commits_but_ambiguous_targets_wait_for_choice() {
+    for target_count in [1, 2] {
+        let mut app = KetchupApp::new();
+        if target_count == 2 {
+            app.document
+                .apply_batch(&CommandBatch::new(vec![
+                    CanonicalCommand::CreateOccurrence {
+                        id: OccurrenceId(2),
+                        definition_id: INITIAL_BOX_DEFINITION,
+                        name: "Second target".to_owned(),
+                        transform: Transform::identity(),
+                        parent: None,
+                        tag: None,
+                        visible: true,
+                    },
+                ]))
+                .unwrap();
+        }
+        assert!(app.complete_circle(Vec3::new(35.0, 25.0, 20.0), 5.0, Vec3::new(1.0, 0.0, 0.0)));
+        let revision = app.document_revision();
+        let digest = app.canonical_digest();
+        let undo_steps = app.undo_step_count();
+        app.active_tool = ActiveTool::PushPull;
+        app.value_input = "-10".to_owned();
+        assert!(app.apply_value_input());
+        assert!(!app.has_preview());
+        assert!(!app.has_occurrence_operation_preview());
+        if target_count == 1 {
+            assert!(!app.has_smart_push_pull_chooser());
+            assert_eq!(app.document_revision(), revision + 1);
+            assert_eq!(app.undo_step_count(), undo_steps + 1);
+            let committed = app.canonical_digest();
+            assert_ne!(committed, digest);
+            assert!(app.undo());
+            assert_eq!(app.canonical_digest(), digest);
+            assert!(app.redo());
+            assert_eq!(app.canonical_digest(), committed);
+        } else {
+            assert_eq!(
+                app.smart_push_pull_chooser
+                    .as_ref()
+                    .unwrap()
+                    .source
+                    .targets
+                    .len(),
+                2
+            );
+            assert_eq!(app.status_key, "status-push-pull-choice");
+            assert_eq!(app.document_revision(), revision);
+            assert_eq!(app.canonical_digest(), digest);
+            assert_eq!(app.undo_step_count(), undo_steps);
+            app.cancel_preview();
+            assert!(!app.has_smart_push_pull_chooser());
+            assert_eq!(app.canonical_digest(), digest);
+        }
+    }
+}
+
+#[test]
+fn smart_push_pull_failed_unique_cut_reports_failure_without_mutation() {
+    let mut app = KetchupApp::new();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceTransform {
+                id: OccurrenceId(1),
+                transform: Transform::from_matrix([
+                    0.0, -1.0, 0.0, 80.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0,
+                    1.0,
+                ])
+                .unwrap(),
+            },
+        ]))
+        .unwrap();
+    assert!(app.complete_circle(Vec3::new(55.0, 35.0, 20.0), 5.0, Vec3::new(1.0, 0.0, 0.0)));
+    app.set_push_pull_distance_input("-10");
+    assert!(app.start_preview());
+    assert_eq!(
+        app.smart_push_pull_chooser
+            .as_ref()
+            .unwrap()
+            .source
+            .targets
+            .len(),
+        1
+    );
+    assert!(
+        !app.confirm_unique_profile_cut_choice(),
+        "the rotated pocket target is unsupported"
+    );
+    assert!(!app.has_smart_push_pull_chooser());
+
+    let revision = app.document_revision();
+    let digest = app.canonical_digest();
+    let undo_steps = app.undo_step_count();
+    app.active_tool = ActiveTool::PushPull;
+    app.value_input = "-10".to_owned();
+    let applied = app.apply_value_input();
+    assert_eq!(app.document_revision(), revision);
+    assert_eq!(app.canonical_digest(), digest);
+    assert_eq!(app.undo_step_count(), undo_steps);
+    assert!(!app.has_smart_push_pull_chooser());
+    assert!(!app.has_preview());
+    assert!(!app.has_occurrence_operation_preview());
+    assert!(
+        !applied,
+        "a rejected unique cut must not report successful input"
+    );
+    assert_eq!(app.status_key, "error-preview-stale");
+    assert_eq!(app.digest, app.catalog.text("error-preview-stale"));
+}
+
+#[test]
 fn smart_push_pull_chooser_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
     fn prepared_chooser() -> KetchupApp {
         let mut app = KetchupApp::new();
@@ -12074,9 +12266,9 @@ fn smart_push_pull_chooser_exact_plan_rejects_tamper_drift_stale_and_replay_atom
         app.set_push_pull_distance_input("10");
         assert!(app.start_preview());
         assert!(app.confirm_preview());
-        app.active_tool = ActiveTool::PushPull;
-        app.value_input = "-10".to_owned();
-        assert!(app.apply_value_input());
+        let parent = app.document.tip_replacement_parent().unwrap();
+        app.set_push_pull_distance_input("-10");
+        assert!(app.start_preview_for(SmartPushPullPlanning::TipReplacement(parent)));
         assert!(app.has_smart_push_pull_chooser());
         app
     }
@@ -12205,9 +12397,9 @@ fn smart_through_cut_exact_plan_rejects_tamper_drift_stale_and_replay_atomically
         app.set_push_pull_distance_input("10");
         assert!(app.start_preview());
         assert!(app.confirm_preview());
-        app.active_tool = ActiveTool::PushPull;
-        app.value_input = "-20".to_owned();
-        assert!(app.apply_value_input());
+        let parent = app.document.tip_replacement_parent().unwrap();
+        app.set_push_pull_distance_input("-20");
+        assert!(app.start_preview_for(SmartPushPullPlanning::TipReplacement(parent)));
         let chooser = app.smart_push_pull_chooser.as_mut().unwrap();
         chooser.selected = SmartPushPullChoice::ProfileCut(OccurrenceId(1));
         assert!(app.confirm_smart_push_pull_choice());
@@ -12356,9 +12548,9 @@ fn smart_profile_pocket_exact_plan_rejects_tamper_drift_stale_and_replay_atomica
         app.set_push_pull_distance_input("10");
         assert!(app.start_preview());
         assert!(app.confirm_preview());
-        app.active_tool = ActiveTool::PushPull;
-        app.value_input = "-10".to_owned();
-        assert!(app.apply_value_input());
+        let parent = app.document.tip_replacement_parent().unwrap();
+        app.set_push_pull_distance_input("-10");
+        assert!(app.start_preview_for(SmartPushPullPlanning::TipReplacement(parent)));
         let chooser = app.smart_push_pull_chooser.as_mut().unwrap();
         chooser.selected = SmartPushPullChoice::ProfileCut(OccurrenceId(1));
         assert!(app.confirm_smart_push_pull_choice());
@@ -13910,6 +14102,156 @@ fn outliner_and_viewport_share_multiselection_without_document_mutation() {
 }
 
 #[test]
+fn exact_topological_selection_ends_numeric_move_correction() {
+    let mut app = KetchupApp::new();
+    app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+    let initial_origin = app.occurrence_box_geometry(1).unwrap().0;
+    let initial_steps = app.undo_step_count();
+
+    app.dispatch_command(AppCommand::Move);
+    app.value_input = "25,0,0".to_owned();
+    assert!(app.apply_value_input());
+    assert_eq!(app.undo_step_count(), initial_steps + 1);
+
+    install_initial_graph_result(&mut app);
+    select_initial_topological(&mut app, TopologicalElementKind::Face, 3);
+    app.value_input = "40,0,0".to_owned();
+    assert!(app.apply_value_input());
+
+    assert_eq!(
+        app.occurrence_box_geometry(1).unwrap().0,
+        initial_origin + Vec3::new(65.0, 0.0, 0.0),
+        "a value entered after an exact topological selection must start a fresh Move"
+    );
+    assert_eq!(app.undo_step_count(), initial_steps + 2);
+}
+
+#[test]
+fn rotate_previews_commits_and_corrects_the_entire_multi_selection_atomically() {
+    let mut app = KetchupApp::new();
+    assert!(app.create_box());
+    app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+    app.select_from_outliner(InstancePath::root(OccurrenceId(2)), true);
+    let occurrence_paths = app.selected_instance_paths();
+    let selection = app.selected_move_reference().unwrap();
+    let centre_mm = app
+        .rotation_centre_for(&|path| occurrence_paths.contains(path))
+        .unwrap();
+    let snapshot = app.document.current();
+    let originals = occurrence_paths
+        .iter()
+        .map(|path| {
+            let id = path.root_occurrence();
+            (id, snapshot.occurrence(id).unwrap().transform())
+        })
+        .collect::<BTreeMap<_, _>>();
+    let base_digest = snapshot.canonical_digest();
+    let base_revision = snapshot.revision_id();
+    let base_steps = app.undo_step_count();
+
+    app.set_rotate_session(
+        ToolSessionPhase::Gesture,
+        RotateDrag {
+            source_document_id: snapshot.document_id(),
+            source_revision: snapshot.revision_id(),
+            selection: selection.clone(),
+            occurrence_paths: occurrence_paths.clone(),
+            group_id: None,
+            centre_mm,
+            axis: Axis::Z,
+            reference_mm: Some(Vec3::new(1.0, 0.0, 0.0)),
+            angle_degrees: 25.0,
+            copy: false,
+        },
+    );
+    assert_eq!(app.rotation_preview_transforms(false).len(), 2);
+    assert_eq!(app.canonical_digest(), base_digest);
+    app.cancel_preview();
+    assert!(app.active_rotate_gesture().is_none());
+    assert_eq!(app.canonical_digest(), base_digest);
+    assert_eq!(app.undo_step_count(), base_steps);
+
+    app.rotate_axis_lock = Some(Axis::Z);
+    assert!(app.rotate_selected(90.0));
+    assert_eq!(app.document_revision(), base_revision + 1);
+    assert_eq!(app.undo_step_count(), base_steps + 1);
+    assert_eq!(app.selected_occurrence_count(), 2);
+    let assert_angle = |app: &KetchupApp, angle_degrees| {
+        let rotation = world_rotation_transform(centre_mm, Axis::Z, angle_degrees).unwrap();
+        let current = app.document.current();
+        for (id, original) in &originals {
+            let actual = current.occurrence(*id).unwrap().transform();
+            let expected = rotation.compose(*original);
+            for (actual, expected) in actual.matrix().iter().zip(expected.matrix()) {
+                assert!((actual - expected).abs() < 1.0e-9);
+            }
+        }
+    };
+    assert_angle(&app, 90.0);
+
+    assert!(app.correct_last_rotation(40.0));
+    assert_angle(&app, 40.0);
+    assert_eq!(app.undo_step_count(), base_steps + 1);
+    assert!(app.undo());
+    assert_eq!(app.canonical_digest(), base_digest);
+    assert_eq!(app.undo_step_count(), base_steps);
+    assert!(app.redo());
+    assert_angle(&app, 40.0);
+}
+
+#[test]
+fn rotate_copy_copies_the_entire_multi_selection_in_one_undo_step() {
+    let mut app = KetchupApp::new();
+    assert!(app.create_box());
+    app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+    app.select_from_outliner(InstancePath::root(OccurrenceId(2)), true);
+    let occurrence_paths = app.selected_instance_paths();
+    let selection = app.selected_move_reference().unwrap();
+    let centre_mm = app
+        .rotation_centre_for(&|path| occurrence_paths.contains(path))
+        .unwrap();
+    let snapshot = app.document.current();
+    let originals = [OccurrenceId(1), OccurrenceId(2)].map(|id| {
+        (
+            snapshot.occurrence(id).unwrap().transform(),
+            snapshot.occurrence(id).unwrap().definition_id(),
+        )
+    });
+    let base_digest = snapshot.canonical_digest();
+    let base_steps = app.undo_step_count();
+
+    assert!(app.rotate_occurrences(
+        &selection,
+        &occurrence_paths,
+        centre_mm,
+        Axis::Z,
+        90.0,
+        true,
+    ));
+    assert_eq!(app.document.current().occurrences().count(), 4);
+    assert_eq!(
+        app.selected_occurrence_ids(),
+        BTreeSet::from([OccurrenceId(3), OccurrenceId(4)])
+    );
+    assert_eq!(app.undo_step_count(), base_steps + 1);
+    let rotation = world_rotation_transform(centre_mm, Axis::Z, 90.0).unwrap();
+    let current = app.document.current();
+    for (index, target_id) in [OccurrenceId(3), OccurrenceId(4)].into_iter().enumerate() {
+        let target = current.occurrence(target_id).unwrap();
+        assert_eq!(target.definition_id(), originals[index].1);
+        let actual = target.transform();
+        let expected = rotation.compose(originals[index].0);
+        for (actual, expected) in actual.matrix().iter().zip(expected.matrix()) {
+            assert!((actual - expected).abs() < 1.0e-9);
+        }
+    }
+
+    assert!(app.undo());
+    assert_eq!(app.canonical_digest(), base_digest);
+    assert_eq!(app.document.current().occurrences().count(), 2);
+}
+
+#[test]
 fn shared_definition_push_pull_previews_each_occurrence_and_explains_impact() {
     let mut app = KetchupApp::new();
     app.document
@@ -14059,6 +14401,651 @@ fn move_and_ctrl_copy_commit_occurrence_only_batches_visible_in_outliner() {
 }
 
 #[test]
+fn move_copy_array_multiplies_and_divides_the_last_vector_in_one_undo_step() {
+    let mut app = KetchupApp::new();
+    app.selection.select_exact(
+        SelectionId {
+            definition_id: INITIAL_BOX_DEFINITION,
+            instance_path: InstancePath::root(OccurrenceId(1)),
+            element: ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum,
+            },
+        },
+        false,
+    );
+    app.dispatch_command(AppCommand::Move);
+    let delta = Vec3::new(50.0, -25.0, 10.0);
+    assert!(app.copy_selected(delta));
+    assert_eq!(app.document.visible_undo_steps(), 1);
+
+    app.value_input = "×5".to_owned();
+    assert!(app.apply_value_input());
+    assert_eq!(app.document.visible_undo_steps(), 1);
+    assert_eq!(app.document.current().occurrences().count(), 6);
+    {
+        let snapshot = app.document.current();
+        for index in 1..=5 {
+            let occurrence = snapshot.occurrence(OccurrenceId(index + 1)).unwrap();
+            let transform = occurrence.transform();
+            let matrix = transform.matrix();
+            assert_eq!(
+                [matrix[3], matrix[7], matrix[11]],
+                [
+                    50.0 * index as f64,
+                    -25.0 * index as f64,
+                    10.0 * index as f64
+                ]
+            );
+            assert_eq!(occurrence.definition_id(), INITIAL_BOX_DEFINITION);
+        }
+    }
+    assert_eq!(
+        app.selected_move_reference().unwrap().instance_path,
+        InstancePath::root(OccurrenceId(6))
+    );
+
+    app.value_input = "/5".to_owned();
+    assert!(app.apply_value_input());
+    assert_eq!(app.document.visible_undo_steps(), 1);
+    assert_eq!(app.document.current().occurrences().count(), 6);
+    {
+        let snapshot = app.document.current();
+        for index in 1..=5 {
+            let occurrence = snapshot.occurrence(OccurrenceId(index + 1)).unwrap();
+            let transform = occurrence.transform();
+            let matrix = transform.matrix();
+            assert_eq!(
+                [matrix[3], matrix[7], matrix[11]],
+                [10.0 * index as f64, -5.0 * index as f64, 2.0 * index as f64]
+            );
+        }
+    }
+
+    assert!(app.undo());
+    assert_eq!(app.document.current().occurrences().count(), 1);
+    assert!(app.redo());
+    assert_eq!(app.document.current().occurrences().count(), 6);
+}
+
+#[test]
+fn move_copy_array_repeats_the_entire_multi_selection_atomically() {
+    let mut app = KetchupApp::new();
+    assert!(app.create_box());
+    app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+    app.select_from_outliner(InstancePath::root(OccurrenceId(2)), true);
+    let originals = app
+        .active_boxes()
+        .into_iter()
+        .map(|item| item.origin_mm)
+        .collect::<Vec<_>>();
+    let delta = Vec3::new(30.0, -10.0, 5.0);
+
+    app.dispatch_command(AppCommand::Move);
+    assert!(app.copy_selected(delta));
+    assert_eq!(app.selected_occurrence_count(), 2);
+    app.value_input = "×3".to_owned();
+    assert!(app.apply_value_input());
+    assert_eq!(app.document.current().occurrences().count(), 8);
+    assert_eq!(app.selected_occurrence_count(), 2);
+    for (source_index, origin) in originals.iter().copied().enumerate() {
+        let copied = app
+            .active_boxes()
+            .into_iter()
+            .find(|item| {
+                item.instance_path == InstancePath::root(OccurrenceId(7 + source_index as u64))
+            })
+            .unwrap();
+        assert_eq!(copied.origin_mm, origin + delta * 3.0);
+    }
+
+    app.value_input = "/3".to_owned();
+    assert!(app.apply_value_input());
+    assert_eq!(app.document.current().occurrences().count(), 8);
+    for copy_index in 1..=3 {
+        for (source_index, origin) in originals.iter().copied().enumerate() {
+            let id = 3 + (copy_index - 1) * 2 + source_index;
+            let copied = app
+                .active_boxes()
+                .into_iter()
+                .find(|item| item.instance_path == InstancePath::root(OccurrenceId(id as u64)))
+                .unwrap();
+            assert_eq!(copied.origin_mm, origin + delta * (copy_index as f64 / 3.0));
+        }
+    }
+
+    assert!(app.undo());
+    assert_eq!(app.document.current().occurrences().count(), 2);
+    assert!(app.redo());
+    assert_eq!(app.document.current().occurrences().count(), 8);
+}
+
+#[test]
+fn move_copy_array_rejects_stale_or_invalid_modifiers_without_mutation() {
+    let mut app = KetchupApp::new();
+    app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+    app.dispatch_command(AppCommand::Move);
+    assert!(app.copy_selected(Vec3::new(40.0, 0.0, 0.0)));
+    assert!(app.create_box());
+    let digest = app.canonical_digest();
+    let undo_steps = app.document.visible_undo_steps();
+
+    app.dispatch_command(AppCommand::Move);
+    app.value_input = "x5".to_owned();
+    assert!(!app.apply_value_input());
+    assert_eq!(app.canonical_digest(), digest);
+    assert_eq!(app.document.visible_undo_steps(), undo_steps);
+
+    app.value_input = "/0".to_owned();
+    assert!(!app.apply_value_input());
+    assert_eq!(app.canonical_digest(), digest);
+    assert_eq!(app.document.visible_undo_steps(), undo_steps);
+}
+
+#[test]
+fn move_ctrl_is_a_persistent_copy_toggle_during_an_active_gesture() {
+    let mut app = KetchupApp::new();
+    let snapshot = app.document.current();
+    app.set_move_session(
+        ToolSessionPhase::Anchor,
+        MoveDrag {
+            source_document_id: snapshot.document_id(),
+            source_revision: snapshot.revision_id(),
+            occurrence_paths: BTreeSet::from([InstancePath::root(OccurrenceId(1))]),
+            selection: SelectionId {
+                definition_id: INITIAL_BOX_DEFINITION,
+                instance_path: InstancePath::root(OccurrenceId(1)),
+                element: ElementId::Face {
+                    axis: Axis::Z,
+                    side: Side::Maximum,
+                },
+            },
+            group_id: None,
+            profile_target: None,
+            pointer_start_world: Vec3::ZERO,
+            plane_z: 0.0,
+            axis: None,
+            axis_reference: None,
+            delta_mm: Vec3::new(25.0, 0.0, 0.0),
+            copy: false,
+        },
+    );
+
+    app.update_move_copy_modifier(true);
+    assert!(!app.move_copy_mode);
+    app.update_move_copy_modifier(false);
+    assert!(app.move_copy_mode);
+    assert!(app.move_session().unwrap().0.copy);
+
+    app.update_move_copy_modifier(true);
+    app.update_move_copy_modifier(false);
+    assert!(!app.move_copy_mode);
+    assert!(!app.move_session().unwrap().0.copy);
+}
+
+#[test]
+fn rotate_ctrl_is_a_persistent_copy_toggle_during_an_active_gesture() {
+    let mut app = KetchupApp::new();
+    let snapshot = app.document.current();
+    app.set_rotate_session(
+        ToolSessionPhase::Anchor,
+        RotateDrag {
+            source_document_id: snapshot.document_id(),
+            source_revision: snapshot.revision_id(),
+            selection: SelectionId {
+                definition_id: INITIAL_BOX_DEFINITION,
+                instance_path: InstancePath::root(OccurrenceId(1)),
+                element: ElementId::Face {
+                    axis: Axis::Z,
+                    side: Side::Maximum,
+                },
+            },
+            occurrence_paths: BTreeSet::from([InstancePath::root(OccurrenceId(1))]),
+            group_id: None,
+            centre_mm: Vec3::new(50.0, 30.0, 20.0),
+            axis: Axis::Z,
+            reference_mm: Some(Vec3::new(25.0, 0.0, 0.0)),
+            angle_degrees: 45.0,
+            copy: false,
+        },
+    );
+
+    app.update_rotate_copy_modifier(true);
+    assert!(!app.rotate_copy_mode);
+    app.update_rotate_copy_modifier(false);
+    assert!(app.rotate_copy_mode);
+    assert!(app.rotate_session().unwrap().0.copy);
+
+    app.update_rotate_copy_modifier(true);
+    app.update_rotate_copy_modifier(false);
+    assert!(!app.rotate_copy_mode);
+    assert!(!app.rotate_session().unwrap().0.copy);
+}
+
+#[test]
+fn transform_copy_toggle_ends_with_the_committed_gesture() {
+    let mut move_app = KetchupApp::new();
+    move_app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+    let snapshot = move_app.document.current();
+    let selection = move_app.selected_move_reference().unwrap();
+    let occurrence_paths = move_app.selected_instance_paths();
+    move_app.update_move_copy_modifier(true);
+    move_app.update_move_copy_modifier(false);
+    assert!(move_app.commit_move_drag(&MoveDrag {
+        source_document_id: snapshot.document_id(),
+        source_revision: snapshot.revision_id(),
+        selection,
+        occurrence_paths,
+        group_id: None,
+        profile_target: None,
+        pointer_start_world: Vec3::ZERO,
+        plane_z: 0.0,
+        axis: None,
+        axis_reference: None,
+        delta_mm: Vec3::new(25.0, 0.0, 0.0),
+        copy: true,
+    }));
+    assert!(!move_app.move_copy_mode);
+    move_app.update_move_copy_modifier(true);
+    move_app.update_move_copy_modifier(false);
+    assert!(
+        move_app.move_copy_mode,
+        "the next standalone Ctrl gesture must enable Copy"
+    );
+
+    let mut rotate_app = KetchupApp::new();
+    rotate_app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+    let snapshot = rotate_app.document.current();
+    let selection = rotate_app.selected_move_reference().unwrap();
+    let occurrence_paths = rotate_app.selected_instance_paths();
+    let centre_mm = rotate_app
+        .rotation_centre_for(&|path| occurrence_paths.contains(path))
+        .unwrap();
+    rotate_app.update_rotate_copy_modifier(true);
+    rotate_app.update_rotate_copy_modifier(false);
+    assert!(rotate_app.commit_rotate_drag(&RotateDrag {
+        source_document_id: snapshot.document_id(),
+        source_revision: snapshot.revision_id(),
+        selection,
+        occurrence_paths,
+        group_id: None,
+        centre_mm,
+        axis: Axis::Z,
+        reference_mm: Some(Vec3::new(25.0, 0.0, 0.0)),
+        angle_degrees: 45.0,
+        copy: true,
+    }));
+    assert!(!rotate_app.rotate_copy_mode);
+    rotate_app.update_rotate_copy_modifier(true);
+    rotate_app.update_rotate_copy_modifier(false);
+    assert!(
+        rotate_app.rotate_copy_mode,
+        "the next standalone Ctrl gesture must enable Rotate-Copy"
+    );
+}
+
+#[test]
+fn escape_and_tool_change_clear_transform_constraints_without_mutation() {
+    let mut app = KetchupApp::new();
+    app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+    let digest = app.canonical_digest();
+    let undo_steps = app.undo_step_count();
+    let selected = app.selected_occurrence_ids();
+    let snapshot = app.document.current();
+    let selection = app.selected_move_reference().unwrap();
+    let paths = app.selected_instance_paths();
+
+    app.dispatch_command(AppCommand::Move);
+    app.set_move_axis_lock(Some(Axis::X));
+    app.set_move_session(
+        ToolSessionPhase::Anchor,
+        MoveDrag {
+            source_document_id: snapshot.document_id(),
+            source_revision: snapshot.revision_id(),
+            occurrence_paths: paths.clone(),
+            selection: selection.clone(),
+            group_id: None,
+            profile_target: None,
+            pointer_start_world: Vec3::ZERO,
+            plane_z: 0.0,
+            axis: Some(Axis::X),
+            axis_reference: Some(0.0),
+            delta_mm: Vec3::new(25.0, 0.0, 0.0),
+            copy: false,
+        },
+    );
+    app.dispatch_command(AppCommand::Rotate);
+    assert!(app.move_session().is_none());
+    assert_eq!(app.move_axis_lock, None);
+
+    app.set_rotate_axis_lock(Some(Axis::Y));
+    app.set_rotate_session(
+        ToolSessionPhase::Anchor,
+        RotateDrag {
+            source_document_id: snapshot.document_id(),
+            source_revision: snapshot.revision_id(),
+            selection,
+            occurrence_paths: paths,
+            group_id: None,
+            centre_mm: Vec3::new(50.0, 30.0, 20.0),
+            axis: Axis::Y,
+            reference_mm: Some(Vec3::new(25.0, 0.0, 0.0)),
+            angle_degrees: 45.0,
+            copy: false,
+        },
+    );
+    app.cancel_preview();
+    assert!(app.rotate_session().is_none());
+    assert_eq!(app.rotate_axis_lock, None);
+
+    assert_eq!(app.canonical_digest(), digest);
+    assert_eq!(app.undo_step_count(), undo_steps);
+    assert_eq!(app.selected_occurrence_ids(), selected);
+}
+
+#[test]
+fn stale_numeric_transform_confirmation_ends_the_copy_toggle_without_mutation() {
+    let mut move_app = KetchupApp::new();
+    assert!(move_app.create_box());
+    move_app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+    move_app.dispatch_command(AppCommand::Move);
+    let snapshot = move_app.document.current();
+    move_app.set_move_session(
+        ToolSessionPhase::Anchor,
+        MoveDrag {
+            source_document_id: snapshot.document_id(),
+            source_revision: snapshot.revision_id(),
+            occurrence_paths: move_app.selected_instance_paths(),
+            selection: move_app.selected_move_reference().unwrap(),
+            group_id: None,
+            profile_target: None,
+            pointer_start_world: Vec3::ZERO,
+            plane_z: 0.0,
+            axis: None,
+            axis_reference: None,
+            delta_mm: Vec3::new(25.0, 0.0, 0.0),
+            copy: true,
+        },
+    );
+    move_app.update_move_copy_modifier(true);
+    move_app.update_move_copy_modifier(false);
+    move_app.select_from_outliner(InstancePath::root(OccurrenceId(2)), false);
+    let digest = move_app.canonical_digest();
+    let undo_steps = move_app.undo_step_count();
+    move_app.value_input = "25, 0, 0".to_owned();
+
+    assert!(!move_app.apply_value_input());
+    assert!(!move_app.move_copy_mode);
+    assert_eq!(move_app.canonical_digest(), digest);
+    assert_eq!(move_app.undo_step_count(), undo_steps);
+
+    let mut rotate_app = KetchupApp::new();
+    assert!(rotate_app.create_box());
+    rotate_app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+    rotate_app.dispatch_command(AppCommand::Rotate);
+    let snapshot = rotate_app.document.current();
+    let occurrence_paths = rotate_app.selected_instance_paths();
+    rotate_app.set_rotate_session(
+        ToolSessionPhase::Anchor,
+        RotateDrag {
+            source_document_id: snapshot.document_id(),
+            source_revision: snapshot.revision_id(),
+            selection: rotate_app.selected_move_reference().unwrap(),
+            occurrence_paths: occurrence_paths.clone(),
+            group_id: None,
+            centre_mm: rotate_app
+                .rotation_centre_for(&|path| occurrence_paths.contains(path))
+                .unwrap(),
+            axis: Axis::Z,
+            reference_mm: Some(Vec3::new(25.0, 0.0, 0.0)),
+            angle_degrees: 45.0,
+            copy: true,
+        },
+    );
+    rotate_app.update_rotate_copy_modifier(true);
+    rotate_app.update_rotate_copy_modifier(false);
+    rotate_app.select_from_outliner(InstancePath::root(OccurrenceId(2)), false);
+    let digest = rotate_app.canonical_digest();
+    let undo_steps = rotate_app.undo_step_count();
+    rotate_app.value_input = "45".to_owned();
+
+    assert!(!rotate_app.apply_value_input());
+    assert!(!rotate_app.rotate_copy_mode);
+    assert_eq!(rotate_app.canonical_digest(), digest);
+    assert_eq!(rotate_app.undo_step_count(), undo_steps);
+}
+
+#[test]
+fn transform_gestures_fail_closed_after_selection_drift() {
+    let mut app = KetchupApp::new();
+    assert!(app.create_box());
+    app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+    let snapshot = app.document.current();
+    let selection = app.selected_move_reference().unwrap();
+    let occurrence_paths = app.selected_instance_paths();
+    let centre_mm = app
+        .rotation_centre_for(&|path| occurrence_paths.contains(path))
+        .unwrap();
+    let move_drag = MoveDrag {
+        source_document_id: snapshot.document_id(),
+        source_revision: snapshot.revision_id(),
+        selection: selection.clone(),
+        occurrence_paths: occurrence_paths.clone(),
+        group_id: None,
+        profile_target: None,
+        pointer_start_world: Vec3::ZERO,
+        plane_z: 0.0,
+        axis: None,
+        axis_reference: None,
+        delta_mm: Vec3::new(25.0, 0.0, 0.0),
+        copy: false,
+    };
+    let rotate_drag = RotateDrag {
+        source_document_id: snapshot.document_id(),
+        source_revision: snapshot.revision_id(),
+        selection,
+        occurrence_paths,
+        group_id: None,
+        centre_mm,
+        axis: Axis::Z,
+        reference_mm: Some(Vec3::new(25.0, 0.0, 0.0)),
+        angle_degrees: 45.0,
+        copy: false,
+    };
+
+    app.update_move_copy_modifier(true);
+    app.update_move_copy_modifier(false);
+    app.update_rotate_copy_modifier(true);
+    app.update_rotate_copy_modifier(false);
+    assert!(app.move_copy_mode);
+    assert!(app.rotate_copy_mode);
+
+    app.select_from_outliner(InstancePath::root(OccurrenceId(2)), false);
+    let digest = app.canonical_digest();
+    let undo_steps = app.undo_step_count();
+    let selected = app.selected_occurrence_ids();
+
+    assert!(!app.move_preview_is_current(&move_drag));
+    assert!(!app.rotate_preview_is_current(&rotate_drag));
+    assert!(!app.commit_move_drag(&move_drag));
+    assert!(!app.move_copy_mode);
+    assert!(!app.commit_rotate_drag(&rotate_drag));
+    assert!(!app.rotate_copy_mode);
+    assert_eq!(app.canonical_digest(), digest);
+    assert_eq!(app.undo_step_count(), undo_steps);
+    assert_eq!(app.selected_occurrence_ids(), selected);
+}
+
+#[test]
+fn directional_selection_window_contains_left_to_right_and_crosses_right_to_left() {
+    let mut app = KetchupApp::new();
+    app.selection.select_exact(
+        SelectionId {
+            definition_id: INITIAL_BOX_DEFINITION,
+            instance_path: InstancePath::root(OccurrenceId(1)),
+            element: ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum,
+            },
+        },
+        false,
+    );
+    assert!(app.copy_selected(Vec3::new(240.0, 0.0, 0.0)));
+    let viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0));
+    app.viewport_rect = Some(viewport);
+    app.home_view();
+    let projected_box = |app: &KetchupApp, occurrence_id| {
+        let (origin, size) = app.occurrence_box_geometry(occurrence_id).unwrap();
+        box_corners(size.x, size.y, size.z)
+            .into_iter()
+            .map(|corner| {
+                let point = app.project(origin + corner, viewport);
+                Rect::from_min_max(point, point)
+            })
+            .reduce(|left, right| left.union(right))
+            .unwrap()
+    };
+    let first = projected_box(&app, 1);
+    let second = projected_box(&app, 2);
+    assert!(!first.intersects(second));
+
+    let contained = app.selection_window_paths(
+        first.left_top() - Vec2::splat(2.0),
+        first.right_bottom() + Vec2::splat(2.0),
+        viewport,
+    );
+    assert_eq!(
+        contained,
+        BTreeSet::from([InstancePath::root(OccurrenceId(1))])
+    );
+
+    let partial_left_to_right = app.selection_window_paths(
+        Pos2::new(first.center().x, first.top() - 2.0),
+        first.right_bottom() + Vec2::splat(2.0),
+        viewport,
+    );
+    assert!(partial_left_to_right.is_empty());
+
+    let crossing_start = second.right_top() + Vec2::splat(2.0);
+    let crossing_end = Pos2::new(second.center().x, second.bottom() + 2.0);
+    let crossing_right_to_left = app.selection_window_paths(crossing_start, crossing_end, viewport);
+    assert_eq!(
+        crossing_right_to_left,
+        BTreeSet::from([InstancePath::root(OccurrenceId(2))]),
+        "second={second:?}, start={crossing_start:?}, end={crossing_end:?}, all={:?}",
+        app.selection_window_paths(viewport.right_top(), viewport.left_bottom(), viewport)
+    );
+
+    let revision = app.document_revision();
+    let digest = app.canonical_digest();
+    let undo_steps = app.undo_step_count();
+    app.selection.clear();
+    app.complete_selection_window(
+        SelectionWindowDrag {
+            start: first.left_top() - Vec2::splat(2.0),
+            cursor: first.right_bottom() + Vec2::splat(2.0),
+            additive: false,
+        },
+        viewport,
+    );
+    app.complete_selection_window(
+        SelectionWindowDrag {
+            start: second.left_top() - Vec2::splat(2.0),
+            cursor: second.right_bottom() + Vec2::splat(2.0),
+            additive: true,
+        },
+        viewport,
+    );
+    assert_eq!(
+        app.selection.occurrences,
+        BTreeSet::from([
+            InstancePath::root(OccurrenceId(1)),
+            InstancePath::root(OccurrenceId(2)),
+        ])
+    );
+
+    app.selection_window = Some(SelectionWindowDrag {
+        start: viewport.left_top(),
+        cursor: viewport.center(),
+        additive: false,
+    });
+    app.cancel_preview();
+    assert!(app.selection_window.is_none());
+    assert_eq!(app.selection.occurrences.len(), 2);
+    assert_eq!(app.document_revision(), revision);
+    assert_eq!(app.canonical_digest(), digest);
+    assert_eq!(app.undo_step_count(), undo_steps);
+}
+
+#[test]
+fn crossing_selection_uses_projected_geometry_instead_of_its_empty_bounds() {
+    let mut app = KetchupApp::new();
+    let definition_id = DefinitionId(100);
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition_id,
+                name: "Triangular mesh".to_owned(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(100),
+                definition_id,
+                name: "Triangular mesh body".to_owned(),
+                kind: FeatureKind::MeshBody(MeshBodySpec {
+                    schema: MESH_BODY_SCHEMA_V1.to_owned(),
+                    vertices_mm: vec![
+                        [0.0, 0.0, 0.0],
+                        [100.0, 0.0, 0.0],
+                        [0.0, 100.0, 0.0],
+                        [0.0, 0.0, 100.0],
+                    ],
+                    triangles: vec![[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]],
+                    authority: MeshAuthority::Authored {
+                        provenance: "crossing-selection-regression".to_owned(),
+                    },
+                }),
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(100),
+                definition_id,
+                name: "Triangular mesh occurrence".to_owned(),
+                transform: Transform::from_translation(300.0, 0.0, 0.0).unwrap(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    let viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0));
+    app.viewport_rect = Some(viewport);
+    app.projection_mode = ProjectionMode::Parallel;
+    app.dispatch_command(AppCommand::ViewTop);
+    app.home_view();
+
+    let empty_corner = Rect::from_two_pos(
+        app.project(Vec3::new(375.0, 75.0, 0.0), viewport),
+        app.project(Vec3::new(395.0, 95.0, 0.0), viewport),
+    );
+    let empty_crossing = app.selection_window_paths(
+        empty_corner.right_top(),
+        empty_corner.left_bottom(),
+        viewport,
+    );
+    assert!(
+        !empty_crossing.contains(&InstancePath::root(OccurrenceId(100))),
+        "the window lies inside the mesh bounds but does not touch its triangle"
+    );
+
+    let touched = Rect::from_two_pos(
+        app.project(Vec3::new(345.0, 45.0, 0.0), viewport),
+        app.project(Vec3::new(355.0, 55.0, 0.0), viewport),
+    );
+    let touched_crossing =
+        app.selection_window_paths(touched.right_top(), touched.left_bottom(), viewport);
+    assert!(touched_crossing.contains(&InstancePath::root(OccurrenceId(100))));
+}
+
+#[test]
 fn move_vcb_accepts_last_direction_distance_and_exact_vector() {
     let mut app = KetchupApp::new();
     app.selection.select_exact(
@@ -14084,7 +15071,7 @@ fn move_vcb_accepts_last_direction_distance_and_exact_vector() {
         .transform();
     assert_eq!(transform.matrix()[3], 60.0);
     assert_eq!(transform.matrix()[7], 80.0);
-    assert_eq!(app.document.visible_undo_steps(), 2);
+    assert_eq!(app.document.visible_undo_steps(), 1);
 
     app.value_input = "10,-20,5".to_owned();
     assert!(app.apply_value_input());

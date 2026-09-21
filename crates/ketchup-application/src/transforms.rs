@@ -1,4 +1,4 @@
-use ketchup_core::document::{CanonicalError, Transform};
+use ketchup_core::document::{CanonicalError, GroupId, Snapshot, Transform};
 use ketchup_interaction::Vec3;
 
 pub fn translated_transform(
@@ -59,6 +59,18 @@ pub fn rotation_in_parent_space(
         .compose(parent_world_transform)
         .compose(local_transform);
     Transform::from_matrix(*transformed.matrix()).ok()
+}
+
+pub fn world_edit_in_parent_space(
+    snapshot: &Snapshot,
+    parent: Option<GroupId>,
+    local: Transform,
+    world_edit: Transform,
+) -> Option<Transform> {
+    let parent_world = parent.map_or(Some(Transform::identity()), |id| {
+        snapshot.world_transform_for_group(id)
+    })?;
+    rotation_in_parent_space(world_edit, parent_world, local)
 }
 
 pub fn world_plane_mirror_transform(

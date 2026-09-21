@@ -29,7 +29,15 @@ mod tests {
                     "move-copy" => assert!(app.copy_selected(Vec3::new(100.0, 0.0, 0.0))),
                     "rotate-copy" => {
                         let selection = app.selected_move_reference().unwrap();
-                        assert!(app.rotate_occurrence(&selection, Vec3::ZERO, Axis::Z, 90.0, true));
+                        let occurrence_paths = app.selected_instance_paths();
+                        assert!(app.rotate_occurrences(
+                            &selection,
+                            &occurrence_paths,
+                            Vec3::ZERO,
+                            Axis::Z,
+                            90.0,
+                            true,
+                        ));
                     }
                     "linear" => {
                         assert!(app.preview_linear_pattern(source, Axis::X, 100.0, 3));

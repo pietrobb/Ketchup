@@ -635,26 +635,30 @@ fn raw_preview_sketch_parameter_editor_dialog_and_anchor_are_busy_and_retained()
                 app.pending_definition_rename.as_mut().unwrap().name = "unfinished rename".into();
             }
             5 => {
-                app.move_anchor = Some(crate::MoveDrag {
-                    source_document_id: app.document.current().document_id(),
-                    source_revision: stamp.revision,
-                    selection: SelectionId {
-                        definition_id: DefinitionId(1),
-                        instance_path: InstancePath::root(OccurrenceId(1)),
-                        element: crate::ElementId::Face {
-                            axis: crate::Axis::Z,
-                            side: crate::Side::Maximum,
+                app.set_move_session(
+                    crate::ToolSessionPhase::Anchor,
+                    crate::MoveDrag {
+                        source_document_id: app.document.current().document_id(),
+                        source_revision: stamp.revision,
+                        occurrence_paths: BTreeSet::from([InstancePath::root(OccurrenceId(1))]),
+                        selection: SelectionId {
+                            definition_id: DefinitionId(1),
+                            instance_path: InstancePath::root(OccurrenceId(1)),
+                            element: crate::ElementId::Face {
+                                axis: crate::Axis::Z,
+                                side: crate::Side::Maximum,
+                            },
                         },
+                        group_id: None,
+                        profile_target: None,
+                        pointer_start_world: crate::Vec3::new(0.0, 0.0, 0.0),
+                        plane_z: 0.0,
+                        axis: None,
+                        axis_reference: None,
+                        delta_mm: crate::Vec3::new(1.0, 2.0, 3.0),
+                        copy: false,
                     },
-                    group_id: None,
-                    profile_target: None,
-                    pointer_start_world: crate::Vec3::new(0.0, 0.0, 0.0),
-                    plane_z: 0.0,
-                    axis: None,
-                    axis_reference: None,
-                    delta_mm: crate::Vec3::new(1.0, 2.0, 3.0),
-                    copy: false,
-                });
+                );
             }
             6 => {
                 app.preview_definition_id = Some(DefinitionId(999));
@@ -703,7 +707,7 @@ fn raw_preview_sketch_parameter_editor_dialog_and_anchor_are_busy_and_retained()
                 "unfinished rename"
             ),
             5 => assert_eq!(
-                app.move_anchor.as_ref().unwrap().delta_mm,
+                app.move_session().unwrap().0.delta_mm,
                 crate::Vec3::new(1.0, 2.0, 3.0)
             ),
             6 => assert_eq!(app.preview_definition_id, Some(DefinitionId(999))),

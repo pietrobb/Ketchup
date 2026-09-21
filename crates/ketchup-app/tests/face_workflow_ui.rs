@@ -439,6 +439,14 @@ fn deliberate_alt_pick_through_has_transient_xray_feedback_without_mutation() {
         Some((1, overlap_count))
     );
     assert!(shell.app().face_workflow_xray_active());
+    let alternate = shell.app().hovered_selection().cloned().unwrap();
+    shell.move_pointer(centre + Vec2::new(1.0, 0.0));
+    assert_eq!(shell.app().hovered_selection(), Some(&alternate));
+    assert_eq!(
+        shell.app().hovered_overlap_choice(),
+        Some((1, overlap_count)),
+        "minor pointer motion must retain the deliberate alternate face"
+    );
     assert_eq!(shell.app().document_revision(), revision);
     assert_eq!(shell.app().canonical_digest(), digest);
     assert_eq!(shell.app().undo_step_count(), undo);
@@ -458,6 +466,14 @@ fn deliberate_alt_pick_through_has_transient_xray_feedback_without_mutation() {
 
     shell.press_key(Key::Escape);
     assert!(!shell.app().face_workflow_xray_active());
+    let empty = shell.viewport_rect().left_top() + Vec2::new(24.0, 200.0);
+    shell.move_pointer(empty);
+    assert!(shell.app().hovered_selection().is_none());
+    shell.move_pointer(centre);
+    assert_eq!(
+        shell.app().hovered_overlap_choice(),
+        Some((0, overlap_count))
+    );
     assert_eq!(shell.app().document_revision(), revision);
     assert_eq!(shell.app().canonical_digest(), digest);
     assert_eq!(shell.app().undo_step_count(), undo);

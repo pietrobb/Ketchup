@@ -506,7 +506,7 @@ impl KetchupApp {
         let line_axis = (self.active_tool == ActiveTool::Line)
             .then(|| self.sketch_start.zip(self.line_axis_lock))
             .flatten();
-        let move_drag = self.move_drag.as_ref().or(self.move_anchor.as_ref());
+        let move_drag = self.move_session().map(|(drag, _)| drag);
         if self.active_tool == ActiveTool::Move && move_drag.is_some_and(|d| d.axis.is_some()) {
             return None;
         }

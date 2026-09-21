@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use eframe::egui::{Key, Pos2, Rect, Vec2, accesskit::Role};
+use eframe::egui::{Key, Modifiers, Pos2, Rect, Vec2, accesskit::Role};
 use harness::{Shell, ctrl, shift};
 use ketchup_app::dialogs::ScriptedFileDialogs;
 use ketchup_app::{
@@ -1731,12 +1731,14 @@ fn center_selection_is_localized_accessible_centered_and_document_preserving() {
         shell.secondary_click_at(shell.top_face_centre(1));
         assert!(shell.offers(AppCommand::CenterSelection));
         shell.click_command(AppCommand::CenterSelection);
+        let centered_distance = shell
+            .app()
+            .project_to_screen(selected_center, rect)
+            .distance(rect.center());
         assert!(
-            shell
-                .app()
-                .project_to_screen(selected_center, rect)
-                .distance(rect.center())
-                < 0.01
+            centered_distance < 0.01,
+            "selection centre remained {centered_distance} px from the viewport centre: {}",
+            shell.app().action_digest()
         );
         assert!((shell.app().camera_zoom() - zoom).abs() < 1.0e-5);
         assert_eq!(shell.app().camera_orientation(), orientation);
@@ -10967,6 +10969,58 @@ fn shift_click_selects_two_edges_away_from_their_midpoints() {
 }
 
 #[test]
+fn shift_click_adds_an_occurrence_without_replacing_the_primary_face() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.viewport_rect().center());
+    assert!(shell.app_mut().copy_selected(Vec3::new(180.0, 0.0, 0.0)));
+    shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+    shell.click_command(AppCommand::Select);
+    shell.click_at(shell.top_face_centre(1));
+    let primary = shell
+        .app()
+        .selected_reference()
+        .expect("the first click must retain an exact primary face");
+
+    shell.click_at_with(shell.top_face_centre(2), shift());
+
+    assert_eq!(shell.app().selected_occurrence_count(), 2);
+    assert!(shell.app().occurrence_is_selected(OccurrenceId(1)));
+    assert!(shell.app().occurrence_is_selected(OccurrenceId(2)));
+    assert_eq!(
+        shell.app().selected_reference(),
+        Some(primary),
+        "an additive click must not replace the exact primary face"
+    );
+}
+
+#[test]
+fn shift_click_removing_the_primary_occurrence_promotes_the_remaining_exact_face() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.viewport_rect().center());
+    assert!(shell.app_mut().copy_selected(Vec3::new(180.0, 0.0, 0.0)));
+    shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+    shell.click_command(AppCommand::Select);
+    shell.click_at(shell.top_face_centre(1));
+    shell.click_at_with(shell.top_face_centre(2), shift());
+    shell.click_at_with(shell.top_face_centre(1), shift());
+
+    assert_eq!(shell.app().selected_occurrence_count(), 1);
+    assert!(shell.app().occurrence_is_selected(OccurrenceId(2)));
+    let primary = shell
+        .app()
+        .selected_reference()
+        .expect("the remaining viewport selection must retain an exact primary face");
+    assert_eq!(primary.instance_path, InstancePath::root(OccurrenceId(2)));
+    assert!(matches!(
+        primary.element,
+        ElementId::Face {
+            axis: Axis::Z,
+            side: Side::Maximum,
+        }
+    ));
+}
+
+#[test]
 fn tab_cycles_overlapping_occurrences_and_click_selects_the_visible_choice() {
     let mut shell = Shell::new();
     shell
@@ -11044,6 +11098,783 @@ fn a_click_outside_geometry_clears_the_selection() {
     shell.click_at(rect.left_top() + eframe::egui::Vec2::new(12.0, 12.0));
 
     assert_eq!(shell.app().selected_occurrence_count(), 0);
+}
+
+#[test]
+fn directional_drag_selection_contains_left_to_right_and_crosses_right_to_left() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.viewport_rect().center());
+    assert!(shell.app_mut().copy_selected(Vec3::new(180.0, 0.0, 0.0)));
+    shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+    shell.click_command(AppCommand::Select);
+
+    let projected_box = |app: &KetchupApp, occurrence_id| {
+        let (origin, size) = app.occurrence_box_geometry(occurrence_id).unwrap();
+        [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(size.x, 0.0, 0.0),
+            Vec3::new(0.0, size.y, 0.0),
+            Vec3::new(size.x, size.y, 0.0),
+            Vec3::new(0.0, 0.0, size.z),
+            Vec3::new(size.x, 0.0, size.z),
+            Vec3::new(0.0, size.y, size.z),
+            Vec3::new(size.x, size.y, size.z),
+        ]
+        .into_iter()
+        .map(|corner| app.viewport_position(origin + corner).unwrap())
+        .map(|point| Rect::from_min_max(point, point))
+        .reduce(|left, right| left.union(right))
+        .unwrap()
+    };
+    let first = projected_box(shell.app(), 1);
+    let second = projected_box(shell.app(), 2);
+    assert!(!first.intersects(second));
+
+    shell.drag(
+        first.left_top() - Vec2::splat(16.0),
+        first.right_bottom() + Vec2::splat(16.0),
+    );
+    assert_eq!(shell.app().selected_occurrence_count(), 1);
+    assert!(shell.app().occurrence_is_selected(OccurrenceId(1)));
+
+    shell.drag(
+        second.right_top() + Vec2::new(16.0, -16.0),
+        Pos2::new(second.center().x, second.bottom() + 16.0),
+    );
+    assert_eq!(shell.app().selected_occurrence_count(), 1);
+    assert!(shell.app().occurrence_is_selected(OccurrenceId(2)));
+}
+
+#[test]
+fn shift_drag_selection_adds_without_forgetting_the_primary_face() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.viewport_rect().center());
+    assert!(shell.app_mut().copy_selected(Vec3::new(180.0, 0.0, 0.0)));
+    shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+    shell.click_command(AppCommand::Select);
+    shell.click_at(shell.top_face_centre(1));
+    let primary = shell
+        .app()
+        .selected_reference()
+        .expect("the first click must retain an exact primary face");
+
+    let (origin, size) = shell.app().occurrence_box_geometry(2).unwrap();
+    let second = [
+        Vec3::new(0.0, 0.0, 0.0),
+        Vec3::new(size.x, 0.0, 0.0),
+        Vec3::new(0.0, size.y, 0.0),
+        Vec3::new(size.x, size.y, 0.0),
+        Vec3::new(0.0, 0.0, size.z),
+        Vec3::new(size.x, 0.0, size.z),
+        Vec3::new(0.0, size.y, size.z),
+        Vec3::new(size.x, size.y, size.z),
+    ]
+    .into_iter()
+    .map(|corner| shell.app().viewport_position(origin + corner).unwrap())
+    .map(|point| Rect::from_min_max(point, point))
+    .reduce(|left, right| left.union(right))
+    .unwrap();
+
+    shell.drag_with(
+        second.left_top() - Vec2::splat(16.0),
+        second.right_bottom() + Vec2::splat(16.0),
+        shift(),
+    );
+
+    assert_eq!(shell.app().selected_occurrence_count(), 2);
+    assert!(shell.app().occurrence_is_selected(OccurrenceId(1)));
+    assert!(shell.app().occurrence_is_selected(OccurrenceId(2)));
+    assert_eq!(
+        shell.app().selected_reference(),
+        Some(primary),
+        "an additive window must not downgrade the existing exact face selection"
+    );
+}
+
+#[test]
+fn empty_history_shortcuts_cancel_an_uncommitted_move() {
+    for key in [Key::Z, Key::Y] {
+        let mut shell = Shell::new();
+        let source = shell.top_face_centre(1);
+        let destination = source + Vec2::new(80.0, 0.0);
+        let digest = shell.app().canonical_digest();
+        let revision = shell.app().document_revision();
+        assert_eq!(shell.app().undo_step_count(), 0);
+
+        shell.click_command(AppCommand::Move);
+        shell.click_at(source);
+        shell.move_pointer(destination);
+        assert!(shell.app().transform_gesture_active(), "key={key:?}");
+        shell.key(key, ctrl());
+
+        assert!(!shell.app().transform_gesture_active(), "key={key:?}");
+        assert_eq!(shell.app().canonical_digest(), digest, "key={key:?}");
+        assert_eq!(shell.app().document_revision(), revision, "key={key:?}");
+    }
+}
+
+#[test]
+fn empty_history_shortcuts_cancel_an_uncommitted_rotate() {
+    for key in [Key::Z, Key::Y] {
+        let mut shell = Shell::new();
+        let rect = shell.viewport_rect();
+        shell.click_at(shell.top_face_centre(1));
+        let (origin, size) = shell.app().occurrence_box_geometry(1).unwrap();
+        let centre = origin + size * 0.5;
+        let digest = shell.app().canonical_digest();
+        let revision = shell.app().document_revision();
+        assert_eq!(shell.app().undo_step_count(), 0);
+
+        shell.click_command(AppCommand::Rotate);
+        shell.click_at(shell.app().project_to_screen(centre, rect));
+        assert!(shell.app().transform_gesture_active(), "key={key:?}");
+        shell.key(key, ctrl());
+
+        assert!(!shell.app().transform_gesture_active(), "key={key:?}");
+        assert_eq!(shell.app().canonical_digest(), digest, "key={key:?}");
+        assert_eq!(shell.app().document_revision(), revision, "key={key:?}");
+    }
+}
+
+#[test]
+fn history_shortcuts_cancel_an_uncommitted_transform_before_navigating_history() {
+    for (tool, key) in [
+        (AppCommand::Move, Key::Z),
+        (AppCommand::Move, Key::Y),
+        (AppCommand::Rotate, Key::Z),
+        (AppCommand::Rotate, Key::Y),
+    ] {
+        let mut shell = Shell::new();
+        assert!(shell.app_mut().create_box());
+        if key == Key::Y {
+            shell.key(Key::Z, ctrl());
+        }
+        let digest = shell.app().canonical_digest();
+        let revision = shell.app().document_revision();
+        let undo_steps = shell.app().undo_step_count();
+        let redo_steps = shell.app().redo_step_count();
+        let source = shell.top_face_centre(1);
+        shell.click_at(source);
+        shell.click_command(tool);
+        match tool {
+            AppCommand::Move => {
+                shell.click_at(source);
+                shell.move_pointer(source + Vec2::new(80.0, 0.0));
+            }
+            AppCommand::Rotate => {
+                let rect = shell.viewport_rect();
+                let (origin, size) = shell.app().occurrence_box_geometry(1).unwrap();
+                shell.click_at(shell.app().project_to_screen(origin + size * 0.5, rect));
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            shell.app().transform_gesture_active(),
+            "tool={tool:?}, key={key:?}"
+        );
+
+        shell.key(key, ctrl());
+
+        assert!(
+            !shell.app().transform_gesture_active(),
+            "tool={tool:?}, key={key:?}"
+        );
+        assert_eq!(
+            shell.app().canonical_digest(),
+            digest,
+            "tool={tool:?}, key={key:?}"
+        );
+        assert_eq!(
+            shell.app().document_revision(),
+            revision,
+            "tool={tool:?}, key={key:?}"
+        );
+        assert_eq!(
+            shell.app().undo_step_count(),
+            undo_steps,
+            "tool={tool:?}, key={key:?}"
+        );
+        assert_eq!(
+            shell.app().redo_step_count(),
+            redo_steps,
+            "tool={tool:?}, key={key:?}"
+        );
+    }
+}
+
+#[test]
+fn switching_tools_cancels_uncommitted_transform_and_copy_toggle() {
+    for tool in [AppCommand::Move, AppCommand::Rotate] {
+        let mut shell = Shell::new();
+        shell.click_at(shell.top_face_centre(1));
+        let digest = shell.app().canonical_digest();
+        let revision = shell.app().document_revision();
+        let undo_steps = shell.app().undo_step_count();
+        let selected = shell.app().selected_occurrence_count();
+
+        shell.click_command(tool);
+        match tool {
+            AppCommand::Move => shell.click_at(shell.top_face_centre(1)),
+            AppCommand::Rotate => {
+                let rect = shell.viewport_rect();
+                let (origin, size) = shell.app().occurrence_box_geometry(1).unwrap();
+                shell.click_at(shell.app().project_to_screen(origin + size * 0.5, rect));
+            }
+            _ => unreachable!(),
+        }
+        assert!(shell.app().transform_gesture_active(), "tool={tool:?}");
+        shell.set_modifiers(ctrl());
+        if tool == AppCommand::Move {
+            shell.set_modifiers(Modifiers::NONE);
+        }
+        assert!(
+            match tool {
+                AppCommand::Move => shell.app().move_copy_mode_active(),
+                AppCommand::Rotate => shell.app().rotate_copy_mode_active(),
+                _ => unreachable!(),
+            },
+            "tool={tool:?}"
+        );
+
+        shell.click_command(match tool {
+            AppCommand::Move => AppCommand::Rotate,
+            AppCommand::Rotate => AppCommand::Move,
+            _ => unreachable!(),
+        });
+        shell.set_modifiers(Modifiers::NONE);
+
+        assert!(!shell.app().transform_gesture_active(), "tool={tool:?}");
+        assert!(!shell.app().move_copy_mode_active(), "tool={tool:?}");
+        assert!(!shell.app().rotate_copy_mode_active(), "tool={tool:?}");
+        assert_eq!(shell.app().canonical_digest(), digest, "tool={tool:?}");
+        assert_eq!(shell.app().document_revision(), revision, "tool={tool:?}");
+        assert_eq!(shell.app().undo_step_count(), undo_steps, "tool={tool:?}");
+        assert_eq!(
+            shell.app().selected_occurrence_count(),
+            selected,
+            "tool={tool:?}"
+        );
+    }
+}
+
+#[test]
+fn move_axis_constraint_does_not_leak_across_tool_changes() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.viewport_rect().center());
+    let origin = shell.app().occurrence_box_geometry(1).unwrap().0;
+    let undo_steps = shell.app().undo_step_count();
+
+    shell.click_command(AppCommand::Move);
+    shell.press_key(Key::ArrowLeft);
+    shell.click_command(AppCommand::Rotate);
+    shell.click_command(AppCommand::Move);
+    shell.type_text("25");
+    shell.press_key(Key::Enter);
+
+    assert_eq!(
+        shell.app().occurrence_box_geometry(1).unwrap().0,
+        origin + Vec3::new(25.0, 0.0, 0.0)
+    );
+    assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+}
+
+#[test]
+fn rotate_axis_constraint_does_not_leak_across_tool_changes() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.top_face_centre(1));
+    let undo_steps = shell.app().undo_step_count();
+
+    shell.click_command(AppCommand::Rotate);
+    shell.press_key(Key::ArrowRight);
+    shell.click_command(AppCommand::Move);
+    shell.click_command(AppCommand::Rotate);
+    shell.type_text("90");
+    shell.press_key(Key::Enter);
+
+    assert_eq!(
+        rounded_extents(shell.app().occurrence_box_geometry(1).unwrap().1),
+        (60.0, 100.0, 20.0),
+        "returning to Rotate must not reuse the previous red-axis lock"
+    );
+    assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+}
+
+#[test]
+fn move_rejects_an_outliner_selection_change_during_the_gesture() {
+    let mut shell = Shell::new();
+    assert!(shell.app_mut().create_box());
+    shell
+        .app_mut()
+        .set_assistant_workspace_mode(ketchup_app::AssistantWorkspaceMode::Tab);
+    shell.settle();
+    shell.click_at(shell.top_face_centre(1));
+    shell.click_command(AppCommand::Move);
+    shell.click_at(shell.top_face_centre(1));
+    let digest = shell.app().canonical_digest();
+    let undo_steps = shell.app().undo_step_count();
+
+    let second_name = shell
+        .app()
+        .occurrence_name(OccurrenceId(2))
+        .unwrap()
+        .trim_end_matches(" #1")
+        .to_owned();
+    let second_row = shell.catalog().format(
+        "outliner-object",
+        &BTreeMap::from([
+            ("name", second_name),
+            ("dimensions", "100 × 60 × 20".to_owned()),
+            ("visibility", "◉".to_owned()),
+        ]),
+    );
+    shell.click_row(&second_row);
+    assert!(shell.app().occurrence_is_selected(OccurrenceId(2)));
+    shell.type_text("25");
+    shell.press_key(Key::Enter);
+
+    assert_eq!(shell.app().canonical_digest(), digest);
+    assert_eq!(shell.app().undo_step_count(), undo_steps);
+    assert!(!shell.app().move_copy_mode_active());
+    assert!(shell.app().occurrence_is_selected(OccurrenceId(2)));
+    assert!(!shell.app().occurrence_is_selected(OccurrenceId(1)));
+}
+
+#[test]
+fn rotate_rejects_an_outliner_selection_change_during_the_gesture() {
+    let mut shell = Shell::new();
+    assert!(shell.app_mut().create_box());
+    shell
+        .app_mut()
+        .set_assistant_workspace_mode(ketchup_app::AssistantWorkspaceMode::Tab);
+    shell.settle();
+    shell.click_at(shell.top_face_centre(1));
+    shell.click_command(AppCommand::Rotate);
+    shell.click_at(shell.top_face_centre(1));
+    let digest = shell.app().canonical_digest();
+    let undo_steps = shell.app().undo_step_count();
+
+    let second_name = shell
+        .app()
+        .occurrence_name(OccurrenceId(2))
+        .unwrap()
+        .trim_end_matches(" #1")
+        .to_owned();
+    let second_row = shell.catalog().format(
+        "outliner-object",
+        &BTreeMap::from([
+            ("name", second_name),
+            ("dimensions", "100 × 60 × 20".to_owned()),
+            ("visibility", "◉".to_owned()),
+        ]),
+    );
+    shell.click_row(&second_row);
+    assert!(shell.app().occurrence_is_selected(OccurrenceId(2)));
+    shell.type_text("45");
+    shell.press_key(Key::Enter);
+
+    assert_eq!(shell.app().canonical_digest(), digest);
+    assert_eq!(shell.app().undo_step_count(), undo_steps);
+    assert!(!shell.app().rotate_copy_mode_active());
+    assert!(shell.app().occurrence_is_selected(OccurrenceId(2)));
+    assert!(!shell.app().occurrence_is_selected(OccurrenceId(1)));
+}
+
+#[test]
+fn stale_move_pointer_confirmation_ends_copy_toggle_without_mutation() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.top_face_centre(1));
+    shell.click_command(AppCommand::Move);
+    let source = shell.top_face_centre(1);
+    let destination = source + Vec2::new(80.0, 0.0);
+    shell.move_pointer(source);
+    shell.set_primary_button(source, Modifiers::NONE, true);
+    shell.move_pointer(source + Vec2::new(20.0, 0.0));
+    shell.set_modifiers(ctrl());
+    shell.set_modifiers(Modifiers::NONE);
+    assert!(shell.app().move_copy_mode_active());
+
+    assert!(shell.app_mut().create_box());
+    let digest = shell.app().canonical_digest();
+    let undo_steps = shell.app().undo_step_count();
+    shell.move_pointer(destination);
+    shell.set_primary_button(destination, ctrl(), false);
+    shell.set_modifiers(Modifiers::NONE);
+
+    assert_eq!(shell.app().canonical_digest(), digest);
+    assert_eq!(shell.app().undo_step_count(), undo_steps);
+    assert!(shell.app().occurrence_is_selected(OccurrenceId(2)));
+    assert!(
+        !shell.app().move_copy_mode_active(),
+        "rejecting the stale pointer confirmation must end Copy mode"
+    );
+}
+
+#[test]
+fn stale_rotate_pointer_confirmation_ends_copy_toggle_without_mutation() {
+    let mut shell = Shell::new();
+    let rect = shell.viewport_rect();
+    shell.click_at(shell.top_face_centre(1));
+    let source = shell.app().occurrence_box_geometry(1).unwrap();
+    let centre = source.0 + source.1 * 0.5;
+    shell.click_command(AppCommand::Rotate);
+    shell.click_at(shell.app().project_to_screen(centre, rect));
+    let from = shell
+        .app()
+        .project_to_screen(centre + Vec3::new(source.1.x * 0.25, 0.0, 0.0), rect);
+    let destination = shell
+        .app()
+        .project_to_screen(centre + Vec3::new(0.0, source.1.x * 0.25, 0.0), rect);
+    shell.move_pointer(from);
+    shell.set_primary_button(from, Modifiers::NONE, true);
+    shell.move_pointer(from + Vec2::new(10.0, 0.0));
+    shell.set_modifiers(ctrl());
+    shell.set_modifiers(Modifiers::NONE);
+    assert!(shell.app().rotate_copy_mode_active());
+
+    assert!(shell.app_mut().create_box());
+    let digest = shell.app().canonical_digest();
+    let undo_steps = shell.app().undo_step_count();
+    shell.move_pointer(destination);
+    shell.set_primary_button(destination, ctrl(), false);
+    shell.set_modifiers(Modifiers::NONE);
+
+    assert_eq!(shell.app().canonical_digest(), digest);
+    assert_eq!(shell.app().undo_step_count(), undo_steps);
+    assert!(shell.app().occurrence_is_selected(OccurrenceId(2)));
+    assert!(
+        !shell.app().rotate_copy_mode_active(),
+        "rejecting the stale pointer confirmation must end Rotate-Copy mode"
+    );
+}
+
+#[test]
+fn entering_a_group_context_cancels_an_uncommitted_transform() {
+    for tool in [AppCommand::Move, AppCommand::Rotate] {
+        let mut shell = Shell::new();
+        assert!(shell.app_mut().create_box());
+        shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+        shell.click_menu_command("menu-model", AppCommand::Group);
+        shell.settle();
+        let group_row = shell.catalog().format(
+            "outliner-group",
+            &BTreeMap::from([("name", "Group 1".to_owned()), ("count", "2".to_owned())]),
+        );
+        let digest = shell.app().canonical_digest();
+        let revision = shell.app().document_revision();
+        let undo_steps = shell.app().undo_step_count();
+        let source = shell.top_face_centre(1);
+
+        shell.click_command(tool);
+        shell.click_at(source);
+        shell.move_pointer(source + Vec2::new(60.0, 20.0));
+        assert!(shell.app().transform_gesture_active(), "tool={tool:?}");
+        shell
+            .app_mut()
+            .set_assistant_workspace_mode(ketchup_app::AssistantWorkspaceMode::Tab);
+        shell.settle();
+        assert!(shell.app().transform_gesture_active(), "tool={tool:?}");
+
+        shell.double_click_row(&group_row);
+
+        assert_eq!(shell.app().edit_context_depth(), 1, "tool={tool:?}");
+        assert!(
+            !shell.app().transform_gesture_active(),
+            "entering a nested context must cancel the stale transform for {tool:?}"
+        );
+        assert_eq!(shell.app().canonical_digest(), digest, "tool={tool:?}");
+        assert_eq!(shell.app().document_revision(), revision, "tool={tool:?}");
+        assert_eq!(shell.app().undo_step_count(), undo_steps, "tool={tool:?}");
+    }
+}
+
+#[test]
+fn move_ctrl_after_the_first_click_switches_to_copy() {
+    let mut shell = Shell::new();
+    let source = shell
+        .app()
+        .viewport_position(Vec3::new(0.0, 0.0, 20.0))
+        .unwrap();
+    let destination = shell
+        .app()
+        .viewport_position(Vec3::new(50.0, 0.0, 20.0))
+        .unwrap();
+    shell.click_command(AppCommand::Move);
+    shell.click_at(source);
+    let revision = shell.app().document_revision();
+    shell.set_modifiers(ctrl());
+    shell.set_modifiers(Modifiers::NONE);
+    shell.click_at(destination);
+
+    assert_eq!(shell.app().document_revision(), revision + 1);
+    assert_eq!(shell.app().active_box_count(), 2);
+    assert_eq!(shell.app().definition_count(), 1);
+    assert_eq!(
+        shell.app().occurrence_box_geometry(1).unwrap().0,
+        Vec3::ZERO,
+        "Copy mode must preserve the source occurrence"
+    );
+    assert!(
+        !shell.app().move_copy_mode_active(),
+        "Copy mode must end with the gesture so the next Move does not duplicate"
+    );
+}
+
+#[test]
+fn ctrl_does_not_offer_copy_for_a_group_move() {
+    let mut shell = Shell::new();
+    assert!(shell.app_mut().create_box());
+    shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+    shell.click_menu_command("menu-model", AppCommand::Group);
+    let before = [1, 2].map(|id| shell.app().occurrence_box_geometry(id).unwrap().0);
+    let source = shell.top_face_centre(1);
+
+    shell.click_command(AppCommand::Move);
+    shell.click_at(source);
+    assert!(shell.app().transform_gesture_active());
+    let move_digest = shell.app().action_digest().to_owned();
+    shell.set_modifiers(ctrl());
+
+    assert!(
+        !shell.app().move_copy_mode_active(),
+        "Ctrl must not offer Copy when the selected group can only be moved"
+    );
+    assert_eq!(shell.app().action_digest(), move_digest);
+
+    shell.set_modifiers(Modifiers::NONE);
+    shell.type_text("25,0,0");
+    shell.press_key(Key::Enter);
+    assert_eq!(shell.app().active_box_count(), 2);
+    for (index, id) in [1, 2].into_iter().enumerate() {
+        assert_eq!(
+            shell.app().occurrence_box_geometry(id).unwrap().0,
+            before[index] + Vec3::new(25.0, 0.0, 0.0)
+        );
+    }
+}
+
+#[test]
+fn ctrl_does_not_offer_copy_for_a_group_rotate() {
+    let mut shell = Shell::new();
+    assert!(shell.app_mut().create_box());
+    shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+    shell.click_menu_command("menu-model", AppCommand::Group);
+    let source = shell.top_face_centre(1);
+    let before_steps = shell.app().undo_step_count();
+
+    shell.click_command(AppCommand::Rotate);
+    shell.click_at(source);
+    assert!(shell.app().transform_gesture_active());
+    let rotate_digest = shell.app().action_digest().to_owned();
+    shell.set_modifiers(ctrl());
+
+    assert!(
+        !shell.app().rotate_copy_mode_active(),
+        "Ctrl must not offer Rotate-Copy when the selected group can only be rotated"
+    );
+    assert_eq!(shell.app().action_digest(), rotate_digest);
+
+    shell.set_modifiers(Modifiers::NONE);
+    shell.type_text("90");
+    shell.press_key(Key::Enter);
+    assert_eq!(shell.app().active_box_count(), 2);
+    assert_eq!(shell.app().undo_step_count(), before_steps + 1);
+}
+
+#[test]
+fn copy_toggle_applies_to_typed_move_and_rotate_during_a_live_gesture() {
+    let mut move_shell = Shell::new();
+    let move_source_point = move_shell.top_face_centre(1);
+    move_shell.click_at(move_source_point);
+    let move_source = move_shell.app().occurrence_box_geometry(1).unwrap();
+    let move_digest = move_shell.app().canonical_digest();
+    let move_steps = move_shell.app().undo_step_count();
+
+    move_shell.click_command(AppCommand::Move);
+    move_shell.click_at(move_source_point);
+    assert!(move_shell.app().transform_gesture_active());
+    move_shell.set_modifiers(ctrl());
+    move_shell.set_modifiers(Modifiers::NONE);
+    assert!(move_shell.app().move_copy_mode_active());
+    move_shell.type_text("25,0,0");
+    move_shell.press_key(Key::Enter);
+
+    assert_eq!(move_shell.app().active_box_count(), 2);
+    assert_eq!(
+        move_shell.app().occurrence_box_geometry(1),
+        Some(move_source)
+    );
+    assert_eq!(
+        move_shell.app().occurrence_box_geometry(2).unwrap().0,
+        move_source.0 + Vec3::new(25.0, 0.0, 0.0)
+    );
+    assert_eq!(move_shell.app().undo_step_count(), move_steps + 1);
+    move_shell.key(Key::Z, ctrl());
+    assert_eq!(move_shell.app().canonical_digest(), move_digest);
+
+    let mut rotate_shell = Shell::new();
+    let rotate_centre = rotate_shell.top_face_centre(1);
+    rotate_shell.click_at(rotate_centre);
+    let rotate_source = rotate_shell.app().occurrence_box_geometry(1).unwrap();
+    let rotate_digest = rotate_shell.app().canonical_digest();
+    let rotate_steps = rotate_shell.app().undo_step_count();
+
+    rotate_shell.click_command(AppCommand::Rotate);
+    rotate_shell.click_at(rotate_centre);
+    assert!(rotate_shell.app().transform_gesture_active());
+    rotate_shell.set_modifiers(ctrl());
+    rotate_shell.set_modifiers(Modifiers::NONE);
+    rotate_shell.type_text("90");
+    rotate_shell.press_key(Key::Enter);
+
+    assert_eq!(rotate_shell.app().active_box_count(), 2);
+    assert_eq!(
+        rotate_shell.app().occurrence_box_geometry(1),
+        Some(rotate_source)
+    );
+    assert_eq!(
+        rounded_extents(rotate_shell.app().occurrence_box_geometry(2).unwrap().1),
+        (60.0, 100.0, 20.0)
+    );
+    assert_eq!(rotate_shell.app().undo_step_count(), rotate_steps + 1);
+    rotate_shell.key(Key::Z, ctrl());
+    assert_eq!(rotate_shell.app().canonical_digest(), rotate_digest);
+}
+
+#[test]
+fn typed_distance_and_vector_correct_the_last_move_copy_in_one_undo_step() {
+    let mut shell = Shell::new();
+    let source = shell
+        .app()
+        .viewport_position(Vec3::new(0.0, 0.0, 20.0))
+        .unwrap();
+    let destination = shell
+        .app()
+        .viewport_position(Vec3::new(50.0, 0.0, 20.0))
+        .unwrap();
+    let original = shell.app().occurrence_box_geometry(1).unwrap().0;
+    let initial_digest = shell.app().canonical_digest();
+    let initial_undo_steps = shell.app().undo_step_count();
+
+    shell.click_command(AppCommand::Move);
+    shell.click_at(source);
+    shell.click_at_with(destination, ctrl());
+    assert_eq!(shell.app().active_box_count(), 2);
+    assert_eq!(shell.app().undo_step_count(), initial_undo_steps + 1);
+    let first_copy = shell.app().occurrence_box_geometry(2).unwrap().0;
+    let first_delta = first_copy - original;
+    let direction = first_delta * (1.0 / first_delta.length());
+
+    shell.type_text("80");
+    shell.press_key(Key::Enter);
+
+    assert_eq!(shell.app().occurrence_box_geometry(1).unwrap().0, original);
+    let corrected = shell.app().occurrence_box_geometry(2).unwrap().0;
+    assert!(
+        (corrected - (original + direction * 80.0)).length() < 1.0e-9,
+        "a typed distance must reposition the copy from the original source: {corrected:?}"
+    );
+    assert_eq!(
+        shell.app().undo_step_count(),
+        initial_undo_steps + 1,
+        "correcting a Move/Copy must replace its history tip"
+    );
+
+    shell.type_text("30,40,0");
+    shell.press_key(Key::Enter);
+    assert_eq!(
+        shell.app().occurrence_box_geometry(2).unwrap().0,
+        original + Vec3::new(30.0, 40.0, 0.0),
+        "an exact vector must replace the previous copy offset"
+    );
+    assert_eq!(shell.app().undo_step_count(), initial_undo_steps + 1);
+
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), initial_digest);
+}
+
+#[test]
+fn move_copy_array_accepts_x_and_slash_through_the_value_box() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.viewport_rect().center());
+    shell.click_command(AppCommand::Move);
+    assert!(shell.app_mut().copy_selected(Vec3::new(100.0, 0.0, 0.0)));
+
+    shell.type_text("x5");
+    shell.press_key(Key::Enter);
+    assert_eq!(shell.app().active_box_count(), 6);
+    assert_eq!(shell.app().undo_step_count(), 1);
+    assert_eq!(
+        shell.app().occurrence_box_geometry(6).unwrap().0,
+        Vec3::new(500.0, 0.0, 0.0)
+    );
+
+    shell.type_text("/5");
+    shell.press_key(Key::Enter);
+    assert_eq!(shell.app().active_box_count(), 6);
+    assert_eq!(shell.app().undo_step_count(), 1);
+    assert_eq!(
+        shell.app().occurrence_box_geometry(2).unwrap().0,
+        Vec3::new(20.0, 0.0, 0.0)
+    );
+    assert_eq!(
+        shell.app().occurrence_box_geometry(6).unwrap().0,
+        Vec3::new(100.0, 0.0, 0.0)
+    );
+}
+
+#[test]
+fn correcting_move_copy_spacing_preserves_the_array_count_and_mode() {
+    let mut shell = Shell::new();
+    let source = shell
+        .app()
+        .viewport_position(Vec3::new(0.0, 0.0, 20.0))
+        .unwrap();
+    let destination = shell
+        .app()
+        .viewport_position(Vec3::new(100.0, 0.0, 20.0))
+        .unwrap();
+    let initial_digest = shell.app().canonical_digest();
+    let initial_undo_steps = shell.app().undo_step_count();
+
+    shell.click_command(AppCommand::Move);
+    shell.click_at(source);
+    shell.click_at_with(destination, ctrl());
+    shell.type_text("x3");
+    shell.press_key(Key::Enter);
+    assert_eq!(shell.app().active_box_count(), 4);
+
+    shell.type_text("50");
+    shell.press_key(Key::Enter);
+    assert_eq!(
+        shell.app().active_box_count(),
+        4,
+        "correcting the spacing must not collapse a multiplied Copy array"
+    );
+    for (id, x) in [(2, 50.0), (3, 100.0), (4, 150.0)] {
+        assert!(
+            (shell.app().occurrence_box_geometry(id).unwrap().0 - Vec3::new(x, 0.0, 0.0)).length()
+                < 0.001
+        );
+    }
+
+    shell.type_text("/3");
+    shell.press_key(Key::Enter);
+    shell.type_text("90");
+    shell.press_key(Key::Enter);
+    assert_eq!(
+        shell.app().active_box_count(),
+        4,
+        "correcting the spacing must not collapse a divided Copy array"
+    );
+    for (id, x) in [(2, 30.0), (3, 60.0), (4, 90.0)] {
+        assert!(
+            (shell.app().occurrence_box_geometry(id).unwrap().0 - Vec3::new(x, 0.0, 0.0)).length()
+                < 0.001
+        );
+    }
+    assert_eq!(shell.app().undo_step_count(), initial_undo_steps + 1);
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), initial_digest);
 }
 
 #[test]
@@ -11343,6 +12174,366 @@ fn typed_move_handles_small_and_large_finite_distances_with_repeatable_history()
 }
 
 #[test]
+fn typed_move_correction_replaces_the_last_distance_in_one_undo_step() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.viewport_rect().center());
+    let initial_digest = shell.app().canonical_digest();
+    let initial_origin = shell.app().occurrence_box_geometry(1).unwrap().0;
+    let initial_undo_steps = shell.app().undo_step_count();
+
+    shell.click_command(AppCommand::Move);
+    shell.type_text("30,40,0");
+    shell.press_key(Key::Enter);
+    assert_eq!(shell.app().undo_step_count(), initial_undo_steps + 1);
+
+    shell.type_text("100");
+    shell.press_key(Key::Enter);
+
+    assert_eq!(
+        shell.app().occurrence_box_geometry(1).unwrap().0,
+        initial_origin + Vec3::new(60.0, 80.0, 0.0),
+        "the replacement distance must keep the original Move direction"
+    );
+    assert_eq!(
+        shell.app().undo_step_count(),
+        initial_undo_steps + 1,
+        "correcting the last Move must replace its history tip"
+    );
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), initial_digest);
+}
+
+#[test]
+fn typed_move_distance_correction_accepts_zero_in_one_undo_step() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.viewport_rect().center());
+    let initial_digest = shell.app().canonical_digest();
+    let initial_origin = shell.app().occurrence_box_geometry(1).unwrap().0;
+    let initial_undo_steps = shell.app().undo_step_count();
+
+    shell.click_command(AppCommand::Move);
+    shell.type_text("30,40,0");
+    shell.press_key(Key::Enter);
+    assert_eq!(shell.app().undo_step_count(), initial_undo_steps + 1);
+
+    shell.type_text("0");
+    shell.press_key(Key::Enter);
+
+    assert_eq!(
+        shell.app().occurrence_box_geometry(1).unwrap().0,
+        initial_origin,
+        "a zero distance must return the Move to its original position"
+    );
+    assert_eq!(
+        shell.app().undo_step_count(),
+        initial_undo_steps + 1,
+        "zero must correct the last Move distance instead of starting a new step"
+    );
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), initial_digest);
+}
+
+#[test]
+fn typed_move_vector_correction_replaces_the_last_vector_in_one_undo_step() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.viewport_rect().center());
+    let initial_digest = shell.app().canonical_digest();
+    let initial_origin = shell.app().occurrence_box_geometry(1).unwrap().0;
+    let initial_undo_steps = shell.app().undo_step_count();
+
+    shell.click_command(AppCommand::Move);
+    shell.type_text("30,40,0");
+    shell.press_key(Key::Enter);
+    assert_eq!(shell.app().undo_step_count(), initial_undo_steps + 1);
+
+    shell.type_text("60,80,0");
+    shell.press_key(Key::Enter);
+
+    assert_eq!(
+        shell.app().occurrence_box_geometry(1).unwrap().0,
+        initial_origin + Vec3::new(60.0, 80.0, 0.0),
+        "the replacement vector must be measured from the original position"
+    );
+    assert_eq!(
+        shell.app().undo_step_count(),
+        initial_undo_steps + 1,
+        "correcting the last Move vector must replace its history tip"
+    );
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), initial_digest);
+}
+
+#[test]
+fn typed_move_vector_correction_accepts_zero_in_one_undo_step() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.viewport_rect().center());
+    let initial_digest = shell.app().canonical_digest();
+    let initial_origin = shell.app().occurrence_box_geometry(1).unwrap().0;
+    let initial_undo_steps = shell.app().undo_step_count();
+
+    shell.click_command(AppCommand::Move);
+    shell.type_text("30,40,0");
+    shell.press_key(Key::Enter);
+    assert_eq!(shell.app().undo_step_count(), initial_undo_steps + 1);
+
+    shell.type_text("0,0,0");
+    shell.press_key(Key::Enter);
+
+    assert_eq!(
+        shell.app().occurrence_box_geometry(1).unwrap().0,
+        initial_origin
+    );
+    assert_eq!(
+        shell.app().undo_step_count(),
+        initial_undo_steps + 1,
+        "zero must correct the last Move vector instead of being rejected"
+    );
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), initial_digest);
+}
+
+#[test]
+fn typed_move_correction_replaces_group_distance_in_one_undo_step() {
+    let mut shell = Shell::new();
+    assert!(shell.app_mut().create_box());
+    shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+    shell.click_menu_command("menu-model", AppCommand::Group);
+    assert_eq!(shell.app().group_count(), 1);
+    let grouped_digest = shell.app().canonical_digest();
+    let initial_origins = [1, 2].map(|id| shell.app().occurrence_box_geometry(id).unwrap().0);
+    let initial_undo_steps = shell.app().undo_step_count();
+
+    shell.click_command(AppCommand::Move);
+    shell.type_text("25");
+    shell.press_key(Key::Enter);
+    let first_undo_steps = shell.app().undo_step_count();
+    assert_eq!(first_undo_steps, initial_undo_steps + 1);
+
+    shell.type_text("40");
+    shell.press_key(Key::Enter);
+
+    for (index, id) in [1, 2].into_iter().enumerate() {
+        assert_eq!(
+            shell.app().occurrence_box_geometry(id).unwrap().0,
+            initial_origins[index] + Vec3::new(40.0, 0.0, 0.0),
+            "the replacement distance must move the whole group from its original position"
+        );
+    }
+    assert_eq!(
+        shell.app().undo_step_count(),
+        first_undo_steps,
+        "correcting a grouped Move must replace its history tip"
+    );
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), grouped_digest);
+}
+
+#[test]
+fn typed_rotate_correction_replaces_group_angle_in_one_undo_step() {
+    let mut shell = Shell::new();
+    assert!(shell.app_mut().create_box());
+    shell.click_menu_command("menu-edit", AppCommand::SelectAll);
+    shell.click_menu_command("menu-model", AppCommand::Group);
+    assert_eq!(shell.app().group_count(), 1);
+    let grouped_digest = shell.app().canonical_digest();
+    let initial_undo_steps = shell.app().undo_step_count();
+
+    shell.click_command(AppCommand::Rotate);
+    shell.type_text("45");
+    shell.press_key(Key::Enter);
+    let first_undo_steps = shell.app().undo_step_count();
+    assert_eq!(first_undo_steps, initial_undo_steps + 1);
+
+    shell.type_text("90");
+    shell.press_key(Key::Enter);
+
+    for id in [1, 2] {
+        assert_eq!(
+            rounded_extents(shell.app().occurrence_box_geometry(id).unwrap().1),
+            (60.0, 100.0, 20.0),
+            "the replacement angle must rotate the whole group from its original orientation"
+        );
+    }
+    assert_eq!(
+        shell.app().undo_step_count(),
+        first_undo_steps,
+        "correcting a grouped Rotate must replace its history tip"
+    );
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), grouped_digest);
+}
+
+#[test]
+fn stale_numeric_move_correction_targets_the_current_selection() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.viewport_rect().center());
+    shell.click_command(AppCommand::Move);
+    shell.type_text("25,0,0");
+    shell.press_key(Key::Enter);
+    let first_after_move = shell.app().occurrence_box_geometry(1).unwrap().0;
+
+    assert!(shell.app_mut().create_box());
+    let second_before_move = shell.app().occurrence_box_geometry(2).unwrap().0;
+    let undo_steps = shell.app().undo_step_count();
+    shell.type_text("40");
+    shell.press_key(Key::Enter);
+
+    assert_eq!(
+        shell.app().occurrence_box_geometry(1).unwrap().0,
+        first_after_move,
+        "a stale correction must not move the previously transformed occurrence"
+    );
+    assert_eq!(
+        shell.app().occurrence_box_geometry(2).unwrap().0,
+        second_before_move + Vec3::new(40.0, 0.0, 0.0),
+        "a plain distance after selection drift must start a fresh Move on the current selection"
+    );
+    assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+}
+
+#[test]
+fn stale_numeric_rotate_correction_targets_the_current_selection() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.top_face_centre(1));
+    shell.click_command(AppCommand::Rotate);
+    shell.type_text("45");
+    shell.press_key(Key::Enter);
+    let first_after_rotate = shell.app().occurrence_box_geometry(1).unwrap();
+
+    assert!(shell.app_mut().create_box());
+    let second_before_rotate = shell.app().occurrence_box_geometry(2).unwrap();
+    let undo_steps = shell.app().undo_step_count();
+    shell.type_text("90");
+    shell.press_key(Key::Enter);
+
+    assert_eq!(
+        shell.app().occurrence_box_geometry(1),
+        Some(first_after_rotate),
+        "a stale correction must not rotate the previously transformed occurrence"
+    );
+    assert_eq!(
+        rounded_extents(shell.app().occurrence_box_geometry(2).unwrap().1),
+        (60.0, 100.0, 20.0),
+        "an angle after selection drift must start a fresh Rotate on the current selection"
+    );
+    assert_eq!(
+        shell.app().occurrence_box_geometry(2).unwrap().0,
+        second_before_rotate.0 + Vec3::new(20.0, -20.0, 0.0)
+    );
+    assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+}
+
+#[test]
+fn reselecting_after_numeric_move_starts_a_new_history_step() {
+    let mut shell = Shell::new();
+    assert!(shell.app_mut().create_box());
+    shell.settle();
+    let row_label = |shell: &Shell, occurrence_id| {
+        let name = shell
+            .app()
+            .occurrence_name(occurrence_id)
+            .unwrap()
+            .trim_end_matches(" #1")
+            .to_owned();
+        shell.catalog().format(
+            "outliner-object",
+            &BTreeMap::from([
+                ("name", name),
+                ("dimensions", "100 × 60 × 20".to_owned()),
+                ("visibility", "◉".to_owned()),
+            ]),
+        )
+    };
+    let first_row = row_label(&shell, OccurrenceId(1));
+    let second_row = row_label(&shell, OccurrenceId(2));
+    assert!(shell.app_mut().headless_select_occurrence(OccurrenceId(1)));
+    let initial_origin = shell.app().occurrence_box_geometry(1).unwrap().0;
+    let initial_undo_steps = shell.app().undo_step_count();
+
+    shell.click_command(AppCommand::Move);
+    shell.focus_text_input(&shell.catalog().text("value-label-distance"));
+    shell.type_text("25");
+    shell.press_key(Key::Enter);
+    assert_eq!(shell.app().undo_step_count(), initial_undo_steps + 1);
+
+    let open_tab = shell.catalog().text("assistant-open-tab");
+    shell.click_role_and_label(Role::Button, &open_tab);
+    shell.click_row(&second_row);
+    shell.click_row(&first_row);
+    let dock_right = shell.catalog().text("assistant-dock-right");
+    shell.click_role_and_label(Role::Button, &dock_right);
+    shell.click_command(AppCommand::Move);
+    shell.focus_text_input(&shell.catalog().text("value-label-distance"));
+    shell.type_text("40");
+    shell.press_key(Key::Enter);
+
+    assert_eq!(
+        shell.app().occurrence_box_geometry(1).unwrap().0,
+        initial_origin + Vec3::new(65.0, 0.0, 0.0),
+        "leaving and restoring the selection must end correction of the old Move"
+    );
+    assert_eq!(shell.app().undo_step_count(), initial_undo_steps + 2);
+    shell.key(Key::Z, ctrl());
+    assert_eq!(
+        shell.app().occurrence_box_geometry(1).unwrap().0,
+        initial_origin + Vec3::new(25.0, 0.0, 0.0)
+    );
+}
+
+#[test]
+fn reselecting_after_numeric_rotate_starts_a_new_history_step() {
+    let mut shell = Shell::new();
+    assert!(shell.app_mut().create_box());
+    shell.settle();
+    let row_label = |shell: &Shell, occurrence_id| {
+        let name = shell
+            .app()
+            .occurrence_name(occurrence_id)
+            .unwrap()
+            .trim_end_matches(" #1")
+            .to_owned();
+        shell.catalog().format(
+            "outliner-object",
+            &BTreeMap::from([
+                ("name", name),
+                ("dimensions", "100 × 60 × 20".to_owned()),
+                ("visibility", "◉".to_owned()),
+            ]),
+        )
+    };
+    let first_row = row_label(&shell, OccurrenceId(1));
+    let second_row = row_label(&shell, OccurrenceId(2));
+    assert!(shell.app_mut().headless_select_occurrence(OccurrenceId(1)));
+    let initial_undo_steps = shell.app().undo_step_count();
+
+    shell.click_command(AppCommand::Rotate);
+    shell.focus_text_input(&shell.catalog().text("value-label-angle"));
+    shell.type_text("45");
+    shell.press_key(Key::Enter);
+    let first_rotation = shell.app().canonical_digest();
+    assert_eq!(shell.app().undo_step_count(), initial_undo_steps + 1);
+
+    let open_tab = shell.catalog().text("assistant-open-tab");
+    shell.click_role_and_label(Role::Button, &open_tab);
+    shell.click_row(&second_row);
+    shell.click_row(&first_row);
+    let dock_right = shell.catalog().text("assistant-dock-right");
+    shell.click_role_and_label(Role::Button, &dock_right);
+    shell.click_command(AppCommand::Rotate);
+    shell.focus_text_input(&shell.catalog().text("value-label-angle"));
+    shell.type_text("40");
+    shell.press_key(Key::Enter);
+
+    assert_eq!(
+        shell.app().undo_step_count(),
+        initial_undo_steps + 2,
+        "leaving and restoring the selection must end correction of the old Rotate"
+    );
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), first_rotation);
+}
+
+#[test]
 fn undo_and_redo_return_the_document_to_identical_canonical_states() {
     let mut shell = Shell::new();
     shell.click_at(shell.viewport_rect().center());
@@ -11369,6 +12560,65 @@ fn undo_and_redo_return_the_document_to_identical_canonical_states() {
     assert_eq!(undone_once, undone_twice, "Undo must be reproducible");
     assert_eq!(redone_once, redone_twice, "Redo must be reproducible");
     assert_ne!(undone_once, redone_once);
+}
+
+#[test]
+fn escape_ends_numeric_move_correction_before_reselecting_the_same_occurrence() {
+    let mut shell = Shell::new();
+    let initial_origin = shell.app().occurrence_box_geometry(1).unwrap().0;
+    let initial_undo_steps = shell.app().undo_step_count();
+    shell.click_at(shell.viewport_rect().center());
+    shell.click_command(AppCommand::Move);
+    shell.type_text("25,0,0");
+    shell.press_key(Key::Enter);
+    let first_origin = shell.app().occurrence_box_geometry(1).unwrap().0;
+    assert_eq!(first_origin, initial_origin + Vec3::new(25.0, 0.0, 0.0));
+    let first_undo_steps = shell.app().undo_step_count();
+    assert_eq!(first_undo_steps, initial_undo_steps + 1);
+
+    shell.press_key(Key::Escape);
+    assert_eq!(shell.app().selected_occurrence_count(), 0);
+    assert!(shell.app_mut().headless_select_occurrence(OccurrenceId(1)));
+    assert!(shell.app().occurrence_is_selected(OccurrenceId(1)));
+    shell.click_command(AppCommand::Move);
+    shell.type_text("40");
+    shell.press_key(Key::Enter);
+
+    assert_eq!(
+        shell.app().occurrence_box_geometry(1).unwrap().0,
+        first_origin + Vec3::new(40.0, 0.0, 0.0),
+        "a value entered after Escape must start a fresh Move"
+    );
+    assert_eq!(shell.app().undo_step_count(), first_undo_steps + 1);
+}
+
+#[test]
+fn escape_ends_numeric_rotate_correction_before_reselecting_the_same_occurrence() {
+    let mut shell = Shell::new();
+    let initial_undo_steps = shell.app().undo_step_count();
+    shell.click_at(shell.top_face_centre(1));
+    shell.click_command(AppCommand::Rotate);
+    shell.type_text("45");
+    shell.press_key(Key::Enter);
+    let first_rotation = shell.app().canonical_digest();
+    let first_undo_steps = shell.app().undo_step_count();
+    assert_eq!(first_undo_steps, initial_undo_steps + 1);
+
+    shell.press_key(Key::Escape);
+    assert_eq!(shell.app().selected_occurrence_count(), 0);
+    assert!(shell.app_mut().headless_select_occurrence(OccurrenceId(1)));
+    assert!(shell.app().occurrence_is_selected(OccurrenceId(1)));
+    shell.click_command(AppCommand::Rotate);
+    shell.type_text("40");
+    shell.press_key(Key::Enter);
+
+    assert_eq!(
+        shell.app().undo_step_count(),
+        first_undo_steps + 1,
+        "a value entered after Escape must start a fresh Rotate"
+    );
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), first_rotation);
 }
 
 #[test]
@@ -11612,9 +12862,282 @@ fn a_viewport_drag_in_rotate_turns_the_occurrence_and_the_arrow_keys_pick_the_ax
     );
 }
 
+#[test]
+fn rotate_ctrl_after_the_pivot_switches_the_live_gesture_to_copy() {
+    let mut shell = Shell::new();
+    let rect = shell.viewport_rect();
+    shell.click_at(shell.top_face_centre(1));
+    let source = shell.app().occurrence_box_geometry(1).unwrap();
+    let centre = source.0 + source.1 * 0.5;
+
+    shell.click_command(AppCommand::Rotate);
+    shell.click_at(shell.app().project_to_screen(centre, rect));
+    let before_revision = shell.app().document_revision();
+    let before_digest = shell.app().canonical_digest();
+    let from = shell
+        .app()
+        .project_to_screen(centre + Vec3::new(source.1.x * 0.25, 0.0, 0.0), rect);
+    let to = shell
+        .app()
+        .project_to_screen(centre + Vec3::new(0.0, source.1.x * 0.25, 0.0), rect);
+
+    shell.drag_with(from, to, ctrl());
+
+    let copied_digest = shell.app().canonical_digest();
+    assert_eq!(shell.app().document_revision(), before_revision + 1);
+    assert_eq!(shell.app().active_box_count(), 2);
+    assert_eq!(shell.app().definition_count(), 1);
+    assert_eq!(shell.app().occurrence_box_geometry(1), Some(source));
+    assert_eq!(
+        rounded_extents(shell.app().occurrence_box_geometry(2).unwrap().1),
+        (60.0, 100.0, 20.0)
+    );
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    assert_eq!(shell.app().active_box_count(), 1);
+    shell.key(Key::Y, ctrl());
+    assert_eq!(shell.app().canonical_digest(), copied_digest);
+    assert_eq!(shell.app().active_box_count(), 2);
+}
+
+#[test]
+fn typed_angle_corrects_the_last_rotate_copy_in_one_undo_step() {
+    let mut shell = Shell::new();
+    let rect = shell.viewport_rect();
+    shell.click_at(shell.top_face_centre(1));
+    let source = shell.app().occurrence_box_geometry(1).unwrap();
+    let centre = source.0 + source.1 * 0.5;
+    let turned_extents = |degrees: f64| {
+        let (sin, cos) = degrees.to_radians().sin_cos();
+        let round = |value: f64| (value * 1_000.0).round() / 1_000.0;
+        (
+            round(source.1.x.mul_add(cos.abs(), source.1.y * sin.abs())),
+            round(source.1.x.mul_add(sin.abs(), source.1.y * cos.abs())),
+        )
+    };
+    let before_digest = shell.app().canonical_digest();
+    let before_steps = shell.app().undo_step_count();
+
+    shell.click_command(AppCommand::Rotate);
+    shell.click_at(shell.app().project_to_screen(centre, rect));
+    let from = shell
+        .app()
+        .project_to_screen(centre + Vec3::new(source.1.x * 0.25, 0.0, 0.0), rect);
+    let to = shell
+        .app()
+        .project_to_screen(centre + Vec3::new(0.0, source.1.x * 0.25, 0.0), rect);
+    shell.drag_with(from, to, ctrl());
+    assert_eq!(shell.app().active_box_count(), 2);
+    assert_eq!(shell.app().undo_step_count(), before_steps + 1);
+
+    shell.type_text("40");
+    shell.press_key(Key::Enter);
+
+    let corrected = shell.app().occurrence_box_geometry(2).unwrap().1;
+    assert_eq!(
+        (
+            (corrected.x * 1_000.0).round() / 1_000.0,
+            (corrected.y * 1_000.0).round() / 1_000.0,
+        ),
+        turned_extents(40.0),
+        "the typed angle must replace the copy's original turn: {:?}",
+        shell.app().action_digest()
+    );
+    assert_eq!(shell.app().occurrence_box_geometry(1), Some(source));
+    assert_eq!(shell.app().active_box_count(), 2);
+    assert_eq!(
+        shell.app().undo_step_count(),
+        before_steps + 1,
+        "Rotate-Copy correction must remain one undo step"
+    );
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    assert_eq!(shell.app().active_box_count(), 1);
+}
+
+#[test]
+fn undo_redo_ends_numeric_move_correction() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.viewport_rect().center());
+    let base_digest = shell.app().canonical_digest();
+    let initial_origin = shell.app().occurrence_box_geometry(1).unwrap().0;
+    let before_steps = shell.app().undo_step_count();
+
+    shell.click_command(AppCommand::Move);
+    shell.type_text("25,0,0");
+    shell.press_key(Key::Enter);
+    let first_move = shell.app().canonical_digest();
+    let first_origin = shell.app().occurrence_box_geometry(1).unwrap().0;
+    assert_eq!(first_origin, initial_origin + Vec3::new(25.0, 0.0, 0.0));
+    assert_eq!(shell.app().undo_step_count(), before_steps + 1);
+
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), base_digest);
+    shell.key(Key::Y, ctrl());
+    assert_eq!(shell.app().canonical_digest(), first_move);
+
+    shell.type_text("40");
+    shell.press_key(Key::Enter);
+
+    assert_eq!(
+        shell.app().occurrence_box_geometry(1).unwrap().0,
+        first_origin + Vec3::new(40.0, 0.0, 0.0),
+        "a value entered after Undo/Redo must start a fresh Move"
+    );
+    assert_eq!(shell.app().undo_step_count(), before_steps + 2);
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), first_move);
+}
+
 /// SketchUp treats a value typed straight after a rotation as a correction of
 /// that rotation, not as a second one. Choosing 45 and then thinking better of
 /// it and typing 40 has to leave the body at 40, not at 85.
+#[test]
+fn undo_redo_ends_numeric_rotate_correction() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.top_face_centre(1));
+    let base_digest = shell.app().canonical_digest();
+    let before_steps = shell.app().undo_step_count();
+
+    shell.click_command(AppCommand::Rotate);
+    shell.type_text("45");
+    shell.press_key(Key::Enter);
+    let first_rotation = shell.app().canonical_digest();
+    assert_eq!(shell.app().undo_step_count(), before_steps + 1);
+
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), base_digest);
+    shell.key(Key::Y, ctrl());
+    assert_eq!(shell.app().canonical_digest(), first_rotation);
+
+    shell.type_text("40");
+    shell.press_key(Key::Enter);
+
+    assert_eq!(
+        shell.app().undo_step_count(),
+        before_steps + 2,
+        "a value entered after Undo/Redo must start a fresh rotation"
+    );
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), first_rotation);
+}
+
+#[test]
+fn changing_and_releasing_the_move_axis_ends_numeric_correction() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.viewport_rect().center());
+    let before_steps = shell.app().undo_step_count();
+
+    shell.click_command(AppCommand::Move);
+    shell.type_text("25,0,0");
+    shell.press_key(Key::Enter);
+    let first_move = shell.app().canonical_digest();
+    let first_origin = shell.app().occurrence_box_geometry(1).unwrap().0;
+    assert_eq!(shell.app().undo_step_count(), before_steps + 1);
+
+    shell.press_key(Key::ArrowRight);
+    shell.press_key(Key::ArrowRight);
+    shell.type_text("40");
+    shell.press_key(Key::Enter);
+
+    assert_eq!(
+        shell.app().occurrence_box_geometry(1).unwrap().0,
+        first_origin + Vec3::new(40.0, 0.0, 0.0),
+        "changing the Move axis and releasing it must start a fresh move"
+    );
+    assert_eq!(shell.app().undo_step_count(), before_steps + 2);
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), first_move);
+}
+
+#[test]
+fn changing_and_releasing_the_rotate_axis_ends_numeric_correction() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.top_face_centre(1));
+    let before_steps = shell.app().undo_step_count();
+
+    shell.click_command(AppCommand::Rotate);
+    shell.type_text("45");
+    shell.press_key(Key::Enter);
+    let first_rotation = shell.app().canonical_digest();
+    assert_eq!(shell.app().undo_step_count(), before_steps + 1);
+
+    shell.press_key(Key::ArrowRight);
+    shell.press_key(Key::ArrowRight);
+    shell.type_text("40");
+    shell.press_key(Key::Enter);
+
+    assert_eq!(
+        shell.app().undo_step_count(),
+        before_steps + 2,
+        "changing the Rotate axis and releasing it must end correction of the old turn"
+    );
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), first_rotation);
+}
+
+#[test]
+fn switching_away_from_move_ends_numeric_correction() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.viewport_rect().center());
+    let base_digest = shell.app().canonical_digest();
+    let initial_origin = shell.app().occurrence_box_geometry(1).unwrap().0;
+    let before_steps = shell.app().undo_step_count();
+
+    shell.click_command(AppCommand::Move);
+    shell.type_text("25,0,0");
+    shell.press_key(Key::Enter);
+    let first_move = shell.app().canonical_digest();
+    let first_origin = shell.app().occurrence_box_geometry(1).unwrap().0;
+    assert_eq!(first_origin, initial_origin + Vec3::new(25.0, 0.0, 0.0));
+    assert_eq!(shell.app().undo_step_count(), before_steps + 1);
+
+    shell.click_command(AppCommand::Select);
+    shell.click_command(AppCommand::Move);
+    shell.type_text("40");
+    shell.press_key(Key::Enter);
+
+    assert_eq!(
+        shell.app().occurrence_box_geometry(1).unwrap().0,
+        first_origin + Vec3::new(40.0, 0.0, 0.0),
+        "returning to Move after another tool must start a fresh move"
+    );
+    assert_eq!(shell.app().undo_step_count(), before_steps + 2);
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), first_move);
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), base_digest);
+}
+
+#[test]
+fn switching_away_from_rotate_ends_numeric_correction() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.top_face_centre(1));
+    let base_digest = shell.app().canonical_digest();
+    let before_steps = shell.app().undo_step_count();
+
+    shell.click_command(AppCommand::Rotate);
+    shell.type_text("45");
+    shell.press_key(Key::Enter);
+    let first_rotation = shell.app().canonical_digest();
+    assert_eq!(shell.app().undo_step_count(), before_steps + 1);
+
+    shell.click_command(AppCommand::Select);
+    shell.click_command(AppCommand::Rotate);
+    shell.type_text("40");
+    shell.press_key(Key::Enter);
+
+    assert_eq!(
+        shell.app().undo_step_count(),
+        before_steps + 2,
+        "returning to Rotate after another tool must start a fresh turn"
+    );
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), first_rotation);
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), base_digest);
+}
+
 #[test]
 fn a_typed_angle_corrects_the_last_rotate_instead_of_stacking_onto_it() {
     let mut shell = Shell::new();
@@ -11709,10 +13232,12 @@ fn a_pinned_move_travels_along_the_blue_axis_and_the_arrow_releases_the_pin() {
     // Without a pin the pointer stays on the plane it grabbed, which is exactly
     // why a part could never be set down on top of another one.
     shell.click_command(AppCommand::Move);
+    assert!(!shell.app().move_copy_mode_active());
     let before_digest = shell.app().canonical_digest();
     let from = shell.app().project_to_screen(top_centre, rect);
     let lifted = Vec3::new(top_centre.x, top_centre.y, top_centre.z + 40.0);
     shell.drag(from, shell.app().project_to_screen(lifted, rect));
+    assert!(!shell.app().move_copy_mode_active());
     assert_eq!(
         shell.app().occurrence_box_geometry(1).unwrap().0.z,
         0.0,
@@ -11723,10 +13248,12 @@ fn a_pinned_move_travels_along_the_blue_axis_and_the_arrow_releases_the_pin() {
         shell.key(Key::Z, ctrl());
     }
     assert_eq!(shell.app().canonical_digest(), before_digest);
+    assert!(!shell.app().move_copy_mode_active());
 
     // The up arrow pins the travel to blue Z, and then the very same drag lifts
     // the body by the full distance it was dragged.
     shell.press_key(Key::ArrowUp);
+    assert!(!shell.app().move_copy_mode_active());
     let before_steps = shell.app().undo_step_count();
     let from = shell.app().project_to_screen(top_centre, rect);
     shell.drag(from, shell.app().project_to_screen(lifted, rect));
@@ -11739,7 +13266,8 @@ fn a_pinned_move_travels_along_the_blue_axis_and_the_arrow_releases_the_pin() {
     assert_eq!(
         shell.app().active_box_count(),
         1,
-        "Move must not create geometry"
+        "Move must not create geometry: {}",
+        shell.app().action_digest()
     );
     let raised = shell.app().occurrence_box_geometry(1).unwrap().0;
     assert_eq!(
@@ -11767,9 +13295,10 @@ fn a_pinned_move_travels_along_the_blue_axis_and_the_arrow_releases_the_pin() {
         "a typed distance along the pinned axis must commit: {:?}",
         shell.app().action_digest()
     );
+    let typed_origin_z = shell.app().occurrence_box_geometry(1).unwrap().0.z;
     assert!(
-        (shell.app().occurrence_box_geometry(1).unwrap().0.z - 65.0).abs() < 1.0e-4,
-        "a typed distance must be read along the pinned axis"
+        (typed_origin_z - 65.0).abs() < 1.0e-4,
+        "a typed distance must be read along the pinned axis; origin Z was {typed_origin_z}"
     );
 
     // Pressing the same arrow again releases the pin, and an exact vector can
@@ -11790,6 +13319,198 @@ fn a_pinned_move_travels_along_the_blue_axis_and_the_arrow_releases_the_pin() {
 fn rounded_extents(size: Vec3) -> (f64, f64, f64) {
     let round = |value: f64| (value * 1_000.0).round() / 1_000.0;
     (round(size.x), round(size.y), round(size.z))
+}
+
+#[test]
+fn uniform_scale_previews_cancels_and_commits_in_one_undo_step() {
+    let mut shell = Shell::new();
+    let rect = shell.viewport_rect();
+    shell.click_at(shell.top_face_centre(1));
+    let (origin, size) = shell.app().occurrence_box_geometry(1).unwrap();
+    let centre = origin + size * 0.5;
+    let centre_screen = shell.app().project_to_screen(centre, rect);
+    let from = shell.top_face_centre(1);
+    let to = centre_screen + (from - centre_screen) * 1.5;
+    let before_revision = shell.app().document_revision();
+    let before_digest = shell.app().canonical_digest();
+    let before_steps = shell.app().undo_step_count();
+
+    shell.click_menu_command("menu-tools", AppCommand::Scale);
+    shell.set_primary_button(from, Modifiers::NONE, true);
+    shell.move_pointer(to);
+    assert!(shell.app().scale_preview_factor().unwrap() > 1.1);
+    assert_eq!(shell.app().document_revision(), before_revision);
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    shell.press_key(Key::Escape);
+    shell.set_primary_button(to, Modifiers::NONE, false);
+    shell.settle();
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    assert_eq!(shell.app().undo_step_count(), before_steps);
+
+    shell.click_menu_command("menu-tools", AppCommand::Scale);
+    shell.set_primary_button(from, Modifiers::NONE, true);
+    shell.move_pointer(to);
+    let factor = shell.app().scale_preview_factor().unwrap();
+    shell.set_primary_button(to, Modifiers::NONE, false);
+    shell.settle();
+
+    let (scaled_origin, scaled_size) = shell.app().occurrence_box_geometry(1).unwrap();
+    assert_eq!(shell.app().document_revision(), before_revision + 1);
+    assert_eq!(shell.app().undo_step_count(), before_steps + 1);
+    assert!((scaled_size.x - size.x * factor).abs() < 1.0e-6);
+    assert!((scaled_size.y - size.y * factor).abs() < 1.0e-6);
+    assert!((scaled_size.z - size.z * factor).abs() < 1.0e-6);
+    assert!(((scaled_origin + scaled_size * 0.5) - centre).length() < 1.0e-6);
+
+    let scaled_digest = shell.app().canonical_digest();
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    shell.key(Key::Y, ctrl());
+    assert_eq!(shell.app().canonical_digest(), scaled_digest);
+}
+
+#[test]
+fn switching_tools_cancels_an_uncommitted_scale_preview() {
+    let mut shell = Shell::new();
+    let rect = shell.viewport_rect();
+    shell.click_at(shell.top_face_centre(1));
+    let (origin, size) = shell.app().occurrence_box_geometry(1).unwrap();
+    let centre_screen = shell.app().project_to_screen(origin + size * 0.5, rect);
+    let from = shell.top_face_centre(1);
+    let to = centre_screen + (from - centre_screen) * 1.5;
+    let before_digest = shell.app().canonical_digest();
+    let before_revision = shell.app().document_revision();
+    let before_steps = shell.app().undo_step_count();
+
+    shell.click_menu_command("menu-tools", AppCommand::Scale);
+    shell.set_primary_button(from, Modifiers::NONE, true);
+    shell.move_pointer(to);
+    assert!(shell.app().scale_preview_factor().unwrap() > 1.1);
+
+    shell.click_command(AppCommand::Move);
+    shell.set_primary_button(to, Modifiers::NONE, false);
+    shell.settle();
+
+    assert_eq!(shell.app().scale_preview_factor(), None);
+    assert!(!shell.app().transform_gesture_active());
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    assert_eq!(shell.app().document_revision(), before_revision);
+    assert_eq!(shell.app().undo_step_count(), before_steps);
+}
+
+#[test]
+fn scale_arrow_locks_change_only_the_requested_world_axis() {
+    let mut shell = Shell::new();
+    let rect = shell.viewport_rect();
+    shell.click_at(shell.top_face_centre(1));
+    let baseline_digest = shell.app().canonical_digest();
+    let (origin, size) = shell.app().occurrence_box_geometry(1).unwrap();
+    let centre = origin + size * 0.5;
+
+    for (key, changed_axis) in [(Key::ArrowRight, 0), (Key::ArrowLeft, 1), (Key::ArrowUp, 2)] {
+        shell.click_menu_command("menu-tools", AppCommand::Scale);
+        shell.press_key(key);
+        let from = shell.top_face_centre(1);
+        let centre_screen = shell.app().project_to_screen(centre, rect);
+        let to = centre_screen + (from - centre_screen) * 1.5;
+        shell.set_primary_button(from, Modifiers::NONE, true);
+        shell.move_pointer(to);
+        let factor = shell.app().scale_preview_factor().unwrap();
+        shell.set_primary_button(to, Modifiers::NONE, false);
+        shell.settle();
+
+        let (scaled_origin, scaled_size) = shell.app().occurrence_box_geometry(1).unwrap();
+        let actual = [scaled_size.x, scaled_size.y, scaled_size.z];
+        let expected = [size.x, size.y, size.z];
+        for axis in 0..3 {
+            let target = if axis == changed_axis {
+                expected[axis] * factor
+            } else {
+                expected[axis]
+            };
+            assert!(
+                (actual[axis] - target).abs() < 1.0e-6,
+                "axis {changed_axis} Scale changed extent {axis} from {} to {} at factor {factor}",
+                expected[axis],
+                actual[axis]
+            );
+        }
+        assert!(((scaled_origin + scaled_size * 0.5) - centre).length() < 1.0e-6);
+
+        shell.key(Key::Z, ctrl());
+        assert_eq!(shell.app().canonical_digest(), baseline_digest);
+    }
+}
+
+#[test]
+fn typed_scale_factor_commits_exactly_in_one_undo_step() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.top_face_centre(1));
+    let before_digest = shell.app().canonical_digest();
+    let before_steps = shell.app().undo_step_count();
+    let (origin, size) = shell.app().occurrence_box_geometry(1).unwrap();
+    let centre = origin + size * 0.5;
+
+    shell.click_menu_command("menu-tools", AppCommand::Scale);
+    shell.type_text("1.5");
+    shell.press_key(Key::Enter);
+
+    let (scaled_origin, scaled_size) = shell.app().occurrence_box_geometry(1).unwrap();
+    assert!((scaled_size.x - size.x * 1.5).abs() < 1.0e-6);
+    assert!((scaled_size.y - size.y * 1.5).abs() < 1.0e-6);
+    assert!((scaled_size.z - size.z * 1.5).abs() < 1.0e-6);
+    assert!(((scaled_origin + scaled_size * 0.5) - centre).length() < 1.0e-6);
+    assert_eq!(shell.app().undo_step_count(), before_steps + 1);
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+}
+
+#[test]
+fn multi_selected_occurrences_scale_about_one_shared_pivot_in_one_undo_step() {
+    let mut shell = Shell::new();
+    shell.click_at(shell.top_face_centre(1));
+    assert!(shell.app_mut().copy_selected(Vec3::new(150.0, 25.0, 0.0)));
+    shell.settle();
+    shell.click_menu_command("menu-view", AppCommand::ZoomFit);
+    shell.click_at_with(shell.top_face_centre(1), shift());
+    assert_eq!(shell.app().selected_occurrence_count(), 2);
+
+    let first = shell.app().occurrence_box_geometry(1).unwrap();
+    let second = shell.app().occurrence_box_geometry(2).unwrap();
+    let minimum = Vec3::new(
+        first.0.x.min(second.0.x),
+        first.0.y.min(second.0.y),
+        first.0.z.min(second.0.z),
+    );
+    let maximum = Vec3::new(
+        (first.0.x + first.1.x).max(second.0.x + second.1.x),
+        (first.0.y + first.1.y).max(second.0.y + second.1.y),
+        (first.0.z + first.1.z).max(second.0.z + second.1.z),
+    );
+    let shared_pivot = (minimum + maximum) * 0.5;
+    let before_digest = shell.app().canonical_digest();
+    let before_revision = shell.app().document_revision();
+    let before_steps = shell.app().undo_step_count();
+
+    shell.click_menu_command("menu-tools", AppCommand::Scale);
+    shell.type_text("1.5");
+    shell.press_key(Key::Enter);
+
+    for (id, (origin, size)) in [(1, first), (2, second)] {
+        let (scaled_origin, scaled_size) = shell.app().occurrence_box_geometry(id).unwrap();
+        let expected_origin = shared_pivot + (origin - shared_pivot) * 1.5;
+        assert!((scaled_origin - expected_origin).length() < 1.0e-6);
+        assert!((scaled_size - size * 1.5).length() < 1.0e-6);
+    }
+    assert_eq!(shell.app().selected_occurrence_count(), 2);
+    assert_eq!(shell.app().document_revision(), before_revision + 1);
+    assert_eq!(shell.app().undo_step_count(), before_steps + 1);
+
+    let scaled_digest = shell.app().canonical_digest();
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    shell.key(Key::Y, ctrl());
+    assert_eq!(shell.app().canonical_digest(), scaled_digest);
 }
 
 #[test]

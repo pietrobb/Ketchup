@@ -16,6 +16,165 @@ fn drag(app: &KetchupApp, selection: SelectionId) -> PushPullDrag {
 }
 
 #[test]
+fn push_pull_extrusion_replaces_cut_preview_without_resurrecting_it() {
+    for cut_distance in ["-10", "-20"] {
+        let mut app = KetchupApp::new();
+        assert!(app.complete_circle(Vec3::new(35.0, 25.0, 20.0), 5.0, Vec3::new(1.0, 0.0, 0.0)));
+        let before = app.canonical_digest();
+        let steps = app.undo_step_count();
+        app.set_push_pull_distance_input(cut_distance);
+        assert!(app.start_preview());
+        app.smart_push_pull_chooser.as_mut().unwrap().selected =
+            SmartPushPullChoice::ProfileCut(OccurrenceId(1));
+        assert!(app.confirm_smart_push_pull_choice());
+        assert!(app.has_occurrence_operation_preview());
+        app.set_push_pull_distance_input("5");
+        assert!(app.start_preview());
+        assert!(app.has_preview());
+        assert!(!app.has_occurrence_operation_preview());
+        assert_eq!(app.canonical_digest(), before);
+        assert_eq!(app.undo_step_count(), steps);
+        app.set_push_pull_distance_input(cut_distance);
+        assert!(
+            !app.has_occurrence_operation_preview(),
+            "typing the former distance must not resurrect a superseded cut preview"
+        );
+        assert!(app.occurrence_operation_preview.is_none());
+        assert!(!app.confirm_push_pull_preview());
+        assert_eq!(app.canonical_digest(), before);
+        assert_eq!(app.undo_step_count(), steps);
+        app.set_push_pull_distance_input("5");
+        assert!(app.start_preview());
+        assert!(app.confirm_push_pull_preview());
+        assert_eq!(app.undo_step_count(), steps + 1);
+        assert_eq!(app.occurrence_box_geometry(1).unwrap().1.z, 20.0);
+        assert_eq!(app.occurrence_box_geometry(2).unwrap().1.z, 5.0);
+        assert!(app.occurrence_operation_preview.is_none());
+        let after = app.canonical_digest();
+        assert!(app.undo());
+        assert_eq!(app.canonical_digest(), before);
+        assert!(app.redo());
+        assert_eq!(app.canonical_digest(), after);
+    }
+}
+
+#[test]
+fn push_pull_zero_gesture_clears_cut_choice_without_losing_anchor() {
+    let mut app = KetchupApp::new();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(2),
+                definition_id: INITIAL_BOX_DEFINITION,
+                name: "Second target".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    assert!(app.complete_circle(Vec3::new(35.0, 25.0, 20.0), 5.0, Vec3::new(1.0, 0.0, 0.0)));
+    let drag = drag(&app, app.selection.primary.clone().unwrap());
+    app.push_pull_anchor = Some(drag.clone());
+    let before = app.canonical_digest();
+    let steps = app.undo_step_count();
+    assert!(!app.update_push_pull_gesture(&drag, Pos2::new(0.0, 10.0)));
+    assert!(app.has_smart_push_pull_chooser());
+    assert!(!app.update_push_pull_gesture(&drag, Pos2::ZERO));
+    assert!(
+        !app.has_smart_push_pull_chooser(),
+        "zero distance must dismiss the old cut choice"
+    );
+    assert!(app.smart_push_pull_proposal.is_none());
+    assert!(app.smart_push_pull_planning.is_none());
+    assert_eq!(app.status_key, "status-ready");
+    assert!(app.push_pull_click_anchor_active());
+    assert_eq!(app.canonical_digest(), before);
+    assert_eq!(app.undo_step_count(), steps);
+    assert!(app.update_push_pull_gesture(&drag, Pos2::new(0.0, -5.0)));
+    assert!(app.has_preview());
+    assert!(app.confirm_push_pull_preview());
+    assert_eq!(app.undo_step_count(), steps + 1);
+    let after = app.canonical_digest();
+    assert!(app.undo());
+    assert_eq!(app.canonical_digest(), before);
+    assert!(app.redo());
+    assert_eq!(app.canonical_digest(), after);
+}
+
+#[test]
+fn push_pull_failed_replan_clears_previous_choice_and_can_recover() {
+    for invalid in ["invalid", "-30"] {
+        let mut app = KetchupApp::new();
+        assert!(app.complete_circle(Vec3::new(35.0, 25.0, 20.0), 5.0, Vec3::new(1.0, 0.0, 0.0)));
+        let before = app.canonical_digest();
+        let steps = app.undo_step_count();
+        app.set_push_pull_distance_input("-10");
+        assert!(app.start_preview());
+        assert!(app.has_smart_push_pull_chooser());
+        app.set_push_pull_distance_input(invalid);
+        assert!(!app.start_preview());
+        assert!(
+            !app.has_smart_push_pull_chooser(),
+            "failed replan {invalid} kept the old cut choice"
+        );
+        assert!(app.smart_push_pull_proposal.is_none());
+        assert!(app.smart_push_pull_planning.is_none());
+        assert!(!app.has_preview());
+        assert!(!app.has_occurrence_operation_preview());
+        assert_eq!(app.status_key, "error-preview-stale");
+        assert_eq!(app.canonical_digest(), before);
+        assert_eq!(app.undo_step_count(), steps);
+        app.set_push_pull_distance_input("5");
+        assert!(app.start_preview());
+        assert!(app.confirm_push_pull_preview());
+        assert_eq!(app.undo_step_count(), steps + 1);
+    }
+}
+
+#[test]
+fn push_pull_clears_exact_preview_on_zero_or_failed_replan() {
+    for zero_gesture in [true, false] {
+        let mut app = planar_push_pull::tests::prism(
+            &[[0.0, 0.0], [40.0, 0.0], [8.0, 30.0]],
+            Transform::identity(),
+        );
+        assert!(app.select_topological_locator(TopologicalPickLocator {
+            instance_path: InstancePath::root(OccurrenceId(1)),
+            producer_feature_id: FeatureId(2),
+            kind: TopologicalElementKind::Face,
+            ordinal: 1,
+        }));
+        let drag = drag(&app, app.selection.primary.clone().unwrap());
+        app.push_pull_anchor = Some(drag.clone());
+        let before = app.canonical_digest();
+        let steps = app.undo_step_count();
+        assert!(app.update_push_pull_gesture(&drag, Pos2::new(0.0, -2.0)));
+        planar_push_pull::tests::wait_preview(&mut app);
+        assert!(app.face_offset_evaluation.is_some());
+        if zero_gesture {
+            assert!(!app.update_push_pull_gesture(&drag, Pos2::ZERO));
+        } else {
+            app.set_push_pull_distance_input("invalid");
+            assert!(!app.start_preview());
+        }
+        assert!(app.face_offset_evaluation.is_none());
+        assert!(app.face_offset_preview_due.is_none());
+        assert!(app.smart_push_pull_proposal.is_none());
+        assert!(app.preview_box.is_none());
+        assert!(app.push_pull_click_anchor_active());
+        assert!(!app.confirm_push_pull_preview());
+        assert_eq!(app.canonical_digest(), before);
+        assert_eq!(app.undo_step_count(), steps);
+        assert!(app.update_push_pull_gesture(&drag, Pos2::new(0.0, -3.0)));
+        planar_push_pull::tests::wait_preview(&mut app);
+        assert!(app.confirm_push_pull_preview());
+        assert_eq!(app.undo_step_count(), steps + 1);
+    }
+}
+
+#[test]
 fn push_pull_snaps_points_and_edges_on_all_signed_axes() {
     for axis in [Axis::X, Axis::Y, Axis::Z] {
         for side in [Side::Minimum, Side::Maximum] {

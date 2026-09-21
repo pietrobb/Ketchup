@@ -12,12 +12,19 @@ fn nested_gesture_preview_transforms_equal_committed_transforms() {
                     side: Side::Maximum,
                 },
             };
+            if let Some(group_id) = group_id {
+                assert!(app.select_group(group_id));
+            } else {
+                assert!(app.enter_group_context(GroupId(30)));
+                app.select_from_outliner(selection.instance_path.clone(), false);
+            }
             let before = app.document.current();
             let preview = if rotate {
                 let drag = RotateDrag {
                     source_document_id: before.document_id(),
                     source_revision: before.revision_id(),
                     selection: selection.clone(),
+                    occurrence_paths: BTreeSet::from([selection.instance_path.clone()]),
                     group_id,
                     centre_mm: Vec3::new(26.0, 44.0, -17.0),
                     axis: Axis::Y,
@@ -25,16 +32,17 @@ fn nested_gesture_preview_transforms_equal_committed_transforms() {
                     angle_degrees: 35.0,
                     copy: false,
                 };
-                app.rotate_drag = Some(drag.clone());
+                app.set_rotate_session(ToolSessionPhase::Gesture, drag.clone());
                 let preview = app.preview_transform_overrides();
                 assert_eq!(app.canonical_digest(), before.canonical_digest());
-                app.rotate_drag = None;
+                app.take_rotate_session(Some(ToolSessionPhase::Gesture));
                 assert!(app.commit_rotate_drag(&drag));
                 preview
             } else {
                 let drag = MoveDrag {
                     source_document_id: before.document_id(),
                     source_revision: before.revision_id(),
+                    occurrence_paths: BTreeSet::from([selection.instance_path.clone()]),
                     selection,
                     group_id,
                     profile_target: None,
@@ -45,10 +53,10 @@ fn nested_gesture_preview_transforms_equal_committed_transforms() {
                     delta_mm: Vec3::new(37.0, -19.0, 53.0),
                     copy: false,
                 };
-                app.move_drag = Some(drag.clone());
+                app.set_move_session(ToolSessionPhase::Gesture, drag.clone());
                 let preview = app.preview_transform_overrides();
                 assert_eq!(app.canonical_digest(), before.canonical_digest());
-                app.move_drag = None;
+                app.take_move_session(Some(ToolSessionPhase::Gesture));
                 assert!(app.commit_move_drag(&drag));
                 preview
             };
@@ -226,7 +234,15 @@ fn nested_world_rotate_copy_and_angle_correction_use_the_same_pivot() {
                 assert!(app.enter_group_context(GroupId(30)));
                 app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
                 let selection = app.selected_move_reference().unwrap();
-                assert!(app.rotate_occurrence(&selection, centre, Axis::Y, 35.0, copy));
+                let occurrence_paths = app.selected_instance_paths();
+                assert!(app.rotate_occurrences(
+                    &selection,
+                    &occurrence_paths,
+                    centre,
+                    Axis::Y,
+                    35.0,
+                    copy,
+                ));
             }
             assert_transform(
                 world(&app, if copy { 4 } else { 1 }),

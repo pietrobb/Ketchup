@@ -23,6 +23,7 @@ use ketchup_application::topology::{
 };
 use ketchup_application::transforms::{
     rotation_in_parent_space, translated_transform, vector_length, world_axis_rotation_transform,
+    world_edit_in_parent_space,
 };
 use ketchup_application::validation::*;
 use ketchup_core::assistant_sidecar::{
@@ -166,6 +167,7 @@ mod occurrence_color_ui;
 #[cfg(feature = "named-product-fixtures")]
 mod part_authoring_ui;
 mod planar_push_pull;
+mod transform_operation;
 mod validator_ui;
 mod viewport_feedback;
 use assistant_runtime::ProcessAssistantTransport;
@@ -179,6 +181,7 @@ pub use helix_thread_ui::{
     helix_segments,
 };
 pub use native_document_inspection::{NativeDocumentInspection, inspect_native_document};
+use transform_operation::{TransformPlan, TransformRequest, TransformTarget};
 mod drawing_plane;
 mod line_geometry;
 mod rectangle_authoring;
@@ -743,11 +746,19 @@ struct MoveProfileTarget {
     world_y_axis: Vec3,
 }
 
+#[derive(Clone, Copy)]
+struct SelectionWindowDrag {
+    start: Pos2,
+    cursor: Pos2,
+    additive: bool,
+}
+
 #[derive(Clone)]
 struct MoveDrag {
     source_document_id: DocumentId,
     source_revision: u64,
     selection: SelectionId,
+    occurrence_paths: BTreeSet<InstancePath>,
     group_id: Option<GroupId>,
     profile_target: Option<MoveProfileTarget>,
     pointer_start_world: Vec3,
@@ -768,10 +779,25 @@ struct MoveDrag {
 /// `axis`, so the live angle is read from where the pointer meets that plane
 /// rather than from raw screen motion.
 #[derive(Clone)]
+struct ScaleDrag {
+    source_document_id: DocumentId,
+    source_revision: u64,
+    selection: SelectionId,
+    occurrence_paths: BTreeSet<InstancePath>,
+    group_id: Option<GroupId>,
+    centre_mm: Vec3,
+    centre_screen: Pos2,
+    reference_radius_points: f32,
+    axis: Option<Axis>,
+    factor: f64,
+}
+
+#[derive(Clone)]
 struct RotateDrag {
     source_document_id: DocumentId,
     source_revision: u64,
     selection: SelectionId,
+    occurrence_paths: BTreeSet<InstancePath>,
     group_id: Option<GroupId>,
     centre_mm: Vec3,
     axis: Axis,
@@ -782,6 +808,75 @@ struct RotateDrag {
     reference_mm: Option<Vec3>,
     angle_degrees: f64,
     copy: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ToolSessionPhase {
+    Gesture,
+    Anchor,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TransformInputEvent {
+    ToggleCopy,
+    CopyRequested,
+}
+
+#[derive(Default)]
+struct TransformInputInterpreter {
+    command_down: bool,
+    command_chord_seen: bool,
+}
+
+impl TransformInputInterpreter {
+    fn interpret_command(
+        &mut self,
+        enabled: bool,
+        command_down: bool,
+        command_chord: bool,
+    ) -> Option<TransformInputEvent> {
+        if !enabled {
+            self.command_down = command_down;
+            self.command_chord_seen = true;
+            return None;
+        }
+        if command_down {
+            if !self.command_down {
+                self.command_chord_seen = command_chord;
+            } else {
+                self.command_chord_seen |= command_chord;
+            }
+            self.command_down = true;
+            return None;
+        }
+
+        let event = (self.command_down && !self.command_chord_seen)
+            .then_some(TransformInputEvent::ToggleCopy);
+        self.command_down = false;
+        self.command_chord_seen = false;
+        event
+    }
+
+    fn interpret_pointer_copy(command_down: bool) -> Option<TransformInputEvent> {
+        command_down.then_some(TransformInputEvent::CopyRequested)
+    }
+
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
+#[derive(Clone)]
+enum ToolSession {
+    Move {
+        phase: ToolSessionPhase,
+        drag: MoveDrag,
+    },
+    Rotate {
+        phase: ToolSessionPhase,
+        drag: RotateDrag,
+    },
+    Scale(ScaleDrag),
 }
 
 /// The on-screen protractor a frame draws for the Rotate tool.
@@ -796,30 +891,66 @@ struct RotationGuide {
     angle_degrees: f64,
 }
 
-#[derive(Clone, Copy)]
-struct LastMove {
-    occurrence_id: OccurrenceId,
-    direction: Vec3,
-    applied_distance_mm: f64,
-}
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum RotateTarget {
-    Occurrence(OccurrenceId),
+#[derive(Clone, Eq, PartialEq)]
+enum CorrectionSelection {
+    Occurrences {
+        occurrence_ids: BTreeSet<OccurrenceId>,
+        primary_occurrence_id: Option<OccurrenceId>,
+    },
     Group(GroupId),
 }
 
-/// The turn a typed angle corrects instead of stacking a second turn onto.
-///
-/// Recorded with the revision and digest it produced, so the correction only
-/// fires while that rotation is still the tip of the history.
 #[derive(Clone)]
-struct LastRotate {
-    target: RotateTarget,
-    centre_mm: Vec3,
-    axis: Axis,
+struct MoveCorrection {
+    direction: Vec3,
+    applied_distance_mm: f64,
+    accepts_vector_correction: bool,
+}
+
+#[derive(Clone)]
+struct MoveCopyCorrection {
+    source_occurrence_ids: Vec<OccurrenceId>,
+    first_copy_occurrence_id: OccurrenceId,
+    primary_source_index: usize,
+    element: ElementId,
+    delta_mm: Vec3,
+    array_mode: MoveCopyArrayMode,
+    array_count: usize,
+}
+
+#[derive(Clone)]
+enum CorrectionOperation {
+    Move(MoveCorrection),
+    MoveCopy(MoveCopyCorrection),
+    Rotate(RotateCorrection),
+    Scale(ScaleCorrection),
+}
+
+#[derive(Clone)]
+struct CorrectionSession {
     revision: u64,
     canonical_digest: String,
+    selection: CorrectionSelection,
+    operation: CorrectionOperation,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MoveCopyArrayMode {
+    Multiply,
+    Divide,
+}
+
+#[derive(Clone)]
+struct RotateCorrection {
+    copy_source_occurrence_ids: Option<Vec<OccurrenceId>>,
+    centre_mm: Vec3,
+    axis: Axis,
+}
+
+#[derive(Clone)]
+struct ScaleCorrection {
+    centre_mm: Vec3,
+    axis: Option<Axis>,
 }
 
 #[derive(Clone)]
@@ -3155,6 +3286,7 @@ enum ActiveTool {
     PushPull,
     Move,
     Rotate,
+    Scale,
     Measure,
     Orbit,
     Pan,
@@ -3188,6 +3320,7 @@ impl ActiveTool {
             Self::PushPull => "tool-push-pull",
             Self::Move => "tool-move",
             Self::Rotate => "tool-rotate",
+            Self::Scale => "tool-scale",
             Self::Measure => "tool-measure",
             Self::Orbit => "tool-orbit",
             Self::Pan => "tool-pan",
@@ -3221,6 +3354,7 @@ impl ActiveTool {
             Self::PushPull => "hint-push-pull",
             Self::Move => "hint-move",
             Self::Rotate => "hint-rotate",
+            Self::Scale => "hint-scale",
             Self::Measure => "hint-measure",
             Self::Orbit => "hint-orbit",
             Self::Pan => "hint-pan",
@@ -3286,6 +3420,7 @@ pub enum AppCommand {
     PushPull,
     Move,
     Rotate,
+    Scale,
     Measure,
     Orbit,
     Pan,
@@ -3432,7 +3567,7 @@ struct CommandSpec {
 struct CommandRegistry;
 
 impl CommandRegistry {
-    const COMMANDS: [CommandSpec; 124] = [
+    const COMMANDS: [CommandSpec; 125] = [
         CommandSpec {
             id: AppCommand::New,
             label_key: "file-new",
@@ -3774,6 +3909,13 @@ impl CommandRegistry {
             label_key: "tool-rotate",
             shortcut_key: "shortcut-rotate",
             tool: Some(ActiveTool::Rotate),
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::Scale,
+            label_key: "tool-scale",
+            shortcut_key: "shortcut-none",
+            tool: Some(ActiveTool::Scale),
             implemented: true,
         },
         CommandSpec {
@@ -4349,6 +4491,7 @@ struct InteractionProjectionCache {
 struct SelectionState {
     occurrences: BTreeSet<InstancePath>,
     primary: Option<SelectionId>,
+    exact_references: BTreeMap<InstancePath, SelectionId>,
     topological: Vec<(SelectionId, SnapshotBoundTopologicalSelection)>,
     selected_group: Option<GroupId>,
     edit_context: Vec<EditContext>,
@@ -4364,6 +4507,7 @@ impl SelectionState {
     fn clear(&mut self) {
         self.occurrences.clear();
         self.primary = None;
+        self.exact_references.clear();
         self.topological.clear();
         self.selected_group = None;
     }
@@ -4377,20 +4521,29 @@ impl SelectionState {
         let instance_path = selection.instance_path.clone();
         if additive && self.occurrences.contains(&instance_path) {
             self.occurrences.remove(&instance_path);
+            self.exact_references.remove(&instance_path);
             if self
                 .primary
                 .as_ref()
                 .is_some_and(|primary| primary.instance_path == selection.instance_path)
             {
-                self.primary = None;
+                self.primary = self
+                    .occurrences
+                    .iter()
+                    .find_map(|path| self.exact_references.get(path).cloned());
             }
             return;
         }
         if !additive {
             self.occurrences.clear();
+            self.exact_references.clear();
         }
-        self.occurrences.insert(instance_path);
-        self.primary = Some(selection);
+        self.occurrences.insert(instance_path.clone());
+        self.exact_references
+            .insert(instance_path, selection.clone());
+        if !additive || self.primary.is_none() {
+            self.primary = Some(selection);
+        }
         self.selected_group = None;
     }
 
@@ -4426,6 +4579,7 @@ impl SelectionState {
                 if self.topological.is_empty() {
                     self.occurrences.clear();
                     self.primary = None;
+                    self.exact_references.clear();
                     self.selected_group = None;
                 } else {
                     self.primary = Some(self.topological[0].0.clone());
@@ -4458,6 +4612,7 @@ impl SelectionState {
             self.occurrences.insert(instance_path);
         }
         self.primary = None;
+        self.exact_references.clear();
         self.topological.clear();
         self.selected_group = None;
     }
@@ -6593,6 +6748,12 @@ struct PdmReviewDialog {
     comparison: Option<ReleaseComparison>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MutationReadiness {
+    Ready,
+    Pending,
+}
+
 enum WorkRecoveryMutationError<E> {
     Mutation(E),
     Recovery(ketchup_core::persistence::FilePersistenceError),
@@ -6701,6 +6862,7 @@ pub struct KetchupApp {
     camera_wheel_active: bool,
     zoom_window_start: Option<Pos2>,
     zoom_window_cursor: Option<Pos2>,
+    selection_window: Option<SelectionWindowDrag>,
     selection: SelectionState,
     hovered: Option<SelectionId>,
     hover_pick: Option<PickResult>,
@@ -6746,18 +6908,18 @@ pub struct KetchupApp {
     bottle_direct_drag: Option<BottleDirectDrag>,
     #[cfg(feature = "named-product-fixtures")]
     bottle_editor: Option<BottleEditorInputs>,
-    move_drag: Option<MoveDrag>,
-    move_anchor: Option<MoveDrag>,
+    tool_session: Option<ToolSession>,
+    transform_input: TransformInputInterpreter,
+    move_copy_mode: bool,
     /// The axis the arrow keys pinned the Move tool to, kept across gestures the
     /// same way the Rotate lock is.
     move_axis_lock: Option<Axis>,
-    rotate_drag: Option<RotateDrag>,
-    rotate_anchor: Option<RotateDrag>,
+    rotate_copy_mode: bool,
     /// The axis the arrow keys pinned the Rotate tool to, kept across gestures
     /// so a locked axis survives releasing and re-grabbing the same body.
     rotate_axis_lock: Option<Axis>,
-    last_move: Option<LastMove>,
-    last_rotate: Option<LastRotate>,
+    scale_axis_lock: Option<Axis>,
+    correction_session: Option<CorrectionSession>,
     sketch_mode: bool,
     sketch_start: Option<Vec3>,
     sketch_end: Option<Vec3>,
@@ -6806,6 +6968,7 @@ pub struct KetchupApp {
     exact_worker_path: Option<PathBuf>,
     exact_worker_attempted: bool,
     exact_task: Option<ExactEvaluationTask>,
+    mutation_readiness: MutationReadiness,
     exact_results: ExactResultRegistry,
     topology_results: ExactResultRegistry,
     exact_result_history: BTreeMap<ExactSource, ExactResultRegistry>,
@@ -6987,6 +7150,7 @@ impl KetchupApp {
             camera_wheel_active: false,
             zoom_window_start: None,
             zoom_window_cursor: None,
+            selection_window: None,
             selection: SelectionState::default(),
             hovered: None,
             hover_pick: None,
@@ -7032,14 +7196,14 @@ impl KetchupApp {
             bottle_direct_drag: None,
             #[cfg(feature = "named-product-fixtures")]
             bottle_editor: None,
-            move_drag: None,
-            move_anchor: None,
+            tool_session: None,
+            transform_input: TransformInputInterpreter::default(),
+            move_copy_mode: false,
             move_axis_lock: None,
-            rotate_drag: None,
-            rotate_anchor: None,
+            rotate_copy_mode: false,
             rotate_axis_lock: None,
-            last_move: None,
-            last_rotate: None,
+            scale_axis_lock: None,
+            correction_session: None,
             sketch_mode: false,
             sketch_start: None,
             sketch_end: None,
@@ -7088,6 +7252,7 @@ impl KetchupApp {
             exact_worker_path: None,
             exact_worker_attempted: false,
             exact_task: None,
+            mutation_readiness: MutationReadiness::Ready,
             exact_results: ExactResultRegistry::default(),
             topology_results: ExactResultRegistry::default(),
             exact_result_history: BTreeMap::new(),
@@ -7282,14 +7447,8 @@ impl KetchupApp {
             self.bottle_direct_drag = None;
             self.bottle_editor = None;
         }
-        self.move_drag = None;
-        self.move_anchor = None;
-        self.move_axis_lock = None;
-        self.rotate_drag = None;
-        self.rotate_anchor = None;
-        self.rotate_axis_lock = None;
-        self.last_move = None;
-        self.last_rotate = None;
+        self.reset_transform_interaction();
+        self.end_transform_correction();
         self.occurrence_clipboard.clear();
         self.cut_occurrence_clipboard.clear();
         self.sketch_mode = false;
@@ -15361,6 +15520,210 @@ impl KetchupApp {
             .any(|occurrence| occurrence.instance_path == *instance_path)
     }
 
+    fn end_transform_correction(&mut self) {
+        self.correction_session = None;
+    }
+
+    fn record_transform_correction(
+        &mut self,
+        selection: CorrectionSelection,
+        operation: CorrectionOperation,
+    ) {
+        self.correction_session = Some(CorrectionSession {
+            revision: self.document_revision(),
+            canonical_digest: self.canonical_digest(),
+            selection,
+            operation,
+        });
+    }
+
+    fn correction_selection_is_current(&self, selection: &CorrectionSelection) -> bool {
+        match selection {
+            CorrectionSelection::Group(group_id) => {
+                self.selection.selected_group == Some(*group_id)
+            }
+            CorrectionSelection::Occurrences {
+                occurrence_ids,
+                primary_occurrence_id,
+            } => {
+                self.selection.selected_group.is_none()
+                    && self.selected_occurrence_ids().eq(occurrence_ids)
+                    && primary_occurrence_id.is_none_or(|expected| {
+                        self.selected_move_reference().is_some_and(|selection| {
+                            selection.instance_path.is_root()
+                                && selection.instance_path.root_occurrence() == expected
+                        })
+                    })
+            }
+        }
+    }
+
+    fn correction_session_is_current(&self, session: &CorrectionSession) -> bool {
+        let current = self.document.current();
+        session.revision == current.revision_id()
+            && session.canonical_digest == current.canonical_digest()
+            && self.correction_selection_is_current(&session.selection)
+    }
+
+    fn current_transform_correction(&mut self) -> Option<&CorrectionSession> {
+        let stale = self
+            .correction_session
+            .as_ref()
+            .is_some_and(|session| !self.correction_session_is_current(session));
+        if stale {
+            self.end_transform_correction();
+        }
+        self.correction_session.as_ref()
+    }
+
+    fn current_move_correction(&mut self) -> Option<(CorrectionSelection, MoveCorrection)> {
+        let session = self.current_transform_correction()?;
+        let CorrectionOperation::Move(operation) = &session.operation else {
+            return None;
+        };
+        Some((session.selection.clone(), operation.clone()))
+    }
+
+    fn current_move_copy_correction(
+        &mut self,
+    ) -> Option<(CorrectionSelection, MoveCopyCorrection)> {
+        let session = self.current_transform_correction()?;
+        let CorrectionOperation::MoveCopy(operation) = &session.operation else {
+            return None;
+        };
+        Some((session.selection.clone(), operation.clone()))
+    }
+
+    fn current_rotate_correction(&mut self) -> Option<(CorrectionSelection, RotateCorrection)> {
+        let session = self.current_transform_correction()?;
+        let CorrectionOperation::Rotate(operation) = &session.operation else {
+            return None;
+        };
+        Some((session.selection.clone(), operation.clone()))
+    }
+
+    fn current_scale_correction(&mut self) -> Option<(CorrectionSelection, ScaleCorrection)> {
+        let session = self.current_transform_correction()?;
+        let CorrectionOperation::Scale(operation) = &session.operation else {
+            return None;
+        };
+        Some((session.selection.clone(), operation.clone()))
+    }
+
+    fn set_move_vector_correction_enabled(&mut self, enabled: bool) {
+        if let Some(CorrectionSession {
+            operation: CorrectionOperation::Move(operation),
+            ..
+        }) = self.correction_session.as_mut()
+        {
+            operation.accepts_vector_correction = enabled;
+        }
+    }
+
+    fn move_session(&self) -> Option<(&MoveDrag, ToolSessionPhase)> {
+        match self.tool_session.as_ref()? {
+            ToolSession::Move { phase, drag } => Some((drag, *phase)),
+            ToolSession::Rotate { .. } | ToolSession::Scale(_) => None,
+        }
+    }
+
+    fn move_session_mut(&mut self) -> Option<&mut MoveDrag> {
+        match self.tool_session.as_mut()? {
+            ToolSession::Move { drag, .. } => Some(drag),
+            ToolSession::Rotate { .. } | ToolSession::Scale(_) => None,
+        }
+    }
+
+    fn set_move_session(&mut self, phase: ToolSessionPhase, drag: MoveDrag) {
+        self.tool_session = Some(ToolSession::Move { phase, drag });
+    }
+
+    fn take_move_session(&mut self, phase: Option<ToolSessionPhase>) -> Option<MoveDrag> {
+        match self.tool_session.take() {
+            Some(ToolSession::Move {
+                phase: actual,
+                drag,
+            }) if phase.is_none_or(|expected| expected == actual) => Some(drag),
+            session => {
+                self.tool_session = session;
+                None
+            }
+        }
+    }
+
+    fn rotate_session(&self) -> Option<(&RotateDrag, ToolSessionPhase)> {
+        match self.tool_session.as_ref()? {
+            ToolSession::Rotate { phase, drag } => Some((drag, *phase)),
+            ToolSession::Move { .. } | ToolSession::Scale(_) => None,
+        }
+    }
+
+    fn rotate_session_mut(&mut self) -> Option<&mut RotateDrag> {
+        match self.tool_session.as_mut()? {
+            ToolSession::Rotate { drag, .. } => Some(drag),
+            ToolSession::Move { .. } | ToolSession::Scale(_) => None,
+        }
+    }
+
+    fn set_rotate_session(&mut self, phase: ToolSessionPhase, drag: RotateDrag) {
+        self.tool_session = Some(ToolSession::Rotate { phase, drag });
+    }
+
+    fn take_rotate_session(&mut self, phase: Option<ToolSessionPhase>) -> Option<RotateDrag> {
+        match self.tool_session.take() {
+            Some(ToolSession::Rotate {
+                phase: actual,
+                drag,
+            }) if phase.is_none_or(|expected| expected == actual) => Some(drag),
+            session => {
+                self.tool_session = session;
+                None
+            }
+        }
+    }
+
+    fn scale_session(&self) -> Option<&ScaleDrag> {
+        match self.tool_session.as_ref()? {
+            ToolSession::Scale(drag) => Some(drag),
+            ToolSession::Move { .. } | ToolSession::Rotate { .. } => None,
+        }
+    }
+
+    fn scale_session_mut(&mut self) -> Option<&mut ScaleDrag> {
+        match self.tool_session.as_mut()? {
+            ToolSession::Scale(drag) => Some(drag),
+            ToolSession::Move { .. } | ToolSession::Rotate { .. } => None,
+        }
+    }
+
+    fn set_scale_session(&mut self, drag: ScaleDrag) {
+        self.tool_session = Some(ToolSession::Scale(drag));
+    }
+
+    fn take_scale_session(&mut self) -> Option<ScaleDrag> {
+        match self.tool_session.take() {
+            Some(ToolSession::Scale(drag)) => Some(drag),
+            session => {
+                self.tool_session = session;
+                None
+            }
+        }
+    }
+
+    fn cancel_transform_session(&mut self) {
+        self.tool_session = None;
+        self.transform_input.reset();
+        self.move_copy_mode = false;
+        self.rotate_copy_mode = false;
+    }
+
+    fn reset_transform_interaction(&mut self) {
+        self.cancel_transform_session();
+        self.move_axis_lock = None;
+        self.rotate_axis_lock = None;
+        self.scale_axis_lock = None;
+    }
+
     fn select_group(&mut self, group_id: GroupId) -> bool {
         let snapshot = self.document.current();
         let Some(group) = snapshot.group(group_id) else {
@@ -15378,6 +15741,7 @@ impl KetchupApp {
             return false;
         }
         let name = group.name().to_owned();
+        self.end_transform_correction();
         self.selection.clear();
         self.selection.occurrences = ids;
         self.selection.selected_group = Some(group_id);
@@ -15395,6 +15759,8 @@ impl KetchupApp {
         if self.document.current().group(group_id).is_none() {
             return false;
         }
+        self.cancel_transform_session();
+        self.end_transform_correction();
         self.selection
             .edit_context
             .push(EditContext::Group(group_id));
@@ -15424,6 +15790,8 @@ impl KetchupApp {
                 instance_path,
             },
         };
+        self.cancel_transform_session();
+        self.end_transform_correction();
         self.selection.edit_context.push(context.clone());
         self.invalidate_pending_import_reviews();
         self.selection.clear();
@@ -15435,9 +15803,12 @@ impl KetchupApp {
     }
 
     fn exit_edit_context(&mut self) -> bool {
-        if self.selection.edit_context.pop().is_none() {
+        if self.selection.edit_context.is_empty() {
             return false;
         }
+        self.cancel_transform_session();
+        self.end_transform_correction();
+        self.selection.edit_context.pop();
         self.invalidate_pending_import_reviews();
         self.selection.clear();
         self.digest = self.catalog.text("digest-exited-edit-context");
@@ -15464,6 +15835,7 @@ impl KetchupApp {
         {
             return false;
         }
+        self.end_transform_correction();
         self.selection.clear();
         self.digest = self.catalog.text("digest-selection-cleared");
         true
@@ -15594,6 +15966,7 @@ impl KetchupApp {
                 ElementId::Endpoint(ordinal)
             }
         };
+        self.end_transform_correction();
         self.selection.select_topological(
             SelectionId {
                 definition_id: target.reference.definition_id,
@@ -15616,6 +15989,7 @@ impl KetchupApp {
         if !self.occurrence_in_active_context(&target.instance_path) {
             return;
         }
+        self.end_transform_correction();
         let snapshot = self.document.current();
         if self.selection.edit_context.is_empty()
             && target.instance_path.is_root()
@@ -15642,10 +16016,185 @@ impl KetchupApp {
         }
     }
 
+    fn selection_window_projected_mesh(
+        &self,
+        snapshot: &Snapshot,
+        definition_id: DefinitionId,
+        transform: Transform,
+        local_box: Option<ProjectedBox>,
+        viewport: Rect,
+    ) -> Option<(Vec<Pos2>, Vec<[usize; 3]>)> {
+        let exact = self.interaction_exact_registry(snapshot);
+        let mut exact_vertices = Vec::new();
+        let mut exact_triangles = Vec::new();
+        for package in exact
+            .render_values(snapshot)
+            .filter(|package| package.definition_id() == definition_id)
+        {
+            let offset = exact_vertices.len();
+            exact_vertices.extend(package.vertices().iter().map(|vertex| {
+                transform_model_point(
+                    transform,
+                    Vec3::new(
+                        vertex.position_mm[0],
+                        vertex.position_mm[1],
+                        vertex.position_mm[2],
+                    ),
+                )
+            }));
+            exact_triangles.extend(
+                package
+                    .triangles()
+                    .iter()
+                    .map(|triangle| triangle.vertex_indices.map(|index| offset + index as usize)),
+            );
+        }
+        if !exact_vertices.is_empty() && !exact_triangles.is_empty() {
+            return Some((
+                exact_vertices
+                    .into_iter()
+                    .map(|point| self.project(point, viewport))
+                    .collect(),
+                exact_triangles,
+            ));
+        }
+
+        if let Some(definition) = snapshot.definition(definition_id)
+            && let Some(mesh) =
+                definition.feature_ids().iter().find_map(|feature_id| {
+                    match snapshot.feature(*feature_id)?.kind() {
+                        FeatureKind::MeshBody(mesh) => Some(mesh),
+                        _ => None,
+                    }
+                })
+        {
+            return Some((
+                mesh.vertices_mm
+                    .iter()
+                    .map(|vertex| {
+                        self.project(
+                            transform_model_point(
+                                transform,
+                                Vec3::new(vertex[0], vertex[1], vertex[2]),
+                            ),
+                            viewport,
+                        )
+                    })
+                    .collect(),
+                mesh.triangles
+                    .iter()
+                    .map(|triangle| triangle.map(|index| index as usize))
+                    .collect(),
+            ));
+        }
+
+        if let Some((vertices, triangles)) =
+            renderer::canonical_definition_fallback_mesh(snapshot, definition_id)
+        {
+            return Some((
+                vertices
+                    .into_iter()
+                    .map(|vertex| {
+                        self.project(
+                            transform_model_point(
+                                transform,
+                                Vec3::new(vertex[0], vertex[1], vertex[2]),
+                            ),
+                            viewport,
+                        )
+                    })
+                    .collect(),
+                triangles
+                    .into_iter()
+                    .map(|triangle| triangle.map(|index| index as usize))
+                    .collect(),
+            ));
+        }
+
+        let [minimum, maximum] =
+            self.definition_local_bounds(snapshot, definition_id, local_box, true)?;
+        let size = maximum - minimum;
+        let vertices = box_corners(size.x, size.y, size.z)
+            .into_iter()
+            .map(|corner| {
+                self.project(transform_model_point(transform, corner + minimum), viewport)
+            })
+            .collect();
+        let triangles = box_faces()
+            .into_iter()
+            .flat_map(|face| {
+                [
+                    [face.corners[0], face.corners[1], face.corners[2]],
+                    [face.corners[0], face.corners[2], face.corners[3]],
+                ]
+            })
+            .collect();
+        Some((vertices, triangles))
+    }
+
+    fn selection_window_paths(
+        &self,
+        start: Pos2,
+        cursor: Pos2,
+        viewport: Rect,
+    ) -> BTreeSet<InstancePath> {
+        let window = Rect::from_two_pos(start, cursor).intersect(viewport);
+        let crossing = cursor.x < start.x;
+        let snapshot = self.document.current();
+        self.active_scene_query_for_snapshot(&snapshot)
+            .into_iter()
+            .filter_map(|occurrence| {
+                let (projected, triangles) = self.selection_window_projected_mesh(
+                    &snapshot,
+                    occurrence.definition_id,
+                    occurrence.transform,
+                    None,
+                    viewport,
+                )?;
+                if projected.is_empty()
+                    || !projected
+                        .iter()
+                        .all(|point| point.x.is_finite() && point.y.is_finite())
+                {
+                    return None;
+                }
+                let selected = if crossing {
+                    triangles.iter().any(|triangle| {
+                        let [first, second, third] = triangle.map(|index| projected[index]);
+                        triangle_intersects_rect([first, second, third], window)
+                    })
+                } else {
+                    projected.iter().all(|point| window.contains(*point))
+                };
+                selected.then_some(occurrence.instance_path)
+            })
+            .collect()
+    }
+
+    fn complete_selection_window(&mut self, drag: SelectionWindowDrag, viewport: Rect) {
+        if drag.start.distance(drag.cursor) < 4.0 {
+            if !drag.additive {
+                self.clear_selection();
+            }
+            return;
+        }
+        let paths = self.selection_window_paths(drag.start, drag.cursor, viewport);
+        self.end_transform_correction();
+        if !drag.additive {
+            self.selection.clear();
+        }
+        self.selection.occurrences.extend(paths);
+        self.digest = self.catalog.format(
+            "digest-selected-all",
+            &BTreeMap::from([("count", self.selection_count().to_string())]),
+        );
+    }
+
     fn select_from_outliner(&mut self, instance_path: InstancePath, additive: bool) {
         if !self.occurrence_in_active_context(&instance_path) {
             return;
         }
+        self.end_transform_correction();
         let snapshot = self.document.current();
         let root_id = instance_path.root_occurrence();
         if self.selection.edit_context.is_empty()
@@ -15675,6 +16224,7 @@ impl KetchupApp {
         let Some(definition) = snapshot.definition(definition_id) else {
             return;
         };
+        self.end_transform_correction();
         let ids = self
             .active_scene_query()
             .into_iter()
@@ -15706,6 +16256,7 @@ impl KetchupApp {
         {
             return false;
         }
+        self.end_transform_correction();
         self.selection.clear();
         self.selection.occurrences = plan.target_instance_paths;
         self.digest = self.catalog.format(
@@ -15753,6 +16304,7 @@ impl KetchupApp {
         {
             return false;
         }
+        self.end_transform_correction();
         self.selection.clear();
         self.selection.occurrences = plan.target_instance_paths;
         self.digest = self.catalog.format(
@@ -15803,6 +16355,7 @@ impl KetchupApp {
         {
             return false;
         }
+        self.end_transform_correction();
         self.selection.clear();
         self.selection.occurrences = plan.target_instance_paths;
         self.digest = self.catalog.format(
@@ -17284,8 +17837,8 @@ impl KetchupApp {
         let snapshot = self.document.current();
         spec.implemented
             && match id {
-                AppCommand::Undo => self.can_undo(),
-                AppCommand::Redo => self.can_redo(),
+                AppCommand::Undo => self.can_undo() || self.transform_gesture_active(),
+                AppCommand::Redo => self.can_redo() || self.transform_gesture_active(),
                 AppCommand::Copy => self.copy_source_plan().is_some(),
                 AppCommand::Cut => self.cut_source_plan().is_some(),
                 AppCommand::Paste => self.paste_source_plan().is_some(),
@@ -17404,7 +17957,26 @@ impl KetchupApp {
         }
         let spec = CommandRegistry::spec(id);
         if let Some(tool) = spec.tool {
+            let tool_changed = self.active_tool != tool;
+            let retained_move_axis = (tool == ActiveTool::Move && self.active_tool == tool)
+                .then_some(self.move_axis_lock);
+            let retained_rotate_axis = (tool == ActiveTool::Rotate && self.active_tool == tool)
+                .then_some(self.rotate_axis_lock);
+            let retained_scale_axis = (tool == ActiveTool::Scale && self.active_tool == tool)
+                .then_some(self.scale_axis_lock);
             self.clear_ephemeral_edit_state();
+            if tool_changed {
+                self.end_transform_correction();
+            }
+            if let Some(axis) = retained_move_axis {
+                self.move_axis_lock = axis;
+            }
+            if let Some(axis) = retained_rotate_axis {
+                self.rotate_axis_lock = axis;
+            }
+            if let Some(axis) = retained_scale_axis {
+                self.scale_axis_lock = axis;
+            }
             self.cancel_rectangle_sketch();
             self.active_tool = tool;
             if tool == ActiveTool::PushPull {
@@ -17734,6 +18306,7 @@ impl KetchupApp {
             | AppCommand::PushPull
             | AppCommand::Move
             | AppCommand::Rotate
+            | AppCommand::Scale
             | AppCommand::Measure
             | AppCommand::Orbit
             | AppCommand::Pan
@@ -19752,6 +20325,24 @@ impl KetchupApp {
         &self.value_input
     }
 
+    #[doc(hidden)]
+    #[must_use]
+    pub fn move_copy_mode_active(&self) -> bool {
+        self.move_copy_mode
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn rotate_copy_mode_active(&self) -> bool {
+        self.rotate_copy_mode
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn transform_gesture_active(&self) -> bool {
+        self.tool_session.is_some()
+    }
+
     /// Current non-authoritative Circle preview as centre and radius.
     #[must_use]
     pub fn circle_preview_geometry(&self) -> Option<(Vec3, f64)> {
@@ -20453,18 +21044,13 @@ impl KetchupApp {
                     .map(|point| point + item.origin_mm)
             })
             .collect::<Vec<_>>();
-        let Some(first) = corners.first().copied() else {
+        let Some([minimum, maximum]) = bounds_of(corners.iter().copied()) else {
             return;
         };
-        let (mut low, mut high) = (first.z, first.z);
-        for corner in &corners {
-            low = low.min(corner.z);
-            high = high.max(corner.z);
-        }
-        self.camera_target_z = f64::midpoint(low, high);
+        let centre = (minimum + maximum) * 0.5;
+        self.camera_target_z = centre.z;
         self.pan = Vec2::ZERO;
-        let bounds = projected_bounds(&corners, |point| self.project(point, rect));
-        self.pan = rect.center() - bounds.center();
+        self.pan = rect.center() - self.project(centre, rect);
         self.digest = self.catalog.format(
             "digest-center-selection",
             &BTreeMap::from([("count", count.to_string())]),
@@ -22049,7 +22635,14 @@ impl KetchupApp {
             return false;
         }
         self.select_group(group_id);
-        self.last_move = None;
+        self.record_transform_correction(
+            CorrectionSelection::Group(group_id),
+            CorrectionOperation::Move(MoveCorrection {
+                direction: delta_mm * (1.0 / distance_mm),
+                applied_distance_mm: distance_mm,
+                accepts_vector_correction: false,
+            }),
+        );
         self.status_key = "status-object-moved";
         self.digest = self.catalog.format(
             "digest-move-committed",
@@ -22059,7 +22652,13 @@ impl KetchupApp {
     }
 
     fn commit_move_drag(&mut self, drag: &MoveDrag) -> bool {
-        if let Some(target) = &drag.profile_target {
+        self.move_copy_mode = false;
+        self.transform_input.reset();
+        if !self.move_preview_is_current(drag) {
+            self.digest = self.catalog.text("error-preview-stale");
+            return false;
+        }
+        if let Some(target) = drag.profile_target.as_ref().filter(|_| !drag.copy) {
             let delta_mm = [
                 dot(drag.delta_mm, target.world_x_axis),
                 dot(drag.delta_mm, target.world_y_axis),
@@ -22091,32 +22690,114 @@ impl KetchupApp {
                 return false;
             }
             self.selection.select_exact(drag.selection.clone(), false);
-            self.last_move = None;
+            self.end_transform_correction();
             self.status_key = "status-object-moved";
             self.digest = self.catalog.format(
                 "digest-move-committed",
                 &BTreeMap::from([("distance", format_height(distance_mm))]),
             );
             true
-        } else if let Some(group_id) = drag.group_id {
-            self.translate_group(group_id, drag.delta_mm)
+        } else if drag.copy {
+            self.translate_occurrences(&drag.selection, &drag.occurrence_paths, drag.delta_mm, true)
         } else {
-            self.translate_occurrence(&drag.selection, drag.delta_mm, drag.copy)
+            let distance_mm = vector_length(drag.delta_mm);
+            let Some(plan) = (distance_mm.is_finite() && distance_mm > 0.0)
+                .then(|| self.move_transform_plan(drag))
+                .flatten()
+            else {
+                return false;
+            };
+            let Ok(target) = self.commit_transform_plan(plan) else {
+                return false;
+            };
+            let selection = match target {
+                TransformTarget::Occurrences(paths) => {
+                    self.selection.select_exact(drag.selection.clone(), false);
+                    self.selection.occurrences.extend(paths.iter().cloned());
+                    CorrectionSelection::Occurrences {
+                        occurrence_ids: paths.iter().map(InstancePath::root_occurrence).collect(),
+                        primary_occurrence_id: None,
+                    }
+                }
+                TransformTarget::Group(group_id) => {
+                    self.select_group(group_id);
+                    CorrectionSelection::Group(group_id)
+                }
+            };
+            self.record_transform_correction(
+                selection,
+                CorrectionOperation::Move(MoveCorrection {
+                    direction: drag.delta_mm * (1.0 / distance_mm),
+                    applied_distance_mm: distance_mm,
+                    accepts_vector_correction: false,
+                }),
+            );
+            self.status_key = "status-object-moved";
+            self.digest = self.catalog.format(
+                "digest-move-committed",
+                &BTreeMap::from([("distance", format_height(distance_mm))]),
+            );
+            true
         }
     }
 
     fn commit_rotate_drag(&mut self, drag: &RotateDrag) -> bool {
-        if let Some(group_id) = drag.group_id {
-            self.rotate_group(group_id, drag.centre_mm, drag.axis, drag.angle_degrees)
-        } else {
-            self.rotate_occurrence(
+        self.rotate_copy_mode = false;
+        self.transform_input.reset();
+        if !self.rotate_preview_is_current(drag) {
+            self.digest = self.catalog.text("error-preview-stale");
+            return false;
+        }
+        if drag.copy {
+            return self.rotate_occurrences(
                 &drag.selection,
+                &drag.occurrence_paths,
                 drag.centre_mm,
                 drag.axis,
                 drag.angle_degrees,
-                drag.copy,
-            )
+                true,
+            );
         }
+        if !rotation_is_meaningful(drag.angle_degrees) {
+            return false;
+        }
+        let Some(plan) = self.rotate_transform_plan(drag) else {
+            return false;
+        };
+        let Ok(target) = self.commit_transform_plan(plan) else {
+            return false;
+        };
+        let selection = match target {
+            TransformTarget::Occurrences(paths) => {
+                self.selection.select_exact(drag.selection.clone(), false);
+                self.selection.occurrences = paths.clone();
+                CorrectionSelection::Occurrences {
+                    occurrence_ids: paths.iter().map(InstancePath::root_occurrence).collect(),
+                    primary_occurrence_id: None,
+                }
+            }
+            TransformTarget::Group(group_id) => {
+                self.select_group(group_id);
+                CorrectionSelection::Group(group_id)
+            }
+        };
+        self.record_transform_correction(
+            selection,
+            CorrectionOperation::Rotate(RotateCorrection {
+                copy_source_occurrence_ids: None,
+                centre_mm: drag.centre_mm,
+                axis: drag.axis,
+            }),
+        );
+        self.status_key = "status-object-rotated";
+        self.digest = self.catalog.format(
+            "digest-rotate-committed",
+            &BTreeMap::from([
+                ("angle", format_angle(drag.angle_degrees)),
+                ("axis", self.catalog.text(axis_name_key(drag.axis))),
+            ]),
+        );
+        true
     }
 
     fn rotate_group(
@@ -22153,14 +22834,14 @@ impl KetchupApp {
             return false;
         }
         self.select_group(group_id);
-        self.last_move = None;
-        self.last_rotate = Some(LastRotate {
-            target: RotateTarget::Group(group_id),
-            centre_mm,
-            axis,
-            revision: self.document_revision(),
-            canonical_digest: self.canonical_digest(),
-        });
+        self.record_transform_correction(
+            CorrectionSelection::Group(group_id),
+            CorrectionOperation::Rotate(RotateCorrection {
+                copy_source_occurrence_ids: None,
+                centre_mm,
+                axis,
+            }),
+        );
         self.status_key = "status-object-rotated";
         self.digest = self.catalog.format(
             "digest-rotate-committed",
@@ -22172,93 +22853,124 @@ impl KetchupApp {
         true
     }
 
-    fn rotate_occurrence(
+    fn rotate_occurrences(
         &mut self,
         selection: &SelectionId,
+        occurrence_paths: &BTreeSet<InstancePath>,
         centre_mm: Vec3,
         axis: Axis,
         angle_degrees: f64,
         copy: bool,
     ) -> bool {
-        if !rotation_is_meaningful(angle_degrees) {
-            return false;
-        }
-        if matches!(
-            self.selection.edit_context.last(),
-            Some(EditContext::Definition { .. })
-        ) || !self.occurrence_in_active_context(&selection.instance_path)
+        if !rotation_is_meaningful(angle_degrees)
+            || occurrence_paths.is_empty()
+            || !occurrence_paths.contains(&selection.instance_path)
+            || occurrence_paths
+                .iter()
+                .any(|path| !path.is_root() || !self.occurrence_in_active_context(path))
+            || matches!(
+                self.selection.edit_context.last(),
+                Some(EditContext::Definition { .. })
+            )
         {
             return false;
         }
         let snapshot = self.document.current();
-        if !selection.instance_path.is_root() {
-            return false;
-        }
-        let source_id = selection.instance_path.root_occurrence();
-        let Some(source) = snapshot.occurrence(source_id) else {
+        let source_ids = occurrence_paths
+            .iter()
+            .map(InstancePath::root_occurrence)
+            .collect::<Vec<_>>();
+        let primary_source_id = selection.instance_path.root_occurrence();
+        let Some(primary_source_index) = source_ids
+            .iter()
+            .position(|source_id| *source_id == primary_source_id)
+        else {
             return false;
         };
-        let definition_id = source.definition_id();
-        if definition_id != selection.definition_id {
+        if snapshot
+            .occurrence(primary_source_id)
+            .is_none_or(|source| source.definition_id() != selection.definition_id)
+        {
             return false;
         }
         let Ok(rotation) = world_rotation_transform(centre_mm, axis, angle_degrees) else {
             return false;
         };
-        let Some(transform) =
-            world_edit_in_parent_space(&snapshot, source.parent(), source.transform(), rotation)
-        else {
+        let first_new_id = snapshot
+            .occurrences()
+            .map(|occurrence| occurrence.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1);
+        if copy && first_new_id.is_none() {
             return false;
-        };
-        let target_id = if copy {
-            OccurrenceId(
-                snapshot
-                    .occurrences()
-                    .map(|occurrence| occurrence.id().0)
-                    .max()
-                    .unwrap_or(0)
-                    + 1,
-            )
-        } else {
-            source_id
-        };
-        let command = if copy {
-            let Some(definition) = snapshot.definition(definition_id) else {
+        }
+        let mut commands = Vec::new();
+        let mut targets = Vec::with_capacity(source_ids.len());
+        let mut created_per_definition = BTreeMap::<DefinitionId, usize>::new();
+        for (index, source_id) in source_ids.iter().copied().enumerate() {
+            let Some(source) = snapshot.occurrence(source_id) else {
                 return false;
             };
-            let number = snapshot
-                .scene_query()
-                .into_iter()
-                .filter(|item| item.definition_id == definition_id)
-                .count()
-                + 1;
-            CanonicalCommand::CreateOccurrence {
-                id: target_id,
-                definition_id,
-                name: self.catalog.format(
-                    "model-copy-occurrence",
-                    &BTreeMap::from([
-                        ("name", definition.name().to_owned()),
-                        ("number", number.to_string()),
-                    ]),
-                ),
-                transform,
-                parent: source.parent(),
-                tag: source.tag(),
-                visible: source.visible(),
+            let definition_id = source.definition_id();
+            let Some(transform) = world_edit_in_parent_space(
+                &snapshot,
+                source.parent(),
+                source.transform(),
+                rotation,
+            ) else {
+                return false;
+            };
+            let target_id = if copy {
+                let Some(id) = first_new_id
+                    .and_then(|id| id.checked_add(index as u64))
+                    .map(OccurrenceId)
+                else {
+                    return false;
+                };
+                id
+            } else {
+                source_id
+            };
+            if copy {
+                let Some(definition) = snapshot.definition(definition_id) else {
+                    return false;
+                };
+                let existing = snapshot
+                    .scene_query()
+                    .into_iter()
+                    .filter(|item| item.definition_id == definition_id)
+                    .count();
+                let created = created_per_definition.entry(definition_id).or_default();
+                *created += 1;
+                commands.push(CanonicalCommand::CreateOccurrence {
+                    id: target_id,
+                    definition_id,
+                    name: self.catalog.format(
+                        "model-copy-occurrence",
+                        &BTreeMap::from([
+                            ("name", definition.name().to_owned()),
+                            ("number", (existing + *created).to_string()),
+                        ]),
+                    ),
+                    transform,
+                    parent: source.parent(),
+                    tag: source.tag(),
+                    visible: source.visible(),
+                });
+                if let Some(color) = source.color() {
+                    commands.push(CanonicalCommand::SetOccurrenceColor {
+                        id: target_id,
+                        color: Some(color),
+                    });
+                }
+            } else {
+                commands.push(CanonicalCommand::SetOccurrenceTransform {
+                    id: target_id,
+                    transform,
+                });
             }
-        } else {
-            CanonicalCommand::SetOccurrenceTransform {
-                id: target_id,
-                transform,
-            }
-        };
-        let mut commands = vec![command];
-        if copy && let Some(color) = source.color() {
-            commands.push(CanonicalCommand::SetOccurrenceColor {
-                id: target_id,
-                color: Some(color),
-            });
+            targets.push((target_id, definition_id));
         }
         if self
             .apply_batch_with_work_recovery(&CommandBatch::new(commands))
@@ -22266,24 +22978,35 @@ impl KetchupApp {
         {
             return false;
         }
+        let target_paths = targets
+            .iter()
+            .map(|(target_id, _)| InstancePath::root(*target_id))
+            .collect::<BTreeSet<_>>();
+        let (primary_target_id, primary_definition_id) = targets[primary_source_index];
         self.selection.select_exact(
             SelectionId {
-                definition_id,
-                instance_path: InstancePath::root(target_id),
+                definition_id: primary_definition_id,
+                instance_path: InstancePath::root(primary_target_id),
                 element: selection.element.clone(),
             },
             false,
         );
-        self.last_move = None;
-        // A rotate-copy has no turn to correct: the typed angle would have to
-        // choose between the original and the copy, so it starts a fresh one.
-        self.last_rotate = (!copy).then(|| LastRotate {
-            target: RotateTarget::Occurrence(target_id),
-            centre_mm,
-            axis,
-            revision: self.document_revision(),
-            canonical_digest: self.canonical_digest(),
-        });
+        self.selection.occurrences.extend(target_paths);
+        let target_ids = targets
+            .iter()
+            .map(|(target_id, _)| *target_id)
+            .collect::<BTreeSet<_>>();
+        self.record_transform_correction(
+            CorrectionSelection::Occurrences {
+                occurrence_ids: target_ids,
+                primary_occurrence_id: None,
+            },
+            CorrectionOperation::Rotate(RotateCorrection {
+                copy_source_occurrence_ids: copy.then_some(source_ids),
+                centre_mm,
+                axis,
+            }),
+        );
         self.status_key = "status-object-rotated";
         self.digest = self.catalog.format(
             "digest-rotate-committed",
@@ -22314,29 +23037,19 @@ impl KetchupApp {
         let Some(selection) = self.selected_move_reference() else {
             return false;
         };
-        let target = selection.instance_path.clone();
-        let applies = move |path: &InstancePath| *path == target;
+        let occurrence_paths = self.selected_instance_paths();
+        let applies = |path: &InstancePath| occurrence_paths.contains(path);
         let Some(centre_mm) = self.rotation_centre_for(&applies) else {
             return false;
         };
-        self.rotate_occurrence(&selection, centre_mm, axis, angle_degrees, false)
-    }
-
-    /// Whether the current selection is still the thing `target` turned.
-    ///
-    /// Without this a typed angle would silently correct the previous body
-    /// after the user has already clicked a different one.
-    fn selection_matches_rotate_target(&self, target: RotateTarget) -> bool {
-        match target {
-            RotateTarget::Group(group_id) => self.selection.selected_group == Some(group_id),
-            RotateTarget::Occurrence(occurrence_id) => {
-                self.selection.selected_group.is_none()
-                    && self.selected_move_reference().is_some_and(|selection| {
-                        selection.instance_path.is_root()
-                            && selection.instance_path.root_occurrence() == occurrence_id
-                    })
-            }
-        }
+        self.rotate_occurrences(
+            &selection,
+            &occurrence_paths,
+            centre_mm,
+            axis,
+            angle_degrees,
+            false,
+        )
     }
 
     /// Re-turn the last rotation to `angle_degrees` instead of adding to it.
@@ -22346,17 +23059,12 @@ impl KetchupApp {
     /// not 85 — and the whole thing stays a single undo step. Zero is a
     /// legitimate correction back to where the body started.
     fn correct_last_rotation(&mut self, angle_degrees: f64) -> bool {
-        let Some(previous) = self.last_rotate.clone() else {
+        let Some((selection, previous)) = self.current_rotate_correction() else {
             return false;
         };
-        let current = self.document.current();
         // Picking a different axis means the user wants another turn, not a
         // different value for the one already made.
-        if previous.axis != self.rotate_axis_lock.unwrap_or(Axis::Z)
-            || previous.revision != current.revision_id()
-            || previous.canonical_digest != current.canonical_digest()
-            || !self.selection_matches_rotate_target(previous.target)
-        {
+        if previous.axis != self.rotate_axis_lock.unwrap_or(Axis::Z) {
             return false;
         }
         let Ok(parent) = self.document.tip_replacement_parent() else {
@@ -22368,45 +23076,131 @@ impl KetchupApp {
             return false;
         };
         let base = parent.snapshot();
-        let command = match previous.target {
-            RotateTarget::Group(group_id) => {
-                let Some(group) = base.group(group_id) else {
+        let commands = if let Some(source_ids) = &previous.copy_source_occurrence_ids {
+            let CorrectionSelection::Occurrences {
+                occurrence_ids: target_ids,
+                ..
+            } = &selection
+            else {
+                return false;
+            };
+            if source_ids.is_empty() || source_ids.len() != target_ids.len() {
+                return false;
+            }
+            let Some(expected_first_id) = base
+                .occurrences()
+                .map(|occurrence| occurrence.id().0)
+                .max()
+                .unwrap_or(0)
+                .checked_add(1)
+                .map(OccurrenceId)
+            else {
+                return false;
+            };
+            let mut commands = Vec::new();
+            let mut created_per_definition = BTreeMap::<DefinitionId, usize>::new();
+            for (index, (source_id, target_id)) in source_ids
+                .iter()
+                .copied()
+                .zip(target_ids.iter().copied())
+                .enumerate()
+            {
+                if expected_first_id
+                    .0
+                    .checked_add(index as u64)
+                    .map(OccurrenceId)
+                    != Some(target_id)
+                {
+                    return false;
+                }
+                let Some(source) = base.occurrence(source_id) else {
                     return false;
                 };
-                CanonicalCommand::SetGroupTransform {
-                    id: group_id,
-                    transform: match world_edit_in_parent_space(
-                        base,
-                        group.parent(),
-                        group.transform(),
-                        rotation,
-                    ) {
-                        Some(transform) => transform,
-                        None => return false,
-                    },
+                let Some(definition) = base.definition(source.definition_id()) else {
+                    return false;
+                };
+                let Some(transform) =
+                    world_edit_in_parent_space(base, source.parent(), source.transform(), rotation)
+                else {
+                    return false;
+                };
+                let existing = base
+                    .scene_query()
+                    .into_iter()
+                    .filter(|item| item.definition_id == source.definition_id())
+                    .count();
+                let created = created_per_definition
+                    .entry(source.definition_id())
+                    .or_default();
+                *created += 1;
+                commands.push(CanonicalCommand::CreateOccurrence {
+                    id: target_id,
+                    definition_id: source.definition_id(),
+                    name: self.catalog.format(
+                        "model-copy-occurrence",
+                        &BTreeMap::from([
+                            ("name", definition.name().to_owned()),
+                            ("number", (existing + *created).to_string()),
+                        ]),
+                    ),
+                    transform,
+                    parent: source.parent(),
+                    tag: source.tag(),
+                    visible: source.visible(),
+                });
+                if let Some(color) = source.color() {
+                    commands.push(CanonicalCommand::SetOccurrenceColor {
+                        id: target_id,
+                        color: Some(color),
+                    });
                 }
             }
-            RotateTarget::Occurrence(occurrence_id) => {
-                let Some(occurrence) = base.occurrence(occurrence_id) else {
-                    return false;
-                };
-                CanonicalCommand::SetOccurrenceTransform {
-                    id: occurrence_id,
-                    transform: match world_edit_in_parent_space(
-                        base,
-                        occurrence.parent(),
-                        occurrence.transform(),
-                        rotation,
-                    ) {
-                        Some(transform) => transform,
-                        None => return false,
-                    },
+            commands
+        } else {
+            match &selection {
+                CorrectionSelection::Group(group_id) => {
+                    let Some(group) = base.group(*group_id) else {
+                        return false;
+                    };
+                    vec![CanonicalCommand::SetGroupTransform {
+                        id: *group_id,
+                        transform: match world_edit_in_parent_space(
+                            base,
+                            group.parent(),
+                            group.transform(),
+                            rotation,
+                        ) {
+                            Some(transform) => transform,
+                            None => return false,
+                        },
+                    }]
+                }
+                CorrectionSelection::Occurrences { occurrence_ids, .. } => {
+                    let mut commands = Vec::with_capacity(occurrence_ids.len());
+                    for occurrence_id in occurrence_ids {
+                        let Some(occurrence) = base.occurrence(*occurrence_id) else {
+                            return false;
+                        };
+                        commands.push(CanonicalCommand::SetOccurrenceTransform {
+                            id: *occurrence_id,
+                            transform: match world_edit_in_parent_space(
+                                base,
+                                occurrence.parent(),
+                                occurrence.transform(),
+                                rotation,
+                            ) {
+                                Some(transform) => transform,
+                                None => return false,
+                            },
+                        });
+                    }
+                    commands
                 }
             }
         };
         let Ok(proposal) = self.document.prepare_tip_replacement_proposal(
             &parent,
-            CommandBatch::new(vec![command]),
+            CommandBatch::new(commands),
             ProposalContext::canonical_preview(),
         ) else {
             return false;
@@ -22419,11 +23213,7 @@ impl KetchupApp {
         {
             return false;
         }
-        self.last_rotate = Some(LastRotate {
-            revision: self.document_revision(),
-            canonical_digest: self.canonical_digest(),
-            ..previous
-        });
+        self.record_transform_correction(selection, CorrectionOperation::Rotate(previous.clone()));
         self.status_key = "status-object-rotated";
         self.digest = self.catalog.format(
             "digest-rotate-committed",
@@ -22435,9 +23225,177 @@ impl KetchupApp {
         true
     }
 
-    fn translate_occurrence(
+    fn correct_last_scale(&mut self, factor: f64) -> bool {
+        let Some((selection, previous)) = self.current_scale_correction() else {
+            return false;
+        };
+        if previous.axis != self.scale_axis_lock
+            || !factor.is_finite()
+            || factor <= 0.0
+            || factor > 1_000.0
+        {
+            return false;
+        }
+        let Ok(parent) = self.document.tip_replacement_parent() else {
+            return false;
+        };
+        let Ok(scale) = world_scale_transform(previous.centre_mm, factor, previous.axis) else {
+            return false;
+        };
+        let base = parent.snapshot();
+        let commands = match &selection {
+            CorrectionSelection::Occurrences { occurrence_ids, .. } => {
+                let mut commands = Vec::with_capacity(occurrence_ids.len());
+                for occurrence_id in occurrence_ids {
+                    let Some(occurrence) = base.occurrence(*occurrence_id) else {
+                        return false;
+                    };
+                    let Some(transform) = world_edit_in_parent_space(
+                        base,
+                        occurrence.parent(),
+                        occurrence.transform(),
+                        scale,
+                    ) else {
+                        return false;
+                    };
+                    commands.push(CanonicalCommand::SetOccurrenceTransform {
+                        id: *occurrence_id,
+                        transform,
+                    });
+                }
+                commands
+            }
+            CorrectionSelection::Group(group_id) => {
+                let Some(group) = base.group(*group_id) else {
+                    return false;
+                };
+                let Some(transform) =
+                    world_edit_in_parent_space(base, group.parent(), group.transform(), scale)
+                else {
+                    return false;
+                };
+                vec![CanonicalCommand::SetGroupTransform {
+                    id: *group_id,
+                    transform,
+                }]
+            }
+        };
+        let Ok(proposal) = self.document.prepare_tip_replacement_proposal(
+            &parent,
+            CommandBatch::new(commands),
+            ProposalContext::canonical_preview(),
+        ) else {
+            return false;
+        };
+        if self
+            .mutate_document_with_work_recovery(|document| {
+                document.commit_tip_replacement_proposal(&proposal)
+            })
+            .is_err()
+        {
+            return false;
+        }
+        self.record_transform_correction(selection, CorrectionOperation::Scale(previous.clone()));
+        self.status_key = "status-object-scaled";
+        self.digest = self.catalog.format(
+            "digest-scale-committed",
+            &BTreeMap::from([
+                ("factor", format_scale_factor(factor)),
+                (
+                    "axis",
+                    self.catalog
+                        .text(previous.axis.map_or("axis-name-uniform", axis_name_key)),
+                ),
+            ]),
+        );
+        true
+    }
+
+    fn correct_move_delta(
+        &mut self,
+        selection: CorrectionSelection,
+        previous: MoveCorrection,
+        delta_mm: Vec3,
+        accepts_vector_correction: bool,
+    ) -> bool {
+        let distance_mm = vector_length(delta_mm);
+        if !delta_mm.x.is_finite() || !delta_mm.y.is_finite() || !delta_mm.z.is_finite() {
+            return false;
+        }
+        let Ok(parent) = self.document.tip_replacement_parent() else {
+            return false;
+        };
+        let base = parent.snapshot();
+        let commands = match &selection {
+            CorrectionSelection::Occurrences { occurrence_ids, .. } => {
+                let mut commands = Vec::with_capacity(occurrence_ids.len());
+                for occurrence_id in occurrence_ids {
+                    let Some(occurrence) = base.occurrence(*occurrence_id) else {
+                        return false;
+                    };
+                    let Some(transform) = translated_in_parent_space(
+                        base,
+                        occurrence.parent(),
+                        occurrence.transform(),
+                        delta_mm,
+                    ) else {
+                        return false;
+                    };
+                    commands.push(CanonicalCommand::SetOccurrenceTransform {
+                        id: *occurrence_id,
+                        transform,
+                    });
+                }
+                commands
+            }
+            CorrectionSelection::Group(group_id) => {
+                let Some(group) = base.group(*group_id) else {
+                    return false;
+                };
+                let Some(transform) =
+                    translated_in_parent_space(base, group.parent(), group.transform(), delta_mm)
+                else {
+                    return false;
+                };
+                vec![CanonicalCommand::SetGroupTransform {
+                    id: *group_id,
+                    transform,
+                }]
+            }
+        };
+        let Ok(proposal) = self.document.prepare_tip_replacement_proposal(
+            &parent,
+            CommandBatch::new(commands),
+            ProposalContext::canonical_preview(),
+        ) else {
+            return false;
+        };
+        if self
+            .mutate_document_with_work_recovery(|document| {
+                document.commit_tip_replacement_proposal(&proposal)
+            })
+            .is_err()
+        {
+            return false;
+        }
+        self.record_transform_correction(
+            selection,
+            CorrectionOperation::Move(MoveCorrection {
+                direction: (distance_mm > 0.0)
+                    .then(|| delta_mm * (1.0 / distance_mm))
+                    .unwrap_or(previous.direction),
+                applied_distance_mm: distance_mm,
+                accepts_vector_correction,
+            }),
+        );
+        self.status_key = "status-object-moved";
+        true
+    }
+
+    fn translate_occurrences(
         &mut self,
         selection: &SelectionId,
+        occurrence_paths: &BTreeSet<InstancePath>,
         delta_mm: Vec3,
         copy: bool,
     ) -> bool {
@@ -22446,82 +23404,108 @@ impl KetchupApp {
             || !delta_mm.y.is_finite()
             || !delta_mm.z.is_finite()
             || distance_mm <= 0.0
-        {
-            return false;
-        }
-        if matches!(
-            self.selection.edit_context.last(),
-            Some(EditContext::Definition { .. })
-        ) || !self.occurrence_in_active_context(&selection.instance_path)
+            || occurrence_paths.is_empty()
+            || !occurrence_paths.contains(&selection.instance_path)
+            || occurrence_paths
+                .iter()
+                .any(|path| !path.is_root() || !self.occurrence_in_active_context(path))
+            || matches!(
+                self.selection.edit_context.last(),
+                Some(EditContext::Definition { .. })
+            )
         {
             return false;
         }
         let snapshot = self.document.current();
-        if !selection.instance_path.is_root() {
-            return false;
-        }
-        let source_id = selection.instance_path.root_occurrence();
-        let Some(source) = snapshot.occurrence(source_id) else {
-            return false;
-        };
-        let definition_id = source.definition_id();
-        if definition_id != selection.definition_id {
-            return false;
-        }
-        let Some(transform) =
-            translated_in_parent_space(&snapshot, source.parent(), source.transform(), delta_mm)
+        let source_ids = occurrence_paths
+            .iter()
+            .map(InstancePath::root_occurrence)
+            .collect::<Vec<_>>();
+        let primary_source_id = selection.instance_path.root_occurrence();
+        let Some(primary_source_index) = source_ids
+            .iter()
+            .position(|source_id| *source_id == primary_source_id)
         else {
             return false;
         };
-        let target_id = if copy {
-            OccurrenceId(
-                snapshot
-                    .occurrences()
-                    .map(|occurrence| occurrence.id().0)
-                    .max()
-                    .unwrap_or(0)
-                    + 1,
-            )
-        } else {
-            source_id
+        if snapshot
+            .occurrence(primary_source_id)
+            .is_none_or(|source| source.definition_id() != selection.definition_id)
+        {
+            return false;
+        }
+        let Some(first_new_id) = snapshot
+            .occurrences()
+            .map(|occurrence| occurrence.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+        else {
+            return false;
         };
-        let command = if copy {
-            let Some(definition) = snapshot.definition(definition_id) else {
+        let mut commands = Vec::new();
+        let mut targets = Vec::with_capacity(source_ids.len());
+        let mut created_per_definition = BTreeMap::<DefinitionId, usize>::new();
+        for (index, source_id) in source_ids.iter().copied().enumerate() {
+            let Some(source) = snapshot.occurrence(source_id) else {
                 return false;
             };
-            let number = snapshot
-                .scene_query()
-                .into_iter()
-                .filter(|item| item.definition_id == definition_id)
-                .count()
-                + 1;
-            CanonicalCommand::CreateOccurrence {
-                id: target_id,
-                definition_id,
-                name: self.catalog.format(
-                    "model-copy-occurrence",
-                    &BTreeMap::from([
-                        ("name", definition.name().to_owned()),
-                        ("number", number.to_string()),
-                    ]),
-                ),
-                transform,
-                parent: source.parent(),
-                tag: source.tag(),
-                visible: source.visible(),
+            let definition_id = source.definition_id();
+            let Some(transform) = translated_in_parent_space(
+                &snapshot,
+                source.parent(),
+                source.transform(),
+                delta_mm,
+            ) else {
+                return false;
+            };
+            let target_id = if copy {
+                let Some(id) = first_new_id.checked_add(index as u64).map(OccurrenceId) else {
+                    return false;
+                };
+                id
+            } else {
+                source_id
+            };
+            if copy {
+                let Some(definition) = snapshot.definition(definition_id) else {
+                    return false;
+                };
+                let existing = snapshot
+                    .scene_query()
+                    .into_iter()
+                    .filter(|item| item.definition_id == definition_id)
+                    .count();
+                let created = created_per_definition.entry(definition_id).or_default();
+                *created += 1;
+                commands.push(CanonicalCommand::CreateOccurrence {
+                    id: target_id,
+                    definition_id,
+                    name: self.catalog.format(
+                        "model-copy-occurrence",
+                        &BTreeMap::from([
+                            ("name", definition.name().to_owned()),
+                            ("number", (existing + *created).to_string()),
+                        ]),
+                    ),
+                    transform,
+                    parent: source.parent(),
+                    tag: source.tag(),
+                    visible: source.visible(),
+                });
+                if let Some(color) = source.color() {
+                    commands.push(CanonicalCommand::SetOccurrenceColor {
+                        id: target_id,
+                        color: Some(color),
+                    });
+                }
+            } else {
+                commands.push(CanonicalCommand::SetOccurrenceTransform {
+                    id: target_id,
+                    transform,
+                });
             }
-        } else {
-            CanonicalCommand::SetOccurrenceTransform {
-                id: target_id,
-                transform,
-            }
-        };
-        let mut commands = vec![command];
-        if copy && let Some(color) = source.color() {
-            commands.push(CanonicalCommand::SetOccurrenceColor {
-                id: target_id,
-                color: Some(color),
-            });
+            targets.push((target_id, definition_id));
         }
         if self
             .apply_batch_with_work_recovery(&CommandBatch::new(commands))
@@ -22529,17 +23513,46 @@ impl KetchupApp {
         {
             return false;
         }
-        let target = SelectionId {
-            definition_id,
-            instance_path: InstancePath::root(target_id),
-            element: selection.element.clone(),
+        let target_paths = targets
+            .iter()
+            .map(|(target_id, _)| InstancePath::root(*target_id))
+            .collect::<BTreeSet<_>>();
+        let (primary_target_id, primary_definition_id) = targets[primary_source_index];
+        self.selection.select_exact(
+            SelectionId {
+                definition_id: primary_definition_id,
+                instance_path: InstancePath::root(primary_target_id),
+                element: selection.element.clone(),
+            },
+            false,
+        );
+        self.selection.occurrences.extend(target_paths);
+        let target_ids = targets
+            .iter()
+            .map(|(target_id, _)| *target_id)
+            .collect::<BTreeSet<_>>();
+        let correction_selection = CorrectionSelection::Occurrences {
+            occurrence_ids: target_ids,
+            primary_occurrence_id: copy.then_some(primary_target_id),
         };
-        self.selection.select_exact(target, false);
-        self.last_move = Some(LastMove {
-            occurrence_id: target_id,
-            direction: delta_mm * (1.0 / distance_mm),
-            applied_distance_mm: distance_mm,
-        });
+        let correction = if copy {
+            CorrectionOperation::MoveCopy(MoveCopyCorrection {
+                source_occurrence_ids: source_ids,
+                first_copy_occurrence_id: targets[0].0,
+                primary_source_index,
+                element: selection.element.clone(),
+                delta_mm,
+                array_mode: MoveCopyArrayMode::Multiply,
+                array_count: 1,
+            })
+        } else {
+            CorrectionOperation::Move(MoveCorrection {
+                direction: delta_mm * (1.0 / distance_mm),
+                applied_distance_mm: distance_mm,
+                accepts_vector_correction: false,
+            })
+        };
+        self.record_transform_correction(correction_selection, correction);
         self.status_key = if copy {
             "status-object-copied"
         } else {
@@ -22563,14 +23576,197 @@ impl KetchupApp {
         let Some(selection) = self.selected_move_reference() else {
             return false;
         };
-        self.translate_occurrence(&selection, delta_mm, false)
+        let occurrence_paths = self.selected_instance_paths();
+        self.translate_occurrences(&selection, &occurrence_paths, delta_mm, false)
     }
 
     pub fn copy_selected(&mut self, delta_mm: Vec3) -> bool {
         let Some(selection) = self.selected_move_reference() else {
             return false;
         };
-        self.translate_occurrence(&selection, delta_mm, true)
+        let occurrence_paths = self.selected_instance_paths();
+        self.translate_occurrences(&selection, &occurrence_paths, delta_mm, true)
+    }
+
+    fn correct_move_copy_delta(&mut self, delta_mm: Vec3) -> bool {
+        if !delta_mm.x.is_finite() || !delta_mm.y.is_finite() || !delta_mm.z.is_finite() {
+            return false;
+        }
+        let Some((_, mut previous)) = self.current_move_copy_correction() else {
+            return false;
+        };
+        previous.delta_mm = delta_mm;
+        self.apply_move_copy_array(previous.clone(), previous.array_mode, previous.array_count)
+    }
+
+    fn apply_current_move_copy_array(&mut self, mode: MoveCopyArrayMode, count: usize) -> bool {
+        let Some((_, previous)) = self.current_move_copy_correction() else {
+            return false;
+        };
+        self.apply_move_copy_array(previous, mode, count)
+    }
+
+    fn apply_move_copy_array(
+        &mut self,
+        previous: MoveCopyCorrection,
+        mode: MoveCopyArrayMode,
+        count: usize,
+    ) -> bool {
+        if !(1..=MAX_PATTERN_COUNT).contains(&count) || previous.source_occurrence_ids.is_empty() {
+            return false;
+        }
+        let Ok(parent) = self.document.tip_replacement_parent() else {
+            return false;
+        };
+        let base = parent.snapshot();
+        let Some(expected_first_id) = base
+            .occurrences()
+            .map(|occurrence| occurrence.id().0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .map(OccurrenceId)
+        else {
+            return false;
+        };
+        if expected_first_id != previous.first_copy_occurrence_id {
+            return false;
+        }
+        let source_count = previous.source_occurrence_ids.len();
+        let mut commands = Vec::new();
+        let mut created_per_definition = BTreeMap::<DefinitionId, usize>::new();
+        for copy_index in 1..=count {
+            let factor = match mode {
+                MoveCopyArrayMode::Multiply => copy_index as f64,
+                MoveCopyArrayMode::Divide => copy_index as f64 / count as f64,
+            };
+            let delta_mm = previous.delta_mm * factor;
+            for (source_index, source_id) in
+                previous.source_occurrence_ids.iter().copied().enumerate()
+            {
+                let Some(source) = base.occurrence(source_id) else {
+                    return false;
+                };
+                let Some(definition) = base.definition(source.definition_id()) else {
+                    return false;
+                };
+                let Some(offset) = (copy_index - 1)
+                    .checked_mul(source_count)
+                    .and_then(|offset| offset.checked_add(source_index))
+                else {
+                    return false;
+                };
+                let Some(id) = previous
+                    .first_copy_occurrence_id
+                    .0
+                    .checked_add(offset as u64)
+                    .map(OccurrenceId)
+                else {
+                    return false;
+                };
+                let Some(transform) =
+                    translated_in_parent_space(base, source.parent(), source.transform(), delta_mm)
+                else {
+                    return false;
+                };
+                let existing = base
+                    .scene_query()
+                    .into_iter()
+                    .filter(|item| item.definition_id == source.definition_id())
+                    .count();
+                let created = created_per_definition
+                    .entry(source.definition_id())
+                    .or_default();
+                *created += 1;
+                commands.push(CanonicalCommand::CreateOccurrence {
+                    id,
+                    definition_id: source.definition_id(),
+                    name: self.catalog.format(
+                        "model-copy-occurrence",
+                        &BTreeMap::from([
+                            ("name", definition.name().to_owned()),
+                            ("number", (existing + *created).to_string()),
+                        ]),
+                    ),
+                    transform,
+                    parent: source.parent(),
+                    tag: source.tag(),
+                    visible: source.visible(),
+                });
+                if let Some(color) = source.color() {
+                    commands.push(CanonicalCommand::SetOccurrenceColor {
+                        id,
+                        color: Some(color),
+                    });
+                }
+            }
+        }
+        let Ok(proposal) = self.document.prepare_tip_replacement_proposal(
+            &parent,
+            CommandBatch::new(commands),
+            ProposalContext::canonical_preview(),
+        ) else {
+            return false;
+        };
+        if self
+            .mutate_document_with_work_recovery(|document| {
+                document.commit_tip_replacement_proposal(&proposal)
+            })
+            .is_err()
+        {
+            return false;
+        }
+        let selected_copy_occurrence_ids = (0..source_count)
+            .map(|source_index| {
+                OccurrenceId(
+                    previous.first_copy_occurrence_id.0
+                        + ((count - 1) * source_count + source_index) as u64,
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        let selected_copy_occurrence_id = OccurrenceId(
+            previous.first_copy_occurrence_id.0
+                + ((count - 1) * source_count + previous.primary_source_index) as u64,
+        );
+        let Some(primary_source) =
+            base.occurrence(previous.source_occurrence_ids[previous.primary_source_index])
+        else {
+            return false;
+        };
+        self.selection.select_exact(
+            SelectionId {
+                definition_id: primary_source.definition_id(),
+                instance_path: InstancePath::root(selected_copy_occurrence_id),
+                element: previous.element.clone(),
+            },
+            false,
+        );
+        self.selection.occurrences.extend(
+            selected_copy_occurrence_ids
+                .iter()
+                .copied()
+                .map(InstancePath::root),
+        );
+        self.record_transform_correction(
+            CorrectionSelection::Occurrences {
+                occurrence_ids: selected_copy_occurrence_ids,
+                primary_occurrence_id: Some(selected_copy_occurrence_id),
+            },
+            CorrectionOperation::MoveCopy(MoveCopyCorrection {
+                array_mode: mode,
+                array_count: count,
+                ..previous
+            }),
+        );
+        self.status_key = "status-object-copied";
+        self.digest = self.catalog.format(
+            match mode {
+                MoveCopyArrayMode::Multiply => "digest-copy-array-multiplied",
+                MoveCopyArrayMode::Divide => "digest-copy-array-divided",
+            },
+            &BTreeMap::from([("count", count.to_string())]),
+        );
+        true
     }
 
     fn occurrence_alignment_plan(
@@ -25995,6 +27191,19 @@ impl KetchupApp {
     }
 
     fn start_preview_for(&mut self, planning: SmartPushPullPlanning) -> bool {
+        self.status_key = "error-preview-stale";
+        self.digest = self.catalog.text("error-preview-stale");
+        if self.mutation_readiness != MutationReadiness::Ready {
+            return false;
+        }
+        let prepared = self.try_start_preview_for(planning);
+        if !prepared {
+            self.clear_push_pull_preview();
+        }
+        prepared
+    }
+
+    fn try_start_preview_for(&mut self, planning: SmartPushPullPlanning) -> bool {
         self.smart_push_pull_planning = Some(planning.clone());
         let Some(selection) = self.selection.primary.clone() else {
             self.clear_ephemeral_edit_state();
@@ -26250,6 +27459,7 @@ impl KetchupApp {
         self.preview = Some(batch.clone());
         self.smart_push_pull_proposal = Some(proposal);
         self.smart_push_pull_chooser = None;
+        self.occurrence_operation_preview = None;
         if plan.source.topological_reference.is_some()
             && self
                 .preview_box
@@ -26462,6 +27672,7 @@ impl KetchupApp {
         if !result {
             self.smart_push_pull_planning = None;
             self.status_key = "error-preview-stale";
+            self.digest = self.catalog.text("error-preview-stale");
         }
         result
     }
@@ -26573,7 +27784,7 @@ impl KetchupApp {
         self.status_key = "status-ready";
     }
 
-    fn clear_ephemeral_edit_state(&mut self) {
+    fn clear_push_pull_preview(&mut self) {
         self.face_offset_evaluation = None;
         self.face_offset_preview_due = None;
         self.preview = None;
@@ -26583,6 +27794,10 @@ impl KetchupApp {
         self.smart_push_pull_planning = None;
         self.smart_push_pull_chooser = None;
         self.occurrence_operation_preview = None;
+    }
+
+    fn clear_ephemeral_edit_state(&mut self) {
+        self.clear_push_pull_preview();
         self.solid_tool_target = None;
         self.revolve_tool = None;
         self.revolve_preview = None;
@@ -26598,12 +27813,10 @@ impl KetchupApp {
         {
             self.bottle_direct_drag = None;
         }
-        self.move_drag = None;
-        self.move_anchor = None;
-        self.rotate_drag = None;
-        self.rotate_anchor = None;
+        self.reset_transform_interaction();
         self.zoom_window_start = None;
         self.zoom_window_cursor = None;
+        self.selection_window = None;
         self.clear_measurement();
     }
 
@@ -26672,12 +27885,7 @@ impl KetchupApp {
         {
             self.selection.topological.clear();
         }
-        if self
-            .last_move
-            .is_some_and(|operation| snapshot.occurrence(operation.occurrence_id).is_none())
-        {
-            self.last_move = None;
-        }
+        let _ = self.current_transform_correction();
         self.push_pull_distance_input.clear();
     }
 
@@ -26796,6 +28004,15 @@ impl KetchupApp {
         self.mutate_document_with_work_recovery(|document| document.apply_batch(batch).map(|_| ()))
     }
 
+    fn commit_transform_plan(
+        &mut self,
+        plan: TransformPlan,
+    ) -> Result<TransformTarget, WorkRecoveryMutationError<CanonicalError>> {
+        let (target, batch) = plan.into_commit();
+        self.apply_batch_with_work_recovery(&batch)?;
+        Ok(target)
+    }
+
     fn commit_proposal_with_work_recovery(
         &mut self,
         proposal: &Proposal,
@@ -26837,14 +28054,27 @@ impl KetchupApp {
         &mut self,
         mutate: impl FnOnce(&mut DocumentStore) -> Option<Snapshot>,
     ) -> bool {
+        self.mutation_readiness = MutationReadiness::Pending;
         match self.mutate_document_with_work_recovery(|document| Ok::<_, String>(mutate(document)))
         {
-            Ok(Some(_)) => true,
-            Ok(None) | Err(_) => false,
+            Ok(Some(snapshot)) => {
+                self.rebind_exact_results(&snapshot);
+                self.mutation_readiness = MutationReadiness::Ready;
+                true
+            }
+            Ok(None) | Err(_) => {
+                self.mutation_readiness = MutationReadiness::Ready;
+                false
+            }
         }
     }
 
     pub fn undo(&mut self) -> bool {
+        if self.transform_gesture_active() {
+            self.clear_ephemeral_edit_state();
+            self.cancel_rectangle_sketch();
+            return false;
+        }
         let undoing_assistant_change = self.assistant_change_can_undo();
         if !self.mutate_history_with_work_recovery(DocumentStore::undo) {
             return false;
@@ -26854,6 +28084,7 @@ impl KetchupApp {
             self.assistant_verification = None;
         }
         self.clear_ephemeral_edit_state();
+        self.end_transform_correction();
         self.cancel_rectangle_sketch();
         self.parameter_editor_node = None;
         self.parameter_provenance = None;
@@ -26864,11 +28095,17 @@ impl KetchupApp {
     }
 
     pub fn redo(&mut self) -> bool {
+        if self.transform_gesture_active() {
+            self.clear_ephemeral_edit_state();
+            self.cancel_rectangle_sketch();
+            return false;
+        }
         if !self.mutate_history_with_work_recovery(DocumentStore::redo) {
             return false;
         }
         self.invalidate_pending_import_reviews();
         self.clear_ephemeral_edit_state();
+        self.end_transform_correction();
         self.cancel_rectangle_sketch();
         self.parameter_editor_node = None;
         self.parameter_provenance = None;
@@ -27124,10 +28361,9 @@ impl KetchupApp {
                 prepared
             }
         } else {
-            self.preview = None;
-            self.preview_box = None;
-            self.preview_definition_id = None;
-            self.occurrence_operation_preview = None;
+            self.clear_push_pull_preview();
+            self.status_key = "status-ready";
+            self.digest = self.catalog.text("digest-nothing-to-apply");
             false
         }
     }
@@ -27430,31 +28666,140 @@ impl KetchupApp {
             .unwrap_or(item)
     }
 
-    /// Whether a gesture started against `source_revision` still describes the
-    /// document, so its preview may be painted and its commit accepted.
-    fn occurrence_gesture_is_current(
+    /// Whether the live UI selection still belongs to this transform session.
+    /// Document freshness and target existence are owned by `TransformRequest`.
+    fn transform_selection_is_current(
+        &self,
+        occurrence_paths: &BTreeSet<InstancePath>,
+        group_id: Option<GroupId>,
+    ) -> bool {
+        if let Some(group_id) = group_id {
+            self.selection.selected_group == Some(group_id)
+        } else {
+            self.selection.selected_group.is_none()
+                && self.selected_instance_paths() == *occurrence_paths
+        }
+    }
+
+    fn move_preview_is_current(&self, drag: &MoveDrag) -> bool {
+        if !drag.copy && drag.profile_target.is_none() {
+            return self.move_transform_plan(drag).is_some();
+        }
+        self.transform_source_is_current(
+            drag.source_document_id,
+            drag.source_revision,
+            &drag.selection,
+            &drag.occurrence_paths,
+            drag.group_id,
+        )
+    }
+
+    fn transform_request(
         &self,
         source_document_id: DocumentId,
         source_revision: u64,
         selection: &SelectionId,
+        occurrence_paths: &BTreeSet<InstancePath>,
         group_id: Option<GroupId>,
-    ) -> bool {
-        let snapshot = self.document.current();
-        source_document_id == snapshot.document_id()
-            && source_revision == snapshot.revision_id()
-            && snapshot
-                .occurrence(selection.instance_path.root_occurrence())
-                .is_some_and(|occurrence| occurrence.definition_id() == selection.definition_id)
-            && group_id.is_none_or(|group_id| snapshot.group(group_id).is_some())
+        world_edit: Transform,
+    ) -> Option<TransformRequest> {
+        self.transform_selection_is_current(occurrence_paths, group_id)
+            .then(|| TransformRequest {
+                source_document_id,
+                source_revision,
+                primary_occurrence: selection.instance_path.root_occurrence(),
+                primary_definition: selection.definition_id,
+                target: group_id.map_or_else(
+                    || TransformTarget::Occurrences(occurrence_paths.clone()),
+                    TransformTarget::Group,
+                ),
+                world_edit,
+            })
     }
 
-    fn move_preview_is_current(&self, drag: &MoveDrag) -> bool {
-        self.occurrence_gesture_is_current(
+    fn transform_source_is_current(
+        &self,
+        source_document_id: DocumentId,
+        source_revision: u64,
+        selection: &SelectionId,
+        occurrence_paths: &BTreeSet<InstancePath>,
+        group_id: Option<GroupId>,
+    ) -> bool {
+        self.transform_request(
+            source_document_id,
+            source_revision,
+            selection,
+            occurrence_paths,
+            group_id,
+            Transform::identity(),
+        )
+        .is_some_and(|request| request.matches_source(&self.document.current()))
+    }
+
+    fn move_transform_plan(&self, drag: &MoveDrag) -> Option<TransformPlan> {
+        if drag.copy
+            || drag.profile_target.is_some()
+            || (drag.group_id.is_none()
+                && matches!(
+                    self.selection.edit_context.last(),
+                    Some(EditContext::Definition { .. })
+                ))
+        {
+            return None;
+        }
+        let request = self.transform_request(
             drag.source_document_id,
             drag.source_revision,
             &drag.selection,
+            &drag.occurrence_paths,
             drag.group_id,
-        )
+            Transform::from_translation(drag.delta_mm.x, drag.delta_mm.y, drag.delta_mm.z).ok()?,
+        )?;
+        TransformPlan::prepare(&self.document.current(), request)
+    }
+
+    fn rotate_transform_plan(&self, drag: &RotateDrag) -> Option<TransformPlan> {
+        if drag.copy
+            || (drag.group_id.is_none()
+                && matches!(
+                    self.selection.edit_context.last(),
+                    Some(EditContext::Definition { .. })
+                ))
+        {
+            return None;
+        }
+        let request = self.transform_request(
+            drag.source_document_id,
+            drag.source_revision,
+            &drag.selection,
+            &drag.occurrence_paths,
+            drag.group_id,
+            world_rotation_transform(drag.centre_mm, drag.axis, drag.angle_degrees).ok()?,
+        )?;
+        TransformPlan::prepare(&self.document.current(), request)
+    }
+
+    fn scale_transform_plan(&self, drag: &ScaleDrag) -> Option<TransformPlan> {
+        if drag.group_id.is_none()
+            && (matches!(
+                self.selection.edit_context.last(),
+                Some(EditContext::Definition { .. })
+            ) || drag
+                .occurrence_paths
+                .iter()
+                .any(|path| !self.occurrence_in_active_context(path)))
+        {
+            return None;
+        }
+        let request = self.transform_request(
+            drag.source_document_id,
+            drag.source_revision,
+            &drag.selection,
+            &drag.occurrence_paths,
+            drag.group_id,
+            world_scale_transform(drag.centre_mm, drag.factor, drag.axis).ok()?,
+        )?;
+        TransformPlan::prepare(&self.document.current(), request)
     }
 
     fn move_profile_target_at(
@@ -27566,10 +28911,14 @@ impl KetchupApp {
     }
 
     fn rotate_preview_is_current(&self, drag: &RotateDrag) -> bool {
-        self.occurrence_gesture_is_current(
+        if !drag.copy {
+            return self.rotate_transform_plan(drag).is_some();
+        }
+        self.transform_source_is_current(
             drag.source_document_id,
             drag.source_revision,
             &drag.selection,
+            &drag.occurrence_paths,
             drag.group_id,
         )
     }
@@ -27599,37 +28948,24 @@ impl KetchupApp {
                 instance_path.root_occurrence(),
             )
         } else {
-            drag.selection.instance_path == *instance_path
+            drag.occurrence_paths.contains(instance_path)
         }
     }
 
     fn move_preview_transform_overrides(&self) -> BTreeMap<InstancePath, Transform> {
-        let Some(drag) = self.move_drag.as_ref().or(self.move_anchor.as_ref()) else {
-            return BTreeMap::new();
-        };
-        if !self.move_preview_is_current(drag) || drag.copy || drag.profile_target.is_some() {
-            return BTreeMap::new();
-        }
-        self.document
-            .current()
-            .scene_query()
-            .into_iter()
-            .filter(|occurrence| self.move_drag_applies_to_path(drag, &occurrence.instance_path))
-            .filter_map(|occurrence| {
-                translated_transform(occurrence.transform, drag.delta_mm)
-                    .ok()
-                    .map(|transform| (occurrence.instance_path, transform))
-            })
-            .collect()
+        self.move_session()
+            .and_then(|(drag, _)| self.move_transform_plan(drag))
+            .map(|plan| plan.preview_overrides().clone())
+            .unwrap_or_default()
     }
 
     /// World-space paths painted as the non-authoritative cut-profile Move preview.
     #[must_use]
     pub fn move_profile_preview_paths(&self) -> Vec<Vec<Vec3>> {
-        let Some(drag) = self.move_drag.as_ref().or(self.move_anchor.as_ref()) else {
+        let Some((drag, _)) = self.move_session() else {
             return Vec::new();
         };
-        if !self.move_preview_is_current(drag) {
+        if !self.move_preview_is_current(drag) || drag.copy {
             return Vec::new();
         }
         let Some(target) = drag.profile_target.as_ref() else {
@@ -27977,7 +29313,9 @@ impl KetchupApp {
             self.digest = self.catalog.text("digest-move-start-missed");
             return false;
         };
-        self.select_from_viewport(Some(selection.clone()), false);
+        if circular_profile.is_some() || !self.selection.contains(&selection.instance_path) {
+            self.select_from_viewport(Some(selection.clone()), false);
+        }
         let plane_z = circular_profile
             .as_ref()
             .map(|(_, _, position)| position.z)
@@ -28027,19 +29365,28 @@ impl KetchupApp {
             let ray = self.view_ray(pointer, rect)?;
             axis_travel_along(&ray, pointer_start_world, axis)
         });
-        self.move_drag = Some(MoveDrag {
-            source_document_id: snapshot.document_id(),
-            source_revision: snapshot.revision_id(),
-            selection,
-            group_id,
-            profile_target,
-            pointer_start_world,
-            plane_z: pointer_start_world.z,
-            axis: self.move_axis_lock,
-            axis_reference,
-            delta_mm: Vec3::ZERO,
-            copy: group_id.is_none() && copy,
-        });
+        let occurrence_paths = if profile_target.is_some() {
+            BTreeSet::from([selection.instance_path.clone()])
+        } else {
+            self.selected_instance_paths()
+        };
+        self.set_move_session(
+            ToolSessionPhase::Gesture,
+            MoveDrag {
+                source_document_id: snapshot.document_id(),
+                source_revision: snapshot.revision_id(),
+                selection,
+                occurrence_paths,
+                group_id,
+                profile_target,
+                pointer_start_world,
+                plane_z: pointer_start_world.z,
+                axis: self.move_axis_lock,
+                axis_reference,
+                delta_mm: Vec3::ZERO,
+                copy: group_id.is_none() && copy,
+            },
+        );
         true
     }
 
@@ -28098,15 +29445,90 @@ impl KetchupApp {
         self.focus_value_box || context.wants_keyboard_input()
     }
 
+    fn apply_transform_input_event(&mut self, tool: ActiveTool, event: TransformInputEvent) {
+        match (tool, event) {
+            (ActiveTool::Move, TransformInputEvent::ToggleCopy) => {
+                let copy_allowed = self.selection.selected_group.is_none();
+                self.move_copy_mode = copy_allowed && !self.move_copy_mode;
+                let copy_mode = self.move_copy_mode;
+                if let Some(drag) = self.move_session_mut() {
+                    drag.copy = drag.group_id.is_none() && copy_mode;
+                }
+                let delta_mm = self
+                    .move_session()
+                    .map_or(Vec3::ZERO, |(drag, _)| drag.delta_mm);
+                self.digest = self.catalog.format(
+                    if self.move_copy_mode {
+                        "digest-copy-live"
+                    } else {
+                        "digest-move-live"
+                    },
+                    &BTreeMap::from([
+                        ("distance", format_height(vector_length(delta_mm))),
+                        ("vector", format_vector_mm(delta_mm)),
+                    ]),
+                );
+            }
+            (ActiveTool::Rotate, TransformInputEvent::ToggleCopy) => {
+                let copy_allowed = self.selection.selected_group.is_none();
+                self.rotate_copy_mode = copy_allowed && !self.rotate_copy_mode;
+                let copy_mode = self.rotate_copy_mode;
+                if let Some(drag) = self.rotate_session_mut() {
+                    drag.copy = drag.group_id.is_none() && copy_mode;
+                }
+                let (angle, axis) = self.rotate_session().map_or(
+                    (0.0, self.rotate_axis_lock.unwrap_or(Axis::Z)),
+                    |(drag, _)| (drag.angle_degrees, drag.axis),
+                );
+                self.digest = self.catalog.format(
+                    if self.rotate_copy_mode {
+                        "digest-rotate-copy-live"
+                    } else {
+                        "digest-rotate-live"
+                    },
+                    &BTreeMap::from([
+                        ("angle", format_angle(angle)),
+                        ("axis", self.catalog.text(axis_name_key(axis))),
+                    ]),
+                );
+            }
+            (_, TransformInputEvent::CopyRequested) | (_, TransformInputEvent::ToggleCopy) => {}
+        }
+    }
+
+    fn interpret_transform_input_for(
+        &mut self,
+        tool: ActiveTool,
+        enabled: bool,
+        command_down: bool,
+        command_chord: bool,
+    ) {
+        if let Some(event) =
+            self.transform_input
+                .interpret_command(enabled, command_down, command_chord)
+        {
+            self.apply_transform_input_event(tool, event);
+        }
+    }
+
+    #[cfg(test)]
+    fn update_move_copy_modifier(&mut self, modifier_down: bool) {
+        self.interpret_transform_input_for(ActiveTool::Move, true, modifier_down, false);
+    }
+
+    #[cfg(test)]
+    fn update_rotate_copy_modifier(&mut self, modifier_down: bool) {
+        self.interpret_transform_input_for(ActiveTool::Rotate, true, modifier_down, false);
+    }
+
     /// Pin the Move tool to `axis`, or release the pin when `axis` is `None`.
     fn set_move_axis_lock(&mut self, axis: Option<Axis>) {
+        self.end_transform_correction();
         self.move_axis_lock = axis;
-        for slot in [&mut self.move_drag, &mut self.move_anchor] {
-            if let Some(drag) = slot.as_mut() {
-                drag.axis = axis;
-                drag.axis_reference = None;
-                drag.delta_mm = Vec3::ZERO;
-            }
+        if let Some(drag) = self.move_session_mut() {
+            drag.axis = axis;
+            drag.axis_reference = None;
+            drag.delta_mm = Vec3::ZERO;
         }
         self.value_input = "0".to_owned();
         self.digest = self.catalog.format(
@@ -28119,11 +29541,200 @@ impl KetchupApp {
         );
     }
 
+    fn set_scale_axis_lock(&mut self, axis: Option<Axis>) {
+        if matches!(
+            self.correction_session
+                .as_ref()
+                .map(|session| &session.operation),
+            Some(CorrectionOperation::Scale(_))
+        ) {
+            self.end_transform_correction();
+        }
+        self.scale_axis_lock = axis;
+        if let Some(drag) = self.scale_session_mut() {
+            drag.axis = axis;
+        }
+        self.digest = self.catalog.format(
+            "digest-scale-axis-locked",
+            &BTreeMap::from([(
+                "axis",
+                self.catalog
+                    .text(axis.map_or("axis-name-uniform", axis_name_key)),
+            )]),
+        );
+    }
+
+    fn scale_preview_is_current(&self, drag: &ScaleDrag) -> bool {
+        self.scale_transform_plan(drag).is_some()
+    }
+
+    fn scale_preview_transform_overrides(&self) -> BTreeMap<InstancePath, Transform> {
+        self.scale_session()
+            .and_then(|drag| self.scale_transform_plan(drag))
+            .map(|plan| plan.preview_overrides().clone())
+            .unwrap_or_default()
+    }
+
+    fn scale_selected(&mut self, factor: f64) -> bool {
+        let Some(selection) = self.selected_move_reference() else {
+            self.digest = self.catalog.text("digest-scale-start-missed");
+            return false;
+        };
+        let snapshot = self.document.current();
+        let group_id = self.selection.selected_group;
+        let occurrence_paths = self.selected_instance_paths();
+        let applies: Box<dyn Fn(&InstancePath) -> bool> = match group_id {
+            Some(group_id) => {
+                let snapshot = snapshot.clone();
+                Box::new(move |path: &InstancePath| {
+                    Self::group_contains_occurrence(&snapshot, group_id, path.root_occurrence())
+                })
+            }
+            None => {
+                let occurrence_paths = occurrence_paths.clone();
+                Box::new(move |path: &InstancePath| occurrence_paths.contains(path))
+            }
+        };
+        let Some(centre_mm) = self.rotation_centre_for(&applies) else {
+            return false;
+        };
+        let drag = ScaleDrag {
+            source_document_id: snapshot.document_id(),
+            source_revision: snapshot.revision_id(),
+            selection,
+            occurrence_paths,
+            group_id,
+            centre_mm,
+            centre_screen: Pos2::ZERO,
+            reference_radius_points: 1.0,
+            axis: self.scale_axis_lock,
+            factor,
+        };
+        self.commit_scale_drag(&drag)
+    }
+
+    fn begin_scale_drag_at(&mut self, pointer: Pos2, rect: Rect) -> bool {
+        let selected = self.selected_move_reference();
+        let Some(selection) = selected.clone().or_else(|| {
+            self.hovered
+                .clone()
+                .filter(|selection| self.occurrence_in_active_context(&selection.instance_path))
+        }) else {
+            self.digest = self.catalog.text("digest-scale-start-missed");
+            return false;
+        };
+        if selected.is_none() {
+            self.select_from_viewport(Some(selection.clone()), false);
+        }
+        let snapshot = self.document.current();
+        let group_id = self.selection.selected_group;
+        let occurrence_paths = self.selected_instance_paths();
+        let applies: Box<dyn Fn(&InstancePath) -> bool> = match group_id {
+            Some(group_id) => {
+                let snapshot = snapshot.clone();
+                Box::new(move |path: &InstancePath| {
+                    Self::group_contains_occurrence(&snapshot, group_id, path.root_occurrence())
+                })
+            }
+            None => {
+                let occurrence_paths = occurrence_paths.clone();
+                Box::new(move |path: &InstancePath| occurrence_paths.contains(path))
+            }
+        };
+        let Some(centre_mm) = self.rotation_centre_for(&applies) else {
+            return false;
+        };
+        let centre_screen = self.project(centre_mm, rect);
+        let reference_radius_points = pointer.distance(centre_screen);
+        if reference_radius_points < 2.0 {
+            self.digest = self.catalog.text("digest-scale-start-too-close");
+            return false;
+        }
+        self.value_input = "1".to_owned();
+        self.set_scale_session(ScaleDrag {
+            source_document_id: snapshot.document_id(),
+            source_revision: snapshot.revision_id(),
+            selection,
+            occurrence_paths,
+            group_id,
+            centre_mm,
+            centre_screen,
+            reference_radius_points,
+            axis: self.scale_axis_lock,
+            factor: 1.0,
+        });
+        true
+    }
+
+    fn advance_scale(drag: &mut ScaleDrag, pointer: Pos2) {
+        let factor = f64::from(pointer.distance(drag.centre_screen) / drag.reference_radius_points);
+        if factor.is_finite() {
+            drag.factor = factor.clamp(0.01, 1_000.0);
+        }
+    }
+
+    fn commit_scale_drag(&mut self, drag: &ScaleDrag) -> bool {
+        if !self.scale_preview_is_current(drag) {
+            self.digest = self.catalog.text("error-preview-stale");
+            return false;
+        }
+        if !scale_is_meaningful(drag.factor) {
+            return false;
+        }
+        let Some(plan) = self.scale_transform_plan(drag) else {
+            return false;
+        };
+        let Ok(target) = self.commit_transform_plan(plan) else {
+            return false;
+        };
+        let selection = match target {
+            TransformTarget::Occurrences(paths) => {
+                self.selection.select_exact(drag.selection.clone(), false);
+                self.selection.occurrences = paths.clone();
+                CorrectionSelection::Occurrences {
+                    occurrence_ids: paths.iter().map(InstancePath::root_occurrence).collect(),
+                    primary_occurrence_id: None,
+                }
+            }
+            TransformTarget::Group(group_id) => {
+                self.select_group(group_id);
+                CorrectionSelection::Group(group_id)
+            }
+        };
+        self.record_transform_correction(
+            selection,
+            CorrectionOperation::Scale(ScaleCorrection {
+                centre_mm: drag.centre_mm,
+                axis: drag.axis,
+            }),
+        );
+        self.status_key = "status-object-scaled";
+        self.digest = self.catalog.format(
+            "digest-scale-committed",
+            &BTreeMap::from([
+                ("factor", format_scale_factor(drag.factor)),
+                (
+                    "axis",
+                    self.catalog
+                        .text(drag.axis.map_or("axis-name-uniform", axis_name_key)),
+                ),
+            ]),
+        );
+        true
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn scale_preview_factor(&self) -> Option<f64> {
+        self.scale_session()
+            .filter(|drag| self.scale_preview_is_current(drag))
+            .map(|drag| drag.factor)
+    }
+
     /// The Rotate gesture currently driving a preview, if any.
     fn active_rotate_gesture(&self) -> Option<&RotateDrag> {
-        self.rotate_drag
-            .as_ref()
-            .or(self.rotate_anchor.as_ref())
+        self.rotate_session()
+            .map(|(drag, _)| drag)
             .filter(|drag| self.rotate_preview_is_current(drag))
     }
 
@@ -28135,19 +29746,22 @@ impl KetchupApp {
                 instance_path.root_occurrence(),
             )
         } else {
-            drag.selection.instance_path == *instance_path
+            drag.occurrence_paths.contains(instance_path)
         }
     }
 
     fn rotate_preview_transform_overrides(&self) -> BTreeMap<InstancePath, Transform> {
-        self.rotation_preview_transforms(false)
+        self.active_rotate_gesture()
+            .and_then(|drag| self.rotate_transform_plan(drag))
+            .map(|plan| plan.preview_overrides().clone())
+            .unwrap_or_default()
     }
 
     fn rotation_preview_transforms(&self, copy: bool) -> BTreeMap<InstancePath, Transform> {
-        let Some(drag) = self
-            .active_rotate_gesture()
-            .filter(|drag| drag.copy == copy)
-        else {
+        if !copy {
+            return self.rotate_preview_transform_overrides();
+        }
+        let Some(drag) = self.active_rotate_gesture().filter(|drag| drag.copy) else {
             return BTreeMap::new();
         };
         let Ok(rotation) = world_rotation_transform(drag.centre_mm, drag.axis, drag.angle_degrees)
@@ -28176,6 +29790,7 @@ impl KetchupApp {
         let mut overrides = self.assembly_preview_transform_overrides();
         overrides.extend(self.move_preview_transform_overrides());
         overrides.extend(self.rotate_preview_transform_overrides());
+        overrides.extend(self.scale_preview_transform_overrides());
         overrides
     }
 
@@ -28349,6 +29964,7 @@ impl KetchupApp {
         }
         let snapshot = self.document.current();
         let group_id = self.selection.selected_group;
+        let occurrence_paths = self.selected_instance_paths();
         let axis = self.rotate_axis_lock.unwrap_or(Axis::Z);
         let applies: Box<dyn Fn(&InstancePath) -> bool> = match group_id {
             Some(group_id) => {
@@ -28358,8 +29974,8 @@ impl KetchupApp {
                 })
             }
             None => {
-                let target = selection.instance_path.clone();
-                Box::new(move |path: &InstancePath| *path == target)
+                let occurrence_paths = occurrence_paths.clone();
+                Box::new(move |path: &InstancePath| occurrence_paths.contains(path))
             }
         };
         let centre_mm = self
@@ -28383,17 +29999,21 @@ impl KetchupApp {
         };
         let reference_mm = None;
         self.value_input = "0".to_owned();
-        self.rotate_drag = Some(RotateDrag {
-            source_document_id: snapshot.document_id(),
-            source_revision: snapshot.revision_id(),
-            selection,
-            group_id,
-            centre_mm,
-            axis,
-            reference_mm,
-            angle_degrees: 0.0,
-            copy: group_id.is_none() && copy,
-        });
+        self.set_rotate_session(
+            ToolSessionPhase::Gesture,
+            RotateDrag {
+                source_document_id: snapshot.document_id(),
+                source_revision: snapshot.revision_id(),
+                selection,
+                occurrence_paths,
+                group_id,
+                centre_mm,
+                axis,
+                reference_mm,
+                angle_degrees: 0.0,
+                copy: group_id.is_none() && (copy || self.rotate_copy_mode),
+            },
+        );
         true
     }
 
@@ -28402,14 +30022,20 @@ impl KetchupApp {
     /// A live gesture keeps its centre but drops its starting arm, so the next
     /// click establishes one in the new plane without a hover-induced turn.
     fn set_rotate_axis_lock(&mut self, axis: Option<Axis>) {
+        if matches!(
+            self.correction_session
+                .as_ref()
+                .map(|session| &session.operation),
+            Some(CorrectionOperation::Rotate(_))
+        ) {
+            self.end_transform_correction();
+        }
         self.rotate_axis_lock = axis;
         let resolved = axis.unwrap_or(Axis::Z);
-        for slot in [&mut self.rotate_drag, &mut self.rotate_anchor] {
-            if let Some(drag) = slot.as_mut() {
-                drag.axis = resolved;
-                drag.reference_mm = None;
-                drag.angle_degrees = 0.0;
-            }
+        if let Some(drag) = self.rotate_session_mut() {
+            drag.axis = resolved;
+            drag.reference_mm = None;
+            drag.angle_degrees = 0.0;
         }
         self.value_input = "0".to_owned();
         self.digest = self.catalog.format(
@@ -28646,15 +30272,11 @@ impl KetchupApp {
                 .as_ref()
                 .is_some_and(|preview| preview.plan.source.topological_reference.is_none())
             && self.preview_definition_id == Some(item.definition_id);
-        let move_preview = self
-            .move_drag
-            .as_ref()
-            .or(self.move_anchor.as_ref())
-            .is_some_and(|drag| {
-                self.move_preview_is_current(drag)
-                    && drag.profile_target.is_none()
-                    && self.move_drag_applies_to_path(drag, &item.instance_path)
-            });
+        let move_preview = self.move_session().is_some_and(|(drag, _)| {
+            self.move_preview_is_current(drag)
+                && (drag.copy || drag.profile_target.is_none())
+                && self.move_drag_applies_to_path(drag, &item.instance_path)
+        });
 
         let occurrence_preview = self.has_occurrence_operation_preview()
             && item.instance_path.is_root()
@@ -28675,9 +30297,9 @@ impl KetchupApp {
         exact_projection: &ExactInteractionProjection,
     ) -> Vec<RenderBox> {
         let mut boxes = self.active_boxes_for_snapshot(snapshot);
-        if let Some(drag) = self.move_drag.as_ref().or(self.move_anchor.as_ref())
+        if let Some((drag, _)) = self.move_session()
             && self.move_preview_is_current(drag)
-            && drag.profile_target.is_none()
+            && (drag.copy || drag.profile_target.is_none())
         {
             let mut copies = Vec::new();
             for item in boxes
@@ -29761,6 +31383,34 @@ impl KetchupApp {
                 return true;
             }
         }
+        if self.active_tool == ActiveTool::Scale {
+            let Some(factor) = self
+                .value_input
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|factor| factor.is_finite() && *factor > 0.0 && *factor <= 1_000.0)
+            else {
+                self.digest = self.catalog.text("digest-scale-invalid-factor");
+                return false;
+            };
+            if let Some(mut drag) = self.take_scale_session() {
+                drag.factor = factor;
+                return self.commit_scale_drag(&drag);
+            }
+            if self.current_scale_correction().is_some() {
+                if self.correct_last_scale(factor) {
+                    return true;
+                }
+                self.end_transform_correction();
+                return false;
+            }
+            if !scale_is_meaningful(factor) {
+                self.digest = self.catalog.text("digest-scale-invalid-factor");
+                return false;
+            }
+            return self.scale_selected(factor);
+        }
         if self.active_tool == ActiveTool::Rotate {
             let Some(angle_degrees) =
                 parse_angle_degrees(&self.value_input).filter(|angle| angle.abs() <= 360.0)
@@ -29770,10 +31420,7 @@ impl KetchupApp {
             };
             // With no gesture in flight the value box edits the turn that just
             // happened rather than adding a second one.
-            if self.rotate_drag.is_none()
-                && self.rotate_anchor.is_none()
-                && self.correct_last_rotation(angle_degrees)
-            {
+            if self.rotate_session().is_none() && self.correct_last_rotation(angle_degrees) {
                 return true;
             }
             if !rotation_is_meaningful(angle_degrees) {
@@ -29782,15 +31429,7 @@ impl KetchupApp {
             }
             // A gesture in flight already knows its centre and axis; typing an
             // angle replaces the one read from the pointer.
-            if let Some(mut drag) = self
-                .rotate_drag
-                .take()
-                .or_else(|| self.rotate_anchor.take())
-            {
-                if !self.rotate_preview_is_current(&drag) {
-                    self.digest = self.catalog.text("error-preview-stale");
-                    return false;
-                }
+            if let Some(mut drag) = self.take_rotate_session(None) {
                 drag.angle_degrees = angle_degrees;
                 return self.commit_rotate_drag(&drag);
             }
@@ -29838,7 +31477,7 @@ impl KetchupApp {
             self.push_pull_distance_input = self.value_input.clone();
             if self.start_preview_for(planning) {
                 if self.has_smart_push_pull_chooser() && !self.confirm_unique_profile_cut_choice() {
-                    return true;
+                    return self.has_smart_push_pull_chooser();
                 }
                 if self.confirm_push_pull_preview() {
                     self.digest = self.catalog.format(
@@ -29854,24 +31493,34 @@ impl KetchupApp {
             }
         }
         if self.active_tool == ActiveTool::Move {
+            let value = self.value_input.trim();
+            if value.starts_with(['x', 'X', '*', '×', '/']) {
+                let Some((mode, count)) = parse_move_copy_array(value) else {
+                    self.digest = self.catalog.text("digest-copy-array-invalid");
+                    return false;
+                };
+                if self.apply_current_move_copy_array(mode, count) {
+                    return true;
+                }
+                self.digest = self.catalog.text("digest-copy-array-unavailable");
+                return false;
+            }
             // A pinned axis turns a plain number into travel along that axis,
             // which is how a part gets set down exactly 25 mm higher.
-            let typed = parse_move_vector(&self.value_input).or_else(|| {
+            let exact_vector = parse_move_vector(&self.value_input);
+            let typed = exact_vector.or_else(|| {
                 let axis = self.move_axis_lock?;
                 let distance = parse_distance_mm(&self.value_input)?;
                 (distance.abs() >= 0.01).then(|| axis_direction(axis) * distance)
             });
             // A gesture in flight already knows its target and its copy mode;
             // typing a value replaces the one the pointer is showing.
-            if let Some(delta_mm) = typed
-                && let Some(mut drag) = self.move_drag.take().or_else(|| self.move_anchor.take())
+            if let Some(delta_mm) = typed.filter(|delta_mm| vector_length(*delta_mm) > 0.0)
+                && let Some(mut drag) = self.take_move_session(None)
             {
-                if !self.move_preview_is_current(&drag) {
-                    self.digest = self.catalog.text("error-preview-stale");
-                    return false;
-                }
                 drag.delta_mm = delta_mm;
                 if self.commit_move_drag(&drag) {
+                    self.set_move_vector_correction_enabled(exact_vector.is_some());
                     self.digest = self.catalog.format(
                         "digest-exact-move-applied",
                         &BTreeMap::from([("value", format_vector_mm(delta_mm))]),
@@ -29881,7 +31530,35 @@ impl KetchupApp {
                 return false;
             }
             if let Some(delta_mm) = typed {
+                if self.current_move_copy_correction().is_some() {
+                    if self.correct_move_copy_delta(delta_mm) {
+                        self.digest = self.catalog.format(
+                            "digest-exact-move-applied",
+                            &BTreeMap::from([("value", format_vector_mm(delta_mm))]),
+                        );
+                        return true;
+                    }
+                    self.end_transform_correction();
+                }
+                let previous = self
+                    .current_move_correction()
+                    .filter(|(_, operation)| operation.accepts_vector_correction);
+                if self.correction_session.is_some() && previous.is_none() {
+                    self.end_transform_correction();
+                }
+                if let Some((selection, previous)) = previous {
+                    if self.correct_move_delta(selection, previous, delta_mm, true) {
+                        self.digest = self.catalog.format(
+                            "digest-exact-move-applied",
+                            &BTreeMap::from([("value", format_vector_mm(delta_mm))]),
+                        );
+                        return true;
+                    }
+                    self.end_transform_correction();
+                    return false;
+                }
                 if self.move_selected(delta_mm) {
+                    self.set_move_vector_correction_enabled(exact_vector.is_some());
                     self.digest = self.catalog.format(
                         "digest-exact-move-applied",
                         &BTreeMap::from([("value", format_vector_mm(delta_mm))]),
@@ -29889,7 +31566,26 @@ impl KetchupApp {
                     return true;
                 }
             } else if let Some(distance_mm) = parse_distance_mm(&self.value_input) {
-                if let Some(previous) = self.last_move {
+                if let Some((_, previous)) = self.current_move_copy_correction() {
+                    let previous_distance_mm = vector_length(previous.delta_mm);
+                    if previous_distance_mm > 0.0
+                        && self.correct_move_copy_delta(
+                            previous.delta_mm * (distance_mm / previous_distance_mm),
+                        )
+                    {
+                        self.digest = self.catalog.format(
+                            "digest-exact-move-applied",
+                            &BTreeMap::from([("value", format_signed_mm(distance_mm))]),
+                        );
+                        return true;
+                    }
+                    self.end_transform_correction();
+                }
+                let previous = self.current_move_correction();
+                if self.correction_session.is_some() && previous.is_none() {
+                    self.end_transform_correction();
+                }
+                if let Some((selection, previous)) = previous {
                     let correction_mm = distance_mm - previous.applied_distance_mm;
                     if correction_mm.abs() < 0.01 {
                         self.digest = self.catalog.format(
@@ -29898,34 +31594,20 @@ impl KetchupApp {
                         );
                         return true;
                     }
-                    let snapshot = self.document.current();
-                    let Some(occurrence) = snapshot.occurrence(previous.occurrence_id) else {
-                        self.last_move = None;
-                        return false;
-                    };
-                    let selection = SelectionId {
-                        definition_id: occurrence.definition_id(),
-                        instance_path: InstancePath::root(previous.occurrence_id),
-                        element: ElementId::Face {
-                            axis: Axis::Z,
-                            side: Side::Maximum,
-                        },
-                    };
-                    if self.translate_occurrence(
-                        &selection,
-                        previous.direction * correction_mm,
+                    if self.correct_move_delta(
+                        selection,
+                        previous.clone(),
+                        previous.direction * distance_mm,
                         false,
                     ) {
-                        self.last_move = Some(LastMove {
-                            applied_distance_mm: distance_mm,
-                            ..previous
-                        });
                         self.digest = self.catalog.format(
                             "digest-exact-move-applied",
                             &BTreeMap::from([("value", format_signed_mm(distance_mm))]),
                         );
                         return true;
                     }
+                    self.end_transform_correction();
+                    return false;
                 } else if self.move_selected(Vec3::new(distance_mm, 0.0, 0.0)) {
                     self.digest = self.catalog.format(
                         "digest-exact-move-applied",
@@ -29958,6 +31640,7 @@ impl KetchupApp {
             }
             ActiveTool::Pocket => "value-label-width-depth",
             ActiveTool::Rotate => "value-label-angle",
+            ActiveTool::Scale => "value-label-scale-factor",
             ActiveTool::PushPull | ActiveTool::Move | ActiveTool::Measure => "value-label-distance",
             _ => "value-label-dimensions",
         }
@@ -30506,7 +32189,7 @@ impl KetchupApp {
         {
             self.face_workflow.set_xray_preview(false);
             self.push_pull_drag = None;
-            self.move_drag = None;
+            self.take_move_session(Some(ToolSessionPhase::Gesture));
             if self.active_tool == ActiveTool::ZoomWindow {
                 self.zoom_window_start = Some(pointer);
                 self.zoom_window_cursor = Some(pointer);
@@ -30602,32 +32285,41 @@ impl KetchupApp {
                     })
                     .map(|snap| snap.reference.clone())
                     .or_else(|| self.hovered.clone());
-                let topological = target.as_ref().and_then(|selection| {
-                    self.topological_selection_at_screen(pointer, response.rect, selection)
-                });
-                match (target, topological) {
-                    (Some(target), Some(topological))
-                        if !additive
-                            || self.selection.occurrences.is_empty()
-                            || !self.selection.topological.is_empty() =>
-                    {
-                        let same_topological_scope = self
-                            .selection
-                            .topological
-                            .first()
-                            .is_some_and(|(current, _)| {
-                                current.definition_id == target.definition_id
-                                    && current.instance_path == target.instance_path
-                            });
-                        if !self
-                            .selection
-                            .select_topological(target.clone(), topological, additive)
-                            && !same_topological_scope
+                if target.is_none() {
+                    self.selection_window = Some(SelectionWindowDrag {
+                        start: pointer,
+                        cursor: pointer,
+                        additive,
+                    });
+                } else {
+                    let topological = target.as_ref().and_then(|selection| {
+                        self.topological_selection_at_screen(pointer, response.rect, selection)
+                    });
+                    match (target, topological) {
+                        (Some(target), Some(topological))
+                            if !additive
+                                || self.selection.occurrences.is_empty()
+                                || !self.selection.topological.is_empty() =>
                         {
-                            self.select_from_viewport(Some(target), additive);
+                            let same_topological_scope = self
+                                .selection
+                                .topological
+                                .first()
+                                .is_some_and(|(current, _)| {
+                                    current.definition_id == target.definition_id
+                                        && current.instance_path == target.instance_path
+                                });
+                            if !self.selection.select_topological(
+                                target.clone(),
+                                topological,
+                                additive,
+                            ) && !same_topological_scope
+                            {
+                                self.select_from_viewport(Some(target), additive);
+                            }
                         }
+                        (target, _) => self.select_from_viewport(target, additive),
                     }
-                    (target, _) => self.select_from_viewport(target, additive),
                 }
             } else if matches!(
                 self.active_tool,
@@ -30685,10 +32377,17 @@ impl KetchupApp {
                     }
                 }
             } else if self.active_tool == ActiveTool::Move {
-                if let Some(mut anchor) = self.move_anchor.take() {
+                if let Some(mut anchor) = self.take_move_session(Some(ToolSessionPhase::Anchor)) {
                     if !self.move_preview_is_current(&anchor) {
-                        self.digest = self.catalog.text("error-preview-stale");
+                        self.commit_move_drag(&anchor);
                     } else {
+                        if TransformInputInterpreter::interpret_pointer_copy(
+                            ui.input(|input| input.modifiers.command),
+                        ) == Some(TransformInputEvent::CopyRequested)
+                        {
+                            anchor.copy = anchor.group_id.is_none();
+                            self.move_copy_mode = anchor.copy;
+                        }
                         self.advance_move(
                             &mut anchor,
                             pointer,
@@ -30698,20 +32397,30 @@ impl KetchupApp {
                         if vector_length(anchor.delta_mm) >= 0.01 {
                             self.commit_move_drag(&anchor);
                         } else {
-                            self.move_anchor = Some(anchor);
+                            self.set_move_session(ToolSessionPhase::Anchor, anchor);
                         }
                     }
                 } else {
+                    let copy_requested = TransformInputInterpreter::interpret_pointer_copy(
+                        ui.input(|input| input.modifiers.command),
+                    ) == Some(TransformInputEvent::CopyRequested);
                     self.begin_move_drag_at(
                         pointer,
                         response.rect,
-                        ui.input(|input| input.modifiers.command),
+                        self.move_copy_mode || copy_requested,
                     );
                 }
             } else if self.active_tool == ActiveTool::Rotate {
-                if let Some(mut anchor) = self.rotate_anchor.take() {
+                if let Some(mut anchor) = self.take_rotate_session(Some(ToolSessionPhase::Anchor)) {
+                    if TransformInputInterpreter::interpret_pointer_copy(
+                        ui.input(|input| input.modifiers.command),
+                    ) == Some(TransformInputEvent::CopyRequested)
+                    {
+                        anchor.copy = anchor.group_id.is_none();
+                        self.rotate_copy_mode = anchor.copy;
+                    }
                     if !self.rotate_preview_is_current(&anchor) {
-                        self.digest = self.catalog.text("error-preview-stale");
+                        self.commit_rotate_drag(&anchor);
                     } else if anchor.reference_mm.is_none() {
                         anchor.reference_mm = self
                             .screen_to_rotation_plane(
@@ -30722,7 +32431,7 @@ impl KetchupApp {
                             )
                             .map(|point| point - anchor.centre_mm)
                             .filter(|arm| vector_length(*arm) >= ROTATION_MIN_ARM_MM);
-                        self.rotate_drag = Some(anchor);
+                        self.set_rotate_session(ToolSessionPhase::Gesture, anchor);
                     } else {
                         self.advance_rotation(
                             &mut anchor,
@@ -30733,16 +32442,17 @@ impl KetchupApp {
                         if rotation_is_meaningful(anchor.angle_degrees) {
                             self.commit_rotate_drag(&anchor);
                         } else {
-                            self.rotate_anchor = Some(anchor);
+                            self.set_rotate_session(ToolSessionPhase::Anchor, anchor);
                         }
                     }
                 } else {
-                    self.begin_rotate_drag_at(
-                        pointer,
-                        response.rect,
+                    let copy_requested = TransformInputInterpreter::interpret_pointer_copy(
                         ui.input(|input| input.modifiers.command),
-                    );
+                    ) == Some(TransformInputEvent::CopyRequested);
+                    self.begin_rotate_drag_at(pointer, response.rect, copy_requested);
                 }
+            } else if self.active_tool == ActiveTool::Scale {
+                self.begin_scale_drag_at(pointer, response.rect);
             } else if self.active_tool == ActiveTool::Measure {
                 let plane_z = self.measure_anchor().map_or_else(
                     || self.rectangle_plane_z(pointer, response.rect),
@@ -30764,8 +32474,9 @@ impl KetchupApp {
         }
 
         if self.active_tool == ActiveTool::Move
-            && self.move_drag.is_none()
-            && let Some(mut anchor) = self.move_anchor.clone()
+            && let Some(mut anchor) = self
+                .move_session()
+                .and_then(|(drag, phase)| (phase == ToolSessionPhase::Anchor).then(|| drag.clone()))
             && self.move_preview_is_current(&anchor)
             && let Some(pointer) = response.hover_pos()
         {
@@ -30778,7 +32489,7 @@ impl KetchupApp {
             let distance = vector_length(anchor.delta_mm);
             let delta_mm = anchor.delta_mm;
             let copy = anchor.copy;
-            self.move_anchor = Some(anchor);
+            self.set_move_session(ToolSessionPhase::Anchor, anchor);
             // While an anchor waits, the pointer only proposes a value. Typing
             // one is the stronger statement, so the live reading must not
             // overwrite what is being entered.
@@ -30799,8 +32510,9 @@ impl KetchupApp {
         }
 
         if self.active_tool == ActiveTool::Rotate
-            && self.rotate_drag.is_none()
-            && let Some(mut anchor) = self.rotate_anchor.clone()
+            && let Some(mut anchor) = self
+                .rotate_session()
+                .and_then(|(drag, phase)| (phase == ToolSessionPhase::Anchor).then(|| drag.clone()))
             && self.rotate_preview_is_current(&anchor)
             && let Some(pointer) = response.hover_pos()
         {
@@ -30813,7 +32525,7 @@ impl KetchupApp {
             let angle = anchor.angle_degrees;
             let axis = anchor.axis;
             let copy = anchor.copy;
-            self.rotate_anchor = Some(anchor);
+            self.set_rotate_session(ToolSessionPhase::Anchor, anchor);
             if !self.value_box_is_being_typed_into(ui.ctx()) {
                 self.value_input = format_angle(angle);
             }
@@ -30857,7 +32569,13 @@ impl KetchupApp {
                 self.orbit(pointer_delta);
             }
         } else if response.dragged_by(egui::PointerButton::Primary) {
-            if self.active_tool == ActiveTool::ZoomWindow {
+            if self.active_tool == ActiveTool::Select {
+                if let Some(pointer) = response.interact_pointer_pos()
+                    && let Some(drag) = self.selection_window.as_mut()
+                {
+                    drag.cursor = pointer;
+                }
+            } else if self.active_tool == ActiveTool::ZoomWindow {
                 self.zoom_window_cursor = response.interact_pointer_pos();
             } else if self.active_tool == ActiveTool::Orbit {
                 self.orbit(pointer_delta);
@@ -30873,9 +32591,12 @@ impl KetchupApp {
                         self.sketch_point_at_screen(pointer, response.rect, start.z)
                     };
                 }
-            } else if let (Some(mut drag), Some(pointer)) =
-                (self.move_drag.clone(), response.interact_pointer_pos())
-            {
+            } else if let (Some(mut drag), Some(pointer)) = (
+                self.move_session().and_then(|(drag, phase)| {
+                    (phase == ToolSessionPhase::Gesture).then(|| drag.clone())
+                }),
+                response.interact_pointer_pos(),
+            ) {
                 self.advance_move(
                     &mut drag,
                     pointer,
@@ -30885,7 +32606,7 @@ impl KetchupApp {
                 let distance = vector_length(drag.delta_mm);
                 let delta_mm = drag.delta_mm;
                 let copy = drag.copy;
-                self.move_drag = Some(drag);
+                self.set_move_session(ToolSessionPhase::Gesture, drag);
                 self.value_input = format_height(distance);
                 self.digest = self.catalog.format(
                     if copy {
@@ -30898,9 +32619,12 @@ impl KetchupApp {
                         ("vector", format_vector_mm(delta_mm)),
                     ]),
                 );
-            } else if let (Some(mut drag), Some(pointer)) =
-                (self.rotate_drag.clone(), response.interact_pointer_pos())
-            {
+            } else if let (Some(mut drag), Some(pointer)) = (
+                self.rotate_session().and_then(|(drag, phase)| {
+                    (phase == ToolSessionPhase::Gesture).then(|| drag.clone())
+                }),
+                response.interact_pointer_pos(),
+            ) {
                 self.advance_rotation(
                     &mut drag,
                     pointer,
@@ -30910,7 +32634,7 @@ impl KetchupApp {
                 let angle = drag.angle_degrees;
                 let axis = drag.axis;
                 let copy = drag.copy;
-                self.rotate_drag = Some(drag);
+                self.set_rotate_session(ToolSessionPhase::Gesture, drag);
                 self.value_input = format_angle(angle);
                 self.digest = self.catalog.format(
                     if copy {
@@ -30921,6 +32645,26 @@ impl KetchupApp {
                     &BTreeMap::from([
                         ("angle", format_angle(angle)),
                         ("axis", self.catalog.text(axis_name_key(axis))),
+                    ]),
+                );
+            } else if let (Some(mut drag), Some(pointer)) = (
+                self.scale_session().cloned(),
+                response.interact_pointer_pos(),
+            ) {
+                Self::advance_scale(&mut drag, pointer);
+                let factor = drag.factor;
+                let axis = drag.axis;
+                self.set_scale_session(drag);
+                self.value_input = format_scale_factor(factor);
+                self.digest = self.catalog.format(
+                    "digest-scale-live",
+                    &BTreeMap::from([
+                        ("factor", format_scale_factor(factor)),
+                        (
+                            "axis",
+                            self.catalog
+                                .text(axis.map_or("axis-name-uniform", axis_name_key)),
+                        ),
                     ]),
                 );
             } else if self.update_bottle_direct_preview(&response) {
@@ -30939,7 +32683,11 @@ impl KetchupApp {
         if response.drag_stopped_by(egui::PointerButton::Primary)
             || (response.hovered() && primary_release)
         {
-            if self.active_tool == ActiveTool::ZoomWindow {
+            if self.active_tool == ActiveTool::Select && self.selection_window.is_some() {
+                if let Some(drag) = self.selection_window.take() {
+                    self.complete_selection_window(drag, response.rect);
+                }
+            } else if self.active_tool == ActiveTool::ZoomWindow {
                 let start = self.zoom_window_start.take();
                 let end = self.zoom_window_cursor.take();
                 if let (Some(start), Some(end)) = (start, end)
@@ -30948,24 +32696,33 @@ impl KetchupApp {
                     self.active_tool = ActiveTool::Select;
                     self.status_key = "status-ready";
                 }
-            } else if let Some(drag) = self.move_drag.take() {
+            } else if let Some(mut drag) = self.take_move_session(Some(ToolSessionPhase::Gesture)) {
+                if TransformInputInterpreter::interpret_pointer_copy(
+                    ui.input(|input| input.modifiers.command),
+                ) == Some(TransformInputEvent::CopyRequested)
+                {
+                    drag.copy = drag.group_id.is_none();
+                    self.move_copy_mode = drag.copy;
+                }
                 if !self.move_preview_is_current(&drag) {
-                    self.digest = self.catalog.text("error-preview-stale");
+                    self.commit_move_drag(&drag);
                 } else if vector_length(drag.delta_mm) >= 0.01 {
                     self.commit_move_drag(&drag);
                 } else {
-                    self.move_anchor = Some(drag);
+                    self.set_move_session(ToolSessionPhase::Anchor, drag);
                     self.digest = self.catalog.text("digest-move-anchor-set");
                 }
-            } else if let Some(drag) = self.rotate_drag.take() {
+            } else if let Some(drag) = self.take_rotate_session(Some(ToolSessionPhase::Gesture)) {
                 if !self.rotate_preview_is_current(&drag) {
-                    self.digest = self.catalog.text("error-preview-stale");
+                    self.commit_rotate_drag(&drag);
                 } else if rotation_is_meaningful(drag.angle_degrees) {
                     self.commit_rotate_drag(&drag);
                 } else {
-                    self.rotate_anchor = Some(drag);
+                    self.set_rotate_session(ToolSessionPhase::Anchor, drag);
                     self.digest = self.catalog.text("digest-rotate-anchor-set");
                 }
+            } else if let Some(drag) = self.take_scale_session() {
+                self.commit_scale_drag(&drag);
             } else if self.commit_bottle_direct_edit() {
                 // The named-product direct edit was committed above.
             } else if let Some(drag) = self.push_pull_drag.take() {
@@ -31714,6 +33471,40 @@ impl KetchupApp {
                 egui::StrokeKind::Inside,
             );
         }
+        if let Some(drag) = self
+            .selection_window
+            .filter(|drag| drag.start.distance(drag.cursor) >= 4.0)
+        {
+            let window = Rect::from_two_pos(drag.start, drag.cursor).intersect(response.rect);
+            let crossing = drag.cursor.x < drag.start.x;
+            let color = if crossing {
+                Color32::from_rgb(90, 205, 125)
+            } else {
+                Color32::from_rgb(94, 183, 235)
+            };
+            painter.rect_filled(
+                window,
+                0.0,
+                if crossing {
+                    Color32::from_rgba_unmultiplied(70, 180, 105, 38)
+                } else {
+                    Color32::from_rgba_unmultiplied(65, 147, 214, 36)
+                },
+            );
+            let stroke = Stroke::new(1.5_f32, color);
+            if crossing {
+                for points in [
+                    [window.left_top(), window.right_top()],
+                    [window.right_top(), window.right_bottom()],
+                    [window.right_bottom(), window.left_bottom()],
+                    [window.left_bottom(), window.left_top()],
+                ] {
+                    paint_dashed_segment(&painter, points, stroke);
+                }
+            } else {
+                painter.rect_stroke(window, 0.0, stroke, egui::StrokeKind::Inside);
+            }
+        }
 
         self.paint_face_feedback(&painter, faces.iter().chain(&feedback_faces));
         self.paint_projected_selection(&painter, &edges);
@@ -32415,7 +34206,21 @@ impl KetchupApp {
         let pointer_moved = self.hover_pointer != pointer;
         self.hover_pointer = pointer;
         if pointer_moved {
-            self.hover_overlap_index = 0;
+            // A deliberate non-front choice stays attached to that face while
+            // the moving pointer still intersects it; leaving it resets to front.
+            self.hover_overlap_index = if self.hover_overlap_index == 0 {
+                0
+            } else {
+                self.hovered
+                    .as_ref()
+                    .and_then(|chosen| {
+                        current
+                            .as_ref()?
+                            .iter()
+                            .position(|candidate| candidate == chosen)
+                    })
+                    .unwrap_or(0)
+            };
         } else if previous != current {
             // A background recompute can republish the same stack of bodies
             // under an unmoved pointer. Resetting blindly would throw away the
@@ -32681,6 +34486,34 @@ impl KetchupApp {
     }
 
     fn handle_shortcuts(&mut self, context: &egui::Context) {
+        let command_modifier = context.input(|input| input.modifiers.command);
+        let command_chord = context.input(|input| {
+            input.events.iter().any(|event| {
+                matches!(
+                    event,
+                    egui::Event::Key {
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } if modifiers.command
+                ) || matches!(
+                    event,
+                    egui::Event::Copy | egui::Event::Cut | egui::Event::Paste(_)
+                )
+            })
+        });
+        let transform_input_enabled = !context.wants_keyboard_input()
+            && match self.active_tool {
+                ActiveTool::Move => self.move_session().is_some(),
+                ActiveTool::Rotate => self.rotate_session().is_some(),
+                _ => false,
+            };
+        self.interpret_transform_input_for(
+            self.active_tool,
+            transform_input_enabled,
+            command_modifier,
+            command_chord,
+        );
         let alt_pick_through = !context.wants_keyboard_input()
             && context.input(|input| input.modifiers.alt)
             && self
@@ -32801,7 +34634,7 @@ impl KetchupApp {
                         egui::Event::Text(text)
                             if text
                                 .chars()
-                                .all(|character| "0123456789.,-;xX* ".contains(character)) =>
+                                .all(|character| "0123456789.,-;xX*×/ ".contains(character)) =>
                         {
                             Some(text.as_str())
                         }
@@ -32833,6 +34666,7 @@ impl KetchupApp {
             self.active_tool,
             ActiveTool::Rotate
                 | ActiveTool::Move
+                | ActiveTool::Scale
                 | ActiveTool::Line
                 | ActiveTool::Rectangle
                 | ActiveTool::Circle
@@ -32856,6 +34690,7 @@ impl KetchupApp {
                     .then(|| self.value_input.clone());
                 let held = match self.active_tool {
                     ActiveTool::Move => self.move_axis_lock,
+                    ActiveTool::Scale => self.scale_axis_lock,
                     ActiveTool::Line => self.line_axis_lock,
                     _ if self.uses_drawing_plane() => Some(match self.face_workflow_datum() {
                         PrincipalPlane::Xy => Axis::Z,
@@ -32873,6 +34708,7 @@ impl KetchupApp {
                 };
                 match self.active_tool {
                     ActiveTool::Move => self.set_move_axis_lock(axis),
+                    ActiveTool::Scale => self.set_scale_axis_lock(axis),
                     ActiveTool::Line => {
                         self.line_axis_lock = axis;
                         self.digest = self.catalog.format(
@@ -32969,6 +34805,12 @@ impl KetchupApp {
         } else if confirm_loft_preview {
             self.confirm_loft_preview();
         } else if escape {
+            if matches!(
+                self.active_tool,
+                ActiveTool::Move | ActiveTool::Rotate | ActiveTool::Scale
+            ) {
+                self.end_transform_correction();
+            }
             self.face_workflow.set_xray_preview(false);
             #[cfg(feature = "named-product-fixtures")]
             let part_authoring_preview_pending = self.part_authoring_preview_pending();
@@ -33006,10 +34848,7 @@ impl KetchupApp {
                 || self.general_finish_preview.is_some()
                 || self.solid_tool_target.is_some()
                 || self.push_pull_anchor.is_some()
-                || self.move_drag.is_some()
-                || self.move_anchor.is_some()
-                || self.rotate_drag.is_some()
-                || self.rotate_anchor.is_some()
+                || self.tool_session.is_some()
                 || self.sketch_mode
             {
                 self.clear_ephemeral_edit_state();
@@ -33459,6 +35298,7 @@ impl KetchupApp {
                 self.menu_command(ui, AppCommand::PushPull);
                 self.menu_command(ui, AppCommand::Move);
                 self.menu_command(ui, AppCommand::Rotate);
+                self.menu_command(ui, AppCommand::Scale);
                 self.menu_command(ui, AppCommand::Measure);
                 self.menu_command(ui, AppCommand::Orbit);
                 self.menu_command(ui, AppCommand::Pan);
@@ -39496,6 +41336,7 @@ const fn command_icon(id: AppCommand) -> Icon {
         AppCommand::PushPull => Icon::PushPull,
         AppCommand::Move => Icon::Move,
         AppCommand::Rotate => Icon::Orbit,
+        AppCommand::Scale => Icon::Rectangle,
         AppCommand::Measure => Icon::Tape,
         AppCommand::Orbit => Icon::Orbit,
         AppCommand::Pan => Icon::Pan,
@@ -39670,19 +41511,6 @@ const fn axis_direction(axis: Axis) -> Vec3 {
     }
 }
 
-/// Conjugate the world-space edit through the complete parent chain before
-/// storing it in a group's or occurrence's parent-local transform.
-fn world_edit_in_parent_space(
-    snapshot: &Snapshot,
-    parent: Option<GroupId>,
-    local: Transform,
-    world_edit: Transform,
-) -> Option<Transform> {
-    let parent_world = parent.map_or(Some(Transform::identity()), |id| {
-        snapshot.world_transform_for_group(id)
-    })?;
-    rotation_in_parent_space(world_edit, parent_world, local)
-}
 fn translated_in_parent_space(
     snapshot: &Snapshot,
     parent: Option<GroupId>,
@@ -39702,6 +41530,52 @@ fn world_rotation_transform(
     angle_degrees: f64,
 ) -> Result<Transform, ()> {
     world_axis_rotation_transform(centre_mm, axis_direction(axis), angle_degrees).map_err(|_| ())
+}
+
+fn world_scale_transform(
+    centre_mm: Vec3,
+    factor: f64,
+    axis: Option<Axis>,
+) -> Result<Transform, ()> {
+    if !factor.is_finite() || factor <= 0.0 || factor > 1_000.0 {
+        return Err(());
+    }
+    let [scale_x, scale_y, scale_z] = match axis {
+        Some(Axis::X) => [factor, 1.0, 1.0],
+        Some(Axis::Y) => [1.0, factor, 1.0],
+        Some(Axis::Z) => [1.0, 1.0, factor],
+        None => [factor; 3],
+    };
+    Transform::from_matrix([
+        scale_x,
+        0.0,
+        0.0,
+        centre_mm.x * (1.0 - scale_x),
+        0.0,
+        scale_y,
+        0.0,
+        centre_mm.y * (1.0 - scale_y),
+        0.0,
+        0.0,
+        scale_z,
+        centre_mm.z * (1.0 - scale_z),
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ])
+    .map_err(|_| ())
+}
+
+fn scale_is_meaningful(factor: f64) -> bool {
+    factor.is_finite() && factor > 0.0 && factor <= 1_000.0 && (factor - 1.0).abs() >= 1.0e-4
+}
+
+fn format_scale_factor(factor: f64) -> String {
+    format!("{factor:.3}")
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_owned()
 }
 
 /// The turn from `reference` to `current` about `axis`, both measured from the
@@ -41212,6 +43086,24 @@ fn continuous_move_delta(start: Vec3, end: Vec3, constrain_axis: bool) -> Vec3 {
     delta
 }
 
+fn parse_move_copy_array(input: &str) -> Option<(MoveCopyArrayMode, usize)> {
+    let trimmed = input.trim();
+    let (mode, count) = if let Some(count) = trimmed
+        .strip_prefix('x')
+        .or_else(|| trimmed.strip_prefix('X'))
+        .or_else(|| trimmed.strip_prefix('*'))
+        .or_else(|| trimmed.strip_prefix('×'))
+    {
+        (MoveCopyArrayMode::Multiply, count)
+    } else {
+        (MoveCopyArrayMode::Divide, trimmed.strip_prefix('/')?)
+    };
+    let count = count.trim().parse::<usize>().ok()?;
+    (1..=MAX_PATTERN_COUNT)
+        .contains(&count)
+        .then_some((mode, count))
+}
+
 fn parse_move_vector(input: &str) -> Option<Vec3> {
     let trimmed = input.trim();
     let numeric = trimmed
@@ -41230,11 +43122,7 @@ fn parse_move_vector(input: &str) -> Option<Vec3> {
         [x, y, z] => Vec3::new(*x, *y, *z),
         _ => return None,
     };
-    (vector.x.is_finite()
-        && vector.y.is_finite()
-        && vector.z.is_finite()
-        && vector_length(vector) > 0.0)
-        .then_some(vector)
+    (vector.x.is_finite() && vector.y.is_finite() && vector.z.is_finite()).then_some(vector)
 }
 
 fn format_vector_mm(vector: Vec3) -> String {
@@ -41592,6 +43480,79 @@ fn paint_dashed_segment(painter: &egui::Painter, points: [Pos2; 2], stroke: Stro
         );
         offset += 9.0;
     }
+}
+
+fn screen_cross(first: Pos2, second: Pos2, third: Pos2) -> f32 {
+    let left = second - first;
+    let right = third - first;
+    left.x * right.y - left.y * right.x
+}
+
+fn screen_point_on_segment(point: Pos2, first: Pos2, second: Pos2) -> bool {
+    const EPSILON: f32 = 1.0e-4;
+    screen_cross(first, second, point).abs() <= EPSILON
+        && point.x >= first.x.min(second.x) - EPSILON
+        && point.x <= first.x.max(second.x) + EPSILON
+        && point.y >= first.y.min(second.y) - EPSILON
+        && point.y <= first.y.max(second.y) + EPSILON
+}
+
+fn screen_segments_intersect(first: [Pos2; 2], second: [Pos2; 2]) -> bool {
+    let [a, b] = first;
+    let [c, d] = second;
+    let ab_c = screen_cross(a, b, c);
+    let ab_d = screen_cross(a, b, d);
+    let cd_a = screen_cross(c, d, a);
+    let cd_b = screen_cross(c, d, b);
+    (ab_c.signum() != ab_d.signum() && cd_a.signum() != cd_b.signum())
+        || screen_point_on_segment(c, a, b)
+        || screen_point_on_segment(d, a, b)
+        || screen_point_on_segment(a, c, d)
+        || screen_point_on_segment(b, c, d)
+}
+
+fn screen_triangle_contains_point(triangle: [Pos2; 3], point: Pos2) -> bool {
+    const EPSILON: f32 = 1.0e-4;
+    let signs = [
+        screen_cross(triangle[0], triangle[1], point),
+        screen_cross(triangle[1], triangle[2], point),
+        screen_cross(triangle[2], triangle[0], point),
+    ];
+    !signs.iter().any(|value| *value < -EPSILON) || !signs.iter().any(|value| *value > EPSILON)
+}
+
+fn triangle_intersects_rect(triangle: [Pos2; 3], rect: Rect) -> bool {
+    if triangle.iter().any(|point| rect.contains(*point)) {
+        return true;
+    }
+    let corners = [
+        rect.left_top(),
+        rect.right_top(),
+        rect.right_bottom(),
+        rect.left_bottom(),
+    ];
+    if corners
+        .iter()
+        .any(|point| screen_triangle_contains_point(triangle, *point))
+    {
+        return true;
+    }
+    let triangle_edges = [
+        [triangle[0], triangle[1]],
+        [triangle[1], triangle[2]],
+        [triangle[2], triangle[0]],
+    ];
+    let rectangle_edges = [
+        [corners[0], corners[1]],
+        [corners[1], corners[2]],
+        [corners[2], corners[3]],
+        [corners[3], corners[0]],
+    ];
+    triangle_edges.into_iter().any(|triangle_edge| {
+        rectangle_edges
+            .into_iter()
+            .any(|rectangle_edge| screen_segments_intersect(triangle_edge, rectangle_edge))
+    })
 }
 
 fn box_corners(width: f64, depth: f64, height: f64) -> [Vec3; 8] {

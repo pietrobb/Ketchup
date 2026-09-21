@@ -87,7 +87,7 @@ fn rotation_preview_does_not_enable_an_extra_bounding_box() {
     let mut harness = shell();
     click(&mut harness, Vec3::new(100.0, 60.0, 20.0));
     let app = harness.state_mut();
-    app.rotate_anchor.as_mut().unwrap().angle_degrees = 37.0;
+    app.rotate_session_mut().unwrap().angle_degrees = 37.0;
     let item = app.active_boxes().into_iter().next().unwrap();
     assert!(
         !app.proxy_preview_is_active(&item),
@@ -200,11 +200,13 @@ fn rotation_rendered_preview_matches_committed_geometry_and_copy() {
             let pivot = Vec3::new(100.0, 60.0, 20.0);
             let rect = app.viewport_rect.unwrap();
             assert!(app.begin_rotate_drag_at(app.project(pivot, rect), rect, copy));
-            app.rotate_drag.as_mut().unwrap().angle_degrees = 37.0;
+            app.rotate_session_mut().unwrap().angle_degrees = 37.0;
             let digest = app.canonical_digest();
             let preview = painted_body_vertices(&mut app, &context);
             assert_eq!(app.canonical_digest(), digest);
-            let drag = app.rotate_drag.take().unwrap();
+            let drag = app
+                .take_rotate_session(Some(ToolSessionPhase::Gesture))
+                .unwrap();
             assert!(app.commit_rotate_drag(&drag));
             app.selection.clear();
             for occurrence in app.document.current().occurrences() {
