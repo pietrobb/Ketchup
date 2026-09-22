@@ -1,6 +1,8 @@
+use ketchup_core::assembly_joint::AssemblyJointKind;
 use ketchup_core::document::{OccurrenceId, Snapshot};
 use ketchup_core::exact_product::ExactResultRegistry;
 use ketchup_core::exact_validation::*;
+use ketchup_core::joinery::project_dowel_joint_contract;
 use ketchup_core::prismatic::TolerancePolicy;
 use ketchup_core::validation::{
     DiagnosticSeverity, EvidenceClass, HostNeutralValidator, VALIDATOR_ROLE_DIMENSION_V1,
@@ -19,8 +21,10 @@ const MAX_STRUCTURAL_SCOPE_DEPENDENCIES: usize = 10_000;
 const MAX_STRUCTURAL_SCOPE_PARAMETERS: usize = 30_000;
 const MAX_STRUCTURAL_CLASSIFICATION_DIMENSIONS: usize = 100;
 const MAX_STRUCTURAL_ROLE_CATEGORIES: usize = 10_000;
-pub const ASSISTANT_VALIDATOR_IDS: [&str; 9] = [
+pub const ASSEMBLY_RETENTION_ROLE_DIMENSION_V1: &str = "ketchup.assembly-retention-role.v1";
+pub const ASSISTANT_VALIDATOR_IDS: [&str; 10] = [
     "collision",
+    "assembly_retention",
     "gravity_support",
     "shelf_deflection",
     "tipping",
@@ -34,10 +38,14 @@ pub const ASSISTANT_VALIDATOR_IDS: [&str; 9] = [
 /// Assistant cannot honestly offer a validator it cannot describe, so this
 /// catalog travels with every validation context and is what the
 /// `list_validators` sidecar tool reads.
-pub const ASSISTANT_VALIDATOR_CATALOG: [(&str, &str); 9] = [
+pub const ASSISTANT_VALIDATOR_CATALOG: [(&str, &str); 10] = [
     (
         "collision",
         "solid bodies that overlap each other instead of touching",
+    ),
+    (
+        "assembly_retention",
+        "declared rigid assembly parts that are not connected into one retained component by verified physical dowels or fixed assembly joints",
     ),
     (
         "gravity_support",
@@ -565,6 +573,357 @@ fn assistant_scaled_orthogonal_source_frame_extents_mm(
                 .source_axis_world_scale(axis)
                 .expect("three source-axis scales are always present")
     }))
+}
+
+pub fn assistant_assembly_retention_report(
+    snapshot: &Snapshot,
+    selected: bool,
+    coverage_complete: bool,
+) -> serde_json::Value {
+    if !selected {
+        return serde_json::json!({
+            "state": "skipped",
+            "complete": false,
+            "applicable_count": 0,
+            "issue_count": 0,
+            "issues_complete": true,
+            "evaluations": [],
+            "issues": [],
+        });
+    }
+
+    let dimensions = snapshot
+        .classification_dimensions()
+        .filter(|dimension| dimension.name() == ASSEMBLY_RETENTION_ROLE_DIMENSION_V1)
+        .collect::<Vec<_>>();
+    let [dimension] = dimensions.as_slice() else {
+        return serde_json::json!({
+            "state": "not_evaluated",
+            "complete": false,
+            "applicable_count": 0,
+            "issue_count": 0,
+            "issues_complete": true,
+            "role_error": if dimensions.is_empty() {
+                "assembly retention role dimension is missing"
+            } else {
+                "assembly retention role dimension is ambiguous"
+            },
+            "evaluations": [],
+            "issues": [],
+        });
+    };
+    let mut category_groups = BTreeMap::new();
+    for category in dimension.categories() {
+        let Some(group) = category.name().strip_prefix("part:") else {
+            continue;
+        };
+        if group.is_empty()
+            || group.len() > 128
+            || !group.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b'/')
+            })
+        {
+            return serde_json::json!({
+                "state": "not_evaluated",
+                "complete": false,
+                "applicable_count": 0,
+                "issue_count": 0,
+                "issues_complete": true,
+                "role_error": "assembly retention category must be part:<group>",
+                "evaluations": [],
+                "issues": [],
+            });
+        }
+        category_groups.insert(category.id(), group.to_owned());
+    }
+
+    let mut groups = BTreeMap::<String, BTreeSet<OccurrenceId>>::new();
+    for occurrence in snapshot.occurrences() {
+        let Some(category_id) = snapshot.occurrence_classification(occurrence.id(), dimension.id())
+        else {
+            continue;
+        };
+        let Some(group) = category_groups.get(&category_id) else {
+            return serde_json::json!({
+                "state": "not_evaluated",
+                "complete": false,
+                "applicable_count": 0,
+                "issue_count": 0,
+                "issues_complete": true,
+                "role_error": "assigned assembly retention category is invalid",
+                "evaluations": [],
+                "issues": [],
+            });
+        };
+        if snapshot.occurrence_effectively_visible(occurrence.id()) == Some(true) {
+            groups
+                .entry(group.clone())
+                .or_default()
+                .insert(occurrence.id());
+        }
+    }
+    let applicable_count = groups.values().map(BTreeSet::len).sum::<usize>();
+    if applicable_count == 0 {
+        return serde_json::json!({
+            "state": "not_evaluated",
+            "complete": false,
+            "applicable_count": 0,
+            "issue_count": 0,
+            "issues_complete": true,
+            "role_error": "no visible occurrence is declared as part:<group>",
+            "evaluations": [],
+            "issues": [],
+        });
+    }
+
+    let group_by_occurrence = groups
+        .iter()
+        .flat_map(|(group, occurrences)| {
+            occurrences
+                .iter()
+                .map(move |occurrence_id| (*occurrence_id, group.clone()))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut adjacency = group_by_occurrence
+        .keys()
+        .map(|occurrence_id| (*occurrence_id, BTreeSet::new()))
+        .collect::<BTreeMap<_, _>>();
+    let mut connections = Vec::new();
+    for joint in snapshot.assembly_joints() {
+        if joint.kind() != AssemblyJointKind::Fixed {
+            continue;
+        }
+        let first = joint.parent_occurrence_id();
+        let second = joint.child_occurrence_id();
+        if group_by_occurrence.get(&first) == group_by_occurrence.get(&second)
+            && group_by_occurrence.contains_key(&first)
+        {
+            adjacency
+                .get_mut(&first)
+                .expect("declared part exists")
+                .insert(second);
+            adjacency
+                .get_mut(&second)
+                .expect("declared part exists")
+                .insert(first);
+            connections.push(serde_json::json!({
+                "type": "fixed_assembly_joint",
+                "joint_id": joint.id().0,
+                "first_occurrence_id": first.0,
+                "second_occurrence_id": second.0,
+                "constrained_translation_directions": ["+X", "-X", "+Y", "-Y", "+Z", "-Z"],
+            }));
+        }
+    }
+
+    let mut physical_dowels = BTreeMap::<(OccurrenceId, OccurrenceId), Vec<(u64, [f64; 3])>>::new();
+    let mut ignored_connections = Vec::new();
+    for joint in snapshot.dowel_joints() {
+        let first = joint.first.instance_path.root_occurrence();
+        let second = joint.second.instance_path.root_occurrence();
+        if group_by_occurrence.get(&first) != group_by_occurrence.get(&second)
+            || !group_by_occurrence.contains_key(&first)
+        {
+            continue;
+        }
+        let pair = if first < second {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        if joint.physical_hole_pairs.is_none() {
+            ignored_connections.push(serde_json::json!({
+                "type": "dowel_joint",
+                "joint_id": joint.id.0,
+                "first_occurrence_id": first.0,
+                "second_occurrence_id": second.0,
+                "reason": "physical_hole_pairs_missing",
+            }));
+            continue;
+        }
+        match project_dowel_joint_contract(snapshot, joint) {
+            Ok(projection)
+                if projection
+                    .pairs
+                    .iter()
+                    .all(|pair| pair.physical_probe_coincidence.is_some()) =>
+            {
+                physical_dowels.entry(pair).or_default().extend(
+                    projection
+                        .pairs
+                        .into_iter()
+                        .map(|pair| (joint.id.0, pair.first.shared_center_world_mm)),
+                );
+            }
+            Ok(_) => ignored_connections.push(serde_json::json!({
+                "type": "dowel_joint",
+                "joint_id": joint.id.0,
+                "first_occurrence_id": first.0,
+                "second_occurrence_id": second.0,
+                "reason": "physical_probe_evidence_missing",
+            })),
+            Err(error) => ignored_connections.push(serde_json::json!({
+                "type": "dowel_joint",
+                "joint_id": joint.id.0,
+                "first_occurrence_id": first.0,
+                "second_occurrence_id": second.0,
+                "reason": "physical_dowel_validation_failed",
+                "detail": error.to_string(),
+            })),
+        }
+    }
+    for ((first, second), dowels) in physical_dowels {
+        let mut distinct_centers = Vec::<[f64; 3]>::new();
+        for (_, center) in &dowels {
+            if distinct_centers.iter().all(|existing| {
+                existing
+                    .iter()
+                    .zip(center)
+                    .map(|(left, right)| (left - right).powi(2))
+                    .sum::<f64>()
+                    .sqrt()
+                    > 1.0e-8
+            }) {
+                distinct_centers.push(*center);
+            }
+        }
+        let joint_ids = dowels
+            .iter()
+            .map(|(joint_id, _)| *joint_id)
+            .collect::<BTreeSet<_>>();
+        if distinct_centers.len() >= 2 {
+            adjacency
+                .get_mut(&first)
+                .expect("declared part exists")
+                .insert(second);
+            adjacency
+                .get_mut(&second)
+                .expect("declared part exists")
+                .insert(first);
+            connections.push(serde_json::json!({
+                "type": "verified_physical_dowels",
+                "joint_ids": joint_ids,
+                "first_occurrence_id": first.0,
+                "second_occurrence_id": second.0,
+                "distinct_dowel_count": distinct_centers.len(),
+                "constrained_translation_directions": ["+X", "-X", "+Y", "-Y", "+Z", "-Z"],
+            }));
+        } else {
+            ignored_connections.push(serde_json::json!({
+                "type": "verified_physical_dowels",
+                "joint_ids": joint_ids,
+                "first_occurrence_id": first.0,
+                "second_occurrence_id": second.0,
+                "distinct_dowel_count": distinct_centers.len(),
+                "reason": "fewer_than_two_distinct_dowels_do_not_prove_rigid_retention",
+            }));
+        }
+    }
+
+    let mut evaluations = Vec::new();
+    let mut issues = Vec::new();
+    for (group, occurrence_ids) in groups {
+        let mut unvisited = occurrence_ids.clone();
+        let mut components = Vec::<BTreeSet<OccurrenceId>>::new();
+        while let Some(start) = unvisited.iter().next().copied() {
+            let mut component = BTreeSet::new();
+            let mut stack = vec![start];
+            while let Some(current) = stack.pop() {
+                if !component.insert(current) {
+                    continue;
+                }
+                unvisited.remove(&current);
+                stack.extend(
+                    adjacency
+                        .get(&current)
+                        .into_iter()
+                        .flatten()
+                        .filter(|neighbor| occurrence_ids.contains(neighbor))
+                        .copied(),
+                );
+            }
+            components.push(component);
+        }
+        components.sort_by(|left, right| {
+            right
+                .len()
+                .cmp(&left.len())
+                .then_with(|| left.iter().next().cmp(&right.iter().next()))
+        });
+        let primary_is_unique = components
+            .get(1)
+            .is_none_or(|second| second.len() < components[0].len());
+        let retained = if primary_is_unique {
+            components[0].clone()
+        } else {
+            BTreeSet::new()
+        };
+        for occurrence_id in occurrence_ids {
+            let is_retained = retained.contains(&occurrence_id);
+            let name = snapshot
+                .occurrence(occurrence_id)
+                .map(|occurrence| occurrence.name())
+                .unwrap_or("unknown");
+            let directions = if is_retained {
+                serde_json::json!({
+                    "+X": "retained", "-X": "retained",
+                    "+Y": "retained", "-Y": "retained",
+                    "+Z": "retained", "-Z": "retained",
+                })
+            } else {
+                serde_json::json!({
+                    "+X": "free", "-X": "free",
+                    "+Y": "free", "-Y": "free",
+                    "+Z": "free", "-Z": "free",
+                })
+            };
+            evaluations.push(serde_json::json!({
+                "occurrence_id": occurrence_id.0,
+                "name": name,
+                "group": group,
+                "connection_count": adjacency.get(&occurrence_id).map_or(0, BTreeSet::len),
+                "translation_probe": directions,
+                "result": if is_retained { "retained" } else { "unretained" },
+            }));
+            if !is_retained {
+                issues.push(serde_json::json!({
+                    "code": "assembly.part_unretained",
+                    "severity": "error",
+                    "occurrence_id": occurrence_id.0,
+                    "name": name,
+                    "group": group,
+                    "free_translation_directions": ["+X", "-X", "+Y", "-Y", "+Z", "-Z"],
+                    "reason": "part is outside the unique largest rigidly connected component",
+                }));
+            }
+        }
+    }
+    let issue_count = issues.len();
+    let complete = coverage_complete && issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES;
+    serde_json::json!({
+        "state": if !coverage_complete {
+            "not_evaluated"
+        } else if issue_count > 0 {
+            "failed"
+        } else {
+            "passed"
+        },
+        "complete": complete,
+        "applicable_count": applicable_count,
+        "issue_count": issue_count,
+        "issues_complete": issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
+        "method": "canonical_rigid_connection_graph_with_six_axis_translation_probe",
+        "accepted_connections": connections,
+        "ignored_connections": ignored_connections,
+        "evaluations": evaluations.into_iter().take(MAX_ASSISTANT_VALIDATION_ISSUES).collect::<Vec<_>>(),
+        "issues": issues.into_iter().take(MAX_ASSISTANT_VALIDATION_ISSUES).collect::<Vec<_>>(),
+        "assumptions": [
+            "only occurrences classified as part:<group> are structural retention participants",
+            "a fixed assembly joint constrains all six rigid-body degrees of freedom",
+            "two or more distinct fully verified physical dowels between the same parts establish rigid retention",
+            "mere face contact or visual overlap is not treated as a connection",
+        ],
+    })
 }
 
 pub fn assistant_shelf_deflection_report(
@@ -2472,6 +2831,15 @@ pub(crate) fn assistant_validation_context_base(
                 "issues_complete": true,
                 "issues": [],
             },
+            "assembly_retention": {
+                "state": "skipped",
+                "complete": false,
+                "applicable_count": 0,
+                "issue_count": 0,
+                "issues_complete": true,
+                "evaluations": [],
+                "issues": [],
+            },
             "gravity_support": {
                 "state": "skipped",
                 "complete": false,
@@ -2644,6 +3012,11 @@ pub(crate) fn assistant_validation_context_base(
             })
         });
     let coverage_complete = occurrence_limit_complete && unavailable.is_empty();
+    let assembly_retention = assistant_assembly_retention_report(
+        snapshot,
+        selection.requested.contains("assembly_retention"),
+        coverage_complete,
+    );
     let shelf_deflection = assistant_shelf_deflection_report(
         &participants,
         &names,
@@ -2782,6 +3155,9 @@ pub(crate) fn assistant_validation_context_base(
     } else {
         ("skipped", 0, 0, 0, Vec::new(), Vec::new())
     };
+    let assembly_retention_state = assembly_retention["state"]
+        .as_str()
+        .unwrap_or("not_evaluated");
     let shelf_state = shelf_deflection["state"]
         .as_str()
         .unwrap_or("not_evaluated");
@@ -2795,6 +3171,8 @@ pub(crate) fn assistant_validation_context_base(
         .as_str()
         .unwrap_or("not_evaluated");
     let static_load_state = static_load["state"].as_str().unwrap_or("not_evaluated");
+    let assembly_retention_issue_count =
+        assembly_retention["issue_count"].as_u64().unwrap_or(0) as usize;
     let shelf_issue_count = shelf_deflection["issue_count"].as_u64().unwrap_or(0) as usize;
     let tipping_issue_count = tipping["issue_count"].as_u64().unwrap_or(0) as usize;
     let anchoring_issue_count = anchoring["issue_count"].as_u64().unwrap_or(0) as usize;
@@ -2807,6 +3185,7 @@ pub(crate) fn assistant_validation_context_base(
     let mut not_evaluated = Vec::new();
     for (validator, validator_state) in [
         ("collision", collision_state),
+        ("assembly_retention", assembly_retention_state),
         ("gravity_support", gravity_state),
         ("shelf_deflection", shelf_state),
         ("tipping", tipping_state),
@@ -2838,6 +3217,7 @@ pub(crate) fn assistant_validation_context_base(
     }
     let state = if [
         collision_state,
+        assembly_retention_state,
         gravity_state,
         shelf_state,
         tipping_state,
@@ -2860,6 +3240,8 @@ pub(crate) fn assistant_validation_context_base(
         && not_evaluated.is_empty()
         && (!selection.requested.contains("collision")
             || collision["complete"].as_bool() == Some(true))
+        && (!selection.requested.contains("assembly_retention")
+            || assembly_retention["complete"].as_bool() == Some(true))
         && (!selection.requested.contains("gravity_support")
             || gravity_issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES)
         && (!selection.requested.contains("shelf_deflection")
@@ -2877,6 +3259,7 @@ pub(crate) fn assistant_validation_context_base(
         && (!selection.requested.contains("static_load")
             || static_load["complete"].as_bool() == Some(true));
     let total_issue_count = issue_count
+        + assembly_retention_issue_count
         + gravity_issue_count
         + shelf_issue_count
         + tipping_issue_count
@@ -2888,6 +3271,7 @@ pub(crate) fn assistant_validation_context_base(
     let mut all_issues = issues.clone();
     all_issues.extend(gravity_issues.iter().cloned());
     for report in [
+        &assembly_retention,
         &shelf_deflection,
         &tipping,
         &anchoring,
@@ -2946,6 +3330,7 @@ pub(crate) fn assistant_validation_context_base(
         "issues_complete": all_issues.len() == total_issue_count,
         "issues": all_issues,
         "collision": collision,
+        "assembly_retention": assembly_retention,
         "gravity_support": {
             "state": gravity_state,
             "complete": selection.requested.contains("gravity_support")

@@ -3,6 +3,7 @@
 //! The loopback request carries no credential. A fresh bridge credential is returned
 //! over that same socket only after the user approves in this exact app instance.
 use super::{KetchupApp, egui, transport};
+use crate::dialogs::HighRiskConfirmationRequest;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -233,6 +234,23 @@ impl KetchupApp {
         self.reject_live_consent();
         self.live_consent_attached = false;
         self.disable_live_bridge();
+    }
+
+    pub(crate) fn confirm_live_open_path(&mut self, path: &Path) -> bool {
+        if !self.live_consent_attached {
+            return true;
+        }
+        let title = self.catalog.text("live-open-consent-title");
+        let description = self.catalog.format(
+            "live-open-consent-description",
+            &std::collections::BTreeMap::from([("path", path.display().to_string())]),
+        );
+        self.dialogs
+            .confirm_high_risk(HighRiskConfirmationRequest {
+                title: &title,
+                description: &description,
+            })
+            .is_some()
     }
 
     fn live_consent_document(&self) -> String {

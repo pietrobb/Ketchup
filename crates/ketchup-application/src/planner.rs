@@ -19,8 +19,9 @@ use ketchup_core::assistant_sidecar::{
     AssistantCadFeatureReference, AssistantCadParameterValueType, AssistantCadPartFeature,
     AssistantCadProgramFeatureOutput, AssistantCadProgramFeatureReference,
     AssistantCadSurfaceBodySource, AssistantCamToolKind, AssistantCamWorkOffset,
-    AssistantInstancePath, AssistantInstancePathStep, AssistantRejectionDiagnostic,
-    AssistantRejectionPhase, validated_spatial_path_segments,
+    AssistantInstancePath, AssistantInstancePathStep, AssistantPanelHole, AssistantPrincipalPlane,
+    AssistantRejectionDiagnostic, AssistantRejectionPhase, AssistantSketchEntity,
+    AssistantStandardDowel, AssistantWorkplaneSpec, validated_spatial_path_segments,
 };
 use ketchup_core::cam::{
     CamCutParameters, CamPlan, CamPlanId, CamSetup, CamStock, CamTool, CamToolKind, CamWorkOffset,
@@ -30,7 +31,7 @@ use ketchup_core::document::{
     CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
     FeatureParameterTarget, InstancePath, InstancePathStep, LocalGroupId, LocalOccurrenceId,
     NodeId, OccurrenceId, ParameterPath, ParameterValueType, ProfileSegment, Snapshot,
-    SpatialPathSegment, Transform,
+    SpatialPathSegment, TagId, Transform,
 };
 use ketchup_core::drawing::{
     DrawingBomBalloon, DrawingBomBalloonId, DrawingError, DrawingMargins, DrawingPageOrientation,
@@ -40,6 +41,10 @@ use ketchup_core::drawing::{
 use ketchup_core::exact_brep_graph::ExactBRepGraph;
 use ketchup_core::exact_product::{
     ExactBodyPackage, ExactPlanarOffsetRequest, ExactResultRegistry,
+};
+use ketchup_core::joinery::{
+    DowelJointContract, DowelJointFace, DowelJointId, DowelPhysicalHolePair, StandardDowel,
+    project_dowel_joint_contract,
 };
 use ketchup_core::sketch::SketchConstraintId;
 use ketchup_core::topology::TopologicalElementKind;
@@ -244,6 +249,182 @@ impl StagedPlanningContext {
             ExactResultRegistry::default()
         }
     }
+}
+
+fn cross(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
+    [
+        left[1] * right[2] - left[2] * right[1],
+        left[2] * right[0] - left[0] * right[2],
+        left[0] * right[1] - left[1] * right[0],
+    ]
+}
+
+fn panel_hole_workplane(hole: &AssistantPanelHole) -> AssistantWorkplaneSpec {
+    let normal = hole.inward_unit_local;
+    let x_axis = if normal[0].abs() > 0.5 {
+        [0.0, 1.0, 0.0]
+    } else if normal[1].abs() > 0.5 {
+        [0.0, 0.0, 1.0]
+    } else {
+        [1.0, 0.0, 0.0]
+    };
+    AssistantWorkplaneSpec::Frame {
+        origin_mm: hole.entry_local_mm,
+        x_axis,
+        y_axis: cross(normal, x_axis),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn plan_panel(
+    name: &str,
+    dimensions_mm: [f64; 3],
+    holes: &[AssistantPanelHole],
+    translation_mm: [f64; 3],
+    rotation: Option<ketchup_core::assistant_sidecar::AssistantCadRotation>,
+    staged: &mut StagedPlanningContext,
+    next_definition: &mut Option<u64>,
+    next_feature: &mut Option<u64>,
+    next_occurrence: &mut Option<u64>,
+    document_target: &str,
+) -> AssistantPlanningResult<(DefinitionId, FeatureId, FeatureId)> {
+    let [width, depth, thickness] = dimensions_mm;
+    let base = AssistantCadEditOperation::CreatePart {
+        name: name.to_owned(),
+        workplane: AssistantWorkplaneSpec::Principal {
+            plane: AssistantPrincipalPlane::Xy,
+        },
+        entities: vec![
+            AssistantSketchEntity::Line {
+                id: 1,
+                start_mm: [0.0, 0.0],
+                end_mm: [width, 0.0],
+            },
+            AssistantSketchEntity::Line {
+                id: 2,
+                start_mm: [width, 0.0],
+                end_mm: [width, depth],
+            },
+            AssistantSketchEntity::Line {
+                id: 3,
+                start_mm: [width, depth],
+                end_mm: [0.0, depth],
+            },
+            AssistantSketchEntity::Line {
+                id: 4,
+                start_mm: [0.0, depth],
+                end_mm: [0.0, 0.0],
+            },
+        ],
+        constraints: Vec::new(),
+        feature: AssistantCadPartFeature::Extrusion {
+            distance_mm: thickness,
+        },
+        translation_mm,
+        rotation,
+    };
+    let base_commands = plan_creation(
+        staged.base_snapshot(),
+        &base,
+        next_definition,
+        next_feature,
+        next_occurrence,
+        document_target,
+    )?;
+    let definition_id = base_commands
+        .iter()
+        .find_map(|command| match command {
+            CanonicalCommand::CreateDefinition { id, .. } => Some(*id),
+            _ => None,
+        })
+        .expect("CreatePart always creates a definition");
+    let base_sketch_id = base_commands
+        .iter()
+        .find_map(|command| match command {
+            CanonicalCommand::CreateFeature {
+                id,
+                kind: FeatureKind::Sketch(_),
+                ..
+            } => Some(*id),
+            _ => None,
+        })
+        .expect("CreatePart always creates a sketch");
+    let mut target_feature_id = base_commands
+        .iter()
+        .find_map(|command| match command {
+            CanonicalCommand::CreateFeature { id, kind, .. }
+                if !matches!(kind, FeatureKind::Workplane(_) | FeatureKind::Sketch(_)) =>
+            {
+                Some(*id)
+            }
+            _ => None,
+        })
+        .expect("CreatePart always creates a body");
+    staged.extend(base_commands);
+
+    for hole in holes {
+        staged.refresh("create_panel", document_target)?;
+        let sketch = AssistantCadEditOperation::CreateSketch {
+            definition_id: definition_id.0,
+            name: format!("{name} hole {}", hole.id),
+            workplane: panel_hole_workplane(hole),
+            entities: vec![AssistantSketchEntity::Circle {
+                id: 1,
+                center_mm: [0.0, 0.0],
+                radius_mm: hole.diameter_mm * 0.5,
+            }],
+            constraints: Vec::new(),
+        };
+        let sketch_commands = plan_creation(
+            staged.staged_snapshot(),
+            &sketch,
+            next_definition,
+            next_feature,
+            next_occurrence,
+            document_target,
+        )?;
+        let sketch_id = sketch_commands
+            .iter()
+            .find_map(|command| match command {
+                CanonicalCommand::CreateFeature {
+                    id,
+                    kind: FeatureKind::Sketch(_),
+                    ..
+                } => Some(*id),
+                _ => None,
+            })
+            .expect("CreateSketch always creates a sketch");
+        staged.extend(sketch_commands);
+        staged.refresh("create_panel", document_target)?;
+        let feature = AssistantCadBodyFeature::Pocket {
+            target_feature_id: target_feature_id.0,
+            profile_feature_id: sketch_id.0,
+            depth_mm: hole.depth_mm,
+        };
+        let kind = plan_feature_kind(
+            staged.staged_snapshot(),
+            &staged.topology(&ExactResultRegistry::default()),
+            definition_id,
+            &feature,
+            "create_panel",
+        )?;
+        let id = next_feature.map(FeatureId).ok_or_else(|| {
+            assistant_canonical_rejection(
+                CanonicalError::IdExhausted,
+                "create_panel",
+                document_target,
+            )
+        })?;
+        *next_feature = id.0.checked_add(1);
+        staged.push(CanonicalCommand::CreateFeature {
+            id,
+            definition_id,
+            name: format!("{name} hole {} pocket", hole.id),
+            kind,
+        });
+        target_feature_id = id;
+    }
+    Ok((definition_id, base_sketch_id, target_feature_id))
 }
 
 fn resolve_assistant_instance_path(
@@ -932,6 +1113,12 @@ pub fn plan_assistant_cad_edit_program(
         .max()
         .unwrap_or(0)
         .checked_add(1);
+    let mut next_dowel_joint = snapshot
+        .dowel_joints()
+        .map(|joint| joint.id.0)
+        .max()
+        .unwrap_or(0)
+        .checked_add(1);
     let mut next_drawing_sheet = snapshot
         .drawing_sheets()
         .map(|sheet| sheet.id().0)
@@ -944,6 +1131,7 @@ pub fn plan_assistant_cad_edit_program(
             AssistantCadEditOperation::CreateSketch { .. } => "create_sketch",
             AssistantCadEditOperation::CreateProgramSketch { .. } => "create_program_sketch",
             AssistantCadEditOperation::CreatePart { .. } => "create_part",
+            AssistantCadEditOperation::CreatePanel { .. } => "create_panel",
             AssistantCadEditOperation::CreateSpatialPath { .. } => "create_spatial_path",
             AssistantCadEditOperation::CreateHelixPath { .. } => "create_helix_path",
             AssistantCadEditOperation::CreateConstructionPoint { .. } => {
@@ -962,6 +1150,7 @@ pub fn plan_assistant_cad_edit_program(
             AssistantCadEditOperation::SetDimension { .. } => "set_dimension",
             AssistantCadEditOperation::SetFeatureParameter { .. } => "set_feature_parameter",
             AssistantCadEditOperation::CreateAssemblyJoint { .. } => "create_assembly_joint",
+            AssistantCadEditOperation::CreateDowelJoint { .. } => "create_dowel_joint",
             AssistantCadEditOperation::SetAssemblyJointPosition { .. } => {
                 "set_assembly_joint_position"
             }
@@ -970,6 +1159,9 @@ pub fn plan_assistant_cad_edit_program(
             AssistantCadEditOperation::Delete { .. } => "delete_occurrence",
             AssistantCadEditOperation::Transform { .. } => "transform_occurrence",
             AssistantCadEditOperation::SetColor { .. } => "set_color",
+            AssistantCadEditOperation::CreateTag { .. } => "create_tag",
+            AssistantCadEditOperation::SetOccurrenceTag { .. } => "set_occurrence_tag",
+            AssistantCadEditOperation::SetTagVisibility { .. } => "set_tag_visibility",
             AssistantCadEditOperation::UpsertClassificationDimension { .. } => {
                 "upsert_classification_dimension"
             }
@@ -1069,6 +1261,7 @@ pub fn plan_assistant_cad_edit_program(
             AssistantCadEditOperation::CreateSketch { .. }
             | AssistantCadEditOperation::CreateProgramSketch { .. }
             | AssistantCadEditOperation::CreatePart { .. }
+            | AssistantCadEditOperation::CreatePanel { .. }
             | AssistantCadEditOperation::CreateSpatialPath { .. }
             | AssistantCadEditOperation::CreateHelixPath { .. }
             | AssistantCadEditOperation::CreateConstructionPoint { .. }
@@ -1083,14 +1276,18 @@ pub fn plan_assistant_cad_edit_program(
             | AssistantCadEditOperation::SetDimension { .. }
             | AssistantCadEditOperation::SetFeatureParameter { .. }
             | AssistantCadEditOperation::CreateAssemblyJoint { .. }
+            | AssistantCadEditOperation::CreateDowelJoint { .. }
             | AssistantCadEditOperation::SetAssemblyJointPosition { .. }
             | AssistantCadEditOperation::CreateDrawing { .. }
             | AssistantCadEditOperation::UpsertCamPlan { .. }
+            | AssistantCadEditOperation::CreateTag { .. }
+            | AssistantCadEditOperation::SetTagVisibility { .. }
             | AssistantCadEditOperation::UpsertClassificationDimension { .. }
             | AssistantCadEditOperation::CreateEvaluatorInput { .. } => None,
             AssistantCadEditOperation::Delete { selector, .. }
             | AssistantCadEditOperation::Transform { selector, .. }
             | AssistantCadEditOperation::SetColor { selector, .. }
+            | AssistantCadEditOperation::SetOccurrenceTag { selector, .. }
             | AssistantCadEditOperation::SetOccurrenceClassification { selector, .. }
             | AssistantCadEditOperation::Copy { selector, .. }
             | AssistantCadEditOperation::LinearPattern { selector, .. }
@@ -1164,6 +1361,39 @@ pub fn plan_assistant_cad_edit_program(
                     }
                 }
                 staged_planning.extend(creation_commands);
+            }
+            AssistantCadEditOperation::CreatePanel {
+                name,
+                dimensions_mm,
+                holes,
+                translation_mm,
+                rotation,
+            } => {
+                let (definition_id, sketch_id, body_feature_id) = plan_panel(
+                    name,
+                    *dimensions_mm,
+                    holes,
+                    *translation_mm,
+                    rotation.clone(),
+                    &mut staged_planning,
+                    &mut next_definition,
+                    &mut next_feature,
+                    &mut next_occurrence,
+                    &document_target,
+                )?;
+                staged_planning.record_output(
+                    operation_index,
+                    StagedProgramOutput::Definition(definition_id),
+                );
+                staged_planning.record_output(
+                    operation_index,
+                    StagedProgramOutput::SketchFeature(sketch_id),
+                );
+                staged_planning.record_output(
+                    operation_index,
+                    StagedProgramOutput::BodyFeature(body_feature_id),
+                );
+                appended_exact_features.push((definition_id, body_feature_id));
             }
             AssistantCadEditOperation::CreateSpatialPath { name, segments } => {
                 let path_segments = validated_spatial_path_segments(segments).map_err(|error| {
@@ -1702,6 +1932,89 @@ pub fn plan_assistant_cad_edit_program(
                     ),
                 ));
             }
+            AssistantCadEditOperation::CreateDowelJoint {
+                name,
+                first,
+                second,
+                first_center_local_mm,
+                row_unit_first_local,
+                count,
+                spacing_mm,
+                dowel,
+                physical_hole_pairs,
+            } => {
+                let id = next_dowel_joint.map(DowelJointId).ok_or_else(|| {
+                    assistant_canonical_rejection(
+                        CanonicalError::IdExhausted,
+                        operation_name,
+                        &document_target,
+                    )
+                })?;
+                next_dowel_joint = id.0.checked_add(1);
+                let face = |input: &ketchup_core::assistant_sidecar::AssistantDowelJointFace| {
+                    resolve_assistant_instance_path(
+                        &input.instance_path,
+                        staged_planning.staged_snapshot(),
+                    )
+                    .map(|instance_path| DowelJointFace {
+                        instance_path,
+                        face_origin_local_mm: input.face_origin_local_mm,
+                        inward_unit_local: input.inward_unit_local,
+                        bounds_min_local_mm: input.bounds_min_local_mm,
+                        bounds_max_local_mm: input.bounds_max_local_mm,
+                    })
+                };
+                let contract = DowelJointContract {
+                    id,
+                    name: name.clone(),
+                    first: face(first).ok_or_else(|| {
+                        assistant_canonical_rejection(
+                            CanonicalError::InvalidInstancePath,
+                            operation_name,
+                            "first.instance_path",
+                        )
+                    })?,
+                    second: face(second).ok_or_else(|| {
+                        assistant_canonical_rejection(
+                            CanonicalError::InvalidInstancePath,
+                            operation_name,
+                            "second.instance_path",
+                        )
+                    })?,
+                    first_center_local_mm: *first_center_local_mm,
+                    row_unit_first_local: *row_unit_first_local,
+                    count: *count,
+                    spacing_mm: *spacing_mm,
+                    dowel: match dowel {
+                        AssistantStandardDowel::D6x30 => StandardDowel::D6x30,
+                        AssistantStandardDowel::D8x30 => StandardDowel::D8x30,
+                        AssistantStandardDowel::D8x40 => StandardDowel::D8x40,
+                        AssistantStandardDowel::D10x40 => StandardDowel::D10x40,
+                    }
+                    .symmetric_spec(),
+                    physical_hole_pairs: (!physical_hole_pairs.is_empty()).then(|| {
+                        physical_hole_pairs
+                            .iter()
+                            .map(|pair| DowelPhysicalHolePair {
+                                first_pocket_feature_id: FeatureId(pair.first_pocket_feature_id),
+                                second_pocket_feature_id: FeatureId(pair.second_pocket_feature_id),
+                            })
+                            .collect()
+                    }),
+                };
+                project_dowel_joint_contract(staged_planning.staged_snapshot(), &contract).map_err(
+                    |error| {
+                        assistant_planning_rejection(
+                            "planning.dowel_joint_invalid",
+                            operation_name,
+                            &format!("dowel_joint:{}", id.0),
+                            error.to_string(),
+                            "Use two coincident opposed part faces and a row that remains inside both parts.",
+                        )
+                    },
+                )?;
+                staged_planning.push(CanonicalCommand::UpsertDowelJoint(contract));
+            }
             AssistantCadEditOperation::SetAssemblyJointPosition { joint_id, position } => {
                 let joint_id = AssemblyJointId(*joint_id);
                 if snapshot.assembly_joint(joint_id).is_none() {
@@ -2100,6 +2413,29 @@ pub fn plan_assistant_cad_edit_program(
                     staged_planning
                         .push(CanonicalCommand::SetOccurrenceColor { id, color: *color });
                 }
+            }
+            AssistantCadEditOperation::CreateTag {
+                tag_id,
+                name,
+                visible,
+            } => staged_planning.push(CanonicalCommand::CreateTag {
+                id: TagId(*tag_id),
+                name: name.clone(),
+                visible: *visible,
+            }),
+            AssistantCadEditOperation::SetOccurrenceTag { tag_id, .. } => {
+                for id in targets {
+                    staged_planning.push(CanonicalCommand::SetOccurrenceTag {
+                        id,
+                        tag: tag_id.map(TagId),
+                    });
+                }
+            }
+            AssistantCadEditOperation::SetTagVisibility { tag_id, visible } => {
+                staged_planning.push(CanonicalCommand::SetTagVisibility {
+                    id: TagId(*tag_id),
+                    visible: *visible,
+                });
             }
             AssistantCadEditOperation::UpsertClassificationDimension {
                 dimension_id,

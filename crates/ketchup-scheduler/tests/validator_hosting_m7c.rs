@@ -80,11 +80,12 @@ fn installed(
 
 fn authorize_external_disclosure(
     package: &InstalledValidatorPackage,
+    grant: &EgressGrant,
     request: &EgressRequest,
 ) -> SideEffectAuthorizationReceipt {
     authorize_external_disclosure_for(
         request,
-        validator_egress_destination(request),
+        validator_egress_destination(grant, request).unwrap(),
         package.manifest().package().to_owned(),
     )
 }
@@ -211,8 +212,8 @@ fn m7c_remote_egress_is_host_mediated_allowlisted_bounded_and_receipted() {
         ),
         Err(ValidatorRuntimeError::EgressDenied)
     ));
-    let grant = EgressGrant::new([("127.0.0.1".to_owned(), port)]);
-    let authorization = authorize_external_disclosure(package, &request);
+    let grant = EgressGrant::new([("127.0.0.1".to_owned(), port)]).unwrap();
+    let authorization = authorize_external_disclosure(package, &grant, &request);
     let (response, egress_receipt) = perform_host_mediated_egress(
         package,
         &grant,
@@ -225,6 +226,7 @@ fn m7c_remote_egress_is_host_mediated_allowlisted_bounded_and_receipted() {
     assert_eq!(response, b"REMOTE-OK");
     assert_eq!(egress_receipt.request_sha256, sha256_hex(b"VALIDATE"));
     assert_eq!(egress_receipt.response_sha256, sha256_hex(b"REMOTE-OK"));
+    assert_eq!(egress_receipt.address, ([127, 0, 0, 1], port).into());
     assert_eq!(egress_receipt.response_bytes, 9);
 
     let denied = EgressRequest {
@@ -248,6 +250,21 @@ fn m7c_remote_egress_is_host_mediated_allowlisted_bounded_and_receipted() {
 }
 
 #[test]
+fn allowed_hostname_cannot_resolve_to_loopback() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    assert!(matches!(
+        EgressGrant::new([("localhost".to_owned(), port)]),
+        Err(ValidatorRuntimeError::EgressDenied)
+    ));
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
+#[test]
 fn m18b_external_disclosure_requires_exact_human_authorization_before_connect() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -263,7 +280,7 @@ fn m18b_external_disclosure_requires_exact_human_authorization_before_connect() 
         port,
         payload: b"APPROVED DISCLOSURE".to_vec(),
     };
-    let grant = EgressGrant::new([("127.0.0.1".to_owned(), port)]);
+    let grant = EgressGrant::new([("127.0.0.1".to_owned(), port)]).unwrap();
 
     assert!(matches!(
         perform_host_mediated_egress(package, &grant, &approved_request, None, EgressLimits::M7C,),
@@ -274,7 +291,7 @@ fn m18b_external_disclosure_requires_exact_human_authorization_before_connect() 
         std::io::ErrorKind::WouldBlock
     );
 
-    let authorization = authorize_external_disclosure(package, &approved_request);
+    let authorization = authorize_external_disclosure(package, &grant, &approved_request);
     let substituted_request = EgressRequest {
         host: approved_request.host.clone(),
         port: approved_request.port,
@@ -293,7 +310,7 @@ fn m18b_external_disclosure_requires_exact_human_authorization_before_connect() 
 
     let wrong_destination = authorize_external_disclosure_for(
         &approved_request,
-        "tcp://127.0.0.1:1".to_owned(),
+        format!("tcp://127.0.0.1:{port}"),
         package.manifest().package().to_owned(),
     );
     assert!(matches!(
@@ -309,7 +326,7 @@ fn m18b_external_disclosure_requires_exact_human_authorization_before_connect() 
 
     let wrong_provider = authorize_external_disclosure_for(
         &approved_request,
-        validator_egress_destination(&approved_request),
+        validator_egress_destination(&grant, &approved_request).unwrap(),
         "org.ketchup.tests.other-provider".to_owned(),
     );
     assert!(matches!(
@@ -344,7 +361,7 @@ fn m7c_zero_egress_limits_fail_closed_before_connecting() {
         port,
         payload: b"request".to_vec(),
     };
-    let grant = EgressGrant::new([("127.0.0.1".to_owned(), port)]);
+    let grant = EgressGrant::new([("127.0.0.1".to_owned(), port)]).unwrap();
 
     for limits in [
         EgressLimits {
@@ -360,7 +377,7 @@ fn m7c_zero_egress_limits_fail_closed_before_connecting() {
             ..EgressLimits::M7C
         },
     ] {
-        let authorization = authorize_external_disclosure(package, &request);
+        let authorization = authorize_external_disclosure(package, &grant, &request);
         assert!(matches!(
             perform_host_mediated_egress(package, &grant, &request, Some(authorization), limits),
             Err(ValidatorRuntimeError::InvalidLimits)
@@ -399,8 +416,8 @@ fn m7c_egress_timeout_is_one_cumulative_transport_deadline() {
         port,
         payload: b"request".to_vec(),
     };
-    let grant = EgressGrant::new([("127.0.0.1".to_owned(), port)]);
-    let authorization = authorize_external_disclosure(package, &request);
+    let grant = EgressGrant::new([("127.0.0.1".to_owned(), port)]).unwrap();
+    let authorization = authorize_external_disclosure(package, &grant, &request);
     let limits = EgressLimits {
         timeout: Duration::from_millis(80),
         ..EgressLimits::M7C
@@ -439,9 +456,9 @@ fn m7c_remote_response_overflow_fails_closed() {
         maximum_response_bytes: 4,
         ..EgressLimits::M7C
     };
-    let grant = EgressGrant::new([("127.0.0.1".to_owned(), port)]);
+    let grant = EgressGrant::new([("127.0.0.1".to_owned(), port)]).unwrap();
     let package = host.resolve(PACKAGE).unwrap();
-    let authorization = authorize_external_disclosure(package, &request);
+    let authorization = authorize_external_disclosure(package, &grant, &request);
     assert!(matches!(
         perform_host_mediated_egress(package, &grant, &request, Some(authorization), limits,),
         Err(ValidatorRuntimeError::EgressResponseLimitExceeded)

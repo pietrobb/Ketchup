@@ -701,6 +701,42 @@ pub enum AssistantCadPartFeature {
     },
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantPanelHole {
+    pub id: String,
+    pub entry_local_mm: [f64; 3],
+    pub inward_unit_local: [f64; 3],
+    pub diameter_mm: f64,
+    pub depth_mm: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantDowelJointFace {
+    pub instance_path: AssistantInstancePath,
+    pub face_origin_local_mm: [f64; 3],
+    pub inward_unit_local: [f64; 3],
+    pub bounds_min_local_mm: [f64; 3],
+    pub bounds_max_local_mm: [f64; 3],
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantDowelPhysicalHolePair {
+    pub first_pocket_feature_id: u64,
+    pub second_pocket_feature_id: u64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantStandardDowel {
+    D6x30,
+    D8x30,
+    D8x40,
+    D10x40,
+}
+
 impl AssistantCadPartFeature {
     fn validate(&self) -> Result<(), String> {
         match self {
@@ -761,6 +797,7 @@ impl AssistantCadProgramFeatureReference {
                 matches!(
                     producer,
                     AssistantCadEditOperation::CreatePart { .. }
+                        | AssistantCadEditOperation::CreatePanel { .. }
                         | AssistantCadEditOperation::CreateSpatialPath { .. }
                         | AssistantCadEditOperation::CreateHelixPath { .. }
                         | AssistantCadEditOperation::CreateConstructionPoint { .. }
@@ -773,6 +810,7 @@ impl AssistantCadProgramFeatureReference {
             AssistantCadProgramFeatureOutput::SketchFeature => matches!(
                 producer,
                 AssistantCadEditOperation::CreatePart { .. }
+                    | AssistantCadEditOperation::CreatePanel { .. }
                     | AssistantCadEditOperation::CreateProgramSketch { .. }
             ),
             AssistantCadProgramFeatureOutput::ConstructionFeature => matches!(
@@ -785,6 +823,7 @@ impl AssistantCadProgramFeatureReference {
             ),
             AssistantCadProgramFeatureOutput::BodyFeature => match producer {
                 AssistantCadEditOperation::CreatePart { .. }
+                | AssistantCadEditOperation::CreatePanel { .. }
                 | AssistantCadEditOperation::CreateHelix { .. }
                 | AssistantCadEditOperation::CreateThread { .. }
                 | AssistantCadEditOperation::FilletEdges { .. }
@@ -1783,6 +1822,14 @@ pub enum AssistantCadEditOperation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rotation: Option<AssistantCadRotation>,
     },
+    CreatePanel {
+        name: String,
+        dimensions_mm: [f64; 3],
+        holes: Vec<AssistantPanelHole>,
+        translation_mm: [f64; 3],
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rotation: Option<AssistantCadRotation>,
+    },
     CreateSpatialPath {
         name: String,
         segments: Vec<AssistantSpatialPathSegment>,
@@ -1856,6 +1903,18 @@ pub enum AssistantCadEditOperation {
         child_instance_path: AssistantInstancePath,
         kind: AssistantAssemblyJointKind,
     },
+    CreateDowelJoint {
+        name: String,
+        first: AssistantDowelJointFace,
+        second: AssistantDowelJointFace,
+        first_center_local_mm: [f64; 3],
+        row_unit_first_local: [f64; 3],
+        count: u32,
+        spacing_mm: f64,
+        dowel: AssistantStandardDowel,
+        #[serde(default)]
+        physical_hole_pairs: Vec<AssistantDowelPhysicalHolePair>,
+    },
     SetAssemblyJointPosition {
         joint_id: u64,
         position: f64,
@@ -1904,6 +1963,19 @@ pub enum AssistantCadEditOperation {
     SetColor {
         selector: AssistantCadEntitySelector,
         color: Option<[u8; 3]>,
+    },
+    CreateTag {
+        tag_id: u64,
+        name: String,
+        visible: bool,
+    },
+    SetOccurrenceTag {
+        selector: AssistantCadEntitySelector,
+        tag_id: Option<u64>,
+    },
+    SetTagVisibility {
+        tag_id: u64,
+        visible: bool,
     },
     UpsertClassificationDimension {
         dimension_id: u64,
@@ -2660,12 +2732,16 @@ impl AssistantCadEditProgram {
                 | AssistantCadEditOperation::SetDimension { .. }
                 | AssistantCadEditOperation::SetFeatureParameter { .. }
                 | AssistantCadEditOperation::CreateAssemblyJoint { .. }
+                | AssistantCadEditOperation::CreateDowelJoint { .. }
                 | AssistantCadEditOperation::SetAssemblyJointPosition { .. }
                 | AssistantCadEditOperation::CreateDrawing { .. }
                 | AssistantCadEditOperation::UpsertCamPlan { .. }
+                | AssistantCadEditOperation::CreateTag { .. }
+                | AssistantCadEditOperation::SetTagVisibility { .. }
                 | AssistantCadEditOperation::UpsertClassificationDimension { .. }
                 | AssistantCadEditOperation::CreateEvaluatorInput { .. } => 0,
                 AssistantCadEditOperation::CreatePart { .. }
+                | AssistantCadEditOperation::CreatePanel { .. }
                 | AssistantCadEditOperation::CreateSpatialPath { .. }
                 | AssistantCadEditOperation::CreateHelixPath { .. }
                 | AssistantCadEditOperation::CreateConstructionPoint { .. }
@@ -2675,6 +2751,7 @@ impl AssistantCadEditProgram {
                 | AssistantCadEditOperation::CreateThread { .. } => 1,
                 AssistantCadEditOperation::Delete { selector, .. }
                 | AssistantCadEditOperation::SetColor { selector, .. }
+                | AssistantCadEditOperation::SetOccurrenceTag { selector, .. }
                 | AssistantCadEditOperation::SetOccurrenceClassification { selector, .. }
                 | AssistantCadEditOperation::Transform { selector, .. }
                 | AssistantCadEditOperation::Copy { selector, .. }
@@ -2768,6 +2845,70 @@ impl AssistantCadEditProgram {
                     }
                     if let Some(rotation) = rotation {
                         rotation.validate()?;
+                    }
+                    1
+                }
+                AssistantCadEditOperation::CreatePanel {
+                    name,
+                    dimensions_mm,
+                    holes,
+                    translation_mm,
+                    rotation,
+                } => {
+                    if name.trim().is_empty()
+                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.chars().any(char::is_control)
+                        || dimensions_mm.iter().any(|value| {
+                            !value.is_finite() || *value <= 0.0 || *value > MAX_ASSISTANT_ABS_MM
+                        })
+                        || holes.len() > 128
+                        || !assistant_cad_vector_is_bounded(*translation_mm)
+                    {
+                        return Err("assistant panel creation is invalid".to_owned());
+                    }
+                    if let Some(rotation) = rotation {
+                        rotation.validate()?;
+                    }
+                    let mut hole_ids = BTreeSet::new();
+                    for hole in holes {
+                        let radius = hole.diameter_mm * 0.5;
+                        let Some(axis) = hole
+                            .inward_unit_local
+                            .iter()
+                            .position(|value| (value.abs() - 1.0).abs() <= 1.0e-9)
+                        else {
+                            return Err("assistant panel hole direction is invalid".to_owned());
+                        };
+                        if hole.id.trim().is_empty()
+                            || hole.id.len() > MAX_ASSISTANT_NAME_BYTES
+                            || hole.id.chars().any(char::is_control)
+                            || !hole_ids.insert(hole.id.as_str())
+                            || !assistant_cad_vector_is_bounded(hole.entry_local_mm)
+                            || !assistant_cad_vector_is_bounded(hole.inward_unit_local)
+                            || hole
+                                .inward_unit_local
+                                .iter()
+                                .enumerate()
+                                .any(|(index, value)| index != axis && value.abs() > 1.0e-9)
+                            || !hole.diameter_mm.is_finite()
+                            || hole.diameter_mm <= 0.0
+                            || !hole.depth_mm.is_finite()
+                            || hole.depth_mm <= 0.0
+                            || hole.depth_mm > dimensions_mm[axis]
+                            || (if hole.inward_unit_local[axis] > 0.0 {
+                                hole.entry_local_mm[axis].abs()
+                            } else {
+                                (hole.entry_local_mm[axis] - dimensions_mm[axis]).abs()
+                            }) > 1.0e-9
+                            || (0..3).any(|index| {
+                                index != axis
+                                    && (hole.entry_local_mm[index] < radius
+                                        || hole.entry_local_mm[index]
+                                            > dimensions_mm[index] - radius)
+                            })
+                        {
+                            return Err("assistant panel hole is invalid".to_owned());
+                        }
                     }
                     1
                 }
@@ -2998,6 +3139,57 @@ impl AssistantCadEditProgram {
                     }
                     0
                 }
+                AssistantCadEditOperation::CreateDowelJoint {
+                    name,
+                    first,
+                    second,
+                    first_center_local_mm,
+                    row_unit_first_local,
+                    count,
+                    spacing_mm,
+                    physical_hole_pairs,
+                    ..
+                } => {
+                    first.instance_path.validate()?;
+                    second.instance_path.validate()?;
+                    let first_holes = physical_hole_pairs
+                        .iter()
+                        .map(|pair| pair.first_pocket_feature_id)
+                        .collect::<BTreeSet<_>>();
+                    let second_holes = physical_hole_pairs
+                        .iter()
+                        .map(|pair| pair.second_pocket_feature_id)
+                        .collect::<BTreeSet<_>>();
+                    if name.trim().is_empty()
+                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.chars().any(char::is_control)
+                        || first.instance_path == second.instance_path
+                        || !assistant_cad_vector_is_bounded(first.face_origin_local_mm)
+                        || !assistant_cad_vector_is_bounded(first.inward_unit_local)
+                        || !assistant_cad_vector_is_bounded(first.bounds_min_local_mm)
+                        || !assistant_cad_vector_is_bounded(first.bounds_max_local_mm)
+                        || !assistant_cad_vector_is_bounded(second.face_origin_local_mm)
+                        || !assistant_cad_vector_is_bounded(second.inward_unit_local)
+                        || !assistant_cad_vector_is_bounded(second.bounds_min_local_mm)
+                        || !assistant_cad_vector_is_bounded(second.bounds_max_local_mm)
+                        || !assistant_cad_vector_is_bounded(*first_center_local_mm)
+                        || !assistant_cad_vector_is_bounded(*row_unit_first_local)
+                        || !assistant_cad_vector_is_nonzero(*row_unit_first_local)
+                        || !(1..=128).contains(count)
+                        || !spacing_mm.is_finite()
+                        || *spacing_mm < 0.0
+                        || (!physical_hole_pairs.is_empty()
+                            && physical_hole_pairs.len() != *count as usize)
+                        || physical_hole_pairs.iter().any(|pair| {
+                            pair.first_pocket_feature_id == 0 || pair.second_pocket_feature_id == 0
+                        })
+                        || first_holes.len() != physical_hole_pairs.len()
+                        || second_holes.len() != physical_hole_pairs.len()
+                    {
+                        return Err("assistant dowel joint creation is invalid".to_owned());
+                    }
+                    0
+                }
                 AssistantCadEditOperation::SetAssemblyJointPosition { joint_id, position } => {
                     if *joint_id == 0
                         || !position.is_finite()
@@ -3140,6 +3332,28 @@ impl AssistantCadEditProgram {
                         || value.abs() > MAX_ASSISTANT_ABS_MM
                     {
                         return Err("assistant CAD evaluator input is invalid".to_owned());
+                    }
+                    0
+                }
+                AssistantCadEditOperation::CreateTag { tag_id, name, .. } => {
+                    if *tag_id == 0
+                        || name.trim().is_empty()
+                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.chars().any(char::is_control)
+                    {
+                        return Err("assistant CAD tag creation is invalid".to_owned());
+                    }
+                    0
+                }
+                AssistantCadEditOperation::SetOccurrenceTag { tag_id, .. } => {
+                    if tag_id == &Some(0) {
+                        return Err("assistant CAD tag assignment is invalid".to_owned());
+                    }
+                    0
+                }
+                AssistantCadEditOperation::SetTagVisibility { tag_id, .. } => {
+                    if *tag_id == 0 {
+                        return Err("assistant CAD tag visibility is invalid".to_owned());
                     }
                     0
                 }

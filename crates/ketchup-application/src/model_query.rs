@@ -10,6 +10,7 @@ use ketchup_core::document::{
 use ketchup_core::exact_product::{
     ExactBRepGraphEdgeEvidence, ExactBRepGraphFaceEvidence, ExactBodyPackage, ExactResultRegistry,
 };
+use ketchup_core::joinery::project_dowel_joint_contract;
 use ketchup_core::topology::{TopologicalElementKind, TopologicalElementRef};
 use ketchup_interaction::Vec3;
 use ketchup_interaction::projection::{
@@ -798,6 +799,67 @@ impl ModelQuery {
                 )?;
             }
         }
+        for joint in snapshot.dowel_joints() {
+            let Ok(projection) = project_dowel_joint_contract(snapshot, joint) else {
+                continue;
+            };
+            let Some((first_path, _, first_definition_id)) = qualified_path(
+                snapshot,
+                &joint.first.instance_path,
+                joint.first.instance_path.steps().len(),
+            ) else {
+                continue;
+            };
+            let Some((second_path, _, second_definition_id)) = qualified_path(
+                snapshot,
+                &joint.second.instance_path,
+                joint.second.instance_path.steps().len(),
+            ) else {
+                continue;
+            };
+            let pairs = projection
+                .pairs
+                .iter()
+                .enumerate()
+                .map(|(index, pair)| {
+                    let binding = joint
+                        .physical_hole_pairs
+                        .as_ref()
+                        .and_then(|bindings| bindings.get(index));
+                    let coincidence = pair.physical_probe_coincidence.map(|diagnostic| json!({
+                        "first_probe_endpoints_world_mm":diagnostic.first_probe_endpoints_world_mm,
+                        "second_probe_endpoints_world_mm":diagnostic.second_probe_endpoints_world_mm,
+                        "maximum_endpoint_error_mm":diagnostic.maximum_endpoint_error_mm,
+                        "full_length_coincident":true
+                    }));
+                    json!({"index":pair.index,
+                        "shared_center_world_mm":pair.first.shared_center_world_mm,
+                        "probe_first_to_second":{"entry_local_mm":pair.first.entry_local_mm,
+                            "inward_unit_local":pair.first.inward_unit_local,
+                            "length_mm":joint.dowel.length_mm},
+                        "probe_second_to_first":{"entry_local_mm":pair.second.entry_local_mm,
+                            "inward_unit_local":pair.second.inward_unit_local,
+                            "length_mm":joint.dowel.length_mm},
+                        "first_pocket_feature_id":binding.map(|binding|binding.first_pocket_feature_id.0),
+                        "second_pocket_feature_id":binding.map(|binding|binding.second_pocket_feature_id.0),
+                        "physical_probe_coincidence":coincidence})
+                })
+                .collect::<Vec<_>>();
+            page.consider(
+                request,
+                "dowel_joint",
+                &[first_definition_id.0, second_definition_id.0],
+                || {
+                    json!({"id":format!("dowel_joint:{}", joint.id.0),
+                    "relation_type":"dowel_joint","direction":"bidirectional",
+                    "source":{"kind":"instance","instance_path":first_path},
+                    "target":{"kind":"instance","instance_path":second_path},
+                    "origin":{"kind":"canonical_dowel_joint","id":joint.id.0},
+                    "name":bounded_text(&joint.name),"pair_count":projection.pairs.len(),
+                    "physical_holes_bound":joint.physical_hole_pairs.is_some(),"pairs":pairs})
+                },
+            )?;
+        }
         for mate in snapshot.assembly_mates() {
             let a = mate.endpoint_a();
             let b = mate.endpoint_b();
@@ -1523,7 +1585,8 @@ pub fn bounded_ids(ids: impl Iterator<Item = u64>) -> Value {
 pub fn created_receipt(before: &Snapshot, after: &Snapshot) -> Value {
     json!({"definition_ids":bounded_ids(after.definitions().filter(|d|before.definition(d.id()).is_none()).map(|d|d.id().0)),
         "occurrence_ids":bounded_ids(after.occurrences().filter(|o|before.occurrence(o.id()).is_none()).map(|o|o.id().0)),
-        "feature_ids":bounded_ids(after.features().filter(|f|before.feature(f.id()).is_none()).map(|f|f.id().0))})
+        "feature_ids":bounded_ids(after.features().filter(|f|before.feature(f.id()).is_none()).map(|f|f.id().0)),
+        "dowel_joint_ids":bounded_ids(after.dowel_joints().filter(|j|before.dowel_joint(j.id).is_none()).map(|j|j.id.0))})
 }
 fn instance_item_size(item: &Value) -> Result<usize, QueryError> {
     let size = serde_json::to_vec(item).expect("bounded projection").len() + 1;

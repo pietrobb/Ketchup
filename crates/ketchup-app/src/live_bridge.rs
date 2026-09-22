@@ -589,6 +589,11 @@ impl LiveBridge {
                 AssistantCadEditOperation::CreateSketch { .. }
                 | AssistantCadEditOperation::CreateProgramSketch { .. }
                 | AssistantCadEditOperation::CreatePart { .. }
+                | AssistantCadEditOperation::CreatePanel { .. }
+                | AssistantCadEditOperation::CreateDowelJoint { .. }
+                | AssistantCadEditOperation::CreateTag { .. }
+                | AssistantCadEditOperation::SetOccurrenceTag { .. }
+                | AssistantCadEditOperation::SetTagVisibility { .. }
                 | AssistantCadEditOperation::CreateSpatialPath { .. }
                 | AssistantCadEditOperation::CreateHelixPath { .. }
                 | AssistantCadEditOperation::CreateConstructionPoint { .. }
@@ -917,6 +922,9 @@ impl LiveBridge {
                     || !Path::new(&path).is_file()
                 {
                     return Err("invalid_path");
+                }
+                if !app.confirm_live_open_path(Path::new(&path)) {
+                    return Err("open_rejected");
                 }
                 if !app.confirm_discard_if_dirty() {
                     return Err("open_rejected");

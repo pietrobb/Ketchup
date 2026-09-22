@@ -1,4 +1,5 @@
-use crate::document::{InstancePath, Snapshot, Transform};
+use crate::document::{FeatureId, FeatureKind, InstancePath, Snapshot, Transform};
+use crate::sketch::SketchEntity;
 use std::fmt;
 
 pub const DOWEL_JOINERY_PROJECTION_V1: &str = "ketchup.dowel-joinery-projection.v1";
@@ -28,6 +29,13 @@ pub struct DowelJointContract {
     pub count: u32,
     pub spacing_mm: f64,
     pub dowel: DowelSpec,
+    pub physical_hole_pairs: Option<Vec<DowelPhysicalHolePair>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DowelPhysicalHolePair {
+    pub first_pocket_feature_id: FeatureId,
+    pub second_pocket_feature_id: FeatureId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -144,6 +152,14 @@ pub struct DowelPair {
     pub index: u32,
     pub first: DowelHole,
     pub second: DowelHole,
+    pub physical_probe_coincidence: Option<DowelProbeCoincidence>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DowelProbeCoincidence {
+    pub first_probe_endpoints_world_mm: [[f64; 3]; 2],
+    pub second_probe_endpoints_world_mm: [[f64; 3]; 2],
+    pub maximum_endpoint_error_mm: f64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -163,6 +179,9 @@ pub enum DowelJointError {
     InvalidParticipantGeometry,
     FacesDoNotMate,
     HoleOutsidePart,
+    InvalidPhysicalHoleBinding,
+    PhysicalHoleGeometryMismatch,
+    PhysicalDowelProbesDoNotCoincide,
 }
 
 impl fmt::Display for DowelJointError {
@@ -176,6 +195,15 @@ impl fmt::Display for DowelJointError {
             Self::InvalidParticipantGeometry => "dowel participant face or bounds are invalid",
             Self::FacesDoNotMate => "dowel participant faces are not coincident and opposed",
             Self::HoleOutsidePart => "a derived dowel hole leaves its host part",
+            Self::InvalidPhysicalHoleBinding => {
+                "dowel physical-hole bindings are missing, duplicated, or reference another part"
+            }
+            Self::PhysicalHoleGeometryMismatch => {
+                "a bound physical hole does not match the dowel pair axis, diameter, or depth"
+            }
+            Self::PhysicalDowelProbesDoNotCoincide => {
+                "the full dowel probes independently derived from both physical holes do not coincide"
+            }
         };
         formatter.write_str(message)
     }
@@ -211,7 +239,7 @@ pub fn project_dowel_joint_contract(
         first_resolved.world_transform,
         contract.row_unit_first_local,
     );
-    project_dowel_joint(&DowelJointRequest {
+    let mut projection = project_dowel_joint(&DowelJointRequest {
         stable_joint_id: format!("dowel-{:016x}", contract.id.0),
         first: DowelJointSide {
             instance_path: contract.first.instance_path.clone(),
@@ -234,7 +262,14 @@ pub fn project_dowel_joint_contract(
         count: contract.count,
         spacing_mm: contract.spacing_mm,
         dowel: contract.dowel,
-    })
+    })?;
+    if let Some(bindings) = &contract.physical_hole_pairs {
+        let diagnostics = validate_physical_hole_pairs(snapshot, contract, &projection, bindings)?;
+        for (pair, diagnostic) in projection.pairs.iter_mut().zip(diagnostics) {
+            pair.physical_probe_coincidence = Some(diagnostic);
+        }
+    }
+    Ok(projection)
 }
 
 pub fn project_dowel_joint(
@@ -346,6 +381,7 @@ pub fn project_dowel_joint(
             index,
             first,
             second,
+            physical_probe_coincidence: None,
         });
     }
     Ok(DowelJointProjection {
@@ -417,6 +453,169 @@ fn derive_hole(
     })
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ObservedPhysicalHole {
+    entry_world_mm: [f64; 3],
+    inward_unit_world: [f64; 3],
+    diameter_mm: f64,
+    depth_mm: f64,
+}
+
+fn validate_physical_hole_pairs(
+    snapshot: &Snapshot,
+    contract: &DowelJointContract,
+    projection: &DowelJointProjection,
+    bindings: &[DowelPhysicalHolePair],
+) -> Result<Vec<DowelProbeCoincidence>, DowelJointError> {
+    if bindings.len() != projection.pairs.len() {
+        return Err(DowelJointError::InvalidPhysicalHoleBinding);
+    }
+    let mut first_features = std::collections::BTreeSet::new();
+    let mut second_features = std::collections::BTreeSet::new();
+    let mut diagnostics = Vec::with_capacity(bindings.len());
+    for (pair, binding) in projection.pairs.iter().zip(bindings) {
+        if !first_features.insert(binding.first_pocket_feature_id)
+            || !second_features.insert(binding.second_pocket_feature_id)
+        {
+            return Err(DowelJointError::InvalidPhysicalHoleBinding);
+        }
+        let first = observe_physical_hole(
+            snapshot,
+            &contract.first.instance_path,
+            binding.first_pocket_feature_id,
+        )?;
+        let second = observe_physical_hole(
+            snapshot,
+            &contract.second.instance_path,
+            binding.second_pocket_feature_id,
+        )?;
+        diagnostics.push(validate_probe_coincidence(first, second, contract.dowel)?);
+        validate_physical_hole(first, &pair.first)?;
+        validate_physical_hole(second, &pair.second)?;
+    }
+    Ok(diagnostics)
+}
+
+fn observe_physical_hole(
+    snapshot: &Snapshot,
+    instance_path: &InstancePath,
+    pocket_feature_id: FeatureId,
+) -> Result<ObservedPhysicalHole, DowelJointError> {
+    let participant = snapshot
+        .resolve_instance_path(instance_path)
+        .map_err(|_| DowelJointError::InvalidPhysicalHoleBinding)?;
+    let pocket = snapshot
+        .feature(pocket_feature_id)
+        .ok_or(DowelJointError::InvalidPhysicalHoleBinding)?;
+    if pocket.definition_id() != participant.definition_id {
+        return Err(DowelJointError::InvalidPhysicalHoleBinding);
+    }
+    let (profile_feature_id, depth_mm) = match pocket.kind() {
+        FeatureKind::Pocket { profile, depth, .. } => (*profile, depth.millimetres()),
+        _ => return Err(DowelJointError::InvalidPhysicalHoleBinding),
+    };
+    let profile = snapshot
+        .feature(profile_feature_id)
+        .filter(|feature| feature.definition_id() == participant.definition_id)
+        .ok_or(DowelJointError::InvalidPhysicalHoleBinding)?;
+    let sketch = match profile.kind() {
+        FeatureKind::Sketch(sketch) => sketch,
+        _ => return Err(DowelJointError::InvalidPhysicalHoleBinding),
+    };
+    let (center_mm, radius_mm) = match sketch.entities.as_slice() {
+        [
+            SketchEntity::Circle {
+                center_mm,
+                radius_mm,
+                ..
+            },
+        ] => (*center_mm, *radius_mm),
+        _ => return Err(DowelJointError::InvalidPhysicalHoleBinding),
+    };
+    let workplane = snapshot
+        .feature(sketch.workplane)
+        .filter(|feature| feature.definition_id() == participant.definition_id)
+        .ok_or(DowelJointError::InvalidPhysicalHoleBinding)?;
+    let frame = match workplane.kind() {
+        FeatureKind::Workplane(spec) => spec.frame,
+        _ => return Err(DowelJointError::InvalidPhysicalHoleBinding),
+    };
+    let entry_local_mm = add(
+        frame.origin_mm,
+        add(
+            scale(frame.x_axis, center_mm[0]),
+            scale(frame.y_axis, center_mm[1]),
+        ),
+    );
+    Ok(ObservedPhysicalHole {
+        entry_world_mm: transform_point(participant.world_transform, entry_local_mm),
+        inward_unit_world: transform_vector(participant.world_transform, frame.normal),
+        diameter_mm: radius_mm * 2.0,
+        depth_mm,
+    })
+}
+
+fn validate_physical_hole(
+    observed: ObservedPhysicalHole,
+    expected: &DowelHole,
+) -> Result<(), DowelJointError> {
+    let expected_participant_entry_world_mm = expected.shared_center_world_mm;
+    if distance(observed.entry_world_mm, expected_participant_entry_world_mm) > GEOMETRY_TOLERANCE
+        || (observed.diameter_mm - expected.diameter_mm).abs() > GEOMETRY_TOLERANCE
+        || (observed.depth_mm - expected.depth_mm).abs() > GEOMETRY_TOLERANCE
+    {
+        return Err(DowelJointError::PhysicalHoleGeometryMismatch);
+    }
+    Ok(())
+}
+
+fn validate_probe_coincidence(
+    first: ObservedPhysicalHole,
+    second: ObservedPhysicalHole,
+    dowel: DowelSpec,
+) -> Result<DowelProbeCoincidence, DowelJointError> {
+    let first_probe_endpoints_world_mm = [
+        add(
+            first.entry_world_mm,
+            scale(first.inward_unit_world, dowel.first_insertion_mm),
+        ),
+        add(
+            first.entry_world_mm,
+            scale(first.inward_unit_world, -dowel.second_insertion_mm),
+        ),
+    ];
+    let second_probe_endpoints_world_mm = [
+        add(
+            second.entry_world_mm,
+            scale(second.inward_unit_world, -dowel.first_insertion_mm),
+        ),
+        add(
+            second.entry_world_mm,
+            scale(second.inward_unit_world, dowel.second_insertion_mm),
+        ),
+    ];
+    let maximum_endpoint_error_mm = distance(
+        first_probe_endpoints_world_mm[0],
+        second_probe_endpoints_world_mm[0],
+    )
+    .max(distance(
+        first_probe_endpoints_world_mm[1],
+        second_probe_endpoints_world_mm[1],
+    ));
+    if !is_unit(first.inward_unit_world)
+        || !is_unit(second.inward_unit_world)
+        || (first.diameter_mm - second.diameter_mm).abs() > GEOMETRY_TOLERANCE
+        || maximum_endpoint_error_mm > GEOMETRY_TOLERANCE
+    {
+        return Err(DowelJointError::PhysicalDowelProbesDoNotCoincide);
+    }
+    Ok(DowelProbeCoincidence {
+        first_probe_endpoints_world_mm,
+        second_probe_endpoints_world_mm,
+        maximum_endpoint_error_mm,
+    })
+}
+
 fn transform_point(transform: Transform, point: [f64; 3]) -> [f64; 3] {
     let matrix = transform.matrix();
     [
@@ -445,6 +644,14 @@ fn dot(left: [f64; 3], right: [f64; 3]) -> f64 {
         .zip(right)
         .map(|(left, right)| left * right)
         .sum()
+}
+
+fn distance(left: [f64; 3], right: [f64; 3]) -> f64 {
+    left.into_iter()
+        .zip(right)
+        .map(|(left, right)| (left - right).powi(2))
+        .sum::<f64>()
+        .sqrt()
 }
 
 fn add(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
@@ -557,6 +764,38 @@ mod tests {
     }
 
     #[test]
+    fn full_length_probe_coincidence_rejects_partial_overlap_after_two_millimetre_offset() {
+        let first = ObservedPhysicalHole {
+            entry_world_mm: [0.0, 0.0, 0.0],
+            inward_unit_world: [0.0, 0.0, -1.0],
+            diameter_mm: 8.0,
+            depth_mm: 16.0,
+        };
+        let matching_second = ObservedPhysicalHole {
+            entry_world_mm: [0.0, 0.0, 0.0],
+            inward_unit_world: [0.0, 0.0, 1.0],
+            diameter_mm: 8.0,
+            depth_mm: 16.0,
+        };
+        let diagnostic = validate_probe_coincidence(
+            first,
+            matching_second,
+            StandardDowel::D8x30.symmetric_spec(),
+        )
+        .unwrap();
+        assert_eq!(diagnostic.maximum_endpoint_error_mm, 0.0);
+
+        let offset_second = ObservedPhysicalHole {
+            entry_world_mm: [2.0, 0.0, 0.0],
+            ..matching_second
+        };
+        assert_eq!(
+            validate_probe_coincidence(first, offset_second, StandardDowel::D8x30.symmetric_spec(),),
+            Err(DowelJointError::PhysicalDowelProbesDoNotCoincide)
+        );
+    }
+
+    #[test]
     fn standard_presets_keep_dowel_length_and_hole_clearance_explicit() {
         for preset in [
             StandardDowel::D6x30,
@@ -626,6 +865,7 @@ mod tests {
             count: 3,
             spacing_mm: 32.0,
             dowel: StandardDowel::D8x30.symmetric_spec(),
+            physical_hole_pairs: None,
         };
         document
             .apply_batch(&CommandBatch::new(vec![

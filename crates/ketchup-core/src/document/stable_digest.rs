@@ -473,6 +473,17 @@ impl StableDigest {
             self.u64(value.to_bits());
         }
         self.u64(u64::from(joint.count));
+        match &joint.physical_hole_pairs {
+            None => self.byte(0),
+            Some(pairs) => {
+                self.byte(1);
+                self.u64(pairs.len() as u64);
+                for pair in pairs {
+                    self.u64(pair.first_pocket_feature_id.0);
+                    self.u64(pair.second_pocket_feature_id.0);
+                }
+            }
+        }
     }
 
     fn persistent_dimension(&mut self, dimension: &PersistentDimension) {

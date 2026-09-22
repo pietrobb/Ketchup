@@ -366,8 +366,13 @@ def register_tools() -> list:
                           if action == "workset_create" else entry["document"].query(**params))
             if result["identity"]["document_id"] != entry["document_id"]:
                 raise Rejection("document_changed", "Owned document identity changed")
+            fresh = runtime.read(entry)["state"]
+            for key in ("document_id", "revision", "canonical_digest"):
+                if result["identity"][key] != fresh[key]:
+                    raise Rejection("stale_query", "Query result no longer matches the owned document")
+            result["identity"].update(_identity(fresh))
             if len(_json({"ok": True, "result": result}).encode("utf-8")) <= MAX_OUTPUT:
-                entry["observed"] = _identity(result["identity"])
+                entry["observed"] = _identity(fresh)
             return result
         return await runtime.run(handle, job)
 

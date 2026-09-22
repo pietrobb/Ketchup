@@ -13,7 +13,6 @@ use ketchup_core::exact_product::ExactResultRegistry;
 use ketchup_core::persistence::{self, ContainerData};
 use std::{
     collections::BTreeSet,
-    io::Write as _,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -204,22 +203,20 @@ impl DocumentSession {
             };
             result.map_err(|error| SessionError::Persistence(error.to_string()))?;
         } else {
-            let bytes = saved_bytes;
-            persistence::load(&bytes)
-                .map_err(|error| SessionError::Persistence(error.to_string()))?;
-            let parent = path
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .unwrap_or(Path::new("."));
-            let mut temporary = tempfile::NamedTempFile::new_in(parent)
-                .map_err(|error| SessionError::Persistence(error.to_string()))?;
-            temporary
-                .write_all(&bytes)
-                .and_then(|()| temporary.as_file_mut().sync_all())
-                .map_err(|error| SessionError::Persistence(error.to_string()))?;
-            temporary
-                .persist_noclobber(path)
-                .map_err(|error| SessionError::Persistence(error.to_string()))?;
+            let result = if preserve_history {
+                persistence::save_atomic_document_store_with_container_if_absent(
+                    path,
+                    &self.document,
+                    &self.container_data,
+                )
+            } else {
+                persistence::save_atomic_document_store_current_snapshot_with_container_if_absent(
+                    path,
+                    &self.document,
+                    &self.container_data,
+                )
+            };
+            result.map_err(|error| SessionError::Persistence(error.to_string()))?;
         }
         if !preserve_history {
             self.document.discard_history_before_current();

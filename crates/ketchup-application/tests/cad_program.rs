@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use ketchup_application::model_query::{EntityKind, ModelQuery};
+use ketchup_application::model_query::{EntityKind, ModelQuery, PageRequest};
 use ketchup_application::plan_assistant_cad_edit_program as plan;
 use ketchup_core::assembly::{
     AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind, PlanarFaceAttachment,
@@ -2292,6 +2292,395 @@ fn create_part_sketch_and_pocket_resolve_typed_program_outputs_atomically() {
     assert_eq!(
         document.current().canonical_digest(),
         committed.canonical_digest()
+    );
+}
+
+#[test]
+fn one_part_accepts_chained_pockets_from_opposed_workplanes() {
+    let document = DocumentStore::new();
+    let output = |operation_index, output| AssistantCadProgramFeatureReference {
+        operation_index,
+        output,
+    };
+    let input = program(vec![
+        AssistantCadEditOperation::CreatePart {
+            name: "Panel".into(),
+            workplane: AssistantWorkplaneSpec::Principal {
+                plane: AssistantPrincipalPlane::Xy,
+            },
+            entities: vec![
+                AssistantSketchEntity::Line {
+                    id: 1,
+                    start_mm: [0.0, 0.0],
+                    end_mm: [100.0, 0.0],
+                },
+                AssistantSketchEntity::Line {
+                    id: 2,
+                    start_mm: [100.0, 0.0],
+                    end_mm: [100.0, 50.0],
+                },
+                AssistantSketchEntity::Line {
+                    id: 3,
+                    start_mm: [100.0, 50.0],
+                    end_mm: [0.0, 50.0],
+                },
+                AssistantSketchEntity::Line {
+                    id: 4,
+                    start_mm: [0.0, 50.0],
+                    end_mm: [0.0, 0.0],
+                },
+            ],
+            constraints: Vec::new(),
+            feature: AssistantCadPartFeature::Extrusion { distance_mm: 18.0 },
+            translation_mm: [0.0, 0.0, 0.0],
+            rotation: None,
+        },
+        AssistantCadEditOperation::CreateProgramSketch {
+            definition: output(0, AssistantCadProgramFeatureOutput::Definition),
+            name: "Left holes".into(),
+            workplane: AssistantWorkplaneSpec::Frame {
+                origin_mm: [0.0, 0.0, 0.0],
+                x_axis: [0.0, 1.0, 0.0],
+                y_axis: [0.0, 0.0, 1.0],
+            },
+            entities: vec![AssistantSketchEntity::Circle {
+                id: 1,
+                center_mm: [5.0, 5.0],
+                radius_mm: 2.0,
+            }],
+            constraints: Vec::new(),
+        },
+        AssistantCadEditOperation::AppendProgramPocket {
+            definition: output(0, AssistantCadProgramFeatureOutput::Definition),
+            name: "Left pocket".into(),
+            target_feature: output(0, AssistantCadProgramFeatureOutput::BodyFeature),
+            profile_feature: output(1, AssistantCadProgramFeatureOutput::SketchFeature),
+            depth_mm: 4.0,
+        },
+        AssistantCadEditOperation::CreateProgramSketch {
+            definition: output(0, AssistantCadProgramFeatureOutput::Definition),
+            name: "Right holes".into(),
+            workplane: AssistantWorkplaneSpec::Frame {
+                origin_mm: [100.0, 0.0, 18.0],
+                x_axis: [0.0, 1.0, 0.0],
+                y_axis: [0.0, 0.0, -1.0],
+            },
+            entities: vec![AssistantSketchEntity::Circle {
+                id: 2,
+                center_mm: [5.0, 5.0],
+                radius_mm: 2.0,
+            }],
+            constraints: Vec::new(),
+        },
+        AssistantCadEditOperation::AppendProgramPocket {
+            definition: output(0, AssistantCadProgramFeatureOutput::Definition),
+            name: "Right pocket".into(),
+            target_feature: output(2, AssistantCadProgramFeatureOutput::BodyFeature),
+            profile_feature: output(3, AssistantCadProgramFeatureOutput::SketchFeature),
+            depth_mm: 4.0,
+        },
+    ]);
+
+    let batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &input,
+    )
+    .unwrap();
+    let candidate = document.preview_batch(&batch).unwrap();
+    assert!(matches!(
+        candidate.feature(FeatureId(9)).unwrap().kind(),
+        FeatureKind::Pocket {
+            target: FeatureId(6),
+            profile: FeatureId(8),
+            ..
+        }
+    ));
+    ExactBRepGraph::from_snapshot(&candidate, DefinitionId(1), FeatureId(9)).unwrap();
+}
+
+#[test]
+fn one_panel_operation_creates_named_physical_holes_and_one_local_edit_moves_one_hole() {
+    let mut document = DocumentStore::new();
+    let panel = AssistantCadEditOperation::CreatePanel {
+        name: "Side panel".into(),
+        dimensions_mm: [100.0, 50.0, 18.0],
+        holes: vec![AssistantPanelHole {
+            id: "dowel-1".into(),
+            entry_local_mm: [20.0, 20.0, 0.0],
+            inward_unit_local: [0.0, 0.0, 1.0],
+            diameter_mm: 8.0,
+            depth_mm: 16.0,
+        }],
+        translation_mm: [0.0, 0.0, 0.0],
+        rotation: None,
+    };
+    let batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &program(vec![panel]),
+    )
+    .unwrap();
+    document.apply_batch(&batch).unwrap();
+    let before_move = document.current();
+    assert_eq!(document.visible_undo_steps(), 1);
+    assert_eq!(before_move.features().count(), 6);
+    assert_eq!(
+        before_move.feature(FeatureId(5)).unwrap().name(),
+        "Side panel hole dowel-1"
+    );
+    assert_eq!(
+        before_move.feature(FeatureId(6)).unwrap().name(),
+        "Side panel hole dowel-1 pocket"
+    );
+    ExactBRepGraph::from_snapshot(&before_move, DefinitionId(1), FeatureId(6)).unwrap();
+
+    let move_hole = AssistantCadEditOperation::SetFeatureParameter {
+        feature_id: 5,
+        parameter_path: "entities.1.center.x".into(),
+        value_type: AssistantCadParameterValueType::Length,
+        value: 20.0,
+    };
+    let batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &program(vec![move_hole]),
+    )
+    .unwrap();
+    document.apply_batch(&batch).unwrap();
+    let after_move = document.current();
+    assert_eq!(document.visible_undo_steps(), 2);
+    assert_eq!(after_move.features().count(), 6);
+    assert!(matches!(
+        after_move.feature(FeatureId(6)).unwrap().kind(),
+        FeatureKind::Pocket {
+            target: FeatureId(3),
+            profile: FeatureId(5),
+            ..
+        }
+    ));
+    ExactBRepGraph::from_snapshot(&after_move, DefinitionId(1), FeatureId(6)).unwrap();
+}
+
+#[test]
+fn one_dowel_joint_operation_derives_matching_sixteen_millimetre_holes_for_both_panels() {
+    let mut document = DocumentStore::new();
+    let panel = |name: &str, translation_mm| AssistantCadEditOperation::CreatePanel {
+        name: name.into(),
+        dimensions_mm: [100.0, 50.0, 18.0],
+        holes: Vec::new(),
+        translation_mm,
+        rotation: None,
+    };
+    let batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &program(vec![
+            panel("Lower panel", [0.0, 0.0, 0.0]),
+            panel("Upper panel", [0.0, 0.0, 18.0]),
+        ]),
+    )
+    .unwrap();
+    document.apply_batch(&batch).unwrap();
+
+    let face = |occurrence_id, face_z, inward_unit_local| AssistantDowelJointFace {
+        instance_path: AssistantInstancePath {
+            root_occurrence_id: occurrence_id,
+            steps: Vec::new(),
+        },
+        face_origin_local_mm: [0.0, 0.0, face_z],
+        inward_unit_local,
+        bounds_min_local_mm: [0.0, 0.0, 0.0],
+        bounds_max_local_mm: [100.0, 50.0, 18.0],
+    };
+    let batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &program(vec![AssistantCadEditOperation::CreateDowelJoint {
+            name: "Shelf row".into(),
+            first: face(1, 18.0, [0.0, 0.0, -1.0]),
+            second: face(2, 0.0, [0.0, 0.0, 1.0]),
+            first_center_local_mm: [20.0, 20.0, 18.0],
+            row_unit_first_local: [1.0, 0.0, 0.0],
+            count: 3,
+            spacing_mm: 25.0,
+            dowel: AssistantStandardDowel::D8x30,
+            physical_hole_pairs: Vec::new(),
+        }]),
+    )
+    .unwrap();
+    document.apply_batch(&batch).unwrap();
+    let snapshot = document.current();
+    let projection = ketchup_core::joinery::project_dowel_joint_contract(
+        &snapshot,
+        snapshot
+            .dowel_joint(ketchup_core::joinery::DowelJointId(1))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(projection.pairs.len(), 3);
+    assert!(projection.pairs.iter().all(|pair| {
+        pair.first.depth_mm == 16.0
+            && pair.second.depth_mm == 16.0
+            && pair.first.shared_center_world_mm == pair.second.shared_center_world_mm
+    }));
+    assert_eq!(document.visible_undo_steps(), 2);
+}
+
+#[test]
+fn bound_dowel_joint_rejects_moving_only_one_physical_hole() {
+    let mut document = DocumentStore::new();
+    let holes = |entry_z, inward_unit_local| {
+        [20.0, 45.0, 70.0]
+            .into_iter()
+            .enumerate()
+            .map(|(index, x)| AssistantPanelHole {
+                id: format!("dowel-{}", index + 1),
+                entry_local_mm: [x, 20.0, entry_z],
+                inward_unit_local,
+                diameter_mm: 8.0,
+                depth_mm: 16.0,
+            })
+            .collect()
+    };
+    let panel = |name: &str, translation_mm, entry_z, inward_unit_local| {
+        AssistantCadEditOperation::CreatePanel {
+            name: name.into(),
+            dimensions_mm: [100.0, 50.0, 18.0],
+            holes: holes(entry_z, inward_unit_local),
+            translation_mm,
+            rotation: None,
+        }
+    };
+    let batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &program(vec![
+            panel("Lower bound panel", [0.0, 0.0, 0.0], 18.0, [0.0, 0.0, -1.0]),
+            panel("Upper bound panel", [0.0, 0.0, 18.0], 0.0, [0.0, 0.0, 1.0]),
+        ]),
+    )
+    .unwrap();
+    document.apply_batch(&batch).unwrap();
+    let pocket_ids = |snapshot: &Snapshot, definition_id| {
+        snapshot
+            .definition(definition_id)
+            .unwrap()
+            .feature_ids()
+            .iter()
+            .copied()
+            .filter(|id| {
+                matches!(
+                    snapshot.feature(*id).unwrap().kind(),
+                    FeatureKind::Pocket { .. }
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let before_joint = document.current();
+    let first_pockets = pocket_ids(&before_joint, DefinitionId(1));
+    let second_pockets = pocket_ids(&before_joint, DefinitionId(2));
+    assert_eq!(first_pockets.len(), 3);
+    assert_eq!(second_pockets.len(), 3);
+    let face = |occurrence_id, face_z, inward_unit_local| AssistantDowelJointFace {
+        instance_path: AssistantInstancePath {
+            root_occurrence_id: occurrence_id,
+            steps: Vec::new(),
+        },
+        face_origin_local_mm: [0.0, 0.0, face_z],
+        inward_unit_local,
+        bounds_min_local_mm: [0.0, 0.0, 0.0],
+        bounds_max_local_mm: [100.0, 50.0, 18.0],
+    };
+    let physical_hole_pairs = first_pockets
+        .iter()
+        .zip(&second_pockets)
+        .map(|(first, second)| AssistantDowelPhysicalHolePair {
+            first_pocket_feature_id: first.0,
+            second_pocket_feature_id: second.0,
+        })
+        .collect();
+    let batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &program(vec![AssistantCadEditOperation::CreateDowelJoint {
+            name: "Bound shelf row".into(),
+            first: face(1, 18.0, [0.0, 0.0, -1.0]),
+            second: face(2, 0.0, [0.0, 0.0, 1.0]),
+            first_center_local_mm: [20.0, 20.0, 18.0],
+            row_unit_first_local: [1.0, 0.0, 0.0],
+            count: 3,
+            spacing_mm: 25.0,
+            dowel: AssistantStandardDowel::D8x30,
+            physical_hole_pairs,
+        }]),
+    )
+    .unwrap();
+    document.apply_batch(&batch).unwrap();
+    let bound = document.current();
+    let reopened = load(&save(&bound)).unwrap();
+    assert_eq!(
+        reopened
+            .snapshot()
+            .dowel_joint(ketchup_core::joinery::DowelJointId(1))
+            .unwrap()
+            .physical_hole_pairs
+            .as_ref()
+            .unwrap()
+            .len(),
+        3
+    );
+    let relation_page = ModelQuery::default()
+        .page(
+            &bound,
+            &PageRequest {
+                kind: EntityKind::Relations,
+                limit: 10,
+                search: "dowel_joint".into(),
+                definition_id: None,
+                tag_id: None,
+                classification_dimension_id: None,
+                classification_category_id: None,
+                world_bounds_mm: None,
+                cursor: None,
+            },
+        )
+        .unwrap();
+    let pairs = relation_page["items"][0]["pairs"].as_array().unwrap();
+    assert_eq!(pairs.len(), 3);
+    assert!(pairs.iter().all(|pair| {
+        pair["physical_probe_coincidence"]["full_length_coincident"] == true
+            && pair["physical_probe_coincidence"]["maximum_endpoint_error_mm"] == 0.0
+    }));
+    let profile_id = match bound.feature(first_pockets[0]).unwrap().kind() {
+        FeatureKind::Pocket { profile, .. } => *profile,
+        _ => unreachable!(),
+    };
+    let revision_before_invalid_move = bound.revision_id();
+    let invalid_move = program(vec![AssistantCadEditOperation::SetFeatureParameter {
+        feature_id: profile_id.0,
+        parameter_path: "entities.1.center.x".into(),
+        value_type: AssistantCadParameterValueType::Length,
+        value: 1.0,
+    }]);
+    let invalid_batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &invalid_move,
+    )
+    .unwrap();
+    assert!(document.apply_batch(&invalid_batch).is_err());
+    assert_eq!(
+        document.current().revision_id(),
+        revision_before_invalid_move
     );
 }
 

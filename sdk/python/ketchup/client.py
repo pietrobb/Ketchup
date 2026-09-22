@@ -409,6 +409,27 @@ class Document:
         """Rectangle sketch + universal extrusion, not a special box primitive."""
         return self.extrude(name, rectangle(width_mm, depth_mm), height_mm, **kwargs)
 
+    def panel(self, name, dimensions_mm, holes=(), *, translation_mm=(0, 0, 0), rotation=None):
+        """Create one rectangular panel and all named physical holes in one Undo step."""
+        operation = {"operation": "create_panel", "name": name,
+                     "dimensions_mm": list(dimensions_mm),
+                     "holes": [dict(hole) for hole in holes],
+                     "translation_mm": list(translation_mm)}
+        if rotation is not None:
+            operation["rotation"] = rotation
+        return self.apply([operation])
+
+    def dowel_joint(self, name, first, second, first_center_local_mm,
+                    row_unit_first_local, count, spacing_mm, *, dowel="d8x30",
+                    physical_hole_pairs=()):
+        """Persist one relational row and optionally bind its physical pocket pairs."""
+        return self.apply([{"operation": "create_dowel_joint", "name": name,
+                            "first": dict(first), "second": dict(second),
+                            "first_center_local_mm": list(first_center_local_mm),
+                            "row_unit_first_local": list(row_unit_first_local),
+                            "count": count, "spacing_mm": spacing_mm, "dowel": dowel,
+                            "physical_hole_pairs": [dict(pair) for pair in physical_hole_pairs]}])
+
     def create_sketch(self, definition_id, name, entities, *, constraints=(), workplane=None):
         return self.apply([{"operation": "create_sketch", "definition_id": definition_id,
                             "name": name, "entities": list(entities), "constraints": list(constraints),

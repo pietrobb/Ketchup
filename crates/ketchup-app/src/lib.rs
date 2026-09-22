@@ -449,6 +449,11 @@ fn bind_assistant_cad_current_selection(
             AssistantCadEditOperation::CreateSketch { .. }
             | AssistantCadEditOperation::CreateProgramSketch { .. }
             | AssistantCadEditOperation::CreatePart { .. }
+            | AssistantCadEditOperation::CreatePanel { .. }
+            | AssistantCadEditOperation::CreateDowelJoint { .. }
+            | AssistantCadEditOperation::CreateTag { .. }
+            | AssistantCadEditOperation::SetOccurrenceTag { .. }
+            | AssistantCadEditOperation::SetTagVisibility { .. }
             | AssistantCadEditOperation::CreateSpatialPath { .. }
             | AssistantCadEditOperation::CreateHelixPath { .. }
             | AssistantCadEditOperation::CreateConstructionPoint { .. }
@@ -17864,8 +17869,8 @@ impl KetchupApp {
         let snapshot = self.document.current();
         spec.implemented
             && match id {
-                AppCommand::Undo => self.can_undo() || self.transform_gesture_active(),
-                AppCommand::Redo => self.can_redo() || self.transform_gesture_active(),
+                AppCommand::Undo => self.can_undo() || self.ephemeral_edit_active(),
+                AppCommand::Redo => self.can_redo() || self.ephemeral_edit_active(),
                 AppCommand::Copy => self.copy_source_plan().is_some(),
                 AppCommand::Cut => self.cut_source_plan().is_some(),
                 AppCommand::Paste => self.paste_source_plan().is_some(),
@@ -20368,6 +20373,30 @@ impl KetchupApp {
     #[must_use]
     pub fn transform_gesture_active(&self) -> bool {
         self.tool_session.is_some()
+    }
+
+    fn ephemeral_edit_active(&self) -> bool {
+        self.has_preview()
+            || self.smart_push_pull_chooser.is_some()
+            || self.has_pocket_preview()
+            || self.has_occurrence_operation_preview()
+            || self.solid_tool_target.is_some()
+            || self.revolve_tool.is_some()
+            || self.revolve_preview.is_some()
+            || self.planar_offset_preview.is_some()
+            || matches!(self.active_tool, ActiveTool::Helix | ActiveTool::Thread)
+            || self.sweep_preview.is_some()
+            || self.loft_preview.is_some()
+            || self.general_finish_preview.is_some()
+            || self
+                .push_pull_drag
+                .as_ref()
+                .is_some_and(|drag| self.push_pull_gesture_is_current(drag))
+            || self
+                .push_pull_anchor
+                .as_ref()
+                .is_some_and(|anchor| self.push_pull_gesture_is_current(anchor))
+            || self.transform_gesture_active()
     }
 
     /// Current non-authoritative Circle preview as centre and radius.
@@ -27621,6 +27650,19 @@ impl KetchupApp {
         self.occurrence_operation_preview = None;
     }
 
+    fn cancel_ephemeral_edit_for_history(&mut self) -> bool {
+        if !self.ephemeral_edit_active() {
+            return false;
+        }
+        let helix_or_thread = matches!(self.active_tool, ActiveTool::Helix | ActiveTool::Thread);
+        self.clear_ephemeral_edit_state();
+        self.cancel_rectangle_sketch();
+        if helix_or_thread {
+            self.active_tool = ActiveTool::Select;
+        }
+        true
+    }
+
     fn clear_ephemeral_edit_state(&mut self) {
         self.clear_push_pull_preview();
         self.solid_tool_target = None;
@@ -27945,9 +27987,7 @@ impl KetchupApp {
     }
 
     pub fn undo(&mut self) -> bool {
-        if self.transform_gesture_active() {
-            self.clear_ephemeral_edit_state();
-            self.cancel_rectangle_sketch();
+        if self.cancel_ephemeral_edit_for_history() {
             return false;
         }
         let undoing_assistant_change = self.assistant_change_can_undo();
@@ -27970,9 +28010,7 @@ impl KetchupApp {
     }
 
     pub fn redo(&mut self) -> bool {
-        if self.transform_gesture_active() {
-            self.clear_ephemeral_edit_state();
-            self.cancel_rectangle_sketch();
+        if self.cancel_ephemeral_edit_for_history() {
             return false;
         }
         if !self.mutate_history_with_work_recovery(DocumentStore::redo) {
@@ -34407,10 +34445,10 @@ impl KetchupApp {
         let save_document = context.input(|input| {
             input.modifiers.command && !input.modifiers.shift && input.key_pressed(egui::Key::S)
         });
-        let undo =
-            context.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::Z));
-        let redo =
-            context.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::Y));
+        let undo = !context.wants_keyboard_input()
+            && context.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::Z));
+        let redo = !context.wants_keyboard_input()
+            && context.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::Y));
         let copy = !context.wants_keyboard_input()
             && context.input_mut(|input| {
                 let mut native_copy = false;
@@ -35409,7 +35447,7 @@ impl KetchupApp {
     }
 
     fn paint_projected_selection(&self, painter: &egui::Painter, edges: &[ProjectedEdge]) {
-        if self.active_tool == ActiveTool::Rotate {
+        if matches!(self.active_tool, ActiveTool::Select | ActiveTool::Rotate) {
             return;
         }
         let selection_stroke = Stroke::new(1.8_f32, Color32::from_rgb(240, 78, 35));
@@ -37868,7 +37906,7 @@ impl KetchupApp {
 
     /// Every validator the operator can run by hand, in canonical order.
     #[must_use]
-    pub const fn validator_ids() -> [&'static str; 9] {
+    pub const fn validator_ids() -> [&'static str; 10] {
         ASSISTANT_VALIDATOR_IDS
     }
 

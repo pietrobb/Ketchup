@@ -13,9 +13,11 @@ const EXACT_REBUILD_BUDGET: Duration = Duration::from_secs(180);
 const UI_FRAMES: usize = 20;
 const UI_FRAME_BUDGET: Duration = Duration::from_secs(5);
 const MEMORY_GROWTH_BUDGET_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-const MEMORY_PROBE_MARGIN_BYTES: u64 = 16 * 1024 * 1024;
-const MEMORY_PROBE_MAX_ALLOCATION_BYTES: u64 = 512 * 1024 * 1024;
+const MEMORY_PROBE_ALLOCATION_BYTES: u64 = 64 * 1024 * 1024;
+const MEMORY_PROBE_MIN_OBSERVED_BYTES: u64 = MEMORY_PROBE_ALLOCATION_BYTES / 2;
 const MEMORY_PROBE_ENV: &str = "KETCHUP_MEMORY_HIGH_WATER_PROBE";
+const MEMORY_PROBE_READY_ENV: &str = "KETCHUP_MEMORY_HIGH_WATER_PROBE_READY";
+const MEMORY_PROBE_RELEASE_ENV: &str = "KETCHUP_MEMORY_HIGH_WATER_PROBE_RELEASE";
 
 #[derive(Clone, Copy)]
 struct CorpusEntry {
@@ -114,16 +116,110 @@ fn process_memory_high_water_bytes() -> u64 {
         .expect("memory high-water must be numeric")
 }
 
+#[cfg(windows)]
+fn process_tree_memory_high_water_bytes() -> u64 {
+    let command = format!(
+        r#"$ErrorActionPreference = 'Stop'
+$root = [uint32]{}
+$self = [uint32]$PID
+$processes = @(Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId)
+$pending = [System.Collections.ArrayList]::new()
+[void]$pending.Add($root)
+$ids = [System.Collections.ArrayList]::new()
+while ($pending.Count -gt 0) {{
+    $id = [uint32]$pending[0]
+    $pending.RemoveAt(0)
+    if ($id -eq $self) {{ continue }}
+    [void]$ids.Add($id)
+    foreach ($child in $processes) {{
+        if ([uint32]$child.ParentProcessId -eq $id) {{
+            [void]$pending.Add([uint32]$child.ProcessId)
+        }}
+    }}
+}}
+[uint64]$sum = 0
+foreach ($id in $ids) {{
+    $process = Get-Process -Id $id -ErrorAction Stop
+    $sum = $sum + [uint64]$process.PeakPagedMemorySize64
+}}
+[Console]::Write($sum)"#,
+        std::process::id()
+    );
+    let output = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &command])
+        .output()
+        .expect("PowerShell must measure process-tree memory high-water");
+    assert!(
+        output.status.success(),
+        "process-tree memory high-water query failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .expect("process-tree memory high-water must be UTF-8 digits")
+        .trim()
+        .parse()
+        .expect("process-tree memory high-water must be numeric")
+}
+
 #[cfg(target_os = "linux")]
-fn process_memory_high_water_bytes() -> u64 {
-    let status = std::fs::read_to_string("/proc/self/status").expect("read /proc/self/status");
+fn linux_process_memory_high_water_bytes(pid: u32) -> u64 {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status"))
+        .unwrap_or_else(|error| panic!("read /proc/{pid}/status: {error}"));
     let kib = status
         .lines()
         .find_map(|line| line.strip_prefix("VmHWM:"))
         .and_then(|value| value.split_whitespace().next())
         .and_then(|value| value.parse::<u64>().ok())
-        .expect("VmHWM must be present");
+        .unwrap_or_else(|| panic!("VmHWM must be present for process {pid}"));
     kib * 1024
+}
+
+#[cfg(target_os = "linux")]
+fn process_memory_high_water_bytes() -> u64 {
+    linux_process_memory_high_water_bytes(std::process::id())
+}
+
+#[cfg(target_os = "linux")]
+fn process_tree_memory_high_water_bytes() -> u64 {
+    let root = std::process::id();
+    let mut relationships = Vec::new();
+    for entry in std::fs::read_dir("/proc").expect("enumerate /proc for process-tree memory") {
+        let entry = entry.expect("read /proc entry");
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
+            continue;
+        };
+        let parent = stat
+            .rsplit_once(") ")
+            .and_then(|(_, fields)| fields.split_whitespace().nth(1))
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or_else(|| panic!("parse parent PID from /proc/{pid}/stat"));
+        relationships.push((pid, parent));
+    }
+
+    let mut descendants = HashSet::from([root]);
+    loop {
+        let previous_len = descendants.len();
+        for &(pid, parent) in &relationships {
+            if descendants.contains(&parent) {
+                descendants.insert(pid);
+            }
+        }
+        if descendants.len() == previous_len {
+            break;
+        }
+    }
+    descendants.into_iter().fold(0_u64, |total, pid| {
+        total
+            .checked_add(linux_process_memory_high_water_bytes(pid))
+            .expect("process-tree memory high-water overflow")
+    })
 }
 
 #[cfg(not(any(windows, target_os = "linux")))]
@@ -131,39 +227,9 @@ fn process_memory_high_water_bytes() -> u64 {
     panic!("memory high-water measurement is unsupported on this platform")
 }
 
-#[cfg(windows)]
-fn process_current_memory_bytes() -> u64 {
-    let command = format!(
-        "[Console]::Write((Get-Process -Id {}).PrivateMemorySize64)",
-        std::process::id()
-    );
-    let output = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &command])
-        .output()
-        .expect("PowerShell must measure current memory");
-    assert!(output.status.success(), "current-memory query failed");
-    String::from_utf8(output.stdout)
-        .expect("current memory must be UTF-8 digits")
-        .trim()
-        .parse()
-        .expect("current memory must be numeric")
-}
-
-#[cfg(target_os = "linux")]
-fn process_current_memory_bytes() -> u64 {
-    let status = std::fs::read_to_string("/proc/self/status").expect("read /proc/self/status");
-    let kib = status
-        .lines()
-        .find_map(|line| line.strip_prefix("VmRSS:"))
-        .and_then(|value| value.split_whitespace().next())
-        .and_then(|value| value.parse::<u64>().ok())
-        .expect("VmRSS must be present");
-    kib * 1024
-}
-
 #[cfg(not(any(windows, target_os = "linux")))]
-fn process_current_memory_bytes() -> u64 {
-    panic!("current-memory measurement is unsupported on this platform")
+fn process_tree_memory_high_water_bytes() -> u64 {
+    panic!("process-tree memory high-water measurement is unsupported on this platform")
 }
 
 fn milliseconds(duration: Duration) -> f64 {
@@ -182,46 +248,70 @@ fn memory_high_water_probe_child() {
         return;
     }
 
-    let high_water_before = process_memory_high_water_bytes();
-    let current_before = process_current_memory_bytes();
-    let allocation_bytes = high_water_before
-        .saturating_sub(current_before)
-        .checked_add(MEMORY_PROBE_MARGIN_BYTES)
-        .expect("memory probe allocation size");
-    assert!(
-        allocation_bytes <= MEMORY_PROBE_MAX_ALLOCATION_BYTES,
-        "memory probe would require an unsafe {allocation_bytes}-byte allocation"
+    let ready_path =
+        PathBuf::from(std::env::var_os(MEMORY_PROBE_READY_ENV).expect("memory probe ready path"));
+    let release_path = PathBuf::from(
+        std::env::var_os(MEMORY_PROBE_RELEASE_ENV).expect("memory probe release path"),
     );
-    let mut allocation = vec![0_u8; usize::try_from(allocation_bytes).unwrap()];
+    let high_water_before = process_memory_high_water_bytes();
+    let mut allocation = vec![0_u8; usize::try_from(MEMORY_PROBE_ALLOCATION_BYTES).unwrap()];
     for page in allocation.chunks_mut(4096) {
         page[0] = 1;
     }
     std::hint::black_box(&allocation);
     let high_water_while_live = process_memory_high_water_bytes();
     assert!(
-        high_water_while_live >= high_water_before.saturating_add(MEMORY_PROBE_MARGIN_BYTES / 2),
-        "memory high-water missed a live {allocation_bytes}-byte transient allocation"
+        high_water_while_live >= high_water_before.saturating_add(MEMORY_PROBE_MIN_OBSERVED_BYTES),
+        "child memory high-water missed a live {MEMORY_PROBE_ALLOCATION_BYTES}-byte allocation"
     );
-    drop(allocation);
-    let high_water_after_drop = process_memory_high_water_bytes();
-    assert!(
-        high_water_after_drop >= high_water_while_live,
-        "memory high-water regressed after releasing a transient allocation"
-    );
+    std::fs::write(&ready_path, b"ready").expect("publish memory probe readiness");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !release_path.is_file() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(release_path.is_file(), "memory probe release timed out");
+    std::hint::black_box(&allocation);
 }
 
-fn verify_memory_high_water_observes_transient_allocation() {
-    let output = Command::new(std::env::current_exe().expect("test executable path"))
+fn verify_memory_high_water_observes_child_allocation() {
+    let directory = tempfile::tempdir().expect("memory probe directory");
+    let ready_path = directory.path().join("ready");
+    let release_path = directory.path().join("release");
+    let high_water_before = process_tree_memory_high_water_bytes();
+    let child = Command::new(std::env::current_exe().expect("test executable path"))
         .args(["--exact", "memory_high_water_probe_child", "--nocapture"])
         .env(MEMORY_PROBE_ENV, "1")
-        .output()
-        .expect("spawn isolated memory high-water probe");
+        .env(MEMORY_PROBE_READY_ENV, &ready_path)
+        .env(MEMORY_PROBE_RELEASE_ENV, &release_path)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn isolated child memory high-water probe");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !ready_path.is_file() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let ready = ready_path.is_file();
+    let high_water_with_child = process_tree_memory_high_water_bytes();
+    std::fs::write(&release_path, b"release").expect("release child memory probe");
+    let output = child
+        .wait_with_output()
+        .expect("wait for child memory high-water probe");
     assert!(
-        output.status.success(),
-        "isolated memory high-water probe failed:\n{}\n{}",
+        ready && output.status.success(),
+        "isolated child memory high-water probe failed:\n{}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    assert!(
+        high_water_with_child >= high_water_before.saturating_add(MEMORY_PROBE_MIN_OBSERVED_BYTES),
+        "process-tree memory high-water missed the child allocation: before={high_water_before}, with_child={high_water_with_child}"
+    );
+}
+
+#[test]
+fn process_tree_memory_high_water_observes_child_allocation() {
+    verify_memory_high_water_observes_child_allocation();
 }
 
 #[test]
@@ -232,8 +322,8 @@ fn realistic_heterogeneous_corpus_measures_open_exact_ui_and_memory_without_pari
         "missing exact worker: {}",
         worker.display()
     );
-    verify_memory_high_water_observes_transient_allocation();
-    let memory_high_water_bytes_before = process_memory_high_water_bytes();
+    verify_memory_high_water_observes_child_allocation();
+    let memory_high_water_bytes_before = process_tree_memory_high_water_bytes();
     let mut memory_high_water_bytes_after = memory_high_water_bytes_before;
     let mut fixtures = Vec::with_capacity(CORPUS.len());
 
@@ -311,6 +401,7 @@ fn realistic_heterogeneous_corpus_measures_open_exact_ui_and_memory_without_pari
             "{} evaluation mutated canonical state",
             entry.name
         );
+        let exact_memory_high_water = process_tree_memory_high_water_bytes();
         drop(session);
 
         let mut shell = Shell::new();
@@ -336,9 +427,10 @@ fn realistic_heterogeneous_corpus_measures_open_exact_ui_and_memory_without_pari
         assert_eq!(shell.app().document_revision(), identity.1);
         assert_eq!(shell.app().canonical_digest(), identity.2);
         assert!(!shell.app().is_dirty());
+        let ui_memory_high_water = process_tree_memory_high_water_bytes();
         drop(shell);
 
-        let fixture_memory_high_water = process_memory_high_water_bytes();
+        let fixture_memory_high_water = exact_memory_high_water.max(ui_memory_high_water);
         memory_high_water_bytes_after =
             memory_high_water_bytes_after.max(fixture_memory_high_water);
         fixtures.push(FixtureMetrics {
@@ -384,7 +476,7 @@ fn realistic_heterogeneous_corpus_measures_open_exact_ui_and_memory_without_pari
     );
 
     let metrics = CorpusMetrics {
-        schema: "ketchup.production-performance-corpus.v2",
+        schema: "ketchup.production-performance-corpus.v3",
         build_profile: if cfg!(debug_assertions) {
             "debug"
         } else {
@@ -402,7 +494,7 @@ fn realistic_heterogeneous_corpus_measures_open_exact_ui_and_memory_without_pari
             "timings are wall-clock samples from one local run, not a cross-product benchmark",
             "UI samples are deterministic offscreen egui frames and do not claim native-window or hardware-GPU latency",
             "legacy documents with unsupported producers report exact incompleteness instead of being skipped",
-            "memory is the process OS high-water: peak page-file usage on Windows and VmHWM on Linux",
+            "memory is the live process-tree OS high-water sum: peak page-file usage on Windows and VmHWM on Linux",
             "regression budgets are generous failure ceilings, not advertised performance targets",
         ],
     };

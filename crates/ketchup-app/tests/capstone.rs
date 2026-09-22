@@ -109,6 +109,83 @@ fn hiding_and_unhiding_the_selection_is_one_undo_step_each() {
 }
 
 #[test]
+fn text_edit_undo_redo_owns_shortcuts_before_document_history() {
+    let mut shell = Shell::new();
+    assert!(shell.app_mut().create_box());
+    shell.settle();
+    let previous = (
+        shell.app().document_revision(),
+        shell.app().canonical_digest(),
+        shell.app().undo_step_count(),
+        shell.app().redo_step_count(),
+    );
+    assert!(shell.app_mut().create_box());
+    shell.settle();
+    let current = (
+        shell.app().document_revision(),
+        shell.app().canonical_digest(),
+        shell.app().undo_step_count(),
+        shell.app().redo_step_count(),
+    );
+
+    let value_label = shell.catalog().text("value-label-dimensions");
+    shell.focus_text_input(&value_label);
+    shell.type_text("12");
+    assert_eq!(shell.app().value_input(), "12");
+
+    shell.key(Key::Z, ctrl());
+    assert_eq!(shell.app().value_input(), "");
+    assert_eq!(
+        (
+            shell.app().document_revision(),
+            shell.app().canonical_digest(),
+            shell.app().undo_step_count(),
+            shell.app().redo_step_count(),
+        ),
+        current,
+        "text Undo must not navigate canonical CAD history"
+    );
+
+    shell.key(Key::Y, ctrl());
+    assert_eq!(shell.app().value_input(), "12");
+    assert_eq!(
+        (
+            shell.app().document_revision(),
+            shell.app().canonical_digest(),
+            shell.app().undo_step_count(),
+            shell.app().redo_step_count(),
+        ),
+        current,
+        "text Redo must not navigate canonical CAD history"
+    );
+
+    shell.click_at(shell.viewport_rect().center());
+    shell.key(Key::Z, ctrl());
+    assert_eq!(
+        (
+            shell.app().document_revision(),
+            shell.app().canonical_digest(),
+            shell.app().undo_step_count(),
+            shell.app().redo_step_count(),
+        ),
+        (previous.0, previous.1, previous.2, 1),
+        "outside text input, Undo must navigate canonical CAD history"
+    );
+
+    shell.key(Key::Y, ctrl());
+    assert_eq!(
+        (
+            shell.app().document_revision(),
+            shell.app().canonical_digest(),
+            shell.app().undo_step_count(),
+            shell.app().redo_step_count(),
+        ),
+        current,
+        "outside text input, Redo must navigate canonical CAD history"
+    );
+}
+
+#[test]
 fn zoom_fit_frames_the_whole_model_without_changing_it() {
     let mut shell = Shell::new();
     shell.click_at(shell.viewport_rect().center());

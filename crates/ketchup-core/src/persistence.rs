@@ -59,7 +59,9 @@ use crate::import::{
     ImportOutputRef, ImportReceipt, ImportUnitAuthority, ImportUnitDecision,
     MAX_IMPORT_DIAGNOSTICS, MAX_IMPORT_OUTPUTS,
 };
-use crate::joinery::{DowelJointContract, DowelJointFace, DowelJointId, DowelSpec};
+use crate::joinery::{
+    DowelJointContract, DowelJointFace, DowelJointId, DowelPhysicalHolePair, DowelSpec,
+};
 use crate::mechanical_contract::{
     MECHANICAL_CONDITION_SCHEMA_V1, MECHANICAL_INTERFACE_SCHEMA_V1, MechanicalAxisAlignment,
     MechanicalCondition, MechanicalConditionId, MechanicalConditionKind, MechanicalInterface,
@@ -167,7 +169,8 @@ const IMPORTED_EXACT_BODY_KIND_SCHEMA: u16 = 88;
 const CAM_PLAN_SCHEMA: u16 = 89;
 const DOWEL_JOINERY_SCHEMA: u16 = 90;
 const PRODUCTION_CODE_SCHEMA: u16 = 91;
-pub const CURRENT_SCHEMA: u16 = PRODUCTION_CODE_SCHEMA;
+const DOWEL_PHYSICAL_HOLE_BINDING_SCHEMA: u16 = 92;
+pub const CURRENT_SCHEMA: u16 = DOWEL_PHYSICAL_HOLE_BINDING_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -274,6 +277,7 @@ struct ProductSchemaCapabilities {
     cam_plans: bool,
     dowel_joinery: bool,
     production_codes: bool,
+    dowel_physical_hole_bindings: bool,
 }
 
 impl ProductSchemaCapabilities {
@@ -365,6 +369,7 @@ impl ProductSchemaCapabilities {
         cam_plans: false,
         dowel_joinery: false,
         production_codes: false,
+        dowel_physical_hole_bindings: false,
     };
 
     const fn current(schema: u16) -> Self {
@@ -456,6 +461,7 @@ impl ProductSchemaCapabilities {
             cam_plans: schema >= CAM_PLAN_SCHEMA,
             dowel_joinery: schema >= DOWEL_JOINERY_SCHEMA,
             production_codes: schema >= PRODUCTION_CODE_SCHEMA,
+            dowel_physical_hole_bindings: schema >= DOWEL_PHYSICAL_HOLE_BINDING_SCHEMA,
         }
     }
 }
@@ -1057,7 +1063,11 @@ fn save_with_schema(snapshot: &Snapshot, schema: u16) -> Vec<u8> {
     {
         push_u32(&mut payload, product.dowel_joints.len() as u32);
         for joint in product.dowel_joints.values() {
-            write_dowel_joint(&mut payload, joint);
+            write_dowel_joint(
+                &mut payload,
+                joint,
+                capabilities.dowel_physical_hole_bindings,
+            );
         }
     }
 
@@ -1084,7 +1094,11 @@ fn save_with_schema(snapshot: &Snapshot, schema: u16) -> Vec<u8> {
     bytes
 }
 
-fn write_dowel_joint(bytes: &mut Vec<u8>, joint: &DowelJointContract) {
+fn write_dowel_joint(
+    bytes: &mut Vec<u8>,
+    joint: &DowelJointContract,
+    write_physical_hole_bindings: bool,
+) {
     push_u64(bytes, joint.id.0);
     push_string(bytes, &joint.name);
     for side in [&joint.first, &joint.second] {
@@ -1116,6 +1130,18 @@ fn write_dowel_joint(bytes: &mut Vec<u8>, joint: &DowelJointContract) {
         joint.dowel.bottom_clearance_mm,
     ] {
         push_u64(bytes, value.to_bits());
+    }
+    if write_physical_hole_bindings {
+        if let Some(bindings) = &joint.physical_hole_pairs {
+            push_u8(bytes, 1);
+            push_u32(bytes, bindings.len() as u32);
+            for binding in bindings {
+                push_u64(bytes, binding.first_pocket_feature_id.0);
+                push_u64(bytes, binding.second_pocket_feature_id.0);
+            }
+        } else {
+            push_u8(bytes, 0);
+        }
     }
 }
 
@@ -3469,13 +3495,14 @@ fn save_atomic_bytes(
 }
 
 fn save_atomic_bytes_if_absent(path: &Path, bytes: &[u8]) -> Result<(), FilePersistenceError> {
-    save_atomic_bytes_if_absent_after_check(path, bytes, || {})
+    save_atomic_bytes_if_absent_after_check(path, bytes, || {}, sync_parent_directory)
 }
 
 fn save_atomic_bytes_if_absent_after_check(
     path: &Path,
     bytes: &[u8],
     after_check: impl FnOnce(),
+    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
 ) -> Result<(), FilePersistenceError> {
     load(bytes).map_err(FilePersistenceError::Format)?;
     let lock_path = save_lock_path(path);
@@ -3506,6 +3533,7 @@ fn save_atomic_bytes_if_absent_after_check(
             FilePersistenceError::Io(error.error)
         }
     })?;
+    sync_parent(parent)?;
     Ok(())
 }
 
@@ -3541,25 +3569,31 @@ fn save_atomic_bytes_after_compare(
         Err(_) if expected.is_some() => return Err(FilePersistenceError::ExternalConflict),
         _ => {}
     }
-    write_atomic_after_prepare(path, bytes, || {
-        after_compare();
-        if expected.is_some_and(|expected| {
-            read_native_document_identity(path).map_or(true, |observed| observed != expected)
-        }) {
-            return Err(FilePersistenceError::ExternalConflict);
-        }
-        Ok(())
-    })
+    write_atomic_after_prepare(
+        path,
+        bytes,
+        || {
+            after_compare();
+            if expected.is_some_and(|expected| {
+                read_native_document_identity(path).map_or(true, |observed| observed != expected)
+            }) {
+                return Err(FilePersistenceError::ExternalConflict);
+            }
+            Ok(())
+        },
+        sync_parent_directory,
+    )
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), FilePersistenceError> {
-    write_atomic_after_prepare(path, bytes, || Ok(()))
+    write_atomic_after_prepare(path, bytes, || Ok(()), sync_parent_directory)
 }
 
 fn write_atomic_after_prepare(
     path: &Path,
     bytes: &[u8],
     before_persist: impl FnOnce() -> Result<(), FilePersistenceError>,
+    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
 ) -> Result<(), FilePersistenceError> {
     let parent = path
         .parent()
@@ -3572,7 +3606,20 @@ fn write_atomic_after_prepare(
     temporary
         .persist(path)
         .map_err(|error| FilePersistenceError::Io(error.error))?;
+    sync_parent(parent)?;
     Ok(())
+}
+
+fn sync_parent_directory(parent: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        fs::File::open(parent)?.sync_all()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = parent;
+        Ok(())
+    }
 }
 
 #[must_use]
@@ -4223,6 +4270,7 @@ fn load_document(
             | IMPORTED_EXACT_BODY_KIND_SCHEMA
             | CAM_PLAN_SCHEMA
             | DOWEL_JOINERY_SCHEMA
+            | PRODUCTION_CODE_SCHEMA
             | CURRENT_SCHEMA
     ) {
         return Err(PersistenceError::UnsupportedSchema(schema));
@@ -6186,7 +6234,10 @@ fn read_cam_plan(reader: &mut Reader<'_>) -> Result<CamPlan, PersistenceError> {
     ))
 }
 
-fn read_dowel_joint(reader: &mut Reader<'_>) -> Result<DowelJointContract, PersistenceError> {
+fn read_dowel_joint(
+    reader: &mut Reader<'_>,
+    read_physical_hole_bindings: bool,
+) -> Result<DowelJointContract, PersistenceError> {
     let id = DowelJointId(reader.u64()?);
     let name = reader.string()?;
     let point3 = |reader: &mut Reader<'_>| -> Result<[f64; 3], PersistenceError> {
@@ -6207,22 +6258,41 @@ fn read_dowel_joint(reader: &mut Reader<'_>) -> Result<DowelJointContract, Persi
     };
     let first = read_side(reader)?;
     let second = read_side(reader)?;
+    let first_center_local_mm = point3(reader)?;
+    let row_unit_first_local = point3(reader)?;
+    let count = reader.u32()?;
+    let spacing_mm = f64::from_bits(reader.u64()?);
+    let dowel = DowelSpec {
+        diameter_mm: f64::from_bits(reader.u64()?),
+        length_mm: f64::from_bits(reader.u64()?),
+        first_insertion_mm: f64::from_bits(reader.u64()?),
+        second_insertion_mm: f64::from_bits(reader.u64()?),
+        bottom_clearance_mm: f64::from_bits(reader.u64()?),
+    };
+    let physical_hole_pairs = if read_physical_hole_bindings && reader.u8()? != 0 {
+        let count = reader.count_with_limit(MAX_COLLECTION_ITEMS)?;
+        let mut bindings = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            bindings.push(DowelPhysicalHolePair {
+                first_pocket_feature_id: FeatureId(reader.u64()?),
+                second_pocket_feature_id: FeatureId(reader.u64()?),
+            });
+        }
+        Some(bindings)
+    } else {
+        None
+    };
     Ok(DowelJointContract {
         id,
         name,
         first,
         second,
-        first_center_local_mm: point3(reader)?,
-        row_unit_first_local: point3(reader)?,
-        count: reader.u32()?,
-        spacing_mm: f64::from_bits(reader.u64()?),
-        dowel: DowelSpec {
-            diameter_mm: f64::from_bits(reader.u64()?),
-            length_mm: f64::from_bits(reader.u64()?),
-            first_insertion_mm: f64::from_bits(reader.u64()?),
-            second_insertion_mm: f64::from_bits(reader.u64()?),
-            bottom_clearance_mm: f64::from_bits(reader.u64()?),
-        },
+        first_center_local_mm,
+        row_unit_first_local,
+        count,
+        spacing_mm,
+        dowel,
+        physical_hole_pairs,
     })
 }
 
@@ -7480,7 +7550,7 @@ fn read_product(
         }
         if capabilities.dowel_joinery && !reader.is_finished() {
             for _ in 0..reader.count_with_limit(MAX_COLLECTION_ITEMS)? {
-                let joint = read_dowel_joint(reader)?;
+                let joint = read_dowel_joint(reader, capabilities.dowel_physical_hole_bindings)?;
                 if product
                     .dowel_joints
                     .insert(joint.id, Arc::new(joint))
@@ -8070,12 +8140,52 @@ mod tests {
         let external = b"concurrent external creation";
 
         assert!(matches!(
-            save_atomic_bytes_if_absent_after_check(&path, &payload, || {
-                fs::write(&path, external).unwrap();
-            }),
+            save_atomic_bytes_if_absent_after_check(
+                &path,
+                &payload,
+                || fs::write(&path, external).unwrap(),
+                |_| Ok(()),
+            ),
             Err(FilePersistenceError::ExternalConflict)
         ));
         assert_eq!(fs::read(path).unwrap(), external);
+    }
+
+    #[test]
+    fn absent_only_save_reports_parent_sync_failure_after_complete_publish() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("new.ketchup");
+        let payload = save(&DocumentStore::new().current());
+
+        let error = save_atomic_bytes_if_absent_after_check(
+            &path,
+            &payload,
+            || {},
+            |_| Err(io::Error::other("injected parent sync failure")),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("injected parent sync failure"));
+        assert_eq!(fs::read(path).unwrap(), payload);
+    }
+
+    #[test]
+    fn replacing_save_reports_parent_sync_failure_after_complete_publish() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("existing.ketchup");
+        fs::write(&path, b"previous").unwrap();
+        let payload = save(&DocumentStore::new().current());
+
+        let error = write_atomic_after_prepare(
+            &path,
+            &payload,
+            || Ok(()),
+            |_| Err(io::Error::other("injected parent sync failure")),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("injected parent sync failure"));
+        assert_eq!(fs::read(path).unwrap(), payload);
     }
 
     #[test]
@@ -8253,12 +8363,13 @@ mod tests {
     }
 
     #[test]
-    fn pre_production_code_schemas_remain_loadable() {
+    fn recent_schemas_remain_loadable() {
         let document = DocumentStore::new();
         for schema in [
             IMPORTED_EXACT_BODY_KIND_SCHEMA,
             CAM_PLAN_SCHEMA,
             DOWEL_JOINERY_SCHEMA,
+            PRODUCTION_CODE_SCHEMA,
         ] {
             let bytes = save_with_schema(&document.current(), schema);
             let loaded = load(&bytes).unwrap();

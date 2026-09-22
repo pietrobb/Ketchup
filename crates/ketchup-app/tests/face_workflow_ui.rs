@@ -29,6 +29,21 @@ fn open_face_workflow(shell: &mut Shell) {
     shell.click_role_and_label(Role::Button, &title);
 }
 
+fn start_push_pull_preview(shell: &mut Shell) {
+    let top = shell.top_face_centre(1);
+    let projected_up = shell
+        .app()
+        .viewport_position(Vec3::new(50.0, 30.0, 21.0))
+        .unwrap();
+    let drag_direction = (projected_up - top).normalized();
+    shell.move_pointer(top);
+    shell.press_key(Key::P);
+    shell.click_at(top);
+    shell.move_pointer(top + drag_direction * 80.0);
+    assert!(shell.app().push_pull_click_anchor_active());
+    assert!(shell.app().preview_action_digest().is_some());
+}
+
 fn canonical_render_triangle_count(shell: &Shell) -> usize {
     let snapshot = shell.app().document_snapshot();
     let mut cache = DerivedRenderCache::default();
@@ -219,6 +234,65 @@ fn typed_push_pull_value_keeps_priority_over_the_hovering_pointer() {
     assert!(!shell.app().push_pull_click_anchor_active());
     assert_eq!(shell.app().document_height_mm(), 27.0);
     assert_eq!(shell.app().undo_step_count(), 1);
+}
+
+#[test]
+fn undo_and_redo_cancel_push_pull_preview_with_empty_history() {
+    let mut shell = Shell::new();
+    let before = (
+        shell.app().document_revision(),
+        shell.app().canonical_digest(),
+        shell.app().undo_step_count(),
+        shell.app().redo_step_count(),
+    );
+
+    for command in [AppCommand::Undo, AppCommand::Redo] {
+        start_push_pull_preview(&mut shell);
+        assert!(shell.app().command_is_enabled(command));
+        shell.click_menu_command("menu-edit", command);
+        assert!(!shell.app().push_pull_click_anchor_active());
+        assert_eq!(
+            (
+                shell.app().document_revision(),
+                shell.app().canonical_digest(),
+                shell.app().undo_step_count(),
+                shell.app().redo_step_count(),
+            ),
+            before
+        );
+    }
+}
+
+#[test]
+fn undo_and_redo_cancel_push_pull_preview_without_navigating_nonempty_history() {
+    let mut shell = Shell::new();
+    assert!(shell.app_mut().create_box());
+    assert!(shell.app_mut().create_box());
+    shell.settle();
+    shell.click_menu_command("menu-edit", AppCommand::Undo);
+    assert!(shell.app().can_undo());
+    assert!(shell.app().can_redo());
+    let before = (
+        shell.app().document_revision(),
+        shell.app().canonical_digest(),
+        shell.app().undo_step_count(),
+        shell.app().redo_step_count(),
+    );
+
+    for command in [AppCommand::Undo, AppCommand::Redo] {
+        start_push_pull_preview(&mut shell);
+        shell.click_menu_command("menu-edit", command);
+        assert!(!shell.app().push_pull_click_anchor_active());
+        assert_eq!(
+            (
+                shell.app().document_revision(),
+                shell.app().canonical_digest(),
+                shell.app().undo_step_count(),
+                shell.app().redo_step_count(),
+            ),
+            before
+        );
+    }
 }
 
 #[test]

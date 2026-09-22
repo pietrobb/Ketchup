@@ -1782,9 +1782,14 @@ mod tests {
             caps["result"]["cad_program_schema"]["$defs"]["AssistantCadEditOperation"]["oneOf"]
                 .as_array()
                 .unwrap();
-        assert_eq!(variants.len(), 30);
+        assert_eq!(variants.len(), 35);
         for operation in [
             "append_feature",
+            "create_panel",
+            "create_dowel_joint",
+            "create_tag",
+            "set_occurrence_tag",
+            "set_tag_visibility",
             "create_program_sketch",
             "append_program_pocket",
             "create_spatial_path",

@@ -626,6 +626,67 @@ fn in_window_consent_is_required_and_disconnect_revokes_the_automatic_credential
 }
 
 #[test]
+fn attached_live_open_requires_explicit_consent_for_the_exact_path() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("approved-live-open.ketchup");
+    let mut source = Shell::with_dialogs(ScriptedFileDialogs::new().queue_save(&path));
+    assert!(source.app_mut().create_box());
+    source.click_menu_command("menu-file", AppCommand::SaveAs);
+    let target_digest = source.app().canonical_digest();
+
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_refused_high_risk()
+        .queue_high_risk_approval(41)
+        .always_discard();
+    let probe = dialogs.clone();
+    let mut shell = Shell::with_dialogs(dialogs);
+    assert!(shell.app_mut().create_box());
+    let before_digest = shell.app().canonical_digest();
+    shell.enable_live_consent_broker();
+    let consent_address = shell.app().live_consent_address().unwrap();
+    let attach = std::thread::spawn(move || request_consent(consent_address, &"c".repeat(64)));
+    wait_for_consent(&mut shell);
+    shell.click_button_label(&shell.catalog().text("live-consent-allow"));
+    let allowed = attach.join().unwrap();
+    let token = allowed["token"].as_str().unwrap();
+    let mut live = TcpStream::connect(allowed["live_bridge_address"].as_str().unwrap()).unwrap();
+
+    let expected = call(&mut shell, &mut live, token, Request::Status {})
+        .stamp
+        .unwrap();
+    let refused = call(
+        &mut shell,
+        &mut live,
+        token,
+        Request::Open {
+            expected: expected.clone(),
+            path: path.to_string_lossy().into_owned(),
+        },
+    );
+    assert_eq!(refused.error.as_deref(), Some("open_rejected"));
+    assert_eq!(shell.app().canonical_digest(), before_digest);
+    assert!(shell.app().document_path().is_none());
+    assert_eq!(probe.high_risk_prompts().len(), 1);
+    assert!(probe.high_risk_prompts()[0].contains(&path.display().to_string()));
+    assert_eq!(probe.discard_prompts(), 0);
+
+    let opened = call(
+        &mut shell,
+        &mut live,
+        token,
+        Request::Open {
+            expected,
+            path: path.to_string_lossy().into_owned(),
+        },
+    );
+    assert!(opened.ok, "{:?}", opened.error);
+    assert_eq!(shell.app().document_path(), Some(path.as_path()));
+    assert_eq!(shell.app().canonical_digest(), target_digest);
+    assert_eq!(probe.high_risk_prompts().len(), 2);
+    assert_eq!(probe.discard_prompts(), 1);
+}
+
+#[test]
 fn disconnected_attach_requester_cannot_leave_window_busy() {
     let mut shell = Shell::new();
     shell.enable_live_consent_broker();

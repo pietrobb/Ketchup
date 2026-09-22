@@ -3,10 +3,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use ketchup_application::{
     AssistantValidationSelection, DocumentSession, StructuralValidationScope,
     scoped_static_load_report,
-    validation::{assistant_static_load_report, assistant_validation_context},
+    validation::{
+        assistant_assembly_retention_report, assistant_static_load_report,
+        assistant_validation_context,
+    },
 };
 use ketchup_core::{
-    document::*, exact_product::ExactResultRegistry, validation::ValidatorRoleIndex,
+    assembly_joint::{AssemblyJoint, AssemblyJointId, AssemblyJointKind},
+    document::*,
+    exact_product::ExactResultRegistry,
+    validation::ValidatorRoleIndex,
 };
 
 fn structural_document(occurrence_count: u64) -> DocumentStore {
@@ -96,6 +102,105 @@ fn unchecked_public_selection_cannot_report_success_without_a_known_validator() 
         );
     }
     assert_eq!(session.visible_undo_steps(), 0);
+}
+
+#[test]
+fn assembly_retention_finds_an_unjoined_back_panel_and_passes_after_a_fixed_connection() {
+    let mut document = DocumentStore::new();
+    let mut commands = vec![
+        CanonicalCommand::CreateDefinition {
+            id: DefinitionId(1),
+            name: "Cabinet panel".into(),
+        },
+        CanonicalCommand::CreateFeature {
+            id: FeatureId(1),
+            definition_id: DefinitionId(1),
+            name: "Panel profile".into(),
+            kind: FeatureKind::Profile {
+                points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+            },
+        },
+        CanonicalCommand::CreateFeature {
+            id: FeatureId(2),
+            definition_id: DefinitionId(1),
+            name: "Panel solid".into(),
+            kind: FeatureKind::Extrusion {
+                profile: FeatureId(1),
+                height: Dimension::new("10", 10.0).unwrap(),
+            },
+        },
+        CanonicalCommand::UpsertClassificationDimension {
+            id: ClassificationDimensionId(7),
+            name: "ketchup.assembly-retention-role.v1".into(),
+            categories: vec![(
+                ClassificationCategoryId(9),
+                "part:nightstand-carcass".into(),
+            )],
+        },
+    ];
+    for (id, name, x) in [
+        (1, "Left side", 0.0),
+        (2, "Top", 20.0),
+        (3, "Back panel", 40.0),
+    ] {
+        commands.extend([
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(id),
+                definition_id: DefinitionId(1),
+                name: name.into(),
+                transform: Transform::from_translation(x, 0.0, 0.0).unwrap(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: OccurrenceId(id),
+                dimension_id: ClassificationDimensionId(7),
+                category_id: Some(ClassificationCategoryId(9)),
+            },
+        ]);
+    }
+    commands.push(CanonicalCommand::CreateAssemblyJoint(AssemblyJoint::new(
+        AssemblyJointId(1),
+        OccurrenceId(1),
+        OccurrenceId(2),
+        AssemblyJointKind::Fixed,
+    )));
+    document.apply_batch(&CommandBatch::new(commands)).unwrap();
+
+    let failed = assistant_assembly_retention_report(&document.current(), true, true);
+    assert_eq!(failed["state"], "failed", "{failed:#}");
+    assert_eq!(failed["complete"], true, "{failed:#}");
+    assert_eq!(failed["issue_count"], 1, "{failed:#}");
+    assert_eq!(failed["issues"][0]["occurrence_id"], 3, "{failed:#}");
+    assert_eq!(failed["issues"][0]["name"], "Back panel", "{failed:#}");
+    assert_eq!(
+        failed["issues"][0]["free_translation_directions"],
+        serde_json::json!(["+X", "-X", "+Y", "-Y", "+Z", "-Z"])
+    );
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateAssemblyJoint(AssemblyJoint::new(
+                AssemblyJointId(2),
+                OccurrenceId(2),
+                OccurrenceId(3),
+                AssemblyJointKind::Fixed,
+            )),
+        ]))
+        .unwrap();
+    let passed = assistant_validation_context(
+        &document.current(),
+        &ExactResultRegistry::default(),
+        &AssistantValidationSelection::only(&["assembly_retention"]),
+    );
+    assert_eq!(passed["state"], "passed", "{passed:#}");
+    assert_eq!(passed["complete"], true, "{passed:#}");
+    assert_eq!(passed["assembly_retention"]["issue_count"], 0);
+    assert_eq!(
+        passed["assembly_retention"]["evaluations"][2]["translation_probe"]["+Y"],
+        "retained"
+    );
 }
 
 #[test]

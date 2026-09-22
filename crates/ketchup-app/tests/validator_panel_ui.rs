@@ -63,7 +63,7 @@ fn the_validator_panel_names_every_validator_and_says_what_it_checks() {
         let mut shell = Shell::with_catalog(catalog);
         shell.settle();
         open_validator_panel(&mut shell);
-        assert_eq!(KetchupApp::validator_ids().len(), 9);
+        assert_eq!(KetchupApp::validator_ids().len(), 10);
         for validator in KetchupApp::validator_ids() {
             let name = shell.catalog().text(&format!("validator-{validator}-name"));
             let what = shell.catalog().text(&format!("validator-{validator}-what"));

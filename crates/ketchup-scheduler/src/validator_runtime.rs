@@ -1,10 +1,10 @@
 use ketchup_core::document::{HighRiskClass, SideEffectAuthorizationReceipt};
 use ketchup_core::graph::sha256_hex;
 use ketchup_core::validator_hosting::{InstalledValidatorPackage, ValidatorRuntime};
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{Read, Write};
-use std::net::{Shutdown, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
 use wasmi::{Config, EnforcedLimits, Engine, Linker, Module, Store, StoreLimitsBuilder};
 
@@ -109,19 +109,74 @@ impl EgressLimits {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EgressGrant {
-    endpoints: BTreeSet<(String, u16)>,
+    endpoints: BTreeMap<(String, u16), SocketAddr>,
 }
 
 impl EgressGrant {
-    #[must_use]
-    pub fn new(endpoints: impl IntoIterator<Item = (String, u16)>) -> Self {
-        Self {
-            endpoints: endpoints.into_iter().collect(),
+    pub fn new(
+        endpoints: impl IntoIterator<Item = (String, u16)>,
+    ) -> Result<Self, ValidatorRuntimeError> {
+        let mut verified = BTreeMap::new();
+        for (host, port) in endpoints {
+            let addresses = (host.as_str(), port)
+                .to_socket_addrs()
+                .map_err(|error| ValidatorRuntimeError::EgressTransport(error.to_string()))?
+                .collect::<Vec<_>>();
+            let address = *addresses.first().ok_or_else(|| {
+                ValidatorRuntimeError::EgressTransport("host resolved to no address".to_owned())
+            })?;
+            if host.parse::<IpAddr>().is_err()
+                && addresses
+                    .iter()
+                    .any(|address| !is_public_egress_address(address.ip()))
+            {
+                return Err(ValidatorRuntimeError::EgressDenied);
+            }
+            verified.insert((host, port), address);
         }
+        Ok(Self {
+            endpoints: verified,
+        })
     }
 
-    fn allows(&self, host: &str, port: u16) -> bool {
-        self.endpoints.contains(&(host.to_owned(), port))
+    fn address(&self, host: &str, port: u16) -> Option<SocketAddr> {
+        self.endpoints.get(&(host.to_owned(), port)).copied()
+    }
+}
+
+fn is_public_egress_address(address: IpAddr) -> bool {
+    match address {
+        IpAddr::V4(address) => {
+            let octets = address.octets();
+            let shared = octets[0] == 100 && octets[1] & 0xc0 == 64;
+            let benchmarking = octets[0] == 198 && octets[1] & 0xfe == 18;
+            let protocol_assignment = octets[0] == 192 && octets[1] == 0 && octets[2] == 0;
+            !address.is_private()
+                && !address.is_loopback()
+                && !address.is_link_local()
+                && !address.is_unspecified()
+                && !address.is_multicast()
+                && !address.is_broadcast()
+                && !address.is_documentation()
+                && octets[0] != 0
+                && !shared
+                && !benchmarking
+                && !protocol_assignment
+                && octets[0] < 240
+        }
+        IpAddr::V6(address) => {
+            if let Some(address) = address.to_ipv4() {
+                return is_public_egress_address(IpAddr::V4(address));
+            }
+            let first = address.segments()[0];
+            !address.is_loopback()
+                && !address.is_unspecified()
+                && !address.is_multicast()
+                && first & 0xfe00 != 0xfc00
+                && first & 0xffc0 != 0xfe80
+                && first & 0xffc0 != 0xfec0
+                && address.segments()[..2] != [0x2001, 0x0db8]
+        }
     }
 }
 
@@ -134,15 +189,24 @@ pub struct EgressRequest {
 
 pub const VALIDATOR_EGRESS_OPERATION: &str = "validator-remote-egress";
 
-#[must_use]
-pub fn validator_egress_destination(request: &EgressRequest) -> String {
-    format!("tcp://{}:{}", request.host, request.port)
+pub fn validator_egress_destination(
+    grant: &EgressGrant,
+    request: &EgressRequest,
+) -> Result<String, ValidatorRuntimeError> {
+    let address = grant
+        .address(&request.host, request.port)
+        .ok_or(ValidatorRuntimeError::EgressDenied)?;
+    Ok(format!(
+        "tcp://{}:{}#resolved={address}",
+        request.host, request.port
+    ))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EgressReceipt {
     pub host: String,
     pub port: u16,
+    pub address: SocketAddr,
     pub request_bytes: usize,
     pub response_bytes: usize,
     pub request_sha256: String,
@@ -172,12 +236,14 @@ pub fn perform_host_mediated_egress(
     let deadline = Instant::now()
         .checked_add(limits.timeout)
         .ok_or(ValidatorRuntimeError::InvalidLimits)?;
-    if !grant.allows(&request.host, request.port)
-        || !package
-            .manifest()
-            .allowed_egress_hosts()
-            .iter()
-            .any(|host| host == &request.host)
+    let address = grant
+        .address(&request.host, request.port)
+        .ok_or(ValidatorRuntimeError::EgressDenied)?;
+    if !package
+        .manifest()
+        .allowed_egress_hosts()
+        .iter()
+        .any(|host| host == &request.host)
     {
         return Err(ValidatorRuntimeError::EgressDenied);
     }
@@ -189,19 +255,12 @@ pub fn perform_host_mediated_egress(
     if authorization.operation() != VALIDATOR_EGRESS_OPERATION
         || authorization.payload_digest() != sha256_hex(&request.payload)
         || scope.class() != HighRiskClass::ExternalDisclosure
-        || scope.destination() != Some(validator_egress_destination(request).as_str())
+        || scope.destination() != Some(validator_egress_destination(grant, request)?.as_str())
         || scope.provider() != Some(package.manifest().package())
         || scope.path().is_some()
     {
         return Err(ValidatorRuntimeError::EgressAuthorizationInvalid);
     }
-    let address = (request.host.as_str(), request.port)
-        .to_socket_addrs()
-        .map_err(|error| ValidatorRuntimeError::EgressTransport(error.to_string()))?
-        .next()
-        .ok_or_else(|| {
-            ValidatorRuntimeError::EgressTransport("host resolved to no address".to_owned())
-        })?;
     let mut stream = TcpStream::connect_timeout(&address, remaining_egress_time(deadline)?)
         .map_err(|error| ValidatorRuntimeError::EgressTransport(error.to_string()))?;
     let mut written = 0;
@@ -247,6 +306,7 @@ pub fn perform_host_mediated_egress(
     let receipt = EgressReceipt {
         host: request.host.clone(),
         port: request.port,
+        address,
         request_bytes: request.payload.len(),
         response_bytes: response.len(),
         request_sha256: sha256_hex(&request.payload),
