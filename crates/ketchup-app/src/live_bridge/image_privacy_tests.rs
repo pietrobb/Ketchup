@@ -44,6 +44,7 @@ fn queue_with_options(
                 framing,
                 detail_target,
             },
+            connection_closed: false,
             cancelled: Arc::new(AtomicBool::new(false)),
             reply,
         },

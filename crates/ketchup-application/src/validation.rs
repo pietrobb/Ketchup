@@ -1,4 +1,5 @@
 use ketchup_core::assembly_joint::AssemblyJointKind;
+use ketchup_core::assembly_recipe::{RecipePartMobility, RecipeRelationKind};
 use ketchup_core::document::{OccurrenceId, Snapshot};
 use ketchup_core::exact_product::ExactResultRegistry;
 use ketchup_core::exact_validation::*;
@@ -575,6 +576,475 @@ fn assistant_scaled_orthogonal_source_frame_extents_mm(
     }))
 }
 
+#[derive(Clone, Copy)]
+struct RecipeFaceEvidence {
+    center_world_mm: [f64; 3],
+    normal_world: [f64; 3],
+    tangent_axes_world: [[f64; 3]; 2],
+    tangent_half_extents_mm: [f64; 2],
+}
+
+fn recipe_face_evidence(
+    participant: &GeneralBodyParticipant,
+    role: &str,
+) -> Option<RecipeFaceEvidence> {
+    let (axis, maximum) = match role {
+        "bounds.x.minimum" => (0, false),
+        "bounds.x.maximum" => (0, true),
+        "bounds.y.minimum" => (1, false),
+        "bounds.y.maximum" => (1, true),
+        "bounds.z.minimum" | "extrusion.bottom" => (2, false),
+        "bounds.z.maximum" | "extrusion.top" => (2, true),
+        _ => return None,
+    };
+    let geometry = participant.geometry_evidence();
+    let axes: [[f64; 3]; 3] =
+        std::array::from_fn(|index| geometry.source_axis_world_direction(index).unwrap());
+    let half_extents: [f64; 3] = std::array::from_fn(|index| {
+        geometry.source_frame_extents_mm()[index]
+            * geometry.source_axis_world_scale(index).unwrap()
+            * 0.5
+    });
+    let sign = if maximum { 1.0 } else { -1.0 };
+    let center_world_mm = std::array::from_fn(|coordinate| {
+        geometry.source_frame_center_world_mm()[coordinate]
+            + axes[axis][coordinate] * half_extents[axis] * sign
+    });
+    let normal_world = axes[axis].map(|component| component * sign);
+    let tangents = [0, 1, 2]
+        .into_iter()
+        .filter(|candidate| *candidate != axis)
+        .collect::<Vec<_>>();
+    Some(RecipeFaceEvidence {
+        center_world_mm,
+        normal_world,
+        tangent_axes_world: [axes[tangents[0]], axes[tangents[1]]],
+        tangent_half_extents_mm: [half_extents[tangents[0]], half_extents[tangents[1]]],
+    })
+}
+
+fn validation_dot(left: [f64; 3], right: [f64; 3]) -> f64 {
+    left.into_iter().zip(right).map(|(a, b)| a * b).sum()
+}
+
+fn validation_distance(left: [f64; 3], right: [f64; 3]) -> f64 {
+    left.into_iter()
+        .zip(right)
+        .map(|(a, b)| (a - b).powi(2))
+        .sum::<f64>()
+        .sqrt()
+}
+
+fn recipe_face_overlap_area_mm2(
+    first: RecipeFaceEvidence,
+    second: RecipeFaceEvidence,
+    epsilon_mm: f64,
+) -> Option<f64> {
+    let aligned = first.tangent_axes_world.iter().all(|first_axis| {
+        second
+            .tangent_axes_world
+            .iter()
+            .filter(|second_axis| validation_dot(*first_axis, **second_axis).abs() >= 1.0 - 1.0e-8)
+            .count()
+            == 1
+    }) && second.tangent_axes_world.iter().all(|second_axis| {
+        first
+            .tangent_axes_world
+            .iter()
+            .filter(|first_axis| validation_dot(**first_axis, *second_axis).abs() >= 1.0 - 1.0e-8)
+            .count()
+            == 1
+    });
+    if !aligned {
+        return None;
+    }
+    let delta =
+        std::array::from_fn(|axis| second.center_world_mm[axis] - first.center_world_mm[axis]);
+    let mut area = 1.0;
+    for (axis_index, axis) in first.tangent_axes_world.iter().copied().enumerate() {
+        let first_radius = first.tangent_half_extents_mm[axis_index];
+        let second_radius = second
+            .tangent_axes_world
+            .iter()
+            .zip(second.tangent_half_extents_mm)
+            .map(|(second_axis, half_extent)| {
+                validation_dot(axis, *second_axis).abs() * half_extent
+            })
+            .sum::<f64>();
+        let center_offset = validation_dot(delta, axis);
+        let overlap = first_radius.min(center_offset + second_radius)
+            - (-first_radius).max(center_offset - second_radius);
+        if overlap <= epsilon_mm {
+            return Some(0.0);
+        }
+        area *= overlap;
+    }
+    Some(area)
+}
+
+fn transform_validation_vector(matrix: &[f64; 16], vector: [f64; 3]) -> [f64; 3] {
+    [
+        matrix[0] * vector[0] + matrix[1] * vector[1] + matrix[2] * vector[2],
+        matrix[4] * vector[0] + matrix[5] * vector[1] + matrix[6] * vector[2],
+        matrix[8] * vector[0] + matrix[9] * vector[1] + matrix[10] * vector[2],
+    ]
+}
+
+fn dowel_minimum_edge_distance_mm(
+    entry_local_mm: [f64; 3],
+    inward_unit_local: [f64; 3],
+    bounds_min_local_mm: [f64; 3],
+    bounds_max_local_mm: [f64; 3],
+    diameter_mm: f64,
+) -> Option<f64> {
+    let insertion_axis =
+        (0..3).find(|axis| (inward_unit_local[*axis].abs() - 1.0).abs() <= 1.0e-8)?;
+    let radius = diameter_mm * 0.5;
+    (0..3)
+        .filter(|axis| *axis != insertion_axis)
+        .flat_map(|axis| {
+            [
+                entry_local_mm[axis] - bounds_min_local_mm[axis] - radius,
+                bounds_max_local_mm[axis] - entry_local_mm[axis] - radius,
+            ]
+        })
+        .min_by(f64::total_cmp)
+}
+
+fn probe_overlap_error_mm(first: [[f64; 3]; 2], second: [[f64; 3]; 2]) -> f64 {
+    validation_distance(first[0], second[0])
+        .max(validation_distance(first[1], second[1]))
+        .min(validation_distance(first[0], second[1]).max(validation_distance(first[1], second[0])))
+}
+
+pub fn assistant_assembly_constraints_report(
+    snapshot: &Snapshot,
+    selected: bool,
+    coverage_complete: bool,
+) -> serde_json::Value {
+    if !selected {
+        return serde_json::json!({
+            "state": "skipped", "complete": false, "applicable_count": 0,
+            "issue_count": 0, "unknown_count": 0, "issues_complete": true,
+            "contacts": [], "physical_dowel_joints": [], "issues": [], "not_evaluated": [],
+        });
+    }
+    let tolerance = TolerancePolicy::default();
+    let epsilon_mm = tolerance.epsilon_mm();
+    let mut contacts = Vec::new();
+    let mut physical_dowel_joints = Vec::new();
+    let mut issues = Vec::new();
+    let mut not_evaluated = Vec::new();
+    let mut relation_count = 0usize;
+
+    if let Some(recipe) = snapshot.assembly_recipe() {
+        if let Err(error) = recipe.audit(snapshot) {
+            not_evaluated.push(serde_json::json!({
+                "reason": "assembly_recipe_invalid",
+                "detail": error.to_string(),
+            }));
+        } else {
+            let mut participants = BTreeMap::new();
+            for part in recipe.parts() {
+                match GeneralBodyParticipant::accept(
+                    snapshot,
+                    &ExactResultRegistry::default(),
+                    part.instance_path.clone(),
+                    tolerance,
+                ) {
+                    Ok(participant) => {
+                        participants.insert(part.key.as_str().to_owned(), participant);
+                    }
+                    Err(error) => not_evaluated.push(serde_json::json!({
+                        "part": part.key.as_str(),
+                        "reason": "contact_geometry_unavailable",
+                        "detail": format!("{error:?}"),
+                    })),
+                }
+            }
+            for relation in recipe.relations() {
+                relation_count += 1;
+                let first =
+                    participants
+                        .get(relation.first.part.as_str())
+                        .and_then(|participant| {
+                            recipe_face_evidence(participant, &relation.first.role)
+                        });
+                let second =
+                    participants
+                        .get(relation.second.part.as_str())
+                        .and_then(|participant| {
+                            recipe_face_evidence(participant, &relation.second.role)
+                        });
+                let (Some(first), Some(second)) = (first, second) else {
+                    not_evaluated.push(serde_json::json!({
+                        "relation": relation.key.as_str(),
+                        "reason": "contact_face_unsupported_or_unavailable",
+                    }));
+                    continue;
+                };
+                let normal_dot = validation_dot(first.normal_world, second.normal_world);
+                let signed_gap_mm = validation_dot(
+                    std::array::from_fn(|axis| {
+                        second.center_world_mm[axis] - first.center_world_mm[axis]
+                    }),
+                    first.normal_world,
+                );
+                let overlap_area_mm2 = recipe_face_overlap_area_mm2(first, second, epsilon_mm);
+                let normals_valid = match relation.kind {
+                    RecipeRelationKind::Contact => normal_dot <= -1.0 + 1.0e-8,
+                    RecipeRelationKind::Coincident => normal_dot.abs() >= 1.0 - 1.0e-8,
+                };
+                let passed = normals_valid
+                    && signed_gap_mm.abs() <= epsilon_mm
+                    && overlap_area_mm2.is_some_and(|area| area > epsilon_mm * epsilon_mm);
+                let state = if passed { "passed" } else { "failed" };
+                contacts.push(serde_json::json!({
+                    "relation": relation.key.as_str(),
+                    "kind": match relation.kind { RecipeRelationKind::Contact => "contact", RecipeRelationKind::Coincident => "coincident" },
+                    "first_part": relation.first.part.as_str(),
+                    "first_face_role": relation.first.role,
+                    "second_part": relation.second.part.as_str(),
+                    "second_face_role": relation.second.role,
+                    "state": state,
+                    "normal_dot": normal_dot,
+                    "normals_opposed": normal_dot <= -1.0 + 1.0e-8,
+                    "signed_gap_mm": signed_gap_mm,
+                    "gap_mm": signed_gap_mm.max(0.0),
+                    "penetration_mm": (-signed_gap_mm).max(0.0),
+                    "overlap_area_mm2": overlap_area_mm2,
+                    "tolerance_mm": epsilon_mm,
+                }));
+                if !passed {
+                    let code = if !normals_valid {
+                        "assembly.contact_normals_mismatch"
+                    } else if signed_gap_mm > epsilon_mm {
+                        "assembly.contact_gap"
+                    } else if signed_gap_mm < -epsilon_mm {
+                        "assembly.contact_penetration"
+                    } else {
+                        "assembly.contact_area_missing"
+                    };
+                    issues.push(serde_json::json!({
+                        "code": code,
+                        "severity": "error",
+                        "relation": relation.key.as_str(),
+                        "signed_gap_mm": signed_gap_mm,
+                        "overlap_area_mm2": overlap_area_mm2,
+                    }));
+                }
+            }
+        }
+    }
+
+    let mut physical_pair_count = 0usize;
+    let mut verified_full_overlap_count = 0usize;
+    let mut all_first_probes = Vec::<(u64, u32, [[f64; 3]; 2])>::new();
+    let mut all_second_probes = Vec::<(u64, u32, [[f64; 3]; 2])>::new();
+    for joint in snapshot.dowel_joints() {
+        let first_transform = snapshot
+            .resolve_instance_path(&joint.first.instance_path)
+            .ok();
+        let second_transform = snapshot
+            .resolve_instance_path(&joint.second.instance_path)
+            .ok();
+        match project_dowel_joint_contract(snapshot, joint) {
+            Ok(projection) => {
+                let mut pairs = Vec::new();
+                let mut first_probes = Vec::new();
+                let mut second_probes = Vec::new();
+                for pair in &projection.pairs {
+                    physical_pair_count += 1;
+                    let coincidence = pair.physical_probe_coincidence;
+                    if coincidence.is_some() {
+                        verified_full_overlap_count += 1;
+                    }
+                    if let Some(coincidence) = coincidence {
+                        first_probes.push((pair.index, coincidence.first_probe_endpoints_world_mm));
+                        second_probes
+                            .push((pair.index, coincidence.second_probe_endpoints_world_mm));
+                        all_first_probes.push((
+                            joint.id.0,
+                            pair.index,
+                            coincidence.first_probe_endpoints_world_mm,
+                        ));
+                        all_second_probes.push((
+                            joint.id.0,
+                            pair.index,
+                            coincidence.second_probe_endpoints_world_mm,
+                        ));
+                    }
+                    let first_axis_world = first_transform.as_ref().map(|resolved| {
+                        transform_validation_vector(
+                            resolved.world_transform.matrix(),
+                            pair.first.inward_unit_local,
+                        )
+                    });
+                    let second_axis_world = second_transform.as_ref().map(|resolved| {
+                        transform_validation_vector(
+                            resolved.world_transform.matrix(),
+                            pair.second.inward_unit_local,
+                        )
+                    });
+                    pairs.push(serde_json::json!({
+                        "index": pair.index,
+                        "shared_center_world_mm": pair.first.shared_center_world_mm,
+                        "first": {
+                            "axis_world": first_axis_world,
+                            "diameter_mm": pair.first.diameter_mm,
+                            "depth_mm": pair.first.depth_mm,
+                            "minimum_edge_distance_mm": dowel_minimum_edge_distance_mm(
+                                pair.first.entry_local_mm,
+                                pair.first.inward_unit_local,
+                                joint.first.bounds_min_local_mm,
+                                joint.first.bounds_max_local_mm,
+                                pair.first.diameter_mm,
+                            ),
+                        },
+                        "second": {
+                            "axis_world": second_axis_world,
+                            "diameter_mm": pair.second.diameter_mm,
+                            "depth_mm": pair.second.depth_mm,
+                            "minimum_edge_distance_mm": dowel_minimum_edge_distance_mm(
+                                pair.second.entry_local_mm,
+                                pair.second.inward_unit_local,
+                                joint.second.bounds_min_local_mm,
+                                joint.second.bounds_max_local_mm,
+                                pair.second.diameter_mm,
+                            ),
+                        },
+                        "axis_dot": first_axis_world.zip(second_axis_world).map(|(first, second)| validation_dot(first, second)),
+                        "physical_probe_coincidence": coincidence.map(|proof| serde_json::json!({
+                            "first_probe_endpoints_world_mm": proof.first_probe_endpoints_world_mm,
+                            "second_probe_endpoints_world_mm": proof.second_probe_endpoints_world_mm,
+                            "maximum_endpoint_error_mm": proof.maximum_endpoint_error_mm,
+                            "full_length_coincident": proof.maximum_endpoint_error_mm <= epsilon_mm,
+                        })),
+                    }));
+                }
+                let mut observed_overlap_count = 0usize;
+                let mut joint_unexpected_overlap_count = 0usize;
+                for (first_index, first) in &first_probes {
+                    for (second_index, second) in &second_probes {
+                        if probe_overlap_error_mm(*first, *second) <= epsilon_mm {
+                            observed_overlap_count += 1;
+                            if first_index != second_index {
+                                joint_unexpected_overlap_count += 1;
+                            }
+                        }
+                    }
+                }
+                let expected_overlap_count = projection.pairs.len();
+                let joint_passed = joint.physical_hole_pairs.is_some()
+                    && first_probes.len() == expected_overlap_count
+                    && observed_overlap_count == expected_overlap_count
+                    && joint_unexpected_overlap_count == 0;
+                physical_dowel_joints.push(serde_json::json!({
+                    "joint_id": joint.id.0,
+                    "name": joint.name,
+                    "first_occurrence_id": joint.first.instance_path.root_occurrence().0,
+                    "second_occurrence_id": joint.second.instance_path.root_occurrence().0,
+                    "pair_count": projection.pairs.len(),
+                    "expected_complete_overlap_count": expected_overlap_count,
+                    "observed_complete_overlap_count": observed_overlap_count,
+                    "unexpected_complete_overlap_count": joint_unexpected_overlap_count,
+                    "physical_holes_bound": joint.physical_hole_pairs.is_some(),
+                    "state": if joint_passed { "passed" } else { "failed" },
+                    "pairs": pairs,
+                }));
+                if !joint_passed {
+                    issues.push(serde_json::json!({
+                        "code": "assembly.physical_dowel_evidence_incomplete",
+                        "severity": "error",
+                        "joint_id": joint.id.0,
+                        "expected_complete_overlap_count": expected_overlap_count,
+                        "observed_complete_overlap_count": observed_overlap_count,
+                    }));
+                }
+            }
+            Err(error) => issues.push(serde_json::json!({
+                "code": "assembly.physical_dowel_invalid",
+                "severity": "error",
+                "joint_id": joint.id.0,
+                "detail": error.to_string(),
+            })),
+        }
+    }
+    let mut unexpected_full_overlaps = Vec::new();
+    for (first_joint_id, first_pair_index, first_probe) in &all_first_probes {
+        for (second_joint_id, second_pair_index, second_probe) in &all_second_probes {
+            if probe_overlap_error_mm(*first_probe, *second_probe) <= epsilon_mm
+                && (first_joint_id != second_joint_id || first_pair_index != second_pair_index)
+            {
+                unexpected_full_overlaps.push(serde_json::json!({
+                    "first_joint_id": first_joint_id,
+                    "first_pair_index": first_pair_index,
+                    "second_joint_id": second_joint_id,
+                    "second_pair_index": second_pair_index,
+                    "maximum_endpoint_error_mm": probe_overlap_error_mm(*first_probe, *second_probe),
+                }));
+            }
+        }
+    }
+    let unexpected_full_overlap_count = unexpected_full_overlaps.len();
+    if unexpected_full_overlap_count > 0 {
+        issues.push(serde_json::json!({
+            "code": "assembly.unexpected_physical_probe_overlap",
+            "severity": "error",
+            "unexpected_complete_overlap_count": unexpected_full_overlap_count,
+            "overlaps": unexpected_full_overlaps,
+        }));
+    }
+    let applicable_count = relation_count + snapshot.dowel_joints().count();
+    if applicable_count == 0 {
+        return serde_json::json!({
+            "schema": "ketchup.assembly-constraints.v1",
+            "document_id": snapshot.document_id().0,
+            "revision": snapshot.revision_id(),
+            "canonical_digest": snapshot.canonical_digest(),
+            "state": "skipped", "complete": true, "applicable_count": 0,
+            "issue_count": 0, "unknown_count": 0, "issues_complete": true,
+            "contacts": [], "physical_dowel_joints": [], "issues": [], "not_evaluated": [],
+        });
+    }
+    let issue_count = issues.len();
+    let unknown_count = not_evaluated.len();
+    let complete =
+        coverage_complete && unknown_count == 0 && issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES;
+    serde_json::json!({
+        "schema": "ketchup.assembly-constraints.v1",
+        "document_id": snapshot.document_id().0,
+        "revision": snapshot.revision_id(),
+        "canonical_digest": snapshot.canonical_digest(),
+        "state": if !coverage_complete || unknown_count > 0 { "not_evaluated" } else if issue_count > 0 { "failed" } else { "passed" },
+        "complete": complete,
+        "applicable_count": applicable_count,
+        "issue_count": issue_count,
+        "unknown_count": unknown_count,
+        "issues_complete": issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
+        "scope": {
+            "recipe_relation_count": relation_count,
+            "physical_dowel_joint_count": snapshot.dowel_joints().count(),
+            "physical_dowel_pair_count": physical_pair_count,
+        },
+        "full_probe_overlaps": {
+            "expected_count": physical_pair_count,
+            "verified_expected_count": verified_full_overlap_count,
+            "unexpected_count": unexpected_full_overlap_count,
+        },
+        "contacts": contacts,
+        "physical_dowel_joints": physical_dowel_joints,
+        "issues": issues.into_iter().take(MAX_ASSISTANT_VALIDATION_ISSUES).collect::<Vec<_>>(),
+        "not_evaluated": not_evaluated.into_iter().take(MAX_ASSISTANT_VALIDATION_ISSUES).collect::<Vec<_>>(),
+        "assumptions": [
+            "declared recipe face roles identify the intended contact surfaces",
+            "contact requires coplanarity within tolerance, compatible normals, and positive overlapping area",
+            "physical dowel evidence requires bound holes and full endpoint coincidence for exactly the declared pairs",
+            "no collision is exempted merely because it belongs to a dowel joint",
+        ],
+    })
+}
+
 pub fn assistant_assembly_retention_report(
     snapshot: &Snapshot,
     selected: bool,
@@ -684,34 +1154,76 @@ pub fn assistant_assembly_retention_report(
                 .map(move |occurrence_id| (*occurrence_id, group.clone()))
         })
         .collect::<BTreeMap<_, _>>();
-    let mut adjacency = group_by_occurrence
-        .keys()
-        .map(|occurrence_id| (*occurrence_id, BTreeSet::new()))
-        .collect::<BTreeMap<_, _>>();
+    let empty_adjacency = || {
+        group_by_occurrence
+            .keys()
+            .map(|occurrence_id| (*occurrence_id, BTreeSet::new()))
+            .collect::<BTreeMap<_, _>>()
+    };
+    let mut connected_adjacency = empty_adjacency();
+    let mut retained_adjacency = empty_adjacency();
     let mut connections = Vec::new();
     for joint in snapshot.assembly_joints() {
-        if joint.kind() != AssemblyJointKind::Fixed {
-            continue;
-        }
         let first = joint.parent_occurrence_id();
         let second = joint.child_occurrence_id();
         if group_by_occurrence.get(&first) == group_by_occurrence.get(&second)
             && group_by_occurrence.contains_key(&first)
         {
-            adjacency
+            connected_adjacency
                 .get_mut(&first)
                 .expect("declared part exists")
                 .insert(second);
-            adjacency
+            connected_adjacency
                 .get_mut(&second)
                 .expect("declared part exists")
                 .insert(first);
+            let (connection_type, constrained_dof, allowed_dof) = match joint.kind() {
+                AssemblyJointKind::Fixed => {
+                    retained_adjacency
+                        .get_mut(&first)
+                        .expect("declared part exists")
+                        .insert(second);
+                    retained_adjacency
+                        .get_mut(&second)
+                        .expect("declared part exists")
+                        .insert(first);
+                    (
+                        "fixed_assembly_joint",
+                        vec!["tx", "ty", "tz", "rx", "ry", "rz"],
+                        Vec::new(),
+                    )
+                }
+                AssemblyJointKind::Revolute { .. } => (
+                    "revolute_assembly_joint",
+                    vec!["all_translation", "rotation_perpendicular_to_declared_axis"],
+                    vec!["rotation_about_declared_axis"],
+                ),
+                AssemblyJointKind::Prismatic { .. } => (
+                    "prismatic_assembly_joint",
+                    vec!["translation_perpendicular_to_declared_axis", "all_rotation"],
+                    vec!["translation_along_declared_axis"],
+                ),
+                AssemblyJointKind::Helical { .. } => (
+                    "helical_assembly_joint",
+                    vec![
+                        "translation_perpendicular_to_declared_axis",
+                        "rotation_perpendicular_to_declared_axis",
+                    ],
+                    vec!["coupled_translation_and_rotation_along_declared_axis"],
+                ),
+            };
             connections.push(serde_json::json!({
-                "type": "fixed_assembly_joint",
+                "type": connection_type,
                 "joint_id": joint.id().0,
                 "first_occurrence_id": first.0,
                 "second_occurrence_id": second.0,
-                "constrained_translation_directions": ["+X", "-X", "+Y", "-Y", "+Z", "-Z"],
+                "constrained_degrees_of_freedom": constrained_dof,
+                "allowed_degrees_of_freedom": allowed_dof,
+                "retention_assumption": if joint.kind() == AssemblyJointKind::Fixed {
+                    "explicit_fixed_joint"
+                } else {
+                    "declared_kinematic_joint"
+                },
             }));
         }
     }
@@ -791,137 +1303,204 @@ pub fn assistant_assembly_retention_report(
             .iter()
             .map(|(joint_id, _)| *joint_id)
             .collect::<BTreeSet<_>>();
-        if distinct_centers.len() >= 2 {
-            adjacency
+        if !distinct_centers.is_empty() {
+            connected_adjacency
                 .get_mut(&first)
                 .expect("declared part exists")
                 .insert(second);
-            adjacency
+            connected_adjacency
                 .get_mut(&second)
                 .expect("declared part exists")
                 .insert(first);
+            let unproven_degrees_of_freedom = if distinct_centers.len() == 1 {
+                vec!["translation_along_dowel_axis", "rotation_about_dowel_axis"]
+            } else {
+                vec!["translation_along_dowel_axis"]
+            };
             connections.push(serde_json::json!({
                 "type": "verified_physical_dowels",
                 "joint_ids": joint_ids,
                 "first_occurrence_id": first.0,
                 "second_occurrence_id": second.0,
                 "distinct_dowel_count": distinct_centers.len(),
-                "constrained_translation_directions": ["+X", "-X", "+Y", "-Y", "+Z", "-Z"],
-            }));
-        } else {
-            ignored_connections.push(serde_json::json!({
-                "type": "verified_physical_dowels",
-                "joint_ids": joint_ids,
-                "first_occurrence_id": first.0,
-                "second_occurrence_id": second.0,
-                "distinct_dowel_count": distinct_centers.len(),
-                "reason": "fewer_than_two_distinct_dowels_do_not_prove_rigid_retention",
+                "connected": true,
+                "retained": false,
+                "unproven_degrees_of_freedom": unproven_degrees_of_freedom,
+                "reason": if distinct_centers.len() == 1 {
+                    "one_smooth_dowel_does_not_prevent_axial_pullout_or_rotation_about_its_axis"
+                } else {
+                    "smooth_dowel_geometry_does_not_prove_axial_pullout_retention_or_joint_strength"
+                },
             }));
         }
     }
 
+    let mut declared_mobility = snapshot
+        .assembly_recipe()
+        .into_iter()
+        .flat_map(|recipe| recipe.parts())
+        .map(|part| (part.instance_path.root_occurrence(), part.mobility))
+        .collect::<BTreeMap<_, _>>();
+    for joint in snapshot.assembly_joints() {
+        if joint.kind() != AssemblyJointKind::Fixed {
+            declared_mobility
+                .entry(joint.child_occurrence_id())
+                .or_insert(RecipePartMobility::Movable);
+        }
+    }
+    let reachable = |starts: &BTreeSet<OccurrenceId>,
+                     adjacency: &BTreeMap<OccurrenceId, BTreeSet<OccurrenceId>>,
+                     allowed: &BTreeSet<OccurrenceId>| {
+        let mut reached = BTreeSet::new();
+        let mut stack = starts.iter().copied().collect::<Vec<_>>();
+        while let Some(current) = stack.pop() {
+            if !allowed.contains(&current) || !reached.insert(current) {
+                continue;
+            }
+            stack.extend(adjacency.get(&current).into_iter().flatten().copied());
+        }
+        reached
+    };
     let mut evaluations = Vec::new();
     let mut issues = Vec::new();
+    let mut not_evaluated = Vec::new();
+    let mut anchor_occurrence_ids = BTreeSet::<OccurrenceId>::new();
     for (group, occurrence_ids) in groups {
-        let mut unvisited = occurrence_ids.clone();
-        let mut components = Vec::<BTreeSet<OccurrenceId>>::new();
-        while let Some(start) = unvisited.iter().next().copied() {
-            let mut component = BTreeSet::new();
-            let mut stack = vec![start];
-            while let Some(current) = stack.pop() {
-                if !component.insert(current) {
-                    continue;
-                }
-                unvisited.remove(&current);
-                stack.extend(
-                    adjacency
-                        .get(&current)
-                        .into_iter()
-                        .flatten()
-                        .filter(|neighbor| occurrence_ids.contains(neighbor))
-                        .copied(),
-                );
-            }
-            components.push(component);
+        let anchors = occurrence_ids
+            .iter()
+            .filter(|occurrence_id| snapshot.occurrence_is_grounded(**occurrence_id))
+            .copied()
+            .collect::<BTreeSet<_>>();
+        anchor_occurrence_ids.extend(&anchors);
+        let connected = reachable(&anchors, &connected_adjacency, &occurrence_ids);
+        let retained = reachable(&anchors, &retained_adjacency, &occurrence_ids);
+        if anchors.is_empty() {
+            not_evaluated.push(serde_json::json!({
+                "group": group,
+                "reason": "retention_base_not_declared",
+            }));
         }
-        components.sort_by(|left, right| {
-            right
-                .len()
-                .cmp(&left.len())
-                .then_with(|| left.iter().next().cmp(&right.iter().next()))
-        });
-        let primary_is_unique = components
-            .get(1)
-            .is_none_or(|second| second.len() < components[0].len());
-        let retained = if primary_is_unique {
-            components[0].clone()
-        } else {
-            BTreeSet::new()
-        };
         for occurrence_id in occurrence_ids {
-            let is_retained = retained.contains(&occurrence_id);
             let name = snapshot
                 .occurrence(occurrence_id)
                 .map(|occurrence| occurrence.name())
                 .unwrap_or("unknown");
-            let directions = if is_retained {
-                serde_json::json!({
-                    "+X": "retained", "-X": "retained",
-                    "+Y": "retained", "-Y": "retained",
-                    "+Z": "retained", "-Z": "retained",
-                })
+            let mobility = declared_mobility
+                .get(&occurrence_id)
+                .copied()
+                .unwrap_or(RecipePartMobility::Fixed);
+            let is_connected = connected.contains(&occurrence_id);
+            let is_retained = retained.contains(&occurrence_id);
+            let (result, probe_state) = if anchors.is_empty() {
+                ("unknown", "unknown")
+            } else if mobility == RecipePartMobility::Movable && is_connected && !is_retained {
+                ("movable_as_declared", "allowed")
+            } else if is_retained {
+                ("retained", "retained")
+            } else if is_connected {
+                not_evaluated.push(serde_json::json!({
+                    "occurrence_id": occurrence_id.0,
+                    "name": name,
+                    "group": group,
+                    "reason": "connected_but_retention_model_incomplete",
+                }));
+                ("unknown", "unknown")
             } else {
-                serde_json::json!({
-                    "+X": "free", "-X": "free",
-                    "+Y": "free", "-Y": "free",
-                    "+Z": "free", "-Z": "free",
-                })
+                ("unretained", "free")
             };
             evaluations.push(serde_json::json!({
                 "occurrence_id": occurrence_id.0,
                 "name": name,
                 "group": group,
-                "connection_count": adjacency.get(&occurrence_id).map_or(0, BTreeSet::len),
-                "translation_probe": directions,
-                "result": if is_retained { "retained" } else { "unretained" },
+                "declared_mobility": match mobility {
+                    RecipePartMobility::Fixed => "fixed",
+                    RecipePartMobility::Movable => "movable",
+                },
+                "is_retention_base": anchors.contains(&occurrence_id),
+                "connection_count": connected_adjacency
+                    .get(&occurrence_id)
+                    .map_or(0, BTreeSet::len),
+                "connected_to_base": is_connected,
+                "translation_probe": {
+                    "+X": probe_state, "-X": probe_state,
+                    "+Y": probe_state, "-Y": probe_state,
+                    "+Z": probe_state, "-Z": probe_state,
+                },
+                "rotation_probe": {
+                    "+X": probe_state, "-X": probe_state,
+                    "+Y": probe_state, "-Y": probe_state,
+                    "+Z": probe_state, "-Z": probe_state,
+                },
+                "result": result,
             }));
-            if !is_retained {
+            if !anchors.is_empty() && mobility == RecipePartMobility::Movable && is_retained {
                 issues.push(serde_json::json!({
-                    "code": "assembly.part_unretained",
+                    "code": "assembly.movable_part_overconstrained",
+                    "severity": "error",
+                    "occurrence_id": occurrence_id.0,
+                    "name": name,
+                    "group": group,
+                    "reason": "part declared movable is retained by a fixed path to the base",
+                }));
+            } else if !anchors.is_empty() && !is_connected {
+                issues.push(serde_json::json!({
+                    "code": "assembly.part_disconnected",
                     "severity": "error",
                     "occurrence_id": occurrence_id.0,
                     "name": name,
                     "group": group,
                     "free_translation_directions": ["+X", "-X", "+Y", "-Y", "+Z", "-Z"],
-                    "reason": "part is outside the unique largest rigidly connected component",
+                    "free_rotation_directions": ["+X", "-X", "+Y", "-Y", "+Z", "-Z"],
+                    "reason": "part or detached subassembly has no declared connection path to the retention base",
                 }));
             }
         }
     }
     let issue_count = issues.len();
-    let complete = coverage_complete && issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES;
+    let unknown_count = not_evaluated.len();
+    let complete =
+        coverage_complete && unknown_count == 0 && issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES;
     serde_json::json!({
+        "schema": "ketchup.assembly-retention.v2",
+        "document_id": snapshot.document_id().0,
+        "revision": snapshot.revision_id(),
+        "canonical_digest": snapshot.canonical_digest(),
         "state": if !coverage_complete {
             "not_evaluated"
         } else if issue_count > 0 {
             "failed"
+        } else if unknown_count > 0 {
+            "not_evaluated"
         } else {
             "passed"
         },
         "complete": complete,
+        "scope": {
+            "participant_model": "visible_occurrences_classified_as_part_group",
+            "applicable_count": applicable_count,
+            "retention_base_occurrence_ids": anchor_occurrence_ids
+                .iter()
+                .map(|id| id.0)
+                .collect::<Vec<_>>(),
+        },
         "applicable_count": applicable_count,
         "issue_count": issue_count,
+        "unknown_count": unknown_count,
         "issues_complete": issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES,
-        "method": "canonical_rigid_connection_graph_with_six_axis_translation_probe",
+        "method": "separate_connection_and_six_dof_retention_graphs",
         "accepted_connections": connections,
         "ignored_connections": ignored_connections,
         "evaluations": evaluations.into_iter().take(MAX_ASSISTANT_VALIDATION_ISSUES).collect::<Vec<_>>(),
+        "not_evaluated": not_evaluated.into_iter().take(MAX_ASSISTANT_VALIDATION_ISSUES).collect::<Vec<_>>(),
         "issues": issues.into_iter().take(MAX_ASSISTANT_VALIDATION_ISSUES).collect::<Vec<_>>(),
         "assumptions": [
-            "only occurrences classified as part:<group> are structural retention participants",
-            "a fixed assembly joint constrains all six rigid-body degrees of freedom",
-            "two or more distinct fully verified physical dowels between the same parts establish rigid retention",
-            "mere face contact or visual overlap is not treated as a connection",
+            "only visible occurrences classified as part:<group> are retention participants",
+            "grounded occurrences explicitly designate the retention base",
+            "a fixed assembly joint explicitly constrains all six rigid-body degrees of freedom",
+            "verified smooth dowels establish connectivity but do not prove axial pullout retention or joint strength",
+            "non-fixed assembly joints retain only their declared kinematic degrees of freedom",
+            "mere face contact, visual overlap, or six sampled translations is not proof of fixation",
+            "static strength is not evaluated without material and load data",
         ],
     })
 }
@@ -2840,6 +3419,16 @@ pub(crate) fn assistant_validation_context_base(
                 "evaluations": [],
                 "issues": [],
             },
+            "assembly_constraints": {
+                "state": "skipped",
+                "complete": false,
+                "applicable_count": 0,
+                "issue_count": 0,
+                "issues_complete": true,
+                "contacts": [],
+                "physical_dowel_joints": [],
+                "issues": [],
+            },
             "gravity_support": {
                 "state": "skipped",
                 "complete": false,
@@ -3017,6 +3606,11 @@ pub(crate) fn assistant_validation_context_base(
         selection.requested.contains("assembly_retention"),
         coverage_complete,
     );
+    let assembly_constraints = assistant_assembly_constraints_report(
+        snapshot,
+        selection.requested.contains("assembly_retention"),
+        coverage_complete,
+    );
     let shelf_deflection = assistant_shelf_deflection_report(
         &participants,
         &names,
@@ -3155,9 +3749,22 @@ pub(crate) fn assistant_validation_context_base(
     } else {
         ("skipped", 0, 0, 0, Vec::new(), Vec::new())
     };
-    let assembly_retention_state = assembly_retention["state"]
+    let retention_only_state = assembly_retention["state"]
         .as_str()
         .unwrap_or("not_evaluated");
+    let assembly_constraints_state = assembly_constraints["state"]
+        .as_str()
+        .unwrap_or("not_evaluated");
+    let assembly_retention_state =
+        if retention_only_state == "failed" || assembly_constraints_state == "failed" {
+            "failed"
+        } else if matches!(retention_only_state, "not_evaluated" | "unavailable")
+            || matches!(assembly_constraints_state, "not_evaluated" | "unavailable")
+        {
+            "not_evaluated"
+        } else {
+            retention_only_state
+        };
     let shelf_state = shelf_deflection["state"]
         .as_str()
         .unwrap_or("not_evaluated");
@@ -3171,8 +3778,9 @@ pub(crate) fn assistant_validation_context_base(
         .as_str()
         .unwrap_or("not_evaluated");
     let static_load_state = static_load["state"].as_str().unwrap_or("not_evaluated");
-    let assembly_retention_issue_count =
-        assembly_retention["issue_count"].as_u64().unwrap_or(0) as usize;
+    let assembly_retention_issue_count = assembly_retention["issue_count"].as_u64().unwrap_or(0)
+        as usize
+        + assembly_constraints["issue_count"].as_u64().unwrap_or(0) as usize;
     let shelf_issue_count = shelf_deflection["issue_count"].as_u64().unwrap_or(0) as usize;
     let tipping_issue_count = tipping["issue_count"].as_u64().unwrap_or(0) as usize;
     let anchoring_issue_count = anchoring["issue_count"].as_u64().unwrap_or(0) as usize;
@@ -3241,7 +3849,9 @@ pub(crate) fn assistant_validation_context_base(
         && (!selection.requested.contains("collision")
             || collision["complete"].as_bool() == Some(true))
         && (!selection.requested.contains("assembly_retention")
-            || assembly_retention["complete"].as_bool() == Some(true))
+            || (assembly_retention["complete"].as_bool() == Some(true)
+                && (assembly_constraints_state == "skipped"
+                    || assembly_constraints["complete"].as_bool() == Some(true))))
         && (!selection.requested.contains("gravity_support")
             || gravity_issue_count <= MAX_ASSISTANT_VALIDATION_ISSUES)
         && (!selection.requested.contains("shelf_deflection")
@@ -3272,6 +3882,7 @@ pub(crate) fn assistant_validation_context_base(
     all_issues.extend(gravity_issues.iter().cloned());
     for report in [
         &assembly_retention,
+        &assembly_constraints,
         &shelf_deflection,
         &tipping,
         &anchoring,
@@ -3331,6 +3942,7 @@ pub(crate) fn assistant_validation_context_base(
         "issues": all_issues,
         "collision": collision,
         "assembly_retention": assembly_retention,
+        "assembly_constraints": assembly_constraints,
         "gravity_support": {
             "state": gravity_state,
             "complete": selection.requested.contains("gravity_support")

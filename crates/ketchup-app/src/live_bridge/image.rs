@@ -24,6 +24,10 @@ pub(super) struct ImageState {
     painted: Option<Result<Painted, &'static str>>,
 }
 impl ImageState {
+    pub(super) fn is_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
     pub(super) fn revoke(&mut self) {
         if let Some(request) = self.pending.take() {
             drop(request.capture);

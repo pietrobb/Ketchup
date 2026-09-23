@@ -95,7 +95,7 @@ class SessionDouble:
         return envelope({"proposal_id": 9} if method == "propose" else {}, self.stamp)
 
     def __getattr__(self, method):
-        if method in ("query", "detail", "create_workset", "workset_status", "start_batch_job", "batch_job_status", "step_batch_job", "cancel_batch_job", "propose", "commit", "undo", "redo", "save", "save_as", "open", "selection", "view", "image"):
+        if method in ("edit_context", "apply_and_verify", "query", "detail", "create_workset", "workset_status", "start_batch_job", "batch_job_status", "step_batch_job", "cancel_batch_job", "propose", "commit", "undo", "redo", "save", "save_as", "open", "selection", "view", "image"):
             return lambda expected, *args, **kwargs: self.request(method, expected, *args, **kwargs)
         raise AttributeError(method)
 
@@ -127,7 +127,7 @@ def test_registration_shared_helpers_no_offline_runtime_or_shadow(monkeypatch):
     engine = namespace["ClaudeEngine"]()
     engine._plan_state = SimpleNamespace(active=True)
     registered = {tool.name: tool for tool in engine.load()}
-    assert set(registered) == {"KetchupLiveSession", "KetchupLiveInspect", "KetchupLiveEdit", "KetchupLiveFile", "KetchupLiveBatch", "KetchupLiveView"}
+    assert set(registered) == {"KetchupLiveSession", "KetchupLiveInspect", "KetchupLiveEdit", "KetchupLiveModel", "KetchupLiveFile", "KetchupLiveBatch", "KetchupLiveView"}
     for tool in registered.values():
         schema = tool.to_dict()
         props = schema["input_schema"]["properties"]
@@ -201,6 +201,95 @@ def test_registered_attach_uses_only_instance_id_and_returns_nonowning_handle():
         assert attached.calls[-2:] == [("disconnect",), ("close",)]
 
     asyncio.run(scenario())
+
+
+def test_hundred_attach_disconnect_cycles_release_handles_and_reuse_host():
+    instance_id = "2" * 32
+    attached = []
+
+    def attacher(selected):
+        assert selected == instance_id
+        session = SessionDouble()
+        attached.append(session)
+        return session
+
+    registered = tools(
+        SimpleNamespace(active=False),
+        lambda *args: pytest.fail("reconnect must reuse the existing GUI host"),
+        attacher=attacher,
+    )
+
+    async def scenario():
+        for _ in range(100):
+            result = await call(
+                registered, "KetchupLiveSession", action="attach", instance_id=instance_id
+            )
+            handle = result["result"]["handle"]
+            assert (await call(
+                registered, "KetchupLiveSession", action="disconnect", handle=handle
+            ))["ok"]
+        live = []
+        for _ in range(skill.MAX_SESSIONS):
+            live.append((await call(
+                registered, "KetchupLiveSession", action="attach", instance_id=instance_id
+            ))["result"]["handle"])
+        full = await call(
+            registered, "KetchupLiveSession", action="attach", instance_id=instance_id
+        )
+        assert full["error"]["code"] == "session_limit"
+        assert len(attached) == 100 + skill.MAX_SESSIONS
+        for handle in live:
+            assert (await call(
+                registered, "KetchupLiveSession", action="disconnect", handle=handle
+            ))["ok"]
+
+    asyncio.run(scenario())
+    assert len(attached) == 104
+    assert all(session.closed for session in attached)
+    assert all(session.calls[-2:] == [("disconnect",), ("close",)] for session in attached)
+
+
+def test_proven_closed_session_is_pruned_without_touching_live_peer():
+    instance_id = "3" * 32
+    attached = []
+
+    def attacher(_selected):
+        session = SessionDouble()
+        attached.append(session)
+        return session
+
+    registered = tools(
+        SimpleNamespace(active=False),
+        lambda *args: pytest.fail("reconnect must not launch another GUI"),
+        attacher=attacher,
+    )
+
+    async def scenario():
+        handles = []
+        for _ in range(skill.MAX_SESSIONS):
+            handles.append((await call(
+                registered, "KetchupLiveSession", action="attach", instance_id=instance_id
+            ))["result"]["handle"])
+        crashed_handle, live_handle = handles[0], handles[1]
+        attached[0].close()
+        reconnected = await call(
+            registered, "KetchupLiveSession", action="attach", instance_id=instance_id
+        )
+        assert reconnected["ok"]
+        assert (await call(
+            registered, "KetchupLiveInspect", action="status", handle=crashed_handle
+        ))["error"]["code"] == "invalid_handle"
+        assert (await call(
+            registered, "KetchupLiveInspect", action="status", handle=live_handle
+        ))["ok"]
+        for handle in [*handles[1:], reconnected["result"]["handle"]]:
+            assert (await call(
+                registered, "KetchupLiveSession", action="disconnect", handle=handle
+            ))["ok"]
+
+    asyncio.run(scenario())
+    assert len(attached) == skill.MAX_SESSIONS + 1
+    assert all(session.closed for session in attached)
 
 
 @pytest.mark.parametrize("failure", ["transport", "rejection", "unexpected", "closed"])
@@ -646,6 +735,79 @@ def test_registered_sdk_socket_injection_unknown_commit_no_retry():
         thread.join(3)
     assert not thread.is_alive() and not errors
     assert methods == ["status", "status", "commit"]
+
+
+def test_public_model_tool_routes_context_then_one_guarded_apply():
+    session = SessionDouble()
+    registered = tools(SimpleNamespace(active=False), lambda *args: session)
+
+    async def scenario():
+        handle = (await launch(registered))["result"]["handle"]
+        targets = [{"root_occurrence_id": 7, "steps": []}]
+        context = await call(
+            registered, "KetchupLiveModel", action="edit_context", handle=handle,
+            expected=STAMP, targets=targets,
+        )
+        assert context["ok"]
+        applied = await call(
+            registered, "KetchupLiveModel", action="apply_and_verify", handle=handle,
+            expected=STAMP, selection=[], request_id="workflow-1", program=PROGRAM,
+            validators=["collision", "gravity_support"], timeout_ms=10_000,
+        )
+        assert applied["ok"]
+
+    asyncio.run(scenario())
+    assert [call[0] for call in session.calls] == [
+        "status", "edit_context", "status", "apply_and_verify"
+    ]
+
+
+def test_public_model_tool_rejects_incomplete_payload_without_mutation():
+    session = SessionDouble()
+    before = copy.deepcopy(session.stamp)
+    registered = tools(SimpleNamespace(active=False), lambda *args: session)
+
+    async def scenario():
+        handle = (await launch(registered))["result"]["handle"]
+        result = await call(
+            registered, "KetchupLiveModel", action="apply_and_verify", handle=handle,
+            expected=STAMP, selection=[], request_id="malformed-1",
+            validators=["collision", "gravity_support"], timeout_ms=10_000,
+        )
+        assert result["error"]["code"] == "invalid_arguments"
+        assert result["mutation_outcome_unknown"] is False
+        assert result["retry_mutation"] is False
+
+    asyncio.run(scenario())
+    assert session.stamp == before
+    assert [call[0] for call in session.calls] == ["status"]
+
+
+def test_public_model_tool_surfaces_bounded_capability_gap_without_retry():
+    session = SessionDouble()
+    gap = {"kind": "capability_gap",
+           "capability": "planning.cad_feature_result_unsupported",
+           "operation": "append_feature", "retryable": False, "published": False}
+
+    def reject(*_args, **_kwargs):
+        raise skill._live().LiveBridgeError("capability_gap", gap)
+
+    session.apply_and_verify = reject
+    registered = tools(SimpleNamespace(active=False), lambda *args: session)
+
+    async def scenario():
+        handle = (await launch(registered))["result"]["handle"]
+        result = await call(
+            registered, "KetchupLiveModel", action="apply_and_verify", handle=handle,
+            expected=STAMP, selection=[], request_id="unsupported-1", program=PROGRAM,
+            validators=["collision", "gravity_support"], timeout_ms=10_000,
+        )
+        assert result["error"]["code"] == "capability_gap"
+        assert result["details"] == gap
+        assert result["mutation_outcome_unknown"] is False
+        assert result["retry_mutation"] is False
+
+    asyncio.run(scenario())
 
 
 def image_envelope(capture_mode="offscreen", max_side_px=512, framing="viewport", detail=None):

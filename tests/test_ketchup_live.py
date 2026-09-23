@@ -616,6 +616,26 @@ def test_safe_server_rejection_no_retry(code):
         assert len(peer.requests) == 1
 
 
+def test_capability_gap_exposes_only_bounded_machine_fields():
+    gap = {"kind": "capability_gap",
+           "capability": "planning.cad_feature_result_unsupported",
+           "operation": "append_feature", "retryable": False, "published": False}
+
+    def answer(request, _stream):
+        value = response(request, error="capability_gap")
+        value["result"] = gap
+        return value
+
+    with Peer(answer) as peer, LiveSession(peer.address, TOKEN) as live:
+        with pytest.raises(LiveBridgeError) as caught:
+            live.apply_and_verify(STAMP, [], "gap-1", PROGRAM,
+                                  ["collision", "gravity_support"])
+        assert caught.value.code == "capability_gap"
+        assert caught.value.details == gap
+        assert not live.closed
+        assert len(peer.requests) == 1
+
+
 @pytest.mark.parametrize("where", ["error", "result", "key", "stamp", "malformed"])
 def test_server_cannot_leak_token_in_return_error_repr_or_traceback(where):
     def answer(req, stream):

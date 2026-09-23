@@ -53,6 +53,10 @@ pub(super) fn digest_snapshot(snapshot: &Snapshot) -> String {
             digest.dowel_joint(joint);
         }
     }
+    if let Some(recipe) = snapshot.product.assembly_recipe.as_deref() {
+        digest.bytes(b"canonical-assembly-recipe.v1");
+        digest.assembly_recipe(recipe);
+    }
     digest.u64(snapshot.product.persistent_dimensions.len() as u64);
     for dimension in snapshot.product.persistent_dimensions.values() {
         digest.persistent_dimension(dimension);
@@ -185,6 +189,13 @@ pub(super) fn digest_snapshot(snapshot: &Snapshot) -> String {
             digest.bytes(code.as_bytes());
         }
     }
+    digest.finish()
+}
+
+pub(super) fn digest_feature(feature: &Feature) -> String {
+    let mut digest = StableDigest::new();
+    digest.bytes(b"ketchup.feature.v1");
+    digest.feature(feature);
     digest.finish()
 }
 
@@ -483,6 +494,89 @@ impl StableDigest {
                     self.u64(pair.second_pocket_feature_id.0);
                 }
             }
+        }
+    }
+
+    fn assembly_recipe(&mut self, recipe: &crate::assembly_recipe::AssemblyRecipe) {
+        use crate::assembly_recipe::{
+            RecipeEditScope, RecipeParameterUnit, RecipePartMobility, RecipeRelationKind,
+            RecognizedRecipeFeatureKind,
+        };
+
+        self.bytes(recipe.schema.as_bytes());
+        self.bytes(recipe.key.as_str().as_bytes());
+        self.u64(recipe.parts.len() as u64);
+        for part in recipe.parts.values() {
+            self.bytes(part.key.as_str().as_bytes());
+            self.instance_path(&part.instance_path);
+            self.u64(part.definition_id.0);
+            self.transform(part.placement);
+            self.byte(match part.mobility {
+                RecipePartMobility::Fixed => 1,
+                RecipePartMobility::Movable => 2,
+            });
+            match &part.edit_scope {
+                RecipeEditScope::Occurrence(path) => {
+                    self.byte(1);
+                    self.instance_path(path);
+                }
+                RecipeEditScope::SharedDefinition(id) => {
+                    self.byte(2);
+                    self.u64(id.0);
+                }
+            }
+            self.u64(part.parameters.len() as u64);
+            for (key, parameter) in &part.parameters {
+                self.bytes(key.as_str().as_bytes());
+                self.u64(parameter.value.to_bits());
+                self.byte(match parameter.unit {
+                    RecipeParameterUnit::Millimetres => 1,
+                    RecipeParameterUnit::Degrees => 2,
+                    RecipeParameterUnit::Scalar => 3,
+                });
+                match &parameter.target {
+                    Some(target) => {
+                        self.byte(1);
+                        self.feature_parameter_target(target);
+                    }
+                    None => self.byte(0),
+                }
+            }
+        }
+        self.u64(recipe.relations.len() as u64);
+        for relation in recipe.relations.values() {
+            self.bytes(relation.key.as_str().as_bytes());
+            self.byte(match relation.kind {
+                RecipeRelationKind::Contact => 1,
+                RecipeRelationKind::Coincident => 2,
+            });
+            for face in [&relation.first, &relation.second] {
+                self.bytes(face.part.as_str().as_bytes());
+                self.bytes(face.role.as_bytes());
+            }
+        }
+        self.u64(recipe.joinery.len() as u64);
+        for joinery in recipe.joinery.values() {
+            self.bytes(joinery.key.as_str().as_bytes());
+            self.bytes(joinery.first_part.as_str().as_bytes());
+            self.bytes(joinery.second_part.as_str().as_bytes());
+            self.u64(joinery.dowel_joint_id.0);
+        }
+        self.u64(recipe.owned_features.len() as u64);
+        for owned in recipe.owned_features.values() {
+            self.bytes(owned.key.as_str().as_bytes());
+            self.bytes(owned.part.as_str().as_bytes());
+            self.u64(owned.feature_id.0);
+            self.byte(match owned.kind {
+                RecognizedRecipeFeatureKind::Profile => 1,
+                RecognizedRecipeFeatureKind::Extrusion => 2,
+                RecognizedRecipeFeatureKind::Pad => 7,
+                RecognizedRecipeFeatureKind::Pocket => 3,
+                RecognizedRecipeFeatureKind::Workplane => 4,
+                RecognizedRecipeFeatureKind::Sketch => 5,
+                RecognizedRecipeFeatureKind::SketchPocket => 6,
+            });
+            self.bytes(owned.canonical_fingerprint.as_bytes());
         }
     }
 
@@ -2358,6 +2452,15 @@ impl StableDigest {
                     self.bytes(code.as_bytes());
                 }
             }
+            AuthoritativeDependency::AssemblyRecipe => {
+                self.bytes(b"assembly-recipe-dependency.v1");
+                if let Some(recipe) = product.assembly_recipe.as_deref() {
+                    self.byte(1);
+                    self.assembly_recipe(recipe);
+                } else {
+                    self.byte(0);
+                }
+            }
             AuthoritativeDependency::Occurrence(id) => {
                 self.byte(4);
                 self.u64(id.0);
@@ -2648,6 +2751,18 @@ impl StableDigest {
                 self.u64(mates.len() as u64);
                 for mate in mates {
                     self.assembly_mate(mate);
+                }
+                let dowel_joints = product
+                    .dowel_joints
+                    .values()
+                    .filter(|joint| {
+                        joint.first.instance_path.root_occurrence() == id
+                            || joint.second.instance_path.root_occurrence() == id
+                    })
+                    .collect::<Vec<_>>();
+                self.u64(dowel_joints.len() as u64);
+                for joint in dowel_joints {
+                    self.dowel_joint(joint);
                 }
             }
         }
@@ -3414,6 +3529,11 @@ impl StableDigest {
                 self.byte(115);
                 self.u64(id.0);
             }
+            CanonicalCommand::SetAssemblyRecipe(recipe) => {
+                self.byte(116);
+                self.assembly_recipe(recipe);
+            }
+            CanonicalCommand::ClearAssemblyRecipe => self.byte(117),
             CanonicalCommand::UpsertPersistentDimension(dimension) => {
                 self.byte(36);
                 self.persistent_dimension(dimension);

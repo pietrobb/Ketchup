@@ -170,10 +170,23 @@ fn scoped_collision_checks_boundary_neighbors_but_rejects_distant_pairs() {
     add(&mut document, 3, rectangle(), 100.0);
     let scope = CollisionScope::bind(&document.current(), [OccurrenceId(1)]);
 
+    let full = exact(&document);
     let report = exact_scope(&document, &scope);
     assert_eq!(report["state"], "failed", "{report}");
     assert_eq!(report["complete"], true, "{report}");
     assert_eq!(report["issue_count"], 1, "{report}");
+    assert_eq!(
+        report["state"], full["state"],
+        "scoped={report} full={full}"
+    );
+    assert_eq!(
+        report["complete"], full["complete"],
+        "scoped={report} full={full}"
+    );
+    assert_eq!(
+        report["issues"], full["issues"],
+        "scoped={report} full={full}"
+    );
     assert_eq!(report["total_body_count"], 1, "{report}");
     assert_eq!(report["model_body_count"], 3, "{report}");
     assert_eq!(report["total_pair_count"], 2, "{report}");

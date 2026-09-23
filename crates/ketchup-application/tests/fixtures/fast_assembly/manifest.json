@@ -1,0 +1,116 @@
+{
+  "schema": "ketchup.fast-assembly-fixtures.v1",
+  "request": {
+    "verbatim": "Predlz zadnu dosku tak, aby sa opierala o vrchnu dosku, pridaj tri koliky hore a kolikove rady do oboch bokov; povodny spodny spoj zachovaj.",
+    "source_fixture": "nightstand_v9_retention.ketchup",
+    "target_part": {
+      "occurrence_id": 6,
+      "name": "Zadna stena iba horna nika 464x216x8",
+      "source_dimensions_mm": [464.0, 216.0, 8.0],
+      "target_dimensions_mm": [464.0, 218.0, 8.0],
+      "preserved_anchor": "lower_face_against_middle_shelf",
+      "target_contact": "upper_face_against_top_board",
+      "required_gap_mm": 0.0,
+      "contact_tolerance_mm": 0.000001
+    },
+    "dowel": {
+      "diameter_mm": 8.0,
+      "length_mm": 30.0,
+      "hole_depth_each_part_mm": 16.0,
+      "probe_endpoint_tolerance_mm": 0.000001
+    },
+    "rows": [
+      {
+        "key": "rear_to_middle_shelf",
+        "action": "preserve",
+        "centers_rear_local_mm": [[80.0, 0.0, 4.0], [232.0, 0.0, 4.0], [384.0, 0.0, 4.0]]
+      },
+      {
+        "key": "rear_to_top_board",
+        "action": "add",
+        "centers_rear_local_mm": [[80.0, 218.0, 4.0], [232.0, 218.0, 4.0], [384.0, 218.0, 4.0]]
+      },
+      {
+        "key": "rear_to_left_side",
+        "action": "add",
+        "centers_rear_local_mm": [[0.0, 54.5, 4.0], [0.0, 109.0, 4.0], [0.0, 163.5, 4.0]]
+      },
+      {
+        "key": "rear_to_right_side",
+        "action": "add",
+        "centers_rear_local_mm": [[464.0, 54.5, 4.0], [464.0, 109.0, 4.0], [464.0, 163.5, 4.0]]
+      }
+    ],
+    "expected": {
+      "rear_joint_rows": 4,
+      "rear_dowels": 12,
+      "new_rear_dowels": 9,
+      "total_document_dowel_joints": 10,
+      "total_document_dowels": 30,
+      "replacement_part_allowed": false,
+      "hidden_superseded_part_allowed": false,
+      "undo_steps_added": 1,
+      "illegal_collisions": 0,
+      "maximum_sequential_tool_round_trips": 3,
+      "planning_budget_ms": 500,
+      "host_job_budget_ms": 10000,
+      "end_to_end_budget_ms": 60000
+    }
+  },
+  "fixtures": [
+    {
+      "path": "nightstand_v8_full_probe.ketchup",
+      "role": "pre_retention_reference",
+      "bytes": 706369,
+      "sha256": "143b988c178a4db465067f9af61a2c0356205949745f9fb6ce31ae715d3fd185",
+      "revision": 24,
+      "canonical_digest": "20b0633ac701779e",
+      "definitions": 15,
+      "features": 126,
+      "instances": 47,
+      "dowel_joints": 6
+    },
+    {
+      "path": "nightstand_v9_retention.ketchup",
+      "role": "benchmark_input",
+      "bytes": 1341247,
+      "sha256": "38e2a2c7dc0256ee1821289407b14292d049e585d3b064d1432cbbb1e2e8d288",
+      "revision": 42,
+      "canonical_digest": "7b23453e96c1a965",
+      "definitions": 15,
+      "features": 144,
+      "instances": 53,
+      "dowel_joints": 7
+    },
+    {
+      "path": "nightstand_v10_interrupted.ketchup",
+      "role": "diagnostic_non_oracle",
+      "bytes": 1894287,
+      "sha256": "fa35ceb2f6589f2acbf7298d7be6c970025e3e39939e06e81d0b66c698c33b59",
+      "revision": 55,
+      "canonical_digest": "caf34ffc1b97716b",
+      "definitions": 16,
+      "features": 174,
+      "instances": 60,
+      "dowel_joints": 9,
+      "known_defects": [
+        "replaced_the_rear_part_instead_of_editing_it",
+        "hid_the_superseded_part",
+        "missing_left_side_dowel_row",
+        "missing_right_side_dowel_row",
+        "no_recorded_phase_trace"
+      ]
+    }
+  ],
+  "large_fixture": {
+    "cabinet_count": 17,
+    "panel_count": 278,
+    "generation": "deterministic_in_test",
+    "claim_scope": "Ketchup scaling fixture; panels-only comparison must be reported separately from full physical joinery"
+  },
+  "historical_attempt": {
+    "reported_total_minutes": 21,
+    "phase_trace_available": false,
+    "policy": "Do not reconstruct or attribute unrecorded phase durations."
+  }
+}

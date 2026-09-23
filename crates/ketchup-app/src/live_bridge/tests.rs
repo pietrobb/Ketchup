@@ -10,6 +10,10 @@ mod mesh_conversion;
 #[path = "topology_recovery_tests.rs"]
 mod topology_recovery;
 use ketchup_core::{
+    assembly_recipe::{
+        AssemblyRecipe, RecipeEditScope, RecipeKey, RecipePartAdoption, RecipePartMobility,
+        RecognizedRecipeFeatureKind,
+    },
     document::NodeId,
     document::Transform,
     document::{
@@ -18,13 +22,15 @@ use ketchup_core::{
     },
 };
 use std::{
+    collections::BTreeMap,
     io::{Read, Write},
     net::{Shutdown, TcpStream},
     path::PathBuf,
     sync::Mutex,
     time::{Duration, Instant},
 };
-
+#[path = "product_integration_tests.rs"]
+mod product_integration;
 fn program() -> AssistantCadEditProgram {
     AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::SetColor {
@@ -34,6 +40,74 @@ fn program() -> AssistantCadEditProgram {
             color: Some([17, 29, 41]),
         }],
     }
+}
+fn mandatory_validators() -> Vec<String> {
+    ["collision", "gravity_support"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn edit_context_is_public_guarded_and_read_only() {
+    let (mut app, mut bridge) = setup();
+    let expected = app.live_bridge_stamp();
+    let history = app.undo_step_count();
+    let result = bridge
+        .execute(
+            &mut app,
+            Request::EditContext {
+                expected: expected.clone(),
+                targets: vec![AssistantInstancePath {
+                    root_occurrence_id: 1,
+                    steps: Vec::new(),
+                }],
+            },
+            false,
+        )
+        .unwrap();
+
+    assert_eq!(result["identity"]["document_id"], expected.document_id);
+    assert_eq!(result["identity"]["revision"], expected.revision);
+    assert_eq!(
+        result["targets"][0]["instance"]["instance_path"],
+        json!({
+            "root_occurrence_id": 1,
+            "steps": []
+        })
+    );
+    assert_eq!(app.live_bridge_stamp(), expected);
+    assert_eq!(app.undo_step_count(), history);
+}
+
+fn geometry_program() -> AssistantCadEditProgram {
+    AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::Transform {
+            selector: AssistantCadEntitySelector::Occurrences {
+                occurrence_ids: vec![2],
+            },
+            translation_mm: [50.0, 0.0, 0.0],
+            rotation: None,
+        }],
+    }
+}
+fn worker_required_program() -> AssistantCadEditProgram {
+    AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::SetDimension {
+            feature_id: 2,
+            constraint_id: None,
+            value_mm: 45.0,
+        }],
+    }
+}
+fn exact_fingerprints(app: &KetchupApp) -> Vec<String> {
+    let mut fingerprints = app
+        .exact_results
+        .values()
+        .map(|package| package.result_key().result_fingerprint)
+        .collect::<Vec<_>>();
+    fingerprints.sort();
+    fingerprints
 }
 fn setup() -> (KetchupApp, LiveBridge) {
     let mut app = KetchupApp::new();
@@ -424,6 +498,1210 @@ fn protected_requests(stamp: &Stamp, commit: &Request) -> Vec<Request> {
 }
 
 #[test]
+fn sdk_and_builtin_assistant_share_apply_and_verify_error_codes() {
+    let invalid_program = AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::SetColor {
+            selector: AssistantCadEntitySelector::Occurrences {
+                occurrence_ids: vec![999],
+            },
+            color: Some([17, 29, 41]),
+        }],
+    };
+    let (mut assistant_app, _) = setup();
+    let assistant_before = assistant_app.live_bridge_stamp();
+    let assistant_undo = assistant_app.undo_step_count();
+    let assistant_error = LiveBridge::apply_assistant_cad_program(
+        &mut assistant_app,
+        "assistant-error-parity".to_owned(),
+        invalid_program.clone(),
+    )
+    .unwrap_err();
+
+    let (mut sdk_app, mut bridge) = setup();
+    let sdk_before = sdk_app.live_bridge_stamp();
+    let sdk_undo = sdk_app.undo_step_count();
+    let sdk_error = bridge
+        .execute(
+            &mut sdk_app,
+            Request::ApplyAndVerify {
+                request_id: "sdk-error-parity".to_owned(),
+                expected: sdk_before.clone(),
+                selection: vec![],
+                program: invalid_program,
+                validators: mandatory_validators(),
+                timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
+                save: None,
+            },
+            false,
+        )
+        .unwrap_err();
+
+    assert_eq!(assistant_error, sdk_error);
+    assert_eq!(assistant_app.live_bridge_stamp(), assistant_before);
+    assert_eq!(sdk_app.live_bridge_stamp(), sdk_before);
+    assert_eq!(assistant_app.undo_step_count(), assistant_undo);
+    assert_eq!(sdk_app.undo_step_count(), sdk_undo);
+}
+
+#[test]
+fn sdk_and_builtin_assistant_share_apply_and_verify_success_contract() {
+    let prepare = |app: &mut KetchupApp| {
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetOccurrenceGrounded {
+                    id: OccurrenceId(1),
+                    grounded: true,
+                },
+            ]))
+            .unwrap();
+        crate::tests::install_initial_graph_result(app);
+    };
+    let contract = |value: &Value| {
+        json!({
+            "published": value["published"],
+            "saved": value["saved"],
+            "save_state": value["save_state"],
+            "same_gui_document": value["same_gui_document"],
+            "diff_entry_count": value["diff"]["entry_count"],
+            "exact_complete": value["exact"]["complete"],
+            "topology_complete": value["exact"]["topology_complete"],
+            "validation_state": value["validation"]["state"],
+            "validation_complete": value["validation"]["complete"],
+            "validators": value["validation"]["requested"],
+            "candidate_state": value["execution"]["candidate_state"],
+            "helper_headless_documents": value["execution"]["helper_headless_documents"],
+        })
+    };
+
+    let (mut assistant_app, _) = setup();
+    prepare(&mut assistant_app);
+    let assistant_before = assistant_app.live_bridge_stamp();
+    let assistant_undo = assistant_app.undo_step_count();
+    let assistant_result = LiveBridge::apply_assistant_cad_program(
+        &mut assistant_app,
+        "success-parity".to_owned(),
+        program(),
+    )
+    .unwrap();
+
+    let (mut sdk_app, mut bridge) = setup();
+    prepare(&mut sdk_app);
+    let sdk_before = sdk_app.live_bridge_stamp();
+    let sdk_undo = sdk_app.undo_step_count();
+    let sdk_result = bridge
+        .execute(
+            &mut sdk_app,
+            Request::ApplyAndVerify {
+                request_id: "success-parity".to_owned(),
+                expected: sdk_before.clone(),
+                selection: vec![],
+                program: program(),
+                validators: mandatory_validators(),
+                timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
+                save: None,
+            },
+            false,
+        )
+        .unwrap();
+
+    assert_eq!(contract(&assistant_result), contract(&sdk_result));
+    assert_eq!(
+        assistant_app.live_bridge_stamp().revision,
+        assistant_before.revision + 1
+    );
+    assert_eq!(
+        sdk_app.live_bridge_stamp().revision,
+        sdk_before.revision + 1
+    );
+    assert_eq!(assistant_app.undo_step_count(), assistant_undo + 1);
+    assert_eq!(sdk_app.undo_step_count(), sdk_undo + 1);
+}
+
+#[test]
+fn apply_and_verify_is_candidate_isolated_idempotent_and_one_undo_step() {
+    let (mut app, mut bridge) = setup();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: OccurrenceId(1),
+                grounded: true,
+            },
+        ]))
+        .unwrap();
+    crate::tests::install_initial_graph_result(&mut app);
+    let expected = app.live_bridge_stamp();
+    let before_digest = expected.canonical_digest.clone();
+    let before_reference_count = app.document_snapshot().exact_reference_evidence().count();
+    let before_steps = app.undo_step_count();
+    let request = Request::ApplyAndVerify {
+        request_id: "lost-response-1".into(),
+        expected: expected.clone(),
+        selection: vec![],
+        program: program(),
+        validators: mandatory_validators(),
+        timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
+        save: None,
+    };
+
+    let first = bridge.execute(&mut app, request.clone(), false).unwrap();
+    let committed_digest = app.live_bridge_stamp().canonical_digest;
+    assert_ne!(committed_digest, before_digest);
+    let committed_reference_count = app.document_snapshot().exact_reference_evidence().count();
+    assert_eq!(committed_reference_count, before_reference_count);
+    assert_eq!(app.undo_step_count(), before_steps + 1);
+    assert_eq!(first["published"], true);
+    assert_eq!(first["saved"], false);
+    assert_eq!(first["save_state"], "not_requested");
+    assert_eq!(first["exact"]["complete"], true);
+    assert_eq!(first["exact"]["topology_complete"], true);
+    assert_eq!(first["validation"]["state"], "passed");
+    assert_eq!(first["validation"]["complete"], true);
+
+    bridge
+        .execute(&mut app, Request::Disconnect {}, false)
+        .unwrap();
+    let replay = bridge.execute(&mut app, request, true).unwrap();
+    assert_eq!(replay, first);
+    assert_eq!(app.live_bridge_stamp().canonical_digest, committed_digest);
+    assert_eq!(app.undo_step_count(), before_steps + 1);
+
+    assert_eq!(
+        bridge.execute(
+            &mut app,
+            Request::ApplyAndVerify {
+                request_id: "lost-response-1".into(),
+                expected,
+                selection: vec![],
+                program: program(),
+                validators: mandatory_validators(),
+                timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS - 1,
+                save: None,
+            },
+            false,
+        ),
+        Err("request_id_payload_mismatch")
+    );
+    assert_eq!(app.live_bridge_stamp().canonical_digest, committed_digest);
+    assert_eq!(app.undo_step_count(), before_steps + 1);
+    assert!(app.undo());
+    assert_eq!(app.live_bridge_stamp().canonical_digest, before_digest);
+    assert_eq!(
+        app.document_snapshot().exact_reference_evidence().count(),
+        before_reference_count
+    );
+    assert!(app.redo());
+    assert_eq!(app.live_bridge_stamp().canonical_digest, committed_digest);
+    assert_eq!(
+        app.document_snapshot().exact_reference_evidence().count(),
+        committed_reference_count
+    );
+}
+
+#[test]
+fn queued_apply_and_verify_replays_after_transport_response_is_lost() {
+    let mut wire = Wire::new();
+    wire.app
+        .document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: OccurrenceId(1),
+                grounded: true,
+            },
+        ]))
+        .unwrap();
+    crate::tests::install_initial_graph_result(&mut wire.app);
+    let expected = wire.app.live_bridge_stamp();
+    let before_steps = wire.app.undo_step_count();
+    let request = Request::ApplyAndVerify {
+        request_id: "transport-lost-response".into(),
+        expected,
+        selection: vec![],
+        program: program(),
+        validators: mandatory_validators(),
+        timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
+        save: None,
+    };
+    wire.send(request.clone(), false);
+
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let stored_result = loop {
+        wire.app.poll_live_bridge(&wire.context);
+        if let Some(value) = wire
+            .app
+            .live_bridge
+            .as_ref()
+            .and_then(|bridge| {
+                bridge
+                    .apply_and_verify_receipts
+                    .iter()
+                    .find(|receipt| receipt.request_id == "transport-lost-response")
+            })
+            .map(|receipt| receipt.value.clone())
+        {
+            break value;
+        }
+        assert!(Instant::now() < deadline, "receipt was not published");
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let committed = wire.app.live_bridge_stamp();
+    assert_eq!(wire.app.undo_step_count(), before_steps + 1);
+
+    let address = wire.stream.peer_addr().unwrap();
+    wire.stream.shutdown(Shutdown::Both).unwrap();
+    wire.stream = TcpStream::connect(address).unwrap();
+    wire.stream
+        .set_read_timeout(Some(Duration::from_secs(4)))
+        .unwrap();
+
+    let replay = wire.call(request);
+    assert_eq!(replay.result.as_ref(), Some(&stored_result));
+    assert_eq!(wire.app.live_bridge_stamp(), committed);
+    assert_eq!(wire.app.undo_step_count(), before_steps + 1);
+}
+
+#[test]
+fn queued_apply_and_verify_yields_to_manual_edit_and_refuses_stale_publication() {
+    let mut wire = Wire::new();
+    wire.app
+        .document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: OccurrenceId(1),
+                grounded: true,
+            },
+        ]))
+        .unwrap();
+    crate::tests::install_initial_graph_result(&mut wire.app);
+    let expected = wire.app.live_bridge_stamp();
+    let before_steps = wire.app.undo_step_count();
+    wire.send(
+        Request::ApplyAndVerify {
+            request_id: "manual-edit-race".into(),
+            expected,
+            selection: vec![],
+            program: program(),
+            validators: mandatory_validators(),
+            timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
+            save: None,
+        },
+        false,
+    );
+    let mut reader = wire.stream.try_clone().unwrap();
+    let (tx, rx) = mpsc::channel();
+    let reader_thread = std::thread::spawn(move || {
+        let mut header = [0; 4];
+        reader.read_exact(&mut header).unwrap();
+        let mut bytes = vec![0; u32::from_be_bytes(header) as usize];
+        reader.read_exact(&mut bytes).unwrap();
+        tx.send(serde_json::from_slice::<Response>(&bytes).unwrap())
+            .unwrap();
+    });
+
+    let start_deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        wire.app.poll_live_bridge(&wire.context);
+        if wire
+            .app
+            .live_bridge
+            .as_ref()
+            .is_some_and(|bridge| bridge.apply_and_verify_job.is_some())
+        {
+            break;
+        }
+        assert!(Instant::now() < start_deadline, "job did not start");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    wire.app
+        .document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: OccurrenceId(1),
+                grounded: false,
+            },
+        ]))
+        .unwrap();
+    let manual_stamp = wire.app.live_bridge_stamp();
+    assert_eq!(wire.app.undo_step_count(), before_steps + 1);
+
+    let response_deadline = Instant::now() + Duration::from_secs(4);
+    let response = loop {
+        if let Ok(response) = rx.try_recv() {
+            break response;
+        }
+        assert!(
+            Instant::now() < response_deadline,
+            "stale result was not returned"
+        );
+        wire.app.poll_live_bridge(&wire.context);
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    reader_thread.join().unwrap();
+    assert!(!response.ok);
+    assert_eq!(response.error.as_deref(), Some("stale_document"));
+    assert_eq!(response.stamp.as_ref(), Some(&manual_stamp));
+    assert_eq!(wire.app.live_bridge_stamp(), manual_stamp);
+    assert_eq!(wire.app.undo_step_count(), before_steps + 1);
+}
+
+#[test]
+fn queued_apply_and_verify_refuses_post_validation_selection_change() {
+    let mut wire = Wire::new();
+    wire.app
+        .document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: OccurrenceId(1),
+                grounded: true,
+            },
+        ]))
+        .unwrap();
+    crate::tests::install_initial_graph_result(&mut wire.app);
+    let expected = wire.app.live_bridge_stamp();
+    let before_steps = wire.app.undo_step_count();
+    wire.send(
+        Request::ApplyAndVerify {
+            request_id: "selection-race".into(),
+            expected: expected.clone(),
+            selection: vec![],
+            program: program(),
+            validators: mandatory_validators(),
+            timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
+            save: None,
+        },
+        false,
+    );
+    let mut reader = wire.stream.try_clone().unwrap();
+    let (tx, rx) = mpsc::channel();
+    let reader_thread = std::thread::spawn(move || {
+        let mut header = [0; 4];
+        reader.read_exact(&mut header).unwrap();
+        let mut bytes = vec![0; u32::from_be_bytes(header) as usize];
+        reader.read_exact(&mut bytes).unwrap();
+        tx.send(serde_json::from_slice::<Response>(&bytes).unwrap())
+            .unwrap();
+    });
+
+    let start_deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        wire.app.poll_live_bridge(&wire.context);
+        if wire
+            .app
+            .live_bridge
+            .as_ref()
+            .is_some_and(|bridge| bridge.apply_and_verify_job.is_some())
+        {
+            break;
+        }
+        assert!(Instant::now() < start_deadline, "job did not start");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    wire.app.selection.select_occurrence(OccurrenceId(1), false);
+    assert_eq!(wire.app.live_bridge_stamp(), expected);
+    assert_eq!(wire.app.undo_step_count(), before_steps);
+
+    let response_deadline = Instant::now() + Duration::from_secs(4);
+    let response = loop {
+        if let Ok(response) = rx.try_recv() {
+            break response;
+        }
+        assert!(
+            Instant::now() < response_deadline,
+            "selection-stale result was not returned"
+        );
+        wire.app.poll_live_bridge(&wire.context);
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    reader_thread.join().unwrap();
+    assert!(!response.ok);
+    assert_eq!(response.error.as_deref(), Some("selection_changed"));
+    assert_eq!(response.stamp.as_ref(), Some(&expected));
+    assert_eq!(wire.app.live_bridge_stamp(), expected);
+    assert_eq!(wire.app.undo_step_count(), before_steps);
+}
+
+#[test]
+fn apply_and_verify_worker_disconnect_is_zero_mutation() {
+    let (mut app, mut bridge) = setup();
+    let expected = app.live_bridge_stamp();
+    let before = (
+        expected.clone(),
+        app.undo_step_count(),
+        app.redo_step_count(),
+        app.is_dirty(),
+    );
+    let proposal = app.derive_assistant_cad_edit_proposal(&program()).unwrap();
+    let candidate = app.document.preview_verified_proposal(&proposal).unwrap();
+    let (reply, response) = mpsc::sync_channel(1);
+    let (sender, receiver) = mpsc::sync_channel::<Result<PreparedApplyAndVerify, &'static str>>(1);
+    drop(sender);
+    bridge.apply_and_verify_job = Some(ApplyAndVerifyJob {
+        id: 91,
+        reply,
+        cancelled: Arc::new(AtomicBool::new(false)),
+        worker_cancelled: Arc::new(AtomicBool::new(false)),
+        request_id: "worker-disconnect".into(),
+        payload_digest: "test-payload".into(),
+        expected,
+        selection: vec![],
+        primary: None,
+        proposal,
+        candidate,
+        save_path: None,
+        timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
+        started: Instant::now(),
+        planned_at: Instant::now(),
+        receiver,
+    });
+
+    bridge.poll_apply_and_verify_job(&mut app, &egui::Context::default(), false);
+
+    let response = response.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert!(!response.ok);
+    assert_eq!(
+        response.error.as_deref(),
+        Some("apply_and_verify_worker_disconnected")
+    );
+    assert_eq!(
+        (
+            app.live_bridge_stamp(),
+            app.undo_step_count(),
+            app.redo_step_count(),
+            app.is_dirty(),
+        ),
+        before
+    );
+}
+
+#[test]
+fn apply_and_verify_timeout_is_zero_mutation_and_cancels_worker() {
+    let (mut app, mut bridge) = setup();
+    let expected = app.live_bridge_stamp();
+    let before = (
+        expected.clone(),
+        app.undo_step_count(),
+        app.redo_step_count(),
+        app.is_dirty(),
+    );
+    let proposal = app.derive_assistant_cad_edit_proposal(&program()).unwrap();
+    let candidate = app.document.preview_verified_proposal(&proposal).unwrap();
+    let (reply, response) = mpsc::sync_channel(1);
+    let (_sender, receiver) = mpsc::sync_channel::<Result<PreparedApplyAndVerify, &'static str>>(1);
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let worker_cancelled = Arc::new(AtomicBool::new(false));
+    bridge.apply_and_verify_job = Some(ApplyAndVerifyJob {
+        id: 92,
+        reply,
+        cancelled: Arc::clone(&cancelled),
+        worker_cancelled: Arc::clone(&worker_cancelled),
+        request_id: "job-timeout".into(),
+        payload_digest: "test-payload".into(),
+        expected,
+        selection: vec![],
+        primary: None,
+        proposal,
+        candidate,
+        save_path: None,
+        timeout_ms: 1,
+        started: Instant::now() - Duration::from_millis(2),
+        planned_at: Instant::now() - Duration::from_millis(2),
+        receiver,
+    });
+
+    bridge.poll_apply_and_verify_job(&mut app, &egui::Context::default(), false);
+
+    let response = response.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert!(!response.ok);
+    assert_eq!(response.error.as_deref(), Some("job_timeout"));
+    assert!(!cancelled.load(Ordering::Acquire));
+    assert!(worker_cancelled.load(Ordering::Acquire));
+    assert_eq!(
+        (
+            app.live_bridge_stamp(),
+            app.undo_step_count(),
+            app.redo_step_count(),
+            app.is_dirty(),
+        ),
+        before
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn apply_and_verify_real_exact_worker_crash_is_zero_mutation() {
+    let directory = tempfile::tempdir().unwrap();
+    let worker = directory.path().join("crash-worker.cmd");
+    std::fs::write(&worker, "@exit /b 23\r\n").unwrap();
+    let (mut app, mut bridge) = setup();
+    app.exact_worker_path = Some(worker);
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: OccurrenceId(1),
+                grounded: true,
+            },
+        ]))
+        .unwrap();
+    crate::tests::install_initial_graph_result(&mut app);
+    let expected = app.live_bridge_stamp();
+    let before = (
+        expected.clone(),
+        app.undo_step_count(),
+        app.redo_step_count(),
+        app.is_dirty(),
+        exact_fingerprints(&app),
+    );
+
+    assert_eq!(
+        bridge.execute(
+            &mut app,
+            Request::ApplyAndVerify {
+                request_id: "real-worker-crash".into(),
+                expected,
+                selection: vec![],
+                program: worker_required_program(),
+                validators: mandatory_validators(),
+                timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
+                save: None,
+            },
+            false,
+        ),
+        Err("exact_evaluation_incomplete")
+    );
+    assert_eq!(
+        (
+            app.live_bridge_stamp(),
+            app.undo_step_count(),
+            app.redo_step_count(),
+            app.is_dirty(),
+            exact_fingerprints(&app),
+        ),
+        before
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn apply_and_verify_cancels_a_running_exact_worker_without_mutation() {
+    let directory = tempfile::tempdir().unwrap();
+    let worker = directory.path().join("slow-worker.cmd");
+    let started = directory.path().join("started.txt");
+    std::fs::write(
+        &worker,
+        format!(
+            "@echo started>\"{}\"\r\n:wait\r\n@goto wait\r\n",
+            started.display()
+        ),
+    )
+    .unwrap();
+    let (mut app, mut bridge) = setup();
+    app.exact_worker_path = Some(worker);
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: OccurrenceId(1),
+                grounded: true,
+            },
+        ]))
+        .unwrap();
+    crate::tests::install_initial_graph_result(&mut app);
+    let expected = app.live_bridge_stamp();
+    let before = (
+        expected.clone(),
+        app.undo_step_count(),
+        app.redo_step_count(),
+        app.is_dirty(),
+        exact_fingerprints(&app),
+    );
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let cancel_flag = Arc::clone(&cancelled);
+    let canceller = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(4);
+        while !started.is_file() {
+            assert!(Instant::now() < deadline, "exact worker did not start");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        cancel_flag.store(true, Ordering::Release);
+    });
+
+    assert_eq!(
+        bridge.execute_authorized(
+            &mut app,
+            Request::ApplyAndVerify {
+                request_id: "running-worker-cancel".into(),
+                expected,
+                selection: vec![],
+                program: worker_required_program(),
+                validators: mandatory_validators(),
+                timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
+                save: None,
+            },
+            false,
+            &cancelled,
+        ),
+        Err("request_cancelled")
+    );
+    canceller.join().unwrap();
+    assert_eq!(
+        (
+            app.live_bridge_stamp(),
+            app.undo_step_count(),
+            app.redo_step_count(),
+            app.is_dirty(),
+            exact_fingerprints(&app),
+        ),
+        before
+    );
+}
+
+#[test]
+fn apply_and_verify_one_undo_redo_restores_geometry_recipe_and_exact_binding_without_helper_document()
+ {
+    let (mut app, mut bridge) = setup();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(2),
+                definition_id: DefinitionId(1),
+                name: "Independent recipe-safe instance".into(),
+                transform: Transform::from_translation(500.0, 0.0, 0.0).unwrap(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: OccurrenceId(1),
+                grounded: true,
+            },
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: OccurrenceId(2),
+                grounded: true,
+            },
+        ]))
+        .unwrap();
+    let recipe = AssemblyRecipe::adopt(
+        &app.document.current(),
+        RecipeKey::new("live-transaction").unwrap(),
+        vec![RecipePartAdoption {
+            key: RecipeKey::new("owned-box").unwrap(),
+            instance_path: InstancePath::root(OccurrenceId(1)),
+            mobility: RecipePartMobility::Fixed,
+            edit_scope: RecipeEditScope::SharedDefinition(DefinitionId(1)),
+            parameters: BTreeMap::new(),
+            features: vec![
+                (
+                    RecipeKey::new("owned-box/profile").unwrap(),
+                    FeatureId(1),
+                    RecognizedRecipeFeatureKind::Profile,
+                ),
+                (
+                    RecipeKey::new("owned-box/extrusion").unwrap(),
+                    FeatureId(2),
+                    RecognizedRecipeFeatureKind::Extrusion,
+                ),
+            ],
+        }],
+        vec![],
+        vec![],
+    )
+    .unwrap();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetAssemblyRecipe(recipe.clone()),
+        ]))
+        .unwrap();
+    crate::tests::install_initial_graph_result(&mut app);
+    let before = app.document.current();
+    let before_stamp = app.live_bridge_stamp();
+    let before_transform = before.occurrence(OccurrenceId(2)).unwrap().transform();
+    let before_exact = exact_fingerprints(&app);
+    let before_steps = app.undo_step_count();
+
+    let report = bridge
+        .execute(
+            &mut app,
+            Request::ApplyAndVerify {
+                request_id: "geometry-recipe-undo-redo".into(),
+                expected: before_stamp.clone(),
+                selection: vec![],
+                program: geometry_program(),
+                validators: mandatory_validators(),
+                timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
+                save: None,
+            },
+            false,
+        )
+        .unwrap();
+    let after = app.document.current();
+    let after_stamp = app.live_bridge_stamp();
+    let after_transform = after.occurrence(OccurrenceId(2)).unwrap().transform();
+    let after_exact = exact_fingerprints(&app);
+    assert_ne!(after_transform, before_transform);
+    assert_eq!(after.assembly_recipe(), Some(&recipe));
+    recipe.audit(&after).unwrap();
+    assert!(app.exact_results.is_bound_to(&after));
+    assert!(app.topology_results.is_bound_to(&after));
+    assert_eq!(before_exact, after_exact);
+    assert_eq!(app.undo_step_count(), before_steps + 1);
+    assert_eq!(report["execution"]["candidate_state"], "isolated_snapshot");
+    assert_eq!(
+        report["execution"]["candidate_document_id"],
+        before_stamp.document_id
+    );
+    assert_eq!(
+        report["execution"]["gui_document_id"],
+        before_stamp.document_id
+    );
+    assert_eq!(report["execution"]["helper_headless_documents"], 0);
+
+    assert!(app.undo());
+    let undone = app.document.current();
+    assert_eq!(
+        app.live_bridge_stamp().canonical_digest,
+        before_stamp.canonical_digest
+    );
+    assert_eq!(
+        undone.occurrence(OccurrenceId(2)).unwrap().transform(),
+        before_transform
+    );
+    assert_eq!(undone.assembly_recipe(), Some(&recipe));
+    recipe.audit(&undone).unwrap();
+    let undone_exact = exact_fingerprints(&app);
+    assert!(
+        before_exact
+            .iter()
+            .all(|fingerprint| undone_exact.contains(fingerprint))
+    );
+    assert!(app.exact_results.is_bound_to(&undone));
+    assert_eq!(app.redo_step_count(), 1);
+
+    assert!(app.redo());
+    let redone = app.document.current();
+    let redone_stamp = app.live_bridge_stamp();
+    assert_eq!(redone_stamp.document_id, after_stamp.document_id);
+    assert_eq!(redone_stamp.revision, after_stamp.revision);
+    assert_eq!(redone_stamp.canonical_digest, after_stamp.canonical_digest);
+    assert!(redone_stamp.mutation_epoch > after_stamp.mutation_epoch);
+    assert_eq!(
+        redone.occurrence(OccurrenceId(2)).unwrap().transform(),
+        after_transform
+    );
+    assert_eq!(redone.assembly_recipe(), Some(&recipe));
+    recipe.audit(&redone).unwrap();
+    assert_eq!(exact_fingerprints(&app), after_exact);
+    assert!(app.exact_results.is_bound_to(&redone));
+    assert_eq!(app.undo_step_count(), before_steps + 1);
+}
+
+#[test]
+fn apply_and_verify_reports_committed_but_unsaved_and_replays_the_receipt() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("apply-verify-save-refused.ketchup");
+    let dialogs = ScriptedFileDialogs::new().queue_refused_high_risk();
+    let probe = dialogs.clone();
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    app.selection.clear();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: OccurrenceId(1),
+                grounded: true,
+            },
+        ]))
+        .unwrap();
+    crate::tests::install_initial_graph_result(&mut app);
+    assert!(app.save_document_to(&path));
+    let original_bytes = std::fs::read(&path).unwrap();
+    let expected = app.live_bridge_stamp();
+    let before_steps = app.undo_step_count();
+    let mut bridge = transport::start(egui::Context::default()).unwrap();
+    let request = Request::ApplyAndVerify {
+        request_id: "save-refused-replay".into(),
+        expected,
+        selection: vec![],
+        program: program(),
+        validators: mandatory_validators(),
+        timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
+        save: Some(ApplyAndVerifySave::Current {}),
+    };
+
+    let first = bridge.execute(&mut app, request.clone(), false).unwrap();
+    let committed = app.live_bridge_stamp();
+    assert_eq!(first["published"], true);
+    assert_eq!(first["saved"], false);
+    assert_eq!(first["save_state"], "committed_but_unsaved");
+    assert_eq!(first["save_error"], "save_rejected");
+    assert_eq!(first["save_path"], path.to_string_lossy().as_ref());
+    assert!(app.is_dirty());
+    assert_eq!(app.undo_step_count(), before_steps + 1);
+    assert_eq!(probe.high_risk_prompts().len(), 1);
+    assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
+
+    let replay = bridge.execute(&mut app, request, true).unwrap();
+    assert_eq!(replay, first);
+    assert_eq!(app.live_bridge_stamp(), committed);
+    assert_eq!(app.undo_step_count(), before_steps + 1);
+    assert_eq!(probe.high_risk_prompts().len(), 1);
+    assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
+}
+
+#[test]
+fn apply_and_verify_save_io_failure_preserves_last_good_file_and_dirty_gui_state() {
+    use egui_kittest::{Harness, kittest::Queryable as _};
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("save-io-failure.ketchup");
+    let dialogs = ScriptedFileDialogs::new().queue_high_risk_approval(42);
+    let probe = dialogs.clone();
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    app.selection.clear();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: OccurrenceId(1),
+                grounded: true,
+            },
+        ]))
+        .unwrap();
+    crate::tests::install_initial_graph_result(&mut app);
+    assert!(app.save_document_to(&path));
+    let original_bytes = std::fs::read(&path).unwrap();
+    let original_stamp = app.live_bridge_stamp();
+    let saved_digest = app.saved_digest.clone();
+    let file_identity = app.file_identity;
+    let undo_before = app.undo_step_count();
+    // Fail the real atomic-save backup write, without touching any user's save-lock.
+    std::fs::create_dir(directory.path().join("save-io-failure.ketchup.recovery")).unwrap();
+    let mut bridge = transport::start(egui::Context::default()).unwrap();
+    let report = bridge
+        .execute(
+            &mut app,
+            Request::ApplyAndVerify {
+                request_id: "save-io-failure".into(),
+                expected: original_stamp.clone(),
+                selection: vec![],
+                program: worker_required_program(),
+                validators: mandatory_validators(),
+                timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
+                save: Some(ApplyAndVerifySave::Current {}),
+            },
+            false,
+        )
+        .unwrap();
+    assert_eq!(report["published"], true);
+    assert_eq!(report["saved"], false);
+    assert_eq!(report["save_state"], "committed_but_unsaved");
+    assert_eq!(report["save_error"], "save_rejected");
+    assert_eq!(probe.high_risk_prompts().len(), 1);
+    assert_eq!(
+        app.live_bridge_stamp().document_id,
+        original_stamp.document_id
+    );
+    assert_ne!(
+        app.live_bridge_stamp().canonical_digest,
+        original_stamp.canonical_digest
+    );
+    assert_eq!(app.undo_step_count(), undo_before + 1);
+    assert!(app.is_dirty());
+    assert_eq!(app.saved_digest, saved_digest);
+    assert_eq!(app.file_identity, file_identity);
+    assert_eq!(app.document_path.as_deref(), Some(path.as_path()));
+    assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
+    let disk = ketchup_core::persistence::load(&original_bytes)
+        .unwrap()
+        .into_editable()
+        .ok()
+        .unwrap();
+    assert_eq!(
+        disk.current().canonical_digest(),
+        original_stamp.canonical_digest
+    );
+    assert!(
+        app.digest.contains("active model remains unsaved"),
+        "{}",
+        app.digest
+    );
+    let error = format!(
+        "{}  \u{b7}  {}",
+        app.catalog.format(
+            "status-selected",
+            &BTreeMap::from([("count", "0".to_owned())])
+        ),
+        app.digest
+    );
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1600.0, 1000.0))
+        .with_max_steps(64)
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+    harness.run();
+    assert!(
+        harness.query_by_label(&error).is_some(),
+        "save error must be visible in the GUI"
+    );
+    assert!(harness.state().is_dirty());
+    assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
+}
+
+#[test]
+fn apply_and_verify_saves_only_the_explicit_absolute_path() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("apply-verify-saved.ketchup");
+    let (mut app, mut bridge) = setup();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: OccurrenceId(1),
+                grounded: true,
+            },
+        ]))
+        .unwrap();
+    crate::tests::install_initial_graph_result(&mut app);
+    let expected = app.live_bridge_stamp();
+
+    let report = bridge
+        .execute(
+            &mut app,
+            Request::ApplyAndVerify {
+                request_id: "explicit-save-path".into(),
+                expected,
+                selection: vec![],
+                program: program(),
+                validators: mandatory_validators(),
+                timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
+                save: Some(ApplyAndVerifySave::Path {
+                    path: path.to_string_lossy().into_owned(),
+                }),
+            },
+            false,
+        )
+        .unwrap();
+
+    assert_eq!(report["published"], true);
+    assert_eq!(report["saved"], true);
+    assert_eq!(report["save_state"], "saved");
+    assert_eq!(report["save_error"], Value::Null);
+    assert_eq!(report["save_path"], path.to_string_lossy().as_ref());
+    assert!(!app.is_dirty());
+    assert_eq!(app.document_path.as_deref(), Some(path.as_path()));
+    let mut reopened = KetchupApp::new();
+    assert!(reopened.open_document_path(&path));
+    assert_eq!(
+        reopened.document_snapshot().canonical_digest(),
+        app.document_snapshot().canonical_digest()
+    );
+}
+
+#[test]
+fn apply_and_verify_preflight_failures_are_zero_mutation() {
+    let (mut app, mut bridge) = setup();
+    let expected = app.live_bridge_stamp();
+    let before = (
+        expected.clone(),
+        app.undo_step_count(),
+        app.redo_step_count(),
+        app.is_dirty(),
+    );
+    assert_eq!(
+        bridge.execute(
+            &mut app,
+            Request::ApplyAndVerify {
+                request_id: "invalid-validators".into(),
+                expected: expected.clone(),
+                selection: vec![],
+                program: program(),
+                validators: vec![],
+                timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
+                save: None,
+            },
+            false,
+        ),
+        Err("mandatory_validators_required")
+    );
+    assert_eq!(
+        (
+            app.live_bridge_stamp(),
+            app.undo_step_count(),
+            app.redo_step_count(),
+            app.is_dirty(),
+        ),
+        before
+    );
+
+    assert_eq!(
+        bridge.execute(
+            &mut app,
+            Request::ApplyAndVerify {
+                request_id: "partial-validator-policy".into(),
+                expected: expected.clone(),
+                selection: vec![],
+                program: program(),
+                validators: vec!["collision".into()],
+                timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
+                save: None,
+            },
+            false,
+        ),
+        Err("mandatory_validators_required")
+    );
+    assert_eq!(
+        (
+            app.live_bridge_stamp(),
+            app.undo_step_count(),
+            app.redo_step_count(),
+            app.is_dirty(),
+        ),
+        before
+    );
+
+    assert_eq!(
+        bridge.execute(
+            &mut app,
+            Request::ApplyAndVerify {
+                request_id: "relative-save-path".into(),
+                expected: expected.clone(),
+                selection: vec![],
+                program: program(),
+                validators: mandatory_validators(),
+                timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
+                save: Some(ApplyAndVerifySave::Path {
+                    path: "relative.ketchup".into(),
+                }),
+            },
+            false,
+        ),
+        Err("invalid_path")
+    );
+    assert_eq!(
+        (
+            app.live_bridge_stamp(),
+            app.undo_step_count(),
+            app.redo_step_count(),
+            app.is_dirty(),
+        ),
+        before
+    );
+
+    let cancelled = Arc::new(AtomicBool::new(true));
+    assert_eq!(
+        bridge.execute_authorized(
+            &mut app,
+            Request::ApplyAndVerify {
+                request_id: "cancelled-before-exact".into(),
+                expected,
+                selection: vec![],
+                program: program(),
+                validators: mandatory_validators(),
+                timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
+                save: None,
+            },
+            false,
+            &cancelled,
+        ),
+        Err("request_cancelled")
+    );
+    assert_eq!(
+        (
+            app.live_bridge_stamp(),
+            app.undo_step_count(),
+            app.redo_step_count(),
+            app.is_dirty(),
+        ),
+        before
+    );
+}
+
+#[test]
+fn apply_and_verify_phase_failures_are_zero_mutation() {
+    for (fault, error) in [
+        (ApplyAndVerifyFault::Planning, "planning_rejected"),
+        (ApplyAndVerifyFault::Candidate, "candidate_rejected"),
+        (ApplyAndVerifyFault::Exact, "exact_evaluation_rejected"),
+        (ApplyAndVerifyFault::Validation, "validation_failed"),
+        (
+            ApplyAndVerifyFault::Report,
+            "validation_report_encoding_rejected",
+        ),
+        (ApplyAndVerifyFault::Publication, "commit_rejected"),
+    ] {
+        let (mut app, mut bridge) = setup();
+        app.document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetOccurrenceGrounded {
+                    id: OccurrenceId(1),
+                    grounded: true,
+                },
+            ]))
+            .unwrap();
+        crate::tests::install_initial_graph_result(&mut app);
+        let expected = app.live_bridge_stamp();
+        let before = (
+            expected.clone(),
+            app.undo_step_count(),
+            app.redo_step_count(),
+            app.is_dirty(),
+        );
+        bridge.apply_and_verify_fault = Some(fault);
+
+        assert_eq!(
+            bridge.execute(
+                &mut app,
+                Request::ApplyAndVerify {
+                    request_id: format!("fault-{fault:?}"),
+                    expected,
+                    selection: vec![],
+                    program: program(),
+                    validators: mandatory_validators(),
+                    timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
+                    save: None,
+                },
+                false,
+            ),
+            Err(error),
+            "fault phase {fault:?}"
+        );
+        assert_eq!(
+            (
+                app.live_bridge_stamp(),
+                app.undo_step_count(),
+                app.redo_step_count(),
+                app.is_dirty(),
+            ),
+            before,
+            "fault phase {fault:?} mutated the live document"
+        );
+        assert!(bridge.apply_and_verify_receipts.is_empty());
+    }
+}
+
+#[test]
+fn unsupported_planning_diagnostic_is_a_bounded_capability_gap() {
+    let diagnostic = AssistantRejectionDiagnostic {
+        phase: ketchup_core::assistant_sidecar::AssistantRejectionPhase::ProposalPlanning,
+        code: "planning.cad_feature_result_unsupported".into(),
+        operation: "append_feature".into(),
+        target: "feature:7".into(),
+        failed_invariant: "unsupported exact result".into(),
+        repair_hint: "use a supported exact operation".into(),
+        retryable: true,
+    };
+    assert!(LiveBridge::is_capability_gap(&diagnostic));
+    let response = Response::capability_gap(19, &diagnostic);
+    assert!(!response.ok);
+    assert_eq!(response.error.as_deref(), Some("capability_gap"));
+    assert_eq!(
+        response.result,
+        Some(json!({
+            "kind": "capability_gap",
+            "capability": "planning.cad_feature_result_unsupported",
+            "operation": "append_feature",
+            "retryable": false,
+            "published": false,
+        }))
+    );
+}
+
+#[test]
 fn image_protocol_is_versioned_declared_and_required() {
     let (mut app, mut bridge) = setup();
     let status = bridge.execute(&mut app, Request::Status {}, false).unwrap();
@@ -491,6 +1769,7 @@ fn image_protocol_is_versioned_declared_and_required() {
                     framing: ImageFraming::Viewport,
                     detail_target: None,
                 },
+                connection_closed: false,
                 cancelled: Arc::new(AtomicBool::new(false)),
                 reply,
             },
@@ -993,6 +2272,191 @@ impl Wire {
             proposal_id: response.result.unwrap()["proposal_id"].as_u64().unwrap(),
         }
     }
+}
+
+fn call_stream(
+    app: &mut KetchupApp,
+    context: &egui::Context,
+    stream: &mut TcpStream,
+    token: &str,
+    id: u64,
+    request: Request,
+) -> Response {
+    let bytes = serde_json::to_vec(&Envelope {
+        version: 1,
+        id,
+        token: token.to_owned(),
+        request,
+    })
+    .unwrap();
+    stream
+        .write_all(&(bytes.len() as u32).to_be_bytes())
+        .unwrap();
+    stream.write_all(&bytes).unwrap();
+    let mut reader = stream.try_clone().unwrap();
+    let (tx, rx) = mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        let mut header = [0; 4];
+        reader.read_exact(&mut header).unwrap();
+        let mut bytes = vec![0; u32::from_be_bytes(header) as usize];
+        reader.read_exact(&mut bytes).unwrap();
+        tx.send(serde_json::from_slice::<Response>(&bytes).unwrap())
+            .unwrap();
+    });
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let response = loop {
+        if let Ok(response) = rx.try_recv() {
+            break response;
+        }
+        assert!(Instant::now() < deadline);
+        app.poll_live_bridge(context);
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    handle.join().unwrap();
+    response
+}
+
+#[test]
+fn hundred_authenticated_disconnect_cycles_leave_host_and_registries_clean() {
+    let mut app = KetchupApp::new();
+    app.selection.clear();
+    let context = egui::Context::default();
+    let address = app.enable_live_bridge(&context).unwrap();
+    let token = app.live_bridge_credentials().unwrap().token;
+    let document_id = app.live_bridge_stamp().document_id;
+
+    for _ in 0..100 {
+        let mut stream = TcpStream::connect(address).unwrap();
+        assert!(
+            call_stream(
+                &mut app,
+                &context,
+                &mut stream,
+                &token,
+                1,
+                Request::Status {},
+            )
+            .ok
+        );
+        assert!(
+            call_stream(
+                &mut app,
+                &context,
+                &mut stream,
+                &token,
+                2,
+                Request::Disconnect {},
+            )
+            .ok
+        );
+        drop(stream);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            app.poll_live_bridge(&context);
+            let bridge = app.live_bridge.as_ref().unwrap();
+            if bridge.active_connections.load(Ordering::Acquire) == 0
+                && bridge.session == 0
+                && bridge.client_states.is_empty()
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    assert_eq!(app.live_bridge_stamp().document_id, document_id);
+    assert!(app.live_bridge.is_some());
+}
+
+#[test]
+fn multiple_clients_reconnect_same_host_and_cannot_cross_window_boundary() {
+    let mut window_a = Wire::new();
+    let mut window_b = Wire::new();
+    let address_a = window_a.stream.peer_addr().unwrap();
+    let address_b = window_b.stream.peer_addr().unwrap();
+    let token_a = window_a.token.clone();
+    let before_b = window_b.app.live_bridge_stamp();
+
+    assert!(window_a.call(Request::Status {}).ok);
+    let mut peer_a = TcpStream::connect(address_a).unwrap();
+    assert!(
+        call_stream(
+            &mut window_a.app,
+            &window_a.context,
+            &mut peer_a,
+            &token_a,
+            1,
+            Request::Status {},
+        )
+        .ok
+    );
+    let expected = window_a.app.live_bridge_stamp();
+    let proposed = call_stream(
+        &mut window_a.app,
+        &window_a.context,
+        &mut peer_a,
+        &token_a,
+        2,
+        Request::Propose {
+            expected: expected.clone(),
+            selection: vec![],
+            program: program(),
+        },
+    );
+    assert!(proposed.ok);
+    assert!(window_a.call(Request::Disconnect {}).ok);
+    let committed = call_stream(
+        &mut window_a.app,
+        &window_a.context,
+        &mut peer_a,
+        &token_a,
+        3,
+        Request::Commit {
+            expected,
+            proposal_id: proposed.result.unwrap()["proposal_id"].as_u64().unwrap(),
+        },
+    );
+    assert!(committed.ok);
+    assert_eq!(window_b.app.live_bridge_stamp(), before_b);
+    assert!(
+        call_stream(
+            &mut window_a.app,
+            &window_a.context,
+            &mut peer_a,
+            &token_a,
+            4,
+            Request::Status {},
+        )
+        .ok
+    );
+
+    drop(peer_a);
+    let mut reconnected = TcpStream::connect(address_a).unwrap();
+    let reconnected_status = call_stream(
+        &mut window_a.app,
+        &window_a.context,
+        &mut reconnected,
+        &token_a,
+        1,
+        Request::Status {},
+    );
+    assert_eq!(
+        reconnected_status.stamp.as_ref().unwrap().document_id,
+        window_a.app.live_bridge_stamp().document_id
+    );
+    let mut wrong_window = TcpStream::connect(address_b).unwrap();
+    let rejected = call_stream(
+        &mut window_b.app,
+        &window_b.context,
+        &mut wrong_window,
+        &token_a,
+        1,
+        Request::Status {},
+    );
+    assert_eq!(rejected.error.as_deref(), Some("unauthorized"));
+    assert_eq!(window_b.app.live_bridge_stamp(), before_b);
+    assert!(window_b.call(Request::Status {}).ok);
 }
 
 #[test]

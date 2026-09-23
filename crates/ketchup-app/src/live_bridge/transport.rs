@@ -8,6 +8,26 @@ use std::{
 
 const IO_DEADLINE: Duration = Duration::from_secs(2);
 const STOP_POLL: Duration = Duration::from_millis(25);
+const MAX_CONNECTIONS: usize = 4;
+
+struct ConnectionPermit(Arc<AtomicUsize>);
+
+impl ConnectionPermit {
+    fn claim(active: &Arc<AtomicUsize>) -> Option<Self> {
+        active
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < MAX_CONNECTIONS).then_some(count + 1)
+            })
+            .ok()
+            .map(|_| Self(Arc::clone(active)))
+    }
+}
+
+impl Drop for ConnectionPermit {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 
 pub(super) fn start(context: egui::Context) -> io::Result<LiveBridge> {
     let mut random = [0_u8; 32];
@@ -22,6 +42,8 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
     let (sender, queue) = mpsc::sync_channel(QUEUE_CAPACITY);
     let stopped = Arc::new(AtomicBool::new(false));
     let stop = Arc::clone(&stopped);
+    let active_connections = Arc::new(AtomicUsize::new(0));
+    let connection_count = Arc::clone(&active_connections);
     let secret = token.clone();
     let worker = std::thread::Builder::new()
         .name("ketchup-live-bridge".into())
@@ -30,11 +52,44 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
             while !stop.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok((stream, peer)) if peer.ip().is_loopback() => {
+                        let Some(permit) = ConnectionPermit::claim(&connection_count) else {
+                            continue;
+                        };
                         let Some(next) = session.checked_add(1) else {
                             break;
                         };
                         session = next;
-                        let _ = serve(stream, session, &secret, &sender, &stop, &context);
+                        let secret = secret.clone();
+                        let sender = sender.clone();
+                        let stop = Arc::clone(&stop);
+                        let context = context.clone();
+                        let authenticated = Arc::new(AtomicBool::new(false));
+                        let _ = std::thread::Builder::new()
+                            .name(format!("ketchup-live-client-{session}"))
+                            .spawn(move || {
+                                let _permit = permit;
+                                let _ = serve(
+                                    stream,
+                                    session,
+                                    &secret,
+                                    &sender,
+                                    &stop,
+                                    &context,
+                                    &authenticated,
+                                );
+                                if authenticated.load(Ordering::Acquire) {
+                                    let (reply, _receiver) = mpsc::sync_channel(1);
+                                    let _ = sender.try_send(Queued {
+                                        session,
+                                        id: 0,
+                                        request: Request::Disconnect {},
+                                        connection_closed: true,
+                                        cancelled: Arc::new(AtomicBool::new(false)),
+                                        reply,
+                                    });
+                                    context.request_repaint();
+                                }
+                            });
                     }
                     Ok(_) => {}
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -49,13 +104,20 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
         token,
         stopped,
         worker: Some(worker),
+        #[cfg(test)]
+        active_connections,
         queue,
         query: ModelQuery::default(),
         observed: None,
         session: 0,
+        client_states: BTreeMap::new(),
         pending: None,
         next_proposal: 1,
         receipts: VecDeque::new(),
+        apply_and_verify_receipts: VecDeque::new(),
+        apply_and_verify_job: None,
+        #[cfg(test)]
+        apply_and_verify_fault: None,
         batch_jobs: VecDeque::new(),
         batch_job_key: RandomState::new(),
         next_batch_job: 1,
@@ -200,6 +262,7 @@ fn serve(
     sender: &mpsc::SyncSender<Queued>,
     stop: &AtomicBool,
     context: &egui::Context,
+    authenticated_session: &AtomicBool,
 ) -> io::Result<()> {
     stream.set_nodelay(true)?;
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -226,12 +289,14 @@ fn serve(
             return Ok(());
         }
         session_authenticated = true;
+        authenticated_session.store(true, Ordering::Release);
         let disconnect = matches!(envelope.request, Request::Disconnect {});
         let (reply, receiver) = mpsc::sync_channel(1);
         let queued = Queued {
             session,
             id: envelope.id,
             request: envelope.request,
+            connection_closed: false,
             cancelled: Arc::clone(&cancelled),
             reply,
         };
@@ -275,6 +340,46 @@ fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn wait_for_connection_count(bridge: &LiveBridge, expected: usize) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while bridge.active_connections.load(Ordering::Acquire) != expected {
+            assert!(
+                Instant::now() < deadline,
+                "connection registry did not reach {expected}"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn hundred_connection_cycles_and_limit_release_every_permit() {
+        let bridge = start_with_token(egui::Context::default(), "a".repeat(64)).unwrap();
+        for _ in 0..100 {
+            let stream = TcpStream::connect(bridge.address).unwrap();
+            wait_for_connection_count(&bridge, 1);
+            drop(stream);
+            wait_for_connection_count(&bridge, 0);
+        }
+
+        let live: Vec<_> = (0..MAX_CONNECTIONS)
+            .map(|_| TcpStream::connect(bridge.address).unwrap())
+            .collect();
+        wait_for_connection_count(&bridge, MAX_CONNECTIONS);
+        let mut refused = TcpStream::connect(bridge.address).unwrap();
+        refused
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut byte = [0];
+        assert_eq!(refused.read(&mut byte).unwrap(), 0);
+        assert_eq!(
+            bridge.active_connections.load(Ordering::Acquire),
+            MAX_CONNECTIONS
+        );
+
+        drop(live);
+        wait_for_connection_count(&bridge, 0);
+    }
 
     #[test]
     fn cumulative_partial_write_deadline_includes_header_and_body() {

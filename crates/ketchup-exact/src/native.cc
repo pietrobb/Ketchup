@@ -6946,19 +6946,37 @@ NativePairQuery query_body_pair_native(
       return result;
     }
     if (distance.Value() == 0.0) {
+      struct ContactFace {
+        TopoDS_Shape shape;
+        Bnd_Box bounds;
+        gp_Dir normal;
+        bool planar;
+      };
+      std::vector<ContactFace> right_faces;
+      for (TopExp_Explorer face(right.impl().shape, TopAbs_FACE); face.More(); face.Next()) {
+        Bnd_Box bounds;
+        BRepBndLib::AddOptimal(face.Current(), bounds, false, true);
+        BRepAdaptor_Surface surface(TopoDS::Face(face.Current()));
+        const bool planar = surface.GetType() == GeomAbs_Plane;
+        right_faces.push_back({face.Current(), bounds,
+                               planar ? surface.Plane().Axis().Direction() : gp_Dir(0, 0, 1),
+                               planar});
+      }
       for (TopExp_Explorer left_faces(left.impl().shape, TopAbs_FACE); left_faces.More();
            left_faces.Next()) {
         Bnd_Box left_face_bounds;
         BRepBndLib::AddOptimal(left_faces.Current(), left_face_bounds, false, true);
-        for (TopExp_Explorer right_faces(right.impl().shape, TopAbs_FACE); right_faces.More();
-             right_faces.Next()) {
-          Bnd_Box right_face_bounds;
-          BRepBndLib::AddOptimal(right_faces.Current(), right_face_bounds, false, true);
-          if (left_face_bounds.IsVoid() || right_face_bounds.IsVoid() ||
-              left_face_bounds.IsOut(right_face_bounds)) {
+        BRepAdaptor_Surface left_surface(TopoDS::Face(left_faces.Current()));
+        const bool left_planar = left_surface.GetType() == GeomAbs_Plane;
+        const gp_Dir left_normal = left_planar ? left_surface.Plane().Axis().Direction() : gp_Dir(0, 0, 1);
+        for (const auto& right_face : right_faces) {
+          if (left_face_bounds.IsVoid() || right_face.bounds.IsVoid() ||
+              left_face_bounds.IsOut(right_face.bounds) ||
+              (left_planar && right_face.planar &&
+               std::abs(left_normal.Dot(right_face.normal)) < 1.0 - 1e-10)) {
             continue;
           }
-          BRepAlgoAPI_Common face_common(left_faces.Current(), right_faces.Current());
+          BRepAlgoAPI_Common face_common(left_faces.Current(), right_face.shape);
           face_common.SetNonDestructive(true);
           face_common.Build();
           if (!face_common.IsDone() || face_common.HasErrors()) {

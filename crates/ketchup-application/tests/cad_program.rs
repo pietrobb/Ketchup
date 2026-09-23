@@ -1,7 +1,10 @@
 use std::collections::BTreeSet;
 
 use ketchup_application::model_query::{EntityKind, ModelQuery, PageRequest};
-use ketchup_application::plan_assistant_cad_edit_program as plan;
+use ketchup_application::{
+    AssistantCadResolvedProgramOutput, plan_assistant_cad_edit_program as plan,
+    plan_assistant_cad_edit_program_with_outputs as plan_with_outputs,
+};
 use ketchup_core::assembly::{
     AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind, PlanarFaceAttachment,
 };
@@ -2530,6 +2533,985 @@ fn one_dowel_joint_operation_derives_matching_sixteen_millimetre_holes_for_both_
             && pair.first.shared_center_world_mm == pair.second.shared_center_world_mm
     }));
     assert_eq!(document.visible_undo_steps(), 2);
+}
+
+#[test]
+fn one_physical_dowel_joint_operation_creates_both_hole_rows_atomically() {
+    let mut document = DocumentStore::new();
+    let panel = |name: &str, translation_mm| AssistantCadEditOperation::CreatePanel {
+        name: name.into(),
+        dimensions_mm: [100.0, 50.0, 18.0],
+        holes: Vec::new(),
+        translation_mm,
+        rotation: None,
+    };
+    let panels = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &program(vec![
+            panel("Lower panel", [0.0, 0.0, 0.0]),
+            panel("Upper panel", [0.0, 0.0, 18.0]),
+        ]),
+    )
+    .unwrap();
+    document.apply_batch(&panels).unwrap();
+    let baseline = document.current();
+    let undo_before = document.visible_undo_steps();
+    let face = |occurrence_id, face_z, inward_unit_local| AssistantDowelJointFace {
+        instance_path: AssistantInstancePath {
+            root_occurrence_id: occurrence_id,
+            steps: Vec::new(),
+        },
+        face_origin_local_mm: [0.0, 0.0, face_z],
+        inward_unit_local,
+        bounds_min_local_mm: [0.0, 0.0, 0.0],
+        bounds_max_local_mm: [100.0, 50.0, 18.0],
+    };
+    let input = program(vec![AssistantCadEditOperation::CreatePhysicalDowelJoint {
+        joint_id: None,
+        name: "Physical shelf row".into(),
+        first: face(1, 18.0, [0.0, 0.0, -1.0]),
+        second: face(2, 0.0, [0.0, 0.0, 1.0]),
+        first_center_local_mm: [20.0, 20.0, 18.0],
+        row_unit_first_local: [1.0, 0.0, 0.0],
+        count: 3,
+        spacing_mm: 25.0,
+        dowel: AssistantStandardDowel::D8x30,
+    }]);
+    let input: AssistantCadEditProgram =
+        serde_json::from_slice(&serde_json::to_vec(&input).unwrap()).unwrap();
+    let batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &input,
+    )
+    .unwrap();
+    assert_eq!(
+        batch
+            .commands()
+            .iter()
+            .filter(|command| matches!(
+                command,
+                CanonicalCommand::CreateFeature {
+                    kind: FeatureKind::Pocket { .. },
+                    ..
+                }
+            ))
+            .count(),
+        6
+    );
+    assert_eq!(
+        batch
+            .commands()
+            .iter()
+            .filter(|command| matches!(command, CanonicalCommand::UpsertDowelJoint(_)))
+            .count(),
+        1
+    );
+
+    document.apply_batch(&batch).unwrap();
+    assert_eq!(document.visible_undo_steps(), undo_before + 1);
+    let committed = document.current();
+    let committed_digest = committed.canonical_digest();
+    let joint = committed
+        .dowel_joint(ketchup_core::joinery::DowelJointId(1))
+        .unwrap();
+    let bindings = joint.physical_hole_pairs.as_ref().unwrap();
+    assert_eq!(bindings.len(), 3);
+    assert!(bindings.iter().all(|binding| {
+        matches!(
+            committed
+                .feature(binding.first_pocket_feature_id)
+                .unwrap()
+                .kind(),
+            FeatureKind::Pocket { .. }
+        ) && matches!(
+            committed
+                .feature(binding.second_pocket_feature_id)
+                .unwrap()
+                .kind(),
+            FeatureKind::Pocket { .. }
+        )
+    }));
+    let projection =
+        ketchup_core::joinery::project_dowel_joint_contract(&committed, joint).unwrap();
+    assert_eq!(projection.pairs.len(), 3);
+    assert!(projection.pairs.iter().all(|pair| {
+        pair.physical_probe_coincidence
+            .as_ref()
+            .is_some_and(|probe| probe.maximum_endpoint_error_mm == 0.0)
+    }));
+
+    document.undo().unwrap();
+    assert_eq!(
+        document.current().canonical_digest(),
+        baseline.canonical_digest()
+    );
+    document.redo().unwrap();
+    assert_eq!(document.current().canonical_digest(), committed_digest);
+
+    let update = program(vec![AssistantCadEditOperation::CreatePhysicalDowelJoint {
+        joint_id: Some(1),
+        name: "Physical shelf row".into(),
+        first: face(1, 18.0, [0.0, 0.0, -1.0]),
+        second: face(2, 0.0, [0.0, 0.0, 1.0]),
+        first_center_local_mm: [25.0, 20.0, 18.0],
+        row_unit_first_local: [1.0, 0.0, 0.0],
+        count: 2,
+        spacing_mm: 30.0,
+        dowel: AssistantStandardDowel::D8x30,
+    }]);
+    let update_batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &update,
+    )
+    .unwrap();
+    assert_eq!(
+        update_batch
+            .commands()
+            .iter()
+            .filter(|command| matches!(command, CanonicalCommand::DeleteDowelJoint { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        update_batch
+            .commands()
+            .iter()
+            .filter(|command| matches!(command, CanonicalCommand::DeleteFeature { .. }))
+            .count(),
+        18
+    );
+    assert_eq!(
+        update_batch
+            .commands()
+            .iter()
+            .filter(|command| matches!(
+                command,
+                CanonicalCommand::CreateFeature {
+                    kind: FeatureKind::Pocket { .. },
+                    ..
+                }
+            ))
+            .count(),
+        4
+    );
+    let undo_before_update = document.visible_undo_steps();
+    document.apply_batch(&update_batch).unwrap();
+    assert_eq!(document.visible_undo_steps(), undo_before_update + 1);
+    let updated = document.current();
+    assert!(
+        baseline
+            .features()
+            .all(|feature| updated.feature(feature.id()).is_some())
+    );
+    let updated_joint = updated
+        .dowel_joint(ketchup_core::joinery::DowelJointId(1))
+        .unwrap();
+    assert_eq!(updated_joint.physical_hole_pairs.as_ref().unwrap().len(), 2);
+    let updated_projection =
+        ketchup_core::joinery::project_dowel_joint_contract(&updated, updated_joint).unwrap();
+    assert!(updated_projection.pairs.iter().all(|pair| {
+        pair.physical_probe_coincidence
+            .as_ref()
+            .is_some_and(|probe| probe.maximum_endpoint_error_mm == 0.0)
+    }));
+
+    let revision_before_repeat = updated.revision_id();
+    let undo_before_repeat = document.visible_undo_steps();
+    let repeated = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &update,
+    )
+    .unwrap();
+    assert!(repeated.commands().is_empty());
+    assert_eq!(document.current().revision_id(), revision_before_repeat);
+    assert_eq!(document.visible_undo_steps(), undo_before_repeat);
+
+    let delete_batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &program(vec![AssistantCadEditOperation::DeletePhysicalDowelJoint {
+            joint_id: 1,
+        }]),
+    )
+    .unwrap();
+    document.apply_batch(&delete_batch).unwrap();
+    let deleted = document.current();
+    assert!(
+        deleted
+            .dowel_joint(ketchup_core::joinery::DowelJointId(1))
+            .is_none()
+    );
+    assert_eq!(deleted.features().count(), baseline.features().count());
+    assert!(
+        baseline
+            .features()
+            .all(|feature| deleted.feature(feature.id()).is_some())
+    );
+
+    document.undo().unwrap();
+    let restored = document.current();
+    let owned_pocket = restored
+        .dowel_joint(ketchup_core::joinery::DowelJointId(1))
+        .unwrap()
+        .physical_hole_pairs
+        .as_ref()
+        .unwrap()[0]
+        .first_pocket_feature_id;
+    let definition_id = restored.feature(owned_pocket).unwrap().definition_id();
+    let manual_feature_id = FeatureId(
+        restored
+            .features()
+            .map(|feature| feature.id().0)
+            .max()
+            .unwrap()
+            + 1,
+    );
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+            id: manual_feature_id,
+            definition_id,
+            name: "Manual downstream feature".into(),
+            kind: FeatureKind::RigidTransform {
+                target: owned_pocket,
+                transform: Transform::identity(),
+            },
+        }]))
+        .unwrap();
+    let guarded = document.current();
+    let guarded_digest = guarded.canonical_digest();
+    let guarded_undo = document.visible_undo_steps();
+    assert!(
+        plan(
+            &document,
+            &BTreeSet::new(),
+            &ExactResultRegistry::default(),
+            &program(vec![AssistantCadEditOperation::DeletePhysicalDowelJoint {
+                joint_id: 1,
+            }]),
+        )
+        .is_err()
+    );
+    assert_eq!(document.current().canonical_digest(), guarded_digest);
+    assert_eq!(document.visible_undo_steps(), guarded_undo);
+}
+
+#[test]
+fn physical_dowel_joint_geometry_regressions_fail_closed_without_mutation() {
+    let seed = |lower_holes: Vec<AssistantPanelHole>, upper_z: f64| {
+        let mut document = DocumentStore::new();
+        let panel = |name: &str, translation_mm, holes| AssistantCadEditOperation::CreatePanel {
+            name: name.into(),
+            dimensions_mm: [100.0, 50.0, 18.0],
+            holes,
+            translation_mm,
+            rotation: None,
+        };
+        let batch = plan(
+            &document,
+            &BTreeSet::new(),
+            &ExactResultRegistry::default(),
+            &program(vec![
+                panel("Lower panel", [0.0, 0.0, 0.0], lower_holes),
+                panel("Upper panel", [0.0, 0.0, upper_z], Vec::new()),
+            ]),
+        )
+        .unwrap();
+        document.apply_batch(&batch).unwrap();
+        document
+    };
+    let face = |occurrence_id, face_z, inward_unit_local| AssistantDowelJointFace {
+        instance_path: AssistantInstancePath {
+            root_occurrence_id: occurrence_id,
+            steps: Vec::new(),
+        },
+        face_origin_local_mm: [0.0, 0.0, face_z],
+        inward_unit_local,
+        bounds_min_local_mm: [0.0, 0.0, 0.0],
+        bounds_max_local_mm: [100.0, 50.0, 18.0],
+    };
+    let joint = |second_normal, count, spacing_mm, dowel| {
+        AssistantCadEditOperation::CreatePhysicalDowelJoint {
+            joint_id: None,
+            name: "Guarded physical row".into(),
+            first: face(1, 18.0, [0.0, 0.0, -1.0]),
+            second: face(2, 0.0, second_normal),
+            first_center_local_mm: [20.0, 20.0, 18.0],
+            row_unit_first_local: [1.0, 0.0, 0.0],
+            count,
+            spacing_mm,
+            dowel,
+        }
+    };
+    let assert_rejected_without_mutation =
+        |document: &DocumentStore, operation: AssistantCadEditOperation| {
+            let before = document.current();
+            let undo = document.visible_undo_steps();
+            assert!(
+                plan(
+                    document,
+                    &BTreeSet::new(),
+                    &ExactResultRegistry::default(),
+                    &program(vec![operation]),
+                )
+                .is_err()
+            );
+            assert_eq!(
+                document.current().canonical_digest(),
+                before.canonical_digest()
+            );
+            assert_eq!(document.visible_undo_steps(), undo);
+        };
+
+    let clean = seed(Vec::new(), 18.0);
+    assert_rejected_without_mutation(
+        &clean,
+        joint([0.0, 0.0, -1.0], 2, 25.0, AssistantStandardDowel::D8x30),
+    );
+    assert_rejected_without_mutation(
+        &clean,
+        joint([0.0, 0.0, 1.0], 2, 7.0, AssistantStandardDowel::D8x30),
+    );
+    assert_rejected_without_mutation(
+        &clean,
+        joint([0.0, 0.0, 1.0], 1, 0.0, AssistantStandardDowel::D8x40),
+    );
+
+    let separated = seed(Vec::new(), 20.0);
+    assert_rejected_without_mutation(
+        &separated,
+        joint([0.0, 0.0, 1.0], 1, 0.0, AssistantStandardDowel::D8x30),
+    );
+
+    let hardware = AssistantPanelHole {
+        id: "hinge-hardware".into(),
+        entry_local_mm: [20.0, 20.0, 18.0],
+        inward_unit_local: [0.0, 0.0, -1.0],
+        diameter_mm: 10.0,
+        depth_mm: 10.0,
+    };
+    let obstructed = seed(vec![hardware], 18.0);
+    assert_rejected_without_mutation(
+        &obstructed,
+        joint([0.0, 0.0, 1.0], 1, 0.0, AssistantStandardDowel::D8x30),
+    );
+
+    let mut shallow = seed(Vec::new(), 18.0);
+    let create = plan(
+        &shallow,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &program(vec![joint(
+            [0.0, 0.0, 1.0],
+            1,
+            0.0,
+            AssistantStandardDowel::D8x30,
+        )]),
+    )
+    .unwrap();
+    shallow.apply_batch(&create).unwrap();
+    let committed = shallow.current();
+    let first_pocket = committed
+        .dowel_joint(ketchup_core::joinery::DowelJointId(1))
+        .unwrap()
+        .physical_hole_pairs
+        .as_ref()
+        .unwrap()[0]
+        .first_pocket_feature_id;
+    let revision_before_shallow = committed.revision_id();
+    let undo_before_shallow = shallow.visible_undo_steps();
+    let make_shallow = plan(
+        &shallow,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &program(vec![AssistantCadEditOperation::SetFeatureParameter {
+            feature_id: first_pocket.0,
+            parameter_path: "depth".into(),
+            value_type: AssistantCadParameterValueType::Length,
+            value: 15.0,
+        }]),
+    )
+    .unwrap();
+    assert!(shallow.apply_batch(&make_shallow).is_err());
+    assert_eq!(shallow.current().revision_id(), revision_before_shallow);
+    assert_eq!(shallow.visible_undo_steps(), undo_before_shallow);
+}
+
+#[test]
+fn physical_dowel_joint_refuses_shared_root_and_nested_definitions_without_mutation() {
+    for nested in [false, true] {
+        for shared_id in [1, 2] {
+            let mut document = DocumentStore::new();
+            let panels = plan(
+                &document,
+                &BTreeSet::new(),
+                &ExactResultRegistry::default(),
+                &program(
+                    vec![0.0, 18.0]
+                        .into_iter()
+                        .map(|z| AssistantCadEditOperation::CreatePanel {
+                            name: format!("Panel {z}"),
+                            dimensions_mm: [100.0, 50.0, 18.0],
+                            holes: vec![],
+                            translation_mm: [0.0, 0.0, z],
+                            rotation: None,
+                        })
+                        .collect(),
+                ),
+            )
+            .unwrap();
+            document.apply_batch(&panels).unwrap();
+            let mut commands = Vec::new();
+            if nested {
+                commands.push(CanonicalCommand::CreateGroup {
+                    id: GroupId(1),
+                    name: "Nested assembly".into(),
+                    transform: Transform::identity(),
+                    parent: None,
+                });
+            }
+            commands.push(CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(3),
+                definition_id: DefinitionId(shared_id),
+                name: "Untouched hidden sibling".into(),
+                transform: Transform::from_translation(200.0, 0.0, 0.0).unwrap(),
+                parent: nested.then_some(GroupId(1)),
+                tag: None,
+                visible: false,
+            });
+            document.apply_batch(&CommandBatch::new(commands)).unwrap();
+            if nested {
+                document
+                    .convert_group_to_component(GroupId(1), "Nested component")
+                    .unwrap();
+            }
+            let before = document.current();
+            let undo = document.visible_undo_steps();
+            let redo = document.visible_redo_steps();
+            let epoch = document.mutation_epoch();
+            let sibling = before
+                .scene_query()
+                .into_iter()
+                .find(|instance| {
+                    instance.definition_id == DefinitionId(shared_id)
+                        && (instance.instance_path.is_root() == !nested)
+                        && instance.occurrence_name == "Untouched hidden sibling"
+                })
+                .expect("the shared sibling must actually exist");
+            assert!(!sibling.visible);
+            let face = |id, z, inward_unit_local| AssistantDowelJointFace {
+                instance_path: AssistantInstancePath {
+                    root_occurrence_id: id,
+                    steps: vec![],
+                },
+                face_origin_local_mm: [0.0, 0.0, z],
+                inward_unit_local,
+                bounds_min_local_mm: [0.0; 3],
+                bounds_max_local_mm: [100.0, 50.0, 18.0],
+            };
+            let rejection = plan(
+                &document,
+                &BTreeSet::new(),
+                &ExactResultRegistry::default(),
+                &program(vec![AssistantCadEditOperation::CreatePhysicalDowelJoint {
+                    joint_id: None,
+                    name: "Must not drill sibling".into(),
+                    first: face(1, 18.0, [0.0, 0.0, -1.0]),
+                    second: face(2, 0.0, [0.0, 0.0, 1.0]),
+                    first_center_local_mm: [20.0, 20.0, 18.0],
+                    row_unit_first_local: [1.0, 0.0, 0.0],
+                    count: 3,
+                    spacing_mm: 25.0,
+                    dowel: AssistantStandardDowel::D8x30,
+                }]),
+            )
+            .unwrap_err();
+            assert_eq!(rejection.code, "planning.physical_dowel_shared_definition");
+            assert_eq!(
+                document.current().canonical_digest(),
+                before.canonical_digest()
+            );
+            assert_eq!(document.current().revision_id(), before.revision_id());
+            assert_eq!(document.mutation_epoch(), epoch);
+            assert_eq!(document.visible_undo_steps(), undo);
+            assert_eq!(document.visible_redo_steps(), redo);
+            assert_eq!(document.current().dowel_joints().count(), 0);
+        }
+    }
+}
+
+#[test]
+fn physical_dowel_joint_supports_both_rotated_sides_and_preserves_existing_work() {
+    let mut document = DocumentStore::new();
+    let panel = |name: &str, translation_mm, rotation: Option<AssistantCadRotation>, holes| {
+        AssistantCadEditOperation::CreatePanel {
+            name: name.into(),
+            dimensions_mm: [100.0, 50.0, 18.0],
+            holes,
+            translation_mm,
+            rotation,
+        }
+    };
+    let rotation = |pivot_mm, angle_degrees| AssistantCadRotation {
+        pivot_mm,
+        axis: [0.0, 1.0, 0.0],
+        angle_degrees,
+    };
+    let hardware = AssistantPanelHole {
+        id: "hinge-hardware".into(),
+        entry_local_mm: [50.0, 25.0, 18.0],
+        inward_unit_local: [0.0, 0.0, -1.0],
+        diameter_mm: 6.0,
+        depth_mm: 10.0,
+    };
+    let panels = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &program(vec![
+            panel("Back panel", [0.0, 0.0, 0.0], None, vec![hardware]),
+            panel("Top panel", [0.0, 0.0, 18.0], None, Vec::new()),
+            panel(
+                "Left side",
+                [0.0, 0.0, 0.0],
+                Some(rotation([0.0, 0.0, 0.0], -90.0)),
+                Vec::new(),
+            ),
+            panel(
+                "Right side",
+                [100.0, 0.0, 100.0],
+                Some(rotation([100.0, 0.0, 100.0], 90.0)),
+                Vec::new(),
+            ),
+        ]),
+    )
+    .unwrap();
+    document.apply_batch(&panels).unwrap();
+    let face = |occurrence_id, face_origin_local_mm, inward_unit_local| AssistantDowelJointFace {
+        instance_path: AssistantInstancePath {
+            root_occurrence_id: occurrence_id,
+            steps: Vec::new(),
+        },
+        face_origin_local_mm,
+        inward_unit_local,
+        bounds_min_local_mm: [0.0, 0.0, 0.0],
+        bounds_max_local_mm: [100.0, 50.0, 18.0],
+    };
+    let top_joint = AssistantCadEditOperation::CreatePhysicalDowelJoint {
+        joint_id: None,
+        name: "Existing top row".into(),
+        first: face(1, [0.0, 0.0, 18.0], [0.0, 0.0, -1.0]),
+        second: face(2, [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+        first_center_local_mm: [30.0, 45.0, 18.0],
+        row_unit_first_local: [1.0, 0.0, 0.0],
+        count: 2,
+        spacing_mm: 40.0,
+        dowel: AssistantStandardDowel::D8x30,
+    };
+    let top_batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &program(vec![top_joint]),
+    )
+    .unwrap();
+    document.apply_batch(&top_batch).unwrap();
+    let before_sides = document.current();
+    let preserved_joint = before_sides
+        .dowel_joint(ketchup_core::joinery::DowelJointId(1))
+        .unwrap()
+        .clone();
+    let hardware_feature_id = before_sides
+        .features()
+        .find(|feature| feature.name() == "Back panel hole hinge-hardware pocket")
+        .unwrap()
+        .id();
+    let side_joint = |name: &str, first, second, first_center_local_mm| {
+        AssistantCadEditOperation::CreatePhysicalDowelJoint {
+            joint_id: None,
+            name: name.into(),
+            first,
+            second,
+            first_center_local_mm,
+            row_unit_first_local: [0.0, 1.0, 0.0],
+            count: 2,
+            spacing_mm: 20.0,
+            dowel: AssistantStandardDowel::D8x30,
+        }
+    };
+    let sides = program(vec![
+        side_joint(
+            "Left physical row",
+            face(1, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]),
+            face(3, [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+            [0.0, 10.0, 9.0],
+        ),
+        side_joint(
+            "Right physical row",
+            face(1, [100.0, 0.0, 0.0], [-1.0, 0.0, 0.0]),
+            face(4, [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+            [100.0, 10.0, 9.0],
+        ),
+    ]);
+    let side_batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &sides,
+    )
+    .unwrap();
+    assert_eq!(
+        side_batch
+            .commands()
+            .iter()
+            .filter(|command| matches!(
+                command,
+                CanonicalCommand::CreateFeature {
+                    kind: FeatureKind::Pocket { .. },
+                    ..
+                }
+            ))
+            .count(),
+        8
+    );
+    let undo_before_sides = document.visible_undo_steps();
+    document.apply_batch(&side_batch).unwrap();
+    assert_eq!(document.visible_undo_steps(), undo_before_sides + 1);
+    let committed = document.current();
+    assert_eq!(committed.dowel_joints().count(), 3);
+    assert_eq!(
+        committed
+            .dowel_joint(ketchup_core::joinery::DowelJointId(1))
+            .unwrap(),
+        &preserved_joint
+    );
+    assert!(committed.feature(hardware_feature_id).is_some());
+    assert_eq!(
+        committed
+            .features()
+            .filter(|feature| matches!(feature.kind(), FeatureKind::Pocket { .. }))
+            .count(),
+        13
+    );
+    for (joint_id, expected_centers, first_inward) in [
+        (
+            1,
+            [[30.0, 45.0, 18.0], [70.0, 45.0, 18.0]],
+            [0.0, 0.0, -1.0],
+        ),
+        (2, [[0.0, 10.0, 9.0], [0.0, 30.0, 9.0]], [1.0, 0.0, 0.0]),
+        (
+            3,
+            [[100.0, 10.0, 9.0], [100.0, 30.0, 9.0]],
+            [-1.0, 0.0, 0.0],
+        ),
+    ] {
+        let joint = committed
+            .dowel_joint(ketchup_core::joinery::DowelJointId(joint_id))
+            .unwrap();
+        let projection =
+            ketchup_core::joinery::project_dowel_joint_contract(&committed, joint).unwrap();
+        assert_eq!(projection.pairs.len(), 2);
+        assert_eq!(
+            projection
+                .pairs
+                .iter()
+                .map(|pair| pair.first.shared_center_world_mm)
+                .collect::<Vec<_>>(),
+            expected_centers
+        );
+        for (pair, center) in projection.pairs.iter().zip(expected_centers) {
+            assert_eq!(pair.first.diameter_mm, 8.0);
+            assert_eq!(pair.second.diameter_mm, 8.0);
+            assert_eq!(pair.first.depth_mm, 16.0);
+            assert_eq!(pair.second.depth_mm, 16.0);
+            let probe = pair.physical_probe_coincidence.unwrap();
+            assert!(probe.maximum_endpoint_error_mm <= 1.0e-8);
+            // D8x30 manufacturing oracle: 15 mm insertion on each side, not the 16 mm hole depth.
+            for (endpoint, insertion) in [(0, 15.0), (1, -15.0)] {
+                for axis in 0..3 {
+                    let expected = center[axis] + first_inward[axis] * insertion;
+                    assert!(
+                        (probe.first_probe_endpoints_world_mm[endpoint][axis] - expected).abs()
+                            <= 1.0e-8
+                    );
+                    assert!(
+                        (probe.second_probe_endpoints_world_mm[endpoint][axis] - expected).abs()
+                            <= 1.0e-8
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn named_program_outputs_create_panels_physical_holes_and_joint_in_one_atomic_batch() {
+    let mut document = DocumentStore::new();
+    let baseline = document.current();
+    let panel = |name: &str, translation_mm, entry_z, inward_unit_local| {
+        AssistantCadEditOperation::CreatePanel {
+            name: name.into(),
+            dimensions_mm: [100.0, 50.0, 18.0],
+            holes: vec![AssistantPanelHole {
+                id: "dowel-1".into(),
+                entry_local_mm: [20.0, 20.0, entry_z],
+                inward_unit_local,
+                diameter_mm: 8.0,
+                depth_mm: 16.0,
+            }],
+            translation_mm,
+            rotation: None,
+        }
+    };
+    let bind = |name: &str, operation_index, output| AssistantCadEditOperation::BindProgramOutput {
+        name: name.into(),
+        source: AssistantCadProgramFeatureReference {
+            operation_index,
+            output,
+        },
+    };
+    let named = |name: &str, output| AssistantCadNamedProgramOutputReference {
+        name: name.into(),
+        output,
+    };
+    let face = |name: &str, face_z, inward_unit_local| AssistantProgramDowelJointFace {
+        occurrence: named(name, AssistantCadProgramFeatureOutput::Occurrence),
+        face_origin_local_mm: [0.0, 0.0, face_z],
+        inward_unit_local,
+        bounds_min_local_mm: [0.0, 0.0, 0.0],
+        bounds_max_local_mm: [100.0, 50.0, 18.0],
+    };
+    let input = program(vec![
+        panel("Lower panel", [0.0, 0.0, 0.0], 18.0, [0.0, 0.0, -1.0]),
+        bind("lower", 0, AssistantCadProgramFeatureOutput::Occurrence),
+        bind(
+            "lower-hole",
+            0,
+            AssistantCadProgramFeatureOutput::BodyFeature,
+        ),
+        panel("Upper panel", [0.0, 0.0, 18.0], 0.0, [0.0, 0.0, 1.0]),
+        bind("upper", 3, AssistantCadProgramFeatureOutput::Occurrence),
+        bind(
+            "upper-hole",
+            3,
+            AssistantCadProgramFeatureOutput::BodyFeature,
+        ),
+        AssistantCadEditOperation::CreateProgramDowelJoint {
+            name: "Bound row".into(),
+            first: face("lower", 18.0, [0.0, 0.0, -1.0]),
+            second: face("upper", 0.0, [0.0, 0.0, 1.0]),
+            first_center_local_mm: [20.0, 20.0, 18.0],
+            row_unit_first_local: [1.0, 0.0, 0.0],
+            count: 1,
+            spacing_mm: 0.0,
+            dowel: AssistantStandardDowel::D8x30,
+            physical_hole_pairs: vec![AssistantProgramDowelPhysicalHolePair {
+                first_pocket_feature: named(
+                    "lower-hole",
+                    AssistantCadProgramFeatureOutput::BodyFeature,
+                ),
+                second_pocket_feature: named(
+                    "upper-hole",
+                    AssistantCadProgramFeatureOutput::BodyFeature,
+                ),
+            }],
+        },
+        bind("joint", 6, AssistantCadProgramFeatureOutput::DowelJoint),
+    ]);
+    let input: AssistantCadEditProgram =
+        serde_json::from_slice(&serde_json::to_vec(&input).unwrap()).unwrap();
+
+    let planned = plan_with_outputs(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &input,
+    )
+    .unwrap();
+    assert_eq!(
+        document.current().canonical_digest(),
+        baseline.canonical_digest()
+    );
+    assert_eq!(document.visible_undo_steps(), 0);
+    let repeated = plan_with_outputs(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &input,
+    )
+    .unwrap();
+    assert_eq!(repeated.outputs, planned.outputs);
+    assert_eq!(repeated.batch.commands(), planned.batch.commands());
+    assert!(matches!(
+        planned.outputs.get("lower"),
+        Some(AssistantCadResolvedProgramOutput::Occurrence(1))
+    ));
+    assert!(matches!(
+        planned.outputs.get("upper"),
+        Some(AssistantCadResolvedProgramOutput::Occurrence(2))
+    ));
+    assert!(matches!(
+        planned.outputs.get("lower-hole"),
+        Some(AssistantCadResolvedProgramOutput::BodyFeature(_))
+    ));
+    assert!(matches!(
+        planned.outputs.get("upper-hole"),
+        Some(AssistantCadResolvedProgramOutput::BodyFeature(_))
+    ));
+    assert_eq!(
+        planned.outputs.get("joint"),
+        Some(&AssistantCadResolvedProgramOutput::DowelJoint(1))
+    );
+
+    document.apply_batch(&planned.batch).unwrap();
+    let committed = document.current();
+    let joint = committed
+        .dowel_joint(ketchup_core::joinery::DowelJointId(1))
+        .unwrap();
+    assert_eq!(joint.physical_hole_pairs.as_ref().unwrap().len(), 1);
+    let projection =
+        ketchup_core::joinery::project_dowel_joint_contract(&committed, joint).unwrap();
+    assert_eq!(
+        projection.pairs[0]
+            .physical_probe_coincidence
+            .as_ref()
+            .unwrap()
+            .maximum_endpoint_error_mm,
+        0.0
+    );
+    assert_eq!(document.visible_undo_steps(), 1);
+    document.undo().unwrap();
+    assert_eq!(
+        document.current().canonical_digest(),
+        baseline.canonical_digest()
+    );
+}
+
+#[test]
+fn named_program_outputs_reject_duplicates_forward_wrong_types_and_late_failure_without_mutation() {
+    let mut document = DocumentStore::new();
+    let baseline = document.current();
+    let bind = |name: &str, operation_index, output| AssistantCadEditOperation::BindProgramOutput {
+        name: name.into(),
+        source: AssistantCadProgramFeatureReference {
+            operation_index,
+            output,
+        },
+    };
+    let duplicate = program(vec![
+        part(),
+        bind("part", 0, AssistantCadProgramFeatureOutput::Definition),
+        bind("part", 0, AssistantCadProgramFeatureOutput::Occurrence),
+    ]);
+    assert!(
+        plan(
+            &document,
+            &BTreeSet::new(),
+            &ExactResultRegistry::default(),
+            &duplicate
+        )
+        .is_err()
+    );
+
+    let wrong_type = program(vec![
+        part(),
+        bind(
+            "not-a-joint",
+            0,
+            AssistantCadProgramFeatureOutput::DowelJoint,
+        ),
+    ]);
+    assert!(
+        plan(
+            &document,
+            &BTreeSet::new(),
+            &ExactResultRegistry::default(),
+            &wrong_type,
+        )
+        .is_err()
+    );
+
+    let late_failure = program(vec![
+        part(),
+        bind("part", 0, AssistantCadProgramFeatureOutput::Occurrence),
+        AssistantCadEditOperation::SetDimension {
+            feature_id: u64::MAX,
+            constraint_id: None,
+            value_mm: 20.0,
+        },
+    ]);
+    let late_batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &late_failure,
+    )
+    .unwrap();
+    assert!(document.apply_batch(&late_batch).is_err());
+    assert_eq!(
+        document.current().canonical_digest(),
+        baseline.canonical_digest()
+    );
+    assert_eq!(document.visible_undo_steps(), 0);
+
+    let missing_or_forward: AssistantCadEditProgram = serde_json::from_value(serde_json::json!({
+        "operations": [
+            {
+                "operation": "create_program_dowel_joint",
+                "name": "Invalid",
+                "first": {
+                    "occurrence": {"name": "later", "output": "occurrence"},
+                    "face_origin_local_mm": [0.0, 0.0, 18.0],
+                    "inward_unit_local": [0.0, 0.0, -1.0],
+                    "bounds_min_local_mm": [0.0, 0.0, 0.0],
+                    "bounds_max_local_mm": [100.0, 50.0, 18.0]
+                },
+                "second": {
+                    "occurrence": {"name": "wrong-type", "output": "occurrence"},
+                    "face_origin_local_mm": [0.0, 0.0, 0.0],
+                    "inward_unit_local": [0.0, 0.0, 1.0],
+                    "bounds_min_local_mm": [0.0, 0.0, 0.0],
+                    "bounds_max_local_mm": [100.0, 50.0, 18.0]
+                },
+                "first_center_local_mm": [20.0, 20.0, 18.0],
+                "row_unit_first_local": [1.0, 0.0, 0.0],
+                "count": 1,
+                "spacing_mm": 0.0,
+                "dowel": "d8x30",
+                "physical_hole_pairs": [{
+                    "first_pocket_feature": {"name": "first-hole", "output": "body_feature"},
+                    "second_pocket_feature": {"name": "second-hole", "output": "body_feature"}
+                }]
+            },
+            {
+                "operation": "bind_program_output",
+                "name": "later",
+                "source": {"operation_index": 2, "output": "occurrence"}
+            },
+            {
+                "operation": "create_panel",
+                "name": "Later panel",
+                "dimensions_mm": [100.0, 50.0, 18.0],
+                "holes": [],
+                "translation_mm": [0.0, 0.0, 0.0]
+            }
+        ]
+    }))
+    .unwrap();
+    assert!(missing_or_forward.validate().is_err());
+    assert_eq!(
+        document.current().canonical_digest(),
+        baseline.canonical_digest()
+    );
 }
 
 #[test]

@@ -808,6 +808,56 @@ pub struct SketchSpec {
 }
 
 impl SketchSpec {
+    pub(crate) fn rectangle_bounds(&self) -> Option<[[f64; 2]; 2]> {
+        if !self.constraints.is_empty() || self.entities.len() != 4 {
+            return None;
+        }
+        let mut minimum = [f64::INFINITY; 2];
+        let mut maximum = [f64::NEG_INFINITY; 2];
+        for entity in &self.entities {
+            let SketchEntity::Line {
+                start_mm, end_mm, ..
+            } = entity
+            else {
+                return None;
+            };
+            for point in [start_mm, end_mm] {
+                for axis in 0..2 {
+                    minimum[axis] = minimum[axis].min(point[axis]);
+                    maximum[axis] = maximum[axis].max(point[axis]);
+                }
+            }
+        }
+        if (0..2).any(|axis| maximum[axis] - minimum[axis] <= EPSILON_MM) {
+            return None;
+        }
+        let mut sides = std::collections::BTreeSet::new();
+        for entity in &self.entities {
+            let SketchEntity::Line {
+                start_mm, end_mm, ..
+            } = entity
+            else {
+                return None;
+            };
+            let axis = (0..2).find(|axis| start_mm[*axis] == end_mm[*axis])?;
+            let tangent = 1 - axis;
+            let maximum_side = if start_mm[axis] == minimum[axis] {
+                false
+            } else if start_mm[axis] == maximum[axis] {
+                true
+            } else {
+                return None;
+            };
+            if start_mm[tangent].min(end_mm[tangent]) != minimum[tangent]
+                || start_mm[tangent].max(end_mm[tangent]) != maximum[tangent]
+                || !sides.insert((axis, maximum_side))
+            {
+                return None;
+            }
+        }
+        Some([minimum, maximum])
+    }
+
     #[must_use]
     pub fn is_projected_entity(&self, entity_id: SketchEntityId) -> bool {
         self.constraints.iter().any(|constraint| {

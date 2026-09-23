@@ -2,10 +2,13 @@
 //! Occurrences are document/root records (including group members), not expanded
 //! definition-local instances. Definitions/features are the full canonical catalogs.
 use ketchup_core::assembly::{AssemblyMateKind, AssemblyReferenceHealth};
+use ketchup_core::assembly_joint::AssemblyJointKind;
+use ketchup_core::assistant_sidecar::{AssistantInstancePath, AssistantInstancePathStep};
 use ketchup_core::document::{
     ClassificationCategoryId, ClassificationDimensionId, DefinitionId, FeatureId, FeatureKind,
-    InstancePath, InstancePathStep, LocalGroupKey, LocalOccurrenceKey, OccurrenceId,
-    SceneQueryBudgetExceeded, SceneQueryBudgetKind, Snapshot, TagId,
+    InstancePath, InstancePathStep, LocalGroupId, LocalGroupKey, LocalOccurrenceId,
+    LocalOccurrenceKey, OccurrenceId, ParameterValueType, SceneQueryBudgetExceeded,
+    SceneQueryBudgetKind, Snapshot, TagId,
 };
 use ketchup_core::exact_product::{
     ExactBRepGraphEdgeEvidence, ExactBRepGraphFaceEvidence, ExactBodyPackage, ExactResultRegistry,
@@ -18,7 +21,7 @@ use ketchup_interaction::projection::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, VecDeque, hash_map::RandomState};
+use std::collections::{BTreeMap, BTreeSet, VecDeque, hash_map::RandomState};
 use std::hash::BuildHasher;
 use std::sync::Mutex;
 
@@ -31,6 +34,9 @@ pub const MAX_INSTANCE_INDEX_TEXT_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_WORKSET_ITEMS: usize = 10_000;
 pub const MAX_WORKSET_TEXT_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_ACTIVE_WORKSETS: usize = 16;
+pub const MAX_EDIT_CONTEXT_TARGETS: usize = 16;
+pub const MAX_EDIT_CONTEXT_FEATURES: usize = 256;
+pub const MAX_EDIT_CONTEXT_FACES: usize = 128;
 const MAX_CURSOR_BYTES: usize = 4096;
 const PAGE_ITEM_BYTES: usize = 20 * 1024;
 const MAX_PROPERTY_VALUES: usize = 32;
@@ -72,6 +78,12 @@ pub struct PageRequest {
     #[serde(default)]
     pub cursor: Option<String>,
 }
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EditContextRequest {
+    pub targets: Vec<AssistantInstancePath>,
+}
+
 fn default_limit() -> usize {
     50
 }
@@ -277,6 +289,120 @@ impl ModelQuery {
                 "max_instance_index_items":MAX_INSTANCE_INDEX_ITEMS,
                 "max_instance_path_steps":MAX_INSTANCE_PATH_STEPS,
                 "max_instance_index_text_bytes":MAX_INSTANCE_INDEX_TEXT_BYTES}})
+    }
+
+    pub fn edit_context(
+        &self,
+        snapshot: &Snapshot,
+        topology_results: &ExactResultRegistry,
+        mutation_epoch: u64,
+        request: &EditContextRequest,
+    ) -> Result<Value, QueryError> {
+        if request.targets.is_empty() || request.targets.len() > MAX_EDIT_CONTEXT_TARGETS {
+            return Err(QueryError::InvalidInput);
+        }
+        let unique = request.targets.iter().collect::<BTreeSet<_>>();
+        if unique.len() != request.targets.len() {
+            return Err(QueryError::InvalidInput);
+        }
+
+        let mut cache = self.instances.lock().expect("instance index lock");
+        let index = self.refresh_instance_index(snapshot, &mut cache);
+        let InstanceIndexState::Ready(projection) = &index.state else {
+            return Err(QueryError::OutputTooLarge);
+        };
+        let packages = topology_results
+            .body_values(snapshot)
+            .map_err(|_| QueryError::InvalidInput)?;
+        let mut targets = Vec::with_capacity(request.targets.len());
+        let mut total_features = 0_usize;
+        let mut total_faces = 0_usize;
+        for requested in &request.targets {
+            let path = canonical_instance_path(snapshot, requested)?;
+            let occurrence = projection
+                .occurrences()
+                .iter()
+                .find(|occurrence| occurrence.instance_path == path)
+                .ok_or(QueryError::NotFound)?;
+            let resolved = snapshot
+                .resolve_instance_path(&path)
+                .map_err(|_| QueryError::NotFound)?;
+            let definition = snapshot
+                .definition(resolved.definition_id)
+                .ok_or(QueryError::NotFound)?;
+            let feature_count = definition.feature_ids().len();
+            total_features = total_features
+                .checked_add(feature_count)
+                .ok_or(QueryError::OutputTooLarge)?;
+            if total_features > MAX_EDIT_CONTEXT_FEATURES {
+                return Err(QueryError::OutputTooLarge);
+            }
+            let features = definition
+                .feature_ids()
+                .iter()
+                .map(|id| edit_feature_value(snapshot, *id))
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut faces = Vec::new();
+            let mut exact_faces_available = false;
+            for package in packages.values() {
+                let ExactBodyPackage::Graph(package) = package.as_ref() else {
+                    continue;
+                };
+                for evidence in &package.face_evidence {
+                    let Some(reference) = topological_reference(
+                        &package.topological_references,
+                        TopologicalElementKind::Face,
+                        evidence.face_ordinal,
+                    ) else {
+                        return Err(QueryError::InvalidInput);
+                    };
+                    if reference.definition_id != resolved.definition_id {
+                        continue;
+                    }
+                    exact_faces_available = true;
+                    total_faces = total_faces
+                        .checked_add(1)
+                        .ok_or(QueryError::OutputTooLarge)?;
+                    if total_faces > MAX_EDIT_CONTEXT_FACES {
+                        return Err(QueryError::OutputTooLarge);
+                    }
+                    faces.push(face_value(reference, evidence));
+                }
+            }
+            targets.push(json!({
+                "instance": instance_row(snapshot, occurrence).ok_or(QueryError::NotFound)?,
+                "local_transform": resolved.local_transform.matrix(),
+                "parent_world_transform": resolved.parent_world_transform.matrix(),
+                "world_transform": resolved.world_transform.matrix(),
+                "definition": {"id": definition.id().0, "name": bounded_text(definition.name()),
+                    "shared_occurrence_count": occurrence.shared_occurrence_count},
+                "features": features,
+                "stable_faces": {"items": faces, "complete": exact_faces_available,
+                    "status": if exact_faces_available { "supported" } else { "unsupported" },
+                    "reason": if exact_faces_available { Value::Null } else { json!("exact_not_available") }},
+                "joinery": edit_joinery_value(snapshot, &path),
+                "declarative_ownership": {"status": "unsupported", "reason": "assembly_recipe_not_present"}
+            }));
+        }
+        let result = json!({
+            "identity": {"document_id": snapshot.document_id().0,
+                "revision": snapshot.revision_id(), "canonical_digest": snapshot.canonical_digest(),
+                "mutation_epoch": mutation_epoch},
+            "targets": targets,
+            "capabilities": {"instance_paths": "supported", "parameters": "supported",
+                "transforms": "supported", "stable_faces": "supported_when_exact_available",
+                "joinery": "supported", "declarative_ownership": "unsupported"},
+            "limits": {"max_targets": MAX_EDIT_CONTEXT_TARGETS,
+                "max_features": MAX_EDIT_CONTEXT_FEATURES, "max_faces": MAX_EDIT_CONTEXT_FACES,
+                "max_output_bytes": MAX_OUTPUT_BYTES},
+            "complete": true
+        });
+        (serde_json::to_vec(&result)
+            .expect("bounded edit context projection")
+            .len()
+            <= MAX_OUTPUT_BYTES)
+            .then_some(result)
+            .ok_or(QueryError::OutputTooLarge)
     }
 
     pub fn page_with_topology(
@@ -1593,6 +1719,156 @@ fn instance_item_size(item: &Value) -> Result<usize, QueryError> {
     (size <= PAGE_ITEM_BYTES)
         .then_some(size)
         .ok_or(QueryError::OutputTooLarge)
+}
+
+fn canonical_instance_path(
+    snapshot: &Snapshot,
+    requested: &AssistantInstancePath,
+) -> Result<InstancePath, QueryError> {
+    if requested.root_occurrence_id == 0 || requested.steps.len() > MAX_INSTANCE_PATH_STEPS {
+        return Err(QueryError::InvalidInput);
+    }
+    let root_id = OccurrenceId(requested.root_occurrence_id);
+    let root = snapshot.occurrence(root_id).ok_or(QueryError::NotFound)?;
+    let mut owner_definition_id = root.definition_id();
+    let mut path = InstancePath::root(root_id);
+    for step in &requested.steps {
+        path = match *step {
+            AssistantInstancePathStep::Group {
+                owner_definition_id: requested_owner,
+                local_id,
+            } => {
+                if requested_owner != owner_definition_id.0 || local_id == 0 {
+                    return Err(QueryError::NotFound);
+                }
+                let local_id = LocalGroupId(local_id);
+                snapshot
+                    .local_group(LocalGroupKey {
+                        definition_id: owner_definition_id,
+                        local_id,
+                    })
+                    .ok_or(QueryError::NotFound)?;
+                path.with_step(InstancePathStep::Group(local_id))
+            }
+            AssistantInstancePathStep::Occurrence {
+                owner_definition_id: requested_owner,
+                local_id,
+            } => {
+                if requested_owner != owner_definition_id.0 || local_id == 0 {
+                    return Err(QueryError::NotFound);
+                }
+                let local_id = LocalOccurrenceId(local_id);
+                let occurrence = snapshot
+                    .local_occurrence(LocalOccurrenceKey {
+                        definition_id: owner_definition_id,
+                        local_id,
+                    })
+                    .ok_or(QueryError::NotFound)?;
+                owner_definition_id = occurrence.definition_id();
+                path.with_step(InstancePathStep::Occurrence(local_id))
+            }
+        };
+    }
+    snapshot
+        .resolve_instance_path(&path)
+        .map_err(|_| QueryError::NotFound)?;
+    Ok(path)
+}
+
+fn edit_feature_value(snapshot: &Snapshot, id: FeatureId) -> Result<Value, QueryError> {
+    let feature = snapshot.feature(id).ok_or(QueryError::NotFound)?;
+    let parameters = feature
+        .kind()
+        .parameter_descriptors()
+        .into_iter()
+        .map(|descriptor| {
+            let value_type = match descriptor.value_type() {
+                ParameterValueType::Length => "length",
+                ParameterValueType::Angle => "angle",
+                ParameterValueType::Scalar => "scalar",
+            };
+            let unit = match descriptor.value_type() {
+                ParameterValueType::Length => "mm",
+                ParameterValueType::Angle => "degrees",
+                ParameterValueType::Scalar => "unitless",
+            };
+            json!({"path": descriptor.path().as_str(), "value_type": value_type,
+                "unit": unit, "value": feature.kind().parameter_value(descriptor.path()),
+                "editable": true, "allowed_range": Value::Null})
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({"id": id.0, "name": bounded_text(feature.name()),
+        "kind": feature_kind(feature.kind()), "suppressed": snapshot.feature_is_suppressed(id),
+        "parameters": parameters,
+        "dependency_feature_ids": feature.kind().authoritative_dependencies().into_iter()
+            .map(|dependency| dependency.0).collect::<Vec<_>>() }))
+}
+
+fn edit_joinery_value(snapshot: &Snapshot, path: &InstancePath) -> Value {
+    let mut items = Vec::new();
+    for joint in snapshot.dowel_joints() {
+        let (role, peer) = if joint.first.instance_path == *path {
+            ("first", &joint.second.instance_path)
+        } else if joint.second.instance_path == *path {
+            ("second", &joint.first.instance_path)
+        } else {
+            continue;
+        };
+        let Some((peer_path, _, _)) = qualified_path(snapshot, peer, peer.steps().len()) else {
+            continue;
+        };
+        let pair_count = project_dowel_joint_contract(snapshot, joint)
+            .map(|projection| projection.pairs.len())
+            .unwrap_or(0);
+        items.push(json!({"type": "dowel_joint", "id": joint.id.0,
+            "name": bounded_text(&joint.name), "role": role, "peer_instance_path": peer_path,
+            "pair_count": pair_count, "physical_holes_bound": joint.physical_hole_pairs.is_some()}));
+    }
+    if path.is_root() {
+        for mate in snapshot.assembly_mates() {
+            let a = mate.endpoint_a();
+            let b = mate.endpoint_b();
+            let (role, peer) = if a.occurrence_id() == path.root_occurrence() {
+                ("source", b)
+            } else if b.occurrence_id() == path.root_occurrence() {
+                ("target", a)
+            } else {
+                continue;
+            };
+            items.push(
+                json!({"type": "assembly_mate", "id": mate.id().0, "role": role,
+                "peer_instance_path": {"root_occurrence_id": peer.occurrence_id().0, "steps": []},
+                "reference_health": assembly_health_value(peer.health()),
+                "mate": assembly_kind_value(mate.kind())}),
+            );
+        }
+    }
+    for joint in snapshot.assembly_joints() {
+        let (role, peer) = if joint.parent_instance_path() == path {
+            ("parent", joint.child_instance_path())
+        } else if joint.child_instance_path() == path {
+            ("child", joint.parent_instance_path())
+        } else {
+            continue;
+        };
+        let Some((peer_path, _, _)) = qualified_path(snapshot, peer, peer.steps().len()) else {
+            continue;
+        };
+        items.push(
+            json!({"type": "assembly_joint", "id": joint.id().0, "role": role,
+            "peer_instance_path": peer_path, "joint_kind": assembly_joint_kind_name(joint.kind())}),
+        );
+    }
+    json!({"items": items, "complete": true})
+}
+
+fn assembly_joint_kind_name(kind: AssemblyJointKind) -> &'static str {
+    match kind {
+        AssemblyJointKind::Fixed => "fixed",
+        AssemblyJointKind::Revolute { .. } => "revolute",
+        AssemblyJointKind::Prismatic { .. } => "prismatic",
+        AssemblyJointKind::Helical { .. } => "helical",
+    }
 }
 
 fn qualified_path(

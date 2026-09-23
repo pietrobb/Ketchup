@@ -40,9 +40,12 @@ class Rejection(ValueError):
         self.code = code
 
 
-def _error(code, message, unknown=False):
-    return {"ok": False, "error": {"code": code, "message": message},
-            "mutation_outcome_unknown": unknown, "retry_mutation": False}
+def _error(code, message, unknown=False, details=None):
+    value = {"ok": False, "error": {"code": code, "message": message},
+             "mutation_outcome_unknown": unknown, "retry_mutation": False}
+    if details is not None:
+        value["details"] = details
+    return value
 
 
 def _output(value):
@@ -258,6 +261,11 @@ class Runtime:
             except Exception:
                 pass
 
+    def prune_closed(self):
+        for handle, session in list(self.sessions.items()):
+            if getattr(session, "closed", False) is True:
+                self.forget(handle)
+
     def expected(self, value):
         result = _live()._stamp(value)
         if not result["canonical_digest"]:
@@ -301,7 +309,7 @@ class Runtime:
                     value = _error(error.code, "The target window did not grant live access.")
                 elif isinstance(error, self.sdk.LiveBridgeError):
                     code = error.code if error.code in self.sdk._ERROR_CODES else "remote_error"
-                    value = _error(code, "Live bridge rejected the request.")
+                    value = _error(code, "Live bridge rejected the request.", details=error.details)
                 elif isinstance(error, self.sdk.LiveTransportError):
                     self.forget(handle)
                     value = _error("live_transport_error", "Live connection failed. Do not retry mutations.",
@@ -355,6 +363,7 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
             if action == "attach":
                 if handle or executable or document_path:
                     raise Rejection("invalid_arguments", "Attach accepts only one listed instance ID.")
+                runtime.prune_closed()
                 if len(runtime.sessions) >= MAX_SESSIONS:
                     raise Rejection("session_limit", "Disconnect a live session first; maximum is four.")
                 live_session = runtime.attacher(instance_id)
@@ -376,6 +385,7 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
                 raise Rejection("invalid_arguments", "Launch accepts no existing instance ID.")
             if handle:
                 raise Rejection("invalid_arguments", "Launch creates a new handle and new GUI window.")
+            runtime.prune_closed()
             if len(runtime.sessions) >= MAX_SESSIONS:
                 raise Rejection("session_limit", "Disconnect a live session first; maximum is four.")
             binary = _path(executable)
@@ -476,6 +486,45 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
                 return live_session.commit(stamp, proposal_id)
             return getattr(live_session, action)(stamp)
         return await runtime.run(handle, job, mutation=True)
+
+    @beta_async_tool(name="KetchupLiveModel")
+    async def model(action: str, handle: str, expected: dict,
+                    targets: list[dict] | None = None,
+                    selection: list[int] | None = None, request_id: str = "",
+                    program: dict | None = None, validators: list[str] | None = None,
+                    timeout_ms: int = 10_000, save: dict | None = None) -> str:
+        """Read a narrow semantic edit context or run one guarded apply-and-verify host job.
+
+        Args:
+            action: edit_context or apply_and_verify.
+            handle: Live session UUID.
+            expected: Exact observed document_id, revision, canonical_digest, mutation_epoch.
+            targets: For edit_context, 1 to 8 observed instance paths using stable root/local IDs.
+            selection: For apply_and_verify, explicit observed root occurrence IDs, including [].
+            request_id: For apply_and_verify, caller-stable bounded ID for receipt recovery; never reuse with another payload.
+            program: For apply_and_verify, one typed semantic CAD patch containing operations.
+            validators: For apply_and_verify, validator IDs including collision and gravity_support.
+            timeout_ms: Whole host-job deadline from 1 through 10000 ms.
+            save: Optional tagged save request: {"mode":"current"} or {"mode":"path","path":"..."}.
+        """
+        def job():
+            _action(action, ("edit_context", "apply_and_verify"))
+            live_session = runtime.entry(handle)
+            stamp = runtime.expected(expected)
+            if action == "edit_context":
+                if (selection is not None or request_id or program is not None
+                        or validators is not None or timeout_ms != 10_000 or save is not None):
+                    raise Rejection("invalid_arguments", "edit_context accepts only expected stamp and targets.")
+                return live_session.edit_context(stamp, targets)
+            runtime.guard()
+            if targets is not None or selection is None or not request_id or program is None:
+                raise Rejection("invalid_arguments", "apply_and_verify requires selection, request_id, program, and validators.")
+            selected = runtime.edit_preflight(live_session, stamp, selection)
+            runtime.guard()
+            return live_session.apply_and_verify(
+                stamp, selected, request_id, program, validators or [], timeout_ms, save
+            )
+        return await runtime.run(handle, job, mutation=action == "apply_and_verify")
 
     @beta_async_tool(name="KetchupLiveFile")
     async def file(action: str, handle: str, expected: dict, path: str = "") -> str:
@@ -611,4 +660,4 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
             return live_session.view(stamp, view)
         return await runtime.run(handle, job, mutation=action in ("selection", "view"))
 
-    return [session, inspect, edit, file, batch, view]
+    return [session, inspect, edit, model, file, batch, view]

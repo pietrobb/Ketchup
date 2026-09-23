@@ -470,6 +470,18 @@ fn validate_physical_hole_pairs(
     if bindings.len() != projection.pairs.len() {
         return Err(DowelJointError::InvalidPhysicalHoleBinding);
     }
+    let first_world_from_local = snapshot
+        .resolve_instance_path(&contract.first.instance_path)
+        .map_err(|_| DowelJointError::InvalidPhysicalHoleBinding)?
+        .world_transform;
+    let second_world_from_local = snapshot
+        .resolve_instance_path(&contract.second.instance_path)
+        .map_err(|_| DowelJointError::InvalidPhysicalHoleBinding)?
+        .world_transform;
+    let first_expected_inward_world =
+        transform_vector(first_world_from_local, contract.first.inward_unit_local);
+    let second_expected_inward_world =
+        transform_vector(second_world_from_local, contract.second.inward_unit_local);
     let mut first_features = std::collections::BTreeSet::new();
     let mut second_features = std::collections::BTreeSet::new();
     let mut diagnostics = Vec::with_capacity(bindings.len());
@@ -490,8 +502,8 @@ fn validate_physical_hole_pairs(
             binding.second_pocket_feature_id,
         )?;
         diagnostics.push(validate_probe_coincidence(first, second, contract.dowel)?);
-        validate_physical_hole(first, &pair.first)?;
-        validate_physical_hole(second, &pair.second)?;
+        validate_physical_hole(first, &pair.first, first_expected_inward_world)?;
+        validate_physical_hole(second, &pair.second, second_expected_inward_world)?;
     }
     Ok(diagnostics)
 }
@@ -558,9 +570,11 @@ fn observe_physical_hole(
 fn validate_physical_hole(
     observed: ObservedPhysicalHole,
     expected: &DowelHole,
+    expected_inward_unit_world: [f64; 3],
 ) -> Result<(), DowelJointError> {
     let expected_participant_entry_world_mm = expected.shared_center_world_mm;
     if distance(observed.entry_world_mm, expected_participant_entry_world_mm) > GEOMETRY_TOLERANCE
+        || distance(observed.inward_unit_world, expected_inward_unit_world) > GEOMETRY_TOLERANCE
         || (observed.diameter_mm - expected.diameter_mm).abs() > GEOMETRY_TOLERANCE
         || (observed.depth_mm - expected.depth_mm).abs() > GEOMETRY_TOLERANCE
     {
@@ -792,6 +806,29 @@ mod tests {
         assert_eq!(
             validate_probe_coincidence(first, offset_second, StandardDowel::D8x30.symmetric_spec(),),
             Err(DowelJointError::PhysicalDowelProbesDoNotCoincide)
+        );
+    }
+
+    #[test]
+    fn observed_physical_hole_must_follow_the_declared_face_normal() {
+        let expected = DowelHole {
+            stable_hole_id: "joint/0/first".into(),
+            instance_path: InstancePath::root(OccurrenceId(1)),
+            entry_local_mm: [20.0, 20.0, 18.0],
+            inward_unit_local: [0.0, 0.0, -1.0],
+            diameter_mm: 8.0,
+            depth_mm: 16.0,
+            shared_center_world_mm: [20.0, 20.0, 18.0],
+        };
+        let sideways = ObservedPhysicalHole {
+            entry_world_mm: expected.shared_center_world_mm,
+            inward_unit_world: [1.0, 0.0, 0.0],
+            diameter_mm: expected.diameter_mm,
+            depth_mm: expected.depth_mm,
+        };
+        assert_eq!(
+            validate_physical_hole(sideways, &expected, [0.0, 0.0, -1.0]),
+            Err(DowelJointError::PhysicalHoleGeometryMismatch)
         );
     }
 

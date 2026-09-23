@@ -451,6 +451,9 @@ fn bind_assistant_cad_current_selection(
             | AssistantCadEditOperation::CreatePart { .. }
             | AssistantCadEditOperation::CreatePanel { .. }
             | AssistantCadEditOperation::CreateDowelJoint { .. }
+            | AssistantCadEditOperation::CreateProgramDowelJoint { .. }
+            | AssistantCadEditOperation::CreatePhysicalDowelJoint { .. }
+            | AssistantCadEditOperation::DeletePhysicalDowelJoint { .. }
             | AssistantCadEditOperation::CreateTag { .. }
             | AssistantCadEditOperation::SetOccurrenceTag { .. }
             | AssistantCadEditOperation::SetTagVisibility { .. }
@@ -465,8 +468,10 @@ fn bind_assistant_cad_current_selection(
             | AssistantCadEditOperation::ChamferEdges { .. }
             | AssistantCadEditOperation::AppendFeature { .. }
             | AssistantCadEditOperation::AppendProgramPocket { .. }
+            | AssistantCadEditOperation::BindProgramOutput { .. }
             | AssistantCadEditOperation::SetDimension { .. }
             | AssistantCadEditOperation::SetFeatureParameter { .. }
+            | AssistantCadEditOperation::MakeOccurrenceUnique { .. }
             | AssistantCadEditOperation::CreateAssemblyJoint { .. }
             | AssistantCadEditOperation::SetAssemblyJointPosition { .. }
             | AssistantCadEditOperation::CreateDrawing { .. }
@@ -5698,6 +5703,7 @@ enum AssistantPreviewSource {
     Workflow(WorkflowIntent),
     Assembly(assembly_ui::AssemblyPreviewSource),
     Model(AssistantModelIntent),
+    #[cfg_attr(not(test), allow(dead_code))]
     CadEdit(AssistantCadEditProgram),
     ValidationRepair(AssistantValidationSelection),
 }
@@ -11372,7 +11378,9 @@ impl KetchupApp {
             | AuthoritativeDependency::OccurrenceClassification(_, _) => None,
             AuthoritativeDependency::Tag(id) => Some(("assistant-entity-tag", id.0)),
             AuthoritativeDependency::Collection(id) => Some(("assistant-entity-collection", id.0)),
-            AuthoritativeDependency::Import(_) | AuthoritativeDependency::ProductionCodes => None,
+            AuthoritativeDependency::Import(_)
+            | AuthoritativeDependency::ProductionCodes
+            | AuthoritativeDependency::AssemblyRecipe => None,
             AuthoritativeDependency::Definition(id) => Some(("assistant-entity-definition", id.0)),
             AuthoritativeDependency::DefinitionUsers(id) => {
                 Some(("assistant-entity-definition-users", id.0))
@@ -13970,18 +13978,96 @@ impl KetchupApp {
                     source: self.catalog.text("assistant-role-error"),
                     diagnostic: None,
                 });
-            } else {
-                let source = if let Some(program) = pending.cad_edit_program.take() {
-                    AssistantPreviewSource::CadEdit(program)
-                } else {
-                    AssistantPreviewSource::Model(
-                        pending
-                            .result
-                            .model_intent
-                            .take()
-                            .expect("pending execution always carries one mutation program"),
+            } else if let Some(program) = pending.cad_edit_program.take() {
+                let metadata_only = program.operations.iter().all(|operation| {
+                    matches!(
+                        operation,
+                        AssistantCadEditOperation::SetOccurrenceClassification { .. }
                     )
-                };
+                });
+                if metadata_only {
+                    match self
+                        .prepare_assistant_preview_source(AssistantPreviewSource::CadEdit(program))
+                    {
+                        Ok(()) => {
+                            let answer = pending.result.message;
+                            self.remember_latest_assistant_exchange(&answer);
+                            self.assistant_messages.push(AssistantChatMessage {
+                                role: AssistantMessageRole::Assistant,
+                                text: answer,
+                                source: pending.source,
+                                diagnostic: None,
+                            });
+                        }
+                        Err(rejection) => {
+                            self.record_assistant_rejection(*rejection, false);
+                        }
+                    }
+                } else {
+                    let request_digest =
+                        ketchup_core::graph::sha256_hex(pending.message.as_bytes());
+                    let request_id = format!("assistant-{}", &request_digest[..24]);
+                    match live_bridge::LiveBridge::apply_assistant_cad_program(
+                        self, request_id, program,
+                    ) {
+                        Ok(value) => {
+                            let verification = (|| {
+                                Some(AssistantVerification {
+                                    revision_id: value["after"]["revision"].as_u64()?,
+                                    command_digest: value["diff"]["command_digest"]
+                                        .as_str()?
+                                        .to_owned(),
+                                    result_digest: value["diff"]["result_digest"]
+                                        .as_str()?
+                                        .to_owned(),
+                                    canonical_digest: value["after"]["canonical_digest"]
+                                        .as_str()?
+                                        .to_owned(),
+                                    verified_write_count: value["diff"]["entry_count"]
+                                        .as_u64()?
+                                        .try_into()
+                                        .ok()?,
+                                    repair_program: None,
+                                    repair_validator: None,
+                                    validation_before: None,
+                                    validation_after: Some(value["validation"].clone()),
+                                })
+                            })();
+                            if let Some(verification) = verification {
+                                self.assistant_verification = Some(verification);
+                                let answer = pending.result.message;
+                                self.remember_latest_assistant_exchange(&answer);
+                                self.assistant_messages.push(AssistantChatMessage {
+                                    role: AssistantMessageRole::Assistant,
+                                    text: answer,
+                                    source: pending.source,
+                                    diagnostic: None,
+                                });
+                            } else {
+                                self.assistant_messages.push(AssistantChatMessage {
+                                    role: AssistantMessageRole::Error,
+                                    text: "apply_and_verify: invalid_result".to_owned(),
+                                    source: pending.source,
+                                    diagnostic: None,
+                                });
+                            }
+                        }
+                        Err(code) => self.assistant_messages.push(AssistantChatMessage {
+                            role: AssistantMessageRole::Error,
+                            text: format!("apply_and_verify: {code}"),
+                            source: pending.source,
+                            diagnostic: None,
+                        }),
+                    }
+                }
+            } else {
+                let source = AssistantPreviewSource::Model(
+                    pending
+                        .result
+                        .model_intent
+                        .take()
+                        .expect("pending execution always carries one mutation program"),
+                );
                 match self.prepare_assistant_preview_source(source) {
                     Ok(()) => {
                         let answer = pending.result.message;

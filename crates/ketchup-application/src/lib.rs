@@ -16,8 +16,12 @@ mod sketch;
 pub mod topology;
 pub mod transforms;
 pub mod validation;
+pub mod workflow_trace;
 
-pub use planner::plan_assistant_cad_edit_program;
+pub use planner::{
+    AssistantCadProgramPlan, AssistantCadResolvedProgramOutput, plan_assistant_cad_edit_program,
+    plan_assistant_cad_edit_program_with_outputs,
+};
 
 mod session;
 pub use session::{DocumentSession, RecoveryState, SaveOptions, SessionError, SessionSettings};

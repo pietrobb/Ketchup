@@ -1,5 +1,16 @@
 use super::*;
-use ketchup_application::model_query::{self, EntityKind, PageRequest};
+use ketchup_application::model_query::{self, EditContextRequest, EntityKind, PageRequest};
+use ketchup_core::assistant_sidecar::AssistantInstancePath;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GuardedEditContext {
+    expected_document_id: u64,
+    expected_revision: u64,
+    expected_digest: String,
+    expected_mutation_epoch: u64,
+    targets: Vec<AssistantInstancePath>,
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -316,7 +327,7 @@ impl Server {
         }
         if matches!(
             method,
-            "summary" | "query" | "detail" | "workset_create" | "workset_status"
+            "summary" | "edit_context" | "query" | "detail" | "workset_create" | "workset_status"
         ) {
             let snapshot = self.session.snapshot();
             let result = match method {
@@ -325,6 +336,59 @@ impl Server {
                         return Err(Error::invalid("summary takes no parameters"));
                     }
                     return Ok(self.compact_state_result());
+                }
+                "edit_context" => {
+                    let request: GuardedEditContext = serde_json::from_value(params)
+                        .map_err(|e| Error::invalid(e.to_string()))?;
+                    let actual_epoch = self.session.mutation_epoch();
+                    if request.expected_document_id != snapshot.document_id().0
+                        || request.expected_revision != snapshot.revision_id()
+                        || request.expected_digest != snapshot.canonical_digest()
+                        || request.expected_mutation_epoch != actual_epoch
+                    {
+                        return Err(Error {
+                            code: "stale_state".into(),
+                            message: "expected document stamp does not match observed document"
+                                .into(),
+                            details: Some(json!({"document_id": snapshot.document_id().0,
+                                "revision": snapshot.revision_id(),
+                                "canonical_digest": snapshot.canonical_digest(),
+                                "mutation_epoch": actual_epoch})),
+                        });
+                    }
+                    let query = EditContextRequest {
+                        targets: request.targets,
+                    };
+                    let context = self
+                        .model_queries
+                        .edit_context(
+                            &snapshot,
+                            self.session.topology_results(),
+                            actual_epoch,
+                            &query,
+                        )
+                        .map_err(|error| {
+                            Error::new(error.code(), format!("model query rejected: {error:?}"))
+                        })?;
+                    let needs_exact = context["targets"].as_array().is_some_and(|targets| {
+                        targets.iter().any(|target| {
+                            target["stable_faces"]["status"] == "unsupported"
+                                && target["features"]
+                                    .as_array()
+                                    .is_some_and(|features| !features.is_empty())
+                        })
+                    });
+                    if !needs_exact {
+                        Ok(context)
+                    } else {
+                        self.session.evaluate()?;
+                        self.model_queries.edit_context(
+                            &self.session.snapshot(),
+                            self.session.topology_results(),
+                            actual_epoch,
+                            &query,
+                        )
+                    }
                 }
                 "query" => {
                     let request: PageRequest = serde_json::from_value(params)
@@ -413,6 +477,136 @@ mod tests {
         json!({"expected_revision":result["result"]["state"]["revision"],
             "expected_digest":result["result"]["state"]["canonical_digest"],
             "expected_mutation_epoch":result["result"]["state"]["mutation_epoch"],"response":"compact"})
+    }
+
+    #[test]
+    fn edit_context_is_guarded_and_read_only_for_duplicate_names() {
+        use ketchup_core::document::{DefinitionId, Transform};
+
+        let mut server = Server::new(SessionSettings::default());
+        let seed = server
+            .session
+            .plan_commands(CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(1),
+                    name: "Shared panel".into(),
+                },
+                CanonicalCommand::CreateOccurrence {
+                    id: OccurrenceId(1),
+                    definition_id: DefinitionId(1),
+                    name: "Panel".into(),
+                    transform: Transform::identity(),
+                    parent: None,
+                    tag: None,
+                    visible: true,
+                },
+                CanonicalCommand::CreateOccurrence {
+                    id: OccurrenceId(2),
+                    definition_id: DefinitionId(1),
+                    name: "Panel".into(),
+                    transform: Transform::from_translation(50.0, 0.0, 0.0).unwrap(),
+                    parent: None,
+                    tag: None,
+                    visible: true,
+                },
+            ]))
+            .unwrap();
+        server.session.apply_proposal(&seed).unwrap();
+        let snapshot = server.session.snapshot();
+        let stamp = json!({"expected_document_id": snapshot.document_id().0,
+            "expected_revision": snapshot.revision_id(),
+            "expected_digest": snapshot.canonical_digest(),
+            "expected_mutation_epoch": server.session.mutation_epoch()});
+        let modified = server.session.is_modified();
+        let undo_steps = server.session.visible_undo_steps();
+
+        let mut params = stamp.clone();
+        params["targets"] = json!([
+            {"root_occurrence_id": 1, "steps": []},
+            {"root_occurrence_id": 2, "steps": []}
+        ]);
+        let result = call(&mut server, "edit_context", params);
+        assert_eq!(result["result"]["targets"].as_array().unwrap().len(), 2);
+        assert_ne!(
+            result["result"]["targets"][0]["world_transform"],
+            result["result"]["targets"][1]["world_transform"]
+        );
+        assert_eq!(
+            server.session.snapshot().canonical_digest(),
+            snapshot.canonical_digest()
+        );
+        assert_eq!(server.session.is_modified(), modified);
+        assert_eq!(server.session.visible_undo_steps(), undo_steps);
+
+        let mut stale = stamp;
+        stale["expected_revision"] = json!(snapshot.revision_id() + 1);
+        stale["targets"] = json!([{"root_occurrence_id": 1, "steps": []}]);
+        assert_eq!(
+            call(&mut server, "edit_context", stale)["error"]["code"],
+            "stale_state"
+        );
+    }
+
+    #[test]
+    fn one_edit_context_call_evaluates_v9_and_returns_both_target_faces_read_only() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../ketchup-application/tests/fixtures/fast_assembly/nightstand_v9_retention.ketchup",
+        );
+        let mut server = Server::new(SessionSettings::default());
+        server.session = DocumentSession::open(path, server.settings.clone()).unwrap();
+        assert!(server.session.topology_results().is_empty());
+        let snapshot = server.session.snapshot();
+        let before = (
+            snapshot.revision_id(),
+            snapshot.canonical_digest(),
+            server.session.mutation_epoch(),
+            server.session.visible_undo_steps(),
+            server.session.is_modified(),
+        );
+        let result = call(
+            &mut server,
+            "edit_context",
+            json!({
+                "expected_document_id": snapshot.document_id().0,
+                "expected_revision": snapshot.revision_id(),
+                "expected_digest": snapshot.canonical_digest(),
+                "expected_mutation_epoch": before.2,
+                "targets": [
+                    {"root_occurrence_id": 6, "steps": []},
+                    {"root_occurrence_id": 1, "steps": []}
+                ]
+            }),
+        );
+
+        let targets = result["result"]["targets"].as_array().unwrap();
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0]["instance"]["id"], "root:6");
+        assert_eq!(targets[1]["instance"]["id"], "root:1");
+        assert!(targets.iter().all(|target| {
+            target["stable_faces"]["status"] == "supported"
+                && target["stable_faces"]["complete"] == true
+                && target["stable_faces"]["items"]
+                    .as_array()
+                    .is_some_and(|faces| !faces.is_empty())
+        }));
+        assert!(
+            targets[1]["stable_faces"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|face| face["semantic_role"] == "extrusion.bottom"
+                    && face["reference_id"].is_string())
+        );
+        assert_eq!(
+            (
+                server.session.snapshot().revision_id(),
+                server.session.snapshot().canonical_digest(),
+                server.session.mutation_epoch(),
+                server.session.visible_undo_steps(),
+                server.session.is_modified(),
+            ),
+            before
+        );
     }
 
     #[test]

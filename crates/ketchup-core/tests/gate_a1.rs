@@ -141,6 +141,96 @@ fn command_batch_is_atomic_and_is_one_undo_redo_step() {
 }
 
 #[test]
+fn verified_proposal_preview_is_isolated_and_stale_safe() {
+    let mut document = seed_document();
+    let proposal = document
+        .prepare_proposal(CommandBatch::new(vec![
+            CanonicalCommand::SetEvaluatorDimension {
+                id: WIDTH,
+                dimension: dimension("720", 720.0),
+            },
+        ]))
+        .unwrap();
+    let before = document.current();
+    let before_state = (
+        before.revision_id(),
+        before.canonical_digest(),
+        document.mutation_epoch(),
+        document.revision_count(),
+        document.visible_undo_steps(),
+        document.visible_redo_steps(),
+    );
+
+    let candidate = document.preview_verified_proposal(&proposal).unwrap();
+    assert_eq!(candidate.revision_id(), before.revision_id() + 1);
+    assert_eq!(
+        candidate
+            .evaluator_node(WIDTH)
+            .unwrap()
+            .dimension()
+            .unwrap()
+            .millimetres(),
+        720.0
+    );
+    assert_eq!(
+        (
+            document.current().revision_id(),
+            document.current().canonical_digest(),
+            document.mutation_epoch(),
+            document.revision_count(),
+            document.visible_undo_steps(),
+            document.visible_redo_steps(),
+        ),
+        before_state
+    );
+
+    let candidate_digest = candidate.canonical_digest();
+    let committed = document.commit_verified_proposal(&proposal).unwrap();
+    assert_eq!(
+        committed.revision().snapshot().canonical_digest(),
+        candidate_digest
+    );
+    assert_eq!(document.visible_undo_steps(), before_state.4 + 1);
+    assert_eq!(document.undo().unwrap().canonical_digest(), before_state.1);
+    assert_eq!(
+        document.redo().unwrap().canonical_digest(),
+        candidate_digest
+    );
+
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetEvaluatorDimension {
+                id: WIDTH,
+                dimension: dimension("800", 800.0),
+            },
+        ]))
+        .unwrap();
+    let stale_state = (
+        document.current().revision_id(),
+        document.current().canonical_digest(),
+        document.mutation_epoch(),
+        document.revision_count(),
+        document.visible_undo_steps(),
+        document.visible_redo_steps(),
+    );
+    assert!(matches!(
+        document.preview_verified_proposal(&proposal),
+        Err(ProposalCommitError::Stale(ProposalValidity::Stale { .. }))
+    ));
+    assert_eq!(
+        (
+            document.current().revision_id(),
+            document.current().canonical_digest(),
+            document.mutation_epoch(),
+            document.revision_count(),
+            document.visible_undo_steps(),
+            document.visible_redo_steps(),
+        ),
+        stale_state
+    );
+}
+
+#[test]
 fn proposal_revalidation_accepts_unrelated_edits_and_rejects_changed_dependencies() {
     let mut document = seed_document();
     let proposal = document

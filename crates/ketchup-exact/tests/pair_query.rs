@@ -78,6 +78,13 @@ fn native_pair_reports_positive_face_area_but_not_edge_contact() {
         "{face:?}"
     );
     assert_eq!(face.distance_mm, 0.0);
+    let reversed = backend
+        .query_body_pair(&face_load.body, &support.body, 1e-7)
+        .unwrap();
+    assert_eq!(reversed.relation, ExactPairRelation::Touching);
+    assert!((reversed.common_contact_area_mm2 - 8.0).abs() < 1e-7);
+    assert_eq!(reversed.common_volume_mm3, 0.0);
+    assert_eq!(reversed.distance_mm, 0.0);
 
     let edge_load = box_at(
         Point3 {
@@ -98,6 +105,63 @@ fn native_pair_reports_positive_face_area_but_not_edge_contact() {
     assert_eq!(edge.common_volume_mm3, 0.0);
     assert_eq!(edge.common_contact_area_mm2, 0.0);
     assert_eq!(edge.distance_mm, 0.0);
+}
+
+#[test]
+fn native_pair_detects_two_millimetre_gap_and_penetration_on_opposite_sides_of_contact() {
+    let backend = ExactBackend::new();
+    let support = backend
+        .make_box(BoxSpec {
+            origin_mm: Point3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            size_mm: Size3 {
+                x: 10.0,
+                y: 10.0,
+                z: 1.0,
+            },
+        })
+        .unwrap();
+    let load = |z| {
+        backend
+            .make_box(BoxSpec {
+                origin_mm: Point3 { x: 2.0, y: 3.0, z },
+                size_mm: Size3 {
+                    x: 2.0,
+                    y: 4.0,
+                    z: 4.0,
+                },
+            })
+            .unwrap()
+    };
+    let touching = load(1.0);
+    let gap = load(3.0);
+    let penetrating = load(-1.0);
+    for (body, relation, volume, distance) in [
+        (&touching.body, ExactPairRelation::Touching, 0.0, 0.0),
+        (&gap.body, ExactPairRelation::Separated, 0.0, 2.0),
+        (&penetrating.body, ExactPairRelation::Penetrating, 8.0, 0.0),
+    ] {
+        for (left, right) in [(&support.body, body), (body, &support.body)] {
+            let result = backend.query_body_pair(left, right, 1e-7).unwrap();
+            assert_eq!(result.relation, relation, "{result:?}");
+            assert!(
+                (result.common_volume_mm3 - volume).abs() < 1e-7,
+                "{result:?}"
+            );
+            assert!((result.distance_mm - distance).abs() < 1e-7, "{result:?}");
+            if relation == ExactPairRelation::Touching {
+                assert!(
+                    (result.common_contact_area_mm2 - 8.0).abs() < 1e-7,
+                    "{result:?}"
+                );
+            } else {
+                assert_eq!(result.common_contact_area_mm2, 0.0, "{result:?}");
+            }
+        }
+    }
 }
 
 #[test]

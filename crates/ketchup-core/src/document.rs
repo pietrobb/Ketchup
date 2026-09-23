@@ -8,6 +8,7 @@ use crate::assembly_joint::{
     joint_motion_states_equal, solve_assembly_joint_kinematics_with_kind_overrides,
     transforms_equivalent,
 };
+use crate::assembly_recipe::{AssemblyRecipe, AssemblyRecipeError};
 use crate::cam::{CamError, CamPlan, CamPlanId};
 use crate::drawing::{
     DrawingCircularDimensionKind, DrawingDimensionTolerance, DrawingError,
@@ -115,7 +116,7 @@ mod instance_path;
 mod stable_digest;
 
 pub use instance_path::{InstancePath, InstancePathStep};
-use stable_digest::{StableDigest, digest_snapshot};
+use stable_digest::{StableDigest, digest_feature, digest_snapshot};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnitSystem {
@@ -873,6 +874,18 @@ impl FeatureKind {
         let mut descriptors = Vec::new();
         match self {
             Self::Workplane(WorkplaneSpec {
+                support: WorkplaneSupport::Free,
+                ..
+            }) => {
+                for axis in ["x", "y", "z"] {
+                    push_parameter_descriptor(
+                        &mut descriptors,
+                        format!("frame.origin.{axis}"),
+                        ParameterValueType::Length,
+                    );
+                }
+            }
+            Self::Workplane(WorkplaneSpec {
                 support: WorkplaneSupport::Offset { .. },
                 ..
             }) => push_parameter_descriptor(
@@ -881,6 +894,15 @@ impl FeatureKind {
                 ParameterValueType::Length,
             ),
             Self::Sketch(spec) => {
+                if spec.rectangle_bounds().is_some() {
+                    for path in ["bounds.width", "bounds.height"] {
+                        push_parameter_descriptor(
+                            &mut descriptors,
+                            path,
+                            ParameterValueType::Length,
+                        );
+                    }
+                }
                 for entity in &spec.entities {
                     if spec.is_projected_entity(entity.id()) {
                         continue;
@@ -1966,6 +1988,7 @@ pub(crate) struct ProductModel {
     pub(crate) clearance_volumes: BTreeMap<ClearanceVolumeId, Arc<CanonicalClearanceVolume>>,
     pub(crate) cam_plans: BTreeMap<CamPlanId, Arc<CamPlan>>,
     pub(crate) dowel_joints: BTreeMap<DowelJointId, Arc<DowelJointContract>>,
+    pub(crate) assembly_recipe: Option<Arc<AssemblyRecipe>>,
     pub(crate) exact_reference_evidence: BTreeMap<String, Arc<BodySubshapeRef>>,
     pub(crate) persistent_dimensions: BTreeMap<PersistentDimensionId, Arc<PersistentDimension>>,
     pub(crate) tags: BTreeMap<TagId, Arc<Tag>>,
@@ -2026,6 +2049,7 @@ impl Default for ProductModel {
             clearance_volumes: BTreeMap::new(),
             cam_plans: BTreeMap::new(),
             dowel_joints: BTreeMap::new(),
+            assembly_recipe: None,
             exact_reference_evidence: BTreeMap::new(),
             persistent_dimensions: BTreeMap::new(),
             tags: BTreeMap::new(),
@@ -2444,6 +2468,8 @@ pub enum CanonicalCommand {
     DeleteDowelJoint {
         id: DowelJointId,
     },
+    SetAssemblyRecipe(AssemblyRecipe),
+    ClearAssemblyRecipe,
     UpsertPersistentDimension(PersistentDimension),
     DeletePersistentDimension {
         id: PersistentDimensionId,
@@ -2863,6 +2889,7 @@ pub enum AuthoritativeDependency {
     CamPlan(CamPlanId),
     DowelJoint(DowelJointId),
     ProductionCodes,
+    AssemblyRecipe,
     PersistentDimension(PersistentDimensionId),
     Tag(TagId),
     ClassificationDimension(ClassificationDimensionId),
@@ -3476,6 +3503,11 @@ impl Snapshot {
     }
 
     #[must_use]
+    pub fn feature_parameter_value(&self, target: &FeatureParameterTarget) -> Option<f64> {
+        feature_parameter_dimension(&self.product, target).map(|value| value.millimetres())
+    }
+
+    #[must_use]
     pub fn feature_parameter_provenance(
         &self,
         target: &FeatureParameterTarget,
@@ -3549,6 +3581,16 @@ impl Snapshot {
     #[must_use]
     pub fn dowel_joint(&self, id: DowelJointId) -> Option<&DowelJointContract> {
         self.product.dowel_joints.get(&id).map(Arc::as_ref)
+    }
+
+    #[must_use]
+    pub fn assembly_recipe(&self) -> Option<&AssemblyRecipe> {
+        self.product.assembly_recipe.as_deref()
+    }
+
+    #[must_use]
+    pub fn feature_canonical_fingerprint(&self, id: FeatureId) -> Option<String> {
+        self.feature(id).map(digest_feature)
     }
 
     #[must_use]
@@ -5629,6 +5671,21 @@ impl DocumentStore {
                 CanonicalCommand::DeleteDowelJoint { id } => {
                     if product.dowel_joints.remove(id).is_none() {
                         return Err(CanonicalError::DowelJointNotFound(*id));
+                    }
+                }
+                CanonicalCommand::SetAssemblyRecipe(recipe) => {
+                    let candidate = Snapshot {
+                        revision_id: current.revision_id(),
+                        product: Arc::new(product.clone()),
+                    };
+                    recipe
+                        .audit(&candidate)
+                        .map_err(CanonicalError::AssemblyRecipe)?;
+                    product.assembly_recipe = Some(Arc::new(recipe.clone()));
+                }
+                CanonicalCommand::ClearAssemblyRecipe => {
+                    if product.assembly_recipe.take().is_none() {
+                        return Err(CanonicalError::AssemblyRecipeNotFound);
                     }
                 }
                 CanonicalCommand::UpsertPersistentDimension(dimension) => {
@@ -8298,6 +8355,18 @@ impl DocumentStore {
         }
     }
 
+    /// Replays and verifies a standard-risk proposal in an isolated store without
+    /// changing canonical history, the mutation epoch, or Undo/Redo state.
+    pub fn preview_verified_proposal(
+        &self,
+        proposal: &Proposal,
+    ) -> Result<Snapshot, ProposalCommitError> {
+        if matches!(proposal.risk, ProposalRisk::High(_)) {
+            return Err(ProposalCommitError::HumanApprovalRequired);
+        }
+        self.verify_proposal_candidate(proposal)
+    }
+
     pub fn commit_proposal(
         &mut self,
         proposal: &Proposal,
@@ -8433,15 +8502,15 @@ impl DocumentStore {
         })
     }
 
-    fn commit_verified_proposal_inner(
-        &mut self,
+    fn verify_proposal_candidate(
+        &self,
         proposal: &Proposal,
-    ) -> Result<VerifiedProposalCommit, ProposalCommitError> {
+    ) -> Result<Snapshot, ProposalCommitError> {
         if let stale @ ProposalValidity::Stale { .. } = self.validate_proposal(proposal) {
             return Err(ProposalCommitError::Stale(stale));
         }
         let current = self.current();
-        let (diff, intended_result_digest) = proposal_candidate(
+        let (candidate, diff, intended_result_digest) = proposal_candidate_snapshot(
             &current,
             &proposal.batch,
             &proposal.authoritative_writes,
@@ -8453,6 +8522,14 @@ impl DocumentStore {
         {
             return Err(ProposalCommitError::VerificationMismatch);
         }
+        Ok(candidate)
+    }
+
+    fn commit_verified_proposal_inner(
+        &mut self,
+        proposal: &Proposal,
+    ) -> Result<VerifiedProposalCommit, ProposalCommitError> {
+        self.verify_proposal_candidate(proposal)?;
         let previous_revisions = self.revisions.clone();
         let previous_cursor = self.cursor;
         let previous_next_revision_id = self.next_revision_id;
@@ -9359,6 +9436,8 @@ pub enum CanonicalError {
     OccurrenceInDowelJoint(OccurrenceId),
     DowelJointNotFound(DowelJointId),
     DowelJoint(DowelJointError),
+    AssemblyRecipeNotFound,
+    AssemblyRecipe(AssemblyRecipeError),
     AssemblyMateAlreadyExists(AssemblyMateId),
     AssemblyMateNotFound(AssemblyMateId),
     InvalidAssemblyMate(AssemblyMateId),
@@ -9513,6 +9592,8 @@ impl CanonicalError {
             Self::OccurrenceInDowelJoint(..) => "canonical.occurrence_in_dowel_joint",
             Self::DowelJointNotFound(..) => "canonical.dowel_joint_not_found",
             Self::DowelJoint(..) => "canonical.dowel_joint",
+            Self::AssemblyRecipeNotFound => "canonical.assembly_recipe_not_found",
+            Self::AssemblyRecipe(..) => "canonical.assembly_recipe",
             Self::AssemblyMateAlreadyExists(..) => "canonical.assembly_mate_already_exists",
             Self::AssemblyMateNotFound(..) => "canonical.assembly_mate_not_found",
             Self::InvalidAssemblyMate(..) => "canonical.invalid_assembly_mate",
@@ -9784,6 +9865,8 @@ impl fmt::Display for CanonicalError {
                 write!(formatter, "dowel joint {} does not exist", id.0)
             }
             Self::DowelJoint(error) => write!(formatter, "invalid dowel joint: {error}"),
+            Self::AssemblyRecipeNotFound => formatter.write_str("assembly recipe does not exist"),
+            Self::AssemblyRecipe(error) => write!(formatter, "{error}"),
             Self::AssemblyMateAlreadyExists(id) => {
                 write!(formatter, "assembly mate {} already exists", id.0)
             }
@@ -10205,6 +10288,9 @@ fn feature_kind_parameter_value(kind: &FeatureKind, path: &str) -> Option<f64> {
     let parts = path.split('.').collect::<Vec<_>>();
     match kind {
         FeatureKind::Workplane(spec) => match (&spec.support, parts.as_slice()) {
+            (WorkplaneSupport::Free, ["frame", "origin", axis]) => {
+                point_coordinate_3d(spec.frame.origin_mm, axis)
+            }
             (WorkplaneSupport::Offset { distance, .. }, ["support", "offset", "distance"]) => {
                 Some(distance.millimetres())
             }
@@ -10338,6 +10424,11 @@ fn feature_kind_parameter_value(kind: &FeatureKind, path: &str) -> Option<f64> {
 
 fn sketch_parameter_value(spec: &SketchSpec, parts: &[&str]) -> Option<f64> {
     match parts {
+        ["bounds", size @ ("width" | "height")] => {
+            let [minimum, maximum] = spec.rectangle_bounds()?;
+            let axis = usize::from(*size == "height");
+            Some(maximum[axis] - minimum[axis])
+        }
         ["entities", id, point, axis] => {
             let id = id.parse::<u64>().ok()?;
             let entity = spec.entities.iter().find(|entity| entity.id().0 == id)?;
@@ -10461,6 +10552,15 @@ fn point_coordinate(point: [f64; 2], axis: &str) -> Option<f64> {
     match axis {
         "x" => Some(point[0]),
         "y" => Some(point[1]),
+        _ => None,
+    }
+}
+
+fn point_coordinate_3d(point: [f64; 3], axis: &str) -> Option<f64> {
+    match axis {
+        "x" => Some(point[0]),
+        "y" => Some(point[1]),
+        "z" => Some(point[2]),
         _ => None,
     }
 }
@@ -10603,6 +10703,9 @@ fn set_feature_kind_parameter(
     let value = dimension.millimetres();
     let updated = match kind {
         FeatureKind::Workplane(spec) => match (&mut spec.support, parts.as_slice()) {
+            (WorkplaneSupport::Free, ["frame", "origin", axis]) => {
+                set_point_coordinate_3d(&mut spec.frame.origin_mm, axis, value)
+            }
             (WorkplaneSupport::Offset { distance, .. }, ["support", "offset", "distance"]) => {
                 *distance = dimension.clone();
                 true
@@ -10795,6 +10898,28 @@ fn set_feature_kind_parameter(
 fn set_sketch_parameter(spec: &mut SketchSpec, parts: &[&str], dimension: &Dimension) -> bool {
     let value = dimension.millimetres();
     match parts {
+        ["bounds", size @ ("width" | "height")] => {
+            let Some([minimum, maximum]) = spec.rectangle_bounds() else {
+                return false;
+            };
+            if value <= PROFILE_EPSILON_MM {
+                return false;
+            }
+            let axis = usize::from(*size == "height");
+            for entity in &mut spec.entities {
+                if let SketchEntity::Line {
+                    start_mm, end_mm, ..
+                } = entity
+                {
+                    for point in [start_mm, end_mm] {
+                        if point[axis] == maximum[axis] {
+                            point[axis] = minimum[axis] + value;
+                        }
+                    }
+                }
+            }
+            true
+        }
         ["entities", id, point, axis] => {
             let Ok(id) = id.parse::<u64>() else {
                 return false;
@@ -10948,6 +11073,16 @@ fn set_point_coordinate(point: &mut [f64; 2], axis: &str, value: f64) -> bool {
     match axis {
         "x" => point[0] = value,
         "y" => point[1] = value,
+        _ => return false,
+    }
+    true
+}
+
+fn set_point_coordinate_3d(point: &mut [f64; 3], axis: &str, value: f64) -> bool {
+    match axis {
+        "x" => point[0] = value,
+        "y" => point[1] = value,
+        "z" => point[2] = value,
         _ => return false,
     }
     true
@@ -14059,6 +14194,68 @@ fn clone_definition_and_repoint(
             ..occurrence
         }),
     );
+    let path = InstancePath::root(occurrence_id);
+    for joint in product.dowel_joints.values_mut() {
+        let first = joint.first.instance_path == path;
+        let second = joint.second.instance_path == path;
+        if (first || second) && joint.physical_hole_pairs.is_some() {
+            for pair in Arc::make_mut(joint).physical_hole_pairs.as_mut().unwrap() {
+                if first {
+                    pair.first_pocket_feature_id = *mapping
+                        .get(&pair.first_pocket_feature_id)
+                        .ok_or(CanonicalError::InvalidFeatureMap)?;
+                }
+                if second {
+                    pair.second_pocket_feature_id = *mapping
+                        .get(&pair.second_pocket_feature_id)
+                        .ok_or(CanonicalError::InvalidFeatureMap)?;
+                }
+            }
+        }
+    }
+    if let Some(recipe) = &mut product.assembly_recipe {
+        let recipe = Arc::make_mut(recipe);
+        for part in recipe
+            .parts
+            .values_mut()
+            .filter(|part| part.instance_path == path)
+        {
+            if part.definition_id != source_definition_id {
+                return Err(CanonicalError::AssemblyRecipe(
+                    AssemblyRecipeError::PartChanged(part.key.clone()),
+                ));
+            }
+            part.definition_id = new_definition_id;
+            part.edit_scope = crate::assembly_recipe::RecipeEditScope::Occurrence(path.clone());
+            for parameter in part.parameters.values_mut() {
+                if let Some(target) = &mut parameter.target
+                    && let Some(mapped) = mapping.get(&target.feature_id)
+                {
+                    target.feature_id = *mapped;
+                }
+            }
+            for owned in recipe
+                .owned_features
+                .values_mut()
+                .filter(|owned| owned.part == part.key)
+            {
+                let source = product
+                    .features
+                    .get(&owned.feature_id)
+                    .ok_or(CanonicalError::InvalidFeatureMap)?;
+                // Do not bless a pre-existing ownership conflict while cloning.
+                if digest_feature(source) != owned.canonical_fingerprint {
+                    return Err(CanonicalError::AssemblyRecipe(
+                        AssemblyRecipeError::OwnedFeatureConflict(owned.key.clone()),
+                    ));
+                }
+                owned.feature_id = *mapping
+                    .get(&owned.feature_id)
+                    .ok_or(CanonicalError::InvalidFeatureMap)?;
+                owned.canonical_fingerprint = digest_feature(&product.features[&owned.feature_id]);
+            }
+        }
+    }
     Ok(())
 }
 
@@ -16225,6 +16422,11 @@ fn validate_product_with_drawing_sources(
         }
         project_dowel_joint_contract(&snapshot, joint).map_err(CanonicalError::DowelJoint)?;
     }
+    if let Some(recipe) = product.assembly_recipe.as_deref() {
+        recipe
+            .audit(&snapshot)
+            .map_err(CanonicalError::AssemblyRecipe)?;
+    }
     FeatureDependencyGraph::from_product(product)?;
     for (id, joint) in &product.joints {
         if *id != joint.id() || !joint.volume().has_positive_volume() {
@@ -17680,13 +17882,29 @@ fn validate_proposal_budget(
     Ok(())
 }
 
-fn proposal_candidate(
+fn proposal_candidate_snapshot(
     snapshot: &Snapshot,
     batch: &CommandBatch,
     writes: &BTreeSet<AuthoritativeDependency>,
     goal: ProposalGoal,
-) -> Result<(Vec<ProposalDiffEntry>, String), ProposalPrepareError> {
-    proposal_candidate_with_validation(snapshot, batch, writes, goal, true)
+) -> Result<(Snapshot, Vec<ProposalDiffEntry>, String), ProposalPrepareError> {
+    let mut candidate =
+        DocumentStore::from_product(snapshot.revision_id, snapshot.product.as_ref().clone())?;
+    let revision = candidate.apply_batch_with_origin(
+        batch,
+        RevisionOrigin::Principal(ProposalPrincipal::ManualClient),
+    )?;
+    let after = revision.snapshot();
+    let diff = writes
+        .iter()
+        .cloned()
+        .map(|target| ProposalDiffEntry {
+            target: target.clone(),
+            before: proposal_value(snapshot, target.clone(), goal.clone()),
+            after: proposal_value(after, target, goal.clone()),
+        })
+        .collect();
+    Ok((after.clone(), diff, dependency_digest(after, writes)))
 }
 
 fn proposal_candidate_with_validation(
@@ -18219,6 +18437,9 @@ fn authoritative_writes(
             CanonicalCommand::DeleteDowelJoint { id } => {
                 writes.insert(AuthoritativeDependency::DowelJoint(*id));
             }
+            CanonicalCommand::SetAssemblyRecipe(_) | CanonicalCommand::ClearAssemblyRecipe => {
+                writes.insert(AuthoritativeDependency::AssemblyRecipe);
+            }
             CanonicalCommand::UpsertPersistentDimension(dimension) => {
                 writes.insert(AuthoritativeDependency::PersistentDimension(dimension.id));
             }
@@ -18406,6 +18627,19 @@ fn authoritative_writes(
                 writes.insert(AuthoritativeDependency::Group(*id));
             }
             CanonicalCommand::CloneDefinitionAndRepoint(plan) => {
+                let path = InstancePath::root(plan.occurrence_id);
+                for joint in snapshot.dowel_joints().filter(|joint| {
+                    joint.physical_hole_pairs.is_some()
+                        && (joint.first.instance_path == path || joint.second.instance_path == path)
+                }) {
+                    writes.insert(AuthoritativeDependency::DowelJoint(joint.id));
+                }
+                if snapshot
+                    .assembly_recipe()
+                    .is_some_and(|recipe| recipe.parts().any(|part| part.instance_path == path))
+                {
+                    writes.insert(AuthoritativeDependency::AssemblyRecipe);
+                }
                 writes.insert(AuthoritativeDependency::Occurrence(plan.occurrence_id));
                 writes.insert(AuthoritativeDependency::Definition(plan.new_definition_id));
                 for (_, new_id) in &plan.feature_id_map {
@@ -19100,6 +19334,17 @@ fn authoritative_dependencies(
                 add_group_ancestry(snapshot, *parent, &mut dependencies);
             }
             CanonicalCommand::CloneDefinitionAndRepoint(plan) => {
+                dependencies.insert(AuthoritativeDependency::OccurrenceCollections(
+                    plan.occurrence_id,
+                ));
+                dependencies.insert(AuthoritativeDependency::AssemblyRecipe);
+                let path = InstancePath::root(plan.occurrence_id);
+                for joint in snapshot.dowel_joints().filter(|joint| {
+                    joint.physical_hole_pairs.is_some()
+                        && (joint.first.instance_path == path || joint.second.instance_path == path)
+                }) {
+                    dependencies.insert(AuthoritativeDependency::DowelJoint(joint.id));
+                }
                 dependencies.insert(AuthoritativeDependency::Occurrence(plan.occurrence_id));
                 dependencies.insert(AuthoritativeDependency::Definition(
                     plan.source_definition_id,
@@ -19303,6 +19548,30 @@ fn authoritative_dependencies(
             }
             CanonicalCommand::DeleteDowelJoint { id } => {
                 dependencies.insert(AuthoritativeDependency::DowelJoint(*id));
+            }
+            CanonicalCommand::SetAssemblyRecipe(recipe) => {
+                dependencies.insert(AuthoritativeDependency::AssemblyRecipe);
+                dependencies.extend(recipe.parts.values().flat_map(|part| {
+                    [
+                        AuthoritativeDependency::Occurrence(part.instance_path.root_occurrence()),
+                        AuthoritativeDependency::Definition(part.definition_id),
+                    ]
+                }));
+                dependencies.extend(
+                    recipe
+                        .owned_features
+                        .values()
+                        .map(|owned| AuthoritativeDependency::Feature(owned.feature_id)),
+                );
+                dependencies.extend(
+                    recipe
+                        .joinery
+                        .values()
+                        .map(|item| AuthoritativeDependency::DowelJoint(item.dowel_joint_id)),
+                );
+            }
+            CanonicalCommand::ClearAssemblyRecipe => {
+                dependencies.insert(AuthoritativeDependency::AssemblyRecipe);
             }
             CanonicalCommand::UpsertPersistentDimension(dimension) => {
                 dependencies.insert(AuthoritativeDependency::PersistentDimension(dimension.id));

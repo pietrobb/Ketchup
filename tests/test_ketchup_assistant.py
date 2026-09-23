@@ -414,6 +414,12 @@ def test_public_sidecar_conversation_uses_bounded_context_and_no_tools():
     ]
 
 
+def test_system_prompt_requires_clarification_instead_of_ambiguous_mutation():
+    assert "ask one concrete clarification question" in assistant.SYSTEM_PROMPT
+    assert "return every action field as null" in assistant.SYSTEM_PROMPT
+    assert "never guess a target or host ID" in assistant.SYSTEM_PROMPT
+
+
 def test_project_memory_is_bounded_scope_checked_and_tamper_evident():
     context = project_context(7, ((4, "Remember shelf spacing", "The shelf spacing is 320 mm."),))
     calls = []
@@ -702,6 +708,21 @@ def test_public_sidecar_accepts_typed_weldment_and_parameter_program():
     wrong_type["operations"][3]["value_type"] = "distance"
     with pytest.raises(assistant.ProtocolError):
         assistant._validate_cad_edit_program(wrong_type)
+
+
+def test_make_occurrence_unique_requires_a_positive_root_id_without_extra_fields():
+    program = {"operations": [{"operation": "make_occurrence_unique", "occurrence_id": 2}]}
+    assert assistant._validate_cad_edit_program(program) == program
+    assert "make_occurrence_unique" in assistant.SYSTEM_PROMPT
+    for invalid in (0, -1, True, 1.5, "2", 2**64):
+        with pytest.raises(assistant.ProtocolError):
+            assistant._validate_cad_edit_program({"operations": [
+                {"operation": "make_occurrence_unique", "occurrence_id": invalid}
+            ]})
+    with pytest.raises(assistant.ProtocolError):
+        assistant._validate_cad_edit_program({"operations": [
+            {"operation": "make_occurrence_unique", "occurrence_id": 2, "feature_id": 3}
+        ]})
 
 
 def test_public_sidecar_parses_strict_bounded_cad_edit_program():

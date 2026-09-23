@@ -3,6 +3,7 @@
 pub mod adapters;
 pub mod assembly;
 pub mod assembly_joint;
+pub mod assembly_recipe;
 pub mod assistant_sidecar;
 #[cfg(feature = "named-product-fixtures")]
 pub mod beam_m4ae;

@@ -529,6 +529,30 @@ pub fn prepare_body_profile_translation(
     if !exact_feature_chain && !exact_brep_graph {
         return Err(BodyParameterEditError::InvalidCutPosition);
     }
+    // A compilable BRep graph is not evidence that a cutting tool reaches its host.
+    // Disjoint conservative bounds prove rejection; overlap still requires exact evaluation.
+    for feature_id in &affected {
+        let Some(FeatureKind::Boolean {
+            operation: BooleanOperation::Cut,
+            target,
+            tool,
+        }) = candidate.feature(*feature_id).map(|feature| feature.kind())
+        else {
+            continue;
+        };
+        let bounds = |producer| {
+            ExactBRepGraph::from_snapshot(&candidate, request.definition_id, producer)
+                .ok()
+                .and_then(|graph| graph.producer_bounds_mm().ok().flatten())
+        };
+        if let (Some(host), Some(cutter)) = (bounds(*target), bounds(*tool)) {
+            if (0..3)
+                .any(|axis| cutter[1][axis] <= host[0][axis] || cutter[0][axis] >= host[1][axis])
+            {
+                return Err(BodyParameterEditError::InvalidCutPosition);
+            }
+        }
+    }
     Ok(BodyParameterEditPreview {
         source_revision: snapshot.revision_id(),
         source_digest: snapshot.canonical_digest(),

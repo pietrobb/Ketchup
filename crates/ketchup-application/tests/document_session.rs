@@ -2,7 +2,7 @@ use ketchup_application::evaluation::*;
 use ketchup_application::{
     AssistantValidationSelection, DocumentSession, SaveOptions, SessionError, SessionSettings,
     StructuralValidationScope,
-    model_query::{EntityKind, ModelQuery, PageRequest},
+    model_query::{EditContextRequest, EntityKind, ModelQuery, PageRequest},
     scoped_static_load_report,
 };
 use ketchup_core::{
@@ -16,6 +16,7 @@ use std::{collections::BTreeSet, time::Duration};
 fn evaluation_retry_distinguishes_failed_topology_from_unsupported_topology() {
     let mut report = ketchup_application::evaluation::EvaluationReport {
         source: exact_source(&DocumentStore::new().current()),
+        selection: ExactEvaluationSelection::Full,
         producers: vec![ProducerCoverage {
             key: ProducerKey {
                 definition_id: DefinitionId(1),
@@ -41,6 +42,9 @@ fn evaluation_retry_distinguishes_failed_topology_from_unsupported_topology() {
     report.producers[0].topology = EvidenceStatus::Evaluated;
     report.topology_complete = true;
     assert!(!report.needs_retry());
+    assert!(report.establishes_full_baseline());
+    report.selection = ExactEvaluationSelection::Scoped(BTreeSet::from([report.producers[0].key]));
+    assert!(!report.establishes_full_baseline());
     report.complete = false;
     report.producers[0].render = EvidenceStatus::Failed {
         reason: "render failed".into(),
@@ -1011,6 +1015,31 @@ fn real_worker_query_selects_two_upper_circular_edges_for_one_fillet_operation()
     assert!(report.complete && report.topology_complete, "{report:?}");
 
     let query = ModelQuery::default();
+    let context = query
+        .edit_context(
+            &created,
+            session.topology_results(),
+            session.mutation_epoch(),
+            &EditContextRequest {
+                targets: vec![AssistantInstancePath {
+                    root_occurrence_id: 1,
+                    steps: Vec::new(),
+                }],
+            },
+        )
+        .unwrap();
+    assert_eq!(context["targets"][0]["stable_faces"]["status"], "supported");
+    assert_eq!(context["targets"][0]["stable_faces"]["complete"], true);
+    let context_faces = context["targets"][0]["stable_faces"]["items"]
+        .as_array()
+        .unwrap();
+    assert!(!context_faces.is_empty());
+    assert!(
+        context_faces
+            .iter()
+            .all(|face| face["reference_id"].is_string())
+    );
+
     let page = query
         .page_with_topology(
             &created,

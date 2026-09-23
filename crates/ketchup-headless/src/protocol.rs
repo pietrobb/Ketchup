@@ -2,8 +2,8 @@ use ketchup_application::cam_workflow::{
     CamReviewError, CamReviewRequest, CamReviewSummary, CamReviewWorkflow,
 };
 use ketchup_application::evaluation::{
-    EvaluationReport, EvidenceStatus, ExactEvaluationProgress, ExactEvaluationTask, ExactSource,
-    ProducerKey, exact_worker_candidates,
+    EvaluationReport, EvidenceStatus, ExactEvaluationProgress, ExactEvaluationSelection,
+    ExactEvaluationTask, ExactSource, ProducerKey, exact_worker_candidates,
 };
 use ketchup_application::fea_workflow::{
     ExactFeaFaceTraction, ExactFeaSetup, ExactVolumeMeshWireOptions, FeaReviewError,
@@ -58,6 +58,7 @@ const METHODS: &[&str] = &[
     "state",
     "production_codes",
     "summary",
+    "edit_context",
     "query",
     "detail",
     "workset_create",
@@ -1420,8 +1421,18 @@ fn evaluation_report(session: &DocumentSession, report: &EvaluationReport) -> Va
         .iter()
         .map(|producer| (producer.key.definition_id.0, producer.key.feature_id.0))
         .collect::<BTreeSet<_>>();
+    let selection = match &report.selection {
+        ExactEvaluationSelection::Full => json!({"mode": "full"}),
+        ExactEvaluationSelection::Scoped(scope) => json!({
+            "mode": "scoped",
+            "producers": scope.iter().map(|key| json!({
+                "definition_id": key.definition_id.0,
+                "feature_id": key.feature_id.0,
+            })).collect::<Vec<_>>(),
+        }),
+    };
     json!({"document_id":report.source.document_id().0,"revision":report.source.source_revision(),"canonical_digest":report.source.source_digest(),
-        "complete":report.complete,"topology_complete":report.topology_complete,"not_evaluated":report.not_evaluated,
+        "selection":selection,"complete":report.complete,"topology_complete":report.topology_complete,"not_evaluated":report.not_evaluated,
         "producers":report.producers.iter().map(|p|json!({"definition_id":p.key.definition_id.0,"feature_id":p.key.feature_id.0,"render":status(&p.render),"topology":status(&p.topology)})).collect::<Vec<_>>(),
         "geometry":geometry(session.exact_results(),&snapshot,&producers),"topology_geometry":geometry(session.topology_results(),&snapshot,&producers)})
 }
@@ -1782,11 +1793,13 @@ mod tests {
             caps["result"]["cad_program_schema"]["$defs"]["AssistantCadEditOperation"]["oneOf"]
                 .as_array()
                 .unwrap();
-        assert_eq!(variants.len(), 35);
+        assert_eq!(variants.len(), 37);
         for operation in [
             "append_feature",
             "create_panel",
             "create_dowel_joint",
+            "create_program_dowel_joint",
+            "bind_program_output",
             "create_tag",
             "set_occurrence_tag",
             "set_tag_visibility",
@@ -1842,9 +1855,12 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 "definition",
+                "occurrence",
                 "sketch_feature",
                 "construction_feature",
-                "body_feature"
+                "body_feature",
+                "assembly_joint",
+                "dowel_joint"
             ]
         );
     }
@@ -2470,6 +2486,7 @@ mod tests {
         server.session.apply_proposal(&seed).unwrap();
         let evaluated = request(&mut server, "evaluate", json!({"timeout_ms":30000}));
         assert_eq!(evaluated["result"]["complete"], true, "{evaluated}");
+        assert_eq!(evaluated["result"]["selection"]["mode"], "full");
         let faces = request(
             &mut server,
             "query",

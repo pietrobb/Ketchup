@@ -3453,6 +3453,121 @@ fn only_successful_assistant_completion_enters_project_memory() {
 }
 
 #[test]
+fn assistant_geometry_program_uses_bounded_apply_and_verify_in_gui_document() {
+    let mut app = KetchupApp::new();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: OccurrenceId(1),
+                grounded: true,
+            },
+        ]))
+        .unwrap();
+    install_initial_graph_result(&mut app);
+    app.selection.occurrences = BTreeSet::from([InstancePath::root(OccurrenceId(1))]);
+    let before = app.live_bridge_stamp();
+    let undo_before = app.document.visible_undo_steps();
+    app.assistant_pending_execution = Some(AssistantPendingExecution {
+        cad_edit_program: Some(AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::Transform {
+                selector: AssistantCadEntitySelector::CurrentSelection {},
+                translation_mm: [10.0, 0.0, 0.0],
+                rotation: None,
+            }],
+        }),
+        result: AssistantChatResult {
+            message: "Moved the selected body and verified it.".to_owned(),
+            model_intent: None,
+        },
+        message: "Move the selected body 10 mm along X.".to_owned(),
+        replan_attempted: false,
+        document_id: app.document.current().document_id(),
+        revision_id: app.document.current().revision_id(),
+        canonical_digest: app.document.current().canonical_digest(),
+        source: "test".to_owned(),
+    });
+
+    app.poll_assistant_chat(&egui::Context::default());
+
+    let after = app.live_bridge_stamp();
+    let verification = app.assistant_verification.as_ref().unwrap_or_else(|| {
+        panic!(
+            "bounded Assistant result missing: {}",
+            app.assistant_messages
+                .last()
+                .map_or("no result", |message| message.text.as_str())
+        )
+    });
+    assert!(app.assistant_proposal.is_none());
+    assert_eq!(after.document_id, before.document_id);
+    assert_eq!(after.revision, before.revision + 1);
+    assert!(after.mutation_epoch > before.mutation_epoch);
+    assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
+    assert_eq!(verification.canonical_digest, after.canonical_digest);
+    assert_eq!(
+        verification.validation_after.as_ref().unwrap()["state"],
+        "passed"
+    );
+    assert!(app.undo());
+    assert_eq!(
+        app.live_bridge_stamp().canonical_digest,
+        before.canonical_digest
+    );
+}
+
+#[test]
+fn ambiguous_assistant_request_surfaces_clarification_without_mutation() {
+    let mut app = KetchupApp::new();
+    let before = (
+        app.document.current().revision_id(),
+        app.document.current().canonical_digest(),
+        app.document.visible_undo_steps(),
+    );
+    let (sender, receiver) = mpsc::channel();
+    sender
+        .send(Ok(AssistantTransportResponse {
+            cad_edit_program: None,
+            fea_review: None,
+            result: AssistantChatResult {
+                message: "Which of the two side panels should I extend?".to_owned(),
+                model_intent: None,
+            },
+            diagnostics: None,
+        }))
+        .unwrap();
+    app.assistant_chat_task = Some(AssistantChatTask {
+        receiver,
+        selected_occurrence_ids: Vec::new(),
+        request_id: "ambiguous-request".to_owned(),
+        message: "Extend the side panel.".to_owned(),
+        replan_attempted: false,
+        started_at: Instant::now(),
+        cancellation: AssistantCancellation::default(),
+        document_id: app.document.current().document_id(),
+        revision_id: app.document.current().revision_id(),
+        canonical_digest: app.document.current().canonical_digest(),
+        source: "test".to_owned(),
+    });
+
+    app.poll_assistant_chat(&egui::Context::default());
+
+    assert_eq!(
+        (
+            app.document.current().revision_id(),
+            app.document.current().canonical_digest(),
+            app.document.visible_undo_steps(),
+        ),
+        before
+    );
+    assert!(app.assistant_pending_execution.is_none());
+    assert!(app.assistant_proposal.is_none());
+    assert!(app.assistant_messages.iter().any(|message| {
+        message.role == AssistantMessageRole::Assistant
+            && message.text == "Which of the two side panels should I extend?"
+    }));
+}
+
+#[test]
 fn assistant_project_memory_retrieval_is_bounded_relevant_and_read_only() {
     let mut app = KetchupApp::new();
     for index in 0..140 {

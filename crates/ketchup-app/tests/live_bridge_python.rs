@@ -450,3 +450,174 @@ fn registered_python_skill_uses_same_gui_store_and_human_history() {
         count + 2
     );
 }
+
+#[test]
+#[ignore = "run via scripts/run_production_tests.py with a required real Python runtime"]
+fn registered_python_skill_runs_bounded_model_workflow_in_gui_document() {
+    let python = std::env::var_os("KETCHUP_LIVE_PYTHON")
+        .expect("KETCHUP_LIVE_PYTHON must identify the provisioned Python 3.11+ runtime");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let mut shell = Shell::new();
+    let (target_id, target_name) = shell
+        .app()
+        .document_snapshot()
+        .occurrences()
+        .next()
+        .map(|occurrence| (occurrence.id(), occurrence.name().to_owned()))
+        .unwrap();
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .expect("the real exact worker is required");
+    wait_for_exact_body(&mut shell);
+    let assembly_title = shell.catalog().text("assembly-title");
+    shell.click_button_label(&assembly_title);
+    let ground = shell.catalog().format(
+        "assembly-preview-ground",
+        &std::collections::BTreeMap::from([("name", target_name)]),
+    );
+    shell.click_button_label(&ground);
+    assert!(shell.app().assembly_preview_pending());
+    let confirm = shell.catalog().text("assembly-confirm-preview");
+    shell.click_button_label(&confirm);
+    assert_eq!(shell.app().grounded_occurrence_count(), 1);
+    shell
+        .app_mut()
+        .enable_live_bridge(&eframe::egui::Context::default())
+        .unwrap();
+    let credentials = shell.app().live_bridge_credentials().unwrap();
+    let initial = shell.app().live_bridge_stamp();
+    let count = shell.app().document_snapshot().occurrences().count();
+    let history = shell.app().undo_step_count();
+
+    let mut child = Python(
+        Command::new(python)
+            .arg("-B")
+            .arg("-u")
+            .arg(root.join("tests/live_bridge_skill_client.py"))
+            .arg("model-workflow")
+            .current_dir(root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("start explicitly configured Python + anthropic"),
+    );
+    let mut input = child.0.stdin.take().unwrap();
+    let mut attachment = serde_json::to_vec(&serde_json::json!({
+        "address": credentials.address.to_string(),
+        "token": credentials.token,
+        "program": AssistantCadEditProgram {
+            operations: vec![AssistantCadEditOperation::SetColor {
+                selector: AssistantCadEntitySelector::Occurrences {
+                    occurrence_ids: vec![target_id.0],
+                },
+                color: Some([73, 109, 151]),
+            }],
+        },
+        "target": {
+            "root_occurrence_id": target_id.0,
+            "steps": [],
+        },
+    }))
+    .unwrap();
+    attachment.push(b'\n');
+    input.write_all(&attachment).unwrap();
+    attachment.fill(0);
+
+    let stdout = child.0.stdout.take().unwrap();
+    let stderr = child.0.stderr.take().unwrap();
+    let (tx, rx) = mpsc::channel();
+    let out_thread = std::thread::spawn(move || {
+        for line in BufReader::new(stdout.take(1024 * 1024)).lines() {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let err_thread = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let result = stderr.take(1024 * 1024).read_to_end(&mut bytes);
+        (result.is_ok(), bytes)
+    });
+    let mut committed = None;
+    for checkpoint in ["model_context", "model_committed", "model_disconnected"] {
+        let deadline = Instant::now() + Duration::from_secs(45);
+        let line = loop {
+            match rx.try_recv() {
+                Ok(Ok(line)) => break line,
+                Ok(Err(_)) => panic!("Python output read failed at {checkpoint}"),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    panic!("Python exited before {checkpoint}")
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Python checkpoint deadline: {checkpoint}"
+            );
+            shell.step();
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert!(!line.contains(&credentials.token));
+        assert!(!line.contains(&credentials.address.to_string()));
+        let event: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(event["checkpoint"].as_str(), Some(checkpoint), "{event}");
+        let observed: Stamp = serde_json::from_value(event["stamp"].clone()).unwrap();
+        let actual = shell.app().live_bridge_stamp();
+        assert_eq!(observed, actual);
+        assert_eq!(shell.app().document_snapshot().occurrences().count(), count);
+        match checkpoint {
+            "model_context" => {
+                assert_eq!(actual, initial);
+                assert_eq!(shell.app().undo_step_count(), history);
+            }
+            "model_committed" => {
+                assert_eq!(
+                    event["evidence"]["modeling_trace"],
+                    serde_json::json!(["edit_context", "apply_and_verify"])
+                );
+                assert_eq!(event["evidence"]["modeling_round_trips"], 2);
+                assert_eq!(event["evidence"]["discovery_round_trips"], 0);
+                assert_eq!(event["evidence"]["retry_round_trips"], 0);
+                assert_eq!(event["evidence"]["compile_or_test_processes"], 0);
+                assert_eq!(event["evidence"]["helper_headless_documents"], 0);
+                assert!(actual.revision > initial.revision);
+                assert!(actual.mutation_epoch > initial.mutation_epoch);
+                assert_eq!(shell.app().undo_step_count(), history + 1);
+                assert_eq!(
+                    shell
+                        .app()
+                        .document_snapshot()
+                        .occurrence(target_id)
+                        .unwrap()
+                        .color(),
+                    Some([73, 109, 151])
+                );
+                committed = Some(actual);
+            }
+            "model_disconnected" => assert_eq!(Some(&actual), committed.as_ref()),
+            _ => unreachable!(),
+        }
+        input.write_all(b"continue\n").unwrap();
+    }
+    drop(input);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "Python exit deadline");
+        shell.step();
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    out_thread.join().unwrap();
+    let (read_ok, stderr) = err_thread.join().unwrap();
+    assert!(read_ok && stderr.is_empty(), "Python stderr was not empty");
+    assert!(status.success(), "Python model workflow failed");
+    assert_eq!(Some(shell.app().live_bridge_stamp()), committed);
+}

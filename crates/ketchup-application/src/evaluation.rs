@@ -1,8 +1,11 @@
-use ketchup_core::document::{DefinitionId, DocumentStore, FeatureId, FeatureKind, Snapshot};
+use ketchup_core::document::{
+    DefinitionId, DocumentStore, FeatureId, FeatureKind, OccurrenceId, SceneOccurrence, Snapshot,
+};
 use ketchup_core::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation};
 use ketchup_core::exact_product::{
     ExactBodyPackage, ExactFeatureChainRequest, ExactProducerCompilation,
     ExactProducerEvidenceContext, ExactProducerPlan, ExactResultRegistry, ImportedExactPackage,
+    exact_body_terminal_features,
 };
 #[cfg(feature = "named-product-fixtures")]
 use ketchup_core::exact_revolve::ExactRevolveRequest;
@@ -18,7 +21,7 @@ use ketchup_scheduler::{
     ExactWorkerSupervisor, MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES,
     MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::{
@@ -49,6 +52,216 @@ type PreparedRequests = (
     Vec<(ProducerKey, ExactEvaluationRequest)>,
     Vec<ProducerCoverage>,
 );
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IncrementalExactScope {
+    pub producers: BTreeSet<ProducerKey>,
+    pub collision_occurrences: BTreeSet<OccurrenceId>,
+    pub changed_feature_count: usize,
+    pub changed_scene_occurrence_count: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IncrementalExactPlan {
+    pub selection: ExactEvaluationSelection,
+    pub collision_occurrences: BTreeSet<OccurrenceId>,
+    pub baseline_reused: bool,
+    pub fallback_reason: Option<String>,
+    pub changed_feature_count: usize,
+    pub changed_scene_occurrence_count: usize,
+}
+
+pub fn plan_incremental_exact_evaluation(
+    before: &Snapshot,
+    after: &Snapshot,
+    full_baseline: Option<&ExactSource>,
+) -> Result<IncrementalExactPlan, String> {
+    let scope = plan_incremental_exact_scope(before, after)?;
+    let expected_baseline = exact_source(before);
+    if full_baseline != Some(&expected_baseline) {
+        return Ok(IncrementalExactPlan {
+            selection: ExactEvaluationSelection::Full,
+            collision_occurrences: after
+                .scene_query()
+                .into_iter()
+                .filter(|occurrence| occurrence.visible)
+                .map(|occurrence| occurrence.instance_path.root_occurrence())
+                .collect(),
+            baseline_reused: false,
+            fallback_reason: Some("missing or stale complete exact baseline".to_owned()),
+            changed_feature_count: scope.changed_feature_count,
+            changed_scene_occurrence_count: scope.changed_scene_occurrence_count,
+        });
+    }
+    Ok(IncrementalExactPlan {
+        selection: ExactEvaluationSelection::Scoped(scope.producers),
+        collision_occurrences: scope.collision_occurrences,
+        baseline_reused: true,
+        fallback_reason: None,
+        changed_feature_count: scope.changed_feature_count,
+        changed_scene_occurrence_count: scope.changed_scene_occurrence_count,
+    })
+}
+
+fn scene_geometry_matches(left: &SceneOccurrence, right: &SceneOccurrence) -> bool {
+    left.definition_id == right.definition_id
+        && left.transform == right.transform
+        && left.parent == right.parent
+        && left.local_parent == right.local_parent
+        && left.visible == right.visible
+}
+
+/// Derives the exact producers and world-space collision roots affected by a
+/// canonical snapshot change. Geometry dependencies are closed through the
+/// feature DAG; scene changes are compared after nested/shared expansion.
+pub fn plan_incremental_exact_scope(
+    before: &Snapshot,
+    after: &Snapshot,
+) -> Result<IncrementalExactScope, String> {
+    if before.document_id() != after.document_id() {
+        return Err("incremental exact scope requires snapshots from one document".to_owned());
+    }
+
+    let before_features = before
+        .features()
+        .map(|feature| (feature.id(), feature))
+        .collect::<BTreeMap<_, _>>();
+    let after_features = after
+        .features()
+        .map(|feature| (feature.id(), feature))
+        .collect::<BTreeMap<_, _>>();
+    let feature_ids = before_features
+        .keys()
+        .chain(after_features.keys())
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let changed_features = feature_ids
+        .into_iter()
+        .filter(|id| before_features.get(id) != after_features.get(id))
+        .collect::<BTreeSet<_>>();
+
+    let definition_ids = before
+        .definitions()
+        .map(|definition| definition.id())
+        .chain(after.definitions().map(|definition| definition.id()))
+        .collect::<BTreeSet<_>>();
+    let mut structurally_changed_definitions = BTreeSet::new();
+    let mut after_terminals = BTreeMap::new();
+    for definition_id in definition_ids {
+        let before_definition_terminals = if before.definition(definition_id).is_some() {
+            exact_body_terminal_features(before, definition_id).map_err(|error| {
+                format!(
+                    "invalid previous exact terminal set for definition {definition_id:?}: {error}"
+                )
+            })?
+        } else {
+            BTreeMap::new()
+        };
+        let after_definition_terminals = if after.definition(definition_id).is_some() {
+            exact_body_terminal_features(after, definition_id).map_err(|error| {
+                format!(
+                    "invalid current exact terminal set for definition {definition_id:?}: {error}"
+                )
+            })?
+        } else {
+            BTreeMap::new()
+        };
+        if before_definition_terminals != after_definition_terminals {
+            structurally_changed_definitions.insert(definition_id);
+        }
+        after_terminals.insert(definition_id, after_definition_terminals);
+    }
+
+    let mut geometry_definitions = structurally_changed_definitions.clone();
+    for feature_id in &changed_features {
+        if let Some(feature) = after
+            .feature(*feature_id)
+            .or_else(|| before.feature(*feature_id))
+        {
+            geometry_definitions.insert(feature.definition_id());
+        }
+    }
+    let current_changed_features = changed_features
+        .iter()
+        .copied()
+        .filter(|id| after.feature(*id).is_some());
+    let dirty_features = after
+        .feature_dependency_graph()
+        .map_err(|error| error.to_string())?
+        .dependent_closure(current_changed_features);
+
+    let after_scene = after
+        .scene_query()
+        .into_iter()
+        .map(|occurrence| (occurrence.instance_path.clone(), occurrence))
+        .collect::<BTreeMap<_, _>>();
+    let visible_definitions = after_scene
+        .values()
+        .filter(|occurrence| occurrence.visible)
+        .map(|occurrence| occurrence.definition_id)
+        .collect::<BTreeSet<_>>();
+    let mut producers = BTreeSet::new();
+    for (definition_id, terminals) in &after_terminals {
+        if !visible_definitions.contains(definition_id) {
+            continue;
+        }
+        for feature_id in terminals.values() {
+            if structurally_changed_definitions.contains(definition_id)
+                || dirty_features.contains(feature_id)
+            {
+                producers.insert(ProducerKey {
+                    definition_id: *definition_id,
+                    feature_id: *feature_id,
+                });
+            }
+        }
+    }
+
+    let before_scene = before
+        .scene_query()
+        .into_iter()
+        .map(|occurrence| (occurrence.instance_path.clone(), occurrence))
+        .collect::<BTreeMap<_, _>>();
+    let scene_paths = before_scene
+        .keys()
+        .chain(after_scene.keys())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let changed_scene_paths = scene_paths
+        .into_iter()
+        .filter(
+            |path| match (before_scene.get(path), after_scene.get(path)) {
+                (Some(left), Some(right)) => !scene_geometry_matches(left, right),
+                (None, None) => false,
+                _ => true,
+            },
+        )
+        .collect::<BTreeSet<_>>();
+    let mut collision_occurrences = changed_scene_paths
+        .iter()
+        .filter_map(|path| {
+            after_scene
+                .get(path)
+                .filter(|occurrence| occurrence.visible)
+                .map(|occurrence| occurrence.instance_path.root_occurrence())
+        })
+        .collect::<BTreeSet<_>>();
+    collision_occurrences.extend(
+        after_scene
+            .values()
+            .filter(|occurrence| {
+                occurrence.visible && geometry_definitions.contains(&occurrence.definition_id)
+            })
+            .map(|occurrence| occurrence.instance_path.root_occurrence()),
+    );
+
+    Ok(IncrementalExactScope {
+        producers,
+        collision_occurrences,
+        changed_feature_count: changed_features.len(),
+        changed_scene_occurrence_count: changed_scene_paths.len(),
+    })
+}
 
 fn prepare_requests(
     snapshot: &Snapshot,
@@ -421,13 +634,34 @@ pub fn start_exact_evaluation(
     executable: Option<PathBuf>,
     completed: impl FnOnce() + Send + 'static,
 ) -> ExactEvaluationTask {
-    start_exact_evaluation_scoped(
+    start_exact_evaluation_with_cancellation(
+        snapshot,
+        container_data,
+        render,
+        topology,
+        executable,
+        Arc::new(AtomicBool::new(false)),
+        completed,
+    )
+}
+
+pub fn start_exact_evaluation_with_cancellation(
+    snapshot: Snapshot,
+    container_data: &ContainerData,
+    render: &ExactResultRegistry,
+    topology: &ExactResultRegistry,
+    executable: Option<PathBuf>,
+    cancelled: Arc<AtomicBool>,
+    completed: impl FnOnce() + Send + 'static,
+) -> ExactEvaluationTask {
+    start_exact_evaluation_scoped_with_cancellation(
         snapshot,
         container_data,
         render,
         topology,
         executable,
         None,
+        cancelled,
         completed,
     )
 }
@@ -441,8 +675,36 @@ pub fn start_exact_evaluation_scoped(
     scope: Option<&BTreeSet<ProducerKey>>,
     completed: impl FnOnce() + Send + 'static,
 ) -> ExactEvaluationTask {
+    start_exact_evaluation_scoped_with_cancellation(
+        snapshot,
+        container_data,
+        render,
+        topology,
+        executable,
+        scope,
+        Arc::new(AtomicBool::new(false)),
+        completed,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn start_exact_evaluation_scoped_with_cancellation(
+    snapshot: Snapshot,
+    container_data: &ContainerData,
+    render: &ExactResultRegistry,
+    topology: &ExactResultRegistry,
+    executable: Option<PathBuf>,
+    scope: Option<&BTreeSet<ProducerKey>>,
+    cancelled: Arc<AtomicBool>,
+    completed: impl FnOnce() + Send + 'static,
+) -> ExactEvaluationTask {
     let source = exact_source(&snapshot);
-    let prepared = prepare_requests(&snapshot, container_data, render, topology, scope);
+    let selection = scope.map_or(ExactEvaluationSelection::Full, |scope| {
+        ExactEvaluationSelection::Scoped(scope.clone())
+    });
+    let render = ExactResultRegistry::carried_forward(&snapshot, render);
+    let topology = ExactResultRegistry::carried_forward(&snapshot, topology);
+    let prepared = prepare_requests(&snapshot, container_data, &render, &topology, scope);
     let initial_active_producer = prepared
         .as_ref()
         .ok()
@@ -464,15 +726,16 @@ pub fn start_exact_evaluation_scoped(
         initial_active_producer.map(|key| (key, Instant::now())),
     ));
     let worker_active_producer = Arc::clone(&active_producer);
-    let cancelled = Arc::new(AtomicBool::new(false));
     let worker_cancelled = Arc::clone(&cancelled);
     let finished = Arc::new(AtomicBool::new(false));
     let worker_finished = Arc::clone(&finished);
     let worker_source = source.clone();
+    let worker_selection = selection.clone();
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
         let mut report = EvaluationReport {
             source: worker_source.clone(),
+            selection: worker_selection,
             producers: Vec::new(),
             complete: false,
             topology_complete: false,
@@ -836,6 +1099,7 @@ pub fn start_exact_evaluation_scoped(
     });
     ExactEvaluationTask {
         source,
+        selection,
         cancelled,
         finished,
         receiver,
@@ -843,5 +1107,240 @@ pub fn start_exact_evaluation_scoped(
         completed_producers,
         reused_producers,
         active_producer,
+    }
+}
+
+#[cfg(test)]
+mod incremental_scope_tests {
+    use super::*;
+    use ketchup_core::document::{
+        CanonicalCommand, CommandBatch, Dimension, GroupId, OccurrenceId, Transform,
+    };
+
+    #[test]
+    fn shared_definition_change_excludes_independent_producers_and_transform_is_world_only() {
+        let mut document = DocumentStore::new();
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(1),
+                    name: "Shared".into(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: FeatureId(1),
+                    definition_id: DefinitionId(1),
+                    name: "Profile".into(),
+                    kind: FeatureKind::Profile {
+                        points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+                    },
+                },
+                CanonicalCommand::CreateFeature {
+                    id: FeatureId(2),
+                    definition_id: DefinitionId(1),
+                    name: "Solid".into(),
+                    kind: FeatureKind::Extrusion {
+                        profile: FeatureId(1),
+                        height: Dimension::new("10", 10.0).unwrap(),
+                    },
+                },
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(2),
+                    name: "Independent".into(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: FeatureId(3),
+                    definition_id: DefinitionId(2),
+                    name: "Profile".into(),
+                    kind: FeatureKind::Profile {
+                        points_mm: vec![[0.0, 0.0], [5.0, 0.0], [5.0, 5.0], [0.0, 5.0]],
+                    },
+                },
+                CanonicalCommand::CreateFeature {
+                    id: FeatureId(4),
+                    definition_id: DefinitionId(2),
+                    name: "Solid".into(),
+                    kind: FeatureKind::Extrusion {
+                        profile: FeatureId(3),
+                        height: Dimension::new("5", 5.0).unwrap(),
+                    },
+                },
+                CanonicalCommand::CreateOccurrence {
+                    id: OccurrenceId(1),
+                    definition_id: DefinitionId(1),
+                    name: "Shared A".into(),
+                    transform: Transform::identity(),
+                    parent: None,
+                    tag: None,
+                    visible: true,
+                },
+                CanonicalCommand::CreateOccurrence {
+                    id: OccurrenceId(2),
+                    definition_id: DefinitionId(1),
+                    name: "Shared B".into(),
+                    transform: Transform::from_translation(30.0, 0.0, 0.0).unwrap(),
+                    parent: None,
+                    tag: None,
+                    visible: true,
+                },
+                CanonicalCommand::CreateOccurrence {
+                    id: OccurrenceId(3),
+                    definition_id: DefinitionId(2),
+                    name: "Independent".into(),
+                    transform: Transform::from_translation(100.0, 0.0, 0.0).unwrap(),
+                    parent: None,
+                    tag: None,
+                    visible: true,
+                },
+            ]))
+            .unwrap();
+        let before = document.current();
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetProfilePoints {
+                    id: FeatureId(1),
+                    points_mm: vec![[0.0, 0.0], [12.0, 0.0], [12.0, 10.0], [0.0, 10.0]],
+                },
+            ]))
+            .unwrap();
+        let after_definition_edit = document.current();
+
+        let scope = plan_incremental_exact_scope(&before, &after_definition_edit).unwrap();
+        assert_eq!(
+            scope.producers,
+            BTreeSet::from([ProducerKey {
+                definition_id: DefinitionId(1),
+                feature_id: FeatureId(2),
+            }])
+        );
+        assert_eq!(
+            scope.collision_occurrences,
+            BTreeSet::from([OccurrenceId(1), OccurrenceId(2)])
+        );
+        assert_eq!(scope.changed_feature_count, 1);
+        assert_eq!(scope.changed_scene_occurrence_count, 0);
+        let incremental = plan_incremental_exact_evaluation(
+            &before,
+            &after_definition_edit,
+            Some(&exact_source(&before)),
+        )
+        .unwrap();
+        assert!(incremental.baseline_reused);
+        assert_eq!(
+            incremental.selection,
+            ExactEvaluationSelection::Scoped(scope.producers.clone())
+        );
+        let without_baseline =
+            plan_incremental_exact_evaluation(&before, &after_definition_edit, None).unwrap();
+        assert!(!without_baseline.baseline_reused);
+        assert_eq!(without_baseline.selection, ExactEvaluationSelection::Full);
+        assert_eq!(
+            without_baseline.collision_occurrences,
+            BTreeSet::from([OccurrenceId(1), OccurrenceId(2), OccurrenceId(3)])
+        );
+
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetOccurrenceTransform {
+                    id: OccurrenceId(3),
+                    transform: Transform::from_translation(40.0, 0.0, 0.0).unwrap(),
+                },
+            ]))
+            .unwrap();
+        let transform_scope =
+            plan_incremental_exact_scope(&after_definition_edit, &document.current()).unwrap();
+        assert!(transform_scope.producers.is_empty());
+        assert_eq!(
+            transform_scope.collision_occurrences,
+            BTreeSet::from([OccurrenceId(3)])
+        );
+        assert_eq!(transform_scope.changed_feature_count, 0);
+        assert_eq!(transform_scope.changed_scene_occurrence_count, 1);
+    }
+
+    #[test]
+    fn nested_shared_leaf_change_invalidates_every_component_root_once() {
+        let mut document = DocumentStore::new();
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(1),
+                    name: "Leaf".into(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: FeatureId(1),
+                    definition_id: DefinitionId(1),
+                    name: "Profile".into(),
+                    kind: FeatureKind::Profile {
+                        points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+                    },
+                },
+                CanonicalCommand::CreateFeature {
+                    id: FeatureId(2),
+                    definition_id: DefinitionId(1),
+                    name: "Solid".into(),
+                    kind: FeatureKind::Extrusion {
+                        profile: FeatureId(1),
+                        height: Dimension::new("10", 10.0).unwrap(),
+                    },
+                },
+                CanonicalCommand::CreateGroup {
+                    id: GroupId(1),
+                    name: "Component source".into(),
+                    transform: Transform::identity(),
+                    parent: None,
+                },
+                CanonicalCommand::CreateOccurrence {
+                    id: OccurrenceId(1),
+                    definition_id: DefinitionId(1),
+                    name: "Nested leaf".into(),
+                    transform: Transform::identity(),
+                    parent: Some(GroupId(1)),
+                    tag: None,
+                    visible: true,
+                },
+            ]))
+            .unwrap();
+        let converted = document
+            .convert_group_to_component(GroupId(1), "Shared component")
+            .unwrap();
+        assert_eq!(converted.component_definition_id, DefinitionId(2));
+        assert_eq!(converted.component_occurrence_id, OccurrenceId(2));
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateOccurrence {
+                    id: OccurrenceId(3),
+                    definition_id: converted.component_definition_id,
+                    name: "Shared component B".into(),
+                    transform: Transform::from_translation(30.0, 0.0, 0.0).unwrap(),
+                    parent: None,
+                    tag: None,
+                    visible: true,
+                },
+            ]))
+            .unwrap();
+        let before = document.current();
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetProfilePoints {
+                    id: FeatureId(1),
+                    points_mm: vec![[0.0, 0.0], [12.0, 0.0], [12.0, 10.0], [0.0, 10.0]],
+                },
+            ]))
+            .unwrap();
+
+        let scope = plan_incremental_exact_scope(&before, &document.current()).unwrap();
+        assert_eq!(
+            scope.producers,
+            BTreeSet::from([ProducerKey {
+                definition_id: DefinitionId(1),
+                feature_id: FeatureId(2),
+            }])
+        );
+        assert_eq!(
+            scope.collision_occurrences,
+            BTreeSet::from([OccurrenceId(2), OccurrenceId(3)])
+        );
+        assert_eq!(scope.changed_feature_count, 1);
+        assert_eq!(scope.changed_scene_occurrence_count, 0);
     }
 }

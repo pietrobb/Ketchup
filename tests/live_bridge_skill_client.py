@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import re
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -50,8 +51,8 @@ async def scenario():
     skill._launch = attach
     tools = {tool.name: tool for tool in skill.register_tools()}
     assert set(tools) == {
-        "KetchupLiveSession", "KetchupLiveInspect", "KetchupLiveEdit", "KetchupLiveFile",
-        "KetchupLiveBatch", "KetchupLiveView"}
+        "KetchupLiveSession", "KetchupLiveInspect", "KetchupLiveEdit", "KetchupLiveModel",
+        "KetchupLiveFile", "KetchupLiveBatch", "KetchupLiveView"}
 
     def safe(text):
         assert isinstance(text, str) and len(text.encode("utf-8")) <= 32768
@@ -216,6 +217,85 @@ async def scenario():
     checkpoint("disconnected", state["stamp"])
 
 
+async def model_workflow_scenario():
+    attachment = json.loads(sys.stdin.readline(32769))
+    assert set(attachment) == {"address", "token", "program", "target"}
+    token = attachment["token"]
+    address = attachment["address"]
+    program = attachment["program"]
+    target = attachment["target"]
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "live_model_workflow_skill", root / "skills" / "ketchup_live.py")
+    skill = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(skill)
+    sessions = []
+
+    def attach(executable, document_path=None):
+        assert Path(executable) == Path(sys.executable).resolve()
+        assert document_path is None and not sessions
+        session = skill._sdk().LiveSession(address, token, timeout=30.0)
+        sessions.append(session)
+        return session
+
+    skill._plan_state = lambda: SimpleNamespace(active=False)
+    skill._launch = attach
+    tools = {tool.name: tool for tool in skill.register_tools()}
+    modeling_trace = []
+
+    async def call(name, **arguments):
+        output = await tools[name].call(arguments)
+        assert token not in output and address not in output
+        return json.loads(output)
+
+    def success(response):
+        assert response.get("ok") is True, response.get("error", {}).get("code")
+        return response
+
+    def checkpoint(name, stamp, evidence=None):
+        event = {"checkpoint": name, "stamp": stamp}
+        if evidence is not None:
+            event["evidence"] = evidence
+        print(json.dumps(event, separators=(",", ":")), flush=True)
+        assert sys.stdin.readline(32) == "continue\n"
+
+    launched = success(await call(
+        "KetchupLiveSession", action="launch", executable=str(Path(sys.executable).resolve())))
+    handle = launched["result"]["handle"]
+    status = success(await call("KetchupLiveInspect", action="status", handle=handle))
+    initial = status["stamp"]
+    selection = status["result"]["selection"]
+    modeling_trace.append("edit_context")
+    context = success(await call(
+        "KetchupLiveModel", action="edit_context", handle=handle,
+        expected=initial, targets=[target]))
+    assert context["stamp"] == initial
+    assert context["result"]["targets"][0]["instance"]["instance_path"] == target
+    checkpoint("model_context", context["stamp"])
+
+    modeling_trace.append("apply_and_verify")
+    committed = success(await call(
+        "KetchupLiveModel", action="apply_and_verify", handle=handle,
+        expected=initial, selection=selection, request_id="real-model-workflow-1",
+        program=program, validators=["collision", "gravity_support"], timeout_ms=10_000))
+    assert committed["result"]["published"] is True
+    assert committed["result"]["same_gui_document"] is True
+    assert committed["result"]["execution"]["helper_headless_documents"] == 0
+    assert modeling_trace == ["edit_context", "apply_and_verify"]
+    checkpoint("model_committed", committed["stamp"], {
+        "modeling_trace": modeling_trace,
+        "modeling_round_trips": len(modeling_trace),
+        "discovery_round_trips": 0,
+        "retry_round_trips": 0,
+        "compile_or_test_processes": 0,
+        "helper_headless_documents": committed["result"]["execution"]["helper_headless_documents"],
+    })
+    disconnected = success(await call(
+        "KetchupLiveSession", action="disconnect", handle=handle))
+    assert disconnected["result"]["app_terminated"] is False
+    checkpoint("model_disconnected", committed["stamp"])
+
+
 async def consent_disconnect_scenario():
     attachment = json.loads(sys.stdin.readline(32769))
     root = Path(__file__).resolve().parents[1]
@@ -278,7 +358,12 @@ async def consent_disconnect_scenario():
 
 if __name__ == "__main__":
     try:
-        asyncio.run(consent_disconnect_scenario() if sys.argv[1:] == ["consent-disconnect"] else scenario())
+        if sys.argv[1:] == ["consent-disconnect"]:
+            asyncio.run(consent_disconnect_scenario())
+        elif sys.argv[1:] == ["model-workflow"]:
+            asyncio.run(model_workflow_scenario())
+        else:
+            asyncio.run(scenario())
     except BaseException as error:
         # Only helper line numbers escape; never exception text, locals or input.
         lines = []
@@ -287,6 +372,6 @@ if __name__ == "__main__":
             if trace.tb_frame.f_code.co_filename == __file__:
                 lines.append(trace.tb_lineno)
             trace = trace.tb_next
-        code = str(error) if str(error) in {"live_operation_failed", "live_transport_error", "invalid_arguments", "busy", "stale_document", "invalid_program", "resource_limit", "planning_rejected", "invalid_handle", "plan_mode", "output_too_large", "instance_unavailable", "consent_rejected", "discovery_available", "discovery_busy"} else "suppressed"
+        code = str(error) if re.fullmatch(r"[a-z_]{1,64}", str(error)) else "suppressed"
         print(json.dumps({"checkpoint": "failed", "lines": [*lines, code, type(error).__name__]}), flush=True)
         sys.exit(1)

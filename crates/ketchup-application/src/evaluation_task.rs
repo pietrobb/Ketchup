@@ -35,8 +35,15 @@ pub struct ProducerCoverage {
     pub topology: EvidenceStatus,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExactEvaluationSelection {
+    Full,
+    Scoped(BTreeSet<ProducerKey>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EvaluationReport {
     pub source: ExactSource,
+    pub selection: ExactEvaluationSelection,
     pub producers: Vec<ProducerCoverage>,
     /// Empty geometry is not a global exact-evaluation pass.
     pub complete: bool,
@@ -44,6 +51,10 @@ pub struct EvaluationReport {
     pub not_evaluated: Option<String>,
 }
 impl EvaluationReport {
+    pub fn establishes_full_baseline(&self) -> bool {
+        self.selection == ExactEvaluationSelection::Full && self.complete && self.topology_complete
+    }
+
     pub fn needs_retry(&self) -> bool {
         !self.complete
             || self
@@ -85,6 +96,7 @@ pub struct ExactEvaluationProgress {
 }
 pub struct ExactEvaluationTask {
     pub source: ExactSource,
+    pub selection: ExactEvaluationSelection,
     pub cancelled: Arc<AtomicBool>,
     pub finished: Arc<AtomicBool>,
     pub(super) receiver: Receiver<ExactEvaluationResult>,
@@ -154,6 +166,36 @@ pub fn rebind_exact_results(
     }
 }
 
+/// Materialize snapshot-bound exact products without publishing canonical or GUI state.
+/// This is the pre-publication boundary used by guarded candidate validation.
+pub fn materialize_exact_products(
+    snapshot: &Snapshot,
+    render: &ExactResultRegistry,
+    topology: &ExactResultRegistry,
+    task: &ExactEvaluationTask,
+    products: ExactEvaluationProducts,
+) -> Result<(ExactResultRegistry, ExactResultRegistry, EvaluationReport), String> {
+    if task.cancelled.load(Ordering::Acquire)
+        || products.source != task.source
+        || products.source != exact_source(snapshot)
+    {
+        return Err("stale or cancelled exact evaluation".into());
+    }
+    let mut results = ExactResultRegistry::carried_forward(snapshot, render);
+    let mut topology_results = ExactResultRegistry::carried_forward(snapshot, topology);
+    for package in products.render_packages {
+        results
+            .insert_current(snapshot, package)
+            .map_err(|error| error.to_string())?;
+    }
+    for package in products.topology_packages {
+        topology_results
+            .insert_current(snapshot, package)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok((results, topology_results, products.report))
+}
+
 /// Publish only snapshot-bound, uncancelled products. Evidence registration is atomic;
 /// canonical content and the Undo stack are never edited here.
 pub fn publish_exact_products(
@@ -164,24 +206,8 @@ pub fn publish_exact_products(
     products: ExactEvaluationProducts,
 ) -> Result<EvaluationReport, String> {
     let snapshot = document.current();
-    if task.cancelled.load(Ordering::Acquire)
-        || products.source != task.source
-        || products.source != exact_source(&snapshot)
-    {
-        return Err("stale or cancelled exact evaluation".into());
-    }
-    let mut results = ExactResultRegistry::carried_forward(&snapshot, render);
-    let mut topology_results = ExactResultRegistry::carried_forward(&snapshot, topology);
-    for package in products.render_packages {
-        results
-            .insert_current(&snapshot, package)
-            .map_err(|error| error.to_string())?;
-    }
-    for package in products.topology_packages {
-        topology_results
-            .insert_current(&snapshot, package)
-            .map_err(|error| error.to_string())?;
-    }
+    let (results, topology_results, report) =
+        materialize_exact_products(&snapshot, render, topology, task, products)?;
     let references = results
         .values()
         .flat_map(|package| package.references())
@@ -209,7 +235,7 @@ pub fn publish_exact_products(
     )?;
     *render = results;
     *topology = topology_results;
-    Ok(products.report)
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -354,6 +380,7 @@ mod tests {
         let (_sender, receiver) = mpsc::channel();
         let task = ExactEvaluationTask {
             source: source.clone(),
+            selection: ExactEvaluationSelection::Full,
             cancelled: Arc::new(AtomicBool::new(false)),
             finished: Arc::new(AtomicBool::new(true)),
             receiver,
@@ -368,6 +395,7 @@ mod tests {
             topology_packages: Vec::new(),
             report: EvaluationReport {
                 source,
+                selection: ExactEvaluationSelection::Full,
                 producers: Vec::new(),
                 complete: true,
                 topology_complete: false,

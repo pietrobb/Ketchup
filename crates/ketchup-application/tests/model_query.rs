@@ -1,11 +1,13 @@
 use ketchup_application::model_query::*;
+use ketchup_application::{DocumentSession, SessionSettings};
 use ketchup_core::assembly::{
     AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind, PlanarFaceAttachment,
 };
+use ketchup_core::assistant_sidecar::AssistantInstancePath;
 use ketchup_core::document::*;
 use ketchup_core::exact_product::{
-    BODY_SUBSHAPE_REF_SCHEMA_V1, BodySubshapeRef, ExactFaceRole, ReferenceStability,
-    canonical_reference_lineage_digest,
+    BODY_SUBSHAPE_REF_SCHEMA_V1, BodySubshapeRef, ExactFaceRole, ExactResultRegistry,
+    ReferenceStability, canonical_reference_lineage_digest,
 };
 use serde_json::{Value, json};
 
@@ -1254,6 +1256,213 @@ fn relation_queries_stream_canonical_hierarchy_definition_and_assembly_edges() {
     assert_eq!(
         mate_page["items"][0]["origin"]["kind"],
         "canonical_assembly_mate"
+    );
+}
+
+#[test]
+fn edit_context_resolves_exact_nested_instance_paths_without_mutating_snapshot() {
+    let mut document = nested_fixture();
+    let copy_id = document
+        .current()
+        .occurrences()
+        .find(|occurrence| occurrence.name() == "Repeated assembly copy")
+        .unwrap()
+        .id();
+    let rotated = Transform::from_matrix([
+        0.0, -1.0, 0.0, 100.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ])
+    .unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceTransform {
+                id: copy_id,
+                transform: rotated,
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    let query = ModelQuery::default();
+    let page = query
+        .page(&snapshot, &request(EntityKind::Instances))
+        .unwrap();
+    let paths = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["definition_id"] == 1)
+        .map(|item| {
+            serde_json::from_value::<AssistantInstancePath>(item["instance_path"].clone()).unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(paths.len(), 2);
+    let before_digest = snapshot.canonical_digest();
+    let context = query
+        .edit_context(
+            &snapshot,
+            &ExactResultRegistry::default(),
+            17,
+            &EditContextRequest {
+                targets: paths.clone(),
+            },
+        )
+        .unwrap();
+
+    bounded(&context);
+    assert_eq!(context["identity"]["canonical_digest"], before_digest);
+    assert_eq!(context["identity"]["mutation_epoch"], 17);
+    assert_eq!(context["targets"].as_array().unwrap().len(), 2);
+    assert_ne!(
+        context["targets"][0]["world_transform"],
+        context["targets"][1]["world_transform"]
+    );
+    assert!(context["targets"].as_array().unwrap().iter().any(|target| {
+        let matrix = target["world_transform"].as_array().unwrap();
+        matrix[0].as_f64().unwrap().abs() <= 1.0e-12
+            && (matrix[1].as_f64().unwrap() + 1.0).abs() <= 1.0e-12
+    }));
+    assert_eq!(context["targets"][0]["definition"]["id"], 1);
+    assert_eq!(context["targets"][1]["definition"]["id"], 1);
+    assert!(context["targets"][0]["features"].is_array());
+    assert_eq!(
+        context["targets"][0]["declarative_ownership"]["status"],
+        "unsupported"
+    );
+    assert_eq!(snapshot.canonical_digest(), before_digest);
+
+    let parameter_snapshot = fixture(1, false).current();
+    let parameter_context = ModelQuery::default()
+        .edit_context(
+            &parameter_snapshot,
+            &ExactResultRegistry::default(),
+            0,
+            &EditContextRequest {
+                targets: vec![AssistantInstancePath {
+                    root_occurrence_id: 1,
+                    steps: Vec::new(),
+                }],
+            },
+        )
+        .unwrap();
+    let parameter_count = parameter_context["targets"][0]["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|feature| feature["parameters"].as_array().unwrap().len())
+        .sum::<usize>();
+    assert_eq!(parameter_count, 6);
+
+    assert_eq!(
+        query.edit_context(
+            &snapshot,
+            &ExactResultRegistry::default(),
+            17,
+            &EditContextRequest {
+                targets: vec![paths[0].clone(), paths[0].clone()],
+            },
+        ),
+        Err(QueryError::InvalidInput)
+    );
+    let missing = AssistantInstancePath {
+        root_occurrence_id: u64::MAX,
+        steps: Vec::new(),
+    };
+    assert_eq!(
+        query.edit_context(
+            &snapshot,
+            &ExactResultRegistry::default(),
+            17,
+            &EditContextRequest {
+                targets: vec![missing],
+            },
+        ),
+        Err(QueryError::NotFound)
+    );
+}
+
+#[test]
+fn edit_context_identifies_the_v9_rear_panel_in_one_bounded_call() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/fast_assembly/nightstand_v9_retention.ketchup");
+    let mut session = DocumentSession::open(path, SessionSettings::default()).unwrap();
+    let before = (
+        session.snapshot().revision_id(),
+        session.snapshot().canonical_digest(),
+        session.mutation_epoch(),
+        session.visible_undo_steps(),
+        session.is_modified(),
+    );
+    let report = session.evaluate().unwrap();
+    assert!(report.complete && report.topology_complete, "{report:?}");
+    let snapshot = session.snapshot();
+    let context = ModelQuery::default()
+        .edit_context(
+            &snapshot,
+            session.topology_results(),
+            session.mutation_epoch(),
+            &EditContextRequest {
+                targets: vec![
+                    AssistantInstancePath {
+                        root_occurrence_id: 6,
+                        steps: Vec::new(),
+                    },
+                    AssistantInstancePath {
+                        root_occurrence_id: 1,
+                        steps: Vec::new(),
+                    },
+                ],
+            },
+        )
+        .unwrap();
+
+    bounded(&context);
+    let targets = context["targets"].as_array().unwrap();
+    assert_eq!(targets.len(), 2);
+    assert_eq!(targets[0]["instance"]["id"], "root:6");
+    assert_eq!(
+        targets[0]["instance"]["occurrence_name"]["text"],
+        "Zadna stena iba horna nika 464x216x8"
+    );
+    assert_eq!(targets[1]["instance"]["id"], "root:1");
+    assert_eq!(
+        targets[1]["instance"]["occurrence_name"]["text"],
+        "Horna doska 500x350x18 - 6 realnych otvorov"
+    );
+    assert!(
+        targets[0]["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|feature| !feature["parameters"].as_array().unwrap().is_empty())
+    );
+    let joinery = targets[0]["joinery"]["items"].as_array().unwrap();
+    assert!(joinery.iter().any(|item| item["type"] == "dowel_joint"));
+    for target in targets {
+        assert_eq!(target["stable_faces"]["status"], "supported");
+        assert_eq!(target["stable_faces"]["complete"], true);
+        assert!(
+            target["stable_faces"]["items"]
+                .as_array()
+                .is_some_and(|faces| !faces.is_empty()
+                    && faces.iter().all(|face| face["reference_id"].is_string()))
+        );
+    }
+    assert!(
+        targets[1]["stable_faces"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|face| face["semantic_role"] == "extrusion.bottom"
+                && face["stability"] == "guaranteed")
+    );
+    assert_eq!(
+        (
+            session.snapshot().revision_id(),
+            session.snapshot().canonical_digest(),
+            session.mutation_epoch(),
+            session.visible_undo_steps(),
+            session.is_modified(),
+        ),
+        before
     );
 }
 

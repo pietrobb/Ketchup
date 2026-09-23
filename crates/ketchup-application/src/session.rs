@@ -81,6 +81,8 @@ pub struct DocumentSession {
     saved_digest: Option<String>,
     exact_results: ExactResultRegistry,
     topology_results: ExactResultRegistry,
+    full_exact_baseline: Option<ExactSource>,
+    incremental_exact_plan: Option<IncrementalExactPlan>,
 }
 impl Default for DocumentSession {
     fn default() -> Self {
@@ -101,6 +103,8 @@ impl DocumentSession {
             saved_digest: None,
             exact_results: ExactResultRegistry::default(),
             topology_results: ExactResultRegistry::default(),
+            full_exact_baseline: None,
+            incremental_exact_plan: None,
         }
     }
     /// Review-only and invalid input never replaces a live session.
@@ -131,6 +135,8 @@ impl DocumentSession {
             saved_digest,
             exact_results: ExactResultRegistry::default(),
             topology_results: ExactResultRegistry::default(),
+            full_exact_baseline: None,
+            incremental_exact_plan: None,
         })
     }
     /// No-clobber publication is atomic, including when another process creates the destination.
@@ -319,6 +325,9 @@ impl DocumentSession {
     pub fn topology_results(&self) -> &ExactResultRegistry {
         &self.topology_results
     }
+    pub fn incremental_exact_plan(&self) -> Option<&IncrementalExactPlan> {
+        self.incremental_exact_plan.as_ref()
+    }
     /// Observational planning. The returned proposal retains the core's revision and policy checks.
     pub fn plan_cad_program(
         &self,
@@ -375,11 +384,13 @@ impl DocumentSession {
         &mut self,
         proposal: &Proposal,
     ) -> Result<VerifiedProposalCommit, SessionError> {
+        let before = self.snapshot();
         let committed = self.mutate_with_work_recovery(|document| {
             document
                 .commit_verified_proposal(proposal)
                 .map_err(SessionError::Commit)
         })?;
+        self.update_incremental_exact_plan(&before);
         self.rebind();
         Ok(committed)
     }
@@ -402,6 +413,15 @@ impl DocumentSession {
         ]))?;
         self.apply_proposal(&proposal)
     }
+    fn update_incremental_exact_plan(&mut self, before: &Snapshot) {
+        self.incremental_exact_plan = plan_incremental_exact_evaluation(
+            before,
+            &self.snapshot(),
+            self.full_exact_baseline.as_ref(),
+        )
+        .ok();
+        self.full_exact_baseline = None;
+    }
     fn rebind(&mut self) {
         rebind_exact_results(
             &self.snapshot(),
@@ -410,19 +430,33 @@ impl DocumentSession {
         );
     }
     pub fn undo(&mut self) -> Result<Snapshot, SessionError> {
+        let before = self.snapshot();
         let snapshot =
             self.mutate_with_work_recovery(|document| document.undo().ok_or(SessionError::NoUndo))?;
+        self.update_incremental_exact_plan(&before);
         self.rebind();
         Ok(snapshot)
     }
     pub fn redo(&mut self) -> Result<Snapshot, SessionError> {
+        let before = self.snapshot();
         let snapshot =
             self.mutate_with_work_recovery(|document| document.redo().ok_or(SessionError::NoRedo))?;
+        self.update_incremental_exact_plan(&before);
         self.rebind();
         Ok(snapshot)
     }
     pub fn start_exact_evaluation_task(&mut self) -> ExactEvaluationTask {
         self.start_scoped_exact_evaluation_task(None)
+    }
+    pub fn start_incremental_exact_evaluation_task(&mut self) -> ExactEvaluationTask {
+        let scope = self.incremental_exact_plan.as_ref().and_then(|plan| {
+            if let ExactEvaluationSelection::Scoped(scope) = &plan.selection {
+                Some(scope.clone())
+            } else {
+                None
+            }
+        });
+        self.start_scoped_exact_evaluation_task(scope.as_ref())
     }
     pub fn start_scoped_exact_evaluation_task(
         &mut self,
@@ -463,10 +497,40 @@ impl DocumentSession {
         })?;
         self.exact_results = exact_results;
         self.topology_results = topology_results;
+        self.full_exact_baseline = report
+            .establishes_full_baseline()
+            .then(|| report.source.clone());
+        self.incremental_exact_plan = None;
         Ok(report)
     }
     pub fn evaluate(&mut self) -> Result<EvaluationReport, SessionError> {
         self.evaluate_with_timeout(self.settings.evaluation_timeout)
+    }
+    pub fn evaluate_incremental(&mut self) -> Result<EvaluationReport, SessionError> {
+        self.evaluate_incremental_with_timeout(self.settings.evaluation_timeout)
+    }
+    /// Evaluates the current incremental plan under one preparation + worker deadline.
+    pub fn evaluate_incremental_with_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<EvaluationReport, SessionError> {
+        let started = Instant::now();
+        if timeout.is_zero() {
+            return Err(SessionError::Evaluation(
+                "exact evaluation timed out".into(),
+            ));
+        }
+        let task = self.start_incremental_exact_evaluation_task();
+        let products = task
+            .wait(timeout.saturating_sub(started.elapsed()))
+            .map_err(SessionError::Evaluation)?;
+        if started.elapsed() >= timeout {
+            task.cancel();
+            return Err(SessionError::Evaluation(
+                "exact evaluation timed out".into(),
+            ));
+        }
+        self.publish_exact_evaluation(&task, products)
     }
     /// Evaluates with a per-call budget including preparation and waiting, checked before publication.
     /// Zero refuses evaluation without changing state, even when results are already current.

@@ -767,9 +767,12 @@ impl AssistantCadPartFeature {
 #[serde(rename_all = "snake_case")]
 pub enum AssistantCadProgramFeatureOutput {
     Definition,
+    Occurrence,
     SketchFeature,
     ConstructionFeature,
     BodyFeature,
+    AssemblyJoint,
+    DowelJoint,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Ord, PartialOrd, PartialEq, Eq, Serialize)]
@@ -807,6 +810,11 @@ impl AssistantCadProgramFeatureReference {
                         | AssistantCadEditOperation::CreateThread { .. }
                 )
             }
+            AssistantCadProgramFeatureOutput::Occurrence => matches!(
+                producer,
+                AssistantCadEditOperation::CreatePart { .. }
+                    | AssistantCadEditOperation::CreatePanel { .. }
+            ),
             AssistantCadProgramFeatureOutput::SketchFeature => matches!(
                 producer,
                 AssistantCadEditOperation::CreatePart { .. }
@@ -834,6 +842,16 @@ impl AssistantCadProgramFeatureReference {
                 }
                 _ => false,
             },
+            AssistantCadProgramFeatureOutput::AssemblyJoint => matches!(
+                producer,
+                AssistantCadEditOperation::CreateAssemblyJoint { .. }
+            ),
+            AssistantCadProgramFeatureOutput::DowelJoint => matches!(
+                producer,
+                AssistantCadEditOperation::CreateDowelJoint { .. }
+                    | AssistantCadEditOperation::CreateProgramDowelJoint { .. }
+                    | AssistantCadEditOperation::CreatePhysicalDowelJoint { .. }
+            ),
         };
         if available {
             Ok(())
@@ -854,6 +872,43 @@ impl From<u64> for AssistantCadFeatureReference {
     fn from(value: u64) -> Self {
         Self::Existing(value)
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Ord, PartialOrd, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantCadNamedProgramOutputReference {
+    pub name: String,
+    pub output: AssistantCadProgramFeatureOutput,
+}
+
+impl AssistantCadNamedProgramOutputReference {
+    fn validate_name(&self) -> Result<(), String> {
+        if self.name.trim().is_empty()
+            || self.name.len() > MAX_ASSISTANT_NAME_BYTES
+            || self.name.chars().any(char::is_control)
+        {
+            Err("assistant CAD named program output reference is invalid".to_owned())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantProgramDowelJointFace {
+    pub occurrence: AssistantCadNamedProgramOutputReference,
+    pub face_origin_local_mm: [f64; 3],
+    pub inward_unit_local: [f64; 3],
+    pub bounds_min_local_mm: [f64; 3],
+    pub bounds_max_local_mm: [f64; 3],
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantProgramDowelPhysicalHolePair {
+    pub first_pocket_feature: AssistantCadNamedProgramOutputReference,
+    pub second_pocket_feature: AssistantCadNamedProgramOutputReference,
 }
 
 impl AssistantCadFeatureReference {
@@ -1887,6 +1942,10 @@ pub enum AssistantCadEditOperation {
         profile_feature: AssistantCadProgramFeatureReference,
         depth_mm: f64,
     },
+    BindProgramOutput {
+        name: String,
+        source: AssistantCadProgramFeatureReference,
+    },
     SetDimension {
         feature_id: u64,
         constraint_id: Option<u64>,
@@ -1897,6 +1956,9 @@ pub enum AssistantCadEditOperation {
         parameter_path: String,
         value_type: AssistantCadParameterValueType,
         value: f64,
+    },
+    MakeOccurrenceUnique {
+        occurrence_id: u64,
     },
     CreateAssemblyJoint {
         parent_instance_path: AssistantInstancePath,
@@ -1914,6 +1976,32 @@ pub enum AssistantCadEditOperation {
         dowel: AssistantStandardDowel,
         #[serde(default)]
         physical_hole_pairs: Vec<AssistantDowelPhysicalHolePair>,
+    },
+    CreateProgramDowelJoint {
+        name: String,
+        first: AssistantProgramDowelJointFace,
+        second: AssistantProgramDowelJointFace,
+        first_center_local_mm: [f64; 3],
+        row_unit_first_local: [f64; 3],
+        count: u32,
+        spacing_mm: f64,
+        dowel: AssistantStandardDowel,
+        physical_hole_pairs: Vec<AssistantProgramDowelPhysicalHolePair>,
+    },
+    CreatePhysicalDowelJoint {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        joint_id: Option<u64>,
+        name: String,
+        first: AssistantDowelJointFace,
+        second: AssistantDowelJointFace,
+        first_center_local_mm: [f64; 3],
+        row_unit_first_local: [f64; 3],
+        count: u32,
+        spacing_mm: f64,
+        dowel: AssistantStandardDowel,
+    },
+    DeletePhysicalDowelJoint {
+        joint_id: u64,
     },
     SetAssemblyJointPosition {
         joint_id: u64,
@@ -2721,6 +2809,7 @@ impl AssistantCadEditProgram {
             return Err("assistant CAD edit program operation count is invalid".to_owned());
         }
         let mut generated_occurrences = 0usize;
+        let mut named_outputs = BTreeMap::<String, AssistantCadProgramFeatureOutput>::new();
         for (operation_index, operation) in self.operations.iter().enumerate() {
             let bounded_targets = match operation {
                 AssistantCadEditOperation::CreateSketch { .. }
@@ -2729,10 +2818,15 @@ impl AssistantCadEditProgram {
                 | AssistantCadEditOperation::FilletEdges { .. }
                 | AssistantCadEditOperation::ChamferEdges { .. }
                 | AssistantCadEditOperation::AppendProgramPocket { .. }
+                | AssistantCadEditOperation::BindProgramOutput { .. }
                 | AssistantCadEditOperation::SetDimension { .. }
                 | AssistantCadEditOperation::SetFeatureParameter { .. }
+                | AssistantCadEditOperation::MakeOccurrenceUnique { .. }
                 | AssistantCadEditOperation::CreateAssemblyJoint { .. }
                 | AssistantCadEditOperation::CreateDowelJoint { .. }
+                | AssistantCadEditOperation::CreateProgramDowelJoint { .. }
+                | AssistantCadEditOperation::CreatePhysicalDowelJoint { .. }
+                | AssistantCadEditOperation::DeletePhysicalDowelJoint { .. }
                 | AssistantCadEditOperation::SetAssemblyJointPosition { .. }
                 | AssistantCadEditOperation::CreateDrawing { .. }
                 | AssistantCadEditOperation::UpsertCamPlan { .. }
@@ -3093,6 +3187,18 @@ impl AssistantCadEditProgram {
                     )?;
                     0
                 }
+                AssistantCadEditOperation::BindProgramOutput { name, source } => {
+                    if name.trim().is_empty()
+                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.chars().any(char::is_control)
+                        || named_outputs.contains_key(name)
+                    {
+                        return Err("assistant CAD program output binding is invalid".to_owned());
+                    }
+                    source.validate_for(operation_index, &self.operations, source.output)?;
+                    named_outputs.insert(name.clone(), source.output);
+                    0
+                }
                 AssistantCadEditOperation::SetDimension {
                     feature_id,
                     constraint_id,
@@ -3123,6 +3229,12 @@ impl AssistantCadEditProgram {
                         || (*value_type == AssistantCadParameterValueType::Length && *value <= 0.0)
                     {
                         return Err("assistant CAD feature parameter edit is invalid".to_owned());
+                    }
+                    0
+                }
+                AssistantCadEditOperation::MakeOccurrenceUnique { occurrence_id } => {
+                    if *occurrence_id == 0 {
+                        return Err("assistant occurrence make-unique target is invalid".to_owned());
                     }
                     0
                 }
@@ -3187,6 +3299,119 @@ impl AssistantCadEditProgram {
                         || second_holes.len() != physical_hole_pairs.len()
                     {
                         return Err("assistant dowel joint creation is invalid".to_owned());
+                    }
+                    0
+                }
+                AssistantCadEditOperation::CreatePhysicalDowelJoint {
+                    joint_id,
+                    name,
+                    first,
+                    second,
+                    first_center_local_mm,
+                    row_unit_first_local,
+                    count,
+                    spacing_mm,
+                    ..
+                } => {
+                    first.instance_path.validate()?;
+                    second.instance_path.validate()?;
+                    if joint_id == &Some(0)
+                        || name.trim().is_empty()
+                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.chars().any(char::is_control)
+                        || first.instance_path == second.instance_path
+                        || !assistant_cad_vector_is_bounded(first.face_origin_local_mm)
+                        || !assistant_cad_vector_is_bounded(first.inward_unit_local)
+                        || !assistant_cad_vector_is_bounded(first.bounds_min_local_mm)
+                        || !assistant_cad_vector_is_bounded(first.bounds_max_local_mm)
+                        || !assistant_cad_vector_is_bounded(second.face_origin_local_mm)
+                        || !assistant_cad_vector_is_bounded(second.inward_unit_local)
+                        || !assistant_cad_vector_is_bounded(second.bounds_min_local_mm)
+                        || !assistant_cad_vector_is_bounded(second.bounds_max_local_mm)
+                        || !assistant_cad_vector_is_bounded(*first_center_local_mm)
+                        || !assistant_cad_vector_is_bounded(*row_unit_first_local)
+                        || !assistant_cad_vector_is_nonzero(*row_unit_first_local)
+                        || !(1..=128).contains(count)
+                        || !spacing_mm.is_finite()
+                        || *spacing_mm < 0.0
+                    {
+                        return Err("assistant physical dowel joint creation is invalid".to_owned());
+                    }
+                    0
+                }
+                AssistantCadEditOperation::DeletePhysicalDowelJoint { joint_id } => {
+                    if *joint_id == 0 {
+                        return Err("assistant physical dowel joint deletion is invalid".to_owned());
+                    }
+                    0
+                }
+                AssistantCadEditOperation::CreateProgramDowelJoint {
+                    name,
+                    first,
+                    second,
+                    first_center_local_mm,
+                    row_unit_first_local,
+                    count,
+                    spacing_mm,
+                    physical_hole_pairs,
+                    ..
+                } => {
+                    let named_output_is = |reference: &AssistantCadNamedProgramOutputReference,
+                                           expected| {
+                        reference.validate_name().is_ok()
+                            && reference.output == expected
+                            && named_outputs.get(&reference.name) == Some(&expected)
+                    };
+                    let first_holes = physical_hole_pairs
+                        .iter()
+                        .map(|pair| pair.first_pocket_feature.name.as_str())
+                        .collect::<BTreeSet<_>>();
+                    let second_holes = physical_hole_pairs
+                        .iter()
+                        .map(|pair| pair.second_pocket_feature.name.as_str())
+                        .collect::<BTreeSet<_>>();
+                    if name.trim().is_empty()
+                        || name.len() > MAX_ASSISTANT_NAME_BYTES
+                        || name.chars().any(char::is_control)
+                        || !named_output_is(
+                            &first.occurrence,
+                            AssistantCadProgramFeatureOutput::Occurrence,
+                        )
+                        || !named_output_is(
+                            &second.occurrence,
+                            AssistantCadProgramFeatureOutput::Occurrence,
+                        )
+                        || first.occurrence.name == second.occurrence.name
+                        || !assistant_cad_vector_is_bounded(first.face_origin_local_mm)
+                        || !assistant_cad_vector_is_bounded(first.inward_unit_local)
+                        || !assistant_cad_vector_is_bounded(first.bounds_min_local_mm)
+                        || !assistant_cad_vector_is_bounded(first.bounds_max_local_mm)
+                        || !assistant_cad_vector_is_bounded(second.face_origin_local_mm)
+                        || !assistant_cad_vector_is_bounded(second.inward_unit_local)
+                        || !assistant_cad_vector_is_bounded(second.bounds_min_local_mm)
+                        || !assistant_cad_vector_is_bounded(second.bounds_max_local_mm)
+                        || !assistant_cad_vector_is_bounded(*first_center_local_mm)
+                        || !assistant_cad_vector_is_bounded(*row_unit_first_local)
+                        || !assistant_cad_vector_is_nonzero(*row_unit_first_local)
+                        || !(1..=128).contains(count)
+                        || !spacing_mm.is_finite()
+                        || *spacing_mm < 0.0
+                        || physical_hole_pairs.len() != *count as usize
+                        || first_holes.len() != physical_hole_pairs.len()
+                        || second_holes.len() != physical_hole_pairs.len()
+                        || physical_hole_pairs.iter().any(|pair| {
+                            !named_output_is(
+                                &pair.first_pocket_feature,
+                                AssistantCadProgramFeatureOutput::BodyFeature,
+                            ) || !named_output_is(
+                                &pair.second_pocket_feature,
+                                AssistantCadProgramFeatureOutput::BodyFeature,
+                            )
+                        })
+                    {
+                        return Err(
+                            "assistant named-output dowel joint creation is invalid".to_owned()
+                        );
                     }
                     0
                 }

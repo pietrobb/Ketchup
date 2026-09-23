@@ -48,13 +48,13 @@ _VIEWS = ("iso", "top", "front", "zoom_fit")
 _CAPTURE_MODES = ("offscreen", "visible_viewport")
 _IMAGE_FRAMINGS = ("viewport", "selection", "detail_selection")
 _IMAGE_DETAIL_KINDS = ("edges", "faces")
-_MUTATIONS = frozenset({"batch_job_start", "batch_job_step", "batch_job_cancel", "propose", "commit", "undo", "redo", "save", "save_as", "open", "selection", "view"})
+_MUTATIONS = frozenset({"apply_and_verify", "batch_job_start", "batch_job_step", "batch_job_cancel", "propose", "commit", "undo", "redo", "save", "save_as", "open", "selection", "view"})
 # Never surface arbitrary remote text, even if it looks like an error code.
 _ERROR_CODES = frozenset({
     "invalid_request", "unauthorized", "unsupported_version", "queue_unavailable",
     "response_limit", "stale_document", "unsupported_selection_scope",
     "selection_limit", "invalid_selection", "read_only_document", "selection_changed",
-    "invalid_program", "planning_rejected", "proposal_ids_exhausted",
+    "invalid_program", "planning_rejected", "capability_gap", "proposal_ids_exhausted",
     "receipt_guard_mismatch", "proposal_not_found", "commit_rejected", "recovery_rejected",
     "undo_unavailable", "redo_unavailable", "entity_not_found", "view_unavailable",
     "unsupported_image", "unsupported_image_protocol", "invalid_params", "invalid_cursor", "stale_cursor",
@@ -65,6 +65,14 @@ _ERROR_CODES = frozenset({
     "unsupported_workset_scope", "incomplete_workset", "missing_workset_identity",
     "batch_job_limit", "batch_job_ids_exhausted", "batch_job_not_found",
     "batch_cancelled", "stale_batch_task", "batch_transaction_failed",
+    "apply_and_verify_busy", "invalid_request_id", "invalid_job_timeout",
+    "payload_encoding_rejected", "request_id_payload_mismatch",
+    "mandatory_validators_required", "candidate_rejected", "job_timeout",
+    "job_worker_unavailable", "request_cancelled", "exact_worker_unavailable",
+    "exact_worker_disconnected", "exact_worker_rejected",
+    "exact_evaluation_rejected", "exact_materialization_rejected", "exact_evaluation_incomplete", "validation_failed",
+    "validation_incomplete", "validation_report_encoding_rejected",
+    "apply_and_verify_worker_disconnected", "exact_reference_rejected",
     "save_path_required", "save_rejected", "open_rejected", "invalid_path",
 })
 _FATAL_CODES = frozenset({"invalid_request", "unauthorized", "unsupported_version", "queue_unavailable"})
@@ -75,11 +83,29 @@ ImageFraming = Literal["viewport", "selection", "detail_selection"]
 ImageDetailKind = Literal["edges", "faces"]
 
 
-class LiveBridgeError(RuntimeError):
-    """Definite server rejection; only a locally allowlisted code is exposed."""
+def _capability_gap(value: object) -> dict:
+    if (type(value) is not dict
+            or set(value) != {"kind", "capability", "operation", "retryable", "published"}
+            or value["kind"] != "capability_gap"
+            or type(value["capability"]) is not str
+            or not 1 <= len(value["capability"]) <= 128
+            or type(value["operation"]) is not str
+            or not 1 <= len(value["operation"]) <= 64
+            or value["retryable"] is not False
+            or value["published"] is not False):
+        raise ValueError("invalid capability gap")
+    allowed = set("abcdefghijklmnopqrstuvwxyz0123456789._-")
+    if any(set(value[field]) - allowed for field in ("capability", "operation")):
+        raise ValueError("invalid capability gap identifier")
+    return value
 
-    def __init__(self, code: str):
+
+class LiveBridgeError(RuntimeError):
+    """Definite server rejection; only locally allowlisted fields are exposed."""
+
+    def __init__(self, code: str, details: dict | None = None):
         self.code = code if code in _ERROR_CODES else "remote_error"
+        self.details = details if self.code == "capability_gap" else None
         super().__init__("live bridge rejected request: " + self.code)
 
 
@@ -1072,8 +1098,12 @@ class LiveSession:
         if response["ok"]:
             if response["stamp"] is None or type(response["result"]) is not dict or response["error"] is not None:
                 raise ValueError("invalid success response")
-        elif response["result"] is not None or type(response["error"]) is not str or response["error"] == "response_limit":
+        elif type(response["error"]) is not str or response["error"] == "response_limit":
             raise ValueError("invalid or unavailable response; response_limit can follow execution")
+        elif response["error"] == "capability_gap":
+            response["result"] = _capability_gap(response["result"])
+        elif response["result"] is not None:
+            raise ValueError("error response must not include a result")
         return response
 
     def _request(self, method: str, *, _deadline: float | None = None, **params) -> dict:
@@ -1131,7 +1161,7 @@ class LiveSession:
                 code = response["error"]
                 if code in _FATAL_CODES or code not in _ERROR_CODES:
                     self._close_locked()
-                raise LiveBridgeError(code)
+                raise LiveBridgeError(code, response["result"])
             return response
         finally:
             if method == "disconnect":
@@ -1150,6 +1180,38 @@ class LiveSession:
 
     def summary(self) -> dict:
         return self._request("summary")
+
+    def edit_context(self, expected: Stamp | dict, targets: list[dict]) -> dict:
+        if type(targets) is not list or not 1 <= len(targets) <= 8:
+            raise ValueError("edit context requires 1 to 8 instance paths")
+        if any(type(target) is not dict for target in targets):
+            raise ValueError("edit context targets must be instance path objects")
+        return self._request("edit_context", expected=_stamp(expected), targets=targets)
+
+    def apply_and_verify(self, expected: Stamp | dict,
+                         selection: list[int] | tuple[int, ...], request_id: str,
+                         program: dict, validators: list[str], timeout_ms: int = 10_000,
+                         save: dict | None = None) -> dict:
+        request_id = _text(request_id, 128)
+        if not request_id:
+            raise ValueError("request ID must be nonempty")
+        if type(program) is not dict or set(program) != {"operations"}:
+            raise ValueError("program must contain operations")
+        operations = program["operations"]
+        if type(operations) is not list or not 1 <= len(operations) <= 64 or any(
+                type(operation) is not dict for operation in operations):
+            raise ValueError("program must contain 1 to 64 operation objects")
+        if type(validators) is not list or not 1 <= len(validators) <= 64 or any(
+                type(validator) is not str or not validator for validator in validators):
+            raise ValueError("validators must contain 1 to 64 names")
+        _uint(timeout_ms, 1, 10_000)
+        if save is not None and type(save) is not dict:
+            raise ValueError("save must be a tagged object")
+        return self._request(
+            "apply_and_verify", request_id=request_id, expected=_stamp(expected),
+            selection=_ids(selection), program=program, validators=validators,
+            timeout_ms=timeout_ms, save=save,
+        )
 
     def query(self, expected: Stamp | dict, *, kind: Kind, limit: int = 50,
               search: str = "", definition_id: int | None = None, tag_id: int | None = None,

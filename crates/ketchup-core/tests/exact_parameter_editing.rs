@@ -789,20 +789,104 @@ fn circular_through_cut_profile_moves_and_remains_exact() {
 fn circular_cut_profile_move_outside_host_is_refused_without_mutation() {
     let document = seed_movable_circular_through_cut();
     let before = stamp(&document);
-    assert_eq!(
-        prepare_body_profile_translation(
+    for delta_mm in [[100.0, 0.0], [-100.0, 0.0], [0.0, 100.0], [0.0, -100.0]] {
+        for principal in [
+            ProposalPrincipal::ManualClient,
+            ProposalPrincipal::LocalAssistant,
+        ] {
+            assert_eq!(
+                prepare_body_profile_translation(
+                    &document,
+                    BodyProfileTranslationRequest {
+                        definition_id: DEFINITION,
+                        body_id: BodyId(1),
+                        profile_id: CUT_SKETCH,
+                        delta_mm,
+                    },
+                    principal,
+                ),
+                Err(BodyParameterEditError::InvalidCutPosition),
+                "disjoint cut {delta_mm:?}"
+            );
+            assert_eq!(stamp(&document), before);
+        }
+    }
+}
+
+#[test]
+fn brep_only_cut_translation_preserves_valid_overlap_and_rejects_disjoint_tools() {
+    for (delta_mm, valid) in [
+        ([7.0, -3.0], true),
+        ([27.0, 0.0], true), // Open edge notch, not limited to legacy enclosed holes.
+        ([100.0, 0.0], false),
+        ([-100.0, 0.0], false),
+        ([0.0, 100.0], false),
+        ([0.0, -100.0], false),
+    ] {
+        let mut document = seed_movable_circular_through_cut();
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetFeatureDimension {
+                    id: FeatureId(16),
+                    dimension: Dimension::from_decimal("12").unwrap(),
+                },
+            ]))
+            .unwrap();
+        let before = stamp(&document);
+        assert!(
+            ExactFeatureChainRequest::from_snapshot_for_body(
+                &document.current(),
+                DEFINITION,
+                BodyId(1)
+            )
+            .is_err(),
+            "unequal extrusion heights require the general BRep path"
+        );
+        let result = prepare_body_profile_translation(
             &document,
             BodyProfileTranslationRequest {
                 definition_id: DEFINITION,
                 body_id: BodyId(1),
                 profile_id: CUT_SKETCH,
-                delta_mm: [100.0, 0.0],
+                delta_mm,
             },
-            ProposalPrincipal::ManualClient,
-        ),
-        Err(BodyParameterEditError::InvalidCutPosition)
-    );
-    assert_eq!(stamp(&document), before);
+            ProposalPrincipal::LocalAssistant,
+        );
+        assert_eq!(stamp(&document), before);
+        if valid {
+            let preview = result.unwrap();
+            let candidate = document.preview_batch(preview.proposal.batch()).unwrap();
+            assert!(
+                ExactFeatureChainRequest::from_snapshot_for_body(&candidate, DEFINITION, BodyId(1))
+                    .is_err()
+            );
+            ExactBRepGraph::from_snapshot(&candidate, DEFINITION, CUT).unwrap();
+            document.commit_proposal(&preview.proposal).unwrap();
+            let FeatureKind::SegmentProfile { segments, .. } = document
+                .current()
+                .feature(CUT_SKETCH)
+                .unwrap()
+                .kind()
+                .clone()
+            else {
+                panic!("cut profile was replaced")
+            };
+            assert!(segments.iter().all(|segment| matches!(segment,
+                ProfileSegment::CircularArc { center_mm, .. }
+                    if *center_mm == [12.0 + delta_mm[0], 14.0 + delta_mm[1]]
+            )));
+            assert_eq!(document.visible_undo_steps(), before.2 + 1);
+            document.undo().unwrap();
+            assert_eq!(document.current().canonical_digest(), before.1);
+            document.redo().unwrap();
+            assert_eq!(
+                document.current().canonical_digest(),
+                candidate.canonical_digest()
+            );
+        } else {
+            assert_eq!(result, Err(BodyParameterEditError::InvalidCutPosition));
+        }
+    }
 }
 
 #[test]
@@ -1423,7 +1507,7 @@ fn advanced_chamfer_parameters_preview_recompute_undo_and_schema_76_round_trip()
     document.commit_proposal(&preview.proposal).unwrap();
     assert_eq!(document.visible_undo_steps(), before.2 + 1);
     let edited_digest = document.current().canonical_digest();
-    assert_eq!(persistence::CURRENT_SCHEMA, 91);
+    assert_eq!(persistence::CURRENT_SCHEMA, 93);
     let bytes = persistence::save(&document.current());
     let reopened = persistence::load(&bytes).unwrap().snapshot();
     assert_eq!(reopened.canonical_digest(), edited_digest);

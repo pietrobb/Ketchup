@@ -15,6 +15,11 @@ use crate::assembly_joint::{
     AssemblyJointId, AssemblyJointKind, AssemblyJointLimits, AssemblyMotionDriver,
     AssemblyMotionStudy, AssemblyMotionStudyId,
 };
+use crate::assembly_recipe::{
+    AssemblyRecipe, RecipeEditScope, RecipeFaceRef, RecipeJoinery, RecipeKey, RecipeOwnedFeature,
+    RecipeParameter, RecipeParameterUnit, RecipePart, RecipePartMobility, RecipeRelation,
+    RecipeRelationKind, RecognizedRecipeFeatureKind,
+};
 use crate::cam::{
     CamCutParameters, CamPlan, CamPlanId, CamSetup, CamStock, CamTarget, CamTool, CamToolKind,
     CamUnits, CamWorkOffset,
@@ -170,7 +175,8 @@ const CAM_PLAN_SCHEMA: u16 = 89;
 const DOWEL_JOINERY_SCHEMA: u16 = 90;
 const PRODUCTION_CODE_SCHEMA: u16 = 91;
 const DOWEL_PHYSICAL_HOLE_BINDING_SCHEMA: u16 = 92;
-pub const CURRENT_SCHEMA: u16 = DOWEL_PHYSICAL_HOLE_BINDING_SCHEMA;
+const ASSEMBLY_RECIPE_SCHEMA: u16 = 93;
+pub const CURRENT_SCHEMA: u16 = ASSEMBLY_RECIPE_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -278,6 +284,7 @@ struct ProductSchemaCapabilities {
     dowel_joinery: bool,
     production_codes: bool,
     dowel_physical_hole_bindings: bool,
+    assembly_recipe: bool,
 }
 
 impl ProductSchemaCapabilities {
@@ -370,6 +377,7 @@ impl ProductSchemaCapabilities {
         dowel_joinery: false,
         production_codes: false,
         dowel_physical_hole_bindings: false,
+        assembly_recipe: false,
     };
 
     const fn current(schema: u16) -> Self {
@@ -462,6 +470,7 @@ impl ProductSchemaCapabilities {
             dowel_joinery: schema >= DOWEL_JOINERY_SCHEMA,
             production_codes: schema >= PRODUCTION_CODE_SCHEMA,
             dowel_physical_hole_bindings: schema >= DOWEL_PHYSICAL_HOLE_BINDING_SCHEMA,
+            assembly_recipe: schema >= ASSEMBLY_RECIPE_SCHEMA,
         }
     }
 }
@@ -1037,7 +1046,8 @@ fn save_with_schema(snapshot: &Snapshot, schema: u16) -> Vec<u8> {
         && (!product.cam_plans.is_empty()
             || !product.instance_transform_overrides.is_empty()
             || !product.dowel_joints.is_empty()
-            || !product.production_codes.is_empty())
+            || !product.production_codes.is_empty()
+            || product.assembly_recipe.is_some())
     {
         push_u32(&mut payload, product.cam_plans.len() as u32);
         for plan in product.cam_plans.values() {
@@ -1047,7 +1057,8 @@ fn save_with_schema(snapshot: &Snapshot, schema: u16) -> Vec<u8> {
     if capabilities.nested_instance_transforms
         && (!product.instance_transform_overrides.is_empty()
             || !product.dowel_joints.is_empty()
-            || !product.production_codes.is_empty())
+            || !product.production_codes.is_empty()
+            || product.assembly_recipe.is_some())
     {
         push_u32(
             &mut payload,
@@ -1059,7 +1070,9 @@ fn save_with_schema(snapshot: &Snapshot, schema: u16) -> Vec<u8> {
         }
     }
     if capabilities.dowel_joinery
-        && (!product.dowel_joints.is_empty() || !product.production_codes.is_empty())
+        && (!product.dowel_joints.is_empty()
+            || !product.production_codes.is_empty()
+            || product.assembly_recipe.is_some())
     {
         push_u32(&mut payload, product.dowel_joints.len() as u32);
         for joint in product.dowel_joints.values() {
@@ -1071,12 +1084,20 @@ fn save_with_schema(snapshot: &Snapshot, schema: u16) -> Vec<u8> {
         }
     }
 
-    if capabilities.production_codes && !product.production_codes.is_empty() {
+    if capabilities.production_codes
+        && (!product.production_codes.is_empty() || product.assembly_recipe.is_some())
+    {
         push_u32(&mut payload, product.production_codes.len() as u32);
         for (path, code) in &product.production_codes {
             write_instance_path(&mut payload, path);
             push_string(&mut payload, code);
         }
+    }
+    if capabilities.assembly_recipe
+        && let Some(recipe) = product.assembly_recipe.as_deref()
+    {
+        push_u8(&mut payload, 1);
+        write_assembly_recipe(&mut payload, recipe);
     }
     let mut manifest = Vec::new();
     push_u64(&mut manifest, payload.len() as u64);
@@ -1092,6 +1113,102 @@ fn save_with_schema(snapshot: &Snapshot, schema: u16) -> Vec<u8> {
     bytes.extend_from_slice(&manifest);
     bytes.extend_from_slice(&payload);
     bytes
+}
+
+fn write_assembly_recipe(bytes: &mut Vec<u8>, recipe: &AssemblyRecipe) {
+    push_string(bytes, recipe.schema());
+    push_string(bytes, recipe.key().as_str());
+    push_u32(bytes, recipe.parts.len() as u32);
+    for part in recipe.parts.values() {
+        push_string(bytes, part.key.as_str());
+        write_instance_path(bytes, &part.instance_path);
+        push_u64(bytes, part.definition_id.0);
+        push_transform(bytes, part.placement);
+        push_u8(
+            bytes,
+            match part.mobility {
+                RecipePartMobility::Fixed => 1,
+                RecipePartMobility::Movable => 2,
+            },
+        );
+        match &part.edit_scope {
+            RecipeEditScope::Occurrence(path) => {
+                push_u8(bytes, 1);
+                write_instance_path(bytes, path);
+            }
+            RecipeEditScope::SharedDefinition(id) => {
+                push_u8(bytes, 2);
+                push_u64(bytes, id.0);
+            }
+        }
+        push_u32(bytes, part.parameters.len() as u32);
+        for (key, parameter) in &part.parameters {
+            push_string(bytes, key.as_str());
+            push_u64(bytes, parameter.value.to_bits());
+            push_u8(
+                bytes,
+                match parameter.unit {
+                    RecipeParameterUnit::Millimetres => 1,
+                    RecipeParameterUnit::Degrees => 2,
+                    RecipeParameterUnit::Scalar => 3,
+                },
+            );
+            push_u8(bytes, u8::from(parameter.target.is_some()));
+            if let Some(target) = &parameter.target {
+                push_u64(bytes, target.feature_id.0);
+                push_string(bytes, target.path.as_str());
+                push_u8(
+                    bytes,
+                    match target.value_type {
+                        ParameterValueType::Length => 1,
+                        ParameterValueType::Angle => 2,
+                        ParameterValueType::Scalar => 3,
+                    },
+                );
+            }
+        }
+    }
+    push_u32(bytes, recipe.relations.len() as u32);
+    for relation in recipe.relations.values() {
+        push_string(bytes, relation.key.as_str());
+        push_u8(
+            bytes,
+            match relation.kind {
+                RecipeRelationKind::Contact => 1,
+                RecipeRelationKind::Coincident => 2,
+            },
+        );
+        for face in [&relation.first, &relation.second] {
+            push_string(bytes, face.part.as_str());
+            push_string(bytes, &face.role);
+        }
+    }
+    push_u32(bytes, recipe.joinery.len() as u32);
+    for joinery in recipe.joinery.values() {
+        push_string(bytes, joinery.key.as_str());
+        push_string(bytes, joinery.first_part.as_str());
+        push_string(bytes, joinery.second_part.as_str());
+        push_u64(bytes, joinery.dowel_joint_id.0);
+    }
+    push_u32(bytes, recipe.owned_features.len() as u32);
+    for owned in recipe.owned_features.values() {
+        push_string(bytes, owned.key.as_str());
+        push_string(bytes, owned.part.as_str());
+        push_u64(bytes, owned.feature_id.0);
+        push_u8(
+            bytes,
+            match owned.kind {
+                RecognizedRecipeFeatureKind::Profile => 1,
+                RecognizedRecipeFeatureKind::Extrusion => 2,
+                RecognizedRecipeFeatureKind::Pad => 7,
+                RecognizedRecipeFeatureKind::Pocket => 3,
+                RecognizedRecipeFeatureKind::Workplane => 4,
+                RecognizedRecipeFeatureKind::Sketch => 5,
+                RecognizedRecipeFeatureKind::SketchPocket => 6,
+            },
+        );
+        push_string(bytes, &owned.canonical_fingerprint);
+    }
 }
 
 fn write_dowel_joint(
@@ -4271,6 +4388,7 @@ fn load_document(
             | CAM_PLAN_SCHEMA
             | DOWEL_JOINERY_SCHEMA
             | PRODUCTION_CODE_SCHEMA
+            | DOWEL_PHYSICAL_HOLE_BINDING_SCHEMA
             | CURRENT_SCHEMA
     ) {
         return Err(PersistenceError::UnsupportedSchema(schema));
@@ -6296,6 +6414,173 @@ fn read_dowel_joint(
     })
 }
 
+fn read_recipe_key(reader: &mut Reader<'_>) -> Result<RecipeKey, PersistenceError> {
+    RecipeKey::new(reader.string()?).map_err(|error| {
+        PersistenceError::InvalidCanonicalData(CanonicalError::AssemblyRecipe(error))
+    })
+}
+
+fn read_assembly_recipe(reader: &mut Reader<'_>) -> Result<AssemblyRecipe, PersistenceError> {
+    let schema = reader.string()?;
+    let key = read_recipe_key(reader)?;
+    let mut parts = BTreeMap::new();
+    for _ in 0..reader.count_with_limit(16_384)? {
+        let part_key = read_recipe_key(reader)?;
+        let instance_path = read_instance_path(reader)?;
+        let definition_id = DefinitionId(reader.u64()?);
+        let placement = reader.transform()?;
+        let mobility = match reader.u8()? {
+            1 => RecipePartMobility::Fixed,
+            2 => RecipePartMobility::Movable,
+            value => return Err(PersistenceError::InvalidRecipeValue(value)),
+        };
+        let edit_scope = match reader.u8()? {
+            1 => RecipeEditScope::Occurrence(read_instance_path(reader)?),
+            2 => RecipeEditScope::SharedDefinition(DefinitionId(reader.u64()?)),
+            value => return Err(PersistenceError::InvalidRecipeValue(value)),
+        };
+        let mut parameters = BTreeMap::new();
+        for _ in 0..reader.count_with_limit(16_384)? {
+            let parameter_key = read_recipe_key(reader)?;
+            let value = f64::from_bits(reader.u64()?);
+            let unit = match reader.u8()? {
+                1 => RecipeParameterUnit::Millimetres,
+                2 => RecipeParameterUnit::Degrees,
+                3 => RecipeParameterUnit::Scalar,
+                value => return Err(PersistenceError::InvalidRecipeValue(value)),
+            };
+            let target = if reader.boolean()? {
+                let feature_id = FeatureId(reader.u64()?);
+                let path = ParameterPath::new(reader.string()?)
+                    .map_err(|_| PersistenceError::InvalidParameterPath)?;
+                let value_type = match reader.u8()? {
+                    1 => ParameterValueType::Length,
+                    2 => ParameterValueType::Angle,
+                    3 => ParameterValueType::Scalar,
+                    value => return Err(PersistenceError::InvalidParameterValueType(value)),
+                };
+                Some(FeatureParameterTarget {
+                    feature_id,
+                    path,
+                    value_type,
+                })
+            } else {
+                None
+            };
+            if parameters
+                .insert(
+                    parameter_key.clone(),
+                    RecipeParameter {
+                        value,
+                        unit,
+                        target,
+                    },
+                )
+                .is_some()
+            {
+                return Err(PersistenceError::InvalidCanonicalData(
+                    CanonicalError::AssemblyRecipe(
+                        crate::assembly_recipe::AssemblyRecipeError::DuplicateKey(parameter_key),
+                    ),
+                ));
+            }
+        }
+        let part = RecipePart {
+            key: part_key.clone(),
+            instance_path,
+            definition_id,
+            placement,
+            mobility,
+            edit_scope,
+            parameters,
+        };
+        if parts.insert(part_key.clone(), part).is_some() {
+            return Err(PersistenceError::InvalidCanonicalData(
+                CanonicalError::AssemblyRecipe(
+                    crate::assembly_recipe::AssemblyRecipeError::DuplicateKey(part_key),
+                ),
+            ));
+        }
+    }
+    let mut relations = BTreeMap::new();
+    for _ in 0..reader.count_with_limit(16_384)? {
+        let relation_key = read_recipe_key(reader)?;
+        let kind = match reader.u8()? {
+            1 => RecipeRelationKind::Contact,
+            2 => RecipeRelationKind::Coincident,
+            value => return Err(PersistenceError::InvalidRecipeValue(value)),
+        };
+        let first = RecipeFaceRef {
+            part: read_recipe_key(reader)?,
+            role: reader.string()?,
+        };
+        let second = RecipeFaceRef {
+            part: read_recipe_key(reader)?,
+            role: reader.string()?,
+        };
+        let relation = RecipeRelation {
+            key: relation_key.clone(),
+            kind,
+            first,
+            second,
+        };
+        if relations.insert(relation_key.clone(), relation).is_some() {
+            return Err(PersistenceError::InvalidCanonicalData(
+                CanonicalError::AssemblyRecipe(
+                    crate::assembly_recipe::AssemblyRecipeError::DuplicateKey(relation_key),
+                ),
+            ));
+        }
+    }
+    let mut joinery = BTreeMap::new();
+    for _ in 0..reader.count_with_limit(16_384)? {
+        let joinery_key = read_recipe_key(reader)?;
+        let item = RecipeJoinery {
+            key: joinery_key.clone(),
+            first_part: read_recipe_key(reader)?,
+            second_part: read_recipe_key(reader)?,
+            dowel_joint_id: DowelJointId(reader.u64()?),
+        };
+        if joinery.insert(joinery_key.clone(), item).is_some() {
+            return Err(PersistenceError::InvalidCanonicalData(
+                CanonicalError::AssemblyRecipe(
+                    crate::assembly_recipe::AssemblyRecipeError::DuplicateKey(joinery_key),
+                ),
+            ));
+        }
+    }
+    let mut owned_features = BTreeMap::new();
+    for _ in 0..reader.count_with_limit(16_384)? {
+        let owned_key = read_recipe_key(reader)?;
+        let owned = RecipeOwnedFeature {
+            key: owned_key.clone(),
+            part: read_recipe_key(reader)?,
+            feature_id: FeatureId(reader.u64()?),
+            kind: match reader.u8()? {
+                1 => RecognizedRecipeFeatureKind::Profile,
+                2 => RecognizedRecipeFeatureKind::Extrusion,
+                7 => RecognizedRecipeFeatureKind::Pad,
+                3 => RecognizedRecipeFeatureKind::Pocket,
+                4 => RecognizedRecipeFeatureKind::Workplane,
+                5 => RecognizedRecipeFeatureKind::Sketch,
+                6 => RecognizedRecipeFeatureKind::SketchPocket,
+                value => return Err(PersistenceError::InvalidRecipeValue(value)),
+            },
+            canonical_fingerprint: reader.string()?,
+        };
+        if owned_features.insert(owned_key.clone(), owned).is_some() {
+            return Err(PersistenceError::InvalidCanonicalData(
+                CanonicalError::AssemblyRecipe(
+                    crate::assembly_recipe::AssemblyRecipeError::DuplicateKey(owned_key),
+                ),
+            ));
+        }
+    }
+    AssemblyRecipe::new(schema, key, parts, relations, joinery, owned_features).map_err(|error| {
+        PersistenceError::InvalidCanonicalData(CanonicalError::AssemblyRecipe(error))
+    })
+}
+
 fn read_product(
     reader: &mut Reader<'_>,
     capabilities: ProductSchemaCapabilities,
@@ -7588,6 +7873,12 @@ fn read_product(
             }
         }
     }
+    if capabilities.assembly_recipe && !reader.is_finished() {
+        product.assembly_recipe = match reader.u8()? {
+            1 => Some(Arc::new(read_assembly_recipe(reader)?)),
+            value => return Err(PersistenceError::InvalidRecipeValue(value)),
+        };
+    }
     if !capabilities.body_contract {
         crate::document::migrate_legacy_body_contract(&mut product)?;
     }
@@ -7695,6 +7986,7 @@ pub enum PersistenceError {
     InvalidParameterSlot(u8),
     InvalidParameterPath,
     InvalidParameterValueType(u8),
+    InvalidRecipeValue(u8),
     InvalidPersistentDimensionTarget(u8),
     InvalidDimensionDisplayUnit(u8),
     InvalidClearanceOwner(u8),
@@ -7829,6 +8121,9 @@ impl fmt::Display for PersistenceError {
             Self::InvalidParameterPath => formatter.write_str("feature parameter path is invalid"),
             Self::InvalidParameterValueType(value) => {
                 write!(formatter, "feature parameter value type {value} is invalid")
+            }
+            Self::InvalidRecipeValue(value) => {
+                write!(formatter, "assembly recipe enum value {value} is invalid")
             }
             Self::InvalidPersistentDimensionTarget(value) => {
                 write!(formatter, "persistent dimension target {value} is invalid")
