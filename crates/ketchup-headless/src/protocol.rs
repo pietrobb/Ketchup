@@ -711,14 +711,25 @@ impl Server {
             })),
             "modified":self.session.is_modified()})
     }
+    /// Optional optimistic-concurrency check: every supplied stamp field must
+    /// match; omitted fields are not checked.
     fn guard(&self, p: &Map<String, Value>) -> Result<()> {
-        let revision = uint(p, "expected_revision")?;
-        let digest = string(p, "expected_digest")?;
-        let mutation_epoch = uint(p, "expected_mutation_epoch")?;
+        let revision = p
+            .contains_key("expected_revision")
+            .then(|| uint(p, "expected_revision"))
+            .transpose()?;
+        let digest = p
+            .contains_key("expected_digest")
+            .then(|| string(p, "expected_digest"))
+            .transpose()?;
+        let mutation_epoch = p
+            .contains_key("expected_mutation_epoch")
+            .then(|| uint(p, "expected_mutation_epoch"))
+            .transpose()?;
         let s = self.session.snapshot();
-        if revision != s.revision_id()
-            || digest != s.canonical_digest()
-            || mutation_epoch != self.session.mutation_epoch()
+        if revision.is_some_and(|revision| revision != s.revision_id())
+            || digest.is_some_and(|digest| digest != s.canonical_digest())
+            || mutation_epoch.is_some_and(|epoch| epoch != self.session.mutation_epoch())
         {
             return Err(Error {
                 code: "stale_state".into(),
@@ -818,7 +829,7 @@ impl Server {
                 json!({"methods":METHODS.iter().map(|name| json!({"name":name,"mutates":method_requires_guard(name)})).collect::<Vec<_>>(),
                 "cad_program_schema":serde_json::from_str::<Value>(include_str!(concat!(env!("OUT_DIR"),"/cad-program-schema.json"))).expect("build-generated schema"),
                 "bounds":{"max_line_bytes":MAX_LINE_BYTES,"max_output_bytes":MAX_LINE_BYTES,"max_selection":100,"max_operations":64,"max_batch_jobs":MAX_BATCH_JOBS,"max_verify_jobs":MAX_VERIFY_JOBS,"evaluation_timeout_ms":{"default":30000,"min":1,"max":300000}},
-                "mutation_preconditions":["expected_revision","expected_digest","expected_mutation_epoch"],"units":"mm","transform":"row-major 4x4 local occurrence transform","transactions":"one apply = one atomic CAD program; newly allocated Definition, Sketch and body references use zero-based earlier operation_index plus a typed output, never guessed IDs","protocol":PROTOCOL}),
+                "optional_mutation_preconditions":["expected_revision","expected_digest","expected_mutation_epoch"],"units":"mm","transform":"row-major 4x4 local occurrence transform","transactions":"one apply = one atomic CAD program; newly allocated Definition, Sketch and body references use zero-based earlier operation_index plus a typed output, never guessed IDs","protocol":PROTOCOL}),
             ),
             "state" => Ok(self.state_result()),
             "production_codes" => Ok(self.production_codes()),
@@ -1591,9 +1602,9 @@ mod tests {
                 .unwrap();
             assert_eq!(advertised["mutates"], true, "{name}");
             assert_eq!(
-                request(&mut server, name, json!({}))["error"]["code"],
-                "invalid_params",
-                "{name} is guarded and must advertise that precondition"
+                request(&mut server, name, json!({"expected_revision":999}))["error"]["code"],
+                "stale_state",
+                "{name} checks a supplied stamp before running"
             );
         }
     }
@@ -1674,6 +1685,14 @@ mod tests {
         let after = request(&mut server, "state", json!({}))["result"]["state"].clone();
         assert_eq!(after, undone["result"]["state"]);
         assert_eq!(after["redo_steps"], 1);
+
+        // The stamp is optional: an unstamped apply goes straight through.
+        let unstamped = request(
+            &mut server,
+            "apply",
+            json!({"program":program,"selection":[]}),
+        );
+        assert_eq!(unstamped["result"]["state"]["undo_steps"], 1, "{unstamped}");
     }
 
     #[test]
@@ -1793,7 +1812,7 @@ mod tests {
             caps["result"]["cad_program_schema"]["$defs"]["AssistantCadEditOperation"]["oneOf"]
                 .as_array()
                 .unwrap();
-        assert_eq!(variants.len(), 37);
+        assert_eq!(variants.len(), 40);
         for operation in [
             "append_feature",
             "create_panel",

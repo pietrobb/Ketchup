@@ -5,22 +5,26 @@ use ketchup_core::assistant_sidecar::AssistantInstancePath;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GuardedEditContext {
-    expected_document_id: u64,
-    expected_revision: u64,
-    expected_digest: String,
-    expected_mutation_epoch: u64,
+    #[serde(default)]
+    expected_document_id: Option<u64>,
+    #[serde(default)]
+    expected_revision: Option<u64>,
+    #[serde(default)]
+    expected_digest: Option<String>,
+    #[serde(default)]
+    expected_mutation_epoch: Option<u64>,
     targets: Vec<AssistantInstancePath>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BatchJobStart {
-    #[serde(rename = "expected_revision")]
-    _expected_revision: u64,
-    #[serde(rename = "expected_digest")]
-    _expected_digest: String,
-    #[serde(rename = "expected_mutation_epoch")]
-    _expected_mutation_epoch: u64,
+    #[serde(default, rename = "expected_revision")]
+    _expected_revision: Option<u64>,
+    #[serde(default, rename = "expected_digest")]
+    _expected_digest: Option<String>,
+    #[serde(default, rename = "expected_mutation_epoch")]
+    _expected_mutation_epoch: Option<u64>,
     workset_handle: String,
     operation: OccurrenceBatchOperation,
 }
@@ -34,24 +38,24 @@ struct BatchJobHandle {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BatchJobStep {
-    #[serde(rename = "expected_revision")]
-    _expected_revision: u64,
-    #[serde(rename = "expected_digest")]
-    _expected_digest: String,
-    #[serde(rename = "expected_mutation_epoch")]
-    _expected_mutation_epoch: u64,
+    #[serde(default, rename = "expected_revision")]
+    _expected_revision: Option<u64>,
+    #[serde(default, rename = "expected_digest")]
+    _expected_digest: Option<String>,
+    #[serde(default, rename = "expected_mutation_epoch")]
+    _expected_mutation_epoch: Option<u64>,
     handle: String,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct VerifyJobStart {
-    #[serde(rename = "expected_revision")]
-    _expected_revision: u64,
-    #[serde(rename = "expected_digest")]
-    _expected_digest: String,
-    #[serde(rename = "expected_mutation_epoch")]
-    _expected_mutation_epoch: u64,
+    #[serde(default, rename = "expected_revision")]
+    _expected_revision: Option<u64>,
+    #[serde(default, rename = "expected_digest")]
+    _expected_digest: Option<String>,
+    #[serde(default, rename = "expected_mutation_epoch")]
+    _expected_mutation_epoch: Option<u64>,
     scope: Option<Vec<VerifyProducerScope>>,
     #[serde(default = "default_verify_timeout_ms")]
     timeout_ms: u64,
@@ -341,10 +345,18 @@ impl Server {
                     let request: GuardedEditContext = serde_json::from_value(params)
                         .map_err(|e| Error::invalid(e.to_string()))?;
                     let actual_epoch = self.session.mutation_epoch();
-                    if request.expected_document_id != snapshot.document_id().0
-                        || request.expected_revision != snapshot.revision_id()
-                        || request.expected_digest != snapshot.canonical_digest()
-                        || request.expected_mutation_epoch != actual_epoch
+                    if request
+                        .expected_document_id
+                        .is_some_and(|id| id != snapshot.document_id().0)
+                        || request
+                            .expected_revision
+                            .is_some_and(|revision| revision != snapshot.revision_id())
+                        || request
+                            .expected_digest
+                            .is_some_and(|digest| digest != snapshot.canonical_digest())
+                        || request
+                            .expected_mutation_epoch
+                            .is_some_and(|epoch| epoch != actual_epoch)
                     {
                         return Err(Error {
                             code: "stale_state".into(),

@@ -17,7 +17,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     while let Some(arg) = args.next() {
         if arg == "--help" || arg == "-h" {
             eprintln!(
-                "Usage: ketchup-headless --stdio [--worker PATH]\nJSON-lines ketchup.headless.v1 on stdin/stdout; diagnostics on stderr.\nDefault worker: sibling ketchup-exact-worker. No GUI or assistant sidecar.\nMutations require expected_revision + expected_digest + expected_mutation_epoch from state.\nEach apply is one atomic CAD program, not a whole-script transaction."
+                "Usage: ketchup-headless --stdio [--worker PATH]\nJSON-lines ketchup.headless.v1 on stdin/stdout; diagnostics on stderr.\nDefault worker: sibling ketchup-exact-worker. No GUI or assistant sidecar.\nMutations may carry expected_revision / expected_digest / expected_mutation_epoch; supplied fields must match.\nEach apply is one atomic CAD program, not a whole-script transaction."
             );
             return Ok(());
         } else if arg == "--stdio" && !stdio {

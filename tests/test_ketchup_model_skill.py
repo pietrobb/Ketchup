@@ -109,7 +109,7 @@ def test_registration_schema_and_real_decorator_calls(monkeypatch):
         assert "plan_mode" not in schema["input_schema"]["properties"]
         json.dumps(schema)
     required = registered["KetchupEdit"].to_dict()["input_schema"]["required"]
-    assert {"expected_revision", "expected_digest", "expected_mutation_epoch"} <= set(required)
+    assert set(required) == {"handle", "action"}
     async def scenario():
         assert (await call(registered, "KetchupDiscover"))["result"]["backend_compact"]
         for name in ("KetchupSession", "KetchupInspect", "KetchupEdit", "KetchupVerify"):
@@ -121,22 +121,20 @@ def test_registration_schema_and_real_decorator_calls(monkeypatch):
     asyncio.run(scenario())
 
 
-def test_preconditions_check_observed_and_fresh_identity():
+def test_optional_preconditions_check_only_supplied_fields():
     identity = {"document_id": 1, "revision": 2, "canonical_digest": "abc", "mutation_epoch": 7}
-    entry = {"document_id": 1, "observed": identity}
-    skill._precondition(entry, identity, 2, "abc", 7)
+    skill._precondition(identity, 2, "abc", 7)
+    skill._precondition(identity, -1, "", -1)
+    skill._precondition(identity, 2, "", -1)
     for fresh, rev, digest, epoch in (
-        (identity, -1, "", -1),
+        (identity, -2, "", -1),
         ({**identity, "revision": 3}, 2, "abc", 7),
-        ({**identity, "document_id": 4}, 2, "abc", 7),
         ({**identity, "mutation_epoch": 8}, 2, "abc", 7),
         (identity, 2, "old", 7),
+        (identity, -1, "old", -1),
     ):
         with pytest.raises(skill.Rejection):
-            skill._precondition(entry, fresh, rev, digest, epoch)
-    entry["observed"] = None
-    with pytest.raises(skill.Rejection):
-        skill._precondition(entry, identity, 2, "abc", 7)
+            skill._precondition(fresh, rev, digest, epoch)
 
 
 def test_summary_preserves_authoritative_recovery_provenance():
@@ -293,6 +291,8 @@ def test_tool_lifecycle_stale_save_close_and_bounds(monkeypatch, doubles, tmp_pa
         stale = await call(registered, "KetchupEdit", handle=handle, action="apply", program={"operations": []}, **pre)
         assert stale["error"]["code"] == "stale_precondition"
         assert len(doubles[0].doc.calls) == 1
+        unstamped = await call(registered, "KetchupEdit", handle=handle, action="apply", program={"operations": []})
+        assert unstamped["ok"] and len(doubles[0].doc.calls) == 2
         current = (await call(registered, "KetchupInspect", handle=handle))["result"]
         pre = expected(current)
         destination = tmp_path / "existing.ketchup"
@@ -437,7 +437,8 @@ def test_batch_tool_guards_steps_but_allows_status_and_cancel(monkeypatch, doubl
         opened = (await call(registered, "KetchupSession", action="new"))["result"]
         handle = opened["handle"]
         assert (await call(registered, "KetchupBatch", handle=handle, action="start",
-                           workset_handle="opaque-workset", operation=operation))["error"]["code"] == "precondition_required"
+                           workset_handle="opaque-workset", operation=operation,
+                           expected_revision=opened["identity"]["revision"] + 1))["error"]["code"] == "stale_precondition"
         started = await call(registered, "KetchupBatch", handle=handle, action="start",
                              workset_handle="opaque-workset", operation=operation, **expected(opened))
         cancelled_handle = started["result"]["job_handle"]
