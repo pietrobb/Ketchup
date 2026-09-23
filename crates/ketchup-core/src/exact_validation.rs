@@ -1030,6 +1030,25 @@ impl GeneralBodyParticipant {
         &self.instance_path
     }
 
+    /// True when this body is no longer than `max_length_mm` and its oriented
+    /// box contains `point_world_mm`, i.e. a fastener seated at that point.
+    #[must_use]
+    pub fn is_fastener_at(
+        &self,
+        point_world_mm: [f64; 3],
+        max_length_mm: f64,
+        tolerance_mm: f64,
+    ) -> bool {
+        let Ok(obb) = general_body_obb(self) else {
+            return false;
+        };
+        let offset = std::array::from_fn(|axis| point_world_mm[axis] - obb.center[axis]);
+        (0..3).all(|axis| {
+            obb.half_extents[axis] * 2.0 <= max_length_mm + tolerance_mm
+                && vector_dot(offset, obb.axes[axis]).abs() <= obb.half_extents[axis] + tolerance_mm
+        })
+    }
+
     #[must_use]
     pub fn source(&self) -> &GeneralBodySource {
         &self.source
@@ -1327,6 +1346,9 @@ impl GravitySupportContact {
 pub struct GravitySupportInput {
     participants: Vec<GravitySupportParticipant>,
     exact_contacts: Vec<GravitySupportContact>,
+    /// Verified rigid connections (joinery, fixed joints): a supported part
+    /// carries every part rigidly attached to it, whatever the direction.
+    rigid_connections: Vec<(InstancePath, InstancePath)>,
     gravity_vector_m_s2: [f64; 3],
     gravity_direction: [f64; 3],
     gravity_magnitude_m_s2: f64,
@@ -1350,6 +1372,7 @@ impl GravitySupportInput {
         Ok(Self {
             participants,
             exact_contacts: Vec::new(),
+            rigid_connections: Vec::new(),
             gravity_vector_m_s2,
             gravity_direction: gravity_vector_m_s2
                 .map(|component| component / gravity_magnitude_m_s2),
@@ -1376,6 +1399,44 @@ impl GravitySupportInput {
     #[must_use]
     pub fn exact_contacts(&self) -> &[GravitySupportContact] {
         &self.exact_contacts
+    }
+
+    #[must_use]
+    pub fn with_rigid_connections(
+        mut self,
+        connections: impl IntoIterator<Item = (InstancePath, InstancePath)>,
+    ) -> Self {
+        let mut connections = connections
+            .into_iter()
+            .filter(|(left, right)| left != right)
+            .map(|(left, right)| {
+                if left <= right {
+                    (left, right)
+                } else {
+                    (right, left)
+                }
+            })
+            .collect::<Vec<_>>();
+        connections.sort();
+        connections.dedup();
+        self.rigid_connections = connections;
+        self
+    }
+
+    #[must_use]
+    pub fn rigid_connections(&self) -> &[(InstancePath, InstancePath)] {
+        &self.rigid_connections
+    }
+
+    fn rigidly_connected(&self, left: &InstancePath, right: &InstancePath) -> bool {
+        let key = if left <= right {
+            (left, right)
+        } else {
+            (right, left)
+        };
+        self.rigid_connections
+            .binary_search_by(|(a, b)| (a, b).cmp(&key))
+            .is_ok()
     }
 
     #[must_use]
@@ -1662,6 +1723,11 @@ pub fn gravity_support_input_bytes(input: &GravitySupportInput) -> Vec<u8> {
         push_instance_path(&mut output, &contact.right);
         output.extend_from_slice(&contact.common_contact_area_mm2_bits.to_le_bytes());
     }
+    output.extend_from_slice(&(input.rigid_connections().len() as u64).to_le_bytes());
+    for (left, right) in input.rigid_connections() {
+        push_instance_path(&mut output, left);
+        push_instance_path(&mut output, right);
+    }
     output
 }
 
@@ -1669,7 +1735,14 @@ pub fn gravity_support_input_bytes(input: &GravitySupportInput) -> Vec<u8> {
 enum GravitySupportSource {
     ExplicitGrounding,
     ProvenContact(usize),
+    RigidConnection(usize),
     UnprovenContact(usize),
+}
+
+impl GravitySupportSource {
+    const fn is_proven(&self) -> bool {
+        !matches!(self, Self::UnprovenContact(_))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1697,25 +1770,35 @@ fn evaluate_gravity_support(
     loop {
         let mut changed = false;
         for candidate_index in 0..participants.len() {
-            if matches!(
-                support[candidate_index],
-                Some(
-                    GravitySupportSource::ExplicitGrounding
-                        | GravitySupportSource::ProvenContact(_)
-                )
-            ) {
+            if support[candidate_index]
+                .as_ref()
+                .is_some_and(GravitySupportSource::is_proven)
+            {
                 continue;
             }
             let candidate = &participants[candidate_index].body;
-            let proven_supporter = (0..participants.len()).find(|&supporter_index| {
-                supporter_index != candidate_index
-                    && matches!(
-                        support[supporter_index],
-                        Some(
-                            GravitySupportSource::ExplicitGrounding
-                                | GravitySupportSource::ProvenContact(_)
-                        )
+            let proven = |index: usize| {
+                index != candidate_index
+                    && support[index]
+                        .as_ref()
+                        .is_some_and(GravitySupportSource::is_proven)
+                    && participants[candidate_index].support_group
+                        == participants[index].support_group
+            };
+            if let Some(supporter_index) = (0..participants.len()).find(|&supporter_index| {
+                proven(supporter_index)
+                    && input.rigidly_connected(
+                        candidate.instance_path(),
+                        participants[supporter_index].body.instance_path(),
                     )
+            }) {
+                support[candidate_index] =
+                    Some(GravitySupportSource::RigidConnection(supporter_index));
+                changed = true;
+                continue;
+            }
+            let proven_supporter = (0..participants.len()).find(|&supporter_index| {
+                proven(supporter_index)
                     && participants[candidate_index].support_group
                         == participants[supporter_index].support_group
                     && body_support_contact(
@@ -1766,6 +1849,7 @@ fn evaluate_gravity_support(
         let evidence_class = match &source {
             Some(
                 GravitySupportSource::ProvenContact(supporter_index)
+                | GravitySupportSource::RigidConnection(supporter_index)
                 | GravitySupportSource::UnprovenContact(supporter_index),
             ) => EvidenceClass::weakest(
                 [
@@ -1798,6 +1882,17 @@ fn evaluate_gravity_support(
                     participant.support_group,
                     instance_path_label(&participants[supporter_index].body.instance_path),
                     GRAVITY_SUPPORT_EXACT_BOX_CONTACT_METHOD_V1
+                ),
+            ),
+            Some(GravitySupportSource::RigidConnection(supporter_index)) => (
+                "gravity.supported-connection",
+                DiagnosticSeverity::Information,
+                format!(
+                    "body={}; gravity_direction={:?}; support_group={}; rigidly_connected_to={}",
+                    instance_path_label(&participant.body.instance_path),
+                    input.gravity_direction(),
+                    participant.support_group,
+                    instance_path_label(&participants[supporter_index].body.instance_path),
                 ),
             ),
             Some(GravitySupportSource::UnprovenContact(supporter_index)) => {
@@ -1861,6 +1956,8 @@ fn evaluate_gravity_support(
             "gravity uses the explicit typed non-zero vector supplied in the validator input"
                 .to_owned(),
             "only explicitly grounded participants seed support propagation".to_owned(),
+            "a supported part carries every part joined to it by verified joinery or a fixed/revolute joint"
+                .to_owned(),
             "support propagation requires same-group positive bearing area proven by native BRep face intersection or exact analytic box contact; OBB-only contact remains unresolved"
                 .to_owned(),
         ],
@@ -2430,6 +2527,62 @@ mod tests {
         assert_eq!(report.state, ValidationState::Failed);
         assert_eq!(report.diagnostics[1].code, "gravity.unsupported");
         assert!(report.unresolved_conditions.is_empty());
+    }
+
+    #[test]
+    fn gravity_support_propagates_through_rigid_connections() {
+        let snapshot = crate::document::DocumentStore::new().current();
+        let path = |id| InstancePath::root(crate::document::OccurrenceId(id));
+        let validator_input = GravitySupportInput::new(
+            vec![
+                gravity_participant(1, [0.0, 0.0, 0.0], [20.0, 400.0, 500.0], true),
+                // A shelf hanging on the side panel, not resting on anything.
+                gravity_participant(2, [20.0, 0.0, 250.0], [500.0, 400.0, 270.0], false),
+                // A dowel seated across the side/shelf interface.
+                gravity_participant(3, [5.0, 100.0, 256.0], [35.0, 108.0, 264.0], false),
+                // An unrelated floating part.
+                gravity_participant(4, [600.0, 0.0, 250.0], [700.0, 100.0, 270.0], false),
+            ],
+            [0.0, 0.0, -9.81],
+        )
+        .unwrap()
+        .with_rigid_connections([
+            (path(2), path(1)),
+            (path(3), path(1)),
+            (path(3), path(2)),
+        ]);
+        let validator = BuiltinGravitySupportValidator::default();
+        let policy = gravity_support_validation_policy();
+        let input = gravity_support_input_bytes(&validator_input);
+        let invocation = ValidationInvocation::bind(
+            &snapshot,
+            validator.descriptor(),
+            &policy,
+            Vec::new(),
+            &input,
+        );
+
+        let report = validator.invoke(ValidationExecution {
+            snapshot: &snapshot,
+            invocation,
+            policy: &policy,
+            input: &validator_input,
+        });
+
+        assert_eq!(report.state, ValidationState::Failed);
+        assert_eq!(report.diagnostics[1].code, "gravity.supported-connection");
+        assert_eq!(report.diagnostics[2].code, "gravity.supported-connection");
+        assert_eq!(report.diagnostics[3].code, "gravity.unsupported");
+        assert!(validator_input.participants()[2].body.is_fastener_at(
+            [20.0, 104.0, 260.0],
+            30.0,
+            0.01
+        ));
+        assert!(!validator_input.participants()[0].body.is_fastener_at(
+            [20.0, 104.0, 260.0],
+            30.0,
+            0.01
+        ));
     }
 
     #[test]

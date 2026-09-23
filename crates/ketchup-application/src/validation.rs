@@ -1,6 +1,6 @@
 use ketchup_core::assembly_joint::AssemblyJointKind;
 use ketchup_core::assembly_recipe::{RecipePartMobility, RecipeRelationKind};
-use ketchup_core::document::{OccurrenceId, Snapshot};
+use ketchup_core::document::{InstancePath, OccurrenceId, Snapshot};
 use ketchup_core::exact_product::ExactResultRegistry;
 use ketchup_core::exact_validation::*;
 use ketchup_core::joinery::project_dowel_joint_contract;
@@ -3335,6 +3335,83 @@ pub use crate::collision::{
     fabrication_collision_validation_with_worker, scoped_collision_report_with_worker,
 };
 
+/// Connections through which a supported part carries another: verified
+/// physical dowel joints (board to board, and every dowel seated in the joint
+/// to both boards) plus fixed and revolute assembly joints. Prismatic and
+/// helical joints are left out because they may move along gravity.
+fn gravity_rigid_connections(
+    snapshot: &Snapshot,
+    participants: &[GravitySupportParticipant],
+) -> Vec<(InstancePath, InstancePath)> {
+    const DOWEL_SEAT_TOLERANCE_MM: f64 = 0.01;
+    let bodies_of = |occurrence: OccurrenceId| {
+        participants
+            .iter()
+            .map(|participant| participant.body.instance_path())
+            .filter(move |path| path.root_occurrence() == occurrence)
+    };
+    let mut connections = Vec::new();
+    let mut connect_roots = |first: OccurrenceId, second: OccurrenceId| {
+        for left in bodies_of(first) {
+            for right in bodies_of(second) {
+                connections.push((left.clone(), right.clone()));
+            }
+        }
+    };
+    for joint in snapshot.assembly_joints() {
+        if matches!(
+            joint.kind(),
+            AssemblyJointKind::Fixed | AssemblyJointKind::Revolute { .. }
+        ) {
+            connect_roots(joint.parent_occurrence_id(), joint.child_occurrence_id());
+        }
+    }
+    let mut dowel_seats = Vec::new();
+    for joint in snapshot.dowel_joints() {
+        if joint.physical_hole_pairs.is_none() {
+            continue;
+        }
+        let Ok(projection) = project_dowel_joint_contract(snapshot, joint) else {
+            continue;
+        };
+        if !projection
+            .pairs
+            .iter()
+            .all(|pair| pair.physical_probe_coincidence.is_some())
+        {
+            continue;
+        }
+        let first = joint.first.instance_path.root_occurrence();
+        let second = joint.second.instance_path.root_occurrence();
+        connect_roots(first, second);
+        for pair in &projection.pairs {
+            dowel_seats.push((
+                pair.first.shared_center_world_mm,
+                joint.dowel.length_mm,
+                first,
+                second,
+            ));
+        }
+    }
+    for participant in participants {
+        let dowel = participant.body.instance_path();
+        for (center, length_mm, first, second) in &dowel_seats {
+            if dowel.root_occurrence() == *first
+                || dowel.root_occurrence() == *second
+                || !participant
+                    .body
+                    .is_fastener_at(*center, *length_mm, DOWEL_SEAT_TOLERANCE_MM)
+            {
+                continue;
+            }
+            for board in bodies_of(*first).chain(bodies_of(*second)) {
+                connections.push((dowel.clone(), board.clone()));
+            }
+        }
+    }
+    connections
+}
+
 pub(crate) fn assistant_validation_context_base(
     snapshot: &Snapshot,
     exact_results: &ExactResultRegistry,
@@ -3574,7 +3651,11 @@ pub(crate) fn assistant_validation_context_base(
         .and_then(|vector_m_s2| {
             GravitySupportInput::new(gravity_participants.clone(), vector_m_s2).ok()
         })
-        .map(|input| input.with_exact_contacts(exact_gravity_contacts.to_vec()));
+        .map(|input| {
+            input
+                .with_exact_contacts(exact_gravity_contacts.to_vec())
+                .with_rigid_connections(gravity_rigid_connections(snapshot, &gravity_participants))
+        });
     // Collision coverage and BRep evidence are independent of the bounded
     // envelope participants used by the remaining structural validators.
     let gravity_report = selection

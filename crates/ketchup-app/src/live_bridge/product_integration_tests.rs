@@ -27,9 +27,12 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
     assert!(app.open_document_path(&source));
     // The fixture was saved without grounding; gravity support needs to know
     // which parts stand on the floor (both sides, bottom shelf, drawer front).
+    // The drawer box (8-11) rides on runners the fixture does not model, so it
+    // is declared carried as well. Everything else must be carried by contact
+    // or by the verified dowel joints.
     app.document
         .apply_batch(&CommandBatch::new(
-            [2, 3, 4, 7]
+            [2, 3, 4, 7, 8, 9, 10, 11]
                 .map(|id| CanonicalCommand::SetOccurrenceGrounded {
                     id: OccurrenceId(id),
                     grounded: true,
