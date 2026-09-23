@@ -1,6 +1,8 @@
 //! Snapshot-bound solid collision evidence, independent of render tessellation.
 #[path = "collision_bounds.rs"]
 mod bounds;
+#[path = "collision_hull.rs"]
+mod hull;
 use crate::validation::{AssistantValidationSelection, assistant_validation_context_base};
 use ketchup_core::document::{
     BodyId, DefinitionId, FeatureId, InstancePath, InstancePathStep, OccurrenceId, SceneOccurrence,
@@ -23,7 +25,7 @@ use ketchup_interaction::spatial::{
     SpatialQueryError, overlapping_bounds_for_sources_with_cancellation, overlapping_bounds_pairs,
 };
 use ketchup_scheduler::pair_query::{MAX_EXACT_PAIR_CANDIDATES, MAX_EXACT_PAIR_GRAPHS};
-use ketchup_scheduler::{ExactPairCandidate, ExactPairRelation, ExactWorkerSupervisor};
+use ketchup_scheduler::{ExactPairCandidate, ExactPairRelation};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -270,7 +272,8 @@ pub fn fabrication_collision_validation_with_worker(
             diagnostics,
             assumptions: vec![
                 "certified world bounds reject only disjoint pairs".to_owned(),
-                "every retained pair is evaluated by native BRep common volume".to_owned(),
+                "non-penetrating panel hulls decide their pairs analytically".to_owned(),
+                "every other retained pair is evaluated by native BRep common volume".to_owned(),
             ],
             unresolved_conditions,
         },
@@ -303,6 +306,27 @@ fn issue(left: &Body, right: &Body, evidence: Value) -> Value {
         "left_name": left.occurrence.occurrence_name, "right_name": right.occurrence.occurrence_name,
         "left_instance_path": path_json(&left.occurrence.instance_path), "right_instance_path": path_json(&right.occurrence.instance_path),
         "left": identity(left), "right": identity(right), "evidence": evidence})
+}
+
+fn add_contact_area(
+    areas: &mut BTreeMap<(InstancePath, InstancePath), f64>,
+    bodies: &[Body],
+    left: usize,
+    right: usize,
+    area_mm2: f64,
+) {
+    let (left, right) = (
+        &bodies[left].occurrence.instance_path,
+        &bodies[right].occurrence.instance_path,
+    );
+    if left != right {
+        let key = if left <= right {
+            (left.clone(), right.clone())
+        } else {
+            (right.clone(), left.clone())
+        };
+        *areas.entry(key).or_default() += area_mm2;
+    }
 }
 
 fn collision_report(
@@ -883,10 +907,39 @@ fn collision_report(
         let mut candidates = candidates.into_iter().collect::<Vec<_>>();
         candidates
             .sort_by_key(|(left, right)| (left / graph_block, right / graph_block, *left, *right));
+        // Panel hulls decide every pair whose boxes do not penetrate, at any
+        // rotation; only penetrating hulls (e.g. dowel in hole) need OCCT.
+        let local_hulls = graphs.iter().map(hull::local_hull).collect::<Vec<_>>();
+        let world_hulls = bodies
+            .iter()
+            .map(|body| {
+                local_hulls
+                    .get(body.graph?)
+                    .copied()
+                    .flatten()?
+                    .world(*body.occurrence.transform.matrix())
+            })
+            .collect::<Vec<_>>();
+        let mut hull_decided = 0usize;
         for (left, right) in candidates {
             let (Some(l), Some(r)) = (bodies[left].graph, bodies[right].graph) else {
                 continue;
             };
+            if let (Some(a), Some(b)) = (&world_hulls[left], &world_hulls[right]) {
+                let area_mm2 = match hull::relate(a, b, TolerancePolicy::default().epsilon_mm()) {
+                    hull::HullRelation::Overlapping => None,
+                    hull::HullRelation::Separated => Some(0.0),
+                    hull::HullRelation::Touching { area_mm2 } => Some(area_mm2),
+                };
+                if let Some(area_mm2) = area_mm2 {
+                    checked += 1;
+                    hull_decided += 1;
+                    if collect_gravity_contacts {
+                        add_contact_area(&mut exact_contact_areas, &bodies, left, right, area_mm2);
+                    }
+                    continue;
+                }
+            }
             pairs.push((
                 left,
                 right,
@@ -898,6 +951,7 @@ fn collision_report(
                 },
             ));
         }
+        report["hull_decided_pair_count"] = json!(hull_decided);
         let path = worker_path.or_else(|| {
             crate::evaluation::exact_worker_candidates()
                 .into_iter()
@@ -914,10 +968,7 @@ fn collision_report(
                 let cancel_worker = cancelled.clone();
                 let (tx, rx) = mpsc::channel();
                 std::thread::spawn(move || {
-                    let mut supervisor = match ExactWorkerSupervisor::spawn_with_cancellation(
-                        path,
-                        &cancel_worker,
-                    ) {
+                    let mut supervisor = match crate::worker_pool::checkout(&path, &cancel_worker) {
                         Ok(supervisor) => supervisor,
                         Err(error) => {
                             let _ = tx.send(Err(format!("exact_worker_unavailable: {error}")));
@@ -968,6 +1019,7 @@ fn collision_report(
                         }
                         offset = end;
                     }
+                    supervisor.release();
                 });
                 loop {
                     match rx.recv_timeout(timeout.saturating_sub(started.elapsed())) {
@@ -979,19 +1031,13 @@ fn collision_report(
                                 if left != right {
                                     checked += 1;
                                     if collect_gravity_contacts {
-                                        let left_path =
-                                            bodies[left].occurrence.instance_path.clone();
-                                        let right_path =
-                                            bodies[right].occurrence.instance_path.clone();
-                                        if left_path != right_path {
-                                            let key = if left_path <= right_path {
-                                                (left_path, right_path)
-                                            } else {
-                                                (right_path, left_path)
-                                            };
-                                            *exact_contact_areas.entry(key).or_default() +=
-                                                result.common_contact_area_mm2;
-                                        }
+                                        add_contact_area(
+                                            &mut exact_contact_areas,
+                                            &bodies,
+                                            left,
+                                            right,
+                                            result.common_contact_area_mm2,
+                                        );
                                     }
                                     if result.relation == ExactPairRelation::Penetrating {
                                         issues.push(issue(&bodies[left], &bodies[right], json!({"method": "occt_brep_common_volume", "common_volume_mm3": result.common_volume_mm3, "distance_mm": result.distance_mm})));
@@ -1100,6 +1146,7 @@ fn collision_report(
         report["total_pair_count"] = json!(0);
         report["broad_phase_rejected_pair_count"] = json!(0);
         report["narrow_phase_pair_count"] = json!(0);
+        report["hull_decided_pair_count"] = json!(0);
         report["issue_count"] = json!(0);
         report["issues"] = json!([]);
         report["not_evaluated"] = json!([]);

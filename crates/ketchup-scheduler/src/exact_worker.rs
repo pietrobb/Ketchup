@@ -2124,7 +2124,7 @@ fn exact_brep_graph_response(
         Ok(sources) => sources,
         Err(response) => return response,
     };
-    let output = match evaluate_exact_brep_graph(backend, graph, &sources) {
+    let output = match evaluate_exact_brep_graph_cached(backend, graph, &sources) {
         Ok(output) => output,
         Err(error) => return geometry_error_response(&error),
     };
@@ -2678,6 +2678,48 @@ fn simulate_cam_geometry(
         result_fingerprint: String::new(),
     };
     Ok(evidence)
+}
+
+// Terminal outputs of validated graphs, keyed by the recomputed graph digest
+// (which covers imported source hashes). Only read-only consumers use it:
+// topology evidence and non-destructive pair queries.
+const MAX_CACHED_GRAPH_OUTPUTS: usize = 512;
+
+#[derive(Default)]
+struct GraphOutputCache {
+    order: std::collections::VecDeque<String>,
+    outputs: BTreeMap<String, std::rc::Rc<ExactOpOutput>>,
+}
+
+thread_local! {
+    static GRAPH_OUTPUT_CACHE: std::cell::RefCell<GraphOutputCache> =
+        std::cell::RefCell::default();
+}
+
+fn evaluate_exact_brep_graph_cached(
+    backend: &ExactBackend,
+    graph: &ExactBRepGraph,
+    imported_sources: &[(String, tempfile::NamedTempFile)],
+) -> Result<std::rc::Rc<ExactOpOutput>, ketchup_exact::GeometryError> {
+    if let Some(output) =
+        GRAPH_OUTPUT_CACHE.with(|cache| cache.borrow().outputs.get(&graph.graph_digest).cloned())
+    {
+        return Ok(output);
+    }
+    let output = std::rc::Rc::new(evaluate_exact_brep_graph(backend, graph, imported_sources)?);
+    GRAPH_OUTPUT_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.order.len() >= MAX_CACHED_GRAPH_OUTPUTS
+            && let Some(oldest) = cache.order.pop_front()
+        {
+            cache.outputs.remove(&oldest);
+        }
+        cache.order.push_back(graph.graph_digest.clone());
+        cache
+            .outputs
+            .insert(graph.graph_digest.clone(), std::rc::Rc::clone(&output));
+    });
+    Ok(output)
 }
 
 fn evaluate_exact_brep_graph(

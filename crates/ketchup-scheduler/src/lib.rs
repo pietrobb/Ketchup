@@ -4226,6 +4226,17 @@ impl ExactWorkerSupervisor {
         })
     }
 
+    /// Canonical worker executable this supervisor was verified against.
+    pub fn executable(&self) -> &Path {
+        &self.executable
+    }
+
+    /// Whether the worker process is alive and its executable is unchanged.
+    pub fn is_reusable(&mut self) -> bool {
+        matches!(self.client.child.try_wait(), Ok(None))
+            && verify_exact_worker_identity(&self.executable, &self.executable_sha256).is_ok()
+    }
+
     fn spawn_verified_client(
         executable: &Path,
         executable_sha256: &str,

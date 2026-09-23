@@ -16,6 +16,7 @@ mod sketch;
 pub mod topology;
 pub mod transforms;
 pub mod validation;
+mod worker_pool;
 pub mod workflow_trace;
 
 pub use planner::{

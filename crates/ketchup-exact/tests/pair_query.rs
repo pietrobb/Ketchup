@@ -108,6 +108,63 @@ fn native_pair_reports_positive_face_area_but_not_edge_contact() {
 }
 
 #[test]
+fn native_pair_contact_area_excludes_holes_in_the_shared_face() {
+    let backend = ExactBackend::new();
+    let panel = backend
+        .make_box(BoxSpec {
+            origin_mm: Point3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            size_mm: Size3 {
+                x: 10.0,
+                y: 10.0,
+                z: 1.0,
+            },
+        })
+        .unwrap();
+    let drill = backend
+        .extrude_circle(CircleExtrudeSpec {
+            center_mm: [5.0, 5.0],
+            radius_mm: 1.0,
+            height_mm: 0.5,
+        })
+        .unwrap();
+    let drilled = backend
+        .boolean_bodies(&panel.body, &drill.body, ExactBodyBooleanOperation::Cut)
+        .unwrap();
+    let support = backend
+        .make_box(BoxSpec {
+            origin_mm: Point3 {
+                x: 0.0,
+                y: 0.0,
+                z: -1.0,
+            },
+            size_mm: Size3 {
+                x: 10.0,
+                y: 10.0,
+                z: 1.0,
+            },
+        })
+        .unwrap();
+    let expected = 100.0 - std::f64::consts::PI;
+    for (left, right) in [
+        (&drilled.body, &support.body),
+        (&support.body, &drilled.body),
+    ] {
+        let result = backend.query_body_pair(left, right, 1e-7).unwrap();
+        assert_eq!(result.relation, ExactPairRelation::Touching, "{result:?}");
+        assert_eq!(result.common_volume_mm3, 0.0);
+        assert_eq!(result.distance_mm, 0.0);
+        assert!(
+            (result.common_contact_area_mm2 - expected).abs() < 1e-6,
+            "{result:?}"
+        );
+    }
+}
+
+#[test]
 fn native_pair_detects_two_millimetre_gap_and_penetration_on_opposite_sides_of_contact() {
     let backend = ExactBackend::new();
     let support = backend

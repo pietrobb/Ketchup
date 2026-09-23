@@ -7,6 +7,7 @@
 #include <BOPAlgo_Splitter.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
+#include <Precision.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_FindPlane.hxx>
 #include <GeomLib_IsPlanarSurface.hxx>
@@ -6893,13 +6894,36 @@ NativePairQuery query_body_pair_native(
       result.status = STATUS_OK;
       return result;
     }
-    // Exact geometry bounds include shape tolerances, never render triangulation.
+    // Tight geometric bounds, never render triangulation. If they overlap no
+    // thicker than OCCT's coincidence tolerance along some axis, the solids can
+    // only share faces, edges or vertices: Boolean Common would report zero
+    // volume, so it is skipped and contact is measured on that slab only.
     Bnd_Box left_bounds, right_bounds;
-    BRepBndLib::AddOptimal(left.impl().shape, left_bounds, false, true);
-    BRepBndLib::AddOptimal(right.impl().shape, right_bounds, false, true);
+    BRepBndLib::AddOptimal(left.impl().shape, left_bounds, false, false);
+    BRepBndLib::AddOptimal(right.impl().shape, right_bounds, false, false);
+    int slab_axis = -1;
+    double slab_low = 0.0;
+    double slab_high = 0.0;
+    if (!left_bounds.IsVoid() && !right_bounds.IsVoid()) {
+      double left_min[3], left_max[3], right_min[3], right_max[3];
+      left_bounds.Get(left_min[0], left_min[1], left_min[2], left_max[0], left_max[1], left_max[2]);
+      right_bounds.Get(
+          right_min[0], right_min[1], right_min[2], right_max[0], right_max[1], right_max[2]);
+      for (int axis = 0; axis < 3 && slab_axis < 0; ++axis) {
+        const double low = std::max(left_min[axis], right_min[axis]);
+        const double high = std::min(left_max[axis], right_max[axis]);
+        // Optimal bounds still carry ~Confusion() per side, so an apparent overlap up
+        // to 3 * Confusion() is a true overlap of at most the contact tolerance.
+        if (high - low <= 3.0 * Precision::Confusion()) {
+          slab_axis = axis;
+          slab_low = std::min(low, high);
+          slab_high = std::max(low, high);
+        }
+      }
+    }
     double volume = 0.0;
     double contact_area = 0.0;
-    if (left_bounds.IsVoid() || right_bounds.IsVoid() || !left_bounds.IsOut(right_bounds)) {
+    if (slab_axis < 0) {
       // Non-destructive: the same native shapes are reused by subsequent pairs.
       BRepAlgoAPI_Common common;
       NCollection_List<TopoDS_Shape> arguments, tools;
@@ -6937,51 +6961,63 @@ NativePairQuery query_body_pair_native(
       result.status = STATUS_OK;
       return result;
     }
-    // Bounds reject Boolean work only; preserve exact distance and contact tolerance.
-    // The two-shape constructor already performs the distance computation.
-    BRepExtrema_DistShapeShape distance(left.impl().shape, right.impl().shape);
-    if (!distance.IsDone() || distance.NbSolution() == 0 ||
-        !std::isfinite(distance.Value()) || distance.Value() < 0.0) {
-      result.diagnostic = "OCCT pair volume or distance query failed";
-      return result;
-    }
-    if (distance.Value() == 0.0) {
-      struct ContactFace {
-        TopoDS_Shape shape;
-        Bnd_Box bounds;
-        gp_Dir normal;
-        bool planar;
-      };
-      std::vector<ContactFace> right_faces;
-      for (TopExp_Explorer face(right.impl().shape, TopAbs_FACE); face.More(); face.Next()) {
+    struct ContactFace {
+      TopoDS_Shape shape;
+      Bnd_Box bounds;
+      gp_Dir normal;
+      bool planar;
+    };
+    // With a slab, only planar faces perpendicular to its axis and lying inside
+    // it can share area; every other face pair has zero-area contact.
+    const auto contact_faces = [&](const TopoDS_Shape& shape) {
+      std::vector<ContactFace> faces;
+      for (TopExp_Explorer face(shape, TopAbs_FACE); face.More(); face.Next()) {
         Bnd_Box bounds;
         BRepBndLib::AddOptimal(face.Current(), bounds, false, true);
         BRepAdaptor_Surface surface(TopoDS::Face(face.Current()));
         const bool planar = surface.GetType() == GeomAbs_Plane;
-        right_faces.push_back({face.Current(), bounds,
-                               planar ? surface.Plane().Axis().Direction() : gp_Dir(0, 0, 1),
-                               planar});
-      }
-      for (TopExp_Explorer left_faces(left.impl().shape, TopAbs_FACE); left_faces.More();
-           left_faces.Next()) {
-        Bnd_Box left_face_bounds;
-        BRepBndLib::AddOptimal(left_faces.Current(), left_face_bounds, false, true);
-        BRepAdaptor_Surface left_surface(TopoDS::Face(left_faces.Current()));
-        const bool left_planar = left_surface.GetType() == GeomAbs_Plane;
-        const gp_Dir left_normal = left_planar ? left_surface.Plane().Axis().Direction() : gp_Dir(0, 0, 1);
-        for (const auto& right_face : right_faces) {
-          if (left_face_bounds.IsVoid() || right_face.bounds.IsVoid() ||
-              left_face_bounds.IsOut(right_face.bounds) ||
-              (left_planar && right_face.planar &&
-               std::abs(left_normal.Dot(right_face.normal)) < 1.0 - 1e-10)) {
+        const gp_Dir normal = planar ? surface.Plane().Axis().Direction() : gp_Dir(0, 0, 1);
+        if (slab_axis >= 0) {
+          const gp_Dir axis(slab_axis == 0 ? 1.0 : 0.0, slab_axis == 1 ? 1.0 : 0.0,
+                            slab_axis == 2 ? 1.0 : 0.0);
+          Bnd_Box geometry;
+          BRepBndLib::AddOptimal(face.Current(), geometry, false, false);
+          // Flatness is proven by the face lying inside the slab, whatever its surface
+          // type: extruded profile edges are flat SurfaceOfExtrusion faces, not planes.
+          if (geometry.IsVoid() || (planar && std::abs(normal.Dot(axis)) < 1.0 - 1e-10)) {
             continue;
           }
-          BRepAlgoAPI_Common face_common(left_faces.Current(), right_face.shape);
+          double minimum[3], maximum[3];
+          geometry.Get(minimum[0], minimum[1], minimum[2], maximum[0], maximum[1], maximum[2]);
+          if (minimum[slab_axis] < slab_low - Precision::Confusion() ||
+              maximum[slab_axis] > slab_high + Precision::Confusion()) {
+            continue;
+          }
+        }
+        faces.push_back({face.Current(), bounds, normal, planar});
+      }
+      return faces;
+    };
+    const auto measure_contact_area = [&]() -> bool {
+      const std::vector<ContactFace> left_faces = contact_faces(left.impl().shape);
+      if (left_faces.empty()) {
+        return true;
+      }
+      const std::vector<ContactFace> right_faces = contact_faces(right.impl().shape);
+      for (const auto& left_face : left_faces) {
+        for (const auto& right_face : right_faces) {
+          if (left_face.bounds.IsVoid() || right_face.bounds.IsVoid() ||
+              left_face.bounds.IsOut(right_face.bounds) ||
+              (left_face.planar && right_face.planar &&
+               std::abs(left_face.normal.Dot(right_face.normal)) < 1.0 - 1e-10)) {
+            continue;
+          }
+          BRepAlgoAPI_Common face_common(left_face.shape, right_face.shape);
           face_common.SetNonDestructive(true);
           face_common.Build();
           if (!face_common.IsDone() || face_common.HasErrors()) {
             result.diagnostic = "OCCT pair face-contact query failed";
-            return result;
+            return false;
           }
           if (face_common.Shape().IsNull()) {
             continue;
@@ -6991,16 +7027,42 @@ NativePairQuery query_body_pair_native(
           const double area = face_properties.Mass();
           if (!std::isfinite(area) || area < 0.0) {
             result.diagnostic = "OCCT pair face-contact area is invalid";
-            return result;
+            return false;
           }
           contact_area += area;
         }
       }
+      return true;
+    };
+    // Positive shared face area already proves zero distance.
+    if (slab_axis >= 0) {
+      if (!measure_contact_area()) {
+        return result;
+      }
+      if (contact_area > 0.0) {
+        result.common_volume_mm3 = 0.0;
+        result.common_contact_area_mm2 = contact_area;
+        result.distance_mm = 0.0;
+        result.status = STATUS_OK;
+        return result;
+      }
+    }
+    // The two-shape constructor already performs the distance computation.
+    BRepExtrema_DistShapeShape distance(left.impl().shape, right.impl().shape);
+    if (!distance.IsDone() || distance.NbSolution() == 0 ||
+        !std::isfinite(distance.Value()) || distance.Value() < 0.0) {
+      result.diagnostic = "OCCT pair volume or distance query failed";
+      return result;
+    }
+    // Touching within the contact tolerance still shares face area.
+    if (distance.Value() <= Precision::Confusion() && slab_axis < 0 && !measure_contact_area()) {
+      return result;
     }
     result.common_volume_mm3 = volume;
     result.common_contact_area_mm2 = contact_area;
-    // Zero-volume common results still require the exact distance query.
-    result.distance_mm = distance.Value();
+    // Zero-volume common results still require the exact distance query;
+    // positive shared face area proves zero distance, as in the slab path.
+    result.distance_mm = contact_area > 0.0 ? 0.0 : distance.Value();
     result.status = STATUS_OK;
   } catch (const Standard_Failure& failure) {
     result.status = STATUS_BACKEND_EXCEPTION;

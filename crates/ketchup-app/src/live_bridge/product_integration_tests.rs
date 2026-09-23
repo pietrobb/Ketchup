@@ -25,6 +25,18 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
         app.exact_worker_attempted = true;
     }
     assert!(app.open_document_path(&source));
+    // The fixture was saved without grounding; gravity support needs to know
+    // which parts stand on the floor (both sides, bottom shelf, drawer front).
+    app.document
+        .apply_batch(&CommandBatch::new(
+            [2, 3, 4, 7]
+                .map(|id| CanonicalCommand::SetOccurrenceGrounded {
+                    id: OccurrenceId(id),
+                    grounded: true,
+                })
+                .to_vec(),
+        ))
+        .unwrap();
     let context = egui::Context::default();
     let baseline_deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while app.exact_source.as_ref()

@@ -18,8 +18,7 @@ use ketchup_core::import::{
 use ketchup_core::persistence::ContainerData;
 use ketchup_core::sketch::{WorkplaneSpec, WorkplaneSupport};
 use ketchup_scheduler::{
-    ExactWorkerSupervisor, MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES,
-    MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES,
+    MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES, MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
@@ -751,7 +750,7 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                     let worker = executable
                         .ok_or_else(|| "exact worker unavailable".to_owned())
                         .and_then(|path| {
-                            ExactWorkerSupervisor::spawn_with_cancellation(path, &worker_cancelled)
+                            crate::worker_pool::checkout(&path, &worker_cancelled)
                                 .map_err(|error| error.to_string())
                         });
                     match worker {
@@ -773,6 +772,7 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                             worker_completed_producers.store(total_producers, Ordering::Release);
                         }
                         Ok(mut worker) => {
+                            let mut worker_healthy = true;
                             for (key, request) in requests {
                                 if worker_cancelled.load(Ordering::Acquire) {
                                     break;
@@ -1043,6 +1043,7 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                                             "exact evaluation rejected definition {}: {error}",
                                             definition_id.0
                                         );
+                                        worker_healthy = false;
                                         if topology_only {
                                             entry.topology =
                                                 EvidenceStatus::Failed { reason: error };
@@ -1076,6 +1077,9 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                                     topology_packages.push(Arc::new(package));
                                 }
                                 worker_completed_producers.fetch_add(1, Ordering::AcqRel);
+                            }
+                            if worker_healthy && !worker_cancelled.load(Ordering::Acquire) {
+                                worker.release();
                             }
                         }
                     }

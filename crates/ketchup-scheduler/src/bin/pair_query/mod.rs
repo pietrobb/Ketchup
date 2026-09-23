@@ -1,13 +1,23 @@
-//! Ephemeral native bodies owned only for one supervisor pair-query batch.
+//! Batch-scoped slots over the worker's digest-keyed graph outputs; pair results
+//! are memoized by graph digests, placements and tolerance.
 use super::*;
 use crate::pair_query::{EXACT_PAIR_IDENTITY, MAX_EXACT_PAIR_CANDIDATES, MAX_EXACT_PAIR_GRAPHS};
 
 type TransformKey = (usize, [u64; 16]);
+/// Graph digests, both placements and tolerance fully determine a pair result.
+type PairResultKey = (String, String, [u64; 16], [u64; 16], u64);
+const MAX_CACHED_PAIR_RESULTS: usize = 100_000;
+
+thread_local! {
+    // Results are pure functions of their key, so they survive batch boundaries.
+    static PAIR_RESULT_CACHE: std::cell::RefCell<BTreeMap<PairResultKey, [u64; 3]>> =
+        std::cell::RefCell::default();
+}
 
 #[derive(Default)]
 pub(super) struct PairQuerySession {
     active: bool,
-    bodies: Vec<(String, ketchup_exact::ExactBody)>,
+    bodies: Vec<(String, std::rc::Rc<ketchup_exact::ExactOpOutput>)>,
     transformed: BTreeMap<TransformKey, ketchup_exact::ExactBody>,
     queries: usize,
 }
@@ -52,7 +62,7 @@ impl PairQuerySession {
                 return Err("ERR invalid_request".to_owned());
             }
             let output = backend
-                .transform_body(body, &matrix)
+                .transform_body(&body.body, &matrix)
                 .map_err(|error| geometry_error_response(&error))?;
             self.transformed.insert(key, output.body);
         }
@@ -60,7 +70,7 @@ impl PairQuerySession {
     }
 
     fn body(&self, slot: usize, key: Option<TransformKey>) -> &ketchup_exact::ExactBody {
-        key.map_or_else(|| &self.bodies[slot].1, |key| &self.transformed[&key])
+        key.map_or_else(|| &self.bodies[slot].1.body, |key| &self.transformed[&key])
     }
 
     fn execute(&mut self, backend: &ExactBackend, request: &str, fields: &[&str]) -> String {
@@ -95,12 +105,12 @@ impl PairQuerySession {
                     Ok(sources) => sources,
                     Err(response) => return response,
                 };
-                let output = match evaluate_exact_brep_graph(backend, &graph, &sources) {
+                let output = match evaluate_exact_brep_graph_cached(backend, &graph, &sources) {
                     Ok(output) => output,
                     Err(error) => return geometry_error_response(&error),
                 };
                 let slot = self.bodies.len();
-                self.bodies.push((graph.graph_digest, output.body));
+                self.bodies.push((graph.graph_digest, output));
                 format!("OK_PAIR_LOAD_V1 {slot} {digest}")
             }
             ["PAIR_QUERY_V2", left, right, tolerance, matrices @ ..]
@@ -128,39 +138,65 @@ impl PairQuerySession {
                 else {
                     return "ERR invalid_request".to_owned();
                 };
-                let left_key = match self.prepare_transform(
-                    backend,
-                    left,
-                    values[..16].try_into().expect("matrix length"),
-                ) {
-                    Ok(key) => key,
-                    Err(error) => return error,
+                let (Some((left_digest, _)), Some((right_digest, _))) =
+                    (self.bodies.get(left), self.bodies.get(right))
+                else {
+                    return "ERR invalid_request".to_owned();
                 };
-                let right_key = match self.prepare_transform(
-                    backend,
-                    right,
-                    values[16..].try_into().expect("matrix length"),
-                ) {
-                    Ok(key) => key,
-                    Err(error) => return error,
-                };
-                match backend.query_body_pair(
-                    self.body(left, left_key),
-                    self.body(right, right_key),
-                    tolerance,
-                ) {
-                    Ok(result) => {
-                        self.queries += 1;
-                        format!(
-                            "OK_PAIR_QUERY_V2 {} {:016x} {:016x} {:016x}",
-                            sha256_hex(request.as_bytes()),
-                            result.common_volume_mm3.to_bits(),
-                            result.common_contact_area_mm2.to_bits(),
-                            result.distance_mm.to_bits()
-                        )
+                let left_matrix: [f64; 16] = values[..16].try_into().expect("matrix length");
+                let right_matrix: [f64; 16] = values[16..].try_into().expect("matrix length");
+                let cache_key = (
+                    left_digest.clone(),
+                    right_digest.clone(),
+                    left_matrix.map(f64::to_bits),
+                    right_matrix.map(f64::to_bits),
+                    tolerance.to_bits(),
+                );
+                let cached =
+                    PAIR_RESULT_CACHE.with(|cache| cache.borrow().get(&cache_key).copied());
+                let bits = match cached {
+                    Some(bits) => bits,
+                    None => {
+                        let left_key = match self.prepare_transform(backend, left, left_matrix) {
+                            Ok(key) => key,
+                            Err(error) => return error,
+                        };
+                        let right_key = match self.prepare_transform(backend, right, right_matrix) {
+                            Ok(key) => key,
+                            Err(error) => return error,
+                        };
+                        match backend.query_body_pair(
+                            self.body(left, left_key),
+                            self.body(right, right_key),
+                            tolerance,
+                        ) {
+                            Ok(result) => {
+                                let bits = [
+                                    result.common_volume_mm3.to_bits(),
+                                    result.common_contact_area_mm2.to_bits(),
+                                    result.distance_mm.to_bits(),
+                                ];
+                                PAIR_RESULT_CACHE.with(|cache| {
+                                    let mut cache = cache.borrow_mut();
+                                    if cache.len() >= MAX_CACHED_PAIR_RESULTS {
+                                        cache.clear();
+                                    }
+                                    cache.insert(cache_key, bits);
+                                });
+                                bits
+                            }
+                            Err(error) => return geometry_error_response(&error),
+                        }
                     }
-                    Err(error) => geometry_error_response(&error),
-                }
+                };
+                self.queries += 1;
+                format!(
+                    "OK_PAIR_QUERY_V2 {} {:016x} {:016x} {:016x}",
+                    sha256_hex(request.as_bytes()),
+                    bits[0],
+                    bits[1],
+                    bits[2]
+                )
             }
             _ => "ERR invalid_request".to_owned(),
         }
@@ -170,6 +206,42 @@ impl PairQuerySession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Real v9 nightstand top board resting on a rotated side panel. The side's
+    /// bearing face is a flat SurfaceOfExtrusion (not a Plane) and both optimal
+    /// bounds carry tolerance, which once hid the bearing area entirely.
+    #[test]
+    fn modeled_board_on_rotated_side_panel_has_bearing_area_minus_dowel_holes() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/v9_top_side_contact");
+        let backend = ExactBackend::new();
+        let load = |name: &str| {
+            ExactBRepGraph::from_bytes(&std::fs::read(dir.join(name)).unwrap()).unwrap()
+        };
+        let (left_matrix, right_matrix): (Vec<f64>, Vec<f64>) =
+            serde_json::from_slice(&std::fs::read(dir.join("matrices.json")).unwrap()).unwrap();
+        let place = |graph: &str, matrix: Vec<f64>| {
+            let body = evaluate_exact_brep_graph(&backend, &load(graph), &[]).unwrap();
+            backend
+                .transform_body(&body.body, &matrix.try_into().unwrap())
+                .unwrap()
+        };
+        let top = place("left.graph", left_matrix);
+        let side = place("right.graph", right_matrix);
+        // 350 x 18 mm bearing face minus three D8 dowel holes.
+        let expected = 350.0 * 18.0 - 3.0 * std::f64::consts::PI * 16.0;
+        for (left, right) in [(&top, &side), (&side, &top)] {
+            let result = backend
+                .query_body_pair(&left.body, &right.body, 1e-7)
+                .unwrap();
+            assert_eq!(result.relation, ketchup_exact::ExactPairRelation::Touching);
+            assert_eq!(result.common_volume_mm3, 0.0);
+            assert_eq!(result.distance_mm, 0.0);
+            assert!(
+                (result.common_contact_area_mm2 - expected).abs() < 1e-6,
+                "{result:?}"
+            );
+        }
+    }
     #[test]
     fn query_session_rejects_missing_bodies_and_clears_failed_batch() {
         let backend = ExactBackend::new();
@@ -209,7 +281,9 @@ mod tests {
                 height_mm: 2.0,
             })
             .unwrap();
-        session.bodies.push(("fixture".to_owned(), shape.body));
+        session
+            .bodies
+            .push(("fixture".to_owned(), std::rc::Rc::new(shape)));
         let mut matrix = EXACT_PAIR_IDENTITY;
         matrix[3] = 3.0;
         let key = session.prepare_transform(&backend, 0, matrix).unwrap();
