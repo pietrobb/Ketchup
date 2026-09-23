@@ -37,7 +37,7 @@ fn queue_with_options(
             session,
             id: session,
             request: Request::Image {
-                expected: app.live_bridge_stamp(),
+                expected: Some(app.live_bridge_stamp()),
                 image_protocol_version: IMAGE_PROTOCOL_VERSION,
                 capture_mode: CaptureMode::Offscreen,
                 max_side_px,

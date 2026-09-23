@@ -585,7 +585,6 @@ fn registered_python_skill_runs_bounded_model_workflow_in_gui_document() {
                 assert_eq!(event["evidence"]["discovery_round_trips"], 0);
                 assert_eq!(event["evidence"]["retry_round_trips"], 0);
                 assert_eq!(event["evidence"]["compile_or_test_processes"], 0);
-                assert_eq!(event["evidence"]["helper_headless_documents"], 0);
                 assert!(actual.revision > initial.revision);
                 assert!(actual.mutation_epoch > initial.mutation_epoch);
                 assert_eq!(shell.app().undo_step_count(), history + 1);

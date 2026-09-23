@@ -14004,12 +14004,7 @@ impl KetchupApp {
                         }
                     }
                 } else {
-                    let request_digest =
-                        ketchup_core::graph::sha256_hex(pending.message.as_bytes());
-                    let request_id = format!("assistant-{}", &request_digest[..24]);
-                    match live_bridge::LiveBridge::apply_assistant_cad_program(
-                        self, request_id, program,
-                    ) {
+                    match live_bridge::LiveBridge::apply_assistant_cad_program(self, program) {
                         Ok(value) => {
                             let verification = (|| {
                                 Some(AssistantVerification {

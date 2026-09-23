@@ -101,12 +101,12 @@ fn protects_mesh_conversion(pending_review: bool, confirm: bool) {
     let mut wire = mesh_wire();
     let stamp = wire.app.live_bridge_stamp();
     let proposed = wire.call(Request::Propose {
-        expected: stamp.clone(),
-        selection: vec![1],
+        expected: Some(stamp.clone()),
+        selection: Some(vec![1]),
         program: program(),
     });
     let commit = Request::Commit {
-        expected: stamp.clone(),
+        expected: Some(stamp.clone()),
         proposal_id: proposed.result.unwrap()["proposal_id"].as_u64().unwrap(),
     };
     let history = (
@@ -149,15 +149,15 @@ fn protects_mesh_conversion(pending_review: bool, confirm: bool) {
     let mut requests = protected_requests(&stamp, &commit);
     requests.extend([
         Request::SaveAs {
-            expected: stamp.clone(),
+            expected: Some(stamp.clone()),
             path: "not-saved.ketchup".into(),
         },
         Request::Open {
-            expected: stamp.clone(),
+            expected: Some(stamp.clone()),
             path: "not-opened.ketchup".into(),
         },
         Request::Save {
-            expected: stamp.clone(),
+            expected: Some(stamp.clone()),
         },
     ]);
     for request in requests {

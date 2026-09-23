@@ -267,21 +267,8 @@ class Runtime:
                 self.forget(handle)
 
     def expected(self, value):
-        result = _live()._stamp(value)
-        if not result["canonical_digest"]:
-            raise Rejection("precondition_required", "Supply a complete caller-observed stamp, including digest and mutation_epoch.")
-        return result
-
-    def edit_preflight(self, session, expected, selection):
-        selected = _live()._ids(selection)
-        fresh = session.status()
-        if fresh["stamp"] != expected:
-            raise Rejection("stale_document", "Caller stamp is stale; inspect before preparing another edit.")
-        if fresh["result"].get("selection") is None or sorted(fresh["result"]["selection"]) != sorted(selected):
-            raise Rejection("selection_changed", "Caller selection differs from the GUI selection.")
-        # Observation is compared, NEVER substituted for the caller's stamp.
-        self.guard()
-        return selected
+        # Optional: a stamp from any earlier response guards against concurrent human edits.
+        return _live()._stamp(value)
 
     async def run(self, handle, job, *, mutation=False):
         async with self.lock:
@@ -417,7 +404,7 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
         Args:
             action: status, summary, query, detail, workset_create, or workset_status. Allowed in plan mode.
             handle: Live session UUID.
-            expected: Complete observed stamp required for query/detail: document_id, revision, canonical_digest, mutation_epoch.
+            expected: Ignored for reads; accepted for symmetry.
             kind: occurrences, instances, definitions, features, relations, faces, or edges. Topology rows include stable reference IDs and exact geometry.
             entity_id: Positive ID for detail; not valid for instances or relations.
             limit: Query page size 1 through 100.
@@ -462,48 +449,47 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
         return await runtime.run(handle, job)
 
     @beta_async_tool(name="KetchupLiveEdit")
-    async def edit(action: str, handle: str, expected: dict, selection: list[int],
+    async def edit(action: str, handle: str, expected: dict | None = None,
+                   selection: list[int] | None = None,
                    program: dict | None = None, proposal_id: int = 0) -> str:
-        """Propose/commit/undo/redo with explicit complete caller stamp and GUI selection. Never refresh or retry mutations.
+        """Propose/commit/undo/redo. Never retry mutations after a transport error.
 
         Args:
             action: propose, commit, undo, or redo; all forbidden in plan mode.
             handle: Live session UUID.
-            expected: Exact observed document_id, revision, canonical_digest, mutation_epoch; all four required.
-            selection: Explicit observed root occurrence IDs, including [] if empty. Preflight checks selection; commit also checks its proposal selection atomically in Rust.
+            expected: Optional stamp from an earlier response; rejects with stale_document if the document changed since.
+            selection: Optional root occurrence IDs the GUI selection must equal.
             program: For propose only, typed CAD program object containing operations; Rust validates and plans it.
-            proposal_id: For commit only, positive proposal ID returned on this connection. No automatic commit/retry.
+            proposal_id: For commit only, positive proposal ID returned on this connection.
         """
         def job():
             _action(action, ("propose", "commit", "undo", "redo"))
             runtime.guard()
             live_session = runtime.entry(handle)
             stamp = runtime.expected(expected)
-            selected = runtime.edit_preflight(live_session, stamp, selection)
             if action == "propose":
-                return live_session.propose(stamp, selected, program)
+                return live_session.propose(stamp, selection, program)
             if action == "commit":
                 return live_session.commit(stamp, proposal_id)
             return getattr(live_session, action)(stamp)
         return await runtime.run(handle, job, mutation=True)
 
     @beta_async_tool(name="KetchupLiveModel")
-    async def model(action: str, handle: str, expected: dict,
+    async def model(action: str, handle: str, expected: dict | None = None,
                     targets: list[dict] | None = None,
-                    selection: list[int] | None = None, request_id: str = "",
+                    selection: list[int] | None = None,
                     program: dict | None = None, validators: list[str] | None = None,
                     timeout_ms: int = 10_000, save: dict | None = None) -> str:
-        """Read a narrow semantic edit context or run one guarded apply-and-verify host job.
+        """Read a narrow semantic edit context or apply one program as a verified single Undo step.
 
         Args:
             action: edit_context or apply_and_verify.
             handle: Live session UUID.
-            expected: Exact observed document_id, revision, canonical_digest, mutation_epoch.
+            expected: Optional stamp from an earlier response; rejects with stale_document if the document changed since.
             targets: For edit_context, 1 to 8 observed instance paths using stable root/local IDs.
-            selection: For apply_and_verify, explicit observed root occurrence IDs, including [].
-            request_id: For apply_and_verify, caller-stable bounded ID for receipt recovery; never reuse with another payload.
+            selection: Optional root occurrence IDs the GUI selection must equal.
             program: For apply_and_verify, one typed semantic CAD patch containing operations.
-            validators: For apply_and_verify, validator IDs including collision and gravity_support.
+            validators: Optional extra validator IDs; collision and gravity_support always run.
             timeout_ms: Whole host-job deadline from 1 through 10000 ms.
             save: Optional tagged save request: {"mode":"current"} or {"mode":"path","path":"..."}.
         """
@@ -512,28 +498,27 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
             live_session = runtime.entry(handle)
             stamp = runtime.expected(expected)
             if action == "edit_context":
-                if (selection is not None or request_id or program is not None
+                if (selection is not None or program is not None
                         or validators is not None or timeout_ms != 10_000 or save is not None):
-                    raise Rejection("invalid_arguments", "edit_context accepts only expected stamp and targets.")
+                    raise Rejection("invalid_arguments", "edit_context accepts only targets.")
                 return live_session.edit_context(stamp, targets)
             runtime.guard()
-            if targets is not None or selection is None or not request_id or program is None:
-                raise Rejection("invalid_arguments", "apply_and_verify requires selection, request_id, program, and validators.")
-            selected = runtime.edit_preflight(live_session, stamp, selection)
-            runtime.guard()
+            if targets is not None or program is None:
+                raise Rejection("invalid_arguments", "apply_and_verify requires a program.")
             return live_session.apply_and_verify(
-                stamp, selected, request_id, program, validators or [], timeout_ms, save
+                program, expected=stamp, selection=selection, validators=validators,
+                timeout_ms=timeout_ms, save=save,
             )
         return await runtime.run(handle, job, mutation=action == "apply_and_verify")
 
     @beta_async_tool(name="KetchupLiveFile")
-    async def file(action: str, handle: str, expected: dict, path: str = "") -> str:
+    async def file(action: str, handle: str, expected: dict | None = None, path: str = "") -> str:
         """Save or open the attached GUI document through its native file workflow.
 
         Args:
             action: save, save_as, or open. Save requires an existing document path; save_as requires overwrite confirmation; open requires discard confirmation when dirty.
             handle: Live session UUID.
-            expected: Exact observed document_id, revision, canonical_digest, mutation_epoch.
+            expected: Optional stamp from an earlier response guarding against concurrent edits.
             path: Explicit absolute destination for save_as or existing source for open; empty for save.
         """
         def job():
@@ -551,7 +536,7 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
         return await runtime.run(handle, job, mutation=True)
 
     @beta_async_tool(name="KetchupLiveBatch")
-    async def batch(action: str, handle: str, expected: dict,
+    async def batch(action: str, handle: str, expected: dict | None = None,
                     workset_handle: str = "", job_handle: str = "",
                     operation: dict | None = None) -> str:
         """Run one bounded live occurrence-workset batch job step at a time.
@@ -559,7 +544,7 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
         Args:
             action: start, status, step, or cancel.
             handle: Live session UUID.
-            expected: Complete caller-observed document stamp; never refreshed automatically.
+            expected: Optional stamp from an earlier response guarding against concurrent edits.
             workset_handle: Complete occurrence workset handle required only for start.
             job_handle: Opaque batch job handle required for status/step/cancel.
             operation: For start only; currently {"type":"set_color","color":[r,g,b] or null}.
@@ -588,7 +573,7 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
         return await runtime.run(handle, job, mutation=action == "step")
 
     @beta_async_tool(name="KetchupLiveView")
-    async def view(action: str, handle: str, expected: dict,
+    async def view(action: str, handle: str, expected: dict | None = None,
                    occurrence_ids: list[int] | None = None, view: str = "", image_path: str = "",
                    capture_mode: str = "offscreen", max_side_px: int = 512,
                    framing: str = "viewport", detail_occurrence_id: int = 0,
@@ -600,7 +585,7 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
         Args:
             action: selection, view, or image. All are forbidden in plan mode (image writes a file).
             handle: Live session UUID.
-            expected: Complete caller-observed document_id, revision, canonical_digest, mutation_epoch.
+            expected: Optional stamp from an earlier response guarding against concurrent edits.
             occurrence_ids: Explicit root occurrence IDs for selection, including [] to clear.
             view: For view action, iso, top, front, or zoom_fit.
             image_path: Required only for image: explicit absolute NEW .png under workspace artifacts/live-view; never overwritten.

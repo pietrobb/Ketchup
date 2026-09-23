@@ -38,7 +38,7 @@ fn topology_retry_preserves_render_and_recovers_live_queries_without_edit() {
             .execute(
                 &mut app,
                 Request::Query {
-                    expected: stamp.clone(),
+                    expected: Some(stamp.clone()),
                     query: serde_json::from_value(json!({"kind": kind, "limit": 100})).unwrap(),
                 },
                 false,
@@ -129,7 +129,7 @@ fn topology_retry_preserves_render_and_recovers_live_queries_without_edit() {
             .execute(
                 app,
                 Request::Query {
-                    expected: stamp.clone(),
+                    expected: Some(stamp.clone()),
                     query: serde_json::from_value(json!({"kind": kind, "limit": 100})).unwrap(),
                 },
                 false,

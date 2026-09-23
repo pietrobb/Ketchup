@@ -64,17 +64,25 @@ impl EvaluationReport {
     }
 
     pub(super) fn finish(&mut self) {
-        self.complete = !self.producers.is_empty()
-            && self
-                .producers
-                .iter()
-                .all(|entry| entry.render.is_evaluated());
-        self.topology_complete = !self.producers.is_empty()
-            && self
-                .producers
-                .iter()
-                .all(|entry| entry.topology.is_evaluated());
-        if self.producers.is_empty() && self.not_evaluated.is_none() {
+        // An incremental plan that selects no producers (e.g. a color or grounding
+        // edit) changed no geometry: the baseline stays valid and nothing is missing.
+        let unchanged_geometry = matches!(
+            &self.selection,
+            ExactEvaluationSelection::Scoped(producers) if producers.is_empty()
+        );
+        self.complete = unchanged_geometry
+            || !self.producers.is_empty()
+                && self
+                    .producers
+                    .iter()
+                    .all(|entry| entry.render.is_evaluated());
+        self.topology_complete = unchanged_geometry
+            || !self.producers.is_empty()
+                && self
+                    .producers
+                    .iter()
+                    .all(|entry| entry.topology.is_evaluated());
+        if self.producers.is_empty() && !unchanged_geometry && self.not_evaluated.is_none() {
             self.not_evaluated = Some("no exact producers selected".into());
         }
     }

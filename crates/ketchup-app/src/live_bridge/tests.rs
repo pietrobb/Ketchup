@@ -57,7 +57,7 @@ fn edit_context_is_public_guarded_and_read_only() {
         .execute(
             &mut app,
             Request::EditContext {
-                expected: expected.clone(),
+                expected: Some(expected.clone()),
                 targets: vec![AssistantInstancePath {
                     root_occurrence_id: 1,
                     steps: Vec::new(),
@@ -185,7 +185,7 @@ fn disconnect_during_live_overwrite_consent_revokes_publication_authority() {
         id: 1,
         token: credentials.token,
         request: Request::SaveAs {
-            expected,
+            expected: Some(expected),
             path: path.to_string_lossy().into_owned(),
         },
     })
@@ -229,7 +229,7 @@ fn save_is_revision_bound_and_uses_the_live_gui_overwrite_consent() {
         bridge.execute(
             &mut app,
             Request::Save {
-                expected: before_edit,
+                expected: Some(before_edit),
             },
             false,
         ),
@@ -242,7 +242,7 @@ fn save_is_revision_bound_and_uses_the_live_gui_overwrite_consent() {
         bridge.execute(
             &mut app,
             Request::Save {
-                expected: expected.clone(),
+                expected: Some(expected.clone()),
             },
             false,
         ),
@@ -253,7 +253,13 @@ fn save_is_revision_bound_and_uses_the_live_gui_overwrite_consent() {
     assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
 
     let saved = bridge
-        .execute(&mut app, Request::Save { expected }, false)
+        .execute(
+            &mut app,
+            Request::Save {
+                expected: Some(expected),
+            },
+            false,
+        )
         .unwrap();
     assert_eq!(
         saved,
@@ -272,7 +278,13 @@ fn save_is_revision_bound_and_uses_the_live_gui_overwrite_consent() {
     let (mut untitled, mut untitled_bridge) = setup();
     let expected = untitled.live_bridge_stamp();
     assert_eq!(
-        untitled_bridge.execute(&mut untitled, Request::Save { expected }, false),
+        untitled_bridge.execute(
+            &mut untitled,
+            Request::Save {
+                expected: Some(expected)
+            },
+            false
+        ),
         Err("save_path_required")
     );
 }
@@ -298,7 +310,7 @@ fn save_as_requires_an_absolute_path_and_live_gui_overwrite_consent() {
         bridge.execute(
             &mut app,
             Request::SaveAs {
-                expected: expected.clone(),
+                expected: Some(expected.clone()),
                 path: "relative.ketchup".to_owned(),
             },
             false,
@@ -309,7 +321,7 @@ fn save_as_requires_an_absolute_path_and_live_gui_overwrite_consent() {
         bridge.execute(
             &mut app,
             Request::SaveAs {
-                expected: stale,
+                expected: Some(stale),
                 path: path.to_string_lossy().into_owned(),
             },
             false,
@@ -322,7 +334,7 @@ fn save_as_requires_an_absolute_path_and_live_gui_overwrite_consent() {
         bridge.execute(
             &mut app,
             Request::SaveAs {
-                expected: expected.clone(),
+                expected: Some(expected.clone()),
                 path: path.to_string_lossy().into_owned(),
             },
             false,
@@ -337,7 +349,7 @@ fn save_as_requires_an_absolute_path_and_live_gui_overwrite_consent() {
         .execute(
             &mut app,
             Request::SaveAs {
-                expected,
+                expected: Some(expected),
                 path: path.to_string_lossy().into_owned(),
             },
             false,
@@ -380,7 +392,7 @@ fn open_is_revision_bound_and_uses_the_live_gui_discard_consent() {
         bridge.execute(
             &mut refused,
             Request::Open {
-                expected: expected.clone(),
+                expected: Some(expected.clone()),
                 path: "relative.ketchup".to_owned(),
             },
             false,
@@ -391,7 +403,7 @@ fn open_is_revision_bound_and_uses_the_live_gui_discard_consent() {
         bridge.execute(
             &mut refused,
             Request::Open {
-                expected: stale,
+                expected: Some(stale),
                 path: path.to_string_lossy().into_owned(),
             },
             false,
@@ -403,7 +415,7 @@ fn open_is_revision_bound_and_uses_the_live_gui_discard_consent() {
         bridge.execute(
             &mut refused,
             Request::Open {
-                expected,
+                expected: Some(expected),
                 path: path.to_string_lossy().into_owned(),
             },
             false,
@@ -431,7 +443,7 @@ fn open_is_revision_bound_and_uses_the_live_gui_discard_consent() {
         .execute(
             &mut approved,
             Request::Open {
-                expected,
+                expected: Some(expected),
                 path: path.to_string_lossy().into_owned(),
             },
             false,
@@ -460,15 +472,15 @@ fn proposal(app: &mut KetchupApp, bridge: &mut LiveBridge) -> Request {
         .execute(
             app,
             Request::Propose {
-                expected: expected.clone(),
-                selection,
+                expected: Some(expected.clone()),
+                selection: Some(selection),
                 program: program(),
             },
             false,
         )
         .unwrap();
     Request::Commit {
-        expected,
+        expected: Some(expected),
         proposal_id: result["proposal_id"].as_u64().unwrap(),
     }
 }
@@ -476,22 +488,22 @@ fn protected_requests(stamp: &Stamp, commit: &Request) -> Vec<Request> {
     vec![
         commit.clone(),
         Request::Undo {
-            expected: stamp.clone(),
+            expected: Some(stamp.clone()),
         },
         Request::Redo {
-            expected: stamp.clone(),
+            expected: Some(stamp.clone()),
         },
         Request::Selection {
-            expected: stamp.clone(),
+            expected: Some(stamp.clone()),
             occurrence_ids: vec![],
         },
         Request::View {
-            expected: stamp.clone(),
+            expected: Some(stamp.clone()),
             view: View::Top,
         },
         Request::Propose {
-            expected: stamp.clone(),
-            selection: vec![1],
+            expected: Some(stamp.clone()),
+            selection: Some(vec![1]),
             program: program(),
         },
     ]
@@ -510,12 +522,9 @@ fn sdk_and_builtin_assistant_share_apply_and_verify_error_codes() {
     let (mut assistant_app, _) = setup();
     let assistant_before = assistant_app.live_bridge_stamp();
     let assistant_undo = assistant_app.undo_step_count();
-    let assistant_error = LiveBridge::apply_assistant_cad_program(
-        &mut assistant_app,
-        "assistant-error-parity".to_owned(),
-        invalid_program.clone(),
-    )
-    .unwrap_err();
+    let assistant_error =
+        LiveBridge::apply_assistant_cad_program(&mut assistant_app, invalid_program.clone())
+            .unwrap_err();
 
     let (mut sdk_app, mut bridge) = setup();
     let sdk_before = sdk_app.live_bridge_stamp();
@@ -524,9 +533,8 @@ fn sdk_and_builtin_assistant_share_apply_and_verify_error_codes() {
         .execute(
             &mut sdk_app,
             Request::ApplyAndVerify {
-                request_id: "sdk-error-parity".to_owned(),
-                expected: sdk_before.clone(),
-                selection: vec![],
+                expected: Some(sdk_before.clone()),
+                selection: Some(vec![]),
                 program: invalid_program,
                 validators: mandatory_validators(),
                 timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
@@ -561,15 +569,12 @@ fn sdk_and_builtin_assistant_share_apply_and_verify_success_contract() {
             "published": value["published"],
             "saved": value["saved"],
             "save_state": value["save_state"],
-            "same_gui_document": value["same_gui_document"],
             "diff_entry_count": value["diff"]["entry_count"],
             "exact_complete": value["exact"]["complete"],
             "topology_complete": value["exact"]["topology_complete"],
             "validation_state": value["validation"]["state"],
             "validation_complete": value["validation"]["complete"],
             "validators": value["validation"]["requested"],
-            "candidate_state": value["execution"]["candidate_state"],
-            "helper_headless_documents": value["execution"]["helper_headless_documents"],
         })
     };
 
@@ -577,12 +582,8 @@ fn sdk_and_builtin_assistant_share_apply_and_verify_success_contract() {
     prepare(&mut assistant_app);
     let assistant_before = assistant_app.live_bridge_stamp();
     let assistant_undo = assistant_app.undo_step_count();
-    let assistant_result = LiveBridge::apply_assistant_cad_program(
-        &mut assistant_app,
-        "success-parity".to_owned(),
-        program(),
-    )
-    .unwrap();
+    let assistant_result =
+        LiveBridge::apply_assistant_cad_program(&mut assistant_app, program()).unwrap();
 
     let (mut sdk_app, mut bridge) = setup();
     prepare(&mut sdk_app);
@@ -592,9 +593,8 @@ fn sdk_and_builtin_assistant_share_apply_and_verify_success_contract() {
         .execute(
             &mut sdk_app,
             Request::ApplyAndVerify {
-                request_id: "success-parity".to_owned(),
-                expected: sdk_before.clone(),
-                selection: vec![],
+                expected: Some(sdk_before.clone()),
+                selection: Some(vec![]),
                 program: program(),
                 validators: mandatory_validators(),
                 timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
@@ -618,7 +618,33 @@ fn sdk_and_builtin_assistant_share_apply_and_verify_success_contract() {
 }
 
 #[test]
-fn apply_and_verify_is_candidate_isolated_idempotent_and_one_undo_step() {
+fn apply_and_verify_needs_only_a_program() {
+    let (mut app, mut bridge) = setup();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: OccurrenceId(1),
+                grounded: true,
+            },
+        ]))
+        .unwrap();
+    crate::tests::install_initial_graph_result(&mut app);
+    let before_steps = app.undo_step_count();
+    let request: Request = serde_json::from_value(json!({
+        "method": "apply_and_verify",
+        "program": program(),
+    }))
+    .unwrap();
+
+    let report = bridge.execute(&mut app, request, false).unwrap();
+
+    assert_eq!(report["published"], true);
+    assert_eq!(report["validation"]["state"], "passed");
+    assert_eq!(app.undo_step_count(), before_steps + 1);
+}
+
+#[test]
+fn apply_and_verify_is_one_undo_step_and_refuses_a_stale_resend() {
     let (mut app, mut bridge) = setup();
     app.document
         .apply_batch(&CommandBatch::new(vec![
@@ -634,9 +660,8 @@ fn apply_and_verify_is_candidate_isolated_idempotent_and_one_undo_step() {
     let before_reference_count = app.document_snapshot().exact_reference_evidence().count();
     let before_steps = app.undo_step_count();
     let request = Request::ApplyAndVerify {
-        request_id: "lost-response-1".into(),
-        expected: expected.clone(),
-        selection: vec![],
+        expected: Some(expected.clone()),
+        selection: Some(vec![]),
         program: program(),
         validators: mandatory_validators(),
         timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
@@ -657,29 +682,9 @@ fn apply_and_verify_is_candidate_isolated_idempotent_and_one_undo_step() {
     assert_eq!(first["validation"]["state"], "passed");
     assert_eq!(first["validation"]["complete"], true);
 
-    bridge
-        .execute(&mut app, Request::Disconnect {}, false)
-        .unwrap();
-    let replay = bridge.execute(&mut app, request, true).unwrap();
-    assert_eq!(replay, first);
-    assert_eq!(app.live_bridge_stamp().canonical_digest, committed_digest);
-    assert_eq!(app.undo_step_count(), before_steps + 1);
-
     assert_eq!(
-        bridge.execute(
-            &mut app,
-            Request::ApplyAndVerify {
-                request_id: "lost-response-1".into(),
-                expected,
-                selection: vec![],
-                program: program(),
-                validators: mandatory_validators(),
-                timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS - 1,
-                save: None,
-            },
-            false,
-        ),
-        Err("request_id_payload_mismatch")
+        bridge.execute(&mut app, request, false),
+        Err("stale_document")
     );
     assert_eq!(app.live_bridge_stamp().canonical_digest, committed_digest);
     assert_eq!(app.undo_step_count(), before_steps + 1);
@@ -695,68 +700,6 @@ fn apply_and_verify_is_candidate_isolated_idempotent_and_one_undo_step() {
         app.document_snapshot().exact_reference_evidence().count(),
         committed_reference_count
     );
-}
-
-#[test]
-fn queued_apply_and_verify_replays_after_transport_response_is_lost() {
-    let mut wire = Wire::new();
-    wire.app
-        .document
-        .apply_batch(&CommandBatch::new(vec![
-            CanonicalCommand::SetOccurrenceGrounded {
-                id: OccurrenceId(1),
-                grounded: true,
-            },
-        ]))
-        .unwrap();
-    crate::tests::install_initial_graph_result(&mut wire.app);
-    let expected = wire.app.live_bridge_stamp();
-    let before_steps = wire.app.undo_step_count();
-    let request = Request::ApplyAndVerify {
-        request_id: "transport-lost-response".into(),
-        expected,
-        selection: vec![],
-        program: program(),
-        validators: mandatory_validators(),
-        timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
-        save: None,
-    };
-    wire.send(request.clone(), false);
-
-    let deadline = Instant::now() + Duration::from_secs(4);
-    let stored_result = loop {
-        wire.app.poll_live_bridge(&wire.context);
-        if let Some(value) = wire
-            .app
-            .live_bridge
-            .as_ref()
-            .and_then(|bridge| {
-                bridge
-                    .apply_and_verify_receipts
-                    .iter()
-                    .find(|receipt| receipt.request_id == "transport-lost-response")
-            })
-            .map(|receipt| receipt.value.clone())
-        {
-            break value;
-        }
-        assert!(Instant::now() < deadline, "receipt was not published");
-        std::thread::sleep(Duration::from_millis(5));
-    };
-    let committed = wire.app.live_bridge_stamp();
-    assert_eq!(wire.app.undo_step_count(), before_steps + 1);
-
-    let address = wire.stream.peer_addr().unwrap();
-    wire.stream.shutdown(Shutdown::Both).unwrap();
-    wire.stream = TcpStream::connect(address).unwrap();
-    wire.stream
-        .set_read_timeout(Some(Duration::from_secs(4)))
-        .unwrap();
-
-    let replay = wire.call(request);
-    assert_eq!(replay.result.as_ref(), Some(&stored_result));
-    assert_eq!(wire.app.live_bridge_stamp(), committed);
-    assert_eq!(wire.app.undo_step_count(), before_steps + 1);
 }
 
 #[test]
@@ -776,9 +719,8 @@ fn queued_apply_and_verify_yields_to_manual_edit_and_refuses_stale_publication()
     let before_steps = wire.app.undo_step_count();
     wire.send(
         Request::ApplyAndVerify {
-            request_id: "manual-edit-race".into(),
-            expected,
-            selection: vec![],
+            expected: Some(expected),
+            selection: Some(vec![]),
             program: program(),
             validators: mandatory_validators(),
             timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
@@ -861,9 +803,8 @@ fn queued_apply_and_verify_refuses_post_validation_selection_change() {
     let before_steps = wire.app.undo_step_count();
     wire.send(
         Request::ApplyAndVerify {
-            request_id: "selection-race".into(),
-            expected: expected.clone(),
-            selection: vec![],
+            expected: Some(expected.clone()),
+            selection: Some(vec![]),
             program: program(),
             validators: mandatory_validators(),
             timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
@@ -941,17 +882,16 @@ fn apply_and_verify_worker_disconnect_is_zero_mutation() {
         reply,
         cancelled: Arc::new(AtomicBool::new(false)),
         worker_cancelled: Arc::new(AtomicBool::new(false)),
-        request_id: "worker-disconnect".into(),
-        payload_digest: "test-payload".into(),
-        expected,
-        selection: vec![],
-        primary: None,
-        proposal,
-        candidate,
-        save_path: None,
-        timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
-        started: Instant::now(),
-        planned_at: Instant::now(),
+        plan: ApplyAndVerifyPlan {
+            before: expected,
+            selection: None,
+            proposal,
+            candidate,
+            save_path: None,
+            timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
+            started: Instant::now(),
+            planned_at: Instant::now(),
+        },
         receiver,
     });
 
@@ -995,17 +935,16 @@ fn apply_and_verify_timeout_is_zero_mutation_and_cancels_worker() {
         reply,
         cancelled: Arc::clone(&cancelled),
         worker_cancelled: Arc::clone(&worker_cancelled),
-        request_id: "job-timeout".into(),
-        payload_digest: "test-payload".into(),
-        expected,
-        selection: vec![],
-        primary: None,
-        proposal,
-        candidate,
-        save_path: None,
-        timeout_ms: 1,
-        started: Instant::now() - Duration::from_millis(2),
-        planned_at: Instant::now() - Duration::from_millis(2),
+        plan: ApplyAndVerifyPlan {
+            before: expected,
+            selection: None,
+            proposal,
+            candidate,
+            save_path: None,
+            timeout_ms: 1,
+            started: Instant::now() - Duration::from_millis(2),
+            planned_at: Instant::now() - Duration::from_millis(2),
+        },
         receiver,
     });
 
@@ -1057,9 +996,8 @@ fn apply_and_verify_real_exact_worker_crash_is_zero_mutation() {
         bridge.execute(
             &mut app,
             Request::ApplyAndVerify {
-                request_id: "real-worker-crash".into(),
-                expected,
-                selection: vec![],
+                expected: Some(expected),
+                selection: Some(vec![]),
                 program: worker_required_program(),
                 validators: mandatory_validators(),
                 timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
@@ -1129,9 +1067,8 @@ fn apply_and_verify_cancels_a_running_exact_worker_without_mutation() {
         bridge.execute_authorized(
             &mut app,
             Request::ApplyAndVerify {
-                request_id: "running-worker-cancel".into(),
-                expected,
-                selection: vec![],
+                expected: Some(expected),
+                selection: Some(vec![]),
                 program: worker_required_program(),
                 validators: mandatory_validators(),
                 timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
@@ -1218,13 +1155,12 @@ fn apply_and_verify_one_undo_redo_restores_geometry_recipe_and_exact_binding_wit
     let before_exact = exact_fingerprints(&app);
     let before_steps = app.undo_step_count();
 
-    let report = bridge
+    bridge
         .execute(
             &mut app,
             Request::ApplyAndVerify {
-                request_id: "geometry-recipe-undo-redo".into(),
-                expected: before_stamp.clone(),
-                selection: vec![],
+                expected: Some(before_stamp.clone()),
+                selection: Some(vec![]),
                 program: geometry_program(),
                 validators: mandatory_validators(),
                 timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
@@ -1244,16 +1180,6 @@ fn apply_and_verify_one_undo_redo_restores_geometry_recipe_and_exact_binding_wit
     assert!(app.topology_results.is_bound_to(&after));
     assert_eq!(before_exact, after_exact);
     assert_eq!(app.undo_step_count(), before_steps + 1);
-    assert_eq!(report["execution"]["candidate_state"], "isolated_snapshot");
-    assert_eq!(
-        report["execution"]["candidate_document_id"],
-        before_stamp.document_id
-    );
-    assert_eq!(
-        report["execution"]["gui_document_id"],
-        before_stamp.document_id
-    );
-    assert_eq!(report["execution"]["helper_headless_documents"], 0);
 
     assert!(app.undo());
     let undone = app.document.current();
@@ -1295,7 +1221,7 @@ fn apply_and_verify_one_undo_redo_restores_geometry_recipe_and_exact_binding_wit
 }
 
 #[test]
-fn apply_and_verify_reports_committed_but_unsaved_and_replays_the_receipt() {
+fn apply_and_verify_reports_committed_but_unsaved() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("apply-verify-save-refused.ketchup");
     let dialogs = ScriptedFileDialogs::new().queue_refused_high_risk();
@@ -1317,30 +1243,21 @@ fn apply_and_verify_reports_committed_but_unsaved_and_replays_the_receipt() {
     let before_steps = app.undo_step_count();
     let mut bridge = transport::start(egui::Context::default()).unwrap();
     let request = Request::ApplyAndVerify {
-        request_id: "save-refused-replay".into(),
-        expected,
-        selection: vec![],
+        expected: Some(expected),
+        selection: Some(vec![]),
         program: program(),
         validators: mandatory_validators(),
         timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
         save: Some(ApplyAndVerifySave::Current {}),
     };
 
-    let first = bridge.execute(&mut app, request.clone(), false).unwrap();
-    let committed = app.live_bridge_stamp();
+    let first = bridge.execute(&mut app, request, false).unwrap();
     assert_eq!(first["published"], true);
     assert_eq!(first["saved"], false);
     assert_eq!(first["save_state"], "committed_but_unsaved");
     assert_eq!(first["save_error"], "save_rejected");
     assert_eq!(first["save_path"], path.to_string_lossy().as_ref());
     assert!(app.is_dirty());
-    assert_eq!(app.undo_step_count(), before_steps + 1);
-    assert_eq!(probe.high_risk_prompts().len(), 1);
-    assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
-
-    let replay = bridge.execute(&mut app, request, true).unwrap();
-    assert_eq!(replay, first);
-    assert_eq!(app.live_bridge_stamp(), committed);
     assert_eq!(app.undo_step_count(), before_steps + 1);
     assert_eq!(probe.high_risk_prompts().len(), 1);
     assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
@@ -1378,9 +1295,8 @@ fn apply_and_verify_save_io_failure_preserves_last_good_file_and_dirty_gui_state
         .execute(
             &mut app,
             Request::ApplyAndVerify {
-                request_id: "save-io-failure".into(),
-                expected: original_stamp.clone(),
-                selection: vec![],
+                expected: Some(original_stamp.clone()),
+                selection: Some(vec![]),
                 program: worker_required_program(),
                 validators: mandatory_validators(),
                 timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
@@ -1463,9 +1379,8 @@ fn apply_and_verify_saves_only_the_explicit_absolute_path() {
         .execute(
             &mut app,
             Request::ApplyAndVerify {
-                request_id: "explicit-save-path".into(),
-                expected,
-                selection: vec![],
+                expected: Some(expected),
+                selection: Some(vec![]),
                 program: program(),
                 validators: mandatory_validators(),
                 timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
@@ -1506,17 +1421,16 @@ fn apply_and_verify_preflight_failures_are_zero_mutation() {
         bridge.execute(
             &mut app,
             Request::ApplyAndVerify {
-                request_id: "invalid-validators".into(),
-                expected: expected.clone(),
-                selection: vec![],
+                expected: Some(expected.clone()),
+                selection: Some(vec![]),
                 program: program(),
-                validators: vec![],
+                validators: vec!["no_such_validator".into()],
                 timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
                 save: None,
             },
             false,
         ),
-        Err("mandatory_validators_required")
+        Err("unknown_validator")
     );
     assert_eq!(
         (
@@ -1532,35 +1446,8 @@ fn apply_and_verify_preflight_failures_are_zero_mutation() {
         bridge.execute(
             &mut app,
             Request::ApplyAndVerify {
-                request_id: "partial-validator-policy".into(),
-                expected: expected.clone(),
-                selection: vec![],
-                program: program(),
-                validators: vec!["collision".into()],
-                timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
-                save: None,
-            },
-            false,
-        ),
-        Err("mandatory_validators_required")
-    );
-    assert_eq!(
-        (
-            app.live_bridge_stamp(),
-            app.undo_step_count(),
-            app.redo_step_count(),
-            app.is_dirty(),
-        ),
-        before
-    );
-
-    assert_eq!(
-        bridge.execute(
-            &mut app,
-            Request::ApplyAndVerify {
-                request_id: "relative-save-path".into(),
-                expected: expected.clone(),
-                selection: vec![],
+                expected: Some(expected.clone()),
+                selection: Some(vec![]),
                 program: program(),
                 validators: mandatory_validators(),
                 timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
@@ -1587,9 +1474,8 @@ fn apply_and_verify_preflight_failures_are_zero_mutation() {
         bridge.execute_authorized(
             &mut app,
             Request::ApplyAndVerify {
-                request_id: "cancelled-before-exact".into(),
-                expected,
-                selection: vec![],
+                expected: Some(expected),
+                selection: Some(vec![]),
                 program: program(),
                 validators: mandatory_validators(),
                 timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
@@ -1618,10 +1504,6 @@ fn apply_and_verify_phase_failures_are_zero_mutation() {
         (ApplyAndVerifyFault::Candidate, "candidate_rejected"),
         (ApplyAndVerifyFault::Exact, "exact_evaluation_rejected"),
         (ApplyAndVerifyFault::Validation, "validation_failed"),
-        (
-            ApplyAndVerifyFault::Report,
-            "validation_report_encoding_rejected",
-        ),
         (ApplyAndVerifyFault::Publication, "commit_rejected"),
     ] {
         let (mut app, mut bridge) = setup();
@@ -1647,9 +1529,8 @@ fn apply_and_verify_phase_failures_are_zero_mutation() {
             bridge.execute(
                 &mut app,
                 Request::ApplyAndVerify {
-                    request_id: format!("fault-{fault:?}"),
-                    expected,
-                    selection: vec![],
+                    expected: Some(expected),
+                    selection: Some(vec![]),
                     program: program(),
                     validators: mandatory_validators(),
                     timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
@@ -1670,7 +1551,6 @@ fn apply_and_verify_phase_failures_are_zero_mutation() {
             before,
             "fault phase {fault:?} mutated the live document"
         );
-        assert!(bridge.apply_and_verify_receipts.is_empty());
     }
 }
 
@@ -1742,7 +1622,7 @@ fn image_protocol_is_versioned_declared_and_required() {
         bridge.execute(
             &mut app,
             Request::Image {
-                expected: stamp,
+                expected: Some(stamp),
                 image_protocol_version: IMAGE_PROTOCOL_VERSION - 1,
                 capture_mode: CaptureMode::Offscreen,
                 max_side_px: MIN_IMAGE_SIDE_PX,
@@ -1762,7 +1642,7 @@ fn image_protocol_is_versioned_declared_and_required() {
                 session: bridge.session,
                 id: u64::from(max_side_px),
                 request: Request::Image {
-                    expected: app.live_bridge_stamp(),
+                    expected: Some(app.live_bridge_stamp()),
                     image_protocol_version: IMAGE_PROTOCOL_VERSION,
                     capture_mode: CaptureMode::Offscreen,
                     max_side_px,
@@ -1790,7 +1670,7 @@ fn topology_query_detail_and_multi_edge_fillet_share_the_live_host_stamp() {
         .execute(
             &mut app,
             Request::Query {
-                expected: expected.clone(),
+                expected: Some(expected.clone()),
                 query: PageRequest {
                     kind: EntityKind::Edges,
                     limit: 10,
@@ -1814,7 +1694,7 @@ fn topology_query_detail_and_multi_edge_fillet_share_the_live_host_stamp() {
         .execute(
             &mut app,
             Request::Detail {
-                expected: expected.clone(),
+                expected: Some(expected.clone()),
                 kind: EntityKind::Edges,
                 entity_id: edge_id,
             },
@@ -1832,8 +1712,8 @@ fn topology_query_detail_and_multi_edge_fillet_share_the_live_host_stamp() {
         .execute(
             &mut app,
             Request::Propose {
-                expected: expected.clone(),
-                selection: vec![],
+                expected: Some(expected.clone()),
+                selection: Some(vec![]),
                 program: AssistantCadEditProgram {
                     operations: vec![AssistantCadEditOperation::FilletEdges {
                         definition_id: 1,
@@ -1851,7 +1731,7 @@ fn topology_query_detail_and_multi_edge_fillet_share_the_live_host_stamp() {
         .execute(
             &mut app,
             Request::Commit {
-                expected: expected.clone(),
+                expected: Some(expected.clone()),
                 proposal_id: proposed["proposal_id"].as_u64().unwrap(),
             },
             false,
@@ -1866,18 +1746,6 @@ fn topology_query_detail_and_multi_edge_fillet_share_the_live_host_stamp() {
             ..
         } if edges.len() == 2
     ));
-    assert_eq!(
-        bridge.execute(
-            &mut app,
-            Request::Detail {
-                expected,
-                kind: EntityKind::Edges,
-                entity_id: edge_id,
-            },
-            false,
-        ),
-        Err("stale_document")
-    );
 }
 
 #[test]
@@ -1997,10 +1865,10 @@ fn raw_preview_sketch_parameter_editor_dialog_and_anchor_are_busy_and_retained()
 }
 
 #[test]
-fn review_only_history_and_focused_editor_reject_but_receipt_replay_is_observational() {
+fn review_only_history_and_focused_editor_reject_mutations() {
     let (mut app, mut bridge) = setup();
     let commit = proposal(&mut app, &mut bridge);
-    let receipt = bridge.execute(&mut app, commit.clone(), false).unwrap();
+    bridge.execute(&mut app, commit.clone(), false).unwrap();
     assert!(app.undo()); // Both Undo and Redo now have history.
     let stamp = app.live_bridge_stamp();
     let steps = (app.undo_step_count(), app.redo_step_count());
@@ -2013,10 +1881,10 @@ fn review_only_history_and_focused_editor_reject_but_receipt_replay_is_observati
     assert_eq!(status["read_only"], true);
     for request in [
         Request::Undo {
-            expected: stamp.clone(),
+            expected: Some(stamp.clone()),
         },
         Request::Redo {
-            expected: stamp.clone(),
+            expected: Some(stamp.clone()),
         },
     ] {
         assert_eq!(
@@ -2025,7 +1893,11 @@ fn review_only_history_and_focused_editor_reject_but_receipt_replay_is_observati
         );
     }
     app.preview = Some(CommandBatch::new(vec![]));
-    assert_eq!(bridge.execute(&mut app, commit, true).unwrap(), receipt);
+    // A committed proposal is never executed twice.
+    assert_eq!(
+        bridge.execute(&mut app, commit, true),
+        Err("stale_document")
+    );
     assert!(app.preview.is_some());
     assert_eq!(app.live_bridge_stamp(), stamp);
     assert_eq!((app.undo_step_count(), app.redo_step_count()), steps);
@@ -2104,7 +1976,7 @@ fn root_scope_rejects_grouped_hidden_tag_hidden_mixed_and_explicit_selectors_ato
             bridge.execute(
                 &mut app,
                 Request::Selection {
-                    expected: stamp.clone(),
+                    expected: Some(stamp.clone()),
                     occurrence_ids: ids.clone()
                 },
                 false
@@ -2149,8 +2021,8 @@ fn root_scope_rejects_grouped_hidden_tag_hidden_mixed_and_explicit_selectors_ato
                 bridge.execute(
                     &mut app,
                     Request::Propose {
-                        expected: stamp.clone(),
-                        selection: vec![1],
+                        expected: Some(stamp.clone()),
+                        selection: Some(vec![1]),
                         program: AssistantCadEditProgram {
                             operations: vec![operation]
                         }
@@ -2263,12 +2135,12 @@ impl Wire {
     fn propose(&mut self) -> Request {
         let expected = self.app.live_bridge_stamp();
         let response = self.call(Request::Propose {
-            expected: expected.clone(),
-            selection: vec![],
+            expected: Some(expected.clone()),
+            selection: Some(vec![]),
             program: program(),
         });
         Request::Commit {
-            expected,
+            expected: Some(expected),
             proposal_id: response.result.unwrap()["proposal_id"].as_u64().unwrap(),
         }
     }
@@ -2399,8 +2271,8 @@ fn multiple_clients_reconnect_same_host_and_cannot_cross_window_boundary() {
         &token_a,
         2,
         Request::Propose {
-            expected: expected.clone(),
-            selection: vec![],
+            expected: Some(expected.clone()),
+            selection: Some(vec![]),
             program: program(),
         },
     );
@@ -2413,7 +2285,7 @@ fn multiple_clients_reconnect_same_host_and_cannot_cross_window_boundary() {
         &token_a,
         3,
         Request::Commit {
-            expected,
+            expected: Some(expected),
             proposal_id: proposed.result.unwrap()["proposal_id"].as_u64().unwrap(),
         },
     );

@@ -6,8 +6,8 @@
 //! logs, command lines, environment variables, documents, or ordinary UI output.
 //! Only a trusted embedding host should use `live_bridge_credentials` and carry
 //! its result over an independently trusted out-of-band channel.
-//! Proposals/commit receipts are connection-local; disconnect drops pending authority.
-//! Guarded apply-and-verify receipts survive reconnect and require an identical payload digest.
+//! Proposals are connection-local; disconnect drops them. Mutations never replay:
+//! an optional `expected` stamp only guards against a concurrent human edit.
 //! Images are callback-correlated CAD-only PNG thumbnails; geometry completeness is not claimed.
 
 use crate::{ActiveTool, AppCommand, KetchupApp, SelectionId, WorkRecoveryMutationError};
@@ -36,7 +36,6 @@ use ketchup_core::{
         CommandBatch, DocumentStore, OccurrenceId, Proposal, Snapshot, VerifiedProposalCommit,
     },
     exact_product::ExactResultRegistry,
-    graph::sha256_hex,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -67,8 +66,10 @@ pub const MIN_IMAGE_SIDE_PX: u32 = 512;
 pub const MAX_IMAGE_SIDE_PX: u32 = 1600;
 pub const QUEUE_CAPACITY: usize = 8;
 pub const MAX_SELECTION: usize = 100;
-pub const MAX_RECEIPTS: usize = 32;
 pub const MAX_APPLY_VERIFY_TIMEOUT_MS: u64 = 10_000;
+const fn default_apply_verify_timeout_ms() -> u64 {
+    MAX_APPLY_VERIFY_TIMEOUT_MS
+}
 pub const MAX_BATCH_JOBS: usize = 16;
 pub const IMAGE_PROTOCOL_VERSION: u32 = 4;
 
@@ -109,89 +110,115 @@ pub enum Request {
     Status {},
     Summary {},
     EditContext {
-        expected: Stamp,
+        #[serde(default)]
+        expected: Option<Stamp>,
         targets: Vec<AssistantInstancePath>,
     },
     Query {
-        expected: Stamp,
+        #[serde(default)]
+        expected: Option<Stamp>,
         query: PageRequest,
     },
     Detail {
-        expected: Stamp,
+        #[serde(default)]
+        expected: Option<Stamp>,
         kind: EntityKind,
         entity_id: u64,
     },
     WorksetCreate {
-        expected: Stamp,
+        #[serde(default)]
+        expected: Option<Stamp>,
         query: PageRequest,
     },
     WorksetStatus {
-        expected: Stamp,
+        #[serde(default)]
+        expected: Option<Stamp>,
         handle: String,
     },
     BatchJobStart {
-        expected: Stamp,
+        #[serde(default)]
+        expected: Option<Stamp>,
         workset_handle: String,
         operation: OccurrenceBatchOperation,
     },
     BatchJobStatus {
-        expected: Stamp,
+        #[serde(default)]
+        expected: Option<Stamp>,
         handle: String,
     },
     BatchJobStep {
-        expected: Stamp,
+        #[serde(default)]
+        expected: Option<Stamp>,
         handle: String,
     },
     BatchJobCancel {
-        expected: Stamp,
+        #[serde(default)]
+        expected: Option<Stamp>,
         handle: String,
     },
     Propose {
-        expected: Stamp,
-        selection: Vec<u64>,
+        #[serde(default)]
+        expected: Option<Stamp>,
+        #[serde(default)]
+        selection: Option<Vec<u64>>,
         program: AssistantCadEditProgram,
     },
     Commit {
-        expected: Stamp,
+        #[serde(default)]
+        expected: Option<Stamp>,
         proposal_id: u64,
     },
+    /// Plan, evaluate exact geometry, run collision + gravity_support (plus any
+    /// extra `validators`) and publish as one Undo step. `expected` and
+    /// `selection` are optional guards against concurrent human edits.
     ApplyAndVerify {
-        request_id: String,
-        expected: Stamp,
-        selection: Vec<u64>,
+        #[serde(default)]
+        expected: Option<Stamp>,
+        #[serde(default)]
+        selection: Option<Vec<u64>>,
         program: AssistantCadEditProgram,
+        #[serde(default)]
         validators: Vec<String>,
+        #[serde(default = "default_apply_verify_timeout_ms")]
         timeout_ms: u64,
         #[serde(default)]
         save: Option<ApplyAndVerifySave>,
     },
     Undo {
-        expected: Stamp,
+        #[serde(default)]
+        expected: Option<Stamp>,
     },
     Redo {
-        expected: Stamp,
+        #[serde(default)]
+        expected: Option<Stamp>,
     },
     Save {
-        expected: Stamp,
+        #[serde(default)]
+        expected: Option<Stamp>,
     },
     SaveAs {
-        expected: Stamp,
+        #[serde(default)]
+        expected: Option<Stamp>,
         path: String,
     },
     Open {
-        expected: Stamp,
+        #[serde(default)]
+        expected: Option<Stamp>,
         path: String,
     },
     Selection {
-        expected: Stamp,
+        #[serde(default)]
+        expected: Option<Stamp>,
         occurrence_ids: Vec<u64>,
     },
     View {
-        expected: Stamp,
+        #[serde(default)]
+        expected: Option<Stamp>,
         view: View,
     },
     Image {
-        expected: Stamp,
+        #[serde(default)]
+        expected: Option<Stamp>,
         image_protocol_version: u32,
         capture_mode: CaptureMode,
         max_side_px: u32,
@@ -304,22 +331,41 @@ struct Queued {
     cancelled: Arc<AtomicBool>,
     reply: mpsc::SyncSender<Response>,
 }
+/// GUI selection the caller asserted, re-checked right before publication.
+type SelectionGuard = Option<(Vec<u64>, Option<SelectionId>)>;
 struct Pending {
     id: u64,
-    stamp: Stamp,
-    selection: Vec<u64>,
-    primary: Option<SelectionId>,
+    epoch: u64,
+    selection: SelectionGuard,
     proposal: Proposal,
 }
-struct Receipt {
-    id: u64,
-    expected: Stamp,
-    value: Value,
+enum PlanRejection {
+    Code(&'static str),
+    CapabilityGap(Box<AssistantRejectionDiagnostic>),
 }
-struct ApplyAndVerifyReceipt {
-    request_id: String,
-    payload_digest: String,
-    value: Value,
+impl From<&'static str> for PlanRejection {
+    fn from(code: &'static str) -> Self {
+        Self::Code(code)
+    }
+}
+pub(crate) struct ApplyAndVerifyRequest {
+    expected: Option<Stamp>,
+    selection: Option<Vec<u64>>,
+    program: AssistantCadEditProgram,
+    validators: Vec<String>,
+    timeout_ms: u64,
+    save: Option<ApplyAndVerifySave>,
+}
+/// Everything decided on the UI thread before the off-thread exact/validation work.
+struct ApplyAndVerifyPlan {
+    before: Stamp,
+    selection: SelectionGuard,
+    proposal: Proposal,
+    candidate: Snapshot,
+    save_path: Option<PathBuf>,
+    timeout_ms: u64,
+    started: Instant,
+    planned_at: Instant,
 }
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -328,7 +374,6 @@ enum ApplyAndVerifyFault {
     Candidate,
     Exact,
     Validation,
-    Report,
     Publication,
 }
 struct PreparedApplyAndVerify {
@@ -345,17 +390,7 @@ struct ApplyAndVerifyJob {
     reply: mpsc::SyncSender<Response>,
     cancelled: Arc<AtomicBool>,
     worker_cancelled: Arc<AtomicBool>,
-    request_id: String,
-    payload_digest: String,
-    expected: Stamp,
-    selection: Vec<u64>,
-    primary: Option<SelectionId>,
-    proposal: Proposal,
-    candidate: Snapshot,
-    save_path: Option<PathBuf>,
-    timeout_ms: u64,
-    started: Instant,
-    planned_at: Instant,
+    plan: ApplyAndVerifyPlan,
     receiver: mpsc::Receiver<Result<PreparedApplyAndVerify, &'static str>>,
 }
 struct BatchJob {
@@ -367,7 +402,6 @@ struct ClientState {
     query: ModelQuery,
     pending: Option<Pending>,
     next_proposal: u64,
-    receipts: VecDeque<Receipt>,
     batch_jobs: VecDeque<BatchJob>,
     batch_job_key: RandomState,
     next_batch_job: u64,
@@ -379,7 +413,6 @@ impl Default for ClientState {
             query: ModelQuery::default(),
             pending: None,
             next_proposal: 1,
-            receipts: VecDeque::new(),
             batch_jobs: VecDeque::new(),
             batch_job_key: RandomState::new(),
             next_batch_job: 1,
@@ -423,8 +456,6 @@ pub(crate) struct LiveBridge {
     client_states: BTreeMap<u64, ClientState>,
     pending: Option<Pending>,
     next_proposal: u64,
-    receipts: VecDeque<Receipt>,
-    apply_and_verify_receipts: VecDeque<ApplyAndVerifyReceipt>,
     apply_and_verify_job: Option<ApplyAndVerifyJob>,
     #[cfg(test)]
     apply_and_verify_fault: Option<ApplyAndVerifyFault>,
@@ -530,7 +561,6 @@ impl KetchupApp {
             } = queued;
             let request = match request {
                 Request::ApplyAndVerify {
-                    request_id,
                     expected,
                     selection,
                     program,
@@ -539,8 +569,20 @@ impl KetchupApp {
                     save,
                 } => {
                     bridge.start_queued_apply_and_verify(
-                        self, context, id, reply, cancelled, request_id, expected, selection,
-                        program, validators, timeout_ms, save, ui_busy,
+                        self,
+                        context,
+                        id,
+                        reply,
+                        cancelled,
+                        ApplyAndVerifyRequest {
+                            expected,
+                            selection,
+                            program,
+                            validators,
+                            timeout_ms,
+                            save,
+                        },
+                        ui_busy,
                     );
                     continue;
                 }
@@ -588,7 +630,6 @@ impl LiveBridge {
                 query: std::mem::take(&mut self.query),
                 pending: self.pending.take(),
                 next_proposal: std::mem::replace(&mut self.next_proposal, 1),
-                receipts: std::mem::take(&mut self.receipts),
                 batch_jobs: std::mem::take(&mut self.batch_jobs),
                 batch_job_key: std::mem::replace(&mut self.batch_job_key, RandomState::new()),
                 next_batch_job: std::mem::replace(&mut self.next_batch_job, 1),
@@ -599,7 +640,6 @@ impl LiveBridge {
         self.query = state.query;
         self.pending = state.pending;
         self.next_proposal = state.next_proposal;
-        self.receipts = state.receipts;
         self.batch_jobs = state.batch_jobs;
         self.batch_job_key = state.batch_job_key;
         self.next_batch_job = state.next_batch_job;
@@ -615,7 +655,6 @@ impl LiveBridge {
         self.query = ModelQuery::default();
         self.pending = None;
         self.next_proposal = 1;
-        self.receipts.clear();
         self.batch_jobs.clear();
         self.batch_job_key = RandomState::new();
         self.next_batch_job = 1;
@@ -626,7 +665,6 @@ impl LiveBridge {
         self.observed = None;
         self.client_states.clear();
         self.pending = None;
-        self.receipts.clear();
         self.batch_jobs.clear();
         self.batch_job_key = RandomState::new();
         self.next_batch_job = 1;
@@ -727,11 +765,40 @@ impl LiveBridge {
         }
         Ok(())
     }
-    fn guard(app: &KetchupApp, expected: &Stamp) -> Result<(), &'static str> {
-        if &app.live_bridge_stamp() != expected {
-            return Err("stale_document");
+    /// Every document mutation (including Undo/Redo and Open) draws a fresh
+    /// process-unique epoch, so the epoch alone detects any intervening change.
+    fn guard(app: &KetchupApp, expected: &Option<Stamp>) -> Result<(), &'static str> {
+        match expected {
+            Some(stamp) if stamp.mutation_epoch != app.document.mutation_epoch() => {
+                Err("stale_document")
+            }
+            _ => Ok(()),
         }
-        Ok(())
+    }
+
+    fn selection_guard(
+        app: &KetchupApp,
+        selection: Option<Vec<u64>>,
+    ) -> Result<SelectionGuard, &'static str> {
+        let Some(selection) = selection else {
+            return Ok(None);
+        };
+        let selection = Self::validate_ids(&selection)?;
+        if selection != Self::selection(app)? {
+            return Err("selection_changed");
+        }
+        Ok(Some((selection, app.selection.primary.clone())))
+    }
+
+    fn check_selection_guard(app: &KetchupApp, guard: &SelectionGuard) -> Result<(), &'static str> {
+        match guard {
+            Some((ids, primary))
+                if *ids != Self::selection(app)? || *primary != app.selection.primary =>
+            {
+                Err("selection_changed")
+            }
+            _ => Ok(()),
+        }
     }
 
     fn selection(app: &KetchupApp) -> Result<Vec<u64>, &'static str> {
@@ -850,14 +917,15 @@ impl LiveBridge {
     fn mandatory_validation_selection(
         validators: &[String],
     ) -> Result<AssistantValidationSelection, &'static str> {
-        let validator_names = validators.iter().map(String::as_str).collect::<Vec<_>>();
+        let mut validator_names = vec!["collision", "gravity_support"];
+        for name in validators {
+            if !validator_names.contains(&name.as_str()) {
+                validator_names.push(name.as_str());
+            }
+        }
         let selection = AssistantValidationSelection::only(&validator_names);
-        if !selection.is_valid()
-            || ["collision", "gravity_support"]
-                .into_iter()
-                .any(|required| !selection.requested.contains(required))
-        {
-            return Err("mandatory_validators_required");
+        if !selection.is_valid() {
+            return Err("unknown_validator");
         }
         Ok(selection)
     }
@@ -936,10 +1004,11 @@ impl LiveBridge {
             .filter(|remaining| !remaining.is_zero())
             .ok_or("job_timeout")?;
         let products = exact_task.wait(remaining).map_err(|error| {
-            if cancelled.load(Ordering::Acquire) {
-                "request_cancelled"
-            } else if error.contains("timed out") {
+            // A wait timeout also raises the shared cancel flag; report it as a timeout.
+            if error.contains("timed out") {
                 "job_timeout"
+            } else if cancelled.load(Ordering::Acquire) {
+                "request_cancelled"
             } else if error.contains("cancelled") {
                 "request_cancelled"
             } else if error.contains("disconnected") {
@@ -997,6 +1066,104 @@ impl LiveBridge {
         })
     }
 
+    fn worker_path(app: &KetchupApp) -> Option<PathBuf> {
+        app.exact_worker_path.clone().or_else(|| {
+            exact_worker_candidates()
+                .into_iter()
+                .find(|path| path.is_file())
+        })
+    }
+
+    /// UI-thread preflight shared by the queued bridge path and the synchronous
+    /// built-in assistant path. Mutates nothing.
+    fn plan_apply_and_verify(
+        app: &KetchupApp,
+        request: ApplyAndVerifyRequest,
+        ui_busy: bool,
+        #[cfg(test)] fault: Option<ApplyAndVerifyFault>,
+    ) -> Result<
+        (
+            ApplyAndVerifyPlan,
+            ExactEvaluationSelection,
+            AssistantValidationSelection,
+        ),
+        PlanRejection,
+    > {
+        let ApplyAndVerifyRequest {
+            expected,
+            selection,
+            program,
+            validators,
+            timeout_ms,
+            save,
+        } = request;
+        let started = Instant::now();
+        if timeout_ms == 0 || timeout_ms > MAX_APPLY_VERIFY_TIMEOUT_MS {
+            return Err("invalid_job_timeout".into());
+        }
+        let save_path = match save {
+            None => None,
+            Some(ApplyAndVerifySave::Current {}) => {
+                Some(app.document_path.clone().ok_or("save_path_required")?)
+            }
+            Some(ApplyAndVerifySave::Path { path }) => {
+                if path.is_empty()
+                    || path.len() > 4096
+                    || path.contains('\0')
+                    || !Path::new(&path).is_absolute()
+                {
+                    return Err("invalid_path".into());
+                }
+                Some(PathBuf::from(path))
+            }
+        };
+        let validation_selection = Self::mandatory_validation_selection(&validators)?;
+        Self::guard(app, &expected)?;
+        Self::available(app, ui_busy)?;
+        let selection = Self::selection_guard(app, selection)?;
+        program.validate().map_err(|_| "invalid_program")?;
+        Self::program_scope(app, &program)?;
+        #[cfg(test)]
+        if fault == Some(ApplyAndVerifyFault::Planning) {
+            return Err("planning_rejected".into());
+        }
+        let proposal = app
+            .derive_assistant_cad_edit_proposal(&program)
+            .map_err(|diagnostic| {
+                if Self::is_capability_gap(&diagnostic) {
+                    PlanRejection::CapabilityGap(diagnostic)
+                } else {
+                    PlanRejection::Code("planning_rejected")
+                }
+            })?;
+        #[cfg(test)]
+        if fault == Some(ApplyAndVerifyFault::Candidate) {
+            return Err("candidate_rejected".into());
+        }
+        let candidate = app
+            .document
+            .preview_verified_proposal(&proposal)
+            .map_err(|_| "candidate_rejected")?;
+        let exact_selection = plan_incremental_exact_evaluation(
+            &app.document.current(),
+            &candidate,
+            app.exact_source.as_ref(),
+        )
+        .map_err(|_| "planning_rejected")?
+        .selection;
+        let plan = ApplyAndVerifyPlan {
+            before: app.live_bridge_stamp(),
+            selection,
+            proposal,
+            candidate,
+            save_path,
+            timeout_ms,
+            started,
+            planned_at: Instant::now(),
+        };
+        Ok((plan, exact_selection, validation_selection))
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn start_queued_apply_and_verify(
         &mut self,
@@ -1005,152 +1172,47 @@ impl LiveBridge {
         id: u64,
         reply: mpsc::SyncSender<Response>,
         cancelled: Arc<AtomicBool>,
-        request_id: String,
-        expected: Stamp,
-        selection: Vec<u64>,
-        program: AssistantCadEditProgram,
-        validators: Vec<String>,
-        timeout_ms: u64,
-        save: Option<ApplyAndVerifySave>,
+        request: ApplyAndVerifyRequest,
         ui_busy: bool,
     ) {
-        macro_rules! reject {
-            ($code:expr) => {{
-                Self::reply(app, id, &reply, Err($code));
-                return;
-            }};
-        }
         if self.apply_and_verify_job.is_some() {
-            reject!("apply_and_verify_busy");
-        }
-        if request_id.is_empty()
-            || request_id.len() > 128
-            || request_id.chars().any(char::is_control)
-        {
-            reject!("invalid_request_id");
-        }
-        if timeout_ms == 0 || timeout_ms > MAX_APPLY_VERIFY_TIMEOUT_MS {
-            reject!("invalid_job_timeout");
-        }
-        let payload = match serde_json::to_vec(&(
-            &expected,
-            &selection,
-            &program,
-            &validators,
-            timeout_ms,
-            &save,
-        )) {
-            Ok(payload) => payload,
-            Err(_) => reject!("payload_encoding_rejected"),
-        };
-        let payload_digest = sha256_hex(&payload);
-        if let Some(receipt) = self
-            .apply_and_verify_receipts
-            .iter()
-            .find(|receipt| receipt.request_id == request_id)
-        {
-            if receipt.payload_digest != payload_digest {
-                reject!("request_id_payload_mismatch");
-            }
-            Self::reply(app, id, &reply, Ok(receipt.value.clone()));
+            Self::reply(app, id, &reply, Err("apply_and_verify_busy"));
             return;
         }
-        let save_path = match &save {
-            None => None,
-            Some(ApplyAndVerifySave::Current {}) => match app.document_path.clone() {
-                Some(path) => Some(path),
-                None => reject!("save_path_required"),
-            },
-            Some(ApplyAndVerifySave::Path { path }) => {
-                if path.is_empty()
-                    || path.len() > 4096
-                    || path.contains('\0')
-                    || !Path::new(path).is_absolute()
-                {
-                    reject!("invalid_path");
-                }
-                Some(Path::new(path).to_owned())
-            }
-        };
-        let validation_selection = match Self::mandatory_validation_selection(&validators) {
-            Ok(selection) => selection,
-            Err(code) => reject!(code),
-        };
-        let started = Instant::now();
-        if let Err(code) = Self::guard(app, &expected) {
-            reject!(code);
-        }
-        if let Err(code) = Self::available(app, ui_busy) {
-            reject!(code);
-        }
-        let selection = match Self::validate_ids(&selection) {
-            Ok(selection) => selection,
-            Err(code) => reject!(code),
-        };
-        match Self::selection(app) {
-            Ok(current) if current == selection => {}
-            Ok(_) => reject!("selection_changed"),
-            Err(code) => reject!(code),
-        }
-        let primary = app.selection.primary.clone();
-        if program.validate().is_err() {
-            reject!("invalid_program");
-        }
-        if let Err(code) = Self::program_scope(app, &program) {
-            reject!(code);
-        }
-        #[cfg(test)]
-        if self.apply_and_verify_fault == Some(ApplyAndVerifyFault::Planning) {
-            reject!("planning_rejected");
-        }
-        let proposal = match app.derive_assistant_cad_edit_proposal(&program) {
-            Ok(proposal) => proposal,
-            Err(diagnostic) if Self::is_capability_gap(&diagnostic) => {
+        let (plan, exact_selection, validation_selection) = match Self::plan_apply_and_verify(
+            app,
+            request,
+            ui_busy,
+            #[cfg(test)]
+            self.apply_and_verify_fault,
+        ) {
+            Ok(planned) => planned,
+            Err(PlanRejection::CapabilityGap(diagnostic)) => {
                 Self::reply_capability_gap(app, id, &reply, &diagnostic);
                 return;
             }
-            Err(_) => reject!("planning_rejected"),
+            Err(PlanRejection::Code(code)) => {
+                Self::reply(app, id, &reply, Err(code));
+                return;
+            }
         };
-        #[cfg(test)]
-        if self.apply_and_verify_fault == Some(ApplyAndVerifyFault::Candidate) {
-            reject!("candidate_rejected");
-        }
-        let candidate = match app.document.preview_verified_proposal(&proposal) {
-            Ok(candidate) => candidate,
-            Err(_) => reject!("candidate_rejected"),
-        };
-        if let Err(code) = Self::require_request_authority(&cancelled) {
-            reject!(code);
-        }
-        let exact_selection = match plan_incremental_exact_evaluation(
-            &app.document.current(),
-            &candidate,
-            app.exact_source.as_ref(),
-        ) {
-            Ok(plan) => plan.selection,
-            Err(_) => reject!("planning_rejected"),
-        };
-        let planned_at = Instant::now();
-        let worker_path = app.exact_worker_path.clone().or_else(|| {
-            exact_worker_candidates()
-                .into_iter()
-                .find(|path| path.is_file())
-        });
         let container_data = app.container_data.clone();
         let render = app.exact_results.clone();
         let topology = app.topology_results.clone();
-        let worker_candidate = candidate.clone();
+        let worker_path = Self::worker_path(app);
+        let candidate = plan.candidate.clone();
+        let (started, timeout_ms) = (plan.started, plan.timeout_ms);
         let worker_cancelled = Arc::new(AtomicBool::new(false));
-        let job_worker_cancelled = Arc::clone(&worker_cancelled);
+        let thread_cancelled = Arc::clone(&worker_cancelled);
         #[cfg(test)]
-        let worker_fault = self.apply_and_verify_fault;
+        let fault = self.apply_and_verify_fault;
         let (sender, receiver) = mpsc::sync_channel(1);
         let repaint = context.clone();
         let spawn = std::thread::Builder::new()
             .name("ketchup-live-apply-verify".into())
             .spawn(move || {
                 let result = Self::evaluate_apply_and_verify_candidate(
-                    &worker_candidate,
+                    &candidate,
                     &container_data,
                     &render,
                     &topology,
@@ -1159,69 +1221,58 @@ impl LiveBridge {
                     &validation_selection,
                     started,
                     timeout_ms,
-                    Arc::clone(&worker_cancelled),
+                    thread_cancelled,
                     #[cfg(test)]
-                    worker_fault,
+                    fault,
                 );
                 let _ = sender.try_send(result);
                 repaint.request_repaint();
             });
         if spawn.is_err() {
-            reject!("job_worker_unavailable");
+            Self::reply(app, id, &reply, Err("job_worker_unavailable"));
+            return;
         }
         self.apply_and_verify_job = Some(ApplyAndVerifyJob {
             id,
             reply,
             cancelled,
-            worker_cancelled: job_worker_cancelled,
-            request_id,
-            payload_digest,
-            expected,
+            worker_cancelled,
+            plan,
+            receiver,
+        });
+        context.request_repaint_after(Duration::from_millis(10));
+    }
+
+    fn publish_apply_and_verify(
+        app: &mut KetchupApp,
+        plan: &ApplyAndVerifyPlan,
+        prepared: PreparedApplyAndVerify,
+        ui_busy: bool,
+        cancelled: &AtomicBool,
+        #[cfg(test)] fault: Option<ApplyAndVerifyFault>,
+    ) -> Result<Value, &'static str> {
+        let ApplyAndVerifyPlan {
+            before,
             selection,
-            primary,
             proposal,
             candidate,
             save_path,
             timeout_ms,
             started,
             planned_at,
-            receiver,
-        });
-        context.request_repaint_after(Duration::from_millis(10));
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn publish_apply_and_verify(
-        app: &mut KetchupApp,
-        request_id: &str,
-        payload_digest: &str,
-        expected: &Stamp,
-        selection: &[u64],
-        primary: &Option<SelectionId>,
-        proposal: &Proposal,
-        candidate: &Snapshot,
-        save_path: Option<&Path>,
-        timeout_ms: u64,
-        started: Instant,
-        planned_at: Instant,
-        prepared: PreparedApplyAndVerify,
-        ui_busy: bool,
-        cancelled: &AtomicBool,
-        receipts: &mut VecDeque<ApplyAndVerifyReceipt>,
-        #[cfg(test)] fault: Option<ApplyAndVerifyFault>,
-    ) -> Result<Value, &'static str> {
-        let deadline = Duration::from_millis(timeout_ms);
+        } = plan;
+        let deadline = Duration::from_millis(*timeout_ms);
         if started.elapsed() > deadline {
             cancelled.store(true, Ordering::Release);
             return Err("job_timeout");
         }
         Self::require_request_authority(cancelled)?;
-        Self::guard(app, expected)?;
-        Self::available(app, ui_busy)?;
-        if selection != Self::selection(app)? || *primary != app.selection.primary {
-            return Err("selection_changed");
+        // The candidate was built on `before`; a human edit since then wins.
+        if app.document.mutation_epoch() != before.mutation_epoch {
+            return Err("stale_document");
         }
-        Self::require_request_authority(cancelled)?;
+        Self::available(app, ui_busy)?;
+        Self::check_selection_guard(app, selection)?;
 
         let PreparedApplyAndVerify {
             candidate_exact,
@@ -1232,12 +1283,6 @@ impl LiveBridge {
             validated_at,
             _exact_task,
         } = prepared;
-        #[cfg(test)]
-        if fault == Some(ApplyAndVerifyFault::Report) {
-            return Err("validation_report_encoding_rejected");
-        }
-        let validation_bytes =
-            serde_json::to_vec(&validation).map_err(|_| "validation_report_encoding_rejected")?;
         let diff_targets = proposal
             .authoritative_diff()
             .iter()
@@ -1276,10 +1321,6 @@ impl LiveBridge {
                 WorkRecoveryMutationError::Recovery(_) => "recovery_rejected",
             })?;
         let after = app.live_bridge_stamp();
-        debug_assert_eq!(
-            exact_source(&app.document.current()),
-            exact_source(candidate)
-        );
         app.exact_source = Some(exact_source(candidate));
         app.exact_retry_at = None;
         app.invalidate_pending_import_reviews();
@@ -1288,7 +1329,6 @@ impl LiveBridge {
         app.status_key = "status-ready";
         let committed_at = Instant::now();
 
-        let save_path_report = save_path.map(|path| path.to_string_lossy().into_owned());
         let (saved, save_state, save_error) = if let Some(path) = save_path {
             let saved = app.save_document_to_while(path, || {
                 !cancelled.load(Ordering::Acquire) && started.elapsed() <= deadline
@@ -1306,11 +1346,8 @@ impl LiveBridge {
             (false, "not_requested", None)
         };
         let finished_at = Instant::now();
-        let candidate_document_id = candidate.document_id().0;
-        let value = json!({
-            "request_id": request_id,
-            "payload_digest": payload_digest,
-            "before": expected,
+        Ok(json!({
+            "before": before,
             "after": after,
             "diff": {
                 "entry_count": proposal.authoritative_diff().len(),
@@ -1329,211 +1366,64 @@ impl LiveBridge {
                 "complete": validation["complete"],
                 "issue_count": validation["issue_count"],
                 "requested": validation["requested"],
-                "report_digest": sha256_hex(&validation_bytes),
             },
             "timing_ms": {
-                "planning": planned_at.duration_since(started).as_millis() as u64,
-                "exact": exact_at.duration_since(planned_at).as_millis() as u64,
+                "planning": planned_at.duration_since(*started).as_millis() as u64,
+                "exact": exact_at.duration_since(*planned_at).as_millis() as u64,
                 "validators": validated_at.duration_since(exact_at).as_millis() as u64,
                 "publication": committed_at.duration_since(validated_at).as_millis() as u64,
                 "save": finished_at.duration_since(committed_at).as_millis() as u64,
-                "total": finished_at.duration_since(started).as_millis() as u64,
+                "total": finished_at.duration_since(*started).as_millis() as u64,
                 "deadline": timeout_ms,
             },
             "published": true,
             "saved": saved,
             "save_state": save_state,
-            "save_path": save_path_report,
+            "save_path": save_path.as_ref().map(|path| path.to_string_lossy().into_owned()),
             "save_error": save_error,
-            "same_gui_document": true,
-            "execution": {
-                "candidate_state": "isolated_snapshot",
-                "candidate_document_id": candidate_document_id,
-                "gui_document_id": after.document_id,
-                "helper_headless_documents": 0,
-            },
             "undo_steps": app.undo_step_count(),
-        });
-        if receipts.len() == MAX_RECEIPTS {
-            receipts.pop_front();
-        }
-        receipts.push_back(ApplyAndVerifyReceipt {
-            request_id: request_id.to_owned(),
-            payload_digest: payload_digest.to_owned(),
-            value: value.clone(),
-        });
-        Ok(value)
+        }))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn apply_and_verify(
-        &mut self,
+    /// Synchronous variant for callers already off the bridge queue.
+    fn apply_and_verify_now(
         app: &mut KetchupApp,
-        request_id: String,
-        expected: Stamp,
-        selection: Vec<u64>,
-        program: AssistantCadEditProgram,
-        validators: Vec<String>,
-        timeout_ms: u64,
-        save: Option<ApplyAndVerifySave>,
+        request: ApplyAndVerifyRequest,
         ui_busy: bool,
         cancelled: &Arc<AtomicBool>,
-    ) -> Result<Value, &'static str> {
-        Self::apply_and_verify_with_state(
-            app,
-            request_id,
-            expected,
-            selection,
-            program,
-            validators,
-            timeout_ms,
-            save,
-            ui_busy,
-            cancelled,
-            &mut self.apply_and_verify_receipts,
-            #[cfg(test)]
-            self.apply_and_verify_fault,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn apply_and_verify_with_state(
-        app: &mut KetchupApp,
-        request_id: String,
-        expected: Stamp,
-        selection: Vec<u64>,
-        program: AssistantCadEditProgram,
-        validators: Vec<String>,
-        timeout_ms: u64,
-        save: Option<ApplyAndVerifySave>,
-        ui_busy: bool,
-        cancelled: &Arc<AtomicBool>,
-        receipts: &mut VecDeque<ApplyAndVerifyReceipt>,
         #[cfg(test)] fault: Option<ApplyAndVerifyFault>,
     ) -> Result<Value, &'static str> {
-        if request_id.is_empty()
-            || request_id.len() > 128
-            || request_id.chars().any(char::is_control)
-        {
-            return Err("invalid_request_id");
-        }
-        if timeout_ms == 0 || timeout_ms > MAX_APPLY_VERIFY_TIMEOUT_MS {
-            return Err("invalid_job_timeout");
-        }
-        let payload = serde_json::to_vec(&(
-            &expected,
-            &selection,
-            &program,
-            &validators,
-            timeout_ms,
-            &save,
-        ))
-        .map_err(|_| "payload_encoding_rejected")?;
-        let payload_digest = sha256_hex(&payload);
-        if let Some(receipt) = receipts
-            .iter()
-            .find(|receipt| receipt.request_id == request_id)
-        {
-            if receipt.payload_digest != payload_digest {
-                return Err("request_id_payload_mismatch");
-            }
-            return Ok(receipt.value.clone());
-        }
-        let save_path = match &save {
-            None => None,
-            Some(ApplyAndVerifySave::Current {}) => {
-                Some(app.document_path.clone().ok_or("save_path_required")?)
-            }
-            Some(ApplyAndVerifySave::Path { path }) => {
-                if path.is_empty()
-                    || path.len() > 4096
-                    || path.contains('\0')
-                    || !Path::new(path).is_absolute()
-                {
-                    return Err("invalid_path");
-                }
-                Some(Path::new(path).to_owned())
-            }
-        };
-        let validation_selection = Self::mandatory_validation_selection(&validators)?;
-
-        let started = Instant::now();
-        Self::guard(app, &expected)?;
-        Self::available(app, ui_busy)?;
-        let selection = Self::validate_ids(&selection)?;
-        if selection != Self::selection(app)? {
-            return Err("selection_changed");
-        }
-        let primary = app.selection.primary.clone();
-        program.validate().map_err(|_| "invalid_program")?;
-        Self::program_scope(app, &program)?;
-        #[cfg(test)]
-        if fault == Some(ApplyAndVerifyFault::Planning) {
-            return Err("planning_rejected");
-        }
-        let proposal = app
-            .derive_assistant_cad_edit_proposal(&program)
-            .map_err(|diagnostic| {
-                if Self::is_capability_gap(&diagnostic) {
-                    "capability_gap"
-                } else {
-                    "planning_rejected"
-                }
-            })?;
-        #[cfg(test)]
-        if fault == Some(ApplyAndVerifyFault::Candidate) {
-            return Err("candidate_rejected");
-        }
-        let candidate = app
-            .document
-            .preview_verified_proposal(&proposal)
-            .map_err(|_| "candidate_rejected")?;
-        let exact_selection = plan_incremental_exact_evaluation(
-            &app.document.current(),
-            &candidate,
-            app.exact_source.as_ref(),
+        let (plan, exact_selection, validation_selection) = Self::plan_apply_and_verify(
+            app,
+            request,
+            ui_busy,
+            #[cfg(test)]
+            fault,
         )
-        .map_err(|_| "planning_rejected")?
-        .selection;
-        let planned_at = Instant::now();
-        Self::require_request_authority(cancelled)?;
-
-        let worker_path = app.exact_worker_path.clone().or_else(|| {
-            exact_worker_candidates()
-                .into_iter()
-                .find(|path| path.is_file())
-        });
+        .map_err(|rejection| match rejection {
+            PlanRejection::Code(code) => code,
+            PlanRejection::CapabilityGap(_) => "capability_gap",
+        })?;
         let prepared = Self::evaluate_apply_and_verify_candidate(
-            &candidate,
+            &plan.candidate,
             &app.container_data,
             &app.exact_results,
             &app.topology_results,
-            worker_path,
+            Self::worker_path(app),
             &exact_selection,
             &validation_selection,
-            started,
-            timeout_ms,
+            plan.started,
+            plan.timeout_ms,
             Arc::clone(cancelled),
             #[cfg(test)]
             fault,
         )?;
         Self::publish_apply_and_verify(
             app,
-            &request_id,
-            &payload_digest,
-            &expected,
-            &selection,
-            &primary,
-            &proposal,
-            &candidate,
-            save_path.as_deref(),
-            timeout_ms,
-            started,
-            planned_at,
+            &plan,
             prepared,
             ui_busy,
             cancelled,
-            receipts,
             #[cfg(test)]
             fault,
         )
@@ -1541,55 +1431,22 @@ impl LiveBridge {
 
     pub(crate) fn apply_assistant_cad_program(
         app: &mut KetchupApp,
-        request_id: String,
         program: AssistantCadEditProgram,
     ) -> Result<Value, &'static str> {
-        let expected = app.live_bridge_stamp();
-        let selection = Self::selection(app)?;
-        let mut receipts = VecDeque::new();
-        Self::apply_and_verify_with_state(
+        Self::apply_and_verify_now(
             app,
-            request_id,
-            expected,
-            selection,
-            program,
-            vec!["collision".to_owned(), "gravity_support".to_owned()],
-            MAX_APPLY_VERIFY_TIMEOUT_MS,
-            None,
+            ApplyAndVerifyRequest {
+                expected: None,
+                selection: None,
+                program,
+                validators: Vec::new(),
+                timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
+                save: None,
+            },
             false,
             &Arc::new(AtomicBool::new(false)),
-            &mut receipts,
             #[cfg(test)]
             None,
-        )
-    }
-
-    fn finish_queued_apply_and_verify(
-        &mut self,
-        app: &mut KetchupApp,
-        job: &ApplyAndVerifyJob,
-        prepared: PreparedApplyAndVerify,
-        ui_busy: bool,
-    ) -> Result<Value, &'static str> {
-        Self::publish_apply_and_verify(
-            app,
-            &job.request_id,
-            &job.payload_digest,
-            &job.expected,
-            &job.selection,
-            &job.primary,
-            &job.proposal,
-            &job.candidate,
-            job.save_path.as_deref(),
-            job.timeout_ms,
-            job.started,
-            job.planned_at,
-            prepared,
-            ui_busy,
-            &job.cancelled,
-            &mut self.apply_and_verify_receipts,
-            #[cfg(test)]
-            self.apply_and_verify_fault,
         )
     }
 
@@ -1605,14 +1462,24 @@ impl LiveBridge {
         let result = if job.cancelled.load(Ordering::Acquire) {
             job.worker_cancelled.store(true, Ordering::Release);
             Some(Err("request_cancelled"))
-        } else if job.started.elapsed() > Duration::from_millis(job.timeout_ms) {
+        } else if job.plan.started.elapsed() > Duration::from_millis(job.plan.timeout_ms) {
             job.worker_cancelled.store(true, Ordering::Release);
             Some(Err("job_timeout"))
+        } else if app.document.mutation_epoch() != job.plan.before.mutation_epoch {
+            // A human edit wins at once; the candidate can never publish.
+            job.worker_cancelled.store(true, Ordering::Release);
+            Some(Err("stale_document"))
         } else {
             match job.receiver.try_recv() {
-                Ok(Ok(prepared)) => {
-                    Some(self.finish_queued_apply_and_verify(app, &job, prepared, ui_busy))
-                }
+                Ok(Ok(prepared)) => Some(Self::publish_apply_and_verify(
+                    app,
+                    &job.plan,
+                    prepared,
+                    ui_busy,
+                    &job.cancelled,
+                    #[cfg(test)]
+                    self.apply_and_verify_fault,
+                )),
                 Ok(Err(code)) => Some(Err(code)),
                 Err(mpsc::TryRecvError::Disconnected) => {
                     Some(Err("apply_and_verify_worker_disconnected"))
@@ -1655,54 +1522,44 @@ impl LiveBridge {
                 "selection":Self::selection(app).ok(),"selection_scope":"root_occurrences_only",
                 "undo_steps":app.undo_step_count(),"redo_steps":app.redo_step_count(),
                 "pending_proposal_id":self.pending.as_ref().map(|p|p.id),
-                "limits":{"frame_bytes":MAX_FRAME_BYTES,"image_frame_bytes":MAX_IMAGE_FRAME_BYTES,"queue":QUEUE_CAPACITY,"receipts":MAX_RECEIPTS,"selection":MAX_SELECTION,"apply_verify_timeout_ms":MAX_APPLY_VERIFY_TIMEOUT_MS,"batch_jobs":MAX_BATCH_JOBS},
+                "limits":{"frame_bytes":MAX_FRAME_BYTES,"image_frame_bytes":MAX_IMAGE_FRAME_BYTES,"queue":QUEUE_CAPACITY,"selection":MAX_SELECTION,"apply_verify_timeout_ms":MAX_APPLY_VERIFY_TIMEOUT_MS,"batch_jobs":MAX_BATCH_JOBS},
                 "methods":["status","summary","edit_context","query","detail","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","undo","redo","save","save_as","open","selection","view","image","disconnect"]}),
             ),
             Request::Summary {} => Ok(self.query.summary(&app.document.current())),
-            Request::EditContext { expected, targets } => {
-                Self::guard(app, &expected)?;
-                self.query
-                    .edit_context(
-                        &app.document.current(),
-                        &app.topology_results,
-                        app.document.mutation_epoch(),
-                        &EditContextRequest { targets },
-                    )
-                    .map_err(|error| error.code())
-            }
-            Request::Query { expected, query } => {
-                Self::guard(app, &expected)?;
-                self.query
-                    .page_with_topology(&app.document.current(), &app.topology_results, &query)
-                    .map_err(|e| e.code())
-            }
+            Request::EditContext { targets, .. } => self
+                .query
+                .edit_context(
+                    &app.document.current(),
+                    &app.topology_results,
+                    app.document.mutation_epoch(),
+                    &EditContextRequest { targets },
+                )
+                .map_err(|error| error.code()),
+            Request::Query { query, .. } => self
+                .query
+                .page_with_topology(&app.document.current(), &app.topology_results, &query)
+                .map_err(|e| e.code()),
             Request::Detail {
-                expected,
-                kind,
-                entity_id,
-            } => {
-                Self::guard(app, &expected)?;
-                self.query
-                    .detail_with_topology(
-                        &app.document.current(),
-                        &app.topology_results,
-                        kind,
-                        entity_id,
-                    )
-                    .map_err(|e| e.code())
-            }
+                kind, entity_id, ..
+            } => self
+                .query
+                .detail_with_topology(
+                    &app.document.current(),
+                    &app.topology_results,
+                    kind,
+                    entity_id,
+                )
+                .map_err(|e| e.code()),
             Request::WorksetCreate { expected, query } => {
                 Self::guard(app, &expected)?;
                 self.query
                     .create_workset(&app.document.current(), &query)
                     .map_err(|e| e.code())
             }
-            Request::WorksetStatus { expected, handle } => {
-                Self::guard(app, &expected)?;
-                self.query
-                    .workset_status(&app.document.current(), &handle)
-                    .map_err(|e| e.code())
-            }
+            Request::WorksetStatus { handle, .. } => self
+                .query
+                .workset_status(&app.document.current(), &handle)
+                .map_err(|e| e.code()),
             Request::BatchJobStart {
                 expected,
                 workset_handle,
@@ -1738,8 +1595,7 @@ impl LiveBridge {
                 });
                 Ok(json!({"job_handle":handle,"status":status}))
             }
-            Request::BatchJobStatus { expected, handle } => {
-                Self::guard(app, &expected)?;
+            Request::BatchJobStatus { handle, .. } => {
                 let job = self
                     .batch_jobs
                     .iter()
@@ -1789,13 +1645,7 @@ impl LiveBridge {
             } => {
                 Self::guard(app, &expected)?;
                 Self::available(app, ui_busy)?;
-                // No GUI-owned edit state is cleared while unavailable.
-                // Receipt replay above remains observational.
-                let selection = Self::validate_ids(&selection)?;
-                if selection != Self::selection(app)? {
-                    return Err("selection_changed");
-                }
-                // Existing typed CAD validation bounds operations, selectors and geometry.
+                let selection = Self::selection_guard(app, selection)?;
                 program.validate().map_err(|_| "invalid_program")?;
                 Self::program_scope(app, &program)?;
                 let proposal = app
@@ -1803,14 +1653,13 @@ impl LiveBridge {
                     .map_err(|_| "planning_rejected")?;
                 let id = self.next_proposal;
                 self.next_proposal = id.checked_add(1).ok_or("proposal_ids_exhausted")?;
-                let value = json!({"proposal_id":id,"observational":true,"selection":selection,
+                let value = json!({"proposal_id":id,
                     "command_digest":proposal.command_digest(),"result_digest":proposal.intended_result_digest(),
-                    "write_count":proposal.authoritative_writes().len(),"image":"not_requested"});
+                    "write_count":proposal.authoritative_writes().len()});
                 self.pending = Some(Pending {
                     id,
-                    stamp: expected,
+                    epoch: app.document.mutation_epoch(),
                     selection,
-                    primary: app.selection.primary.clone(),
                     proposal,
                 });
                 Ok(value)
@@ -1819,30 +1668,16 @@ impl LiveBridge {
                 expected,
                 proposal_id,
             } => {
-                // A retained receipt is returned even after later human edits, with its
-                // original commit stamp. Never execute the proposal for a second time.
-                if let Some(receipt) = self.receipts.iter().find(|r| r.id == proposal_id) {
-                    if receipt.expected != expected {
-                        return Err("receipt_guard_mismatch");
-                    }
-                    return Ok(receipt.value.clone());
-                }
                 Self::guard(app, &expected)?;
                 Self::available(app, ui_busy)?;
-                // No GUI-owned edit state is cleared while unavailable.
-                // Receipt replay above remains observational.
                 let pending = self.pending.as_ref().ok_or("proposal_not_found")?;
                 if pending.id != proposal_id {
                     return Err("proposal_not_found");
                 }
-                if pending.stamp != expected {
+                if pending.epoch != app.document.mutation_epoch() {
                     return Err("stale_document");
                 }
-                if pending.selection != Self::selection(app)?
-                    || pending.primary != app.selection.primary
-                {
-                    return Err("selection_changed");
-                }
+                Self::check_selection_guard(app, &pending.selection)?;
                 Self::require_request_authority(cancelled)?;
                 let committed = app
                     .commit_verified_proposal_with_work_recovery(&pending.proposal)
@@ -1851,35 +1686,37 @@ impl LiveBridge {
                         WorkRecoveryMutationError::Recovery(_) => "recovery_rejected",
                     })?;
                 self.pending.take().expect("committed pending proposal");
-                let value = json!({"proposal_id":proposal_id,"committed":true,"verified":true,
-                    "before":expected,"after":app.live_bridge_stamp(),"command_digest":committed.command_digest(),
+                let value = json!({"proposal_id":proposal_id,"committed":true,
+                    "after":app.live_bridge_stamp(),"command_digest":committed.command_digest(),
                     "result_digest":committed.result_digest(),"write_count":committed.verified_writes().len(),
-                    "undo_steps":app.undo_step_count(),"geometry_evaluated":false,"image":"not_requested"});
+                    "undo_steps":app.undo_step_count(),"geometry_evaluated":false});
                 app.invalidate_pending_import_reviews();
                 app.clear_ephemeral_edit_state();
                 app.reconcile_selection();
                 app.status_key = "status-ready";
-                if self.receipts.len() == MAX_RECEIPTS {
-                    self.receipts.pop_front();
-                }
-                self.receipts.push_back(Receipt {
-                    id: proposal_id,
-                    expected,
-                    value: value.clone(),
-                });
                 Ok(value)
             }
             Request::ApplyAndVerify {
-                request_id,
                 expected,
                 selection,
                 program,
                 validators,
                 timeout_ms,
                 save,
-            } => self.apply_and_verify(
-                app, request_id, expected, selection, program, validators, timeout_ms, save,
-                ui_busy, cancelled,
+            } => Self::apply_and_verify_now(
+                app,
+                ApplyAndVerifyRequest {
+                    expected,
+                    selection,
+                    program,
+                    validators,
+                    timeout_ms,
+                    save,
+                },
+                ui_busy,
+                cancelled,
+                #[cfg(test)]
+                self.apply_and_verify_fault,
             ),
             Request::Undo { expected } => {
                 Self::guard(app, &expected)?;
@@ -1975,8 +1812,7 @@ impl LiveBridge {
                 self.pending = None;
                 Ok(json!({"occurrence_ids":ids,"canonical_mutation":false}))
             }
-            Request::View { expected, view } => {
-                Self::guard(app, &expected)?;
+            Request::View { view, .. } => {
                 Self::available(app, ui_busy)?;
                 let command = match view {
                     View::Iso => AppCommand::ViewIso,
@@ -2003,7 +1839,6 @@ impl LiveBridge {
             }
             Request::Disconnect {} => {
                 self.pending = None;
-                self.receipts.clear();
                 self.batch_jobs.clear();
                 self.batch_job_key = RandomState::new();
                 self.next_batch_job = 1;

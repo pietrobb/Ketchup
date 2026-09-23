@@ -535,7 +535,9 @@ impl LiveBridge {
             if Instant::now() >= request.deadline {
                 return Err("image_timeout");
             }
-            Self::guard(app, &request.initial.stamp)?;
+            if request.initial.stamp.mutation_epoch != app.document.mutation_epoch() {
+                return Err("stale_document");
+            }
             Self::available(app, ctx.wants_keyboard_input() || ctx.is_using_pointer())?;
             if request.mode == CaptureMode::VisibleViewport
                 && (ctx.viewport_id() != egui::ViewportId::ROOT

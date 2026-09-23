@@ -274,7 +274,7 @@ fn readiness_authentication_and_detach_use_the_actual_app() {
         &mut stream,
         TOKEN,
         Request::Image {
-            expected: before.clone(),
+            expected: Some(before.clone()),
             image_protocol_version: IMAGE_PROTOCOL_VERSION,
             capture_mode: CaptureMode::Offscreen,
             max_side_px: ketchup_app::live_bridge::MIN_IMAGE_SIDE_PX,
@@ -659,7 +659,7 @@ fn attached_live_open_requires_explicit_consent_for_the_exact_path() {
         &mut live,
         token,
         Request::Open {
-            expected: expected.clone(),
+            expected: Some(expected.clone()),
             path: path.to_string_lossy().into_owned(),
         },
     );
@@ -675,7 +675,7 @@ fn attached_live_open_requires_explicit_consent_for_the_exact_path() {
         &mut live,
         token,
         Request::Open {
-            expected,
+            expected: Some(expected),
             path: path.to_string_lossy().into_owned(),
         },
     );
@@ -762,8 +762,8 @@ fn file_new_preserves_window_live_services_and_invalidates_document_authority() 
         &mut live,
         &token,
         Request::Propose {
-            expected: before.clone(),
-            selection: vec![],
+            expected: Some(before.clone()),
+            selection: Some(vec![]),
             program: AssistantCadEditProgram {
                 operations: vec![AssistantCadEditOperation::SetColor {
                     selector: AssistantCadEntitySelector::Occurrences {
@@ -803,7 +803,7 @@ fn file_new_preserves_window_live_services_and_invalidates_document_authority() 
         &mut live,
         &token,
         Request::Commit {
-            expected: before,
+            expected: Some(before),
             proposal_id,
         },
     );
@@ -813,7 +813,7 @@ fn file_new_preserves_window_live_services_and_invalidates_document_authority() 
         &mut live,
         &token,
         Request::Commit {
-            expected: after,
+            expected: Some(after),
             proposal_id,
         },
     );
@@ -869,8 +869,8 @@ fn file_open_clears_line_chain_and_measurement_before_live_mutation() {
         &mut live,
         &token,
         Request::Propose {
-            expected: dirty,
-            selection: vec![],
+            expected: Some(dirty),
+            selection: Some(vec![]),
             program: AssistantCadEditProgram {
                 operations: vec![AssistantCadEditOperation::SetColor {
                     selector: AssistantCadEntitySelector::Occurrences {
@@ -897,8 +897,8 @@ fn file_open_clears_line_chain_and_measurement_before_live_mutation() {
         &mut live,
         &token,
         Request::Propose {
-            expected: opened,
-            selection: vec![],
+            expected: Some(opened),
+            selection: Some(vec![]),
             program: AssistantCadEditProgram {
                 operations: vec![AssistantCadEditOperation::SetColor {
                     selector: AssistantCadEntitySelector::Occurrences {
@@ -953,8 +953,8 @@ fn unfinished_helix_and_thread_previews_block_live_mutations_without_losing_huma
             &mut live,
             &token,
             Request::Propose {
-                expected: expected.clone(),
-                selection: vec![],
+                expected: Some(expected.clone()),
+                selection: Some(vec![]),
                 program: color_program(),
             },
         );
@@ -973,7 +973,7 @@ fn unfinished_helix_and_thread_previews_block_live_mutations_without_losing_huma
             &mut live,
             &token,
             Request::Commit {
-                expected: expected.clone(),
+                expected: Some(expected.clone()),
                 proposal_id,
             },
         );
@@ -983,13 +983,20 @@ fn unfinished_helix_and_thread_previews_block_live_mutations_without_losing_huma
             &mut live,
             &token,
             Request::Propose {
-                expected: expected.clone(),
-                selection: vec![],
+                expected: Some(expected.clone()),
+                selection: Some(vec![]),
                 program: color_program(),
             },
         );
         assert_eq!(blocked_proposal.error.as_deref(), Some("busy"));
-        let blocked_undo = call(&mut shell, &mut live, &token, Request::Undo { expected });
+        let blocked_undo = call(
+            &mut shell,
+            &mut live,
+            &token,
+            Request::Undo {
+                expected: Some(expected),
+            },
+        );
         assert_eq!(blocked_undo.error.as_deref(), Some("busy"));
 
         assert_eq!(shell.app().document_revision(), baseline_revision);

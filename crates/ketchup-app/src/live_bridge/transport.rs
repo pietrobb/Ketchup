@@ -113,8 +113,6 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
         client_states: BTreeMap::new(),
         pending: None,
         next_proposal: 1,
-        receipts: VecDeque::new(),
-        apply_and_verify_receipts: VecDeque::new(),
         apply_and_verify_job: None,
         #[cfg(test)]
         apply_and_verify_fault: None,

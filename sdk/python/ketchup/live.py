@@ -55,7 +55,7 @@ _ERROR_CODES = frozenset({
     "response_limit", "stale_document", "unsupported_selection_scope",
     "selection_limit", "invalid_selection", "read_only_document", "selection_changed",
     "invalid_program", "planning_rejected", "capability_gap", "proposal_ids_exhausted",
-    "receipt_guard_mismatch", "proposal_not_found", "commit_rejected", "recovery_rejected",
+    "proposal_not_found", "commit_rejected", "recovery_rejected",
     "undo_unavailable", "redo_unavailable", "entity_not_found", "view_unavailable",
     "unsupported_image", "unsupported_image_protocol", "invalid_params", "invalid_cursor", "stale_cursor",
     "cross_query_cursor", "output_too_large", "busy", "image_unavailable", "image_timeout",
@@ -65,13 +65,12 @@ _ERROR_CODES = frozenset({
     "unsupported_workset_scope", "incomplete_workset", "missing_workset_identity",
     "batch_job_limit", "batch_job_ids_exhausted", "batch_job_not_found",
     "batch_cancelled", "stale_batch_task", "batch_transaction_failed",
-    "apply_and_verify_busy", "invalid_request_id", "invalid_job_timeout",
-    "payload_encoding_rejected", "request_id_payload_mismatch",
-    "mandatory_validators_required", "candidate_rejected", "job_timeout",
+    "apply_and_verify_busy", "invalid_job_timeout",
+    "unknown_validator", "candidate_rejected", "job_timeout",
     "job_worker_unavailable", "request_cancelled", "exact_worker_unavailable",
     "exact_worker_disconnected", "exact_worker_rejected",
     "exact_evaluation_rejected", "exact_materialization_rejected", "exact_evaluation_incomplete", "validation_failed",
-    "validation_incomplete", "validation_report_encoding_rejected",
+    "validation_incomplete",
     "apply_and_verify_worker_disconnected", "exact_reference_rejected",
     "save_path_required", "save_rejected", "open_rejected", "invalid_path",
 })
@@ -181,7 +180,10 @@ class Stamp:
         _text(self.canonical_digest, MAX_FRAME_BYTES)
 
 
-def _stamp(value: Any) -> dict:
+def _stamp(value: Any) -> dict | None:
+    """Optional guard: `None` means "do not check for concurrent edits"."""
+    if value is None:
+        return None
     if isinstance(value, Stamp):
         return asdict(value)
     if type(value) is not dict or set(value) != {
@@ -1188,29 +1190,32 @@ class LiveSession:
             raise ValueError("edit context targets must be instance path objects")
         return self._request("edit_context", expected=_stamp(expected), targets=targets)
 
-    def apply_and_verify(self, expected: Stamp | dict,
-                         selection: list[int] | tuple[int, ...], request_id: str,
-                         program: dict, validators: list[str], timeout_ms: int = 10_000,
+    def apply_and_verify(self, program: dict, *, expected: Stamp | dict | None = None,
+                         selection: list[int] | tuple[int, ...] | None = None,
+                         validators: list[str] | None = None, timeout_ms: int = 10_000,
                          save: dict | None = None) -> dict:
-        request_id = _text(request_id, 128)
-        if not request_id:
-            raise ValueError("request ID must be nonempty")
+        """One atomic, verified edit (collision + gravity_support always run).
+
+        `expected`/`selection` are optional guards against a concurrent human edit.
+        Never resend after a transport error without re-observing: there is no replay.
+        """
         if type(program) is not dict or set(program) != {"operations"}:
             raise ValueError("program must contain operations")
         operations = program["operations"]
         if type(operations) is not list or not 1 <= len(operations) <= 64 or any(
                 type(operation) is not dict for operation in operations):
             raise ValueError("program must contain 1 to 64 operation objects")
-        if type(validators) is not list or not 1 <= len(validators) <= 64 or any(
+        validators = [] if validators is None else validators
+        if type(validators) is not list or any(
                 type(validator) is not str or not validator for validator in validators):
-            raise ValueError("validators must contain 1 to 64 names")
+            raise ValueError("validators must be a list of names")
         _uint(timeout_ms, 1, 10_000)
         if save is not None and type(save) is not dict:
             raise ValueError("save must be a tagged object")
         return self._request(
-            "apply_and_verify", request_id=request_id, expected=_stamp(expected),
-            selection=_ids(selection), program=program, validators=validators,
-            timeout_ms=timeout_ms, save=save,
+            "apply_and_verify", expected=_stamp(expected),
+            selection=None if selection is None else _ids(selection), program=program,
+            validators=validators, timeout_ms=timeout_ms, save=save,
         )
 
     def query(self, expected: Stamp | dict, *, kind: Kind, limit: int = 50,
@@ -1278,7 +1283,9 @@ class LiveSession:
         if type(operations) is not list or not 1 <= len(operations) <= 64 or any(type(op) is not dict for op in operations):
             raise ValueError("program must contain 1 to 64 operation objects")
         # Rust alone validates operation schemas, selectors and proposal authority.
-        return self._request("propose", expected=_stamp(expected), selection=_ids(selection), program=program)
+        return self._request("propose", expected=_stamp(expected),
+                             selection=None if selection is None else _ids(selection),
+                             program=program)
 
     def commit(self, expected: Stamp | dict, proposal_id: int) -> dict:
         return self._request("commit", expected=_stamp(expected), proposal_id=_uint(proposal_id, 1))
@@ -1334,8 +1341,10 @@ class LiveSession:
         )
         expected = _stamp(expected)
         deadline = time.monotonic() + self._timeout
-        if self._image_capture_modes is None:
-            self._status(deadline)
+        if self._image_capture_modes is None or expected is None:
+            # The image is correlated to a document state; observe one if none was given.
+            observed = self._status(deadline)["stamp"]
+            expected = observed if expected is None else expected
         if capture_mode not in self._image_capture_modes or framing not in self._image_framings:
             raise LiveProtocolError("live image protocol, capture mode or framing was not negotiated")
         response = self._request("image", _deadline=deadline, expected=expected,

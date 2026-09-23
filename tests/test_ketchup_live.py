@@ -628,8 +628,7 @@ def test_capability_gap_exposes_only_bounded_machine_fields():
 
     with Peer(answer) as peer, LiveSession(peer.address, TOKEN) as live:
         with pytest.raises(LiveBridgeError) as caught:
-            live.apply_and_verify(STAMP, [], "gap-1", PROGRAM,
-                                  ["collision", "gravity_support"])
+            live.apply_and_verify(PROGRAM, expected=STAMP)
         assert caught.value.code == "capability_gap"
         assert caught.value.details == gap
         assert not live.closed

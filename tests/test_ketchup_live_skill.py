@@ -94,8 +94,11 @@ class SessionDouble:
             self.selected = args[0]
         return envelope({"proposal_id": 9} if method == "propose" else {}, self.stamp)
 
+    def apply_and_verify(self, program, *, expected=None, **kwargs):
+        return self.request("apply_and_verify", expected, program, **kwargs)
+
     def __getattr__(self, method):
-        if method in ("edit_context", "apply_and_verify", "query", "detail", "create_workset", "workset_status", "start_batch_job", "batch_job_status", "step_batch_job", "cancel_batch_job", "propose", "commit", "undo", "redo", "save", "save_as", "open", "selection", "view", "image"):
+        if method in ("edit_context", "query", "detail", "create_workset", "workset_status", "start_batch_job", "batch_job_status", "step_batch_job", "cancel_batch_job", "propose", "commit", "undo", "redo", "save", "save_as", "open", "selection", "view", "image"):
             return lambda expected, *args, **kwargs: self.request(method, expected, *args, **kwargs)
         raise AttributeError(method)
 
@@ -133,7 +136,7 @@ def test_registration_shared_helpers_no_offline_runtime_or_shadow(monkeypatch):
         props = schema["input_schema"]["properties"]
         assert not {"token", "address", "plan_mode", "launcher", "session_factory", "args", "env"} & props.keys()
     required = registered["KetchupLiveEdit"].to_dict()["input_schema"]["required"]
-    assert {"expected", "selection"} <= set(required)
+    assert not {"expected", "selection"} & set(required)
     capture = registered["KetchupLiveView"].to_dict()["input_schema"]["properties"]["capture_mode"]
     assert capture["default"] == "offscreen"
     async def scenario():
@@ -381,10 +384,6 @@ def test_registered_lifecycle_stamps_selection_and_stale_rejection(tmp_path, mon
         assert session.calls[-1][2] == ("opaque-workset",)
         assert (await call(registered, "KetchupLiveInspect", action="workset_create",
                            handle=handle, expected=STAMP, cursor="partial"))["error"]["code"] == "invalid_arguments"
-        rejected = await call(registered, "KetchupLiveEdit", action="propose", handle=handle,
-                              expected=STAMP, selection=[1], program=PROGRAM)
-        assert rejected["error"]["code"] == "selection_changed"
-        assert not any(c[0] == "propose" for c in session.calls)
         proposed = await call(registered, "KetchupLiveEdit", action="propose", handle=handle,
                               expected=STAMP, selection=[], program=PROGRAM)
         assert proposed["stamp"] == STAMP and proposed["result"]["proposal_id"] == 9
@@ -395,7 +394,7 @@ def test_registered_lifecycle_stamps_selection_and_stale_rejection(tmp_path, mon
         stale = await call(registered, "KetchupLiveEdit", action="commit", handle=handle,
                            expected=STAMP, selection=[], proposal_id=9)
         assert stale["error"]["code"] == "stale_document"
-        assert sum(c[0] == "commit" for c in session.calls) == 1
+        assert sum(c[0] == "commit" for c in session.calls) == 2  # host rejected, not the client
         for action in ("undo", "redo"):
             previous = result["stamp"]
             result = await call(registered, "KetchupLiveEdit", action=action, handle=handle,
@@ -734,7 +733,7 @@ def test_registered_sdk_socket_injection_unknown_commit_no_retry():
             session.close()
         thread.join(3)
     assert not thread.is_alive() and not errors
-    assert methods == ["status", "status", "commit"]
+    assert methods == ["status", "commit"]
 
 
 def test_public_model_tool_routes_context_then_one_guarded_apply():
@@ -751,14 +750,14 @@ def test_public_model_tool_routes_context_then_one_guarded_apply():
         assert context["ok"]
         applied = await call(
             registered, "KetchupLiveModel", action="apply_and_verify", handle=handle,
-            expected=STAMP, selection=[], request_id="workflow-1", program=PROGRAM,
+            expected=STAMP, selection=[], program=PROGRAM,
             validators=["collision", "gravity_support"], timeout_ms=10_000,
         )
         assert applied["ok"]
 
     asyncio.run(scenario())
     assert [call[0] for call in session.calls] == [
-        "status", "edit_context", "status", "apply_and_verify"
+        "status", "edit_context", "apply_and_verify"
     ]
 
 
@@ -771,7 +770,7 @@ def test_public_model_tool_rejects_incomplete_payload_without_mutation():
         handle = (await launch(registered))["result"]["handle"]
         result = await call(
             registered, "KetchupLiveModel", action="apply_and_verify", handle=handle,
-            expected=STAMP, selection=[], request_id="malformed-1",
+            expected=STAMP, selection=[],
             validators=["collision", "gravity_support"], timeout_ms=10_000,
         )
         assert result["error"]["code"] == "invalid_arguments"
@@ -799,7 +798,7 @@ def test_public_model_tool_surfaces_bounded_capability_gap_without_retry():
         handle = (await launch(registered))["result"]["handle"]
         result = await call(
             registered, "KetchupLiveModel", action="apply_and_verify", handle=handle,
-            expected=STAMP, selection=[], request_id="unsupported-1", program=PROGRAM,
+            expected=STAMP, selection=[], program=PROGRAM,
             validators=["collision", "gravity_support"], timeout_ms=10_000,
         )
         assert result["error"]["code"] == "capability_gap"

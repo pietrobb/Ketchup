@@ -54,7 +54,7 @@ fn send_request_version_mode(
         id: 1,
         token: credentials.token,
         request: Request::Image {
-            expected: h.state().live_bridge_stamp(),
+            expected: Some(h.state().live_bridge_stamp()),
             image_protocol_version,
             capture_mode,
             max_side_px: MIN_IMAGE_SIDE_PX,

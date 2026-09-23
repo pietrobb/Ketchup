@@ -107,8 +107,8 @@ fn propose(client: &mut Client, shell: &mut Shell) -> (Stamp, u64) {
     let response = client.call(
         shell,
         Request::Propose {
-            expected: expected.clone(),
-            selection: vec![],
+            expected: Some(expected.clone()),
+            selection: Some(vec![]),
             program: program(),
         },
     );
@@ -126,7 +126,7 @@ fn commit(client: &mut Client, shell: &mut Shell) -> Response {
     let response = client.call(
         shell,
         Request::Commit {
-            expected,
+            expected: Some(expected),
             proposal_id,
         },
     );
@@ -146,7 +146,7 @@ fn same_gui_store_observational_reads_verified_once_and_gui_history() {
     assert!(serde_json::to_vec(&summary).unwrap().len() < 8192);
     let (expected, proposal_id) = propose(&mut client, &mut shell);
     let request = Request::Commit {
-        expected,
+        expected: Some(expected),
         proposal_id,
     };
     let response = client.call(&mut shell, request.clone());
@@ -158,8 +158,8 @@ fn same_gui_store_observational_reads_verified_once_and_gui_history() {
     );
     assert!(after.mutation_epoch > before.mutation_epoch);
     let steps = shell.app().undo_step_count();
-    let replay = client.call(&mut shell, request.clone());
-    assert_eq!(response.result, replay.result);
+    let resent = client.call(&mut shell, request.clone());
+    assert_eq!(resent.error.as_deref(), Some("stale_document"));
     assert_eq!(shell.app().undo_step_count(), steps);
     assert_eq!(shell.app().live_bridge_stamp(), after);
     // Actual GUI command dispatch through AccessKit, not a separate session.
@@ -171,12 +171,26 @@ fn same_gui_store_observational_reads_verified_once_and_gui_history() {
         count + 1
     );
     let expected = shell.app().live_bridge_stamp();
-    let undo = client.call(&mut shell, Request::Undo { expected });
+    let undo = client.call(
+        &mut shell,
+        Request::Undo {
+            expected: Some(expected),
+        },
+    );
     assert!(undo.ok, "{:?}", undo.error);
     let expected = shell.app().live_bridge_stamp();
-    assert!(client.call(&mut shell, Request::Redo { expected }).ok);
+    assert!(
+        client
+            .call(
+                &mut shell,
+                Request::Redo {
+                    expected: Some(expected)
+                }
+            )
+            .ok
+    );
     let stamp = shell.app().live_bridge_stamp();
-    assert!(client.call(&mut shell, request).ok);
+    assert!(!client.call(&mut shell, request).ok);
     assert_eq!(shell.app().live_bridge_stamp(), stamp);
     let occurrence_id = shell
         .app()
@@ -191,7 +205,7 @@ fn same_gui_store_observational_reads_verified_once_and_gui_history() {
             .call(
                 &mut shell,
                 Request::Detail {
-                    expected: stamp.clone(),
+                    expected: Some(stamp.clone()),
                     kind: EntityKind::Occurrences,
                     entity_id: occurrence_id
                 }
@@ -203,7 +217,7 @@ fn same_gui_store_observational_reads_verified_once_and_gui_history() {
             .call(
                 &mut shell,
                 Request::View {
-                    expected: stamp.clone(),
+                    expected: Some(stamp.clone()),
                     view: View::Top
                 }
             )
@@ -213,7 +227,7 @@ fn same_gui_store_observational_reads_verified_once_and_gui_history() {
     let image = client.call(
         &mut shell,
         Request::Image {
-            expected: stamp,
+            expected: Some(stamp),
             image_protocol_version: IMAGE_PROTOCOL_VERSION,
             capture_mode: CaptureMode::Offscreen,
             max_side_px: MIN_IMAGE_SIDE_PX,
@@ -247,7 +261,7 @@ fn live_commit_rolls_back_when_work_recovery_checkpoint_fails() {
     let rejected = client.call(
         &mut shell,
         Request::Commit {
-            expected: expected.clone(),
+            expected: Some(expected.clone()),
             proposal_id,
         },
     );
@@ -284,7 +298,7 @@ fn live_batch_step_rolls_back_when_work_recovery_checkpoint_fails() {
         let workset = client.call(
             shell,
             Request::WorksetCreate {
-                expected: expected.clone(),
+                expected: Some(expected.clone()),
                 query: PageRequest {
                     kind: EntityKind::Occurrences,
                     limit: 100,
@@ -306,7 +320,7 @@ fn live_batch_step_rolls_back_when_work_recovery_checkpoint_fails() {
         let started = client.call(
             shell,
             Request::BatchJobStart {
-                expected: expected.clone(),
+                expected: Some(expected.clone()),
                 workset_handle,
                 operation: OccurrenceBatchOperation::SetColor {
                     color: Some([10, 20, 30]),
@@ -329,7 +343,7 @@ fn live_batch_step_rolls_back_when_work_recovery_checkpoint_fails() {
     let rejected = client.call(
         &mut shell,
         Request::BatchJobStep {
-            expected: expected.clone(),
+            expected: Some(expected.clone()),
             handle: job_handle.clone(),
         },
     );
@@ -344,7 +358,7 @@ fn live_batch_step_rolls_back_when_work_recovery_checkpoint_fails() {
     let status = client.call(
         &mut shell,
         Request::BatchJobStatus {
-            expected: rolled_back,
+            expected: Some(rolled_back),
             handle: job_handle,
         },
     );
@@ -357,7 +371,7 @@ fn live_batch_step_rolls_back_when_work_recovery_checkpoint_fails() {
     let retried = client.call(
         &mut shell,
         Request::BatchJobStep {
-            expected,
+            expected: Some(expected),
             handle: job_handle,
         },
     );
@@ -385,7 +399,7 @@ fn live_workset_batch_jobs_cancel_or_commit_one_compact_atomic_step() {
     let workset = client.call(
         &mut shell,
         Request::WorksetCreate {
-            expected: expected.clone(),
+            expected: Some(expected.clone()),
             query,
         },
     );
@@ -398,7 +412,7 @@ fn live_workset_batch_jobs_cancel_or_commit_one_compact_atomic_step() {
         client.call(
             shell,
             Request::BatchJobStart {
-                expected: expected.clone(),
+                expected: Some(expected.clone()),
                 workset_handle: workset_handle.clone(),
                 operation: OccurrenceBatchOperation::SetColor {
                     color: Some([10, 20, 30]),
@@ -415,7 +429,7 @@ fn live_workset_batch_jobs_cancel_or_commit_one_compact_atomic_step() {
     let cancelled = client.call(
         &mut shell,
         Request::BatchJobCancel {
-            expected: expected.clone(),
+            expected: Some(expected.clone()),
             handle: cancelled_handle.clone(),
         },
     );
@@ -426,7 +440,7 @@ fn live_workset_batch_jobs_cancel_or_commit_one_compact_atomic_step() {
     let rejected = client.call(
         &mut shell,
         Request::BatchJobStart {
-            expected: expected.clone(),
+            expected: Some(expected.clone()),
             workset_handle: "forged".into(),
             operation: OccurrenceBatchOperation::SetColor {
                 color: Some([10, 20, 30]),
@@ -437,7 +451,7 @@ fn live_workset_batch_jobs_cancel_or_commit_one_compact_atomic_step() {
     let retained = client.call(
         &mut shell,
         Request::BatchJobStatus {
-            expected: expected.clone(),
+            expected: Some(expected.clone()),
             handle: cancelled_handle.clone(),
         },
     );
@@ -446,7 +460,7 @@ fn live_workset_batch_jobs_cancel_or_commit_one_compact_atomic_step() {
     let rejected = client.call(
         &mut shell,
         Request::BatchJobStep {
-            expected: expected.clone(),
+            expected: Some(expected.clone()),
             handle: cancelled_handle,
         },
     );
@@ -462,7 +476,7 @@ fn live_workset_batch_jobs_cancel_or_commit_one_compact_atomic_step() {
     let stepped = client.call(
         &mut shell,
         Request::BatchJobStep {
-            expected,
+            expected: Some(expected),
             handle: running_handle.clone(),
         },
     );
@@ -494,7 +508,7 @@ fn live_workset_batch_jobs_cancel_or_commit_one_compact_atomic_step() {
     let status = client.call(
         &mut shell,
         Request::BatchJobStatus {
-            expected: after,
+            expected: Some(after),
             handle: running_handle,
         },
     );
@@ -522,7 +536,7 @@ fn human_history_aba_and_selection_refuse_stale_proposals_and_cursors() {
     let page = client.call(
         &mut shell,
         Request::Query {
-            expected: before.clone(),
+            expected: Some(before.clone()),
             query: query.clone(),
         },
     );
@@ -534,7 +548,7 @@ fn human_history_aba_and_selection_refuse_stale_proposals_and_cursors() {
     let workset = client.call(
         &mut shell,
         Request::WorksetCreate {
-            expected: before.clone(),
+            expected: Some(before.clone()),
             query: PageRequest {
                 cursor: None,
                 ..query.clone()
@@ -551,7 +565,7 @@ fn human_history_aba_and_selection_refuse_stale_proposals_and_cursors() {
             .call(
                 &mut shell,
                 Request::WorksetStatus {
-                    expected: before.clone(),
+                    expected: Some(before.clone()),
                     handle: workset_handle.clone(),
                 },
             )
@@ -562,7 +576,7 @@ fn human_history_aba_and_selection_refuse_stale_proposals_and_cursors() {
     let stale = client.call(
         &mut shell,
         Request::Commit {
-            expected: expected.clone(),
+            expected: Some(expected.clone()),
             proposal_id,
         },
     );
@@ -575,7 +589,7 @@ fn human_history_aba_and_selection_refuse_stale_proposals_and_cursors() {
     let stale_workset = client.call(
         &mut shell,
         Request::WorksetStatus {
-            expected: after.clone(),
+            expected: Some(after.clone()),
             handle: workset_handle,
         },
     );
@@ -583,7 +597,7 @@ fn human_history_aba_and_selection_refuse_stale_proposals_and_cursors() {
     let stale = client.call(
         &mut shell,
         Request::Commit {
-            expected,
+            expected: Some(expected),
             proposal_id,
         },
     );
@@ -591,7 +605,7 @@ fn human_history_aba_and_selection_refuse_stale_proposals_and_cursors() {
     let stale_cursor = client.call(
         &mut shell,
         Request::Query {
-            expected: after.clone(),
+            expected: Some(after.clone()),
             query: PageRequest {
                 cursor: Some(cursor),
                 ..query
@@ -610,8 +624,8 @@ fn human_history_aba_and_selection_refuse_stale_proposals_and_cursors() {
     let mismatch = client.call(
         &mut shell,
         Request::Propose {
-            expected: after.clone(),
-            selection: vec![id],
+            expected: Some(after.clone()),
+            selection: Some(vec![id]),
             program: program(),
         },
     );
@@ -622,7 +636,7 @@ fn human_history_aba_and_selection_refuse_stale_proposals_and_cursors() {
             .call(
                 &mut shell,
                 Request::Selection {
-                    expected: after.clone(),
+                    expected: Some(after.clone()),
                     occurrence_ids: vec![id]
                 }
             )
@@ -632,7 +646,7 @@ fn human_history_aba_and_selection_refuse_stale_proposals_and_cursors() {
     let stale = client.call(
         &mut shell,
         Request::Commit {
-            expected,
+            expected: Some(expected),
             proposal_id,
         },
     );
@@ -664,7 +678,7 @@ fn auth_bounds_disconnect_and_default_disabled() {
     let invalid = client.call(
         &mut shell,
         Request::Query {
-            expected: before.clone(),
+            expected: Some(before.clone()),
             query: PageRequest {
                 kind: EntityKind::Occurrences,
                 limit: 101,
@@ -687,7 +701,7 @@ fn auth_bounds_disconnect_and_default_disabled() {
     let replay = client.call(
         &mut shell,
         Request::Commit {
-            expected,
+            expected: Some(expected),
             proposal_id,
         },
     );

@@ -134,9 +134,8 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
         .execute(
             &mut app,
             Request::ApplyAndVerify {
-                request_id: "original-v9-physical-repair".into(),
-                expected: before.clone(),
-                selection: vec![],
+                expected: Some(before.clone()),
+                selection: Some(vec![]),
                 program,
                 validators: mandatory_validators(),
                 timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
@@ -270,9 +269,8 @@ fn verified_geometry_is_render_ready_in_same_gui_across_history_and_preserves_vi
         .execute(
             harness.state_mut(),
             Request::ApplyAndVerify {
-                request_id: "render-ready-same-gui".into(),
-                expected: before.clone(),
-                selection: vec![1],
+                expected: Some(before.clone()),
+                selection: Some(vec![1]),
                 program: worker_required_program(),
                 validators: mandatory_validators(),
                 timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
@@ -286,8 +284,6 @@ fn verified_geometry_is_render_ready_in_same_gui_across_history_and_preserves_vi
     assert_ne!(before_exact, published_exact);
     assert_eq!(report["before"], serde_json::to_value(&before).unwrap());
     assert_eq!(report["after"], serde_json::to_value(&published).unwrap());
-    assert_eq!(report["execution"]["gui_document_id"], before.document_id);
-    assert_eq!(report["execution"]["helper_headless_documents"], 0);
     assert_eq!(report["exact"]["complete"], true);
     assert_eq!(report["exact"]["topology_complete"], true);
     assert_eq!(report["validation"]["complete"], true);

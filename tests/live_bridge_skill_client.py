@@ -276,11 +276,9 @@ async def model_workflow_scenario():
     modeling_trace.append("apply_and_verify")
     committed = success(await call(
         "KetchupLiveModel", action="apply_and_verify", handle=handle,
-        expected=initial, selection=selection, request_id="real-model-workflow-1",
+        expected=initial, selection=selection,
         program=program, validators=["collision", "gravity_support"], timeout_ms=10_000))
     assert committed["result"]["published"] is True
-    assert committed["result"]["same_gui_document"] is True
-    assert committed["result"]["execution"]["helper_headless_documents"] == 0
     assert modeling_trace == ["edit_context", "apply_and_verify"]
     checkpoint("model_committed", committed["stamp"], {
         "modeling_trace": modeling_trace,
@@ -288,7 +286,6 @@ async def model_workflow_scenario():
         "discovery_round_trips": 0,
         "retry_round_trips": 0,
         "compile_or_test_processes": 0,
-        "helper_headless_documents": committed["result"]["execution"]["helper_headless_documents"],
     })
     disconnected = success(await call(
         "KetchupLiveSession", action="disconnect", handle=handle))
