@@ -43,11 +43,6 @@ Other included scenes:
 | Example | Try it for |
 |---|---|
 | [`grooved-beam-array.ketchup`](examples/grooved-beam-array.ketchup) | A 480-occurrence timber stress scene with 24 shared definitions; useful for viewport, selection, Outliner, and instancing behavior. |
-| [`assistant-ketchup-squeeze-bottle.ketchup`](examples/assistant-ketchup-squeeze-bottle.ketchup) | A saved Assistant-authored squeeze-bottle showcase. |
-| [`assistant-rounded-teapot.ketchup`](examples/assistant-rounded-teapot.ketchup) | A rounded multi-part teapot showcase. |
-| [`assistant-balloon-letters.ketchup`](examples/assistant-balloon-letters.ketchup) | Inflated balloon-style lettering and organic mesh presentation. |
-
-The three visual showcase files contain authored mesh geometry; they demonstrate document, Assistant, viewport, framing, and persistence workflows rather than unrestricted exact freeform modeling.
 
 ## One path from intent to geometry
 

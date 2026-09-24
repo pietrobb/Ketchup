@@ -5,10 +5,6 @@ pub mod assembly;
 pub mod assembly_joint;
 pub mod assembly_recipe;
 pub mod assistant_sidecar;
-#[cfg(feature = "named-product-fixtures")]
-pub mod beam_m4ae;
-#[cfg(feature = "named-product-fixtures")]
-pub mod beam_m5;
 pub mod blender_export;
 pub mod cam;
 pub mod exact_revolve;
@@ -31,16 +27,12 @@ pub mod graph;
 pub mod import;
 pub mod intent;
 pub mod joinery;
-pub mod linear_hardware;
 pub mod local_pdm;
 pub mod mechanical_contract;
 pub mod mechanical_coupling;
 pub mod mesh_recognition;
 pub mod persistence;
 pub mod prismatic;
-pub mod reference_examples;
-#[cfg(feature = "named-product-fixtures")]
-pub mod release_capstone;
 pub mod shared_change;
 pub mod sheet_metal;
 pub mod sketch;

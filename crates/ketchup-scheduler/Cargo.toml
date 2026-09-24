@@ -9,7 +9,6 @@ repository.workspace = true
 
 [features]
 default = []
-named-product-fixtures = ["ketchup-core/named-product-fixtures"]
 private-oauth = ["ketchup-core/private-oauth"]
 
 [dependencies]

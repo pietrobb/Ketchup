@@ -73,8 +73,6 @@ struct VisualState {
     exact_complete: bool,
     evaluating: bool,
     theme: String,
-    #[cfg(feature = "named-product-fixtures")]
-    beam: u64,
 }
 impl VisualState {
     fn read(app: &KetchupApp) -> Result<Self, &'static str> {
@@ -92,8 +90,6 @@ impl VisualState {
                 )),
             evaluating: app.exact_task.is_some(),
             theme: format!("{:?}", app.theme),
-            #[cfg(feature = "named-product-fixtures")]
-            beam: app.beam_exact_results.contents_stamp(),
         })
     }
 }

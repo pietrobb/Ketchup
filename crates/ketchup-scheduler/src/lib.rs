@@ -11,11 +11,6 @@ use response_transport::read_worker_response;
 pub mod validator_runtime;
 
 use ketchup_core::assembly::AxialAttachmentKind;
-#[cfg(feature = "named-product-fixtures")]
-use ketchup_core::beam_m5::{
-    BeamExactPiecePackage, BeamExactPieceRequest, BeamM5Error, BeamNotchFaceRole,
-    BeamWorkerFaceEvidence, BeamWorkerResult, HalfLapParticipant, build_piece_package,
-};
 use ketchup_core::cam::{
     CAM_SIMULATION_SCHEMA_V1, CamCollisionEvidence, CamCollisionParticipant, CamCollisionTarget,
     CamFixture, CamMotionKind, CamMotionPath, CamPlan, CamSimulationEvidence, CamToolpath,
@@ -59,10 +54,6 @@ use ketchup_core::import::{
     STEP_MESH_MAGIC, StepImportEvidence, StepImportMesh, StepXdeImportEvidence,
     StepXdeNodeEvidence, StepXdePartEvidence,
 };
-#[cfg(feature = "named-product-fixtures")]
-use ketchup_core::prismatic::Aabb;
-#[cfg(feature = "named-product-fixtures")]
-use ketchup_core::prismatic::JointId;
 use ketchup_exact::GeometryErrorCode;
 #[cfg(windows)]
 use process_wrap::std::JobObject;
@@ -954,8 +945,6 @@ const P3_CIRCLE_CAPABILITY: &str = "P3_CIRCLE_V1";
 const P3_CIRCLE_AXIAL_CAPABILITY: &str = "P3_CIRCLE_V2";
 const P3_ARC_CAPABILITY: &str = "P3_ARC_V1";
 const P3_POLYGON_CUT_CAPABILITY: &str = "P3_POLYGON_CUT_V1";
-#[cfg(feature = "named-product-fixtures")]
-const M5_NOTCH_CAPABILITY: &str = "M5_NOTCH_V1";
 const M6_REVOLVE_CAPABILITY: &str = "M6_REVOLVE_V1";
 const M6_SHELL_CAPABILITY: &str = "M6_SHELL_V1";
 const M14_STEP_CAPABILITY: &str = "M14_STEP_V1";
@@ -1701,19 +1690,6 @@ impl ExactWorkerClient {
         } else {
             self.terminate_worker();
             Err(WorkerError::MissingCapability(capability.to_owned()))
-        }
-    }
-
-    #[cfg(feature = "named-product-fixtures")]
-    fn verify_m5_notch_capability(&mut self, cancelled: &AtomicBool) -> Result<(), WorkerError> {
-        let response = self.request_with_cancellation("CAPS M5_NOTCH_V1", cancelled)?;
-        if response == "CAPS M5_NOTCH_V1" {
-            Ok(())
-        } else {
-            self.terminate_worker();
-            Err(WorkerError::MissingCapability(
-                M5_NOTCH_CAPABILITY.to_owned(),
-            ))
         }
     }
 
@@ -3900,36 +3876,6 @@ impl ExactWorkerClient {
         Ok(bytes)
     }
 
-    #[cfg(feature = "named-product-fixtures")]
-    fn evaluate_beam_piece_request_with_cancellation(
-        &mut self,
-        request: &BeamExactPieceRequest,
-        cancelled: &AtomicBool,
-    ) -> Result<BeamWorkerResult, WorkerError> {
-        self.verify_m5_notch_capability(cancelled)?;
-        let stock = request.stock;
-        let mut line = format!(
-            "EVAL_NOTCHED_M5_V1 {} {} {}",
-            request.document_id.0, request.piece_key, request.canonical_input_digest
-        );
-        push_aabb_request(&mut line, stock);
-        line.push_str(&format!(" {}", request.notches.len()));
-        for notch in &request.notches {
-            line.push_str(&format!(
-                " {} {} {}",
-                notch.joint_id.0,
-                notch.participant.token(),
-                notch.feature_ordinal
-            ));
-            push_aabb_request(&mut line, notch.removed);
-        }
-        let response = self.request_with_cancellation(&line, cancelled)?;
-        match parse_m5_exact_result(&response) {
-            Err(WorkerError::Protocol(response)) => self.fail_protocol(response),
-            result => result,
-        }
-    }
-
     pub fn exception_probe(&mut self) -> Result<String, WorkerError> {
         let response = self.request("EXCEPTION")?;
         let fields = response.split_whitespace().collect::<Vec<_>>();
@@ -6032,48 +5978,6 @@ impl ExactWorkerSupervisor {
             .persist(path)
             .map_err(|error| WorkerError::Transport(error.error.to_string()))?;
         Ok(verified)
-    }
-
-    #[cfg(feature = "named-product-fixtures")]
-    pub fn evaluate_beam_piece(
-        &mut self,
-        request: &BeamExactPieceRequest,
-    ) -> Result<BeamExactPiecePackage, M5EvaluationError> {
-        self.evaluate_beam_piece_with_cancellation(request, &NEVER_CANCELLED)
-    }
-
-    #[cfg(feature = "named-product-fixtures")]
-    pub fn evaluate_beam_piece_with_cancellation(
-        &mut self,
-        request: &BeamExactPieceRequest,
-        cancelled: &AtomicBool,
-    ) -> Result<BeamExactPiecePackage, M5EvaluationError> {
-        if !is_sha256_digest(&request.piece_key)
-            || !is_sha256_digest(&request.canonical_input_digest)
-        {
-            return Err(BeamM5Error::InvalidWorkerEvidence.into());
-        }
-        self.client.ensure_not_cancelled(cancelled)?;
-        let result = match self
-            .client
-            .evaluate_beam_piece_request_with_cancellation(request, cancelled)
-        {
-            Ok(result) => result,
-            Err(error) if error.permits_restart() => {
-                self.client = Self::spawn_verified_client(
-                    &self.executable,
-                    &self.executable_sha256,
-                    cancelled,
-                )?;
-                self.client
-                    .evaluate_beam_piece_request_with_cancellation(request, cancelled)?
-            }
-            Err(error) => return Err(error.into()),
-        };
-        self.client.ensure_not_cancelled(cancelled)?;
-        let package = build_piece_package(request, result)?;
-        self.client.ensure_not_cancelled(cancelled)?;
-        Ok(package)
     }
 }
 
@@ -8341,40 +8245,6 @@ impl From<ExactProductError> for M6EvaluationError {
     }
 }
 
-#[cfg(feature = "named-product-fixtures")]
-#[derive(Debug)]
-pub enum M5EvaluationError {
-    Worker(WorkerError),
-    Product(BeamM5Error),
-}
-
-#[cfg(feature = "named-product-fixtures")]
-impl fmt::Display for M5EvaluationError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Worker(error) => error.fmt(formatter),
-            Self::Product(error) => error.fmt(formatter),
-        }
-    }
-}
-
-#[cfg(feature = "named-product-fixtures")]
-impl std::error::Error for M5EvaluationError {}
-
-#[cfg(feature = "named-product-fixtures")]
-impl From<WorkerError> for M5EvaluationError {
-    fn from(error: WorkerError) -> Self {
-        Self::Worker(error)
-    }
-}
-
-#[cfg(feature = "named-product-fixtures")]
-impl From<BeamM5Error> for M5EvaluationError {
-    fn from(error: BeamM5Error) -> Self {
-        Self::Product(error)
-    }
-}
-
 #[derive(Debug)]
 pub enum M3EvaluationError {
     Worker(WorkerError),
@@ -8735,13 +8605,6 @@ fn hex_decode_utf8(value: &str) -> Option<String> {
         })
         .collect::<Option<Vec<_>>>()?;
     String::from_utf8(bytes).ok()
-}
-
-#[cfg(feature = "named-product-fixtures")]
-fn push_aabb_request(line: &mut String, bounds: Aabb) {
-    for value in bounds.min().into_iter().chain(bounds.max()) {
-        line.push_str(&format!(" {:016x}", value.to_bits()));
-    }
 }
 
 fn parse_exact_brep_graph_step_acknowledgment(
@@ -9198,87 +9061,6 @@ fn parse_m6_revolve_result(response: &str) -> Result<WorkerRevolveResult, Worker
         backend: fields[17].to_owned(),
         tolerance: fields[18].to_owned(),
         faces,
-    })
-}
-
-#[cfg(feature = "named-product-fixtures")]
-fn parse_m5_exact_result(response: &str) -> Result<BeamWorkerResult, WorkerError> {
-    let fields = response.split_whitespace().collect::<Vec<_>>();
-    if fields.first() == Some(&"ERR") {
-        return Err(parse_error_response(response, &fields));
-    }
-    if fields.len() < 19 || fields[0] != "OK_M5_V1" {
-        return Err(WorkerError::Protocol(response.to_owned()));
-    }
-    let parse_u64 = |index: usize| {
-        fields[index]
-            .parse::<u64>()
-            .map_err(|_| WorkerError::Protocol(response.to_owned()))
-    };
-    let parse_u32 = |index: usize| {
-        fields[index]
-            .parse::<u32>()
-            .map_err(|_| WorkerError::Protocol(response.to_owned()))
-    };
-    let parse_f64 = |index: usize| {
-        u64::from_str_radix(fields[index], 16)
-            .map(f64::from_bits)
-            .map_err(|_| WorkerError::Protocol(response.to_owned()))
-    };
-    let reference_count = fields[18]
-        .parse::<usize>()
-        .map_err(|_| WorkerError::Protocol(response.to_owned()))?;
-    let expected_len = reference_count
-        .checked_mul(6)
-        .and_then(|count| count.checked_add(19))
-        .ok_or_else(|| WorkerError::Protocol(response.to_owned()))?;
-    if fields.len() != expected_len {
-        return Err(WorkerError::Protocol(response.to_owned()));
-    }
-    let bounds_mm = Aabb::bounded_volume(
-        [parse_f64(3)?, parse_f64(4)?, parse_f64(5)?],
-        [parse_f64(6)?, parse_f64(7)?, parse_f64(8)?],
-    )
-    .map_err(|_| WorkerError::Protocol(response.to_owned()))?;
-    let mut face_evidence = Vec::with_capacity(reference_count);
-    for index in 0..reference_count {
-        let offset = 19 + index * 6;
-        let participant = match fields[offset + 1] {
-            "a" => HalfLapParticipant::A,
-            "b" => HalfLapParticipant::B,
-            _ => return Err(WorkerError::Protocol(response.to_owned())),
-        };
-        let role = match fields[offset + 2] {
-            "contact" => BeamNotchFaceRole::Contact,
-            "wall.west" => BeamNotchFaceRole::WestWall,
-            "wall.east" => BeamNotchFaceRole::EastWall,
-            _ => return Err(WorkerError::Protocol(response.to_owned())),
-        };
-        face_evidence.push(BeamWorkerFaceEvidence {
-            joint_id: JointId(parse_u64(offset)?),
-            participant,
-            role,
-            face_ordinal: parse_u32(offset + 3)?,
-            geometric_fingerprint: fields[offset + 4].to_owned(),
-            lineage_digest: fields[offset + 5].to_owned(),
-        });
-    }
-    Ok(BeamWorkerResult {
-        result_fingerprint: fields[1].to_owned(),
-        volume_mm3: parse_f64(2)?,
-        bounds_mm,
-        topology_counts: [
-            parse_u32(9)?,
-            parse_u32(10)?,
-            parse_u32(11)?,
-            parse_u32(12)?,
-            parse_u32(13)?,
-        ],
-        request_digest: fields[14].to_owned(),
-        exact_input_digest: fields[15].to_owned(),
-        backend: fields[16].to_owned(),
-        tolerance: fields[17].to_owned(),
-        face_evidence,
     })
 }
 

@@ -10,21 +10,18 @@ use ketchup_app::{
 use ketchup_core::assistant_sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantApiDiagnostics, AssistantAssemblyJointAxis,
     AssistantAssemblyJointKind, AssistantAssemblyJointLimits, AssistantAxisSpec,
-    AssistantBalloonTextIntent, AssistantBeamNotchIntent, AssistantBottleFinishKind,
-    AssistantBottleIntent, AssistantBoxIntent, AssistantCadBodyFeature,
-    AssistantCadBooleanOperation, AssistantCadChamferMode, AssistantCadDeletePolicy,
-    AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
-    AssistantCadFeatureReference, AssistantCadFilletRadiusStation, AssistantCadLoftContinuity,
-    AssistantCadLoftSection, AssistantCadPartFeature, AssistantCadProgramFeatureOutput,
-    AssistantCadProgramFeatureReference, AssistantCadRotation, AssistantCadShellDirection,
-    AssistantCadSurfaceBodySource, AssistantChatResult, AssistantDistribution,
-    AssistantGableRoofIntent, AssistantInstancePath, AssistantInstancePathStep,
-    AssistantKetchupBottleIntent, AssistantLinearArrayIntent, AssistantModelIntent,
-    AssistantOrientedBeamIntent, AssistantParameterEditIntent, AssistantPrincipalPlane,
-    AssistantProfileTranslationIntent, AssistantRotationIntent, AssistantSketchConstraint,
-    AssistantSketchEntity, AssistantSketchPointKind, AssistantSketchPointRef,
-    AssistantStaircaseIntent, AssistantSubtractionIntent, AssistantTeapotIntent,
-    AssistantTranslationIntent, AssistantWorkplaneSpec,
+    AssistantBoxIntent, AssistantCadBodyFeature, AssistantCadBooleanOperation,
+    AssistantCadChamferMode, AssistantCadDeletePolicy, AssistantCadEditOperation,
+    AssistantCadEditProgram, AssistantCadEntitySelector, AssistantCadFeatureReference,
+    AssistantCadFilletRadiusStation, AssistantCadLoftContinuity, AssistantCadLoftSection,
+    AssistantCadPartFeature, AssistantCadProgramFeatureOutput, AssistantCadProgramFeatureReference,
+    AssistantCadRotation, AssistantCadShellDirection, AssistantCadSurfaceBodySource,
+    AssistantChatResult, AssistantDistribution, AssistantInstancePath, AssistantInstancePathStep,
+    AssistantLinearArrayIntent, AssistantModelIntent, AssistantParameterEditIntent,
+    AssistantPrincipalPlane, AssistantProfileTranslationIntent, AssistantRotationIntent,
+    AssistantSketchConstraint, AssistantSketchEntity, AssistantSketchPointKind,
+    AssistantSketchPointRef, AssistantSubtractionIntent, AssistantTranslationIntent,
+    AssistantWorkplaneSpec,
 };
 use ketchup_core::document::{
     BodyId, BooleanOperation, CanonicalCommand, ChamferEdgeSide, ChamferMode,
@@ -698,11 +695,6 @@ fn assistant_rotates_arbitrary_occurrences_and_groups_around_arbitrary_world_axe
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }
     ));
     assert_eq!(shell.app().document_revision(), before_revision + 1);
@@ -762,11 +754,6 @@ fn assistant_rotates_arbitrary_occurrences_and_groups_around_arbitrary_world_axe
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }
     ));
     let group_snapshot = shell.app().document_snapshot();
@@ -830,11 +817,6 @@ fn scripted_assistant_rotation_reviews_cancel_stale_confirm_and_undo_through_acc
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }),
     };
     let transport = Arc::new(ScriptedAssistantTransport::new([
@@ -1119,132 +1101,6 @@ fn assistant_enter_sends_and_shift_enter_keeps_composing() {
     let new_chat = shell.catalog().text("assistant-new-chat");
     shell.click_row(&new_chat);
     assert!(shell.app().assistant_messages().is_empty());
-}
-
-#[test]
-fn assistant_follow_up_move_right_is_not_misclassified_as_validation_repair() {
-    let create_request = "Urob mäkčenie na to č v podobnej balónovej geometrii";
-    let move_request =
-        "Trošku ho posuň doprava, aby bol v strede nad tým céčkom. Teraz je trošku posunutý";
-    let transport = Arc::new(ScriptedAssistantTransport::new([
-        (
-            create_request.to_owned(),
-            AssistantChatResult {
-                message: "Pridávam samostatný mäkčeň.".to_owned(),
-                model_intent: Some(AssistantModelIntent {
-                    replace_scene: false,
-                    boxes: Vec::new(),
-                    translations: Vec::new(),
-                    rotations: Vec::new(),
-                    profile_translations: Vec::new(),
-                    parameter_edits: Vec::new(),
-                    linear_arrays: Vec::new(),
-                    bottles: Vec::new(),
-                    balloon_texts: vec![AssistantBalloonTextIntent {
-                        name: "Balloon caron".to_owned(),
-                        text: "ˇ".to_owned(),
-                        height_mm: 40.0,
-                        depth_mm: 16.0,
-                        stroke_width_mm: 8.0,
-                        letter_spacing_mm: 0.0,
-                        origin_mm: [40.0, 0.0, 100.0],
-                    }],
-                    gable_roofs: Vec::new(),
-                    staircases: Vec::new(),
-                    oriented_beams: Vec::new(),
-                }),
-            },
-        ),
-        (
-            create_request.to_owned(),
-            AssistantChatResult {
-                message: "Používam editovateľný všeobecný feature program.".to_owned(),
-                model_intent: Some(AssistantModelIntent {
-                    replace_scene: false,
-                    boxes: vec![AssistantBoxIntent {
-                        name: "Editable caron proxy".to_owned(),
-                        size_mm: [20.0, 8.0, 12.0],
-                        origin_mm: [40.0, 0.0, 100.0],
-                        subtract_boxes: Vec::new(),
-                    }],
-                    translations: Vec::new(),
-                    rotations: Vec::new(),
-                    profile_translations: Vec::new(),
-                    parameter_edits: Vec::new(),
-                    linear_arrays: Vec::new(),
-                    bottles: Vec::new(),
-                    balloon_texts: Vec::new(),
-                    gable_roofs: Vec::new(),
-                    staircases: Vec::new(),
-                    oriented_beams: Vec::new(),
-                }),
-            },
-        ),
-        (
-            move_request.to_owned(),
-            AssistantChatResult {
-                message: "Posúvam mäkčeň doprava.".to_owned(),
-                model_intent: Some(AssistantModelIntent {
-                    replace_scene: false,
-                    boxes: Vec::new(),
-                    translations: vec![AssistantTranslationIntent {
-                        occurrence_id: 1,
-                        delta_mm: [5.0, 0.0, 0.0],
-                    }],
-                    rotations: Vec::new(),
-                    profile_translations: Vec::new(),
-                    parameter_edits: Vec::new(),
-                    linear_arrays: Vec::new(),
-                    bottles: Vec::new(),
-                    balloon_texts: Vec::new(),
-                    gable_roofs: Vec::new(),
-                    staircases: Vec::new(),
-                    oriented_beams: Vec::new(),
-                }),
-            },
-        ),
-    ]));
-    let mut shell = Shell::with_assistant_transport(transport.clone());
-    let input_label = shell.catalog().text("assistant-input-hint");
-    let confirm = shell.catalog().text("assistant-confirm");
-
-    shell.focus_text_input(&input_label);
-    shell.type_text(create_request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert!(shell.app().assistant_messages().iter().any(|message| {
-        message
-            .diagnostic
-            .as_ref()
-            .is_some_and(|diagnostic| diagnostic.code == "planning.editable_macro_required")
-    }));
-    assert_eq!(transport.remaining_responses(), 1);
-    shell.click_row(&confirm);
-    let before_move = shell
-        .app()
-        .document_snapshot()
-        .occurrence(OccurrenceId(1))
-        .expect("the first turn must create the standalone caron")
-        .transform();
-
-    shell.focus_text_input(&input_label);
-    shell.type_text(move_request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(transport.remaining_responses(), 0);
-    shell.click_row(&confirm);
-
-    let after_move = shell
-        .app()
-        .document_snapshot()
-        .occurrence(OccurrenceId(1))
-        .expect("the second turn must retain the standalone caron")
-        .transform();
-    let before_matrix = before_move.matrix();
-    let after_matrix = after_move.matrix();
-    assert_eq!(after_matrix[3], before_matrix[3] + 5.0);
-    assert_eq!(after_matrix[7], before_matrix[7]);
-    assert_eq!(after_matrix[11], before_matrix[11]);
 }
 
 #[test]
@@ -1566,11 +1422,6 @@ fn canonical_rejection_reaches_accesskit_without_generic_error_degradation() {
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }),
     };
     let transport = Arc::new(ScriptedAssistantTransport::new([
@@ -1653,11 +1504,6 @@ fn scripted_assistant_model_review_cancel_confirm_undo_and_redo_use_accesskit() 
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }),
     };
     let transport = Arc::new(ScriptedAssistantTransport::new([
@@ -3698,11 +3544,6 @@ fn integrated_finishing_chain_rebuilds_exactly_through_headless_assistant() {
                 value_mm: 30.0,
             }],
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }
     ));
     assert_eq!(shell.app().document_revision(), initial_revision + 4);
@@ -3742,230 +3583,6 @@ fn integrated_finishing_chain_rebuilds_exactly_through_headless_assistant() {
     shell.click_menu_command("menu-edit", AppCommand::Redo);
     assert_eq!(shell.app().canonical_digest(), rebuilt_digest);
     assert_eq!(transport.remaining_responses(), 0);
-}
-
-#[test]
-fn named_assistant_generators_are_editable_or_fail_closed_with_bounded_macro_inputs() {
-    let empty_intent = || AssistantModelIntent {
-        replace_scene: false,
-        boxes: Vec::new(),
-        translations: Vec::new(),
-        rotations: Vec::new(),
-        profile_translations: Vec::new(),
-        parameter_edits: Vec::new(),
-        linear_arrays: Vec::new(),
-        bottles: Vec::new(),
-        gable_roofs: Vec::new(),
-        staircases: Vec::new(),
-        oriented_beams: Vec::new(),
-        balloon_texts: Vec::new(),
-    };
-    let mut shell = Shell::new();
-    let baseline_revision = shell.app().document_revision();
-    let baseline_digest = shell.app().canonical_digest();
-    let baseline_undo = shell.app().undo_step_count();
-
-    let mut vessel = empty_intent();
-    vessel.bottles.push(AssistantBottleIntent {
-        name: "Editable vessel".to_owned(),
-        body_radius_mm: 30.0,
-        body_height_mm: 110.0,
-        shoulder_rise_mm: 20.0,
-        neck_radius_mm: 12.0,
-        neck_height_mm: 25.0,
-        wall_thickness_mm: 2.0,
-        finish_kind: AssistantBottleFinishKind::Fillet,
-        finish_amount_mm: 2.0,
-        origin_mm: [0.0, 0.0, 0.0],
-        teapot: None,
-        ketchup_bottle: None,
-    });
-    let mut roof = empty_intent();
-    roof.gable_roofs.push(AssistantGableRoofIntent {
-        name: "Editable roof".to_owned(),
-        length_mm: 600.0,
-        span_mm: 400.0,
-        rise_mm: 120.0,
-        thickness_mm: 20.0,
-        origin_mm: [100.0, 0.0, 0.0],
-    });
-    let mut stairs = empty_intent();
-    stairs.staircases.push(AssistantStaircaseIntent {
-        name: "Editable stairs".to_owned(),
-        run_mm: 3_000.0,
-        width_mm: 800.0,
-        rise_mm: 3_000.0,
-        step_count: 15,
-        origin_mm: [0.0, 2_200.0, 0.0],
-    });
-    let mut beam = empty_intent();
-    beam.oriented_beams.push(AssistantOrientedBeamIntent {
-        name: "Editable beam".to_owned(),
-        start_mm: [0.0, 0.0, 300.0],
-        end_mm: [500.0, 100.0, 400.0],
-        up_hint: [0.0, 0.0, 1.0],
-        width_mm: 40.0,
-        depth_mm: 60.0,
-        bottom_notches: Vec::new(),
-    });
-    #[cfg(not(feature = "named-product-fixtures"))]
-    {
-        assert!(!shell.app_mut().prepare_assistant_model_intent(vessel));
-        assert!(shell.app().assistant_proposal().is_none());
-        assert_eq!(shell.app().document_revision(), baseline_revision);
-        assert_eq!(shell.app().canonical_digest(), baseline_digest);
-        assert_eq!(shell.app().undo_step_count(), baseline_undo);
-    }
-    #[cfg(feature = "named-product-fixtures")]
-    let editable_generators = [
-        (vessel, "Editable vessel"),
-        (roof, "Editable roof"),
-        (stairs, "Editable stairs"),
-        (beam, "Editable beam"),
-    ];
-    #[cfg(not(feature = "named-product-fixtures"))]
-    let editable_generators = [
-        (roof, "Editable roof"),
-        (stairs, "Editable stairs"),
-        (beam, "Editable beam"),
-    ];
-    for (editable, name) in editable_generators {
-        assert!(
-            apply_reviewed_model_intent(&mut shell, editable),
-            "{name} must produce a reviewed editable macro"
-        );
-        let editable_snapshot = shell.app().document_snapshot();
-        let definition = editable_snapshot
-            .definitions()
-            .find(|definition| definition.name() == name)
-            .unwrap();
-        assert!(definition.feature_ids().iter().all(|feature_id| {
-            !matches!(
-                editable_snapshot.feature(*feature_id).unwrap().kind(),
-                FeatureKind::MeshBody(_)
-            )
-        }));
-        assert!(shell.app_mut().undo());
-        assert_eq!(shell.app().document_revision(), baseline_revision);
-        assert_eq!(shell.app().canonical_digest(), baseline_digest);
-        assert_eq!(shell.app().undo_step_count(), baseline_undo);
-    }
-
-    let mut teapot = empty_intent();
-    teapot.bottles.push(AssistantBottleIntent {
-        name: "Rejected teapot".to_owned(),
-        body_radius_mm: 70.0,
-        body_height_mm: 105.0,
-        shoulder_rise_mm: 22.0,
-        neck_radius_mm: 42.0,
-        neck_height_mm: 14.0,
-        wall_thickness_mm: 3.0,
-        finish_kind: AssistantBottleFinishKind::Fillet,
-        finish_amount_mm: 4.0,
-        origin_mm: [0.0, 0.0, 0.0],
-        teapot: Some(AssistantTeapotIntent {
-            handle_clearance_mm: 52.0,
-            handle_tube_radius_mm: 9.0,
-            spout_length_mm: 105.0,
-            spout_radius_mm: 14.0,
-            lid_height_mm: 18.0,
-            lid_knob_radius_mm: 10.0,
-        }),
-        ketchup_bottle: None,
-    });
-    let mut squeeze_bottle = empty_intent();
-    squeeze_bottle.replace_scene = true;
-    squeeze_bottle.bottles.push(AssistantBottleIntent {
-        name: "Rejected squeeze bottle".to_owned(),
-        body_radius_mm: 38.0,
-        body_height_mm: 145.0,
-        shoulder_rise_mm: 28.0,
-        neck_radius_mm: 15.0,
-        neck_height_mm: 18.0,
-        wall_thickness_mm: 2.0,
-        finish_kind: AssistantBottleFinishKind::Fillet,
-        finish_amount_mm: 2.0,
-        origin_mm: [0.0, 0.0, 0.0],
-        teapot: None,
-        ketchup_bottle: Some(AssistantKetchupBottleIntent {
-            body_depth_ratio: 0.68,
-            cap_radius_mm: 19.5,
-            cap_height_mm: 24.0,
-            label_width_mm: 58.0,
-            label_height_mm: 72.0,
-            label_relief_mm: 2.5,
-            grip_rib_count: 20,
-        }),
-    });
-    let mut balloon_text = empty_intent();
-    balloon_text.balloon_texts.push(AssistantBalloonTextIntent {
-        name: "Rejected balloon text".to_owned(),
-        text: "ABC".to_owned(),
-        height_mm: 40.0,
-        depth_mm: 16.0,
-        stroke_width_mm: 8.0,
-        letter_spacing_mm: 4.0,
-        origin_mm: [0.0, 0.0, 0.0],
-    });
-    for rejected in [teapot, squeeze_bottle, balloon_text] {
-        assert!(!shell.app_mut().prepare_assistant_model_intent(rejected));
-        assert!(shell.app().assistant_proposal().is_none());
-        assert_eq!(shell.app().document_revision(), baseline_revision);
-        assert_eq!(shell.app().canonical_digest(), baseline_digest);
-        assert_eq!(shell.app().undo_step_count(), baseline_undo);
-        assert!(
-            shell
-                .app()
-                .document_snapshot()
-                .features()
-                .all(|feature| !matches!(feature.kind(), FeatureKind::MeshBody(_)))
-        );
-    }
-
-    let invalid_reference = AssistantCadEditProgram {
-        operations: vec![AssistantCadEditOperation::CreatePart {
-            name: "Invalid offset part".to_owned(),
-            workplane: AssistantWorkplaneSpec::Offset {
-                base_feature_id: 999,
-                distance_mm: 10.0,
-            },
-            entities: vec![AssistantSketchEntity::Circle {
-                id: 1,
-                center_mm: [0.0, 0.0],
-                radius_mm: 5.0,
-            }],
-            constraints: Vec::new(),
-            feature: AssistantCadPartFeature::Extrusion { distance_mm: 10.0 },
-            translation_mm: [0.0; 3],
-            rotation: None,
-        }],
-    };
-    let invalid_reference = shell
-        .app()
-        .plan_assistant_cad_edit_program(&invalid_reference)
-        .expect_err("missing workplane reference must fail closed");
-    assert_eq!(
-        invalid_reference.code,
-        "planning.workplane_base_unavailable"
-    );
-
-    let resource_overflow = AssistantCadEditProgram {
-        operations: (0..65)
-            .map(|_| AssistantCadEditOperation::Delete {
-                selector: AssistantCadEntitySelector::CurrentSelection {},
-                dependency_policy: AssistantCadDeletePolicy::RejectIfReferenced,
-            })
-            .collect(),
-    };
-    let resource_overflow = shell
-        .app()
-        .plan_assistant_cad_edit_program(&resource_overflow)
-        .expect_err("operation budget overflow must fail closed");
-    assert_eq!(resource_overflow.code, "intent.cad_edit_program_invalid");
-    assert_eq!(shell.app().document_revision(), baseline_revision);
-    assert_eq!(shell.app().canonical_digest(), baseline_digest);
-    assert_eq!(shell.app().undo_step_count(), baseline_undo);
-    assert!(shell.app().assistant_proposal().is_none());
 }
 
 #[test]
@@ -4316,106 +3933,6 @@ fn scripted_sketch_program_refuses_stale_preview_and_invalid_constraint_without_
 }
 
 #[test]
-#[cfg(feature = "named-product-fixtures")]
-fn verbal_bottle_goal_with_dimension_constraint_completes_verified_one_undo_cycle() {
-    let request = "Create an editable ketchup bottle with a 30 mm body radius";
-    let transport = Arc::new(ScriptedAssistantTransport::new([(
-        request.to_owned(),
-        AssistantChatResult {
-            message: "Review the editable bottle.".to_owned(),
-            model_intent: Some(AssistantModelIntent {
-                replace_scene: false,
-                boxes: Vec::new(),
-                translations: Vec::new(),
-                rotations: Vec::new(),
-                profile_translations: Vec::new(),
-                parameter_edits: Vec::new(),
-                linear_arrays: Vec::new(),
-                bottles: vec![AssistantBottleIntent {
-                    name: "Verbally created bottle".to_owned(),
-                    body_radius_mm: 30.0,
-                    body_height_mm: 110.0,
-                    shoulder_rise_mm: 20.0,
-                    neck_radius_mm: 12.0,
-                    neck_height_mm: 25.0,
-                    wall_thickness_mm: 2.0,
-                    finish_kind: AssistantBottleFinishKind::Fillet,
-                    finish_amount_mm: 2.0,
-                    origin_mm: [90.0, 0.0, 0.0],
-                    teapot: None,
-                    ketchup_bottle: None,
-                }],
-                gable_roofs: Vec::new(),
-                staircases: Vec::new(),
-                oriented_beams: Vec::new(),
-                balloon_texts: Vec::new(),
-            }),
-        },
-    )]));
-    let mut shell = Shell::with_assistant_transport(transport.clone());
-    let initial_revision = shell.app().document_revision();
-    let initial_digest = shell.app().canonical_digest();
-    let initial_undo_steps = shell.app().undo_step_count();
-    let initial_features = shell.app().feature_count();
-    let initial_occurrences = shell.app().occurrence_count();
-
-    shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
-    shell.type_text(request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(shell.app().document_revision(), initial_revision);
-    assert_eq!(shell.app().canonical_digest(), initial_digest);
-    assert_eq!(shell.app().undo_step_count(), initial_undo_steps);
-
-    shell.click_row(&shell.catalog().text("assistant-confirm"));
-    assert_eq!(shell.app().document_revision(), initial_revision + 1);
-    assert_eq!(shell.app().undo_step_count(), initial_undo_steps + 1);
-    assert_eq!(shell.app().feature_count(), initial_features + 5);
-    assert_eq!(shell.app().occurrence_count(), initial_occurrences + 1);
-    let snapshot = shell.app().document_snapshot();
-    let occurrence = snapshot
-        .occurrences()
-        .find(|occurrence| occurrence.name() == "Verbally created bottle occurrence")
-        .expect("confirmed proposal creates the requested bottle");
-    assert!(snapshot.features().any(|feature| {
-        feature.definition_id() == occurrence.definition_id()
-            && matches!(
-                feature.kind(),
-                FeatureKind::BottleProfileControl { body_radius, .. }
-                    if body_radius.millimetres() == 30.0
-            )
-    }));
-    let verification = shell
-        .app()
-        .assistant_verification()
-        .expect("confirmed proposal returns host verification")
-        .clone();
-    assert_eq!(verification.revision_id, initial_revision + 1);
-    assert_eq!(
-        verification.canonical_digest,
-        shell.app().canonical_digest()
-    );
-    assert!(verification.verified_write_count > 0);
-    assert!(!verification.command_digest.is_empty());
-    assert!(!verification.result_digest.is_empty());
-    shell.settle();
-    assert!(shell.has_visible_label(&shell.catalog().text("assistant-result-title")));
-    assert!(shell.has_visible_label(&shell.catalog().format(
-        "assistant-verification",
-        &BTreeMap::from([
-            ("revision", verification.revision_id.to_string()),
-            ("writes", verification.verified_write_count.to_string()),
-        ]),
-    )));
-
-    shell.click_row(&shell.catalog().text("assistant-undo-change"));
-    assert_eq!(shell.app().document_revision(), initial_revision);
-    assert_eq!(shell.app().canonical_digest(), initial_digest);
-    assert_eq!(shell.app().undo_step_count(), initial_undo_steps);
-    assert_eq!(transport.remaining_responses(), 0);
-}
-
-#[test]
 fn assistant_profile_translation_reviews_confirms_undoes_and_fails_closed() {
     let directory = tempfile::tempdir().unwrap();
     let fixture = directory
@@ -4463,11 +3980,6 @@ fn assistant_profile_translation_reviews_confirms_undoes_and_fails_closed() {
             }],
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     assert_eq!(shell.app().document_revision(), before_revision + 1);
@@ -4508,11 +4020,6 @@ fn assistant_profile_translation_reviews_confirms_undoes_and_fails_closed() {
                 }],
                 parameter_edits: Vec::new(),
                 linear_arrays: Vec::new(),
-                bottles: Vec::new(),
-                gable_roofs: Vec::new(),
-                staircases: Vec::new(),
-                oriented_beams: Vec::new(),
-                balloon_texts: Vec::new(),
             })
     );
     assert_eq!(shell.app().canonical_digest(), before_digest);
@@ -4562,11 +4069,6 @@ fn assistant_parameter_edit_uses_the_selected_exact_target_for_feature_and_const
                 value_mm: 7.5,
             }],
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }
     ));
     assert!(matches!(
@@ -4626,11 +4128,6 @@ fn assistant_parameter_edit_uses_the_selected_exact_target_for_feature_and_const
                 value_mm: 4.5,
             }],
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }
     ));
     let snapshot = shell.app().document_snapshot();
@@ -4661,11 +4158,6 @@ fn assistant_parameter_edit_uses_the_selected_exact_target_for_feature_and_const
                     value_mm: 4.5,
                 }],
                 linear_arrays: Vec::new(),
-                bottles: Vec::new(),
-                gable_roofs: Vec::new(),
-                staircases: Vec::new(),
-                oriented_beams: Vec::new(),
-                balloon_texts: Vec::new(),
             })
     );
     assert_eq!(shell.app().canonical_digest(), before_digest);
@@ -4942,11 +4434,6 @@ fn assistant_context_runs_current_collision_validation_without_mutating_or_addin
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     let revision = shell.app().document_revision();
@@ -4984,11 +4471,6 @@ fn assistant_context_runs_current_collision_validation_without_mutating_or_addin
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     let clean_revision = shell.app().document_revision();
@@ -5047,11 +4529,6 @@ fn assistant_context_finds_transitively_supported_and_floating_parts_without_mut
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     assign_validator_roles(
@@ -5114,11 +4591,6 @@ fn assistant_context_finds_transitively_supported_and_floating_parts_without_mut
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     shell.settle();
@@ -5293,11 +4765,6 @@ fn assistant_chat_reports_shelf_deflection_tipping_and_anchoring_with_explicit_l
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     shell.settle();
@@ -5422,11 +4889,6 @@ fn assistant_chat_reports_shelf_deflection_tipping_and_anchoring_with_explicit_l
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     shell.settle();
@@ -5594,11 +5056,6 @@ fn assistant_chat_reports_hardware_and_manufacturing_from_roles_and_source_geome
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     shell.settle();
@@ -5698,11 +5155,6 @@ fn assistant_chat_reports_hardware_and_manufacturing_from_roles_and_source_geome
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     shell.settle();
@@ -5890,11 +5342,6 @@ fn assistant_chat_reports_spatial_roles_and_oriented_narrow_phase() {
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     shell.settle();
@@ -5990,11 +5437,6 @@ fn assistant_chat_reports_spatial_roles_and_oriented_narrow_phase() {
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     shell.settle();
@@ -6170,11 +5612,6 @@ fn assistant_chat_calculates_static_load_from_explicit_canonical_physics_inputs(
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     assign_validator_roles(
@@ -6346,11 +5783,6 @@ fn assistant_repairs_a_collision_through_preview_confirmation_revalidation_and_o
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     shell.settle();
@@ -6449,11 +5881,6 @@ fn assistant_repairs_an_unsupported_part_and_reruns_only_gravity_support() {
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     assign_validator_roles(
@@ -6554,11 +5981,6 @@ fn assistant_repairs_gravity_support_along_the_typed_non_world_axis() {
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     assign_validator_roles(
@@ -6679,11 +6101,6 @@ fn assistant_repairs_all_safe_collision_and_support_findings_in_one_confirmed_ba
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     assign_validator_roles(
@@ -6946,11 +6363,6 @@ fn public_apply_helpers_cannot_bypass_review_for_non_whitelisted_changes() {
                 profile_translations: Vec::new(),
                 parameter_edits: Vec::new(),
                 linear_arrays: Vec::new(),
-                bottles: Vec::new(),
-                gable_roofs: Vec::new(),
-                staircases: Vec::new(),
-                oriented_beams: Vec::new(),
-                balloon_texts: Vec::new(),
             })
     );
     assert!(shell.app().assistant_proposal().is_some());
@@ -7391,11 +6803,6 @@ fn assistant_creates_a_rectangular_prism_as_one_reviewed_batch_and_one_undo_step
                 profile_translations: Vec::new(),
                 parameter_edits: Vec::new(),
                 linear_arrays: Vec::new(),
-                bottles: Vec::new(),
-                gable_roofs: Vec::new(),
-                staircases: Vec::new(),
-                oriented_beams: Vec::new(),
-                balloon_texts: Vec::new(),
             })
     );
     assert_eq!(shell.app().document_revision(), initial_revision);
@@ -7440,11 +6847,6 @@ fn assistant_replacement_review_hides_internal_digests_and_describes_removals() 
                 profile_translations: Vec::new(),
                 parameter_edits: Vec::new(),
                 linear_arrays: Vec::new(),
-                bottles: Vec::new(),
-                gable_roofs: Vec::new(),
-                staircases: Vec::new(),
-                oriented_beams: Vec::new(),
-                balloon_texts: Vec::new(),
             })
     );
     let removed = shell
@@ -7525,11 +6927,6 @@ fn assistant_model_intent_applies_real_3d_boxes_immediately_as_one_undoable_batc
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }
     ));
     assert_eq!(shell.app().document_revision(), initial_revision + 1);
@@ -7554,910 +6951,8 @@ fn assistant_model_intent_applies_real_3d_boxes_immediately_as_one_undoable_batc
 }
 
 #[test]
-#[cfg(feature = "named-product-fixtures")]
-fn assistant_teapot_intent_creates_smooth_hollow_saved_model_as_one_undo_step() {
-    let mut shell = Shell::new();
-    let initial_revision = shell.app().document_revision();
-    let initial_digest = shell.app().canonical_digest();
-    let initial_features = shell.app().feature_count();
-
-    if !apply_reviewed_model_intent(
-        &mut shell,
-        AssistantModelIntent {
-            replace_scene: false,
-            boxes: Vec::new(),
-            translations: Vec::new(),
-            rotations: Vec::new(),
-            profile_translations: Vec::new(),
-            parameter_edits: Vec::new(),
-            linear_arrays: Vec::new(),
-            bottles: vec![AssistantBottleIntent {
-                name: "Rounded tea pot".to_owned(),
-                body_radius_mm: 70.0,
-                body_height_mm: 105.0,
-                shoulder_rise_mm: 22.0,
-                neck_radius_mm: 42.0,
-                neck_height_mm: 14.0,
-                wall_thickness_mm: 3.0,
-                finish_kind: AssistantBottleFinishKind::Fillet,
-                finish_amount_mm: 4.0,
-                origin_mm: [0.0, 0.0, 0.0],
-                teapot: Some(AssistantTeapotIntent {
-                    handle_clearance_mm: 52.0,
-                    handle_tube_radius_mm: 9.0,
-                    spout_length_mm: 105.0,
-                    spout_radius_mm: 14.0,
-                    lid_height_mm: 18.0,
-                    lid_knob_radius_mm: 10.0,
-                }),
-                ketchup_bottle: None,
-            }],
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
-        },
-    ) {
-        assert_eq!(shell.app().document_revision(), initial_revision);
-        assert_eq!(shell.app().canonical_digest(), initial_digest);
-        assert!(shell.app().assistant_proposal().is_none());
-        assert!(shell.app().action_digest().contains("non-editable mesh"));
-        return;
-    }
-
-    assert_eq!(shell.app().document_revision(), initial_revision + 1);
-    assert_eq!(shell.app().feature_count(), initial_features + 2);
-    let snapshot = shell.app().document_snapshot();
-    let body_occurrence = snapshot
-        .occurrences()
-        .find(|occurrence| occurrence.name() == "Rounded tea pot body occurrence")
-        .expect("separate teapot body occurrence must exist");
-    let lid_occurrence = snapshot
-        .occurrences()
-        .find(|occurrence| occurrence.name() == "Rounded tea pot lid occurrence")
-        .expect("separate removable lid occurrence must exist");
-    assert_ne!(
-        body_occurrence.definition_id(),
-        lid_occurrence.definition_id(),
-        "the lid must be independently selectable and removable"
-    );
-    let body_feature = snapshot
-        .features()
-        .find(|feature| feature.name() == "Rounded tea pot smooth hollow body")
-        .expect("teapot body mesh must exist");
-    let lid_feature = snapshot
-        .features()
-        .find(|feature| feature.name() == "Rounded tea pot removable seated lid")
-        .expect("separate seated lid mesh must exist");
-    let FeatureKind::MeshBody(body_mesh) = body_feature.kind() else {
-        panic!("teapot body must be a canonical mesh body");
-    };
-    let FeatureKind::MeshBody(lid_mesh) = lid_feature.kind() else {
-        panic!("teapot lid must be a canonical mesh body");
-    };
-    let assert_closed_manifold = |mesh: &ketchup_core::document::MeshBodySpec| {
-        let mut edges = BTreeMap::<(u32, u32), (usize, i32)>::new();
-        let mut signed_volume = 0.0;
-        for triangle in &mesh.triangles {
-            let [a, b, c] = *triangle;
-            assert!(a != b && b != c && c != a);
-            let va = mesh.vertices_mm[a as usize];
-            let vb = mesh.vertices_mm[b as usize];
-            let vc = mesh.vertices_mm[c as usize];
-            signed_volume += va[0] * (vb[1] * vc[2] - vb[2] * vc[1])
-                + va[1] * (vb[2] * vc[0] - vb[0] * vc[2])
-                + va[2] * (vb[0] * vc[1] - vb[1] * vc[0]);
-            for (start, end) in [(a, b), (b, c), (c, a)] {
-                let key = (start.min(end), start.max(end));
-                let edge = edges.entry(key).or_default();
-                edge.0 += 1;
-                edge.1 += if start < end { 1 } else { -1 };
-            }
-        }
-        assert!(
-            edges
-                .values()
-                .all(|(count, balance)| *count == 2 && *balance == 0)
-        );
-        assert!(signed_volume.abs() > 1.0);
-    };
-    assert_closed_manifold(body_mesh);
-    assert_closed_manifold(lid_mesh);
-    assert!(body_mesh.vertices_mm.len() > 1_800);
-    assert!(body_mesh.triangles.len() > 3_000);
-    assert!(lid_mesh.vertices_mm.len() > 400);
-    assert!(lid_mesh.triangles.len() > 800);
-    assert!(body_mesh.vertices_mm.contains(&[42.0, 0.0, 141.0]));
-    assert!(body_mesh.vertices_mm.contains(&[39.0, 0.0, 141.0]));
-    assert!(body_mesh.vertices_mm.iter().any(|vertex| vertex[0] > 165.0));
-    assert!(
-        body_mesh
-            .vertices_mm
-            .iter()
-            .any(|vertex| vertex[0] < -110.0)
-    );
-    let spout_tip_radii = body_mesh
-        .vertices_mm
-        .iter()
-        .filter(|vertex| (vertex[0] - 170.8).abs() < 0.1 && (vertex[2] - 124.08).abs() < 0.1)
-        .map(|vertex| vertex[1].abs())
-        .collect::<Vec<_>>();
-    assert!(spout_tip_radii.iter().copied().fold(0.0, f64::max) > 10.5);
-    assert!(
-        spout_tip_radii
-            .iter()
-            .copied()
-            .fold(f64::INFINITY, f64::min)
-            < 8.0,
-        "the tapered spout tip must retain a distinct open inner radius"
-    );
-    assert!(
-        lid_mesh
-            .vertices_mm
-            .iter()
-            .any(|vertex| { vertex[2] < 141.0 && vertex[0].hypot(vertex[1]) > 37.0 })
-    );
-    assert!(
-        lid_mesh
-            .vertices_mm
-            .iter()
-            .any(|vertex| { vertex[2] > 141.0 && vertex[0].hypot(vertex[1]) > 45.0 })
-    );
-    assert!(matches!(
-        &body_mesh.authority,
-        ketchup_core::document::MeshAuthority::Authored { provenance }
-            if provenance == "ketchup-assistant-rounded-teapot-body-v2"
-    ));
-    assert!(matches!(
-        &lid_mesh.authority,
-        ketchup_core::document::MeshAuthority::Authored { provenance }
-            if provenance == "ketchup-assistant-removable-teapot-lid-v1"
-    ));
-
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("assistant-rounded-teapot.ketchup");
-    persistence::save_atomic(&path, &snapshot).unwrap();
-    let reopened = persistence::load_file(&path).unwrap().snapshot();
-    assert_eq!(reopened.canonical_digest(), snapshot.canonical_digest());
-    assert!(
-        reopened
-            .features()
-            .any(|feature| feature.name() == "Rounded tea pot smooth hollow body")
-    );
-    assert!(
-        reopened
-            .features()
-            .any(|feature| feature.name() == "Rounded tea pot removable seated lid")
-    );
-    let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/assistant-rounded-teapot.ketchup");
-    if std::env::var_os("UPDATE_ASSISTANT_TEAPOT_FIXTURE").is_some() {
-        persistence::save_atomic(&fixture_path, &snapshot).unwrap();
-    }
-    let fixture = persistence::load_file(&fixture_path).unwrap().snapshot();
-    for (name, expected) in [
-        ("Rounded tea pot smooth hollow body", body_mesh),
-        ("Rounded tea pot removable seated lid", lid_mesh),
-    ] {
-        let fixture_feature = fixture
-            .features()
-            .find(|feature| feature.name() == name)
-            .expect("saved teapot fixture must retain both removable parts");
-        let FeatureKind::MeshBody(fixture_mesh) = fixture_feature.kind() else {
-            panic!("saved teapot fixture parts must remain canonical mesh bodies");
-        };
-        assert_eq!(fixture_mesh.vertices_mm.len(), expected.vertices_mm.len());
-        assert_eq!(fixture_mesh.triangles.len(), expected.triangles.len());
-        assert_eq!(fixture_mesh.authority, expected.authority);
-    }
-    assert_eq!(
-        fixture
-            .occurrences()
-            .filter(|occurrence| occurrence.name().starts_with("Rounded tea pot"))
-            .count(),
-        2
-    );
-
-    assert!(shell.app_mut().undo());
-    assert_eq!(shell.app().document_revision(), initial_revision);
-    assert_eq!(shell.app().canonical_digest(), initial_digest);
-}
-
-#[test]
-fn assistant_balloon_text_creates_inflated_letters_with_holes_depth_save_and_undo() {
-    let mut shell = Shell::new();
-    let initial_revision = shell.app().document_revision();
-    let initial_digest = shell.app().canonical_digest();
-    if !apply_reviewed_model_intent(
-        &mut shell,
-        AssistantModelIntent {
-            replace_scene: false,
-            boxes: Vec::new(),
-            translations: Vec::new(),
-            rotations: Vec::new(),
-            profile_translations: Vec::new(),
-            parameter_edits: Vec::new(),
-            linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            balloon_texts: vec![AssistantBalloonTextIntent {
-                name: "Balloon KECUP".to_owned(),
-                text: "KECUP".to_owned(),
-                height_mm: 120.0,
-                depth_mm: 42.0,
-                stroke_width_mm: 20.0,
-                letter_spacing_mm: 12.0,
-                origin_mm: [25.0, 10.0, 5.0],
-            }],
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-        },
-    ) {
-        assert_eq!(shell.app().document_revision(), initial_revision);
-        assert_eq!(shell.app().canonical_digest(), initial_digest);
-        assert!(shell.app().assistant_proposal().is_none());
-        assert!(shell.app().action_digest().contains("non-editable mesh"));
-        return;
-    }
-    assert_eq!(shell.app().document_revision(), initial_revision + 1);
-    let snapshot = shell.app().document_snapshot();
-    let feature = snapshot
-        .features()
-        .find(|feature| feature.name() == "Balloon KECUP inflated text")
-        .expect("balloon text mesh must exist");
-    let FeatureKind::MeshBody(mesh) = feature.kind() else {
-        panic!("balloon text must be one canonical mesh body");
-    };
-    assert!(mesh.vertices_mm.len() > 3_000);
-    assert!(mesh.triangles.len() > 6_000);
-    assert!(mesh.vertices_mm.iter().any(|point| point[1] == -21.0));
-    assert!(mesh.vertices_mm.iter().any(|point| point[1] == 21.0));
-    let depth_layers = mesh
-        .vertices_mm
-        .iter()
-        .map(|point| (point[1] * 1_000.0).round() as i64)
-        .collect::<BTreeSet<_>>();
-    assert!(
-        depth_layers.len() > 20,
-        "inflated glyphs must have continuously rounded depth, not three beveled slabs"
-    );
-    assert!(
-        !mesh
-            .vertices_mm
-            .iter()
-            .any(|point| (point[0] - 520.8).abs() < 5.0 && (point[2] - 90.0).abs() < 5.0),
-        "the bowl of P must remain a through opening"
-    );
-    assert!(matches!(
-        &mesh.authority,
-        ketchup_core::document::MeshAuthority::Authored { provenance }
-            if provenance == "ketchup-assistant-balloon-text-v2"
-    ));
-    let occurrence = snapshot
-        .occurrences()
-        .find(|occurrence| occurrence.name() == "Balloon KECUP occurrence")
-        .expect("balloon text occurrence must exist");
-    let transform = occurrence.transform();
-    let matrix = transform.matrix();
-    assert_eq!([matrix[3], matrix[7], matrix[11]], [25.0, 10.0, 5.0]);
-
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("assistant-balloon-letters.ketchup");
-    persistence::save_atomic(&path, &snapshot).unwrap();
-    let reopened = persistence::load_file(&path).unwrap().snapshot();
-    assert_eq!(reopened.canonical_digest(), snapshot.canonical_digest());
-    let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/assistant-balloon-letters.ketchup");
-    if std::env::var_os("UPDATE_ASSISTANT_BALLOON_FIXTURE").is_some() {
-        persistence::save_atomic(&fixture_path, &snapshot).unwrap();
-    }
-    let fixture = persistence::load_file(&fixture_path).unwrap().snapshot();
-    let fixture_feature = fixture
-        .features()
-        .find(|feature| feature.name() == "Balloon KECUP inflated text")
-        .expect("saved balloon text fixture must remain openable");
-    let FeatureKind::MeshBody(fixture_mesh) = fixture_feature.kind() else {
-        panic!("saved balloon text fixture must retain its canonical mesh body");
-    };
-    assert_eq!(fixture_mesh.vertices_mm.len(), mesh.vertices_mm.len());
-    assert_eq!(fixture_mesh.triangles.len(), mesh.triangles.len());
-    assert_eq!(fixture_mesh.authority, mesh.authority);
-
-    assert!(shell.app_mut().undo());
-    assert_eq!(shell.app().document_revision(), initial_revision);
-    assert_eq!(shell.app().canonical_digest(), initial_digest);
-}
-
-#[test]
-fn assistant_balloon_text_supports_the_complete_rounded_uppercase_and_digit_alphabet() {
-    let mut shell = Shell::new();
-    let initial_revision = shell.app().document_revision();
-    let initial_digest = shell.app().canonical_digest();
-    if !apply_reviewed_model_intent(
-        &mut shell,
-        AssistantModelIntent {
-            replace_scene: false,
-            boxes: Vec::new(),
-            translations: Vec::new(),
-            rotations: Vec::new(),
-            profile_translations: Vec::new(),
-            parameter_edits: Vec::new(),
-            linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            balloon_texts: vec![
-                AssistantBalloonTextIntent {
-                    name: "Complete balloon alphabet".to_owned(),
-                    text: "ABCDEFGHIJKLMNOPQRSTUVWXYZ".to_owned(),
-                    height_mm: 40.0,
-                    depth_mm: 16.0,
-                    stroke_width_mm: 8.0,
-                    letter_spacing_mm: 4.0,
-                    origin_mm: [0.0, 0.0, 0.0],
-                },
-                AssistantBalloonTextIntent {
-                    name: "Complete balloon digits".to_owned(),
-                    text: "0123456789".to_owned(),
-                    height_mm: 40.0,
-                    depth_mm: 16.0,
-                    stroke_width_mm: 8.0,
-                    letter_spacing_mm: 4.0,
-                    origin_mm: [0.0, 0.0, 60.0],
-                },
-                AssistantBalloonTextIntent {
-                    name: "Standalone balloon caron".to_owned(),
-                    text: "ˇ".to_owned(),
-                    height_mm: 40.0,
-                    depth_mm: 16.0,
-                    stroke_width_mm: 8.0,
-                    letter_spacing_mm: 4.0,
-                    origin_mm: [0.0, 0.0, 120.0],
-                },
-            ],
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-        },
-    ) {
-        assert_eq!(shell.app().document_revision(), initial_revision);
-        assert_eq!(shell.app().canonical_digest(), initial_digest);
-        assert!(shell.app().assistant_proposal().is_none());
-        assert!(shell.app().action_digest().contains("non-editable mesh"));
-        return;
-    }
-    let snapshot = shell.app().document_snapshot();
-    for name in [
-        "Complete balloon alphabet inflated text",
-        "Complete balloon digits inflated text",
-        "Standalone balloon caron inflated text",
-    ] {
-        let feature = snapshot
-            .features()
-            .find(|feature| feature.name() == name)
-            .expect("every supported balloon glyph must produce a mesh body");
-        let FeatureKind::MeshBody(mesh) = feature.kind() else {
-            panic!("every supported balloon glyph must be a canonical mesh body");
-        };
-        assert!(mesh.vertices_mm.len() < 100_000);
-        assert!(mesh.triangles.len() < 200_000);
-        assert!(matches!(
-            &mesh.authority,
-            ketchup_core::document::MeshAuthority::Authored { provenance }
-                if provenance == "ketchup-assistant-balloon-text-v2"
-        ));
-    }
-}
-
-#[test]
-#[cfg(feature = "named-product-fixtures")]
-fn assistant_ketchup_bottle_creates_saved_rounded_squeeze_model_as_one_undo_step() {
-    let mut shell = Shell::new();
-    let initial_revision = shell.app().document_revision();
-    let initial_digest = shell.app().canonical_digest();
-    if !apply_reviewed_model_intent(
-        &mut shell,
-        AssistantModelIntent {
-            replace_scene: true,
-            boxes: Vec::new(),
-            translations: Vec::new(),
-            rotations: Vec::new(),
-            profile_translations: Vec::new(),
-            parameter_edits: Vec::new(),
-            linear_arrays: Vec::new(),
-            bottles: vec![AssistantBottleIntent {
-                name: "Kečup squeeze bottle".to_owned(),
-                body_radius_mm: 38.0,
-                body_height_mm: 145.0,
-                shoulder_rise_mm: 28.0,
-                neck_radius_mm: 15.0,
-                neck_height_mm: 18.0,
-                wall_thickness_mm: 2.0,
-                finish_kind: AssistantBottleFinishKind::Fillet,
-                finish_amount_mm: 2.0,
-                origin_mm: [0.0, 0.0, 0.0],
-                teapot: None,
-                ketchup_bottle: Some(AssistantKetchupBottleIntent {
-                    body_depth_ratio: 0.68,
-                    cap_radius_mm: 19.5,
-                    cap_height_mm: 24.0,
-                    label_width_mm: 58.0,
-                    label_height_mm: 72.0,
-                    label_relief_mm: 2.5,
-                    grip_rib_count: 20,
-                }),
-            }],
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
-        },
-    ) {
-        assert_eq!(shell.app().document_revision(), initial_revision);
-        assert_eq!(shell.app().canonical_digest(), initial_digest);
-        assert!(shell.app().assistant_proposal().is_none());
-        assert!(shell.app().action_digest().contains("non-editable mesh"));
-        return;
-    }
-    let snapshot = shell.app().document_snapshot();
-    let body_occurrence = snapshot
-        .occurrences()
-        .find(|occurrence| occurrence.name() == "Kečup squeeze bottle body occurrence")
-        .expect("separate bottle body occurrence must exist");
-    let cap_occurrence = snapshot
-        .occurrences()
-        .find(|occurrence| occurrence.name() == "Kečup squeeze bottle cap occurrence")
-        .expect("separate removable cap occurrence must exist");
-    assert_ne!(
-        body_occurrence.definition_id(),
-        cap_occurrence.definition_id(),
-        "the cap must be independently selectable and removable"
-    );
-    let body_feature = snapshot
-        .features()
-        .find(|feature| feature.name() == "Kečup squeeze bottle clean threaded body")
-        .expect("clean threaded bottle body must exist");
-    let cap_feature = snapshot
-        .features()
-        .find(|feature| feature.name() == "Kečup squeeze bottle removable threaded cap")
-        .expect("removable threaded cap must exist");
-    let FeatureKind::MeshBody(body_mesh) = body_feature.kind() else {
-        panic!("ketchup bottle body must be a canonical mesh body");
-    };
-    let FeatureKind::MeshBody(cap_mesh) = cap_feature.kind() else {
-        panic!("ketchup bottle cap must be a canonical mesh body");
-    };
-    assert!(body_mesh.vertices_mm.len() > 3_000);
-    assert!(body_mesh.triangles.len() > 6_000);
-    assert!(cap_mesh.vertices_mm.len() > 3_000);
-    assert!(cap_mesh.triangles.len() > 6_000);
-    let x_extent = body_mesh
-        .vertices_mm
-        .iter()
-        .map(|point| point[0].abs())
-        .fold(0.0, f64::max);
-    let y_extent = body_mesh
-        .vertices_mm
-        .iter()
-        .filter(|point| point[2] < 145.0)
-        .map(|point| point[1].abs())
-        .fold(0.0, f64::max);
-    assert!(x_extent > y_extent * 1.25);
-    let body_thread_radii = body_mesh
-        .vertices_mm
-        .iter()
-        .filter(|point| point[2] > 174.0 && point[2] < 190.0)
-        .map(|point| point[0].hypot(point[1]))
-        .collect::<Vec<_>>();
-    assert!(
-        body_thread_radii.iter().copied().fold(0.0, f64::max) > 16.0,
-        "the neck must carry a raised external helix"
-    );
-    assert!(
-        body_thread_radii
-            .iter()
-            .copied()
-            .fold(f64::INFINITY, f64::min)
-            < 15.1,
-        "the helical neck must retain land between thread turns"
-    );
-    let cap_inner_radii = cap_mesh
-        .vertices_mm
-        .iter()
-        .filter(|point| {
-            point[2] > 173.0
-                && point[2] < 193.0
-                && point[0].hypot(point[1]) > 14.0
-                && point[0].hypot(point[1]) < 17.5
-        })
-        .map(|point| point[0].hypot(point[1]))
-        .collect::<Vec<_>>();
-    assert!(
-        cap_inner_radii.iter().copied().fold(0.0, f64::max) > 16.4,
-        "the cap must carry a complementary internal helical groove"
-    );
-    assert!(
-        cap_inner_radii
-            .iter()
-            .copied()
-            .fold(f64::INFINITY, f64::min)
-            < 15.5,
-        "the cap groove must return to its clearance land"
-    );
-    assert!(matches!(
-        &body_mesh.authority,
-        ketchup_core::document::MeshAuthority::Authored { provenance }
-            if provenance == "ketchup-assistant-squeeze-bottle-body-v2"
-    ));
-    assert!(matches!(
-        &cap_mesh.authority,
-        ketchup_core::document::MeshAuthority::Authored { provenance }
-            if provenance == "ketchup-assistant-threaded-cap-v1"
-    ));
-    let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/assistant-ketchup-squeeze-bottle.ketchup");
-    if std::env::var_os("UPDATE_ASSISTANT_KETCHUP_FIXTURE").is_some() {
-        persistence::save_atomic(&fixture_path, &snapshot).unwrap();
-    }
-    let fixture = persistence::load_file(&fixture_path).unwrap().snapshot();
-    assert!(
-        fixture
-            .features()
-            .any(|feature| { feature.name() == "Kečup squeeze bottle clean threaded body" })
-    );
-    assert!(
-        fixture
-            .features()
-            .any(|feature| { feature.name() == "Kečup squeeze bottle removable threaded cap" })
-    );
-    assert_eq!(
-        fixture
-            .occurrences()
-            .filter(|occurrence| occurrence.name().starts_with("Kečup squeeze bottle"))
-            .count(),
-        2
-    );
-    assert!(shell.app_mut().undo());
-    assert_eq!(shell.app().document_revision(), initial_revision);
-    assert_eq!(shell.app().canonical_digest(), initial_digest);
-}
-
-#[test]
-#[cfg(feature = "named-product-fixtures")]
-fn assistant_bottle_intent_creates_editable_feature_chain_as_one_undo_step() {
-    let mut shell = Shell::new();
-    let initial_revision = shell.app().document_revision();
-    let initial_digest = shell.app().canonical_digest();
-    let initial_features = shell.app().feature_count();
-    let initial_occurrences = shell.app().occurrence_count();
-
-    assert!(apply_reviewed_model_intent(
-        &mut shell,
-        AssistantModelIntent {
-            replace_scene: false,
-            boxes: Vec::new(),
-            translations: Vec::new(),
-            rotations: Vec::new(),
-            profile_translations: Vec::new(),
-            parameter_edits: Vec::new(),
-            linear_arrays: Vec::new(),
-            bottles: vec![AssistantBottleIntent {
-                name: "AI ketchup bottle".to_owned(),
-                body_radius_mm: 30.0,
-                body_height_mm: 110.0,
-                shoulder_rise_mm: 20.0,
-                neck_radius_mm: 12.0,
-                neck_height_mm: 25.0,
-                wall_thickness_mm: 2.0,
-                finish_kind: AssistantBottleFinishKind::Chamfer,
-                finish_amount_mm: 2.0,
-                origin_mm: [90.0, 0.0, 0.0],
-                teapot: None,
-                ketchup_bottle: None,
-            }],
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
-        }
-    ));
-
-    assert_eq!(shell.app().document_revision(), initial_revision + 1);
-    assert_eq!(shell.app().feature_count(), initial_features + 5);
-    assert_eq!(shell.app().occurrence_count(), initial_occurrences + 1);
-    let snapshot = shell.app().document_snapshot();
-    let occurrence = snapshot
-        .occurrences()
-        .find(|occurrence| occurrence.name() == "AI ketchup bottle occurrence")
-        .unwrap();
-    let transform = occurrence.transform();
-    let matrix = transform.matrix();
-    assert_eq!([matrix[3], matrix[7], matrix[11]], [90.0, 0.0, 0.0]);
-    let kinds = snapshot
-        .features()
-        .filter(|feature| feature.definition_id() == occurrence.definition_id())
-        .map(|feature| feature.kind())
-        .collect::<Vec<_>>();
-    assert!(
-        kinds
-            .iter()
-            .any(|kind| matches!(kind, FeatureKind::Profile { .. }))
-    );
-    assert!(
-        kinds
-            .iter()
-            .any(|kind| matches!(kind, FeatureKind::BottleProfileControl { .. }))
-    );
-    assert!(
-        kinds
-            .iter()
-            .any(|kind| matches!(kind, FeatureKind::Revolve { .. }))
-    );
-    assert!(
-        kinds
-            .iter()
-            .any(|kind| matches!(kind, FeatureKind::Shell { .. }))
-    );
-    assert!(kinds.iter().any(|kind| matches!(
-        kind,
-        FeatureKind::BottleEdgeFinish {
-            kind: ketchup_core::document::BottleEdgeFinishKind::Chamfer,
-            ..
-        }
-    )));
-
-    assert!(shell.app_mut().undo());
-    assert_eq!(shell.app().document_revision(), initial_revision);
-    assert_eq!(shell.app().canonical_digest(), initial_digest);
-}
-
-#[test]
-fn assistant_builds_gable_roof_floor_opening_and_staircase_as_one_undo_step() {
-    let mut shell = Shell::new();
-    let initial_revision = shell.app().document_revision();
-    let initial_digest = shell.app().canonical_digest();
-
-    assert!(apply_reviewed_model_intent(
-        &mut shell,
-        AssistantModelIntent {
-            replace_scene: true,
-            boxes: vec![AssistantBoxIntent {
-                name: "Attic floor with stair opening".to_owned(),
-                size_mm: [5_500.0, 3_800.0, 200.0],
-                origin_mm: [0.0, 0.0, 3_200.0],
-                subtract_boxes: vec![AssistantSubtractionIntent {
-                    size_mm: [900.0, 1_400.0, 200.0],
-                    origin_mm: [3_900.0, 1_900.0, 0.0],
-                }],
-            }],
-            translations: Vec::new(),
-            rotations: Vec::new(),
-            profile_translations: Vec::new(),
-            parameter_edits: Vec::new(),
-            linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: vec![AssistantGableRoofIntent {
-                name: "True gable roof".to_owned(),
-                length_mm: 5_900.0,
-                span_mm: 4_200.0,
-                rise_mm: 1_400.0,
-                thickness_mm: 180.0,
-                origin_mm: [-200.0, -200.0, 3_400.0],
-            }],
-            staircases: vec![AssistantStaircaseIntent {
-                name: "Attic staircase".to_owned(),
-                run_mm: 3_000.0,
-                width_mm: 800.0,
-                rise_mm: 3_000.0,
-                step_count: 15,
-                origin_mm: [1_800.0, 2_200.0, 200.0],
-            }],
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
-        }
-    ));
-
-    assert_eq!(shell.app().document_revision(), initial_revision + 1);
-    assert_eq!(shell.app().occurrence_count(), 3);
-    assert_eq!(shell.app().active_box_count(), 3);
-    let snapshot = shell.app().document_snapshot();
-    let roof_definition = snapshot
-        .definitions()
-        .find(|definition| definition.name() == "True gable roof")
-        .expect("gable roof definition must exist");
-    let roof_features = roof_definition
-        .feature_ids()
-        .iter()
-        .map(|id| snapshot.feature(*id).unwrap())
-        .collect::<Vec<_>>();
-    assert!(
-        roof_features
-            .iter()
-            .any(|feature| matches!(feature.kind(), FeatureKind::Workplane(_)))
-    );
-    let roof_sketch = roof_features
-        .iter()
-        .find_map(|feature| match feature.kind() {
-            FeatureKind::Sketch(sketch) => Some(sketch),
-            _ => None,
-        })
-        .expect("gable roof editable sketch must exist");
-    assert_eq!(roof_sketch.entities.len(), 6);
-    assert!(
-        roof_features
-            .iter()
-            .any(|feature| matches!(feature.kind(), FeatureKind::Pad(_)))
-    );
-    assert!(
-        !roof_features
-            .iter()
-            .any(|feature| matches!(feature.kind(), FeatureKind::MeshBody(_)))
-    );
-    let floor_definition = snapshot
-        .definitions()
-        .find(|definition| definition.name() == "Attic floor with stair opening")
-        .expect("floor opening definition must exist");
-    let floor_features = floor_definition
-        .feature_ids()
-        .iter()
-        .map(|id| snapshot.feature(*id).unwrap())
-        .collect::<Vec<_>>();
-    assert!(
-        floor_features
-            .iter()
-            .any(|feature| matches!(feature.kind(), FeatureKind::Pad(_)))
-    );
-    assert!(
-        floor_features
-            .iter()
-            .any(|feature| matches!(feature.kind(), FeatureKind::Boolean { .. }))
-    );
-    assert!(
-        floor_features
-            .iter()
-            .all(|feature| !matches!(feature.kind(), FeatureKind::MeshBody(_)))
-    );
-    let floor_producer = *floor_definition.feature_ids().last().unwrap();
-    assert!(
-        ExactBRepGraph::from_snapshot(&snapshot, floor_definition.id(), floor_producer).is_ok()
-    );
-    let stairs_definition = snapshot
-        .definitions()
-        .find(|definition| definition.name() == "Attic staircase")
-        .expect("staircase definition must exist");
-    let stairs_features = stairs_definition
-        .feature_ids()
-        .iter()
-        .map(|id| snapshot.feature(*id).unwrap())
-        .collect::<Vec<_>>();
-    let stairs_sketch = stairs_features
-        .iter()
-        .find_map(|feature| match feature.kind() {
-            FeatureKind::Sketch(sketch) => Some(sketch),
-            _ => None,
-        })
-        .expect("staircase editable sketch must exist");
-    assert_eq!(stairs_sketch.entities.len(), 32);
-    assert!(
-        stairs_features
-            .iter()
-            .any(|feature| matches!(feature.kind(), FeatureKind::Pad(_)))
-    );
-    assert!(
-        !stairs_features
-            .iter()
-            .any(|feature| matches!(feature.kind(), FeatureKind::MeshBody(_)))
-    );
-
-    assert!(shell.app_mut().undo());
-    assert_eq!(shell.app().document_revision(), initial_revision);
-    assert_eq!(shell.app().canonical_digest(), initial_digest);
-}
-
-#[test]
-fn assistant_builds_sloped_rafters_with_real_notches_and_central_purlin() {
-    let mut shell = Shell::new();
-    let initial_revision = shell.app().document_revision();
-    let initial_digest = shell.app().canonical_digest();
-    let rafter = |name: &str, x: f64, start_y: f64, end_y: f64| AssistantOrientedBeamIntent {
-        name: name.to_owned(),
-        start_mm: [x, start_y, 3_044.067_796_610_17],
-        end_mm: [x, end_y, 4_800.0],
-        up_hint: [0.0, 0.0, 1.0],
-        width_mm: 100.0,
-        depth_mm: 180.0,
-        bottom_notches: vec![AssistantBeamNotchIntent {
-            from_start_mm: 600.0,
-            length_mm: 160.0,
-            depth_mm: 50.0,
-        }],
-    };
-
-    assert!(apply_reviewed_model_intent(
-        &mut shell,
-        AssistantModelIntent {
-            replace_scene: true,
-            boxes: Vec::new(),
-            translations: Vec::new(),
-            rotations: Vec::new(),
-            profile_translations: Vec::new(),
-            parameter_edits: Vec::new(),
-            linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: vec![
-                rafter("Left rafter 1", 0.0, -483.050_847_457_627_1, 1_900.0),
-                rafter("Right rafter 1", 0.0, 4_283.050_847_457_627, 1_900.0),
-                rafter("Left rafter 2", 600.0, -483.050_847_457_627_1, 1_900.0),
-                rafter("Right rafter 2", 600.0, 4_283.050_847_457_627, 1_900.0),
-                AssistantOrientedBeamIntent {
-                    name: "Central purlin".to_owned(),
-                    start_mm: [-200.0, 1_900.0, 4_600.0],
-                    end_mm: [5_700.0, 1_900.0, 4_600.0],
-                    up_hint: [0.0, 0.0, 1.0],
-                    width_mm: 160.0,
-                    depth_mm: 240.0,
-                    bottom_notches: Vec::new(),
-                },
-            ],
-            balloon_texts: Vec::new(),
-        }
-    ));
-
-    assert_eq!(shell.app().document_revision(), initial_revision + 1);
-    assert_eq!(shell.app().occurrence_count(), 5);
-    let snapshot = shell.app().document_snapshot();
-    let rafter_definition = snapshot
-        .definitions()
-        .find(|definition| definition.name() == "Left rafter 1")
-        .expect("rafter definition must exist");
-    let rafter_features = rafter_definition
-        .feature_ids()
-        .iter()
-        .map(|id| snapshot.feature(*id).unwrap())
-        .collect::<Vec<_>>();
-    let rafter_sketch = rafter_features
-        .iter()
-        .find_map(|feature| match feature.kind() {
-            FeatureKind::Sketch(sketch) => Some(sketch),
-            _ => None,
-        })
-        .expect("rafter editable sketch must exist");
-    assert_eq!(rafter_sketch.entities.len(), 8);
-    assert!(
-        rafter_features
-            .iter()
-            .any(|feature| matches!(feature.kind(), FeatureKind::Pad(_)))
-    );
-    assert!(
-        !rafter_features
-            .iter()
-            .any(|feature| matches!(feature.kind(), FeatureKind::MeshBody(_)))
-    );
-    let left = snapshot
-        .occurrences()
-        .find(|occurrence| occurrence.name() == "Left rafter 1")
-        .expect("left rafter occurrence must exist");
-    let right = snapshot
-        .occurrences()
-        .find(|occurrence| occurrence.name() == "Right rafter 1")
-        .expect("right rafter occurrence must exist");
-    assert!(left.transform().matrix()[8] > 0.5);
-    assert!(right.transform().matrix()[8] > 0.5);
-    assert!(left.transform().matrix()[4] > 0.5);
-    assert!(right.transform().matrix()[4] < -0.5);
-
-    assert!(shell.app_mut().undo());
-    assert_eq!(shell.app().document_revision(), initial_revision);
-    assert_eq!(shell.app().canonical_digest(), initial_digest);
-}
-
-#[test]
-fn top_bar_zoom_fit_physically_frames_saved_organic_models() {
-    for fixture in [
-        "assistant-balloon-letters.ketchup",
-        "assistant-ketchup-squeeze-bottle.ketchup",
-        "assistant-rounded-teapot.ketchup",
-    ] {
+fn top_bar_zoom_fit_physically_frames_saved_models() {
+    for fixture in ["garden-studio.ketchup", "hettich-quadro-v6-drawer.ketchup"] {
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../examples")
             .join(fixture);
@@ -8562,11 +7057,6 @@ fn assistant_subtractions_create_one_real_grooved_body_as_one_undo_step() {
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }
     ));
 
@@ -8654,11 +7144,6 @@ fn assistant_moves_existing_grooved_body_without_rebuilding_its_geometry() {
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }
     ));
     let occurrence_id = shell
@@ -8685,11 +7170,6 @@ fn assistant_moves_existing_grooved_body_without_rebuilding_its_geometry() {
                 delta_mm: [100.0, 0.0, 0.0],
             }],
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }
     ));
 
@@ -8751,11 +7231,6 @@ fn assistant_context_keeps_all_17_plain_and_7_grooved_parts_copyable_with_bounds
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }
     ));
 
@@ -8803,11 +7278,6 @@ fn assistant_stacks_24_existing_parts_into_20_layers_as_shared_occurrences_in_on
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }
     ));
     let before = shell.app().document_snapshot();
@@ -8835,11 +7305,6 @@ fn assistant_stacks_24_existing_parts_into_20_layers_as_shared_occurrences_in_on
                 instances: 20,
                 step_mm: [0.0, 0.0, 280.0],
             }],
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }
     ));
 

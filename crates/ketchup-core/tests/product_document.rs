@@ -24,7 +24,6 @@ use ketchup_core::exact_product::{
     EXACT_CIRCLE_EVALUATOR_V1, ExactFeatureChainRequest, ExactPlanarOffsetRequest,
 };
 use ketchup_core::persistence;
-#[cfg(not(feature = "named-product-fixtures"))]
 use ketchup_core::persistence::{LegacyFeatureKind, PersistenceError};
 use ketchup_core::sketch::{
     PrincipalPlane, SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity,
@@ -933,7 +932,6 @@ fn general_shell_and_edge_finish_roles_are_canonical_undoable_unique_and_persist
     ));
 
     let loaded = persistence::load(&persistence::save(&unique));
-    #[cfg(not(feature = "named-product-fixtures"))]
     assert!(matches!(
         loaded,
         Err(PersistenceError::LegacyFeatureRequiresMigration {
@@ -941,24 +939,6 @@ fn general_shell_and_edge_finish_roles_are_canonical_undoable_unique_and_persist
             kind: LegacyFeatureKind::RoleStringShell,
         }) if feature_id == SHELL
     ));
-    #[cfg(feature = "named-product-fixtures")]
-    {
-        let unique_digest = unique.canonical_digest();
-        let loaded = loaded.unwrap();
-        assert_eq!(loaded.source_schema(), persistence::CURRENT_SCHEMA);
-        assert!(loaded.migration_losses().is_empty());
-        assert_eq!(loaded.snapshot().canonical_digest(), unique_digest);
-        assert!(matches!(
-            loaded.snapshot().feature(unique_shell).unwrap().kind(),
-            FeatureKind::Shell { removed_faces, .. }
-                if removed_faces[0].as_str() == "extrusion.top"
-        ));
-        assert!(matches!(
-            loaded.snapshot().feature(unique_finish).unwrap().kind(),
-            FeatureKind::BottleEdgeFinish { edges, .. }
-                if edges[0].as_str() == "shell.edge.top-east"
-        ));
-    }
 }
 
 #[test]
@@ -1031,7 +1011,6 @@ fn m6_shell_thickness_is_canonical_undoable_persisted_and_fail_closed() {
     assert_eq!(document.redo().unwrap().canonical_digest(), changed_digest);
 
     let reopened = persistence::load(&persistence::save(&document.current()));
-    #[cfg(not(feature = "named-product-fixtures"))]
     assert!(matches!(
         reopened,
         Err(PersistenceError::LegacyFeatureRequiresMigration {
@@ -1039,13 +1018,6 @@ fn m6_shell_thickness_is_canonical_undoable_persisted_and_fail_closed() {
             kind: LegacyFeatureKind::RoleStringShell,
         })
     ));
-    #[cfg(feature = "named-product-fixtures")]
-    {
-        let reopened = reopened.unwrap();
-        assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
-        assert!(reopened.migration_losses().is_empty());
-        assert_eq!(reopened.snapshot().canonical_digest(), changed_digest);
-    }
 
     let before_invalid = document.current().canonical_digest();
     let undo_before_invalid = document.visible_undo_steps();
@@ -1191,7 +1163,6 @@ fn m6_controlled_profile_and_edge_finish_are_atomic_persisted_and_fail_closed() 
     assert_eq!(document.redo().unwrap().canonical_digest(), changed_digest);
 
     let reopened = persistence::load(&persistence::save(&document.current()));
-    #[cfg(not(feature = "named-product-fixtures"))]
     assert!(matches!(
         reopened,
         Err(PersistenceError::LegacyFeatureRequiresMigration {
@@ -1199,21 +1170,6 @@ fn m6_controlled_profile_and_edge_finish_are_atomic_persisted_and_fail_closed() 
             kind: LegacyFeatureKind::BottleProfileControl,
         })
     ));
-    #[cfg(feature = "named-product-fixtures")]
-    {
-        let reopened = reopened.unwrap();
-        assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);
-        assert!(reopened.migration_losses().is_empty());
-        assert_eq!(reopened.snapshot().canonical_digest(), changed_digest);
-        assert!(matches!(
-            reopened.snapshot().feature(FINISH).unwrap().kind(),
-            FeatureKind::BottleEdgeFinish {
-                kind: BottleEdgeFinishKind::Chamfer,
-                amount,
-                ..
-            } if amount.millimetres() == 1.5
-        ));
-    }
 
     for (command, invalid_feature) in [
         (

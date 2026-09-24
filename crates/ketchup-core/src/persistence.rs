@@ -4559,7 +4559,6 @@ fn load_document(
             return Err(PersistenceError::InvalidExactReference);
         }
     }
-    #[cfg(not(feature = "named-product-fixtures"))]
     reject_legacy_feature_authority(&loaded_snapshot)?;
     if review_required || container_data.requires_unknown_extension() {
         Ok(LoadOutcome::ReviewOnly(ReviewCandidate {
@@ -4576,7 +4575,6 @@ fn load_document(
     }
 }
 
-#[cfg(not(feature = "named-product-fixtures"))]
 fn reject_legacy_feature_authority(snapshot: &Snapshot) -> Result<(), PersistenceError> {
     for feature in snapshot.features() {
         let kind = match feature.kind() {

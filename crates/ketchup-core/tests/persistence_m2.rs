@@ -6,7 +6,6 @@ use ketchup_core::document::{
     RevisionOrigin, RuleOutput, SlotPath, SlotResolution, SlotSegment, StableEdgeRole,
     StableFaceRole, Transform,
 };
-#[cfg(not(feature = "named-product-fixtures"))]
 use ketchup_core::persistence::LegacyFeatureKind;
 use ketchup_core::persistence::{self, LoadDisposition, PersistenceError};
 use ketchup_core::sheet_metal::{SheetMetalEdge, SheetMetalFlange, SheetMetalSpec};
@@ -227,7 +226,6 @@ fn legacy_authority_document(authority: LegacyAuthority) -> DocumentStore {
     store
 }
 
-#[cfg(not(feature = "named-product-fixtures"))]
 #[test]
 fn default_load_rejects_legacy_named_feature_authority_with_typed_migration_error() {
     for (authority, kind) in [
@@ -255,7 +253,6 @@ fn default_load_rejects_legacy_named_feature_authority_with_typed_migration_erro
     }
 }
 
-#[cfg(not(feature = "named-product-fixtures"))]
 #[test]
 fn migration_required_primary_is_not_replaced_by_a_recovery_document() {
     let directory = tempfile::tempdir().unwrap();
@@ -282,26 +279,6 @@ fn migration_required_primary_is_not_replaced_by_a_recovery_document() {
             }
         ))
     ));
-}
-
-#[cfg(feature = "named-product-fixtures")]
-#[test]
-fn named_product_fixture_build_preserves_legacy_feature_decoding() {
-    for authority in [
-        LegacyAuthority::BottleProfileControl,
-        LegacyAuthority::RoleStringShell,
-        LegacyAuthority::BottleEdgeFinish,
-    ] {
-        let bytes = persistence::save(&legacy_authority_document(authority).current());
-        let loaded = persistence::load(&bytes).unwrap();
-        assert_eq!(loaded.disposition(), LoadDisposition::EditableLossless);
-        assert!(matches!(
-            loaded.snapshot().feature(FeatureId(20)).unwrap().kind(),
-            FeatureKind::BottleProfileControl { .. }
-                | FeatureKind::Shell { .. }
-                | FeatureKind::BottleEdgeFinish { .. }
-        ));
-    }
 }
 
 #[test]

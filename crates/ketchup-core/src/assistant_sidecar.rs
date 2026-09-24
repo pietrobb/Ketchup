@@ -3,9 +3,6 @@ use crate::document::{
     is_valid_spatial_sweep_path,
 };
 use crate::exact_product::EXACT_MIN_LENGTH_MM;
-use crate::exact_revolve::{
-    controlled_bottle_profile, finish_amount_is_conservative, inner_shell_profile,
-};
 use crate::sheet_metal::{SheetMetalEdge, SheetMetalFlange, SheetMetalSpec};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -25,14 +22,6 @@ const MAX_ASSISTANT_ARRAY_OUTPUTS: usize = 512;
 const MAX_ASSISTANT_CAD_EDIT_OPERATIONS: usize = 64;
 const MAX_ASSISTANT_CAD_SELECTOR_TARGETS: usize = 100;
 const MAX_ASSISTANT_CAD_GENERATED_OCCURRENCES: usize = 512;
-const MAX_ASSISTANT_BOTTLES: usize = 8;
-const MAX_ASSISTANT_TEAPOT_DIMENSION_MM: f64 = 2_000.0;
-const MAX_ASSISTANT_BALLOON_TEXTS: usize = 8;
-const MAX_ASSISTANT_BALLOON_TEXT_CHARS: usize = 32;
-const MAX_ASSISTANT_GABLE_ROOFS: usize = 16;
-const MAX_ASSISTANT_STAIRCASES: usize = 16;
-const MAX_ASSISTANT_ORIENTED_BEAMS: usize = 64;
-const MAX_ASSISTANT_BEAM_NOTCHES: usize = 64;
 const MAX_ASSISTANT_NAME_BYTES: usize = 128;
 const MAX_ASSISTANT_REJECTION_CODE_BYTES: usize = 128;
 const MAX_ASSISTANT_REJECTION_OPERATION_BYTES: usize = 128;
@@ -3686,229 +3675,6 @@ impl AssistantCadEditProgram {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AssistantBottleFinishKind {
-    Fillet,
-    Chamfer,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AssistantTeapotIntent {
-    pub handle_clearance_mm: f64,
-    pub handle_tube_radius_mm: f64,
-    pub spout_length_mm: f64,
-    pub spout_radius_mm: f64,
-    pub lid_height_mm: f64,
-    pub lid_knob_radius_mm: f64,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AssistantKetchupBottleIntent {
-    pub body_depth_ratio: f64,
-    pub cap_radius_mm: f64,
-    pub cap_height_mm: f64,
-    pub label_width_mm: f64,
-    pub label_height_mm: f64,
-    pub label_relief_mm: f64,
-    pub grip_rib_count: u32,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AssistantBottleIntent {
-    pub name: String,
-    pub body_radius_mm: f64,
-    pub body_height_mm: f64,
-    pub shoulder_rise_mm: f64,
-    pub neck_radius_mm: f64,
-    pub neck_height_mm: f64,
-    pub wall_thickness_mm: f64,
-    pub finish_kind: AssistantBottleFinishKind,
-    pub finish_amount_mm: f64,
-    pub origin_mm: [f64; 3],
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub teapot: Option<AssistantTeapotIntent>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ketchup_bottle: Option<AssistantKetchupBottleIntent>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AssistantBalloonTextIntent {
-    pub name: String,
-    pub text: String,
-    pub height_mm: f64,
-    pub depth_mm: f64,
-    pub stroke_width_mm: f64,
-    pub letter_spacing_mm: f64,
-    pub origin_mm: [f64; 3],
-}
-
-impl AssistantBottleIntent {
-    fn validate(&self) -> Result<(), String> {
-        if self.name.trim().is_empty()
-            || self.name.len() > MAX_ASSISTANT_NAME_BYTES
-            || self.name.chars().any(char::is_control)
-        {
-            return Err("assistant bottle name is invalid".to_owned());
-        }
-        if self
-            .origin_mm
-            .iter()
-            .any(|value| !value.is_finite() || value.abs() > MAX_ASSISTANT_ABS_MM)
-        {
-            return Err("assistant bottle origin is outside the envelope".to_owned());
-        }
-        let dimensions = [
-            self.body_radius_mm,
-            self.body_height_mm,
-            self.shoulder_rise_mm,
-            self.neck_radius_mm,
-            self.neck_height_mm,
-            self.wall_thickness_mm,
-            self.finish_amount_mm,
-        ];
-        if dimensions
-            .iter()
-            .any(|value| !value.is_finite() || *value <= 0.0 || *value > MAX_ASSISTANT_ABS_MM)
-            || self.neck_radius_mm >= self.body_radius_mm
-        {
-            return Err("assistant bottle dimensions are outside the envelope".to_owned());
-        }
-        let source_profile = vec![
-            [0.0, 0.0],
-            [self.body_radius_mm, 0.0],
-            [self.body_radius_mm, self.body_height_mm],
-            [
-                self.neck_radius_mm,
-                self.body_height_mm + self.shoulder_rise_mm,
-            ],
-            [
-                self.neck_radius_mm,
-                self.body_height_mm + self.shoulder_rise_mm + self.neck_height_mm,
-            ],
-            [
-                0.0,
-                self.body_height_mm + self.shoulder_rise_mm + self.neck_height_mm,
-            ],
-        ];
-        let profile = controlled_bottle_profile(
-            &source_profile,
-            self.body_radius_mm,
-            self.body_height_mm,
-            self.shoulder_rise_mm,
-        )
-        .map_err(|_| "assistant bottle profile is unsupported".to_owned())?;
-        inner_shell_profile(&profile, self.wall_thickness_mm)
-            .map_err(|_| "assistant bottle wall thickness is unsupported".to_owned())?;
-        if !finish_amount_is_conservative(&profile, self.finish_amount_mm) {
-            return Err("assistant bottle edge finish is unsupported".to_owned());
-        }
-        if let Some(teapot) = &self.teapot {
-            let dimensions = [
-                teapot.handle_clearance_mm,
-                teapot.handle_tube_radius_mm,
-                teapot.spout_length_mm,
-                teapot.spout_radius_mm,
-                teapot.lid_height_mm,
-                teapot.lid_knob_radius_mm,
-            ];
-            if dimensions.iter().any(|value| {
-                !value.is_finite() || *value <= 0.0 || *value > MAX_ASSISTANT_TEAPOT_DIMENSION_MM
-            }) || teapot.handle_clearance_mm < teapot.handle_tube_radius_mm * 2.0
-                || teapot.handle_tube_radius_mm >= self.body_radius_mm * 0.35
-                || teapot.spout_length_mm < self.body_radius_mm * 0.75
-                || teapot.spout_length_mm > self.body_radius_mm * 4.0
-                || teapot.spout_radius_mm <= self.wall_thickness_mm
-                || teapot.spout_radius_mm >= self.body_radius_mm * 0.5
-                || teapot.lid_height_mm >= self.body_height_mm * 0.5
-                || teapot.lid_knob_radius_mm >= self.neck_radius_mm * 0.75
-            {
-                return Err("assistant teapot dimensions are outside the envelope".to_owned());
-            }
-        }
-        if self.teapot.is_some() && self.ketchup_bottle.is_some() {
-            return Err("assistant bottle cannot combine vessel styles".to_owned());
-        }
-        if let Some(ketchup) = &self.ketchup_bottle {
-            let dimensions = [
-                ketchup.cap_radius_mm,
-                ketchup.cap_height_mm,
-                ketchup.label_width_mm,
-                ketchup.label_height_mm,
-                ketchup.label_relief_mm,
-            ];
-            if !ketchup.body_depth_ratio.is_finite()
-                || !(0.5..=1.0).contains(&ketchup.body_depth_ratio)
-                || dimensions.iter().any(|value| {
-                    !value.is_finite()
-                        || *value <= 0.0
-                        || *value > MAX_ASSISTANT_TEAPOT_DIMENSION_MM
-                })
-                || ketchup.cap_radius_mm <= self.neck_radius_mm + self.wall_thickness_mm * 1.75
-                || ketchup.cap_radius_mm >= self.body_radius_mm * 0.55
-                || ketchup.cap_height_mm <= self.neck_height_mm + self.wall_thickness_mm * 2.0
-                || ketchup.cap_height_mm >= self.body_height_mm * 0.35
-                || ketchup.label_width_mm >= self.body_radius_mm * 1.8
-                || ketchup.label_height_mm >= self.body_height_mm * 0.7
-                || ketchup.label_relief_mm >= self.body_radius_mm * 0.1
-                || !(8..=48).contains(&ketchup.grip_rib_count)
-            {
-                return Err(
-                    "assistant ketchup bottle dimensions are outside the envelope".to_owned(),
-                );
-            }
-        }
-        Ok(())
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AssistantGableRoofIntent {
-    pub name: String,
-    pub length_mm: f64,
-    pub span_mm: f64,
-    pub rise_mm: f64,
-    pub thickness_mm: f64,
-    pub origin_mm: [f64; 3],
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AssistantStaircaseIntent {
-    pub name: String,
-    pub run_mm: f64,
-    pub width_mm: f64,
-    pub rise_mm: f64,
-    pub step_count: u32,
-    pub origin_mm: [f64; 3],
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AssistantBeamNotchIntent {
-    pub from_start_mm: f64,
-    pub length_mm: f64,
-    pub depth_mm: f64,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AssistantOrientedBeamIntent {
-    pub name: String,
-    pub start_mm: [f64; 3],
-    pub end_mm: [f64; 3],
-    pub up_hint: [f64; 3],
-    pub width_mm: f64,
-    pub depth_mm: f64,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub bottom_notches: Vec<AssistantBeamNotchIntent>,
-}
-
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AssistantModelIntent {
@@ -3925,16 +3691,6 @@ pub struct AssistantModelIntent {
     pub parameter_edits: Vec<AssistantParameterEditIntent>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub linear_arrays: Vec<AssistantLinearArrayIntent>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub bottles: Vec<AssistantBottleIntent>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub balloon_texts: Vec<AssistantBalloonTextIntent>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub gable_roofs: Vec<AssistantGableRoofIntent>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub staircases: Vec<AssistantStaircaseIntent>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub oriented_beams: Vec<AssistantOrientedBeamIntent>,
 }
 
 fn boxes_overlap(left: &AssistantSubtractionIntent, right: &AssistantSubtractionIntent) -> bool {
@@ -3942,82 +3698,6 @@ fn boxes_overlap(left: &AssistantSubtractionIntent, right: &AssistantSubtraction
         left.origin_mm[axis] < right.origin_mm[axis] + right.size_mm[axis]
             && right.origin_mm[axis] < left.origin_mm[axis] + left.size_mm[axis]
     })
-}
-
-impl AssistantOrientedBeamIntent {
-    fn validate(&self) -> Result<(), String> {
-        if self.name.trim().is_empty()
-            || self.name.len() > MAX_ASSISTANT_NAME_BYTES
-            || self.name.chars().any(char::is_control)
-        {
-            return Err("assistant oriented beam name is invalid".to_owned());
-        }
-        if self
-            .start_mm
-            .iter()
-            .chain(self.end_mm.iter())
-            .chain(self.up_hint.iter())
-            .any(|value| !value.is_finite() || value.abs() > MAX_ASSISTANT_ABS_MM)
-            || !self.width_mm.is_finite()
-            || self.width_mm <= 0.0
-            || self.width_mm > MAX_ASSISTANT_ABS_MM
-            || !self.depth_mm.is_finite()
-            || self.depth_mm <= 0.0
-            || self.depth_mm > MAX_ASSISTANT_ABS_MM
-        {
-            return Err("assistant oriented beam dimensions are outside the envelope".to_owned());
-        }
-        let axis = [
-            self.end_mm[0] - self.start_mm[0],
-            self.end_mm[1] - self.start_mm[1],
-            self.end_mm[2] - self.start_mm[2],
-        ];
-        let axis_length = axis.iter().map(|value| value * value).sum::<f64>().sqrt();
-        let up_length = self
-            .up_hint
-            .iter()
-            .map(|value| value * value)
-            .sum::<f64>()
-            .sqrt();
-        let cross = [
-            axis[1] * self.up_hint[2] - axis[2] * self.up_hint[1],
-            axis[2] * self.up_hint[0] - axis[0] * self.up_hint[2],
-            axis[0] * self.up_hint[1] - axis[1] * self.up_hint[0],
-        ];
-        let cross_length = cross.iter().map(|value| value * value).sum::<f64>().sqrt();
-        if axis_length <= f64::EPSILON
-            || axis_length > MAX_ASSISTANT_ABS_MM
-            || up_length <= f64::EPSILON
-            || cross_length <= axis_length * up_length * 1.0e-6
-        {
-            return Err("assistant oriented beam axis or up hint is invalid".to_owned());
-        }
-        if self.bottom_notches.len() > MAX_ASSISTANT_BEAM_NOTCHES {
-            return Err("assistant oriented beam contains too many notches".to_owned());
-        }
-        for notch in &self.bottom_notches {
-            if !notch.from_start_mm.is_finite()
-                || notch.from_start_mm < 0.0
-                || !notch.length_mm.is_finite()
-                || notch.length_mm <= 0.0
-                || notch.from_start_mm + notch.length_mm > axis_length
-                || !notch.depth_mm.is_finite()
-                || notch.depth_mm <= 0.0
-                || notch.depth_mm >= self.depth_mm
-            {
-                return Err("assistant oriented beam notch is invalid".to_owned());
-            }
-        }
-        if self.bottom_notches.iter().enumerate().any(|(index, left)| {
-            self.bottom_notches[index + 1..].iter().any(|right| {
-                left.from_start_mm < right.from_start_mm + right.length_mm
-                    && right.from_start_mm < left.from_start_mm + left.length_mm
-            })
-        }) {
-            return Err("assistant oriented beam notches overlap".to_owned());
-        }
-        Ok(())
-    }
 }
 
 impl AssistantModelIntent {
@@ -4028,14 +3708,9 @@ impl AssistantModelIntent {
             && self.profile_translations.is_empty()
             && self.parameter_edits.is_empty()
             && self.linear_arrays.is_empty()
-            && self.bottles.is_empty()
-            && self.balloon_texts.is_empty()
-            && self.gable_roofs.is_empty()
-            && self.staircases.is_empty()
-            && self.oriented_beams.is_empty()
         {
             return Err(
-                "assistant proposal must contain geometry, translations, rotations, profile translations, parameter edits, linear arrays, bottles, balloon text, roofs, staircases, or oriented beams"
+                "assistant proposal must contain geometry, translations, rotations, profile translations, parameter edits, or linear arrays"
                     .to_owned(),
             );
         }
@@ -4057,98 +3732,6 @@ impl AssistantModelIntent {
         if self.linear_arrays.len() > MAX_ASSISTANT_ARRAYS {
             return Err("assistant proposal contains too many linear arrays".to_owned());
         }
-        if self.bottles.len() > MAX_ASSISTANT_BOTTLES {
-            return Err("assistant proposal contains too many bottles".to_owned());
-        }
-        if self.balloon_texts.len() > MAX_ASSISTANT_BALLOON_TEXTS {
-            return Err("assistant proposal contains too many balloon texts".to_owned());
-        }
-        if self.gable_roofs.len() > MAX_ASSISTANT_GABLE_ROOFS {
-            return Err("assistant proposal contains too many gable roofs".to_owned());
-        }
-        if self.staircases.len() > MAX_ASSISTANT_STAIRCASES {
-            return Err("assistant proposal contains too many staircases".to_owned());
-        }
-        if self.oriented_beams.len() > MAX_ASSISTANT_ORIENTED_BEAMS {
-            return Err("assistant proposal contains too many oriented beams".to_owned());
-        }
-        for beam in &self.oriented_beams {
-            beam.validate()?;
-        }
-        for bottle in &self.bottles {
-            bottle.validate()?;
-        }
-        for text in &self.balloon_texts {
-            let characters = text.text.chars().collect::<Vec<_>>();
-            if text.name.trim().is_empty()
-                || text.name.len() > MAX_ASSISTANT_NAME_BYTES
-                || text.name.chars().any(char::is_control)
-                || characters.is_empty()
-                || characters.len() > MAX_ASSISTANT_BALLOON_TEXT_CHARS
-                || characters.iter().all(|character| *character == ' ')
-                || characters
-                    .iter()
-                    .any(|character| !matches!(character, 'A'..='Z' | '0'..='9' | ' ' | 'ˇ'))
-                || !text.height_mm.is_finite()
-                || !(10.0..=MAX_ASSISTANT_TEAPOT_DIMENSION_MM).contains(&text.height_mm)
-                || !text.depth_mm.is_finite()
-                || !(text.height_mm * 0.1..=text.height_mm * 0.8).contains(&text.depth_mm)
-                || !text.stroke_width_mm.is_finite()
-                || !(text.height_mm * 0.08..=text.height_mm * 0.24).contains(&text.stroke_width_mm)
-                || !text.letter_spacing_mm.is_finite()
-                || !(0.0..=text.height_mm).contains(&text.letter_spacing_mm)
-                || text
-                    .origin_mm
-                    .iter()
-                    .any(|value| !value.is_finite() || value.abs() > MAX_ASSISTANT_ABS_MM)
-            {
-                return Err("assistant balloon text is invalid".to_owned());
-            }
-        }
-        for roof in &self.gable_roofs {
-            if roof.name.trim().is_empty()
-                || roof.name.len() > MAX_ASSISTANT_NAME_BYTES
-                || roof.name.chars().any(char::is_control)
-                || [
-                    roof.length_mm,
-                    roof.span_mm,
-                    roof.rise_mm,
-                    roof.thickness_mm,
-                ]
-                .iter()
-                .any(|value| !value.is_finite() || *value <= 0.0 || *value > MAX_ASSISTANT_ABS_MM)
-                || roof.thickness_mm >= roof.rise_mm
-                || roof
-                    .origin_mm
-                    .iter()
-                    .any(|value| !value.is_finite() || value.abs() > MAX_ASSISTANT_ABS_MM)
-            {
-                return Err("assistant gable roof is invalid".to_owned());
-            }
-        }
-        for stairs in &self.staircases {
-            let tread_mm = stairs.run_mm / f64::from(stairs.step_count.max(1));
-            let riser_mm = stairs.rise_mm / f64::from(stairs.step_count.max(1));
-            if stairs.name.trim().is_empty()
-                || stairs.name.len() > MAX_ASSISTANT_NAME_BYTES
-                || stairs.name.chars().any(char::is_control)
-                || [stairs.run_mm, stairs.width_mm, stairs.rise_mm]
-                    .iter()
-                    .any(|value| {
-                        !value.is_finite() || *value <= 0.0 || *value > MAX_ASSISTANT_ABS_MM
-                    })
-                || !(2..=64).contains(&stairs.step_count)
-                || !(150.0..=450.0).contains(&tread_mm)
-                || !(100.0..=250.0).contains(&riser_mm)
-                || stairs.width_mm < 500.0
-                || stairs
-                    .origin_mm
-                    .iter()
-                    .any(|value| !value.is_finite() || value.abs() > MAX_ASSISTANT_ABS_MM)
-            {
-                return Err("assistant staircase is invalid".to_owned());
-            }
-        }
         if self.replace_scene
             && (!self.translations.is_empty()
                 || !self.rotations.is_empty()
@@ -4163,12 +3746,7 @@ impl AssistantModelIntent {
                 || !self.translations.is_empty()
                 || !self.rotations.is_empty()
                 || !self.parameter_edits.is_empty()
-                || !self.linear_arrays.is_empty()
-                || !self.bottles.is_empty()
-                || !self.balloon_texts.is_empty()
-                || !self.gable_roofs.is_empty()
-                || !self.staircases.is_empty()
-                || !self.oriented_beams.is_empty())
+                || !self.linear_arrays.is_empty())
         {
             return Err("assistant profile translation cannot mix geometry mutations".to_owned());
         }
@@ -4177,12 +3755,7 @@ impl AssistantModelIntent {
                 || !self.translations.is_empty()
                 || !self.rotations.is_empty()
                 || !self.profile_translations.is_empty()
-                || !self.linear_arrays.is_empty()
-                || !self.bottles.is_empty()
-                || !self.balloon_texts.is_empty()
-                || !self.gable_roofs.is_empty()
-                || !self.staircases.is_empty()
-                || !self.oriented_beams.is_empty())
+                || !self.linear_arrays.is_empty())
         {
             return Err("assistant parameter edit cannot mix geometry mutations".to_owned());
         }

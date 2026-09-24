@@ -1,8 +1,6 @@
 #![forbid(unsafe_code)]
 
 use crate::assembly::{AxialAttachment, AxialAttachmentKind, PlanarFaceAttachment};
-#[cfg(feature = "named-product-fixtures")]
-use crate::beam_m5::{BeamExactPiecePackage, BeamExactResultKey};
 use crate::document::{
     BodyId, BooleanOperation, CanonicalCommand, CommandBatch, DefinitionId, DocumentId,
     EdgeFinishKind, ExactReferenceConversionConsequence, ExactToMeshConversion,
@@ -1952,49 +1950,6 @@ impl ExactBodyView for ExactBodyPackage {
     }
 }
 
-#[cfg(feature = "named-product-fixtures")]
-impl ExactBodyView for BeamExactPiecePackage {
-    fn bounds_mm(&self) -> [[f64; 3]; 2] {
-        [self.bounds_mm.min(), self.bounds_mm.max()]
-    }
-
-    fn vertex_count(&self) -> usize {
-        self.vertices.len()
-    }
-
-    fn vertex_position_mm(&self, index: usize) -> [f64; 3] {
-        self.vertices[index].position_mm
-    }
-
-    fn triangle_count(&self) -> usize {
-        self.triangles.len()
-    }
-
-    fn triangle_indices(&self, index: usize) -> [u32; 3] {
-        self.triangles[index].vertex_indices
-    }
-
-    fn triangle_group(&self, _index: usize) -> &'static str {
-        "unreferenced"
-    }
-
-    fn tolerance(&self) -> &str {
-        &self.identity.tolerance
-    }
-
-    fn source_digest(&self) -> &str {
-        &self.identity.source_digest
-    }
-
-    fn producer_identity(&self) -> String {
-        format!("producer_piece_key={}", self.identity.piece_key)
-    }
-
-    fn result_fingerprint(&self) -> &str {
-        &self.identity.result_fingerprint
-    }
-}
-
 fn mesh_export_from_view(
     view: &(impl ExactBodyView + ?Sized),
     transform: Transform,
@@ -2220,8 +2175,6 @@ pub struct ExactBodyResultKey {
 #[derive(Clone, Debug)]
 pub struct ExactResultRegistry {
     packages: BTreeMap<ExactResultKey, Arc<ExactBodyPackage>>,
-    #[cfg(feature = "named-product-fixtures")]
-    beam_packages: BTreeMap<BeamExactResultKey, Arc<BeamExactPiecePackage>>,
     contents_stamp: u64,
 }
 
@@ -2229,8 +2182,6 @@ impl Default for ExactResultRegistry {
     fn default() -> Self {
         Self {
             packages: BTreeMap::new(),
-            #[cfg(feature = "named-product-fixtures")]
-            beam_packages: BTreeMap::new(),
             contents_stamp: next_contents_stamp(),
         }
     }
@@ -2392,18 +2343,6 @@ impl ExactResultRegistry {
         Ok(registry)
     }
 
-    #[cfg(feature = "named-product-fixtures")]
-    pub fn accept_beam(
-        snapshot: &Snapshot,
-        packages: impl IntoIterator<Item = Arc<BeamExactPiecePackage>>,
-    ) -> Result<Self, ExactProductError> {
-        let mut registry = Self::default();
-        for package in packages {
-            registry.insert_current_beam(snapshot, package)?;
-        }
-        Ok(registry)
-    }
-
     /// Every product of `previous` whose producer inputs are unchanged in
     /// `snapshot`, rebound to the new revision envelope.
     ///
@@ -2537,36 +2476,6 @@ impl ExactResultRegistry {
         Ok(())
     }
 
-    #[cfg(feature = "named-product-fixtures")]
-    pub fn insert_current_beam(
-        &mut self,
-        snapshot: &Snapshot,
-        package: Arc<BeamExactPiecePackage>,
-    ) -> Result<(), ExactProductError> {
-        if package.identity.document_id != snapshot.document_id()
-            || package.identity.source_revision != snapshot.revision_id()
-            || package.identity.source_digest != snapshot.canonical_digest()
-        {
-            return Err(ExactProductError::StaleResult);
-        }
-        if !package.has_valid_registry_evidence() {
-            return Err(ExactProductError::InvalidWorkerEvidence);
-        }
-        let key = package.result_key();
-        if self
-            .beam_packages
-            .keys()
-            .any(|existing| existing.piece == key.piece)
-        {
-            return Err(ExactProductError::DuplicateDerivedResult {
-                piece: key.piece.clone(),
-            });
-        }
-        self.beam_packages.insert(key, package);
-        self.contents_stamp = next_contents_stamp();
-        Ok(())
-    }
-
     /// A process-unique stamp of what this registry currently holds.
     ///
     /// Products are rebound to a new revision without changing how many there
@@ -2581,24 +2490,6 @@ impl ExactResultRegistry {
     #[must_use]
     pub fn get_result(&self, key: &ExactResultKey) -> Option<&Arc<ExactBodyPackage>> {
         self.packages.get(key)
-    }
-
-    #[must_use]
-    #[cfg(feature = "named-product-fixtures")]
-    pub fn get_beam_result(&self, key: &BeamExactResultKey) -> Option<&Arc<BeamExactPiecePackage>> {
-        self.beam_packages.get(key)
-    }
-
-    #[must_use]
-    #[cfg(feature = "named-product-fixtures")]
-    pub fn get_beam(&self, piece: &DerivedIdentity) -> Option<&Arc<BeamExactPiecePackage>> {
-        let mut matches = self
-            .beam_packages
-            .iter()
-            .filter(|(key, _)| key.piece == *piece)
-            .map(|(_, package)| package);
-        let package = matches.next()?;
-        matches.next().is_none().then_some(package)
     }
 
     #[must_use]
@@ -2805,20 +2696,9 @@ impl ExactResultRegistry {
         self.packages.values()
     }
 
-    #[cfg(feature = "named-product-fixtures")]
-    pub fn beam_values(&self) -> impl Iterator<Item = &Arc<BeamExactPiecePackage>> {
-        self.beam_packages.values()
-    }
-
     #[must_use]
     pub fn len(&self) -> usize {
         self.packages.len()
-    }
-
-    #[must_use]
-    #[cfg(feature = "named-product-fixtures")]
-    pub fn beam_len(&self) -> usize {
-        self.beam_packages.len()
     }
 
     #[must_use]
@@ -2842,8 +2722,6 @@ impl ExactResultRegistry {
 
     pub fn clear(&mut self) {
         self.packages.clear();
-        #[cfg(feature = "named-product-fixtures")]
-        self.beam_packages.clear();
         self.contents_stamp = next_contents_stamp();
     }
 }
@@ -8377,10 +8255,7 @@ impl<'a> ExactProducerCompilation<'a> {
         self.context
     }
 
-    pub fn plan(
-        &self,
-        include_legacy_revolve: bool,
-    ) -> Result<Option<ExactProducerPlan>, ExactBRepGraphError> {
+    pub fn plan(&self) -> Result<Option<ExactProducerPlan>, ExactBRepGraphError> {
         if let Ok(request) = ExactFeatureChainRequest::from_snapshot_for_producer(
             self.snapshot,
             self.definition_id,
@@ -8408,13 +8283,6 @@ impl<'a> ExactProducerCompilation<'a> {
                 request: Box::new(request),
                 topology,
             }));
-        }
-        if include_legacy_revolve
-            && let Ok(request) =
-                ExactRevolveRequest::from_snapshot(self.snapshot, self.definition_id)
-            && request.producer_feature_id() == self.feature_id
-        {
-            return Ok(Some(ExactProducerPlan::Revolve(Box::new(request))));
         }
         let feature = self
             .snapshot

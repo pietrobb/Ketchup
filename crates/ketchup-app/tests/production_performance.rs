@@ -26,7 +26,7 @@ struct CorpusEntry {
     exact_must_be_complete: bool,
 }
 
-const CORPUS: [CorpusEntry; 5] = [
+const CORPUS: [CorpusEntry; 3] = [
     CorpusEntry {
         name: "garden-studio",
         relative_path: "examples/garden-studio.ketchup",
@@ -40,16 +40,6 @@ const CORPUS: [CorpusEntry; 5] = [
     CorpusEntry {
         name: "grooved-beam-array",
         relative_path: "examples/grooved-beam-array.ketchup",
-        exact_must_be_complete: false,
-    },
-    CorpusEntry {
-        name: "rounded-teapot",
-        relative_path: "examples/assistant-rounded-teapot.ketchup",
-        exact_must_be_complete: false,
-    },
-    CorpusEntry {
-        name: "squeeze-bottle",
-        relative_path: "examples/assistant-ketchup-squeeze-bottle.ketchup",
         exact_must_be_complete: false,
     },
 ];

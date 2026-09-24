@@ -747,13 +747,6 @@ impl LiveBridge {
             || app.face_workflow.xray_preview()
             || Self::fixture_busy(app)
     }
-    #[cfg(feature = "named-product-fixtures")]
-    fn fixture_busy(app: &KetchupApp) -> bool {
-        app.bottle_direct_drag.is_some()
-            || app.bottle_editor.is_some()
-            || app.part_authoring_preview_pending()
-    }
-    #[cfg(not(feature = "named-product-fixtures"))]
     fn fixture_busy(_app: &KetchupApp) -> bool {
         false
     }

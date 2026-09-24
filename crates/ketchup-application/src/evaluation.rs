@@ -7,8 +7,6 @@ use ketchup_core::exact_product::{
     ExactProducerEvidenceContext, ExactProducerPlan, ExactResultRegistry, ImportedExactPackage,
     exact_body_terminal_features,
 };
-#[cfg(feature = "named-product-fixtures")]
-use ketchup_core::exact_revolve::ExactRevolveRequest;
 use ketchup_core::graph::sha256_bytes;
 use ketchup_core::import::{
     IGES_PARSER_ID, IGES_PARSER_VERSION, IGES_XDE_PARSER_VERSION, ImportFormat,
@@ -42,8 +40,6 @@ enum ExactEvaluationRequest {
         request: Box<ExactFeatureChainRequest>,
         topology: Option<Box<ExactBRepGraph>>,
     },
-    #[cfg(feature = "named-product-fixtures")]
-    Revolve(Box<ExactRevolveRequest>),
     Imported(DefinitionId, Vec<u8>),
 }
 
@@ -396,15 +392,13 @@ fn prepare_requests(
                 feature_id,
             )
             .map_err(|error| error.to_string())?;
-            let Some(plan) = producer
-                .plan(cfg!(feature = "named-product-fixtures"))
-                .map_err(|error| {
-                    eprintln!(
-                        "exact producer compilation rejected producer {}: {error}",
-                        feature_id.0
-                    );
-                    "unsupported or unavailable exact producer/source".to_owned()
-                })?
+            let Some(plan) = producer.plan().map_err(|error| {
+                eprintln!(
+                    "exact producer compilation rejected producer {}: {error}",
+                    feature_id.0
+                );
+                "unsupported or unavailable exact producer/source".to_owned()
+            })?
             else {
                 return Ok(None);
             };
@@ -413,12 +407,6 @@ fn prepare_requests(
                     definition_id,
                     ExactEvaluationRequest::Rectangle { request, topology },
                 ))),
-                #[cfg(feature = "named-product-fixtures")]
-                ExactProducerPlan::Revolve(request) => Ok(Some((
-                    definition_id,
-                    ExactEvaluationRequest::Revolve(request),
-                ))),
-                #[cfg(not(feature = "named-product-fixtures"))]
                 ExactProducerPlan::Revolve(_) => {
                     unreachable!("legacy revolve planning is disabled")
                 }
@@ -833,17 +821,6 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                 });
                 (package, topology_package)
             }
-            #[cfg(feature = "named-product-fixtures")]
-            ExactEvaluationRequest::Revolve(request) => (
-                worker
-                    .evaluate_revolve_with_cancellation(
-                        &request,
-                        &worker_cancelled,
-                    )
-                    .map(ExactBodyPackage::from)
-                    .map_err(|error| error.to_string())?,
-                None,
-            ),
             ExactEvaluationRequest::Imported(definition_id, source) => {
                 let definition =
                     snapshot.definition(definition_id).ok_or_else(|| {

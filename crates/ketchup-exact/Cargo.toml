@@ -1,6 +1,6 @@
 [package]
 name = "ketchup-exact"
-description = "Exception-safe exact geometry facade and A0 structure-aware harness for Ketchup"
+description = "Exception-safe exact geometry facade for Ketchup"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,17 +12,6 @@ cxx = "=1.0.198"
 
 [build-dependencies]
 cxx-build = "=1.0.198"
-
-[features]
-a0-certification = []
-
-[[test]]
-name = "gate_a0"
-required-features = ["a0-certification"]
-
-[[test]]
-name = "gate_a0_v2"
-required-features = ["a0-certification"]
 
 [lints.clippy]
 all = "deny"

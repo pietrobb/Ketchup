@@ -1,19 +1,17 @@
 use ketchup_core::assistant_sidecar::{
-    ASSISTANT_PROTOCOL_VERSION, AssistantAxisSpec, AssistantBalloonTextIntent,
-    AssistantBeamNotchIntent, AssistantBottleFinishKind, AssistantBottleIntent,
-    AssistantCadBodyFeature, AssistantCadBooleanOperation, AssistantCadChamferMode,
-    AssistantCadDeletePolicy, AssistantCadEditOperation, AssistantCadEditProgram,
-    AssistantCadEntitySelector, AssistantCadFeatureReference, AssistantCadLoftContinuity,
-    AssistantCadLoftSection, AssistantCadPartFeature, AssistantCadProgramFeatureOutput,
-    AssistantCadProgramFeatureReference, AssistantCadRotation, AssistantCadShellDirection,
-    AssistantCadSurfaceBodySource, AssistantDistribution, AssistantHandshake,
-    AssistantHandshakeError, AssistantHelixHandedness, AssistantHelixParameters,
-    AssistantKetchupBottleIntent, AssistantLinearArrayIntent, AssistantModelIntent,
-    AssistantOrientedBeamIntent, AssistantParameterEditIntent, AssistantPrincipalPlane,
-    AssistantProfileTranslationIntent, AssistantRejectionDiagnostic, AssistantRejectionPhase,
-    AssistantRotationIntent, AssistantSketchConstraint, AssistantSketchEntity,
-    AssistantSketchPointKind, AssistantSketchPointRef, AssistantSketchProfileCopy,
-    AssistantTeapotIntent, AssistantWorkplaneSpec, distribution_is_enabled,
+    ASSISTANT_PROTOCOL_VERSION, AssistantAxisSpec, AssistantCadBodyFeature,
+    AssistantCadBooleanOperation, AssistantCadChamferMode, AssistantCadDeletePolicy,
+    AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
+    AssistantCadFeatureReference, AssistantCadLoftContinuity, AssistantCadLoftSection,
+    AssistantCadPartFeature, AssistantCadProgramFeatureOutput, AssistantCadProgramFeatureReference,
+    AssistantCadRotation, AssistantCadShellDirection, AssistantCadSurfaceBodySource,
+    AssistantDistribution, AssistantHandshake, AssistantHandshakeError, AssistantHelixHandedness,
+    AssistantHelixParameters, AssistantLinearArrayIntent, AssistantModelIntent,
+    AssistantParameterEditIntent, AssistantPrincipalPlane, AssistantProfileTranslationIntent,
+    AssistantRejectionDiagnostic, AssistantRejectionPhase, AssistantRotationIntent,
+    AssistantSketchConstraint, AssistantSketchEntity, AssistantSketchPointKind,
+    AssistantSketchPointRef, AssistantSketchProfileCopy, AssistantWorkplaneSpec,
+    distribution_is_enabled,
 };
 
 const PUBLIC_HANDSHAKE: &str = r#"{
@@ -2090,11 +2088,6 @@ fn assistant_rotation_is_shape_independent_arbitrary_axis_and_fail_closed() {
         profile_translations: Vec::new(),
         parameter_edits: Vec::new(),
         linear_arrays: Vec::new(),
-        bottles: Vec::new(),
-        gable_roofs: Vec::new(),
-        staircases: Vec::new(),
-        oriented_beams: Vec::new(),
-        balloon_texts: Vec::new(),
     };
     assert!(valid.validate().is_ok());
     let serialized = serde_json::to_value(&valid).unwrap();
@@ -2157,11 +2150,6 @@ fn assistant_array_budget_matches_the_canonical_proposal_command_limit() {
             instances: 6,
             step_mm: [0.0, 0.0, 280.0],
         }],
-        bottles: Vec::new(),
-        gable_roofs: Vec::new(),
-        staircases: Vec::new(),
-        oriented_beams: Vec::new(),
-        balloon_texts: Vec::new(),
     };
     assert!(valid.validate().is_ok());
 
@@ -2194,11 +2182,6 @@ fn assistant_profile_translation_is_single_bounded_and_unmixed() {
         }],
         parameter_edits: Vec::new(),
         linear_arrays: Vec::new(),
-        bottles: Vec::new(),
-        gable_roofs: Vec::new(),
-        staircases: Vec::new(),
-        oriented_beams: Vec::new(),
-        balloon_texts: Vec::new(),
     };
     assert!(valid.validate().is_ok());
     assert_eq!(
@@ -2250,11 +2233,6 @@ fn assistant_parameter_edit_is_single_bounded_and_unmixed() {
             value_mm: 8.5,
         }],
         linear_arrays: Vec::new(),
-        bottles: Vec::new(),
-        gable_roofs: Vec::new(),
-        staircases: Vec::new(),
-        oriented_beams: Vec::new(),
-        balloon_texts: Vec::new(),
     };
     assert!(valid.validate().is_ok());
     assert_eq!(
@@ -2287,286 +2265,6 @@ fn assistant_parameter_edit_is_single_bounded_and_unmixed() {
         mixed.validate(),
         Err("assistant parameter edit cannot mix geometry mutations".to_owned())
     );
-}
-
-#[test]
-fn assistant_oriented_beam_intent_is_bounded_and_rejects_invalid_notches() {
-    let intent: AssistantModelIntent = serde_json::from_str(
-        r#"{
-            "replace_scene": false,
-            "boxes": [],
-            "oriented_beams": [{
-                "name": "Rafter",
-                "start_mm": [0.0, -483.05, 3044.07],
-                "end_mm": [0.0, 1900.0, 4800.0],
-                "up_hint": [0.0, 0.0, 1.0],
-                "width_mm": 100.0,
-                "depth_mm": 180.0,
-                "bottom_notches": [{
-                    "from_start_mm": 600.0,
-                    "length_mm": 160.0,
-                    "depth_mm": 50.0
-                }]
-            }]
-        }"#,
-    )
-    .unwrap();
-    assert!(intent.validate().is_ok());
-    assert_eq!(intent.oriented_beams[0].width_mm, 100.0);
-
-    let parallel_up = AssistantModelIntent {
-        oriented_beams: vec![AssistantOrientedBeamIntent {
-            up_hint: [0.0, 2_383.05, 1_755.93],
-            ..intent.oriented_beams[0].clone()
-        }],
-        ..intent.clone()
-    };
-    assert_eq!(
-        parallel_up.validate(),
-        Err("assistant oriented beam axis or up hint is invalid".to_owned())
-    );
-
-    let overlapping = AssistantModelIntent {
-        oriented_beams: vec![AssistantOrientedBeamIntent {
-            bottom_notches: vec![
-                AssistantBeamNotchIntent {
-                    from_start_mm: 600.0,
-                    length_mm: 160.0,
-                    depth_mm: 50.0,
-                },
-                AssistantBeamNotchIntent {
-                    from_start_mm: 700.0,
-                    length_mm: 100.0,
-                    depth_mm: 40.0,
-                },
-            ],
-            ..intent.oriented_beams[0].clone()
-        }],
-        ..intent
-    };
-    assert_eq!(
-        overlapping.validate(),
-        Err("assistant oriented beam notches overlap".to_owned())
-    );
-}
-
-#[test]
-fn assistant_bottle_intent_round_trips_and_reuses_exact_geometry_limits() {
-    let intent: AssistantModelIntent = serde_json::from_str(
-        r#"{
-            "replace_scene": false,
-            "boxes": [],
-            "bottles": [{
-                "name": "AI ketchup bottle",
-                "body_radius_mm": 30.0,
-                "body_height_mm": 110.0,
-                "shoulder_rise_mm": 20.0,
-                "neck_radius_mm": 12.0,
-                "neck_height_mm": 25.0,
-                "wall_thickness_mm": 2.0,
-                "finish_kind": "fillet",
-                "finish_amount_mm": 2.0,
-                "origin_mm": [90.0, 0.0, 0.0]
-            }]
-        }"#,
-    )
-    .unwrap();
-
-    assert!(intent.validate().is_ok());
-    assert_eq!(
-        intent.bottles[0].finish_kind,
-        AssistantBottleFinishKind::Fillet
-    );
-    let encoded = serde_json::to_value(&intent).unwrap();
-    assert_eq!(encoded["bottles"][0]["neck_height_mm"], 25.0);
-    assert_eq!(encoded["bottles"][0]["finish_kind"], "fillet");
-
-    let invalid = AssistantModelIntent {
-        bottles: vec![AssistantBottleIntent {
-            wall_thickness_mm: 6.0,
-            ..intent.bottles[0].clone()
-        }],
-        ..intent
-    };
-    assert_eq!(
-        invalid.validate(),
-        Err("assistant bottle wall thickness is unsupported".to_owned())
-    );
-}
-
-#[test]
-fn assistant_teapot_intent_round_trips_and_rejects_impossible_attachments() {
-    let intent: AssistantModelIntent = serde_json::from_str(
-        r#"{
-            "replace_scene": false,
-            "boxes": [],
-            "bottles": [{
-                "name": "Rounded tea pot",
-                "body_radius_mm": 70.0,
-                "body_height_mm": 105.0,
-                "shoulder_rise_mm": 22.0,
-                "neck_radius_mm": 42.0,
-                "neck_height_mm": 14.0,
-                "wall_thickness_mm": 3.0,
-                "finish_kind": "fillet",
-                "finish_amount_mm": 4.0,
-                "origin_mm": [0.0, 0.0, 0.0],
-                "teapot": {
-                    "handle_clearance_mm": 52.0,
-                    "handle_tube_radius_mm": 9.0,
-                    "spout_length_mm": 105.0,
-                    "spout_radius_mm": 14.0,
-                    "lid_height_mm": 18.0,
-                    "lid_knob_radius_mm": 10.0
-                }
-            }]
-        }"#,
-    )
-    .unwrap();
-
-    assert!(intent.validate().is_ok());
-    assert_eq!(
-        serde_json::to_value(&intent).unwrap()["bottles"][0]["teapot"]["spout_length_mm"],
-        105.0
-    );
-
-    let invalid = AssistantModelIntent {
-        bottles: vec![AssistantBottleIntent {
-            teapot: Some(AssistantTeapotIntent {
-                spout_radius_mm: 2.0,
-                ..intent.bottles[0].teapot.clone().unwrap()
-            }),
-            ..intent.bottles[0].clone()
-        }],
-        ..intent
-    };
-    assert_eq!(
-        invalid.validate(),
-        Err("assistant teapot dimensions are outside the envelope".to_owned())
-    );
-}
-
-#[test]
-fn assistant_ketchup_bottle_intent_round_trips_and_rejects_invalid_relief() {
-    let intent: AssistantModelIntent = serde_json::from_str(
-        r#"{
-            "replace_scene": false,
-            "boxes": [],
-            "bottles": [{
-                "name": "Kečup squeeze bottle",
-                "body_radius_mm": 38.0,
-                "body_height_mm": 145.0,
-                "shoulder_rise_mm": 28.0,
-                "neck_radius_mm": 15.0,
-                "neck_height_mm": 18.0,
-                "wall_thickness_mm": 2.0,
-                "finish_kind": "fillet",
-                "finish_amount_mm": 2.0,
-                "origin_mm": [0.0, 0.0, 0.0],
-                "ketchup_bottle": {
-                    "body_depth_ratio": 0.68,
-                    "cap_radius_mm": 19.5,
-                    "cap_height_mm": 24.0,
-                    "label_width_mm": 58.0,
-                    "label_height_mm": 72.0,
-                    "label_relief_mm": 2.5,
-                    "grip_rib_count": 20
-                }
-            }]
-        }"#,
-    )
-    .unwrap();
-    assert!(intent.validate().is_ok());
-    assert_eq!(
-        intent.bottles[0]
-            .ketchup_bottle
-            .as_ref()
-            .unwrap()
-            .grip_rib_count,
-        20
-    );
-
-    let invalid = AssistantModelIntent {
-        bottles: vec![AssistantBottleIntent {
-            ketchup_bottle: Some(AssistantKetchupBottleIntent {
-                label_relief_mm: 4.0,
-                ..intent.bottles[0].ketchup_bottle.clone().unwrap()
-            }),
-            ..intent.bottles[0].clone()
-        }],
-        ..intent
-    };
-    assert_eq!(
-        invalid.validate(),
-        Err("assistant ketchup bottle dimensions are outside the envelope".to_owned())
-    );
-}
-
-#[test]
-fn assistant_balloon_text_round_trips_and_rejects_unsupported_or_flat_letters() {
-    let intent: AssistantModelIntent = serde_json::from_str(
-        r#"{
-            "replace_scene": false,
-            "boxes": [],
-            "balloon_texts": [{
-                "name": "Balloon KECUP",
-                "text": "KECUP 3D ˇ",
-                "height_mm": 120.0,
-                "depth_mm": 42.0,
-                "stroke_width_mm": 20.0,
-                "letter_spacing_mm": 12.0,
-                "origin_mm": [0.0, 0.0, 0.0]
-            }]
-        }"#,
-    )
-    .unwrap();
-    assert!(intent.validate().is_ok());
-    assert_eq!(intent.balloon_texts[0].text, "KECUP 3D ˇ");
-
-    let lowercase = AssistantModelIntent {
-        balloon_texts: vec![AssistantBalloonTextIntent {
-            text: "Kečup".to_owned(),
-            ..intent.balloon_texts[0].clone()
-        }],
-        ..intent.clone()
-    };
-    assert_eq!(
-        lowercase.validate(),
-        Err("assistant balloon text is invalid".to_owned())
-    );
-    let flat = AssistantModelIntent {
-        balloon_texts: vec![AssistantBalloonTextIntent {
-            depth_mm: 5.0,
-            ..intent.balloon_texts[0].clone()
-        }],
-        ..intent
-    };
-    assert_eq!(
-        flat.validate(),
-        Err("assistant balloon text is invalid".to_owned())
-    );
-}
-
-#[test]
-fn assistant_bottle_intent_rejects_unknown_fields() {
-    let unknown = r#"{
-        "replace_scene": false,
-        "boxes": [],
-        "bottles": [{
-            "name": "Bottle",
-            "body_radius_mm": 30.0,
-            "body_height_mm": 110.0,
-            "shoulder_rise_mm": 20.0,
-            "neck_radius_mm": 12.0,
-            "neck_height_mm": 25.0,
-            "wall_thickness_mm": 2.0,
-            "finish_kind": "fillet",
-            "finish_amount_mm": 2.0,
-            "origin_mm": [0.0, 0.0, 0.0],
-            "shell_command": "arbitrary"
-        }]
-    }"#;
-    assert!(serde_json::from_str::<AssistantModelIntent>(unknown).is_err());
 }
 
 #[test]

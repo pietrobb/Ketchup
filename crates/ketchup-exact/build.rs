@@ -29,9 +29,22 @@ fn main() {
         .unwrap_or_else(|| repository_root.join("third_party/occt-install-r0-v1"));
     let backend_fingerprint = env::var("KETCHUP_OCCT_BUILD_FINGERPRINT")
         .unwrap_or_else(|_| "occt-8.0.1:b8f597c677811d1f9f4d8a97f5ae2825c0353a42:r0-v1".to_owned());
-    let include_dir = occt_root.join("inc");
-    let library_dir = occt_root.join("win64/vc14/lib");
-    let runtime_dir = occt_root.join("win64/vc14/bin");
+    // Windows installs use OCCT's "Windows" layout; other platforms use the "Unix" layout.
+    let windows = env::var("CARGO_CFG_WINDOWS").is_ok();
+    let (include_dir, library_dir, runtime_dir) = if windows {
+        (
+            occt_root.join("inc"),
+            occt_root.join("win64/vc14/lib"),
+            occt_root.join("win64/vc14/bin"),
+        )
+    } else {
+        let library_dir = occt_root.join("lib");
+        (
+            occt_root.join("include/opencascade"),
+            library_dir.clone(),
+            library_dir,
+        )
+    };
 
     println!("cargo:rustc-env=KETCHUP_OCCT_BUILD_FINGERPRINT={backend_fingerprint}");
     println!("cargo:rerun-if-env-changed=KETCHUP_OCCT_ROOT");
@@ -84,8 +97,12 @@ fn main() {
         .ancestors()
         .nth(3)
         .expect("unexpected Cargo OUT_DIR layout");
-    copy_runtime_dlls(&runtime_dir, profile_dir);
-    copy_runtime_dlls(&runtime_dir, &profile_dir.join("deps"));
+    if windows {
+        copy_runtime_dlls(&runtime_dir, profile_dir);
+        copy_runtime_dlls(&runtime_dir, &profile_dir.join("deps"));
+    } else {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", runtime_dir.display());
+    }
 
     println!("cargo:rerun-if-changed=src/lib.rs");
     println!("cargo:rerun-if-changed=src/native.cc");

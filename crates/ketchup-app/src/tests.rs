@@ -1796,51 +1796,6 @@ fn assistant_preview_planner_preserves_canonical_and_validator_diagnostics() {
     assert_eq!(intent.code, "intent.model_invalid");
     assert_eq!(intent.validate(), Ok(()));
 
-    let mesh_only_model = AssistantModelIntent {
-        replace_scene: false,
-        boxes: Vec::new(),
-        translations: Vec::new(),
-        rotations: Vec::new(),
-        profile_translations: Vec::new(),
-        parameter_edits: Vec::new(),
-        linear_arrays: Vec::new(),
-        bottles: Vec::new(),
-        gable_roofs: Vec::new(),
-        staircases: Vec::new(),
-        oriented_beams: Vec::new(),
-        balloon_texts: vec![AssistantBalloonTextIntent {
-            name: "Legacy mesh-only text".to_owned(),
-            text: "A".to_owned(),
-            height_mm: 40.0,
-            depth_mm: 16.0,
-            stroke_width_mm: 8.0,
-            letter_spacing_mm: 4.0,
-            origin_mm: [0.0, 0.0, 0.0],
-        }],
-    };
-    let editable_macro = app
-        .derive_assistant_preview_plan(&AssistantPreviewSource::Model(mesh_only_model))
-        .unwrap_err();
-    assert_eq!(
-        editable_macro.phase,
-        AssistantRejectionPhase::ProposalPlanning
-    );
-    assert_eq!(editable_macro.code, "planning.editable_macro_required");
-    assert_eq!(editable_macro.operation, "model_intent");
-    assert_eq!(
-        editable_macro.target,
-        format!("document:{}", app.document.current().document_id().0)
-    );
-    assert!(
-        editable_macro
-            .failed_invariant
-            .contains("non-editable mesh")
-    );
-    assert!(editable_macro.repair_hint.contains("create_part"));
-    assert!(editable_macro.retryable);
-    assert_eq!(editable_macro.validate(), Ok(()));
-    assert!(app.assistant_proposal.is_none());
-
     let selection = AssistantValidationSelection {
         mode: "selected",
         requested: BTreeSet::new(),
@@ -1891,11 +1846,6 @@ fn structured_rejection_is_localized_and_drives_exactly_one_bounded_replan() {
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }
     }
 
@@ -3156,11 +3106,6 @@ fn assistant_preview_plan_rejects_source_proposal_stale_and_replay_atomically() 
         profile_translations: Vec::new(),
         parameter_edits: Vec::new(),
         linear_arrays: Vec::new(),
-        bottles: Vec::new(),
-        gable_roofs: Vec::new(),
-        staircases: Vec::new(),
-        oriented_beams: Vec::new(),
-        balloon_texts: Vec::new(),
     };
     assert!(model_tampered.prepare_assistant_model_intent(model_intent));
     let mut model_plan = model_tampered.assistant_proposal.take().unwrap();
@@ -3859,11 +3804,6 @@ fn assistant_panel_progress_phases_are_accessible_with_deterministic_channels() 
                 profile_translations: Vec::new(),
                 parameter_edits: Vec::new(),
                 linear_arrays: Vec::new(),
-                bottles: Vec::new(),
-                gable_roofs: Vec::new(),
-                staircases: Vec::new(),
-                oriented_beams: Vec::new(),
-                balloon_texts: Vec::new(),
             }),
         },
         document_id: state.document.current().document_id(),
@@ -3917,11 +3857,6 @@ fn new_chat_discards_a_pending_assistant_execution_before_commit() {
                 profile_translations: Vec::new(),
                 parameter_edits: Vec::new(),
                 linear_arrays: Vec::new(),
-                bottles: Vec::new(),
-                gable_roofs: Vec::new(),
-                staircases: Vec::new(),
-                oriented_beams: Vec::new(),
-                balloon_texts: Vec::new(),
             }),
         },
         document_id: app.document.current().document_id(),
@@ -3975,11 +3910,6 @@ fn assistant_model_change_requires_explicit_confirmation_after_validation() {
                     profile_translations: Vec::new(),
                     parameter_edits: Vec::new(),
                     linear_arrays: Vec::new(),
-                    bottles: Vec::new(),
-                    gable_roofs: Vec::new(),
-                    staircases: Vec::new(),
-                    oriented_beams: Vec::new(),
-                    balloon_texts: Vec::new(),
                 }),
             },
             diagnostics: None,
@@ -4041,11 +3971,6 @@ fn assistant_replace_scene_clears_collection_references_in_the_same_undo_step() 
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }
     ));
 
@@ -4129,11 +4054,6 @@ fn stale_assistant_model_result_is_reported_without_mutating_the_newer_document(
                     profile_translations: Vec::new(),
                     parameter_edits: Vec::new(),
                     linear_arrays: Vec::new(),
-                    bottles: Vec::new(),
-                    gable_roofs: Vec::new(),
-                    staircases: Vec::new(),
-                    oriented_beams: Vec::new(),
-                    balloon_texts: Vec::new(),
                 }),
             },
             diagnostics: None,
@@ -4245,48 +4165,6 @@ fn lossy_legacy_document() -> Vec<u8> {
     bytes.extend_from_slice(&3.5_f64.to_bits().to_le_bytes());
     bytes.extend_from_slice(&0_u32.to_le_bytes());
     bytes
-}
-
-#[cfg(feature = "named-product-fixtures")]
-fn current_bottle_package(app: &KetchupApp, definition_id: DefinitionId) -> Arc<ExactBodyPackage> {
-    use ketchup_core::exact_product::canonical_reference_lineage_digest;
-    use ketchup_core::exact_revolve::{SHELL_FACE_ROLES, build_revolve_package};
-
-    let snapshot = app.document.current();
-    let request = ExactRevolveRequest::from_snapshot(&snapshot, definition_id).unwrap();
-    let points = request.points_mm();
-    let max_radius = points.iter().map(|point| point[0]).fold(0.0_f64, f64::max);
-    let evidence = SHELL_FACE_ROLES
-        .map(|role| {
-            (
-                role,
-                canonical_reference_lineage_digest(
-                    request.document_id,
-                    request.producer_feature_id(),
-                    role.semantic_role(),
-                    role.source_element_id(),
-                    role.expected_type(),
-                ),
-                format!("geometry-{role:?}"),
-            )
-        })
-        .to_vec();
-    Arc::new(
-        build_revolve_package(
-            &request,
-            "exact-input".to_owned(),
-            "result".to_owned(),
-            "OCCT-test".to_owned(),
-            "linear=1e-7mm".to_owned(),
-            [
-                [-max_radius, -max_radius, points[0][1]],
-                [max_radius, max_radius, points[5][1]],
-            ],
-            evidence,
-        )
-        .unwrap()
-        .into(),
-    )
 }
 
 fn through_cut_document() -> DocumentStore {
@@ -4401,275 +4279,6 @@ fn current_box_package(app: &KetchupApp) -> Arc<ketchup_core::exact_product::Exa
 }
 
 #[test]
-#[cfg(feature = "named-product-fixtures")]
-fn exact_bottle_can_start_preview_and_commit_the_standard_move_tool() {
-    let mut app = KetchupApp::new();
-    assert!(app.create_bottle());
-    let definition_id = app.selected_bottle_definition().unwrap();
-    let bottle_path = app.selection.occurrences.iter().next().unwrap().clone();
-    let package = current_bottle_package(&app, definition_id);
-    let snapshot = app.document.current();
-    app.exact_results
-        .insert_current(&snapshot, package)
-        .unwrap();
-    let bottle_proxy = app
-        .active_boxes()
-        .into_iter()
-        .find(|item| item.instance_path == bottle_path)
-        .expect("the exact bottle exposes its evaluated bounds proxy");
-    assert_eq!(bottle_proxy.origin_mm, Vec3::new(60.0, -30.0, 0.0));
-    assert_eq!(bottle_proxy.size_mm, Vec3::new(60.0, 60.0, 155.0));
-
-    let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1_000.0, 800.0));
-    let pointer = app.project(Vec3::new(120.0, 0.0, 50.0), rect);
-    app.update_viewport_inference(Some(pointer), rect);
-    assert_eq!(
-        app.hovered
-            .as_ref()
-            .map(|selection| &selection.instance_path),
-        Some(&bottle_path)
-    );
-    assert!(app.begin_move_drag_at(pointer, rect, false));
-    let mut drag = app
-        .take_move_session(Some(ToolSessionPhase::Gesture))
-        .unwrap();
-    drag.delta_mm = Vec3::new(25.0, 10.0, 0.0);
-    let overrides = app.document.current().scene_query();
-    app.set_move_session(ToolSessionPhase::Gesture, drag.clone());
-    let preview = app.move_preview_transform_overrides();
-    let original = overrides
-        .iter()
-        .find(|occurrence| occurrence.instance_path == bottle_path)
-        .unwrap()
-        .transform;
-    assert_eq!(
-        preview[&bottle_path].matrix()[3],
-        original.matrix()[3] + 25.0
-    );
-    assert_eq!(
-        preview[&bottle_path].matrix()[7],
-        original.matrix()[7] + 10.0
-    );
-    let render_snapshot = app.document.current();
-    let render_plan = InstancedRenderPlan::from_snapshot_with_transform_overrides(
-        &render_snapshot,
-        &app.exact_results,
-        &mut app.render_cache,
-        &preview,
-    );
-    let bottle_instance = &render_plan
-        .batches()
-        .iter()
-        .find(|batch| batch.definition_id == definition_id)
-        .unwrap()
-        .instances[0];
-    assert_eq!(
-        bottle_instance.transform[3],
-        (original.matrix()[3] + 25.0) as f32
-    );
-    assert_eq!(
-        bottle_instance.transform[7],
-        (original.matrix()[7] + 10.0) as f32
-    );
-
-    app.take_move_session(Some(ToolSessionPhase::Gesture));
-    assert!(app.commit_move_drag(&drag));
-    let moved = app
-        .document
-        .current()
-        .world_transform_for_occurrence(bottle_path.root_occurrence())
-        .unwrap();
-    assert_eq!(moved.matrix()[3], original.matrix()[3] + 25.0);
-    assert_eq!(moved.matrix()[7], original.matrix()[7] + 10.0);
-}
-
-#[test]
-#[cfg(feature = "named-product-fixtures")]
-fn bottle_numeric_workflow_is_atomic_and_round_trips_losslessly() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("editable-bottle.ketchup");
-    let mut app = KetchupApp::new();
-    let undo_before_create = app.document.visible_undo_steps();
-
-    assert!(app.create_bottle());
-    assert_eq!(app.document.visible_undo_steps(), undo_before_create + 1);
-    let definition_id = app.selected_bottle_definition().unwrap();
-    let revision_before_edit = app.document.current().revision_id();
-    let undo_before_edit = app.document.visible_undo_steps();
-
-    assert!(app.set_bottle_parameters(&BottleEditorInputs {
-        definition_id,
-        body_radius: "34 mm".to_owned(),
-        body_height: "125".to_owned(),
-        shoulder_rise: "16.5".to_owned(),
-        thickness: "2.5".to_owned(),
-        finish_amount: "1.5".to_owned(),
-        finish_kind: BottleEdgeFinishKind::Chamfer,
-    }));
-    assert_ne!(app.document.current().revision_id(), revision_before_edit);
-    assert_eq!(app.document.visible_undo_steps(), undo_before_edit + 1);
-    let edited = app.document.current();
-    let ids = KetchupApp::bottle_feature_ids(&edited, definition_id).unwrap();
-    let FeatureKind::BottleProfileControl {
-        body_radius,
-        body_height,
-        shoulder_rise,
-        ..
-    } = edited.feature(ids.control).unwrap().kind()
-    else {
-        panic!("bottle control feature missing");
-    };
-    assert_eq!(body_radius.source_token(), "34 mm");
-    assert_eq!(body_height.millimetres(), 125.0);
-    assert_eq!(shoulder_rise.millimetres(), 16.5);
-    assert!(matches!(
-        edited.feature(ids.finish).unwrap().kind(),
-        FeatureKind::BottleEdgeFinish {
-            kind: BottleEdgeFinishKind::Chamfer,
-            ..
-        }
-    ));
-
-    let digest_before_rejection = edited.canonical_digest();
-    let revision_before_rejection = edited.revision_id();
-    let undo_before_rejection = app.document.visible_undo_steps();
-    assert!(!app.set_bottle_parameters(&BottleEditorInputs {
-        definition_id,
-        body_radius: "34".to_owned(),
-        body_height: "125".to_owned(),
-        shoulder_rise: "16.5".to_owned(),
-        thickness: "7".to_owned(),
-        finish_amount: "1.5".to_owned(),
-        finish_kind: BottleEdgeFinishKind::Fillet,
-    }));
-    assert_eq!(
-        app.document.current().canonical_digest(),
-        digest_before_rejection
-    );
-    assert_eq!(
-        app.document.current().revision_id(),
-        revision_before_rejection
-    );
-    assert_eq!(app.document.visible_undo_steps(), undo_before_rejection);
-
-    assert!(app.save_document_to(&path));
-    let expected = app.document.current();
-    let mut reopened = KetchupApp::new();
-    assert!(reopened.open_document_from(&path));
-    let actual = reopened.document.current();
-    assert_eq!(actual.canonical_digest(), expected.canonical_digest());
-    assert!(ExactRevolveRequest::from_snapshot(&actual, definition_id).is_ok());
-    assert!(KetchupApp::bottle_editor_inputs(&actual, definition_id).is_some());
-}
-
-#[test]
-#[cfg(feature = "named-product-fixtures")]
-fn accepted_bottle_result_drives_render_pick_authority_and_fail_closed_exports() {
-    let directory = tempfile::tempdir().unwrap();
-    let exact_path = directory.path().join("bottle.kbex");
-    let mesh_path = directory.path().join("bottle.obj");
-    let stale_path = directory.path().join("stale.kbex");
-    let mut app = KetchupApp::new().with_dialogs(Box::new(
-        dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(61),
-    ));
-    assert!(app.create_bottle());
-    let definition_id = app.selected_bottle_definition().unwrap();
-    let package = current_bottle_package(&app, definition_id);
-    let snapshot = app.document.current();
-    app.exact_results
-        .insert_current(&snapshot, package)
-        .unwrap();
-
-    let report = app.bottle_authority_report(definition_id).unwrap();
-    assert!(report.current);
-    assert!(report.validation_passed);
-    assert_eq!(report.durable_reference_count, 9);
-    assert_eq!(app.exact_render_body_count(), 1);
-    assert_eq!(app.exact_stable_reference_count(), 9);
-    let picked = app
-        .exact_pick_durable(
-            Ray::new(Vec3::new(130.0, 0.0, 50.0), Vec3::new(-1.0, 0.0, 0.0)).unwrap(),
-        )
-        .expect("accepted bottle mesh must remain exactly pickable");
-    assert_eq!(picked.body.role(), Some(ExactFaceRole::ShellOuterBody));
-
-    assert!(app.export_bottle_exact_recipe_to(definition_id, &exact_path));
-    assert!(app.export_bottle_mesh_to(definition_id, &mesh_path));
-    let exact = std::fs::read_to_string(&exact_path).unwrap();
-    let mesh = std::fs::read_to_string(&mesh_path).unwrap();
-    let loss = std::fs::read_to_string(mesh_path.with_extension("obj.loss.txt")).unwrap();
-    assert!(exact.starts_with("KETCHUP_EXACT_BOTTLE_RECIPE_V1\n"));
-    assert!(exact.contains("result_fingerprint=result"));
-    assert!(mesh.contains("# authority=accepted exact OCCT B-Rep"));
-    assert!(mesh.contains("g shell.outer.body"));
-    assert!(loss.contains("editability_loss="));
-    assert!(loss.contains("topology_loss="));
-    assert!(loss.contains("tolerance_loss="));
-
-    let ids = KetchupApp::bottle_feature_ids(&app.document.current(), definition_id).unwrap();
-    let undo_before_drag = app.document.visible_undo_steps();
-    assert!(app.commit_bottle_direct_drag(
-        BottleDirectDrag {
-            definition_id,
-            feature_id: ids.control,
-            control: BottleControlDimension::BodyRadius,
-            pointer_start: Pos2::ZERO,
-            value_start_mm: 30.0,
-            screen_direction: Vec2::X,
-            pixels_per_mm: 1.0,
-        },
-        33.0,
-    ));
-    assert_eq!(app.document.visible_undo_steps(), undo_before_drag + 1);
-    assert_eq!(app.exact_render_body_count(), 0);
-    assert!(!app.bottle_authority_report(definition_id).unwrap().current);
-    assert!(!app.export_bottle_exact_recipe_to(definition_id, &stale_path));
-    assert!(!stale_path.exists());
-}
-
-#[test]
-#[cfg(feature = "named-product-fixtures")]
-fn exact_revolve_step_export_failure_does_not_replace_existing_artifact() {
-    let executable = exact_worker_executable();
-    assert!(executable.is_file(), "{}", executable.display());
-    let directory = tempfile::tempdir().unwrap();
-    let step_path = directory.path().join("protected.step");
-    let report_path = step_path.with_extension("step.loss.txt");
-    std::fs::write(&step_path, b"existing STEP").unwrap();
-    std::fs::create_dir(&report_path).unwrap();
-
-    let mut app = KetchupApp::new();
-    assert!(app.create_bottle());
-    let definition_id = app.selected_bottle_definition().unwrap();
-    let snapshot = app.document.current();
-    let request = ExactRevolveRequest::from_snapshot(&snapshot, definition_id).unwrap();
-    let mut worker = ExactWorkerSupervisor::spawn(&executable).unwrap();
-    let package: Arc<ExactBodyPackage> =
-        Arc::new(worker.evaluate_revolve(&request).unwrap().into());
-    app.exact_results
-        .insert_current(&snapshot, package)
-        .unwrap();
-    app.headless_force_exact_worker_path(&executable);
-
-    assert!(!app.export_bottle_step_to(definition_id, &step_path));
-    assert_eq!(std::fs::read(&step_path).unwrap(), b"existing STEP");
-    assert!(report_path.is_dir());
-
-    std::fs::remove_dir(&report_path).unwrap();
-    assert!(app.export_bottle_step_to(definition_id, &step_path));
-    assert!(
-        std::fs::read(&step_path)
-            .unwrap()
-            .starts_with(b"ISO-10303-21;")
-    );
-    assert!(
-        std::fs::read_to_string(&report_path)
-            .unwrap()
-            .contains("editability_loss=")
-    );
-}
-
-#[test]
 fn exact_mesh_export_failure_does_not_partially_replace_existing_artifact() {
     let directory = tempfile::tempdir().unwrap();
     let mesh_path = directory.path().join("protected.obj");
@@ -4689,57 +4298,6 @@ fn exact_mesh_export_failure_does_not_partially_replace_existing_artifact() {
     assert!(!error.is_empty());
     assert_eq!(std::fs::read(&mesh_path).unwrap(), b"existing mesh");
     assert!(report_path.is_dir());
-}
-
-#[test]
-#[cfg(feature = "named-product-fixtures")]
-fn lossy_mesh_export_requires_payload_bound_receipt_before_any_artifact_write() {
-    let directory = tempfile::tempdir().unwrap();
-    let mesh_path = directory.path().join("protected.obj");
-    let loss_path = mesh_path.with_extension("obj.loss.txt");
-    let original_mesh = b"preserve mesh until approval".to_vec();
-    let original_loss = b"preserve loss report until approval".to_vec();
-    std::fs::write(&mesh_path, &original_mesh).unwrap();
-    std::fs::write(&loss_path, &original_loss).unwrap();
-    let script = dialogs::ScriptedFileDialogs::new()
-        .queue_refused_high_risk()
-        .queue_high_risk_approval(73);
-    let mut app = KetchupApp::new().with_dialogs(Box::new(script.clone()));
-    assert!(app.create_bottle());
-    let definition_id = app.selected_bottle_definition().unwrap();
-    let package = current_bottle_package(&app, definition_id);
-    let snapshot = app.document.current();
-    app.exact_results
-        .insert_current(&snapshot, package)
-        .unwrap();
-    let canonical_before = app.document.current().canonical_digest();
-    let revision_before = app.document.current().revision_id();
-    let undo_before = app.document.visible_undo_steps();
-
-    assert!(!app.export_bottle_mesh_to(definition_id, &mesh_path));
-    assert_eq!(std::fs::read(&mesh_path).unwrap(), original_mesh);
-    assert_eq!(std::fs::read(&loss_path).unwrap(), original_loss);
-    assert!(app.last_side_effect_receipt().is_none());
-
-    assert!(app.export_bottle_mesh_to(definition_id, &mesh_path));
-    let receipt = app
-        .last_side_effect_receipt()
-        .expect("approved lossy export returns an authorization receipt");
-    assert_eq!(receipt.approving_human(), 73);
-    assert_eq!(receipt.revision_id(), revision_before);
-    assert_eq!(receipt.operation(), "export-lossy-obj-with-loss-report");
-    assert_eq!(receipt.scope().class(), HighRiskClass::LossyConversion);
-    assert_eq!(
-        receipt.scope().path(),
-        Some(mesh_path.display().to_string().as_str())
-    );
-    assert_ne!(std::fs::read(&mesh_path).unwrap(), original_mesh);
-    assert_ne!(std::fs::read(&loss_path).unwrap(), original_loss);
-    assert_eq!(app.document.current().canonical_digest(), canonical_before);
-    assert_eq!(app.document.current().revision_id(), revision_before);
-    assert_eq!(app.document.visible_undo_steps(), undo_before);
-    assert_eq!(script.high_risk_prompts().len(), 2);
-    assert!(script.high_risk_prompts()[0].contains("Payload SHA-256:"));
 }
 
 fn staged_export_restart_journal(
@@ -6763,118 +6321,6 @@ fn assistant_group_translation_review_is_typed_observational_and_undoable() {
         app.document.current().group(group).unwrap().transform(),
         Transform::identity()
     );
-}
-
-#[test]
-#[cfg(feature = "named-product-fixtures")]
-fn assistant_bottle_control_dimension_review_is_typed_observational_and_undoable() {
-    let mut app = KetchupApp::new();
-    assert!(app.create_bottle());
-    let definition_id = app.selected_bottle_definition().unwrap();
-    let control = KetchupApp::bottle_feature_ids(&app.document.current(), definition_id)
-        .unwrap()
-        .control;
-    let revision_before = app.document_revision();
-    let digest_before = app.canonical_digest();
-    let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::BottleControlDimension;
-    app.assistant_target_input = control.0.to_string();
-    app.assistant_value_input = "waist=32".to_owned();
-    assert!(!app.prepare_assistant_from_inputs());
-    assert!(app.assistant_proposal().is_none());
-    assert_eq!(app.document_revision(), revision_before);
-    assert_eq!(app.canonical_digest(), digest_before);
-
-    app.assistant_value_input = "body_radius=32".to_owned();
-    assert!(app.prepare_assistant_from_inputs());
-    let proposal = app.assistant_proposal().unwrap();
-    assert_eq!(
-        proposal.goal(),
-        ProposalGoal::SetBottleControlDimension(control, BottleControlDimension::BodyRadius)
-    );
-    assert_eq!(
-        proposal.authoritative_diff()[0].before,
-        ProposalValue::Dimension(Dimension::from_decimal("30").unwrap())
-    );
-    assert_eq!(
-        proposal.authoritative_diff()[0].after,
-        ProposalValue::Dimension(Dimension::from_decimal("32").unwrap())
-    );
-    assert_eq!(app.document_revision(), revision_before);
-    assert_eq!(app.canonical_digest(), digest_before);
-    assert_eq!(app.document.visible_undo_steps(), undo_before);
-
-    assert!(app.confirm_assistant_proposal());
-    assert!(matches!(
-        app.document.current().feature(control).unwrap().kind(),
-        FeatureKind::BottleProfileControl { body_radius, .. }
-            if body_radius.millimetres() == 32.0
-    ));
-    assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
-    assert!(app.undo());
-    assert!(matches!(
-        app.document.current().feature(control).unwrap().kind(),
-        FeatureKind::BottleProfileControl { body_radius, .. }
-            if body_radius.millimetres() == 30.0
-    ));
-}
-
-#[test]
-#[cfg(feature = "named-product-fixtures")]
-fn assistant_bottle_finish_kind_review_is_typed_observational_and_undoable() {
-    let mut app = KetchupApp::new();
-    assert!(app.create_bottle());
-    let definition_id = app.selected_bottle_definition().unwrap();
-    let finish = KetchupApp::bottle_feature_ids(&app.document.current(), definition_id)
-        .unwrap()
-        .finish;
-    let revision_before = app.document_revision();
-    let digest_before = app.canonical_digest();
-    let undo_before = app.document.visible_undo_steps();
-    app.assistant_intent_kind = AssistantIntentKind::BottleEdgeFinishKind;
-    app.assistant_target_input = finish.0.to_string();
-    app.assistant_value_input = "round".to_owned();
-    assert!(!app.prepare_assistant_from_inputs());
-    assert!(app.assistant_proposal().is_none());
-    assert_eq!(app.document_revision(), revision_before);
-    assert_eq!(app.canonical_digest(), digest_before);
-
-    app.assistant_value_input = "chamfer".to_owned();
-    assert!(app.prepare_assistant_from_inputs());
-    let proposal = app.assistant_proposal().unwrap();
-    assert_eq!(
-        proposal.goal(),
-        ProposalGoal::SetBottleEdgeFinishKind(finish)
-    );
-    assert_eq!(
-        proposal.authoritative_diff()[0].before,
-        ProposalValue::BottleEdgeFinishKind(BottleEdgeFinishKind::Fillet)
-    );
-    assert_eq!(
-        proposal.authoritative_diff()[0].after,
-        ProposalValue::BottleEdgeFinishKind(BottleEdgeFinishKind::Chamfer)
-    );
-    assert_eq!(app.document_revision(), revision_before);
-    assert_eq!(app.canonical_digest(), digest_before);
-    assert_eq!(app.document.visible_undo_steps(), undo_before);
-
-    assert!(app.confirm_assistant_proposal());
-    assert!(matches!(
-        app.document.current().feature(finish).unwrap().kind(),
-        FeatureKind::BottleEdgeFinish {
-            kind: BottleEdgeFinishKind::Chamfer,
-            ..
-        }
-    ));
-    assert_eq!(app.document.visible_undo_steps(), undo_before + 1);
-    assert!(app.undo());
-    assert!(matches!(
-        app.document.current().feature(finish).unwrap().kind(),
-        FeatureKind::BottleEdgeFinish {
-            kind: BottleEdgeFinishKind::Fillet,
-            ..
-        }
-    ));
 }
 
 #[test]
@@ -13992,11 +13438,6 @@ fn picking_chooses_the_frontmost_body_across_mesh_and_box_geometry() {
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }
     ));
     app.projection_mode = ProjectionMode::Parallel;
