@@ -99,13 +99,27 @@ def _capability_gap(value: object) -> dict:
     return value
 
 
+_CODE_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789._-")
+
+
+def _diagnostic(value: object) -> dict:
+    """Why a request failed: code, message, and optionally hint, issues, target."""
+    if (type(value) is not dict or value.get("kind") != "diagnostic"
+            or type(value.get("code")) is not str or type(value.get("message")) is not str):
+        raise ValueError("invalid error diagnostic")
+    return value
+
+
 class LiveBridgeError(RuntimeError):
-    """Definite server rejection; only locally allowlisted fields are exposed."""
+    """Definite server rejection with the server's explanation, when it sent one."""
 
     def __init__(self, code: str, details: dict | None = None):
-        self.code = code if code in _ERROR_CODES else "remote_error"
-        self.details = details if self.code == "capability_gap" else None
-        super().__init__("live bridge rejected request: " + self.code)
+        known = type(code) is str and 1 <= len(code) <= 128 and not set(code) - _CODE_CHARS
+        self.code = code if known else "remote_error"
+        self.details = details if type(details) is dict else None
+        message = self.details.get("message") if self.details else None
+        super().__init__("live bridge rejected request: " + self.code
+                         + (": " + message if type(message) is str and message else ""))
 
 
 class LiveConsentError(RuntimeError):
@@ -1105,7 +1119,7 @@ class LiveSession:
         elif response["error"] == "capability_gap":
             response["result"] = _capability_gap(response["result"])
         elif response["result"] is not None:
-            raise ValueError("error response must not include a result")
+            response["result"] = _diagnostic(response["result"])
         return response
 
     def _request(self, method: str, *, _deadline: float | None = None, **params) -> dict:
@@ -1193,9 +1207,11 @@ class LiveSession:
     def apply_and_verify(self, program: dict, *, expected: Stamp | dict | None = None,
                          selection: list[int] | tuple[int, ...] | None = None,
                          validators: list[str] | None = None, timeout_ms: int = 60_000,
-                         save: dict | None = None) -> dict:
+                         save: dict | None = None, strict: bool = False) -> dict:
         """One atomic, verified edit (collision always runs; add gravity_support to validators on demand).
 
+        The edit is published even when a validator reports issues; the result's
+        validation.issues lists them. Pass strict=True to reject such an edit instead.
         `expected`/`selection` are optional guards against a concurrent human edit.
         Never resend after a transport error without re-observing: there is no replay.
         """
@@ -1215,7 +1231,7 @@ class LiveSession:
         return self._request(
             "apply_and_verify", expected=_stamp(expected),
             selection=None if selection is None else _ids(selection), program=program,
-            validators=validators, timeout_ms=timeout_ms, save=save,
+            validators=validators, timeout_ms=timeout_ms, save=save, strict=bool(strict),
         )
 
     def query(self, expected: Stamp | dict, *, kind: Kind, limit: int = 50,

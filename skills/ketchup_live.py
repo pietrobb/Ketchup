@@ -240,9 +240,8 @@ class Runtime:
         self.lock = asyncio.Lock()
 
     def guard(self):
-        if self.plan_state is None or type(getattr(self.plan_state, "active", None)) is not bool:
-            raise Rejection("plan_guard_unavailable", "No Supervisor plan state binding; launch and mutations disabled.")
-        if self.plan_state.active:
+        # Hosts without a plan mode (no binding) may always write.
+        if getattr(self.plan_state, "active", False) is True:
             raise Rejection("plan_mode", "Live launch and mutations are forbidden in Supervisor plan mode.")
 
     def entry(self, handle):
@@ -295,8 +294,8 @@ class Runtime:
                 elif isinstance(error, self.sdk.LiveConsentError):
                     value = _error(error.code, "The target window did not grant live access.")
                 elif isinstance(error, self.sdk.LiveBridgeError):
-                    code = error.code if error.code in self.sdk._ERROR_CODES else "remote_error"
-                    value = _error(code, "Live bridge rejected the request.", details=error.details)
+                    message = (error.details or {}).get("message") or "Live bridge rejected the request."
+                    value = _error(error.code, message, details=error.details)
                 elif isinstance(error, self.sdk.LiveTransportError):
                     self.forget(handle)
                     value = _error("live_transport_error", "Live connection failed. Do not retry mutations.",
@@ -479,8 +478,11 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
                     targets: list[dict] | None = None,
                     selection: list[int] | None = None,
                     program: dict | None = None, validators: list[str] | None = None,
-                    timeout_ms: int = 60_000, save: dict | None = None) -> str:
+                    timeout_ms: int = 60_000, save: dict | None = None, strict: bool = False) -> str:
         """Read a narrow semantic edit context or apply one program as a verified single Undo step.
+
+        apply_and_verify publishes the edit and reports validator issues (validation.issues with
+        the parts involved); fix them with a follow-up edit. strict=true rejects instead.
 
         Args:
             action: edit_context or apply_and_verify.
@@ -492,6 +494,7 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
             validators: Optional extra validator IDs; collision always runs; pass ["gravity_support"] for an occasional gravity check.
             timeout_ms: Whole host-job deadline from 1 through 120000 ms (default 60000); on timeout nothing is applied.
             save: Optional tagged save request: {"mode":"current"} or {"mode":"path","path":"..."}.
+            strict: Reject the edit when a validator fails instead of publishing it with issues.
         """
         def job():
             _action(action, ("edit_context", "apply_and_verify"))
@@ -499,7 +502,7 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
             stamp = runtime.expected(expected)
             if action == "edit_context":
                 if (selection is not None or program is not None
-                        or validators is not None or timeout_ms != 60_000 or save is not None):
+                        or validators is not None or timeout_ms != 60_000 or save is not None or strict):
                     raise Rejection("invalid_arguments", "edit_context accepts only targets.")
                 return live_session.edit_context(stamp, targets)
             runtime.guard()
@@ -507,7 +510,7 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
                 raise Rejection("invalid_arguments", "apply_and_verify requires a program.")
             return live_session.apply_and_verify(
                 program, expected=stamp, selection=selection, validators=validators,
-                timeout_ms=timeout_ms, save=save,
+                timeout_ms=timeout_ms, save=save, strict=strict,
             )
         return await runtime.run(handle, job, mutation=action == "apply_and_verify")
 

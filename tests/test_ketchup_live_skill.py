@@ -462,8 +462,7 @@ def test_live_batch_tool_routes_bounded_jobs_and_cancel_stays_available_in_plan_
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("binding,code", [(None, "plan_guard_unavailable"),
-    (SimpleNamespace(active=True), "plan_mode"), (SimpleNamespace(), "plan_guard_unavailable")])
+@pytest.mark.parametrize("binding,code", [(SimpleNamespace(active=True), "plan_mode")])
 def test_fail_closed_launch_and_all_mutations(binding, code):
     def forbidden(*args):
         pytest.fail("launch happened without permission")
@@ -934,7 +933,7 @@ def test_registered_image_path_scope_preflight(tmp_path, monkeypatch, case):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("when", ["before", "during", "unbound"])
+@pytest.mark.parametrize("when", ["before", "during"])
 def test_image_file_write_guard_but_inspection_stays_read_only(tmp_path, monkeypatch, when):
     monkeypatch.setattr(skill, "IMAGE_ROOT", tmp_path)
     destination = tmp_path / "guarded.png"

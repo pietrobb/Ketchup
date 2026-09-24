@@ -143,9 +143,8 @@ class Runtime:
         self.lock = asyncio.Lock()
 
     def guard(self):
-        if self.plan_state is None:
-            raise Rejection("plan_guard_unavailable", "No Supervisor plan state binding; mutations disabled")
-        if self.plan_state.active:
+        # Hosts without a plan mode (no binding) may always write.
+        if getattr(self.plan_state, "active", False) is True:
             raise Rejection("plan_mode", "CAD mutations are forbidden in Supervisor plan mode")
 
     def entry(self, handle):

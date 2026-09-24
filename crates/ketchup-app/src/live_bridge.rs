@@ -184,6 +184,10 @@ pub enum Request {
         timeout_ms: u64,
         #[serde(default)]
         save: Option<ApplyAndVerifySave>,
+        /// Reject the edit when a validator fails. By default the edit is
+        /// published and the issues are reported.
+        #[serde(default)]
+        strict: bool,
     },
     Undo {
         #[serde(default)]
@@ -294,6 +298,57 @@ pub struct Response {
     pub result: Option<Value>,
     pub error: Option<String>,
 }
+thread_local! {
+    /// Why the next error response failed. Set right before an error code is
+    /// returned on the UI thread and attached to that response.
+    static ERROR_DETAILS: std::cell::RefCell<Option<Value>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Records the cause of `code` for the client and returns the code.
+fn failure(code: &'static str, message: impl Into<String>, details: Value) -> &'static str {
+    let mut value = json!({"kind": "diagnostic", "code": code, "message": message.into()});
+    if let (Some(value), Some(details)) = (value.as_object_mut(), details.as_object()) {
+        for (key, item) in details {
+            value.insert(key.clone(), item.clone());
+        }
+    }
+    ERROR_DETAILS.with(|slot| *slot.borrow_mut() = Some(value));
+    code
+}
+
+fn planning_failure(code: &'static str, diagnostic: &AssistantRejectionDiagnostic) -> &'static str {
+    failure(
+        code,
+        diagnostic.failed_invariant.clone(),
+        json!({
+            "reason": diagnostic.code,
+            "operation": diagnostic.operation,
+            "target": diagnostic.target,
+            "hint": diagnostic.repair_hint,
+            "retryable": diagnostic.retryable,
+        }),
+    )
+}
+
+/// Issues of every validator that reported any, flattened and bounded.
+fn validation_issues(validation: &Value) -> Vec<Value> {
+    let mut issues = Vec::new();
+    if let Some(validators) = validation.as_object() {
+        for (validator, report) in validators {
+            for issue in report["issues"].as_array().into_iter().flatten() {
+                if issues.len() < 50 {
+                    let mut issue = issue.clone();
+                    if let Some(object) = issue.as_object_mut() {
+                        object.insert("validator".to_owned(), json!(validator));
+                    }
+                    issues.push(issue);
+                }
+            }
+        }
+    }
+    issues
+}
+
 impl Response {
     fn error(id: u64, code: &str) -> Self {
         Self {
@@ -301,7 +356,7 @@ impl Response {
             id,
             ok: false,
             stamp: None,
-            result: None,
+            result: ERROR_DETAILS.with(|slot| slot.borrow_mut().take()),
             error: Some(code.into()),
         }
     }
@@ -356,6 +411,7 @@ pub(crate) struct ApplyAndVerifyRequest {
     validators: Vec<String>,
     timeout_ms: u64,
     save: Option<ApplyAndVerifySave>,
+    strict: bool,
 }
 /// Everything decided on the UI thread before the off-thread exact/validation work.
 struct ApplyAndVerifyPlan {
@@ -365,6 +421,7 @@ struct ApplyAndVerifyPlan {
     candidate: Snapshot,
     save_path: Option<PathBuf>,
     timeout_ms: u64,
+    strict: bool,
     started: Instant,
     planned_at: Instant,
 }
@@ -568,6 +625,7 @@ impl KetchupApp {
                     validators,
                     timeout_ms,
                     save,
+                    strict,
                 } => {
                     bridge.start_queued_apply_and_verify(
                         self,
@@ -582,6 +640,7 @@ impl KetchupApp {
                             validators,
                             timeout_ms,
                             save,
+                            strict,
                         },
                         ui_busy,
                     );
@@ -1044,12 +1103,6 @@ impl LiveBridge {
             return Err("job_timeout");
         }
         Self::require_request_authority(&cancelled)?;
-        if validation["state"] == "failed" {
-            return Err("validation_failed");
-        }
-        if validation["state"] != "passed" || validation["complete"] != true {
-            return Err("validation_incomplete");
-        }
         Ok(PreparedApplyAndVerify {
             candidate_exact,
             candidate_topology,
@@ -1091,6 +1144,7 @@ impl LiveBridge {
             validators,
             timeout_ms,
             save,
+            strict,
         } = request;
         let started = Instant::now();
         if timeout_ms == 0 || timeout_ms > MAX_APPLY_VERIFY_TIMEOUT_MS {
@@ -1116,7 +1170,9 @@ impl LiveBridge {
         Self::guard(app, &expected)?;
         Self::available(app, ui_busy)?;
         let selection = Self::selection_guard(app, selection)?;
-        program.validate().map_err(|_| "invalid_program")?;
+        program
+            .validate()
+            .map_err(|error| failure("invalid_program", error, json!({})))?;
         Self::program_scope(app, &program)?;
         #[cfg(test)]
         if fault == Some(ApplyAndVerifyFault::Planning) {
@@ -1128,7 +1184,7 @@ impl LiveBridge {
                 if Self::is_capability_gap(&diagnostic) {
                     PlanRejection::CapabilityGap(diagnostic)
                 } else {
-                    PlanRejection::Code("planning_rejected")
+                    PlanRejection::Code(planning_failure("planning_rejected", &diagnostic))
                 }
             })?;
         #[cfg(test)]
@@ -1138,13 +1194,13 @@ impl LiveBridge {
         let candidate = app
             .document
             .preview_verified_proposal(&proposal)
-            .map_err(|_| "candidate_rejected")?;
+            .map_err(|error| failure("candidate_rejected", format!("{error:?}"), json!({})))?;
         let exact_selection = plan_incremental_exact_evaluation(
             &app.document.current(),
             &candidate,
             app.exact_source.as_ref(),
         )
-        .map_err(|_| "planning_rejected")?
+        .map_err(|error| failure("planning_rejected", format!("{error:?}"), json!({})))?
         .selection;
         let plan = ApplyAndVerifyPlan {
             before: app.live_bridge_stamp(),
@@ -1153,6 +1209,7 @@ impl LiveBridge {
             candidate,
             save_path,
             timeout_ms,
+            strict,
             started,
             planned_at: Instant::now(),
         };
@@ -1253,6 +1310,7 @@ impl LiveBridge {
             candidate,
             save_path,
             timeout_ms,
+            strict,
             started,
             planned_at,
         } = plan;
@@ -1278,6 +1336,23 @@ impl LiveBridge {
             validated_at,
             _exact_task,
         } = prepared;
+        let issues = validation_issues(&validation);
+        if *strict && validation["state"] != "passed" {
+            let code = if validation["state"] == "failed" {
+                "validation_failed"
+            } else {
+                "validation_incomplete"
+            };
+            return Err(failure(
+                code,
+                format!(
+                    "validation {} with {} issue(s); the edit was not published (strict)",
+                    validation["state"].as_str().unwrap_or("did not pass"),
+                    validation["issue_count"]
+                ),
+                json!({"issues": issues, "not_evaluated": validation["not_evaluated"]}),
+            ));
+        }
         let diff_targets = proposal
             .authoritative_diff()
             .iter()
@@ -1295,9 +1370,12 @@ impl LiveBridge {
         let committed = app
             .complete_mutation_and_exact_results_with_work_recovery(
                 |document, exact_results, topology_results| {
-                    let committed = document
-                        .commit_verified_proposal(proposal)
-                        .map_err(|_| "commit_rejected")?;
+                    let committed =
+                        document
+                            .commit_verified_proposal(proposal)
+                            .map_err(|error| {
+                                failure("commit_rejected", format!("{error:?}"), json!({}))
+                            })?;
                     for reference in exact_references {
                         document
                             .register_exact_reference_evidence(reference)
@@ -1361,6 +1439,8 @@ impl LiveBridge {
                 "complete": validation["complete"],
                 "issue_count": validation["issue_count"],
                 "requested": validation["requested"],
+                "issues": issues,
+                "not_evaluated": validation["not_evaluated"],
             },
             "timing_ms": {
                 "planning": planned_at.duration_since(*started).as_millis() as u64,
@@ -1437,6 +1517,7 @@ impl LiveBridge {
                 validators: Vec::new(),
                 timeout_ms: DEFAULT_APPLY_VERIFY_TIMEOUT_MS,
                 save: None,
+                strict: false,
             },
             false,
             &Arc::new(AtomicBool::new(false)),
@@ -1641,11 +1722,13 @@ impl LiveBridge {
                 Self::guard(app, &expected)?;
                 Self::available(app, ui_busy)?;
                 let selection = Self::selection_guard(app, selection)?;
-                program.validate().map_err(|_| "invalid_program")?;
+                program
+                    .validate()
+                    .map_err(|error| failure("invalid_program", error, json!({})))?;
                 Self::program_scope(app, &program)?;
                 let proposal = app
                     .derive_assistant_cad_edit_proposal(&program)
-                    .map_err(|_| "planning_rejected")?;
+                    .map_err(|diagnostic| planning_failure("planning_rejected", &diagnostic))?;
                 let id = self.next_proposal;
                 self.next_proposal = id.checked_add(1).ok_or("proposal_ids_exhausted")?;
                 let value = json!({"proposal_id":id,
@@ -1698,6 +1781,7 @@ impl LiveBridge {
                 validators,
                 timeout_ms,
                 save,
+                strict,
             } => Self::apply_and_verify_now(
                 app,
                 ApplyAndVerifyRequest {
@@ -1707,6 +1791,7 @@ impl LiveBridge {
                     validators,
                     timeout_ms,
                     save,
+                    strict,
                 },
                 ui_busy,
                 cancelled,

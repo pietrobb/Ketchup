@@ -32,9 +32,9 @@ def test_output_is_bounded_real_json():
         skill._output({"result": float("nan")})
 
 
-def test_guard_fails_closed_and_tracks_shared_state():
-    with pytest.raises(skill.Rejection, match="No Supervisor"):
-        skill.Runtime(None).guard()
+def test_guard_allows_hosts_without_plan_mode_and_tracks_shared_state():
+    skill.Runtime(None).guard()
+    skill.Runtime(SimpleNamespace()).guard()
     state = SimpleNamespace(active=False)
     runtime = skill.Runtime(state)
     runtime.guard()
@@ -503,7 +503,10 @@ def test_plan_tools_reject_and_missing_binding(monkeypatch, doubles):
         await call(registered, "KetchupSession", action="close", handle=opened["handle"], discard=True, **expected(opened))
         monkeypatch.setattr(skill, "_plan_state", lambda: None)
         unbound = {t.name: t for t in skill.register_tools()}
-        assert (await call(unbound, "KetchupSession", action="new"))["error"]["code"] == "plan_guard_unavailable"
+        created = await call(unbound, "KetchupSession", action="new")
+        assert created.get("error", {}).get("code") != "plan_guard_unavailable"
+        if created.get("ok"):
+            await call(unbound, "KetchupSession", action="close", handle=created["result"]["handle"], discard=True)
     asyncio.run(scenario())
 
 
