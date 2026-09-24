@@ -1090,9 +1090,7 @@ impl LiveBridge {
             // A wait timeout also raises the shared cancel flag; report it as a timeout.
             if error.contains("timed out") {
                 "job_timeout"
-            } else if cancelled.load(Ordering::Acquire) {
-                "request_cancelled"
-            } else if error.contains("cancelled") {
+            } else if cancelled.load(Ordering::Acquire) || error.contains("cancelled") {
                 "request_cancelled"
             } else if error.contains("disconnected") {
                 "exact_worker_disconnected"

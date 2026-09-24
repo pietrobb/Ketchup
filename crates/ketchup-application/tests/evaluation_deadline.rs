@@ -1,5 +1,5 @@
 use ketchup_application::evaluation::{
-    EvidenceStatus, ExactEvaluationSelection, ProducerKey, exact_source, exact_worker_candidates,
+    EvidenceStatus, ExactEvaluationSelection, exact_source, exact_worker_candidates,
 };
 use ketchup_application::{DocumentSession, SessionError, SessionSettings};
 use ketchup_core::assistant_sidecar::{
@@ -735,7 +735,7 @@ fn crashed_worker_cannot_pass_a_scoped_exact_evaluation() {
         .features()
         .find(|feature| feature.kind().produces_body())
         .unwrap();
-    let scope = BTreeSet::from([ProducerKey {
+    let scope = BTreeSet::from([ketchup_application::evaluation::ProducerKey {
         definition_id: producer.definition_id(),
         feature_id: producer.id(),
     }]);

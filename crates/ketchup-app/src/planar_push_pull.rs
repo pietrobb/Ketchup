@@ -270,7 +270,7 @@ impl KetchupApp {
             let package = self
                 .topology_results_for_snapshot(&snapshot)?
                 .get_render(&snapshot, hit.definition_id)?;
-            return face_ordinal(&package, &target.target().reference)
+            return face_ordinal(package, &target.target().reference)
                 .map(ElementId::TopologicalFace);
         }
         hit.durable_target
@@ -297,7 +297,7 @@ impl KetchupApp {
             .scene_query()
             .into_iter()
             .find(|item| item.instance_path == target.instance_path)?;
-        planar_face(&package, &resolved.reference, occurrence.transform)
+        planar_face(package, &resolved.reference, occurrence.transform)
     }
 
     pub(super) fn select_push_pull_target(

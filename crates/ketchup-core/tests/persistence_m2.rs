@@ -197,19 +197,15 @@ fn legacy_authority_document(authority: LegacyAuthority) -> DocumentStore {
 
 #[test]
 fn default_load_rejects_legacy_named_feature_authority_with_typed_migration_error() {
-    for (authority, kind) in [(
-        LegacyAuthority::RoleStringShell,
-        LegacyFeatureKind::RoleStringShell,
-    )] {
-        let bytes = persistence::save(&legacy_authority_document(authority).current());
-        assert_eq!(
-            load_error(&bytes),
-            PersistenceError::LegacyFeatureRequiresMigration {
-                feature_id: FeatureId(20),
-                kind,
-            }
-        );
-    }
+    let bytes =
+        persistence::save(&legacy_authority_document(LegacyAuthority::RoleStringShell).current());
+    assert_eq!(
+        load_error(&bytes),
+        PersistenceError::LegacyFeatureRequiresMigration {
+            feature_id: FeatureId(20),
+            kind: LegacyFeatureKind::RoleStringShell,
+        }
+    );
 }
 
 #[test]

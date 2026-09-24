@@ -295,10 +295,10 @@ fn rectangular_sketch_pad_dimensions_preserve_anchors_and_entity_identity() {
                     vec![FeatureId(1), FeatureId(2), FeatureId(3)]
                 );
                 let transform = after.occurrence(OccurrenceId(1)).unwrap().transform();
-                for coordinate in 0..3 {
+                for (coordinate, direction) in axis.iter().enumerate() {
                     assert!(
                         (transform.matrix()[coordinate * 4 + 3]
-                            - axis[coordinate] * (current - next) * fraction)
+                            - direction * (current - next) * fraction)
                             .abs()
                             < 1.0e-9
                     );

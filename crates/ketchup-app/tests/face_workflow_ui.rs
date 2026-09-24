@@ -1077,7 +1077,7 @@ fn line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical() {
         );
         shell
             .app_mut()
-            .set_push_pull_distance_input(&distance.to_string());
+            .set_push_pull_distance_input(distance.to_string());
         let started = shell.app_mut().start_preview();
         assert!(
             started,

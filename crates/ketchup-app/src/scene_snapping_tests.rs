@@ -321,12 +321,10 @@ fn constrained_circle_snap_uses_solved_geometry_on_yz() {
         ]))
         .unwrap();
     let rect = viewport();
-    for x in [0.0] {
-        let point = Vec3::new(x, 40.0, 50.0);
-        let snap = app
-            .scene_snap_at_screen(app.project(point, rect), rect, 8.0, None)
-            .unwrap();
-        assert_eq!(snap.kind, SnapKind::Center);
-        assert!(snap.position_mm.distance(point) < 1e-7);
-    }
+    let point = Vec3::new(0.0, 40.0, 50.0);
+    let snap = app
+        .scene_snap_at_screen(app.project(point, rect), rect, 8.0, None)
+        .unwrap();
+    assert_eq!(snap.kind, SnapKind::Center);
+    assert!(snap.position_mm.distance(point) < 1e-7);
 }

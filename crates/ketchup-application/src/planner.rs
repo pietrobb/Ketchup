@@ -447,10 +447,9 @@ fn panel_pocket_sketch(pocket: &AssistantPanelPocket) -> (AssistantWorkplaneSpec
     let axis = pocket.axis().unwrap_or(2);
     let x_axis = panel_face_x_axis(normal);
     let y_axis = cross(normal, x_axis);
-    let mut origin_mm = [0.0; 3];
-    for index in 0..3 {
-        origin_mm[index] = (pocket.min_local_mm[index] + pocket.max_local_mm[index]) * 0.5;
-    }
+    let mut origin_mm: [f64; 3] = std::array::from_fn(|index| {
+        (pocket.min_local_mm[index] + pocket.max_local_mm[index]) * 0.5
+    });
     origin_mm[axis] = if normal[axis] > 0.0 {
         pocket.min_local_mm[axis]
     } else {
@@ -3937,7 +3936,7 @@ pub fn plan_panel_batch(
                 AssistantRejectionPhase::IntentValidation,
                 "intent.panel_invalid",
                 "create_panel",
-                &format!("panel:{name}"),
+                format!("panel:{name}"),
                 error,
                 "Fix the panel dimensions, holes or pockets named in the message.",
                 true,
