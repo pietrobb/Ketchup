@@ -1,7 +1,7 @@
 # Rules for coding agents working on Ketchup
 
 These rules apply to every agent (Codex/GPT, Claude, or others) and to human contributors.
-They override conflicting guidance in older documents, including `docs/*/EXECUTION_CONTRACT.md`
+They override conflicting guidance in older documents, including `docs/archive/EXECUTION_CONTRACT.md`
 §11, §12 and §16 and the gate/preregistration process.
 Plan and rationale: `docs/plan-upratovania-2026-09-24.md`, `docs/analyza-fundamentov-2026-09-24.md`.
 

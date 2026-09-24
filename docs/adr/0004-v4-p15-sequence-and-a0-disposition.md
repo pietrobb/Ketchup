@@ -1,6 +1,6 @@
 # ADR 0004: V4-P15 Sequence and A0 Disposition
 
-- Status: Amended after A0 v2 FULL_GO — project owner, 2026-08-04; L-01/L-02 withdrawn, M3 halt released
+- Status: Superseded by ADR 0008 (was amended 2026-08-04 after A0 v2 FULL_GO)
 - Date: 2026-08-04
 - Decision owner: Architecture lead
 - Accountable approver: Project owner

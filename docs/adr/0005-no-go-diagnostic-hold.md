@@ -1,6 +1,6 @@
 # ADR 0005: NO-GO Diagnostic Hold Before Architectural Disposition
 
-- Status: Accepted — project owner, 2026-08-04
+- Status: Superseded by ADR 0008 (was accepted 2026-08-04)
 - Date: 2026-08-04
 - Decision owner: Architecture lead
 - Accountable approver: Project owner

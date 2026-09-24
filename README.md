@@ -124,7 +124,10 @@ Validate the workspace:
 cargo test --locked --workspace --all-targets --no-fail-fast -- --test-threads=1
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo fmt --all -- --check
+python scripts/check_no_named_products.py
 ```
+
+The Rust workspace also builds on Linux against an OCCT 8.0.1 install in the Unix layout (`include/opencascade`, `lib`). Point `KETCHUP_OCCT_ROOT` at it and make the libraries loadable, for example with `RUSTFLAGS="-C link-arg=-Wl,-rpath,$KETCHUP_OCCT_ROOT/lib"`.
 
 No stable public API or long-term native file-format compatibility is promised yet. Undo/Redo history is currently session-local; saved documents preserve the validated snapshot, not the in-memory history stack.
 
@@ -134,16 +137,16 @@ Ketchup has one canonical, revisioned document and one validated mutation gatewa
 
 Read project authority in this order:
 
-1. [Accepted ADRs](docs/adr) for the decisions they own.
-2. The frozen [execution contract](docs/architecture/EXECUTION_CONTRACT.md) for binding invariants.
-3. The retained consolidated [Architecture Specification V4c](KETCHUP_ARCHITECTURE_SPECIFICATION_V4c.md) for the latest architecture review snapshot. Its evidence baseline is historical; current capability claims come from the present code and tests, and proposed post-contract decisions remain non-binding until accepted by ADR.
-4. The [interaction specification](docs/design/README.md) and [workflow-led implementation plan](docs/design/IMPLEMENTATION_PLAN.md) for UI behavior and delivery order.
+1. [`AGENTS.md`](AGENTS.md): the working rules for every contributor and coding agent. Generic geometry only in the core; validators report instead of blocking; only data-protecting checks.
+2. [Accepted ADRs](docs/adr) for the decisions they own. [ADR 0008](docs/adr/0008-retire-gate-governance.md) retired the gate and preregistration process.
+3. The [interaction specification](docs/design/README.md) and [implementation plan](docs/design/IMPLEMENTATION_PLAN.md) for UI behavior.
+4. The [fundamentals analysis](docs/analyza-fundamentov-2026-09-24.md) and [cleanup plan](docs/plan-upratovania-2026-09-24.md) for the current direction.
 
-Earlier root-level architecture drafts were removed from the current tree to avoid competing definitions; their history remains available in Git. Historical gate evidence and the original [R0 baseline](R0_LICENSE_AND_TOOLCHAIN_BASELINE.md) remain unchanged for provenance.
+Earlier specifications and the execution contract are kept in [`docs/archive`](docs/archive) for history only; they are not binding.
 
 ## Direction
 
-Current development is focused on turning bounded vertical slices into reusable, role-neutral CAD operation families: broader typed profiles and paths, stronger stable-reference behavior, more general multi-selection, richer exact fabrication projections, and fewer legacy named-product branches. UI polish and additional platform packaging follow functional correctness and deterministic failure behavior.
+The model is moving from absolute per-piece geometry to a rule program that the AI or a person writes. Boards, holes and joints will follow from parameters, and validators will report issues instead of rejecting edits. Named-product code paths are being removed; `scripts/check_no_named_products.py` keeps them from returning. See the [cleanup plan](docs/plan-upratovania-2026-09-24.md).
 
 ## License
 
