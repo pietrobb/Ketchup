@@ -30,9 +30,10 @@ fn attributes(attrs: &[syn::Attribute]) -> Serde {
             } else if meta.path.is_ident("untagged") {
                 result.untagged = true;
             } else if meta.path.is_ident("skip_serializing_if") {
-                assert_eq!(
-                    meta.value()?.parse::<syn::LitStr>()?.value(),
-                    "Option::is_none"
+                let predicate = meta.value()?.parse::<syn::LitStr>()?.value();
+                assert!(
+                    predicate == "Option::is_none" || predicate == "Vec::is_empty",
+                    "unsupported skip_serializing_if predicate {predicate}"
                 );
             } else {
                 panic!("unsupported CAD schema serde attribute");

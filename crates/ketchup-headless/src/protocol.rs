@@ -68,6 +68,8 @@ const METHODS: &[&str] = &[
     "batch_job_step",
     "batch_job_cancel",
     "apply",
+    "program_check",
+    "program_apply",
     "set_production_codes",
     "production_job",
     "cam_preview",
@@ -92,6 +94,7 @@ const GUARDED_METHODS: &[&str] = &[
     "new",
     "open",
     "apply",
+    "program_apply",
     "set_production_codes",
     "production_job",
     "cam_preview",
@@ -763,6 +766,8 @@ impl Server {
             "new" => (&["discard_unsaved"], true),
             "open" => (&["path", "discard_unsaved"], true),
             "apply" => (&["program", "selection"], true),
+            "program_check" => (&["source", "file_name", "params", "include_model"], false),
+            "program_apply" => (&["source", "file_name", "params", "discard_unsaved"], true),
             "set_production_codes" => (&["assignments"], true),
             "production_job" => (
                 &["adapters", "vertical_pocket_tool_number", "timeout_ms"],
@@ -880,6 +885,27 @@ impl Server {
                 } else {
                     created(&before, &self.session.snapshot())
                 };
+                Ok(result)
+            }
+            "program_check" => {
+                let (evaluated, report) = run_program(p)?;
+                let mut result = json!(report);
+                if boolean(p, "include_model", false)? {
+                    result["model"] = json!(evaluated.model);
+                }
+                Ok(result)
+            }
+            "program_apply" => {
+                self.discard_guard(p)?;
+                let (evaluated, report) = run_program(p)?;
+                let panels = ketchup_program::cad::panel_operations(&evaluated.model);
+                let mut session = DocumentSession::new(self.settings.clone());
+                session.apply_panels(&panels)?;
+                self.session = session;
+                self.revoke_jobs();
+                self.initial_placeholder = false;
+                let mut result = self.state_result();
+                result["program"] = json!(report);
                 Ok(result)
             }
             "cam_preview" => {
@@ -1114,6 +1140,35 @@ fn string<'a>(p: &'a Map<String, Value>, key: &str) -> Result<&'a str> {
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| Error::invalid(format!("{key} must be nonempty string")))
+}
+/// Evaluates the `source` rule program with numeric `params` overrides.
+fn run_program(
+    p: &Map<String, Value>,
+) -> Result<(ketchup_program::Evaluated, ketchup_program::Report)> {
+    let source = string(p, "source")?;
+    let file_name = p.get("file_name").map_or(Ok("program.star"), |value| {
+        value
+            .as_str()
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| Error::invalid("file_name must be a nonempty string"))
+    })?;
+    let mut overrides = std::collections::BTreeMap::new();
+    if let Some(params) = p.get("params") {
+        let params = params
+            .as_object()
+            .ok_or_else(|| Error::invalid("params must be an object of name: number"))?;
+        for (name, value) in params {
+            let value = value
+                .as_f64()
+                .ok_or_else(|| Error::invalid(format!("params.{name} must be a number")))?;
+            overrides.insert(name.clone(), value);
+        }
+    }
+    ketchup_program::run(file_name, source, &overrides).map_err(|error| Error {
+        code: format!("program.{}", error.code),
+        message: error.message,
+        details: None,
+    })
 }
 fn boolean(p: &Map<String, Value>, key: &str, default: bool) -> Result<bool> {
     p.get(key).map_or(Ok(default), |v| {

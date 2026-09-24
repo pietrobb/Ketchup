@@ -545,12 +545,11 @@ pub fn prepare_body_profile_translation(
                 .ok()
                 .and_then(|graph| graph.producer_bounds_mm().ok().flatten())
         };
-        if let (Some(host), Some(cutter)) = (bounds(*target), bounds(*tool)) {
-            if (0..3)
+        if let (Some(host), Some(cutter)) = (bounds(*target), bounds(*tool))
+            && (0..3)
                 .any(|axis| cutter[1][axis] <= host[0][axis] || cutter[0][axis] >= host[1][axis])
-            {
-                return Err(BodyParameterEditError::InvalidCutPosition);
-            }
+        {
+            return Err(BodyParameterEditError::InvalidCutPosition);
         }
     }
     Ok(BodyParameterEditPreview {

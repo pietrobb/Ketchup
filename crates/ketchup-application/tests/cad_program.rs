@@ -2416,6 +2416,7 @@ fn one_panel_operation_creates_named_physical_holes_and_one_local_edit_moves_one
             diameter_mm: 8.0,
             depth_mm: 16.0,
         }],
+        pockets: Vec::new(),
         translation_mm: [0.0, 0.0, 0.0],
         rotation: None,
     };
@@ -2475,6 +2476,7 @@ fn one_dowel_joint_operation_derives_matching_sixteen_millimetre_holes_for_both_
         name: name.into(),
         dimensions_mm: [100.0, 50.0, 18.0],
         holes: Vec::new(),
+        pockets: Vec::new(),
         translation_mm,
         rotation: None,
     };
@@ -2542,6 +2544,7 @@ fn one_physical_dowel_joint_operation_creates_both_hole_rows_atomically() {
         name: name.into(),
         dimensions_mm: [100.0, 50.0, 18.0],
         holes: Vec::new(),
+        pockets: Vec::new(),
         translation_mm,
         rotation: None,
     };
@@ -2812,6 +2815,7 @@ fn physical_dowel_joint_geometry_regressions_fail_closed_without_mutation() {
             name: name.into(),
             dimensions_mm: [100.0, 50.0, 18.0],
             holes,
+            pockets: Vec::new(),
             translation_mm,
             rotation: None,
         };
@@ -2961,6 +2965,7 @@ fn physical_dowel_joint_refuses_shared_root_and_nested_definitions_without_mutat
                             name: format!("Panel {z}"),
                             dimensions_mm: [100.0, 50.0, 18.0],
                             holes: vec![],
+                            pockets: Vec::new(),
                             translation_mm: [0.0, 0.0, z],
                             rotation: None,
                         })
@@ -3056,6 +3061,7 @@ fn physical_dowel_joint_supports_both_rotated_sides_and_preserves_existing_work(
             name: name.into(),
             dimensions_mm: [100.0, 50.0, 18.0],
             holes,
+            pockets: Vec::new(),
             translation_mm,
             rotation,
         }
@@ -3268,6 +3274,7 @@ fn named_program_outputs_create_panels_physical_holes_and_joint_in_one_atomic_ba
                 diameter_mm: 8.0,
                 depth_mm: 16.0,
             }],
+            pockets: Vec::new(),
             translation_mm,
             rotation: None,
         }
@@ -3535,6 +3542,7 @@ fn bound_dowel_joint_rejects_moving_only_one_physical_hole() {
             name: name.into(),
             dimensions_mm: [100.0, 50.0, 18.0],
             holes: holes(entry_z, inward_unit_local),
+            pockets: Vec::new(),
             translation_mm,
             rotation: None,
         }

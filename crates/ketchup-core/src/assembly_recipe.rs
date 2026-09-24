@@ -1238,11 +1238,11 @@ fn supported_part_bounds(
                 for x in [minimum[0], maximum[0]] {
                     for y in [minimum[1], maximum[1]] {
                         for depth in [0.0, height] {
-                            for axis in 0..3 {
+                            for (axis, direction) in direction.iter().enumerate() {
                                 let coordinate = frame.origin_mm[axis]
                                     + x * frame.x_axis[axis]
                                     + y * frame.y_axis[axis]
-                                    + depth * direction[axis];
+                                    + depth * direction;
                                 bounds.minimum[axis] = bounds.minimum[axis].min(coordinate);
                                 bounds.maximum[axis] = bounds.maximum[axis].max(coordinate);
                             }

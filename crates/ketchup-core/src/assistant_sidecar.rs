@@ -700,6 +700,68 @@ pub struct AssistantPanelHole {
     pub depth_mm: f64,
 }
 
+/// A rectangular pocket milled into one face of a panel: the removed box in
+/// panel-local coordinates. It must start on the face that `inward_unit_local`
+/// points away from and may run off the face edges (grooves, rabbets).
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantPanelPocket {
+    pub id: String,
+    pub min_local_mm: [f64; 3],
+    pub max_local_mm: [f64; 3],
+    pub inward_unit_local: [f64; 3],
+}
+
+impl AssistantPanelPocket {
+    /// Axis index of the pocket direction, if `inward_unit_local` is a unit axis.
+    #[must_use]
+    pub fn axis(&self) -> Option<usize> {
+        let axis = self
+            .inward_unit_local
+            .iter()
+            .position(|value| (value.abs() - 1.0).abs() <= 1.0e-9)?;
+        self.inward_unit_local
+            .iter()
+            .enumerate()
+            .all(|(index, value)| index == axis || value.abs() <= 1.0e-9)
+            .then_some(axis)
+    }
+
+    fn validate(&self, dimensions_mm: [f64; 3]) -> Result<(), String> {
+        let invalid = || {
+            Err(format!(
+                "panel pocket {:?} is invalid: it must be a box that starts on the face opposite to inward_unit_local, stays within the panel thickness and overlaps the face",
+                self.id
+            ))
+        };
+        let Some(axis) = self.axis() else {
+            return invalid();
+        };
+        if self.id.trim().is_empty()
+            || self.id.len() > MAX_ASSISTANT_NAME_BYTES
+            || self.id.chars().any(char::is_control)
+            || !assistant_cad_vector_is_bounded(self.min_local_mm)
+            || !assistant_cad_vector_is_bounded(self.max_local_mm)
+            || (0..3).any(|index| self.max_local_mm[index] - self.min_local_mm[index] <= 1.0e-6)
+        {
+            return invalid();
+        }
+        let entry_ok = if self.inward_unit_local[axis] > 0.0 {
+            self.min_local_mm[axis].abs() <= 1.0e-9
+        } else {
+            (self.max_local_mm[axis] - dimensions_mm[axis]).abs() <= 1.0e-9
+        };
+        let depth = self.max_local_mm[axis] - self.min_local_mm[axis];
+        let overlaps_face = (0..3).filter(|index| *index != axis).all(|index| {
+            self.min_local_mm[index] < dimensions_mm[index] && self.max_local_mm[index] > 0.0
+        });
+        if !entry_ok || depth > dimensions_mm[axis] + 1.0e-9 || !overlaps_face {
+            return invalid();
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AssistantDowelJointFace {
@@ -1870,6 +1932,8 @@ pub enum AssistantCadEditOperation {
         name: String,
         dimensions_mm: [f64; 3],
         holes: Vec<AssistantPanelHole>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pockets: Vec<AssistantPanelPocket>,
         translation_mm: [f64; 3],
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rotation: Option<AssistantCadRotation>,
@@ -2940,9 +3004,20 @@ impl AssistantCadEditProgram {
                     name,
                     dimensions_mm,
                     holes,
+                    pockets,
                     translation_mm,
                     rotation,
                 } => {
+                    if pockets.len() > 128 {
+                        return Err("assistant panel has more than 128 pockets".to_owned());
+                    }
+                    let mut pocket_ids = BTreeSet::new();
+                    for pocket in pockets {
+                        if !pocket_ids.insert(pocket.id.as_str()) {
+                            return Err(format!("panel pocket id {:?} is used twice", pocket.id));
+                        }
+                        pocket.validate(*dimensions_mm)?;
+                    }
                     if name.trim().is_empty()
                         || name.len() > MAX_ASSISTANT_NAME_BYTES
                         || name.chars().any(char::is_control)

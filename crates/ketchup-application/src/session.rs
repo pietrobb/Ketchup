@@ -4,7 +4,9 @@ use crate::{
     plan_assistant_cad_edit_program,
     validation::{AssistantValidationSelection, assistant_validation_context_with_worker},
 };
-use ketchup_core::assistant_sidecar::{AssistantCadEditProgram, AssistantRejectionDiagnostic};
+use ketchup_core::assistant_sidecar::{
+    AssistantCadEditOperation, AssistantCadEditProgram, AssistantRejectionDiagnostic,
+};
 use ketchup_core::document::{
     CanonicalCommand, CanonicalError, CommandBatch, DocumentStore, OccurrenceId, Proposal,
     ProposalCommitError, ProposalContext, ProposalPrepareError, Snapshot, VerifiedProposalCommit,
@@ -401,6 +403,17 @@ impl DocumentSession {
         selection: &BTreeSet<OccurrenceId>,
     ) -> Result<Snapshot, SessionError> {
         let proposal = self.plan_cad_program(program, selection)?;
+        self.apply_proposal(&proposal)
+    }
+    /// Creates one panel per `create_panel` operation as a single undo step.
+    /// Rule programs use this; it is not bound by Assistant program limits.
+    pub fn apply_panels(
+        &mut self,
+        panels: &[AssistantCadEditOperation],
+    ) -> Result<Snapshot, SessionError> {
+        let batch = crate::planner::plan_panel_batch(&self.document, panels)
+            .map_err(SessionError::Planning)?;
+        let proposal = self.plan_commands(batch)?;
         self.apply_proposal(&proposal)
     }
     pub fn set_grounded(

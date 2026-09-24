@@ -625,6 +625,7 @@ fn physical_dowel_document(count: u32, duplicate_joint: bool) -> DocumentStore {
         name: name.into(),
         dimensions_mm: [100.0, 50.0, 18.0],
         holes: Vec::new(),
+        pockets: Vec::new(),
         translation_mm,
         rotation: None,
     };
