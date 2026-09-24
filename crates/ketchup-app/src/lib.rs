@@ -11796,7 +11796,12 @@ impl KetchupApp {
                         }
                         Err(code) => self.assistant_messages.push(AssistantChatMessage {
                             role: AssistantMessageRole::Error,
-                            text: format!("apply_and_verify: {code}"),
+                            text: match live_bridge::take_error_details()
+                                .and_then(|details| details["message"].as_str().map(str::to_owned))
+                            {
+                                Some(message) => format!("apply_and_verify: {code}: {message}"),
+                                None => format!("apply_and_verify: {code}"),
+                            },
                             source: pending.source,
                             diagnostic: None,
                         }),

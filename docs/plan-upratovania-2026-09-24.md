@@ -6,6 +6,20 @@
 
 ---
 
+## Stav k 24. 9. 2026 (vetva `claude/optimistic-goodall-2aqwdt`)
+
+| Krok | Stav |
+|---|---|
+| 0 — pravidlá a poistka | **hotové**: `AGENTS.md`, `CLAUDE.md`, `scripts/check_no_named_products.py` (rohatka, baseline 126 výskytov: capsule, d_profile, drawer…) |
+| 1 — agent nezlyháva naslepo | **väčšinou hotové**: headless už neoreže hlášky na 128 B, živý most posiela dôvod a návrh opravy, `apply_and_verify` zapíše a vráti `validation.issues` (voliteľne `strict`), skills fungujú aj mimo Supervisora. Zostáva: zjednodušený kolíkový spoj v starom JSON API (v pravidlovom jazyku už je) |
+| 2 — vyhodiť showcase | **hotové**: čajník, balónové písmená aj s fontom, strechy, schody, trámy, Hettich, beam_m4ae/m5, capstone, gate binárky, `named-product-fixtures` |
+| 3 — dôkazová diéta, 1. časť | **hotové v CI a súboroch**: ADR 0008, preč governance, preregistrácie, 50 MB artefaktov a staré release-evidence skripty; nové jednoduché CI. Zostáva: podpisy ed25519, digesty návrhu, SHA kontrola workera |
+| 4 — pravidlový jazyk | **MVP hotové**: crate `ketchup-program` (Starlark), knižnica `board/dowels/groove/rabbet/hole_row/divide`, kontroly, kusovník, vŕtací plán, `create_panel` s výrezmi, `program_check`/`program_apply`, SDK a skill `KetchupProgram`, príklad `examples/programs/cabinet.star`, dokumentácia `docs/program-language.md`. Zostáva: program uložený v dokumente, override ručných úprav, rotované diely a profily |
+| 5 — fľaša a špeciálne evaluátory | **fľaša hotová** (aj v C++). Zostáva 16 evaluátorov a ručné siete (kapsuly, D-profily). Ťahajú sa cez smart Push/Pull a shared change v GUI, preto najprv test zhody |
+| 6–9 | neotvorené |
+
+Build a testy bežia aj na Linuxe (OCCT 8.0.1 zo zdrojov, `KETCHUP_OCCT_ROOT` + rpath, pozri README).
+
 ## 1. Cieľ
 
 1. **Z jadra zmizne všetko, čo je robené na mieru.** Fľaša, čajník, balónové písmená, strechy,

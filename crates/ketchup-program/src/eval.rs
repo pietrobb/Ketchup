@@ -276,8 +276,8 @@ fn builtins(builder: &mut GlobalsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
         let heap = eval.heap();
-        if name.trim().is_empty() || name.len() > 200 || name.chars().any(char::is_control) {
-            anyhow::bail!("part name must be 1-200 printable characters, got {name:?}");
+        if name.trim().is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
+            anyhow::bail!("part name must be 1-128 printable bytes, got {name:?}");
         }
         let size = numbers::<3>(size, heap, "size")?;
         if let Some(axis) = size.iter().position(|value| *value <= TOLERANCE_MM) {

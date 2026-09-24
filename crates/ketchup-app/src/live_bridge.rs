@@ -330,14 +330,43 @@ fn planning_failure(code: &'static str, diagnostic: &AssistantRejectionDiagnosti
     )
 }
 
-/// Issues of every validator that reported any, flattened and bounded.
+/// Takes the cause recorded by the last `failure`, if any. Callers that turn
+/// an error code into something other than a bridge response use this.
+pub(crate) fn take_error_details() -> Option<Value> {
+    ERROR_DETAILS.with(|slot| slot.borrow_mut().take())
+}
+
+const MAX_REPORTED_ISSUES: usize = 12;
+const MAX_ISSUE_BYTES: usize = 1024;
+
+/// One issue reduced to its scalar fields when it is too large for a frame.
+fn compact_issue(issue: &Value) -> Value {
+    if serde_json::to_vec(issue).map_or(0, |bytes| bytes.len()) <= MAX_ISSUE_BYTES {
+        return issue.clone();
+    }
+    let mut compact = serde_json::Map::new();
+    let mut size = 0;
+    for (key, value) in issue.as_object().into_iter().flatten() {
+        let scalar = value.is_string() || value.is_number() || value.is_boolean();
+        let length = serde_json::to_vec(value).map_or(usize::MAX, |bytes| bytes.len());
+        if scalar && size + key.len() + length < MAX_ISSUE_BYTES {
+            size += key.len() + length;
+            compact.insert(key.clone(), value.clone());
+        }
+    }
+    compact.insert("truncated".to_owned(), json!(true));
+    Value::Object(compact)
+}
+
+/// Issues of every validator that reported any, flattened and bounded so the
+/// response stays inside one bridge frame. `validation.issue_count` keeps the total.
 fn validation_issues(validation: &Value) -> Vec<Value> {
     let mut issues = Vec::new();
     if let Some(validators) = validation.as_object() {
         for (validator, report) in validators {
             for issue in report["issues"].as_array().into_iter().flatten() {
-                if issues.len() < 50 {
-                    let mut issue = issue.clone();
+                if issues.len() < MAX_REPORTED_ISSUES {
+                    let mut issue = compact_issue(issue);
                     if let Some(object) = issue.as_object_mut() {
                         object.insert("validator".to_owned(), json!(validator));
                     }
@@ -1227,6 +1256,7 @@ impl LiveBridge {
         request: ApplyAndVerifyRequest,
         ui_busy: bool,
     ) {
+        take_error_details();
         if self.apply_and_verify_job.is_some() {
             Self::reply(app, id, &reply, Err("apply_and_verify_busy"));
             return;
@@ -1508,6 +1538,7 @@ impl LiveBridge {
         app: &mut KetchupApp,
         program: AssistantCadEditProgram,
     ) -> Result<Value, &'static str> {
+        take_error_details();
         Self::apply_and_verify_now(
             app,
             ApplyAndVerifyRequest {
@@ -1589,6 +1620,7 @@ impl LiveBridge {
         ui_busy: bool,
         cancelled: &Arc<AtomicBool>,
     ) -> Result<Value, &'static str> {
+        take_error_details();
         Self::require_request_authority(cancelled)?;
         match request {
             Request::Status {} => Ok(
