@@ -26,7 +26,7 @@ def test_malformed_query_diagnostics_are_bounded_and_nondestructive(method, para
             session._request(method, params)
         error = caught.value
         assert error.code == "invalid_params"
-        assert error.details["diagnostic_truncated"] is True
+        assert error.details["message_truncated"] is True
         assert len(json.dumps({"code": error.code, "message": error.message,
                                "details": error.details}).encode("utf-8")) < 32768
         assert doc.summary() == before

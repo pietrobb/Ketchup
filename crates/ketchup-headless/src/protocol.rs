@@ -746,13 +746,15 @@ impl Server {
         Ok(())
     }
     fn discard_guard(&self, p: &Map<String, Value>) -> Result<()> {
+        let empty = self.session.snapshot().definitions().next().is_none();
         if !boolean(p, "discard_unsaved", false)?
             && !self.initial_placeholder
+            && !empty
             && self.session.is_modified()
         {
             return Err(Error::new(
                 "unsaved_changes",
-                "new/open requires discard_unsaved=true for unsaved changes",
+                "replacing the document would lose unsaved changes; save first or pass discard_unsaved=true",
             ));
         }
         Ok(())

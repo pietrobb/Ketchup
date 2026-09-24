@@ -102,7 +102,7 @@ async def call(registered, name, **kwargs):
 
 def test_registration_schema_and_real_decorator_calls(monkeypatch):
     registered = tools(monkeypatch)
-    assert set(registered) == {"KetchupDiscover", "KetchupSession", "KetchupInspect", "KetchupEdit", "KetchupBatch", "KetchupSave", "KetchupVerify"}
+    assert set(registered) == {"KetchupDiscover", "KetchupSession", "KetchupProgram", "KetchupInspect", "KetchupEdit", "KetchupBatch", "KetchupSave", "KetchupVerify"}
     for tool in registered.values():
         schema = tool.to_dict()
         assert schema["input_schema"]["type"] == "object"
@@ -112,6 +112,9 @@ def test_registration_schema_and_real_decorator_calls(monkeypatch):
     assert set(required) == {"handle", "action"}
     async def scenario():
         assert (await call(registered, "KetchupDiscover"))["result"]["backend_compact"]
+        library = (await call(registered, "KetchupDiscover", section="program"))["result"]
+        assert "def dowels(" in library["library"] and "dowels(" in library["example"]
+        assert (await call(registered, "KetchupProgram", action="check", handle="bad", source="x = 1"))["error"]["code"] == "invalid_handle"
         for name in ("KetchupSession", "KetchupInspect", "KetchupEdit", "KetchupVerify"):
             args = {"action": "invalid", "handle": "bad"}
             if name == "KetchupEdit":

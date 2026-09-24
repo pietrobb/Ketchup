@@ -14,6 +14,9 @@ import uuid
 from anthropic.lib.tools import beta_async_tool
 
 MAX_OUTPUT = 32 * 1024
+PROGRAM_LIBRARY = Path(__file__).resolve().parents[1] / "crates" / "ketchup-program" / "library" / "prelude.star"
+PROGRAM_EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "programs" / "cabinet.star"
+MAX_REPORT_ISSUES = 50
 MAX_SESSIONS = 4
 
 
@@ -217,17 +220,22 @@ def register_tools() -> list:
         """Discover owned offline CAD tools, then one capability section, never the full schema.
 
         Args:
-            section: overview, methods, operations, operation, definition, or validators.
+            section: overview, program, methods, operations, operation, definition, or validators.
+                program returns the rule-program library (all helpers with docs); no handle needed.
             handle: Owned session UUID; required except for overview.
             name: Exact operation or schema definition name when requesting its schema.
         """
         def job():
-            _action(section, ("overview", "methods", "operations", "operation", "definition", "validators"))
+            _action(section, ("overview", "program", "methods", "operations", "operation", "definition", "validators"))
+            if section == "program":
+                return {"language": "Starlark (Python subset)", "library": PROGRAM_LIBRARY.read_text(encoding="utf-8"),
+                        "example": PROGRAM_EXAMPLE.read_text(encoding="utf-8")}
             if section == "overview":
                 return {"mode": "owned_headless_not_live_GUI", "max_sessions": MAX_SESSIONS,
                         "max_output_bytes": MAX_OUTPUT, "plan_guard_bound": runtime.plan_state is not None,
                         "backend_compact": True,
-                        "workflow": "session new/open -> inspect summary -> search -> detail -> edit -> inspect -> verify -> save",
+                        "workflow": "new models: session new -> KetchupProgram check (fix issues) -> KetchupProgram build -> verify -> save; "
+                                    "existing models: session open -> inspect summary -> search -> detail -> edit -> inspect -> verify -> save",
                         "preconditions": "expected_revision/expected_digest/expected_mutation_epoch are optional on edit/save/close/batch/verify start; supplied fields must match",
                         "limitations": "Requires compact-capable SDK/headless. No scripts, raw canonical commands, "
                                        "GUI bridge, exact spatial geometry or automatic retries. Spatial bounds use explicit conservative proxies; "
@@ -290,6 +298,66 @@ def register_tools() -> list:
                 runtime.forget(owned)
                 raise
         return await runtime.run(owned, job)
+
+    @beta_async_tool(name="KetchupProgram")
+    async def program(action: str, handle: str, source: str = "", source_path: str = "",
+                      params: dict[str, float] | None = None, machining: bool = False,
+                      discard: bool = False) -> str:
+        """Describe the model as a rule program (Starlark) and check or build it.
+
+        Prefer this for new furniture and timber models: write parameters and parts once,
+        change one number and everything that depends on it follows. Helpers (board, dowels,
+        groove, rabbet, hole_row, divide, ...) are listed by KetchupDiscover section=program.
+        The report names every issue with its parts, location in mm and a fix hint; fix
+        errors and check again before building.
+
+        Args:
+            action: check (evaluate and validate only) or build (replace the document with
+                the generated parts as one undo step; returns the same report).
+            handle: Owned session UUID from KetchupSession.
+            source: Program text; or give source_path.
+            source_path: Absolute path of a .star program file.
+            params: Overrides of param() values by name, e.g. {"width": 700}.
+            machining: Include every hole and pocket per part (can be large).
+            discard: Required for build when the current document has unsaved changes.
+        """
+        def job():
+            _action(action, ("check", "build"))
+            if bool(source) == bool(source_path):
+                raise Rejection("invalid_arguments", "Give exactly one of source or source_path")
+            text = source or Path(_absolute(source_path)).read_text(encoding="utf-8")
+            name = Path(source_path).name if source_path else "program.star"
+            overrides = {}
+            for key, value in (params or {}).items():
+                if type(key) is not str or not _finite_number(value):
+                    raise Rejection("invalid_arguments", "params must map names to finite numbers")
+                overrides[key] = value
+            entry = runtime.entry(handle)
+            if action == "check":
+                report = entry["session"].check_program(text, params=overrides, file_name=name)
+            else:
+                runtime.guard()
+                document, report = entry["session"].program_document(
+                    text, params=overrides, file_name=name, discard_unsaved=discard)
+                entry["document"] = document
+                entry["document_id"] = document.state["document_id"]
+                runtime.read(entry)
+            issues = report["issues"]
+            result = {"ok": report["ok"], "errors": report["errors"], "warnings": report["warnings"],
+                      "issues": issues[:MAX_REPORT_ISSUES], "issues_truncated": len(issues) > MAX_REPORT_ISSUES,
+                      "params": report["params"], "unused_params": report["unused_overrides"],
+                      "cut_list": report["bom"]["cut_list"], "hardware": report["bom"]["hardware"],
+                      "log": report["log"][:50]}
+            if machining:
+                result["machining"] = report["bom"]["machining"]
+            else:
+                result["machining_summary"] = [
+                    {"part": part["part"], "operations": len(part["operations"])}
+                    for part in report["bom"]["machining"]]
+            if action == "build":
+                result["document"] = runtime.summary(entry, runtime.read(entry))
+            return result
+        return await runtime.run(handle, job)
 
     @beta_async_tool(name="KetchupInspect")
     async def inspect_model(handle: str, action: str = "summary", kind: str = "occurrences",
@@ -511,4 +579,4 @@ def register_tools() -> list:
             return doc.evaluate(timeout_ms=timeout_ms) if action == "evaluate" else doc.validators.list()
         return await runtime.run(handle, job)
 
-    return [discover, session, inspect_model, edit, batch, save, verify]
+    return [discover, session, program, inspect_model, edit, batch, save, verify]
