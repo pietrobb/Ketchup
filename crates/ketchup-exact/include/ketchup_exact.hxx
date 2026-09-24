@@ -108,8 +108,6 @@ std::unique_ptr<NativeOperationResult> extrude_planar_region_native(
     rust::Slice<const double> segments,
     rust::Slice<const std::uint32_t> loop_segment_counts,
     double height) noexcept;
-std::unique_ptr<NativeOperationResult> revolve_profile_native(
-    rust::Slice<const double> points) noexcept;
 std::unique_ptr<NativeOperationResult> revolve_general_profile_native(
     rust::Slice<const double> segments,
     double axis_start_x, double axis_start_y,
@@ -126,11 +124,6 @@ std::unique_ptr<NativeOperationResult> shell_box_native(
 std::unique_ptr<NativeOperationResult> finish_shell_box_native(
     double width, double depth, double height, double thickness,
     double amount, bool fillet) noexcept;
-std::unique_ptr<NativeOperationResult> shell_revolve_profile_native(
-    rust::Slice<const double> points, double thickness) noexcept;
-std::unique_ptr<NativeOperationResult> finish_shell_revolve_profile_native(
-    rust::Slice<const double> points, double thickness, double amount,
-    bool fillet) noexcept;
 std::unique_ptr<NativeOperationResult> shell_body_native(
     const NativeOperationResult& body, rust::Slice<const std::uint32_t> face_ordinals,
     double thickness, std::uint8_t direction) noexcept;

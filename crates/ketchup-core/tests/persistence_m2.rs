@@ -1,10 +1,9 @@
 use ketchup_core::document::{
-    BOTTLE_SHELL_OPENING_FACE_ROLE, BottleEdgeFinishKind, CanonicalCommand, CanonicalError,
-    CanonicalOverride, ClassificationCategoryId, ClassificationDimensionId, CommandBatch,
-    DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind, NodeId, OccurrenceId,
-    OverrideParameterSpec, PortSpec, ProposalContext, ProposalPrincipal, RevisionHistoryError,
-    RevisionOrigin, RuleOutput, SlotPath, SlotResolution, SlotSegment, StableEdgeRole,
-    StableFaceRole, Transform,
+    CanonicalCommand, CanonicalError, CanonicalOverride, ClassificationCategoryId,
+    ClassificationDimensionId, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
+    FeatureKind, NodeId, OccurrenceId, OverrideParameterSpec, PortSpec, ProposalContext,
+    ProposalPrincipal, RevisionHistoryError, RevisionOrigin, RuleOutput, SlotPath, SlotResolution,
+    SlotSegment, StableFaceRole, Transform,
 };
 use ketchup_core::persistence::LegacyFeatureKind;
 use ketchup_core::persistence::{self, LoadDisposition, PersistenceError};
@@ -135,9 +134,7 @@ fn graph_document() -> DocumentStore {
 
 #[derive(Clone, Copy, Debug)]
 enum LegacyAuthority {
-    BottleProfileControl,
     RoleStringShell,
-    BottleEdgeFinish,
 }
 
 fn legacy_authority_document(authority: LegacyAuthority) -> DocumentStore {
@@ -168,26 +165,7 @@ fn legacy_authority_document(authority: LegacyAuthority) -> DocumentStore {
         },
     ];
     match authority {
-        LegacyAuthority::BottleProfileControl => commands.extend([
-            CanonicalCommand::CreateFeature {
-                id: LEGACY,
-                definition_id: DEFINITION,
-                name: "Legacy authority".to_owned(),
-                kind: FeatureKind::BottleProfileControl {
-                    profile: PROFILE,
-                    body_radius: Dimension::new("10", 10.0).unwrap(),
-                    body_height: Dimension::new("20", 20.0).unwrap(),
-                    shoulder_rise: Dimension::new("5", 5.0).unwrap(),
-                },
-            },
-            CanonicalCommand::CreateFeature {
-                id: REVOLVE,
-                definition_id: DEFINITION,
-                name: "Revolve".to_owned(),
-                kind: FeatureKind::full_revolve(LEGACY),
-            },
-        ]),
-        LegacyAuthority::RoleStringShell | LegacyAuthority::BottleEdgeFinish => {
+        LegacyAuthority::RoleStringShell => {
             commands.push(CanonicalCommand::CreateFeature {
                 id: REVOLVE,
                 definition_id: DEFINITION,
@@ -197,18 +175,9 @@ fn legacy_authority_document(authority: LegacyAuthority) -> DocumentStore {
             let kind = match authority {
                 LegacyAuthority::RoleStringShell => FeatureKind::Shell {
                     target: REVOLVE,
-                    removed_faces: vec![
-                        StableFaceRole::new(BOTTLE_SHELL_OPENING_FACE_ROLE).unwrap(),
-                    ],
+                    removed_faces: vec![StableFaceRole::new("revolve.mouth").unwrap()],
                     thickness: Dimension::new("2", 2.0).unwrap(),
                 },
-                LegacyAuthority::BottleEdgeFinish => FeatureKind::BottleEdgeFinish {
-                    target: REVOLVE,
-                    edges: vec![StableEdgeRole::new("revolve.shoulder").unwrap()],
-                    kind: BottleEdgeFinishKind::Fillet,
-                    amount: Dimension::new("1", 1.0).unwrap(),
-                },
-                LegacyAuthority::BottleProfileControl => unreachable!(),
             };
             commands.push(CanonicalCommand::CreateFeature {
                 id: LEGACY,
@@ -228,20 +197,10 @@ fn legacy_authority_document(authority: LegacyAuthority) -> DocumentStore {
 
 #[test]
 fn default_load_rejects_legacy_named_feature_authority_with_typed_migration_error() {
-    for (authority, kind) in [
-        (
-            LegacyAuthority::BottleProfileControl,
-            LegacyFeatureKind::BottleProfileControl,
-        ),
-        (
-            LegacyAuthority::RoleStringShell,
-            LegacyFeatureKind::RoleStringShell,
-        ),
-        (
-            LegacyAuthority::BottleEdgeFinish,
-            LegacyFeatureKind::BottleEdgeFinish,
-        ),
-    ] {
+    for (authority, kind) in [(
+        LegacyAuthority::RoleStringShell,
+        LegacyFeatureKind::RoleStringShell,
+    )] {
         let bytes = persistence::save(&legacy_authority_document(authority).current());
         assert_eq!(
             load_error(&bytes),
@@ -259,9 +218,7 @@ fn migration_required_primary_is_not_replaced_by_a_recovery_document() {
     let path = directory.path().join("legacy.ketchup");
     std::fs::write(
         &path,
-        persistence::save(
-            &legacy_authority_document(LegacyAuthority::BottleProfileControl).current(),
-        ),
+        persistence::save(&legacy_authority_document(LegacyAuthority::RoleStringShell).current()),
     )
     .unwrap();
     std::fs::write(
@@ -275,7 +232,7 @@ fn migration_required_primary_is_not_replaced_by_a_recovery_document() {
         Err(persistence::FilePersistenceError::Format(
             PersistenceError::LegacyFeatureRequiresMigration {
                 feature_id: FeatureId(20),
-                kind: LegacyFeatureKind::BottleProfileControl,
+                kind: LegacyFeatureKind::RoleStringShell,
             }
         ))
     ));

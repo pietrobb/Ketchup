@@ -25,8 +25,7 @@ use crate::cam::{
     CamUnits, CamWorkOffset,
 };
 use crate::document::{
-    BOTTLE_SHELL_OPENING_FACE_ROLE, BOTTLE_SHOULDER_EDGE_ROLE, Body, BodyId, BodyKind,
-    BooleanOperation, BottleEdgeFinishKind, CanonicalCommand, CanonicalError, ChamferEdgeSide,
+    Body, BodyId, BodyKind, BooleanOperation, CanonicalCommand, CanonicalError, ChamferEdgeSide,
     ChamferMode, ClassificationCategory, ClassificationCategoryId, ClassificationDimension,
     ClassificationDimensionId, Collection, CollectionId, CommandBatch, Definition, DefinitionId,
     Dimension, DimensionDisplayUnit, DimensionPresentation, DocumentStore, EdgeFinishKind,
@@ -39,8 +38,8 @@ use crate::document::{
     Occurrence, OccurrenceId, ParameterPath, ParameterValueType, PersistentDimension,
     PersistentDimensionId, PersistentDimensionTarget, ProductModel, ProfileSegment,
     ProposalPrincipal, Revision, RevisionOrigin, ShellDirection, Snapshot, SpatialPathSegment,
-    StableEdgeRole, StableFaceRole, SurfaceBodySpec, Tag, TagId, Transform, UnitSystem,
-    WeldmentJointPolicy, WeldmentJointPrimary, WeldmentJointSpec, WeldmentMemberSpec,
+    StableFaceRole, SurfaceBodySpec, Tag, TagId, Transform, UnitSystem, WeldmentJointPolicy,
+    WeldmentJointPrimary, WeldmentJointSpec, WeldmentMemberSpec,
 };
 use crate::drawing::{
     DrawingAngularDimension, DrawingAnnotations, DrawingBomBalloon, DrawingBomBalloonId,
@@ -184,7 +183,7 @@ const PROFILE_CONSTRAINT_SCHEMA: u16 = 12;
 const PARAMETRIC_PROVENANCE_SCHEMA: u16 = 11;
 const PARAMETRIC_BINDING_SCHEMA: u16 = 10;
 const BOOLEAN_SCHEMA: u16 = 9;
-const BOTTLE_FINISH_SCHEMA: u16 = 8;
+const EDGE_FINISH_SCHEMA: u16 = 8;
 const SHELL_SCHEMA: u16 = 7;
 const REVOLVE_SCHEMA: u16 = 6;
 const THROUGH_CUT_SCHEMA: u16 = 5;
@@ -201,7 +200,6 @@ struct ProductSchemaCapabilities {
     through_cut: bool,
     revolve: bool,
     shell: bool,
-    bottle_finish: bool,
     boolean: bool,
     parametric_bindings: bool,
     parametric_provenance: bool,
@@ -294,7 +292,6 @@ impl ProductSchemaCapabilities {
         through_cut: false,
         revolve: false,
         shell: false,
-        bottle_finish: false,
         boolean: false,
         parametric_bindings: false,
         parametric_provenance: false,
@@ -387,7 +384,6 @@ impl ProductSchemaCapabilities {
             through_cut: schema >= THROUGH_CUT_SCHEMA,
             revolve: schema >= REVOLVE_SCHEMA,
             shell: schema >= SHELL_SCHEMA,
-            bottle_finish: schema >= BOTTLE_FINISH_SCHEMA,
             boolean: schema >= BOOLEAN_SCHEMA,
             parametric_bindings: schema >= PARAMETRIC_BINDING_SCHEMA,
             parametric_provenance: schema >= PARAMETRIC_PROVENANCE_SCHEMA,
@@ -618,9 +614,7 @@ pub enum LoadDisposition {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LegacyFeatureKind {
-    BottleProfileControl,
     RoleStringShell,
-    BottleEdgeFinish,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2475,19 +2469,6 @@ fn write_features(
                 }
                 push_u64(bytes, angle_degrees.to_bits());
             }
-            FeatureKind::BottleProfileControl {
-                profile,
-                body_radius,
-                body_height,
-                shoulder_rise,
-            } => {
-                push_u8(bytes, 6);
-                push_u64(bytes, profile.0);
-                for dimension in [body_radius, body_height, shoulder_rise] {
-                    push_string(bytes, dimension.source_token());
-                    push_u64(bytes, dimension.millimetres().to_bits());
-                }
-            }
             FeatureKind::Shell {
                 target,
                 removed_faces,
@@ -2501,28 +2482,6 @@ fn write_features(
                 }
                 push_string(bytes, thickness.source_token());
                 push_u64(bytes, thickness.millimetres().to_bits());
-            }
-            FeatureKind::BottleEdgeFinish {
-                target,
-                edges,
-                kind,
-                amount,
-            } => {
-                push_u8(bytes, 7);
-                push_u64(bytes, target.0);
-                push_u32(bytes, edges.len() as u32);
-                for role in edges {
-                    push_string(bytes, role.as_str());
-                }
-                push_u8(
-                    bytes,
-                    match kind {
-                        BottleEdgeFinishKind::Fillet => 1,
-                        BottleEdgeFinishKind::Chamfer => 2,
-                    },
-                );
-                push_string(bytes, amount.source_token());
-                push_u64(bytes, amount.millimetres().to_bits());
             }
             FeatureKind::TopologyShell {
                 target,
@@ -4306,7 +4265,7 @@ fn load_document(
             | THROUGH_CUT_SCHEMA
             | REVOLVE_SCHEMA
             | SHELL_SCHEMA
-            | BOTTLE_FINISH_SCHEMA
+            | EDGE_FINISH_SCHEMA
             | BOOLEAN_SCHEMA
             | PARAMETRIC_BINDING_SCHEMA
             | PARAMETRIC_PROVENANCE_SCHEMA
@@ -4527,12 +4486,6 @@ fn load_document(
             )
             .is_ok_and(|request| {
                 reference.matches_request(&request) || reference.matches_legacy_request(&request)
-            }) || crate::exact_revolve::ExactRevolveRequest::from_snapshot(
-                &loaded_snapshot,
-                reference.definition_id,
-            )
-            .is_ok_and(|request| {
-                crate::exact_revolve::reference_matches_revolve_request(reference, &request)
             }) || crate::exact_brep_graph::ExactBRepGraph::from_snapshot(
                 &loaded_snapshot,
                 reference.definition_id,
@@ -4578,9 +4531,7 @@ fn load_document(
 fn reject_legacy_feature_authority(snapshot: &Snapshot) -> Result<(), PersistenceError> {
     for feature in snapshot.features() {
         let kind = match feature.kind() {
-            FeatureKind::BottleProfileControl { .. } => LegacyFeatureKind::BottleProfileControl,
             FeatureKind::Shell { .. } => LegacyFeatureKind::RoleStringShell,
-            FeatureKind::BottleEdgeFinish { .. } => LegacyFeatureKind::BottleEdgeFinish,
             _ => continue,
         };
         return Err(PersistenceError::LegacyFeatureRequiresMigration {
@@ -6884,49 +6835,13 @@ fn read_product(
                     }
                     roles
                 } else {
-                    vec![
-                        StableFaceRole::new(BOTTLE_SHELL_OPENING_FACE_ROLE)
-                            .expect("built-in bottle face role is valid"),
-                    ]
+                    // Pre-role shell features are no longer supported.
+                    return Err(PersistenceError::InvalidStableSubshapeRole);
                 };
                 FeatureKind::Shell {
                     target,
                     removed_faces,
                     thickness: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
-                }
-            }
-            6 if capabilities.bottle_finish => FeatureKind::BottleProfileControl {
-                profile: FeatureId(reader.u64()?),
-                body_radius: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
-                body_height: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
-                shoulder_rise: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
-            },
-            7 if capabilities.bottle_finish => {
-                let target = FeatureId(reader.u64()?);
-                let edges = if capabilities.stable_subshape_roles {
-                    let mut roles = Vec::new();
-                    for _ in 0..reader.count_with_limit(64)? {
-                        roles.push(
-                            StableEdgeRole::new(reader.string()?)
-                                .map_err(|_| PersistenceError::InvalidStableSubshapeRole)?,
-                        );
-                    }
-                    roles
-                } else {
-                    vec![
-                        StableEdgeRole::new(BOTTLE_SHOULDER_EDGE_ROLE)
-                            .expect("built-in bottle edge role is valid"),
-                    ]
-                };
-                FeatureKind::BottleEdgeFinish {
-                    target,
-                    edges,
-                    kind: match reader.u8()? {
-                        1 => BottleEdgeFinishKind::Fillet,
-                        2 => BottleEdgeFinishKind::Chamfer,
-                        value => return Err(PersistenceError::InvalidFeatureKind(value)),
-                    },
-                    amount: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
                 }
             }
             21 if capabilities.topological_feature_references => {
@@ -8222,9 +8137,7 @@ impl fmt::Display for PersistenceError {
             ),
             Self::LegacyFeatureRequiresMigration { feature_id, kind } => {
                 let kind = match kind {
-                    LegacyFeatureKind::BottleProfileControl => "BottleProfileControl",
                     LegacyFeatureKind::RoleStringShell => "role-string Shell",
-                    LegacyFeatureKind::BottleEdgeFinish => "BottleEdgeFinish",
                 };
                 write!(
                     formatter,

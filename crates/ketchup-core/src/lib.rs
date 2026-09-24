@@ -7,11 +7,6 @@ pub mod assembly_recipe;
 pub mod assistant_sidecar;
 pub mod blender_export;
 pub mod cam;
-pub mod exact_revolve;
-
-pub mod bottle_m6 {
-    pub use crate::exact_revolve::*;
-}
 pub mod document;
 pub mod drawing;
 pub mod drawing_export;

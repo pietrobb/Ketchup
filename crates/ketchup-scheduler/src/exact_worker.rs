@@ -4,8 +4,8 @@ use crate::{
     CamSimulationWireCollision, CamSimulationWireEvidence, CamSimulationWireRequest,
     EXACT_VOLUME_MESH_WIRE_SCHEMA_V1, ExactVolumeMeshWireOptions,
     MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCE_BYTES, MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES,
-    StepAssemblyManifest, StepFeatureExportSpec, StepProfileSegment, StepRevolveExportSpec,
-    StepXdeWorkerEvidence, StepXdeWorkerNode, StepXdeWorkerPart, WorkerExactBRepGraphEdgeEvidence,
+    StepAssemblyManifest, StepFeatureExportSpec, StepProfileSegment, StepXdeWorkerEvidence,
+    StepXdeWorkerNode, StepXdeWorkerPart, WorkerExactBRepGraphEdgeEvidence,
     WorkerExactBRepGraphFaceEvidence, WorkerExactVolumeBoundaryTriangle, WorkerExactVolumeMesh,
 };
 use ketchup_core::cam::CAM_SIMULATION_SCHEMA_V1;
@@ -47,12 +47,11 @@ use ketchup_exact::{
     capture_box_shell_references, capture_circle_extrusion_references,
     capture_circular_pocket_references, capture_circular_split_references,
     capture_circular_through_cut_references, capture_contained_polygon_intersection_references,
-    capture_contained_polygon_union_references, capture_general_revolve_references,
-    capture_guaranteed_references, capture_mixed_profile_extrusion_references,
-    capture_planar_offset_reference, capture_polygon_through_cut_references,
-    capture_profile_split_references, capture_rectangular_intersection_references,
-    capture_rectangular_split_references, capture_rectangular_sweep_references,
-    capture_rectangular_union_references, capture_revolve_references, capture_shell_references,
+    capture_contained_polygon_union_references, capture_guaranteed_references,
+    capture_mixed_profile_extrusion_references, capture_planar_offset_reference,
+    capture_polygon_through_cut_references, capture_profile_split_references,
+    capture_rectangular_intersection_references, capture_rectangular_split_references,
+    capture_rectangular_sweep_references, capture_rectangular_union_references,
     capture_spline_loft_references, resolve_subshape_reference,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -124,13 +123,8 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
         (Some("CAPS"), Some("P3_POLYGON_CUT_V1"), None) => {
             Some("CAPS P3_POLYGON_CUT_V1".to_owned())
         }
-        (Some("CAPS"), Some("M6_REVOLVE_V1"), None) => Some("CAPS M6_REVOLVE_V1".to_owned()),
-        (Some("CAPS"), Some("P4_REVOLVE_V1"), None) => Some("CAPS P4_REVOLVE_V1".to_owned()),
-        (Some("CAPS"), Some("M6_SHELL_V1"), None) => Some("CAPS M6_SHELL_V1".to_owned()),
-        (Some("CAPS"), Some("M6_FINISH_V1"), None) => Some("CAPS M6_FINISH_V1".to_owned()),
         (Some("CAPS"), Some("P5_SHELL_V1"), None) => Some("CAPS P5_SHELL_V1".to_owned()),
         (Some("CAPS"), Some("P5_FINISH_V1"), None) => Some("CAPS P5_FINISH_V1".to_owned()),
-        (Some("CAPS"), Some("M14_STEP_V1"), None) => Some("CAPS M14_STEP_V1".to_owned()),
         (Some("CAPS"), Some("M21_STEP_MODEL_V1"), None) => {
             Some("CAPS M21_STEP_MODEL_V1".to_owned())
         }
@@ -316,15 +310,6 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
             };
             Some(exact_brep_graph_response(backend, &graph, &remaining))
         }
-        (Some("EXPORT_REVOLVE_STEP_M21_V1"), Some(document_id), Some(producer_feature_id)) => {
-            let remaining = fields.collect::<Vec<_>>();
-            Some(m21_revolve_step_export_response(
-                backend,
-                document_id,
-                producer_feature_id,
-                &remaining,
-            ))
-        }
         (Some("EXPORT_FEATURE_STEP_M21_V1"), Some(document_id), Some(producer_feature_id)) => {
             let remaining = fields.collect::<Vec<_>>();
             Some(m21_box_step_export_response(
@@ -456,55 +441,6 @@ fn handle_request(backend: &ExactBackend, request: &str) -> Option<String> {
                 assembly_digest,
                 output_path,
                 &remaining,
-            ))
-        }
-        (Some("EXPORT_STEP_M14_V1"), Some(document_id), Some(producer_feature_id)) => {
-            let remaining = fields.collect::<Vec<_>>();
-            Some(m14_step_export_response(
-                backend,
-                document_id,
-                producer_feature_id,
-                &remaining,
-            ))
-        }
-        (Some("REVOLVE_M6_V1"), Some(document_id), Some(producer_feature_id)) => {
-            let remaining = fields.collect::<Vec<_>>();
-            Some(m6_revolve_response(
-                backend,
-                document_id,
-                producer_feature_id,
-                &remaining,
-                None,
-            ))
-        }
-        (Some("REVOLVE_P4_V1"), Some(document_id), Some(producer_feature_id)) => {
-            let remaining = fields.collect::<Vec<_>>();
-            Some(p4_revolve_response(
-                backend,
-                document_id,
-                producer_feature_id,
-                &remaining,
-            ))
-        }
-        (Some("SHELL_M6_V1"), Some(document_id), Some(producer_feature_id)) => {
-            let remaining = fields.collect::<Vec<_>>();
-            Some(m6_revolve_response(
-                backend,
-                document_id,
-                producer_feature_id,
-                &remaining,
-                Some("shell"),
-            ))
-        }
-        (Some("FINISH_M6_V1"), Some(document_id), Some(producer_feature_id)) => {
-            let remaining = fields.collect::<Vec<_>>();
-            let finish = remaining.get(2).copied();
-            Some(m6_revolve_response(
-                backend,
-                document_id,
-                producer_feature_id,
-                &remaining,
-                finish,
             ))
         }
         (Some("SHELL_BOX_P5_V1"), Some(width_bits), Some(depth_bits)) => {
@@ -6522,388 +6458,6 @@ fn m3_pocket_response(
             )
         }
         Err(error) => format!("ERR {}", error.code.as_str()),
-    }
-}
-
-fn p4_revolve_response(
-    backend: &ExactBackend,
-    document_id: &str,
-    producer_feature_id: &str,
-    fields: &[&str],
-) -> String {
-    if fields.len() < 9
-        || document_id.parse::<u64>().is_err()
-        || producer_feature_id.parse::<u64>().is_err()
-        || !is_canonical_digest(fields[0])
-    {
-        return "ERR invalid_request".to_owned();
-    }
-    let parse_bits = |value: &str| u64::from_str_radix(value, 16).map(f64::from_bits);
-    let Some(axis_angle) = fields[1..=5]
-        .iter()
-        .map(|value| parse_bits(value))
-        .collect::<Result<Vec<_>, _>>()
-        .ok()
-        .and_then(|values| <[f64; 5]>::try_from(values).ok())
-    else {
-        return "ERR invalid_parameter".to_owned();
-    };
-    let Ok(segment_count) = fields[6].parse::<usize>() else {
-        return "ERR invalid_parameter".to_owned();
-    };
-    if !(2..=64).contains(&segment_count) || fields.len() != segment_count + 7 {
-        return "ERR invalid_request".to_owned();
-    }
-    let Some(segments) = fields[7..]
-        .iter()
-        .map(|token| parse_profile_segment(token))
-        .collect::<Option<Vec<_>>>()
-    else {
-        return "ERR invalid_parameter".to_owned();
-    };
-    let angle_degrees = axis_angle[4];
-    let output = match backend.revolve_general_profile(
-        &segments,
-        [axis_angle[0], axis_angle[1]],
-        [axis_angle[2], axis_angle[3]],
-        angle_degrees,
-    ) {
-        Ok(output) => output,
-        Err(error) => return format!("ERR {}", error.code.as_str()),
-    };
-    let references = match capture_general_revolve_references(
-        &output,
-        document_id,
-        producer_feature_id,
-        angle_degrees < 360.0,
-    ) {
-        Ok(references) => references,
-        Err(error) => return format!("ERR {}", error.code.as_str()),
-    };
-    let mut evidence = Vec::with_capacity(references.len());
-    for reference in references {
-        if reference.document_id != document_id
-            || reference.producer_feature_id != producer_feature_id
-            || reference.expected_type != "face"
-            || reference.stability_class != StabilityClass::Guaranteed
-            || reference.backend_fingerprint != output.backend_fingerprint
-            || reference.lineage_digest.is_empty()
-            || reference.corroborating_geometry_fingerprint.is_empty()
-        {
-            return "ERR incomplete_history".to_owned();
-        }
-        let ReferenceResolution::Resolved {
-            face_ordinal,
-            migrated_backend: false,
-        } = resolve_subshape_reference(&reference, &output)
-        else {
-            return "ERR incomplete_history".to_owned();
-        };
-        evidence.push((face_ordinal, reference));
-    }
-    let topology = &output.body.topology;
-    let mut response = format!(
-        "OK_P4_REVOLVE_V1 0 {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {} {} {} {} {}",
-        output.body.result_fingerprint,
-        topology.volume_mm3.to_bits(),
-        topology.bounds_mm.min.x.to_bits(),
-        topology.bounds_mm.min.y.to_bits(),
-        topology.bounds_mm.min.z.to_bits(),
-        topology.bounds_mm.max.x.to_bits(),
-        topology.bounds_mm.max.y.to_bits(),
-        topology.bounds_mm.max.z.to_bits(),
-        topology.vertex_count,
-        topology.edge_count,
-        topology.face_count,
-        topology.shell_count,
-        topology.solid_count,
-        fields[0],
-        output.input_digest,
-        output.backend_fingerprint,
-        output.tolerance_report.profile,
-        evidence.len(),
-    );
-    for (ordinal, reference) in evidence {
-        response.push_str(&format!(
-            " {ordinal} {} {}",
-            reference.corroborating_geometry_fingerprint, reference.lineage_digest,
-        ));
-    }
-    response
-}
-
-fn m6_revolve_response(
-    backend: &ExactBackend,
-    document_id: &str,
-    producer_feature_id: &str,
-    fields: &[&str],
-    operation: Option<&str>,
-) -> String {
-    let finish = match operation {
-        Some("fillet") => Some(EdgeFinish::Fillet),
-        Some("chamfer") => Some(EdgeFinish::Chamfer),
-        _ => None,
-    };
-    let shell = operation.is_some();
-    let expected_fields = if finish.is_some() {
-        16
-    } else if shell {
-        14
-    } else {
-        13
-    };
-    if document_id.parse::<u64>().is_err()
-        || producer_feature_id.parse::<u64>().is_err()
-        || fields.len() != expected_fields
-        || !is_canonical_digest(fields[0])
-    {
-        return "ERR invalid_request".to_owned();
-    }
-    let parse_bits = |value: &str| u64::from_str_radix(value, 16).map(f64::from_bits);
-    let thickness_mm = shell
-        .then(|| parse_bits(fields[1]))
-        .transpose()
-        .ok()
-        .flatten();
-    let amount_mm = finish
-        .map(|_| parse_bits(fields[3]))
-        .transpose()
-        .ok()
-        .flatten();
-    if shell && thickness_mm.is_none() || finish.is_some() && amount_mm.is_none() {
-        return "ERR invalid_parameter".to_owned();
-    }
-    let point_offset = if finish.is_some() {
-        4
-    } else if shell {
-        2
-    } else {
-        1
-    };
-    let mut points = Vec::with_capacity(6);
-    for pair in fields[point_offset..].chunks_exact(2) {
-        let (Ok(radius), Ok(z)) = (parse_bits(pair[0]), parse_bits(pair[1])) else {
-            return "ERR invalid_parameter".to_owned();
-        };
-        points.push([radius, z]);
-    }
-    let output = match (thickness_mm, finish, amount_mm) {
-        (Some(thickness), Some(finish), Some(amount)) => {
-            backend.finish_shell_revolve_profile(&points, thickness, finish, amount)
-        }
-        (Some(thickness), None, None) => backend.shell_revolve_profile(&points, thickness),
-        (None, None, None) => backend.revolve_profile(&points),
-        _ => return "ERR invalid_request".to_owned(),
-    };
-    let output = match output {
-        Ok(output) => output,
-        Err(error) => return format!("ERR {}", error.code.as_str()),
-    };
-    let references = if shell {
-        capture_shell_references(&output, document_id, producer_feature_id)
-    } else {
-        capture_revolve_references(&output, document_id, producer_feature_id)
-    };
-    let references = match references {
-        Ok(references) => references,
-        Err(error) => return format!("ERR {}", error.code.as_str()),
-    };
-    let roles = if shell {
-        vec![
-            ("shell.outer.bottom", "revolve.face.bottom"),
-            ("shell.outer.body", "revolve.face.body"),
-            ("shell.outer.shoulder", "revolve.face.shoulder"),
-            ("shell.outer.neck", "revolve.face.neck"),
-            ("shell.rim", "revolve.face.mouth"),
-            ("shell.inner.bottom", "shell.offset.bottom"),
-            ("shell.inner.body", "shell.offset.body"),
-            ("shell.inner.shoulder", "shell.offset.shoulder"),
-            ("shell.inner.neck", "shell.offset.neck"),
-        ]
-    } else {
-        vec![
-            ("revolve.bottom", "profile.edge.0"),
-            ("revolve.body", "profile.edge.1"),
-            ("revolve.shoulder", "profile.edge.2"),
-            ("revolve.neck", "profile.edge.3"),
-            ("revolve.mouth", "profile.edge.4"),
-        ]
-    };
-    let mut evidence = Vec::with_capacity(roles.len());
-    for (role, source) in roles {
-        let matching = references
-            .iter()
-            .filter(|reference| {
-                reference.semantic_role == role && reference.source_element_id == source
-            })
-            .collect::<Vec<_>>();
-        let [reference] = matching.as_slice() else {
-            return "ERR incomplete_history".to_owned();
-        };
-        if reference.document_id != document_id
-            || reference.producer_feature_id != producer_feature_id
-            || reference.expected_type != "face"
-            || reference.stability_class != StabilityClass::Guaranteed
-            || reference.backend_fingerprint != output.backend_fingerprint
-            || reference.lineage_digest.is_empty()
-            || reference.corroborating_geometry_fingerprint.is_empty()
-        {
-            return "ERR incomplete_history".to_owned();
-        }
-        let ReferenceResolution::Resolved {
-            face_ordinal,
-            migrated_backend: false,
-        } = resolve_subshape_reference(reference, &output)
-        else {
-            return "ERR incomplete_history".to_owned();
-        };
-        evidence.push((face_ordinal, *reference));
-    }
-    let topology = &output.body.topology;
-    let response_kind = if finish.is_some() {
-        "OK_M6_FINISH_V1"
-    } else if shell {
-        "OK_M6_SHELL_V1"
-    } else {
-        "OK_M6_REVOLVE_V1"
-    };
-    let mut response = format!(
-        "{response_kind} 0 {} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {} {} {} {} {} {} {} {} {}",
-        output.body.result_fingerprint,
-        topology.volume_mm3.to_bits(),
-        topology.bounds_mm.min.x.to_bits(),
-        topology.bounds_mm.min.y.to_bits(),
-        topology.bounds_mm.min.z.to_bits(),
-        topology.bounds_mm.max.x.to_bits(),
-        topology.bounds_mm.max.y.to_bits(),
-        topology.bounds_mm.max.z.to_bits(),
-        topology.vertex_count,
-        topology.edge_count,
-        topology.face_count,
-        topology.shell_count,
-        topology.solid_count,
-        fields[0],
-        output.input_digest,
-        output.backend_fingerprint,
-        output.tolerance_report.profile,
-    );
-    for (ordinal, reference) in evidence {
-        response.push_str(&format!(
-            " {ordinal} {} {}",
-            reference.corroborating_geometry_fingerprint, reference.lineage_digest,
-        ));
-    }
-    response
-}
-
-fn m14_step_export_response(
-    backend: &ExactBackend,
-    document_id: &str,
-    producer_feature_id: &str,
-    fields: &[&str],
-) -> String {
-    if document_id.parse::<u64>().is_err()
-        || producer_feature_id.parse::<u64>().is_err()
-        || fields.len() != 18
-        || !is_canonical_digest(fields[0])
-        || fields[1].len() != 24
-        || !fields[1].starts_with("fnv1a64:")
-        || !fields[1][8..].bytes().all(|byte| byte.is_ascii_hexdigit())
-    {
-        return "ERR invalid_request".to_owned();
-    }
-    let parse_bits = |value: &str| u64::from_str_radix(value, 16).map(f64::from_bits);
-    let mut points = Vec::with_capacity(6);
-    for pair in fields[6..].chunks_exact(2) {
-        let (Ok(radius), Ok(z)) = (parse_bits(pair[0]), parse_bits(pair[1])) else {
-            return "ERR invalid_parameter".to_owned();
-        };
-        points.push([radius, z]);
-    }
-    let output = match fields[2] {
-        "revolve" if fields[3] == "-" && fields[4] == "-" => backend.revolve_profile(&points),
-        "shell" if fields[4] == "-" => {
-            let Ok(thickness) = parse_bits(fields[3]) else {
-                return "ERR invalid_parameter".to_owned();
-            };
-            backend.shell_revolve_profile(&points, thickness)
-        }
-        "fillet" | "chamfer" => {
-            let (Ok(thickness), Ok(amount)) = (parse_bits(fields[3]), parse_bits(fields[4])) else {
-                return "ERR invalid_parameter".to_owned();
-            };
-            backend.finish_shell_revolve_profile(
-                &points,
-                thickness,
-                if fields[2] == "fillet" {
-                    EdgeFinish::Fillet
-                } else {
-                    EdgeFinish::Chamfer
-                },
-                amount,
-            )
-        }
-        _ => return "ERR invalid_request".to_owned(),
-    };
-    let output = match output {
-        Ok(output) => output,
-        Err(error) => return format!("ERR {}", error.code.as_str()),
-    };
-    if output.body.result_fingerprint != fields[1] {
-        return "ERR invalid_shape".to_owned();
-    }
-    let Some(path) = decode_hex_utf8(fields[5]) else {
-        return "ERR invalid_request".to_owned();
-    };
-    match backend.export_step(&output.body, &path) {
-        Ok(()) => format!("OK_M14_STEP_V1 {} {}", fields[0], fields[1]),
-        Err(error) => format!("ERR {}", error.code.as_str()),
-    }
-}
-
-fn m21_revolve_step_export_response(
-    backend: &ExactBackend,
-    document_id: &str,
-    producer_feature_id: &str,
-    fields: &[&str],
-) -> String {
-    if document_id.parse::<u64>().is_err()
-        || producer_feature_id.parse::<u64>().is_err()
-        || fields.len() != 4
-        || !is_canonical_digest(fields[0])
-        || !is_result_fingerprint(fields[1])
-    {
-        return "ERR invalid_request".to_owned();
-    }
-    let Some(path) = decode_hex_utf8(fields[2]) else {
-        return "ERR invalid_request".to_owned();
-    };
-    let Some(encoded) = decode_hex_utf8(fields[3]) else {
-        return "ERR invalid_request".to_owned();
-    };
-    let Ok(specification) = serde_json::from_str::<StepRevolveExportSpec>(&encoded) else {
-        return "ERR invalid_request".to_owned();
-    };
-    let segments = specification
-        .segments
-        .iter()
-        .map(step_profile_segment)
-        .collect::<Vec<_>>();
-    let output = match backend.revolve_general_profile(
-        &segments,
-        specification.axis_start_bits.map(f64::from_bits),
-        specification.axis_end_bits.map(f64::from_bits),
-        f64::from_bits(specification.angle_degrees_bits),
-    ) {
-        Ok(output) => output,
-        Err(error) => return geometry_error_response(&error),
-    };
-    if output.body.result_fingerprint != fields[1] {
-        return "ERR invalid_shape".to_owned();
-    }
-    match backend.export_step(&output.body, &path) {
-        Ok(()) => format!("OK_M21_REVOLVE_STEP_V1 {} {}", fields[0], fields[1]),
-        Err(error) => geometry_error_response(&error),
     }
 }
 

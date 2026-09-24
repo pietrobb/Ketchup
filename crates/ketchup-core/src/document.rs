@@ -224,13 +224,6 @@ impl Default for Transform {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BottleControlDimension {
-    BodyRadius,
-    BodyHeight,
-    ShoulderRise,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EdgeFinishKind {
     Fillet,
     Chamfer,
@@ -256,8 +249,6 @@ pub enum ShellDirection {
     Outward,
     Symmetric,
 }
-
-pub type BottleEdgeFinishKind = EdgeFinishKind;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct StableFaceRole(String);
@@ -291,8 +282,6 @@ impl StableEdgeRole {
     }
 }
 
-pub const BOTTLE_SHELL_OPENING_FACE_ROLE: &str = "revolve.mouth";
-pub const BOTTLE_SHOULDER_EDGE_ROLE: &str = "shell.edge.shoulder";
 pub const MAX_PARAMETER_PATH_BYTES: usize = 256;
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -768,12 +757,6 @@ pub enum FeatureKind {
     },
     Pad(PadSpec),
     SketchPocket(PocketSpec),
-    BottleProfileControl {
-        profile: FeatureId,
-        body_radius: Dimension,
-        body_height: Dimension,
-        shoulder_rise: Dimension,
-    },
     Revolve {
         profile: FeatureId,
         axis_start_mm: [f64; 2],
@@ -784,12 +767,6 @@ pub enum FeatureKind {
         target: FeatureId,
         removed_faces: Vec<StableFaceRole>,
         thickness: Dimension,
-    },
-    BottleEdgeFinish {
-        target: FeatureId,
-        edges: Vec<StableEdgeRole>,
-        kind: EdgeFinishKind,
-        amount: Dimension,
     },
     TopologyShell {
         target: FeatureId,
@@ -1061,11 +1038,6 @@ impl FeatureKind {
             Self::SketchPocket(spec) => {
                 describe_feature_extent(&mut descriptors, "extent", &spec.extent);
             }
-            Self::BottleProfileControl { .. } => {
-                for path in ["body_radius", "body_height", "shoulder_rise"] {
-                    push_parameter_descriptor(&mut descriptors, path, ParameterValueType::Length);
-                }
-            }
             Self::Revolve { .. } => {
                 for point in ["axis_start", "axis_end"] {
                     for axis in ["x", "y"] {
@@ -1080,9 +1052,6 @@ impl FeatureKind {
             }
             Self::Shell { .. } | Self::TopologyShell { .. } | Self::SurfaceThicken { .. } => {
                 push_parameter_descriptor(&mut descriptors, "thickness", ParameterValueType::Length)
-            }
-            Self::BottleEdgeFinish { .. } => {
-                push_parameter_descriptor(&mut descriptors, "amount", ParameterValueType::Length);
             }
             Self::TopologyEdgeFinish {
                 fillet_radius_stations,
@@ -1227,13 +1196,11 @@ impl FeatureKind {
             | Self::MeshBody(_) => BTreeSet::new(),
             Self::RigidTransform { target, .. } => [*target].into_iter().collect(),
             Self::Extrusion { profile, .. }
-            | Self::BottleProfileControl { profile, .. }
             | Self::Revolve { profile, .. }
             | Self::PlanarOffset { profile, .. } => [*profile].into_iter().collect(),
             Self::Pad(spec) => [spec.sketch].into_iter().collect(),
             Self::SketchPocket(spec) => [spec.target, spec.sketch].into_iter().collect(),
             Self::Shell { target, .. }
-            | Self::BottleEdgeFinish { target, .. }
             | Self::TopologyShell { target, .. }
             | Self::TopologyEdgeFinish { target, .. }
             | Self::TopologyFaceOffset { target, .. } => [*target].into_iter().collect(),
@@ -1302,7 +1269,6 @@ impl FeatureKind {
             | Self::SketchPocket(_)
             | Self::Revolve { .. }
             | Self::Shell { .. }
-            | Self::BottleEdgeFinish { .. }
             | Self::TopologyShell { .. }
             | Self::TopologyEdgeFinish { .. }
             | Self::TopologyFaceOffset { .. }
@@ -2645,15 +2611,6 @@ pub enum CanonicalCommand {
         id: FeatureId,
         delta_mm: [f64; 2],
     },
-    SetBottleControlDimension {
-        id: FeatureId,
-        control: BottleControlDimension,
-        dimension: Dimension,
-    },
-    SetBottleEdgeFinishKind {
-        id: FeatureId,
-        kind: EdgeFinishKind,
-    },
     SetProfilePoints {
         id: FeatureId,
         points_mm: Vec<[f64; 2]>,
@@ -3085,8 +3042,6 @@ pub enum ProposalGoal {
     SetEvaluatorExpression(NodeId),
     SetRuleOutputs(NodeId),
     SetFeatureDimension(FeatureId),
-    SetBottleControlDimension(FeatureId, BottleControlDimension),
-    SetBottleEdgeFinishKind(FeatureId),
     SetProfilePoints(FeatureId),
     RenameDefinition(DefinitionId),
     SetOccurrenceVisibility(OccurrenceId),
@@ -3184,7 +3139,6 @@ pub enum ProposalValue {
     },
     Boolean(bool),
     Dimension(Dimension),
-    BottleEdgeFinishKind(EdgeFinishKind),
     RuleOutputs(Vec<RuleOutput>),
     ProfilePoints(Vec<[f64; 2]>),
     Transform(Transform),
@@ -6321,17 +6275,6 @@ impl DocumentStore {
                             thickness: dimension.clone(),
                             direction,
                         },
-                        FeatureKind::BottleEdgeFinish {
-                            target,
-                            ref edges,
-                            kind,
-                            ..
-                        } => FeatureKind::BottleEdgeFinish {
-                            target,
-                            edges: edges.clone(),
-                            kind,
-                            amount: dimension.clone(),
-                        },
                         FeatureKind::TopologyEdgeFinish {
                             target,
                             ref edges,
@@ -6813,81 +6756,6 @@ impl DocumentStore {
                             definition_id: feature.definition_id,
                             name: feature.name.clone(),
                             kind,
-                        }),
-                    );
-                }
-                CanonicalCommand::SetBottleControlDimension {
-                    id,
-                    control,
-                    dimension,
-                } => {
-                    let feature = product
-                        .features
-                        .get(id)
-                        .ok_or(CanonicalError::FeatureNotFound(*id))?;
-                    let FeatureKind::BottleProfileControl {
-                        profile,
-                        body_radius,
-                        body_height,
-                        shoulder_rise,
-                    } = &feature.kind
-                    else {
-                        return Err(CanonicalError::FeatureHasNoDimension(*id));
-                    };
-                    let kind = FeatureKind::BottleProfileControl {
-                        profile: *profile,
-                        body_radius: if *control == BottleControlDimension::BodyRadius {
-                            dimension.clone()
-                        } else {
-                            body_radius.clone()
-                        },
-                        body_height: if *control == BottleControlDimension::BodyHeight {
-                            dimension.clone()
-                        } else {
-                            body_height.clone()
-                        },
-                        shoulder_rise: if *control == BottleControlDimension::ShoulderRise {
-                            dimension.clone()
-                        } else {
-                            shoulder_rise.clone()
-                        },
-                    };
-                    product.features.insert(
-                        *id,
-                        Arc::new(Feature {
-                            id: *id,
-                            definition_id: feature.definition_id,
-                            name: feature.name.clone(),
-                            kind,
-                        }),
-                    );
-                }
-                CanonicalCommand::SetBottleEdgeFinishKind { id, kind } => {
-                    let feature = product
-                        .features
-                        .get(id)
-                        .ok_or(CanonicalError::FeatureNotFound(*id))?;
-                    let FeatureKind::BottleEdgeFinish {
-                        target,
-                        edges,
-                        amount,
-                        ..
-                    } = &feature.kind
-                    else {
-                        return Err(CanonicalError::FeatureHasNoDimension(*id));
-                    };
-                    product.features.insert(
-                        *id,
-                        Arc::new(Feature {
-                            id: *id,
-                            definition_id: feature.definition_id,
-                            name: feature.name.clone(),
-                            kind: FeatureKind::BottleEdgeFinish {
-                                target: *target,
-                                edges: edges.clone(),
-                                kind: *kind,
-                                amount: amount.clone(),
-                            },
                         }),
                     );
                 }
@@ -10323,17 +10191,6 @@ fn feature_kind_parameter_value(kind: &FeatureKind, path: &str) -> Option<f64> {
         FeatureKind::SketchPocket(spec) => {
             extent_parameter_value(&spec.extent, path.strip_prefix("extent.")?)
         }
-        FeatureKind::BottleProfileControl {
-            body_radius,
-            body_height,
-            shoulder_rise,
-            ..
-        } => match path {
-            "body_radius" => Some(body_radius.millimetres()),
-            "body_height" => Some(body_height.millimetres()),
-            "shoulder_rise" => Some(shoulder_rise.millimetres()),
-            _ => None,
-        },
         FeatureKind::Revolve {
             axis_start_mm,
             axis_end_mm,
@@ -10375,9 +10232,6 @@ fn feature_kind_parameter_value(kind: &FeatureKind, path: &str) -> Option<f64> {
             ),
             _ => None,
         },
-        FeatureKind::BottleEdgeFinish { amount, .. } if path == "amount" => {
-            Some(amount.millimetres())
-        }
         FeatureKind::TopologyFaceOffset { distance, .. }
         | FeatureKind::PlanarOffset { distance, .. }
             if path == "distance" =>
@@ -10742,26 +10596,6 @@ fn set_feature_kind_parameter(
         FeatureKind::SketchPocket(spec) => path
             .strip_prefix("extent.")
             .is_some_and(|path| set_extent_parameter(&mut spec.extent, path, dimension)),
-        FeatureKind::BottleProfileControl {
-            body_radius,
-            body_height,
-            shoulder_rise,
-            ..
-        } => match path {
-            "body_radius" => {
-                *body_radius = dimension.clone();
-                true
-            }
-            "body_height" => {
-                *body_height = dimension.clone();
-                true
-            }
-            "shoulder_rise" => {
-                *shoulder_rise = dimension.clone();
-                true
-            }
-            _ => false,
-        },
         FeatureKind::Revolve {
             axis_start_mm,
             axis_end_mm,
@@ -10818,10 +10652,6 @@ fn set_feature_kind_parameter(
                 }),
             _ => false,
         },
-        FeatureKind::BottleEdgeFinish { amount, .. } if path == "amount" => {
-            *amount = dimension.clone();
-            true
-        }
         FeatureKind::TopologyFaceOffset { distance, .. }
         | FeatureKind::PlanarOffset { distance, .. }
             if path == "distance" =>
@@ -11214,7 +11044,6 @@ fn feature_kind_is_solid(kind: &FeatureKind) -> bool {
             | FeatureKind::SketchPocket(_)
             | FeatureKind::Revolve { .. }
             | FeatureKind::Shell { .. }
-            | FeatureKind::BottleEdgeFinish { .. }
             | FeatureKind::TopologyShell { .. }
             | FeatureKind::TopologyEdgeFinish { .. }
             | FeatureKind::TopologyFaceOffset { .. }
@@ -11237,7 +11066,6 @@ fn primary_solid_dependency(kind: &FeatureKind) -> Option<FeatureId> {
     match kind {
         FeatureKind::SketchPocket(spec) => Some(spec.target),
         FeatureKind::Shell { target, .. }
-        | FeatureKind::BottleEdgeFinish { target, .. }
         | FeatureKind::TopologyShell { target, .. }
         | FeatureKind::TopologyEdgeFinish { target, .. }
         | FeatureKind::TopologyFaceOffset { target, .. }
@@ -11898,21 +11726,6 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
             }
             Ok(())
         }
-        FeatureKind::BottleProfileControl {
-            body_radius,
-            body_height,
-            shoulder_rise,
-            ..
-        } => {
-            for dimension in [body_radius, body_height, shoulder_rise] {
-                Dimension::new(dimension.source_token.clone(), dimension.millimetres)
-                    .map(|_| ())?;
-                if dimension.millimetres <= 0.0 {
-                    return Err(CanonicalError::DimensionOutsideEnvelope);
-                }
-            }
-            Ok(())
-        }
         FeatureKind::Pocket { depth, .. } => {
             Dimension::new(depth.source_token.clone(), depth.millimetres).map(|_| ())?;
             if depth.millimetres <= 0.0 {
@@ -11930,16 +11743,6 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
                 return Err(CanonicalError::DimensionOutsideEnvelope);
             }
             if !roles_are_strictly_sorted(removed_faces) {
-                return Err(CanonicalError::SubshapeRolesNotCanonical);
-            }
-            Ok(())
-        }
-        FeatureKind::BottleEdgeFinish { edges, amount, .. } => {
-            Dimension::new(amount.source_token.clone(), amount.millimetres).map(|_| ())?;
-            if amount.millimetres <= 0.0 {
-                return Err(CanonicalError::DimensionOutsideEnvelope);
-            }
-            if !roles_are_strictly_sorted(edges) {
                 return Err(CanonicalError::SubshapeRolesNotCanonical);
             }
             Ok(())
@@ -13440,103 +13243,6 @@ fn segments_intersect(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> boo
         || (cd_b.abs() <= PROFILE_EPSILON_MM && on_segment(c, d, b))
 }
 
-fn is_valid_revolve_profile(points_mm: &[[f64; 2]]) -> bool {
-    is_valid_profile(points_mm)
-        && points_mm.len() >= 4
-        && points_mm
-            .first()
-            .is_some_and(|point| point[0].abs() <= PROFILE_EPSILON_MM)
-        && points_mm
-            .last()
-            .is_some_and(|point| point[0].abs() <= PROFILE_EPSILON_MM)
-        && points_mm[1..points_mm.len() - 1]
-            .iter()
-            .all(|point| point[0] > PROFILE_EPSILON_MM)
-}
-
-fn shell_thickness_is_conservative(points_mm: &[[f64; 2]], thickness_mm: f64) -> bool {
-    is_valid_revolve_profile(points_mm)
-        && thickness_mm.is_finite()
-        && thickness_mm > 0.0
-        && points_mm[1..points_mm.len() - 1]
-            .iter()
-            .map(|point| point[0])
-            .reduce(f64::min)
-            .is_some_and(|minimum_radius| thickness_mm < minimum_radius * 0.5)
-        && points_mm
-            .windows(2)
-            .map(|edge| {
-                let radius = edge[1][0] - edge[0][0];
-                let height = edge[1][1] - edge[0][1];
-                radius.hypot(height)
-            })
-            .filter(|length| *length > PROFILE_EPSILON_MM)
-            .reduce(f64::min)
-            .is_some_and(|minimum_edge| thickness_mm < minimum_edge * 0.5)
-}
-
-fn controlled_bottle_profile(
-    points_mm: &[[f64; 2]],
-    body_radius_mm: f64,
-    body_height_mm: f64,
-    shoulder_rise_mm: f64,
-) -> Option<Vec<[f64; 2]>> {
-    if points_mm.len() != 6
-        || !is_valid_revolve_profile(points_mm)
-        || !body_radius_mm.is_finite()
-        || !body_height_mm.is_finite()
-        || !shoulder_rise_mm.is_finite()
-        || body_radius_mm <= points_mm[3][0]
-        || body_height_mm <= 0.0
-        || shoulder_rise_mm <= 0.0
-    {
-        return None;
-    }
-    let base_z = points_mm[0][1];
-    let neck_height = points_mm[4][1] - points_mm[3][1];
-    if neck_height <= 0.0 {
-        return None;
-    }
-    let body_top_z = base_z + body_height_mm;
-    let shoulder_top_z = body_top_z + shoulder_rise_mm;
-    let top_z = shoulder_top_z + neck_height;
-    let controlled = vec![
-        [0.0, base_z],
-        [body_radius_mm, base_z],
-        [body_radius_mm, body_top_z],
-        [points_mm[3][0], shoulder_top_z],
-        [points_mm[4][0], top_z],
-        [0.0, top_z],
-    ];
-    is_valid_revolve_profile(&controlled).then_some(controlled)
-}
-
-fn resolved_bottle_profile(product: &ProductModel, id: FeatureId) -> Option<Vec<[f64; 2]>> {
-    let feature = product.features.get(&id)?;
-    match &feature.kind {
-        FeatureKind::Profile { points_mm } if is_valid_revolve_profile(points_mm) => {
-            Some(points_mm.clone())
-        }
-        FeatureKind::BottleProfileControl {
-            profile,
-            body_radius,
-            body_height,
-            shoulder_rise,
-        } => {
-            let FeatureKind::Profile { points_mm } = &product.features.get(profile)?.kind else {
-                return None;
-            };
-            controlled_bottle_profile(
-                points_mm,
-                body_radius.millimetres(),
-                body_height.millimetres(),
-                shoulder_rise.millimetres(),
-            )
-        }
-        _ => None,
-    }
-}
-
 fn remap_body_subshape_reference(
     reference: &BodySubshapeRef,
     new_definition_id: DefinitionId,
@@ -13778,19 +13484,6 @@ fn clone_definition_and_repoint(
                 remap_feature_extent(&mut cloned.extent, new_definition_id, &mapping)?;
                 FeatureKind::SketchPocket(cloned)
             }
-            FeatureKind::BottleProfileControl {
-                profile,
-                body_radius,
-                body_height,
-                shoulder_rise,
-            } => FeatureKind::BottleProfileControl {
-                profile: *mapping
-                    .get(profile)
-                    .ok_or(CanonicalError::InvalidFeatureMap)?,
-                body_radius: body_radius.clone(),
-                body_height: body_height.clone(),
-                shoulder_rise: shoulder_rise.clone(),
-            },
             FeatureKind::Revolve {
                 profile,
                 axis_start_mm,
@@ -13814,19 +13507,6 @@ fn clone_definition_and_repoint(
                     .ok_or(CanonicalError::InvalidFeatureMap)?,
                 removed_faces: removed_faces.clone(),
                 thickness: thickness.clone(),
-            },
-            FeatureKind::BottleEdgeFinish {
-                target,
-                edges,
-                kind,
-                amount,
-            } => FeatureKind::BottleEdgeFinish {
-                target: *mapping
-                    .get(target)
-                    .ok_or(CanonicalError::InvalidFeatureMap)?,
-                edges: edges.clone(),
-                kind: *kind,
-                amount: amount.clone(),
             },
             FeatureKind::TopologyShell {
                 target,
@@ -16694,32 +16374,6 @@ fn validate_product_with_drawing_sources(
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
                 }
             }
-            FeatureKind::BottleProfileControl {
-                profile,
-                body_radius,
-                body_height,
-                shoulder_rise,
-            } => {
-                let source = product
-                    .features
-                    .get(&profile)
-                    .ok_or(CanonicalError::FeatureNotFound(profile))?;
-                if source.definition_id != feature.definition_id
-                    || !matches!(source.kind, FeatureKind::Profile { .. })
-                    || controlled_bottle_profile(
-                        match &source.kind {
-                            FeatureKind::Profile { points_mm } => points_mm,
-                            _ => unreachable!(),
-                        },
-                        body_radius.millimetres(),
-                        body_height.millimetres(),
-                        shoulder_rise.millimetres(),
-                    )
-                    .is_none()
-                {
-                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
-                }
-            }
             FeatureKind::Revolve { profile, .. } => {
                 let profile_feature = product
                     .features
@@ -16727,8 +16381,7 @@ fn validate_product_with_drawing_sources(
                     .ok_or(CanonicalError::FeatureNotFound(profile))?;
                 let supported_profile = match &profile_feature.kind {
                     FeatureKind::Profile { .. }
-                    | FeatureKind::SegmentProfile { closed: true, .. }
-                    | FeatureKind::BottleProfileControl { .. } => true,
+                    | FeatureKind::SegmentProfile { closed: true, .. } => true,
                     FeatureKind::Sketch(sketch) => sketch
                         .solved_regions()
                         .is_ok_and(|regions| regions.len() == 1),
@@ -16738,11 +16391,7 @@ fn validate_product_with_drawing_sources(
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
                 }
             }
-            FeatureKind::Shell {
-                target,
-                removed_faces,
-                thickness,
-            } => {
+            FeatureKind::Shell { target, .. } => {
                 let target_feature = product
                     .features
                     .get(&target)
@@ -16752,66 +16401,6 @@ fn validate_product_with_drawing_sources(
                     || !feature_kind_is_solid(&target_feature.kind)
                 {
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
-                }
-                if removed_faces.len() == 1
-                    && removed_faces[0].as_str() == BOTTLE_SHELL_OPENING_FACE_ROLE
-                {
-                    let FeatureKind::Revolve { profile, .. } = target_feature.kind else {
-                        return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
-                    };
-                    let profile = product
-                        .features
-                        .get(&profile)
-                        .ok_or(CanonicalError::FeatureNotFound(profile))?;
-                    if profile.definition_id != feature.definition_id
-                        || !resolved_bottle_profile(product, profile.id).is_some_and(|points_mm| {
-                            shell_thickness_is_conservative(&points_mm, thickness.millimetres())
-                        })
-                    {
-                        return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
-                    }
-                }
-            }
-            FeatureKind::BottleEdgeFinish {
-                target,
-                edges,
-                amount,
-                ..
-            } => {
-                let target_feature = product
-                    .features
-                    .get(&target)
-                    .ok_or(CanonicalError::FeatureNotFound(target))?;
-                if target == feature.id
-                    || target_feature.definition_id != feature.definition_id
-                    || !feature_kind_is_solid(&target_feature.kind)
-                {
-                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
-                }
-                if edges.len() == 1 && edges[0].as_str() == BOTTLE_SHOULDER_EDGE_ROLE {
-                    let FeatureKind::Shell {
-                        target: revolve_id, ..
-                    } = target_feature.kind
-                    else {
-                        return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
-                    };
-                    let revolve = product
-                        .features
-                        .get(&revolve_id)
-                        .ok_or(CanonicalError::FeatureNotFound(revolve_id))?;
-                    let FeatureKind::Revolve { profile, .. } = revolve.kind else {
-                        return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
-                    };
-                    let valid_amount =
-                        resolved_bottle_profile(product, profile).is_some_and(|points| {
-                            let shoulder_length =
-                                (points[3][0] - points[2][0]).hypot(points[3][1] - points[2][1]);
-                            amount.millimetres() < shoulder_length * 0.25
-                                && amount.millimetres() < points[3][0] * 0.25
-                        });
-                    if revolve.definition_id != feature.definition_id || !valid_amount {
-                        return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
-                    }
                 }
             }
             FeatureKind::TopologyShell {
@@ -18131,34 +17720,6 @@ fn proposal_value(
                             .map_or(ProposalValue::Missing, ProposalValue::Dimension);
                     }
                     match feature.kind() {
-                        FeatureKind::BottleProfileControl {
-                            body_radius,
-                            body_height,
-                            shoulder_rise,
-                            ..
-                        } => match goal {
-                            ProposalGoal::SetBottleControlDimension(
-                                _,
-                                BottleControlDimension::BodyRadius,
-                            ) => ProposalValue::Dimension(body_radius.clone()),
-                            ProposalGoal::SetBottleControlDimension(
-                                _,
-                                BottleControlDimension::BodyHeight,
-                            ) => ProposalValue::Dimension(body_height.clone()),
-                            ProposalGoal::SetBottleControlDimension(
-                                _,
-                                BottleControlDimension::ShoulderRise,
-                            ) => ProposalValue::Dimension(shoulder_rise.clone()),
-                            _ => ProposalValue::Digest(dependency_digest(
-                                snapshot,
-                                &BTreeSet::from([target]),
-                            )),
-                        },
-                        FeatureKind::BottleEdgeFinish { kind, .. }
-                            if matches!(goal, ProposalGoal::SetBottleEdgeFinishKind(_)) =>
-                        {
-                            ProposalValue::BottleEdgeFinishKind(*kind)
-                        }
                         FeatureKind::Profile { points_mm }
                             if matches!(goal, ProposalGoal::SetProfilePoints(_)) =>
                         {
@@ -18183,9 +17744,6 @@ fn proposal_value(
                         }
                         FeatureKind::Shell { thickness, .. } => {
                             ProposalValue::Dimension(thickness.clone())
-                        }
-                        FeatureKind::BottleEdgeFinish { amount, .. } => {
-                            ProposalValue::Dimension(amount.clone())
                         }
                         _ => ProposalValue::Digest(dependency_digest(
                             snapshot,
@@ -18530,8 +18088,6 @@ fn authoritative_writes(
             | CanonicalCommand::ProjectSketchEntity { id, .. }
             | CanonicalCommand::SetSketchEntityConstruction { id, .. }
             | CanonicalCommand::TranslateProfile { id, .. }
-            | CanonicalCommand::SetBottleControlDimension { id, .. }
-            | CanonicalCommand::SetBottleEdgeFinishKind { id, .. }
             | CanonicalCommand::SetProfilePoints { id, .. } => {
                 writes.insert(AuthoritativeDependency::Feature(*id));
             }
@@ -18809,7 +18365,6 @@ fn authoritative_dependencies(
                         add_feature_dependency_closure(snapshot, spec.sketch, &mut dependencies);
                     }
                     FeatureKind::Extrusion { profile, .. }
-                    | FeatureKind::BottleProfileControl { profile, .. }
                     | FeatureKind::Revolve { profile, .. }
                     | FeatureKind::PlanarOffset { profile, .. }
                     | FeatureKind::SurfaceBody(SurfaceBodySpec::Planar { profile }) => {
@@ -18861,7 +18416,6 @@ fn authoritative_dependencies(
                         add_feature_dependency_closure(snapshot, *tool, &mut dependencies);
                     }
                     FeatureKind::Shell { target, .. }
-                    | FeatureKind::BottleEdgeFinish { target, .. }
                     | FeatureKind::TopologyShell { target, .. }
                     | FeatureKind::TopologyEdgeFinish { target, .. }
                     | FeatureKind::TopologyFaceOffset { target, .. }
@@ -18914,8 +18468,6 @@ fn authoritative_dependencies(
             | CanonicalCommand::OffsetSketchEntity { id, .. }
             | CanonicalCommand::SetSketchEntityConstruction { id, .. }
             | CanonicalCommand::TranslateProfile { id, .. }
-            | CanonicalCommand::SetBottleControlDimension { id, .. }
-            | CanonicalCommand::SetBottleEdgeFinishKind { id, .. }
             | CanonicalCommand::SetProfilePoints { id, .. } => {
                 add_feature_dependency_closure(snapshot, *id, &mut dependencies);
             }
@@ -19701,7 +19253,6 @@ fn add_feature_dependency_closure(
                 add_feature_dependency_closure(snapshot, spec.sketch, dependencies);
             }
             FeatureKind::Extrusion { profile, .. }
-            | FeatureKind::BottleProfileControl { profile, .. }
             | FeatureKind::Revolve { profile, .. }
             | FeatureKind::PlanarOffset { profile, .. }
             | FeatureKind::SurfaceBody(SurfaceBodySpec::Planar { profile }) => {
@@ -19745,7 +19296,6 @@ fn add_feature_dependency_closure(
                 add_feature_dependency_closure(snapshot, *tool, dependencies);
             }
             FeatureKind::Shell { target, .. }
-            | FeatureKind::BottleEdgeFinish { target, .. }
             | FeatureKind::TopologyShell { target, .. }
             | FeatureKind::TopologyEdgeFinish { target, .. }
             | FeatureKind::TopologyFaceOffset { target, .. }
@@ -19833,18 +19383,6 @@ mod parameter_contract_tests {
     use crate::sketch::{
         FeatureDirection, SketchConstraint, SketchEntityId, SketchPointRef, SketchRegionId,
     };
-
-    #[test]
-    fn bottle_edge_finish_kind_is_an_alias_for_generic_edge_finish_kind() {
-        assert_eq!(
-            std::any::TypeId::of::<EdgeFinishKind>(),
-            std::any::TypeId::of::<BottleEdgeFinishKind>()
-        );
-        let generic: EdgeFinishKind = BottleEdgeFinishKind::Fillet;
-        let legacy: BottleEdgeFinishKind = EdgeFinishKind::Chamfer;
-        assert_eq!(generic, EdgeFinishKind::Fillet);
-        assert_eq!(legacy, BottleEdgeFinishKind::Chamfer);
-    }
 
     fn dimension(value: f64) -> Dimension {
         Dimension::new(value.to_string(), value).unwrap()
@@ -19946,12 +19484,6 @@ mod parameter_contract_tests {
                     opposite: FeatureExtentEnd::Blind(dimension(3.0)),
                 },
             }),
-            FeatureKind::BottleProfileControl {
-                profile: FeatureId(1),
-                body_radius: dimension(20.0),
-                body_height: dimension(50.0),
-                shoulder_rise: dimension(8.0),
-            },
             FeatureKind::Revolve {
                 profile: FeatureId(1),
                 axis_start_mm: [0.0, 0.0],

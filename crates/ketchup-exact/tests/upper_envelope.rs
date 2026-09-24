@@ -1,5 +1,5 @@
 use ketchup_exact::{
-    AdvancedChamferMode, BottleEdgeFinish, BoxSpec, CircleExtrudeSpec, CutMode, CylinderToolSpec,
+    AdvancedChamferMode, BoxSpec, CircleExtrudeSpec, CutMode, CylinderToolSpec, EdgeFinish,
     ExactBackend, ExactOpOutput, ExactVolumeMeshOptions, GeometryErrorCode,
     MAX_PLANAR_REGION_HOLES, PlanarLoftSection, PlanarLoftSpec, PlanarProfileLoop,
     PlanarProfileSegment, Point3, RectangleExtrudeSpec, RectangleOffsetSpec, RectangleSweepSpec,
@@ -2199,7 +2199,7 @@ fn box_shell_fillet_and_chamfer_are_exact_deterministic_and_keep_stable_faces() 
             && !reference.corroborating_geometry_fingerprint.is_empty()
     }));
 
-    for finish in [BottleEdgeFinish::Fillet, BottleEdgeFinish::Chamfer] {
+    for finish in [EdgeFinish::Fillet, EdgeFinish::Chamfer] {
         let output = backend.finish_shell_box(spec, 2.0, finish, 1.0).unwrap();
         let repeated = backend.finish_shell_box(spec, 2.0, finish, 1.0).unwrap();
         assert_valid(&output);
@@ -2258,7 +2258,7 @@ fn topology_selected_shell_fillet_and_chamfer_apply_to_an_existing_exact_body() 
         .find(|edge| edge.adjacent_face_ordinals.len() == 2)
         .unwrap()
         .ordinal;
-    for finish in [BottleEdgeFinish::Fillet, BottleEdgeFinish::Chamfer] {
+    for finish in [EdgeFinish::Fillet, EdgeFinish::Chamfer] {
         let output = backend
             .finish_body(&base.body, &[selected_edge], finish, 0.75)
             .unwrap();
@@ -2290,7 +2290,7 @@ fn topology_selected_shell_fillet_and_chamfer_apply_to_an_existing_exact_body() 
             .finish_body(
                 &base.body,
                 &[base.body.topology.edge_count],
-                BottleEdgeFinish::Fillet,
+                EdgeFinish::Fillet,
                 0.75,
             )
             .unwrap_err()

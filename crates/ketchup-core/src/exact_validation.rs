@@ -150,24 +150,6 @@ impl ExactBodyParticipant {
                 | ExactFaceRole::CutCircle
                 | ExactFaceRole::CutLinear
                 | ExactFaceRole::CutArc
-                | ExactFaceRole::RevolveBottom
-                | ExactFaceRole::RevolveBody
-                | ExactFaceRole::RevolveShoulder
-                | ExactFaceRole::RevolveNeck
-                | ExactFaceRole::RevolveMouth
-                | ExactFaceRole::RevolveSide0
-                | ExactFaceRole::RevolveSide1
-                | ExactFaceRole::RevolveStart
-                | ExactFaceRole::RevolveEnd
-                | ExactFaceRole::ShellOuterBottom
-                | ExactFaceRole::ShellOuterBody
-                | ExactFaceRole::ShellOuterShoulder
-                | ExactFaceRole::ShellOuterNeck
-                | ExactFaceRole::ShellRim
-                | ExactFaceRole::ShellInnerBottom
-                | ExactFaceRole::ShellInnerBody
-                | ExactFaceRole::ShellInnerShoulder
-                | ExactFaceRole::ShellInnerNeck
                 | ExactFaceRole::BoxShellOuterBottom
                 | ExactFaceRole::BoxShellOuterEast
                 | ExactFaceRole::BoxShellRim

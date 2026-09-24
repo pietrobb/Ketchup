@@ -41,18 +41,17 @@ use ketchup_core::assistant_sidecar::{
 use ketchup_core::blender_export::{ExactGlbExport, MeshGlbInstance, model_glb_export};
 use ketchup_core::cam::{CamPlanId, CamPostprocessorDialect};
 use ketchup_core::document::{
-    AuthenticatedApprover, AuthoritativeDependency, BodyId, BooleanOperation, BottleEdgeFinishKind,
-    CanonicalCommand, CanonicalError, ClassificationCategoryId, ClassificationDimensionId,
-    CloneDefinitionPlan, CollectionId, CommandBatch, ConvertGroupPlan, DefinitionId, Dimension,
-    DimensionDisplayUnit, DimensionPresentation, DocumentId, DocumentStore, EdgeFinishKind,
-    EvaluationIdentity, EvaluatorParameterEdit, FeatureId, FeatureKind, FeatureParameterTarget,
-    GroupId, HighRiskClass, HighRiskScope, InstancePath, LoftContinuity, LoftSection,
-    MAX_HUMAN_CONFIRMATION_LIFETIME_MS, MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, NodeId,
-    OccurrenceId, PersistentDimensionId, ProfileSegment, Proposal, ProposalCommitError,
-    ProposalContext, ProposalGoal, ProposalPrepareError, ProposalPrincipal, ProposalValue,
-    SceneOccurrence, SceneQueryContext, SideEffectAuthorizationReceipt, SlotPath, Snapshot,
-    SolidToolPlan, SpatialPathSegment, TagId, TipReplacementParent, TipReplacementProposal,
-    Transform, TrustedConfirmationSurface,
+    AuthenticatedApprover, AuthoritativeDependency, BodyId, BooleanOperation, CanonicalCommand,
+    CanonicalError, ClassificationCategoryId, ClassificationDimensionId, CloneDefinitionPlan,
+    CollectionId, CommandBatch, ConvertGroupPlan, DefinitionId, Dimension, DimensionDisplayUnit,
+    DimensionPresentation, DocumentId, DocumentStore, EdgeFinishKind, EvaluationIdentity,
+    EvaluatorParameterEdit, FeatureId, FeatureKind, FeatureParameterTarget, GroupId, HighRiskClass,
+    HighRiskScope, InstancePath, LoftContinuity, LoftSection, MAX_HUMAN_CONFIRMATION_LIFETIME_MS,
+    MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, NodeId, OccurrenceId, PersistentDimensionId,
+    ProfileSegment, Proposal, ProposalCommitError, ProposalContext, ProposalGoal,
+    ProposalPrepareError, ProposalPrincipal, ProposalValue, SceneOccurrence, SceneQueryContext,
+    SideEffectAuthorizationReceipt, SlotPath, Snapshot, SolidToolPlan, SpatialPathSegment, TagId,
+    TipReplacementParent, TipReplacementProposal, Transform, TrustedConfirmationSurface,
 };
 #[cfg(test)]
 use ketchup_core::document::{
@@ -69,7 +68,6 @@ use ketchup_core::exact_product::{
 };
 #[cfg(test)]
 use ketchup_core::exact_product::{ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence};
-use ketchup_core::exact_revolve::ExactRevolveRequest;
 use ketchup_core::exact_validation::{
     GeneralBodyNarrowPhaseRelation, GeneralBodyParticipant, general_body_narrow_phase,
 };
@@ -1330,7 +1328,7 @@ struct RevolvePreviewPlan {
     axis_end_mm: [f64; 2],
     angle_degrees_bits: u64,
     command: CanonicalCommand,
-    exact_request: ExactRevolveRequest,
+    exact_request: ExactBRepGraph,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -3951,9 +3949,7 @@ fn assistant_fea_face_context(
                     })
                 })
                 .collect::<Vec<_>>(),
-            ExactBodyPackage::Rectangle(_)
-            | ExactBodyPackage::Revolve(_)
-            | ExactBodyPackage::Imported(_) => Vec::new(),
+            ExactBodyPackage::Rectangle(_) | ExactBodyPackage::Imported(_) => Vec::new(),
         })
         .collect::<Vec<_>>();
     faces.sort_unstable_by_key(|face| {
@@ -9688,12 +9684,6 @@ impl KetchupApp {
                     ("value", value.millimetres().to_string()),
                 ]),
             ),
-            ProposalValue::BottleEdgeFinishKind(BottleEdgeFinishKind::Fillet) => {
-                self.catalog.text("assistant-value-fillet")
-            }
-            ProposalValue::BottleEdgeFinishKind(BottleEdgeFinishKind::Chamfer) => {
-                self.catalog.text("assistant-value-chamfer")
-            }
             ProposalValue::ProfilePoints(points) => self.catalog.format(
                 "assistant-value-profile-points",
                 &BTreeMap::from([(
@@ -10191,8 +10181,6 @@ impl KetchupApp {
             proposal.goal(),
             ProposalGoal::SetRuleDimension(_)
                 | ProposalGoal::SetFeatureDimension(_)
-                | ProposalGoal::SetBottleControlDimension(_, _)
-                | ProposalGoal::SetBottleEdgeFinishKind(_)
                 | ProposalGoal::SetOccurrenceVisibility(_)
                 | ProposalGoal::SetTagVisibility(_)
         )
@@ -14578,8 +14566,12 @@ impl KetchupApp {
         };
         let batch = CommandBatch::new(vec![command.clone()]);
         let preview_snapshot = self.document.preview_batch(&batch).ok()?;
-        let exact_request =
-            ExactRevolveRequest::from_snapshot(&preview_snapshot, source.definition_id).ok()?;
+        let exact_request = ExactBRepGraph::from_snapshot(
+            &preview_snapshot,
+            source.definition_id,
+            generated_feature_id,
+        )
+        .ok()?;
         Some((
             RevolvePreviewPlan {
                 source: source.clone(),
@@ -15574,33 +15566,6 @@ impl KetchupApp {
                     feature.id(),
                     removed_faces.first()?.as_str().to_owned(),
                     thickness.millimetres(),
-                ))
-            })
-            .last()
-    }
-
-    #[must_use]
-    pub fn latest_general_edge_finish_parameters(
-        &self,
-    ) -> Option<(FeatureId, String, BottleEdgeFinishKind, f64)> {
-        self.document
-            .current()
-            .features()
-            .filter_map(|feature| {
-                let FeatureKind::BottleEdgeFinish {
-                    edges,
-                    kind,
-                    amount,
-                    ..
-                } = feature.kind()
-                else {
-                    return None;
-                };
-                Some((
-                    feature.id(),
-                    edges.first()?.as_str().to_owned(),
-                    *kind,
-                    amount.millimetres(),
                 ))
             })
             .last()
@@ -38798,24 +38763,6 @@ fn exact_face_element(role: ExactFaceRole) -> Option<ElementId> {
         | ExactFaceRole::CutCircle
         | ExactFaceRole::CutLinear
         | ExactFaceRole::CutArc
-        | ExactFaceRole::RevolveBottom
-        | ExactFaceRole::RevolveBody
-        | ExactFaceRole::RevolveShoulder
-        | ExactFaceRole::RevolveNeck
-        | ExactFaceRole::RevolveMouth
-        | ExactFaceRole::RevolveSide0
-        | ExactFaceRole::RevolveSide1
-        | ExactFaceRole::RevolveStart
-        | ExactFaceRole::RevolveEnd
-        | ExactFaceRole::ShellOuterBottom
-        | ExactFaceRole::ShellOuterBody
-        | ExactFaceRole::ShellOuterShoulder
-        | ExactFaceRole::ShellOuterNeck
-        | ExactFaceRole::ShellRim
-        | ExactFaceRole::ShellInnerBottom
-        | ExactFaceRole::ShellInnerBody
-        | ExactFaceRole::ShellInnerShoulder
-        | ExactFaceRole::ShellInnerNeck
         | ExactFaceRole::PlanarOffsetFace
         | ExactFaceRole::SweepStart
         | ExactFaceRole::SweepEnd

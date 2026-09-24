@@ -2954,7 +2954,7 @@ pub fn project_general_fabrication(
                     ExactBodyPackage::Graph(package) => {
                         graph_manufacturing_operations(row, source, &package.graph)
                     }
-                    ExactBodyPackage::Revolve(_) | ExactBodyPackage::Imported(_) => None,
+                    ExactBodyPackage::Imported(_) => None,
                 };
                 let Some(row_operations) = row_operations else {
                     unresolved_sources.push(row.source.clone());

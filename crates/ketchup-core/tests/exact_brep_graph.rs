@@ -17,7 +17,6 @@ use ketchup_core::exact_product::{
     ExactFaceRole, ExactFeatureChainRequest, ExactProductError, build_box_render_package,
     canonical_reference_lineage_digest,
 };
-use ketchup_core::exact_revolve::ExactRevolveRequest;
 use ketchup_core::persistence;
 use ketchup_core::sketch::{
     FeatureDirection, FeatureExtent, FeatureExtentEnd, PadSpec, PocketSpec, PrincipalPlane,
@@ -130,7 +129,7 @@ fn arbitrary_boolean_document() -> DocumentStore {
 }
 
 #[test]
-fn bottle_like_profile_remains_an_ordinary_graph_revolve() {
+fn stepped_profile_revolves_through_the_general_graph() {
     let definition = DefinitionId(6);
     let profile = FeatureId(500);
     let revolve = FeatureId(501);
@@ -166,13 +165,6 @@ fn bottle_like_profile_remains_an_ordinary_graph_revolve() {
         .unwrap();
 
     let snapshot = document.current();
-    let legacy_request = ExactRevolveRequest::from_snapshot(&snapshot, definition).unwrap();
-    assert!(
-        legacy_request.general,
-        "profile geometry must not select named-product semantics"
-    );
-    assert!(legacy_request.control_feature_id.is_none());
-
     let graph = ExactBRepGraph::from_snapshot(&snapshot, definition, revolve).unwrap();
     assert_eq!(graph.nodes.len(), 1);
     assert!(matches!(

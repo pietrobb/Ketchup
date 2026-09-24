@@ -1395,45 +1395,6 @@ pub fn encode_semantic_state_with_results(
                 .unwrap();
                 writeln!(agent, "feature.{}=name:{:?},kind:sketch_pocket,definition:{},target:{},sketch:{},region:{},direction:{:?},extent:{:?},support_lineage:{:?}", feature.id().0, feature.name(), feature.definition_id().0, spec.target.0, spec.sketch.0, spec.region.0, spec.direction, spec.extent, spec.support.lineage_digest).unwrap();
             }
-            crate::document::FeatureKind::BottleProfileControl {
-                profile,
-                body_radius,
-                body_height,
-                shoulder_rise,
-            } => {
-                writeln!(
-                    complete,
-                    "feature.{}.kind=bottle_profile_control",
-                    feature.id().0
-                )
-                .unwrap();
-                writeln!(complete, "feature.{}.profile={}", feature.id().0, profile.0).unwrap();
-                for (name, dimension) in [
-                    ("body_radius", body_radius),
-                    ("body_height", body_height),
-                    ("shoulder_rise", shoulder_rise),
-                ] {
-                    writeln!(
-                        complete,
-                        "feature.{}.{name}.f64_bits={:016x}",
-                        feature.id().0,
-                        dimension.millimetres().to_bits()
-                    )
-                    .unwrap();
-                }
-                writeln!(
-                    agent,
-                    "feature.{}=name:{:?},kind:bottle_profile_control,definition:{},profile:{},body_radius_mm:{:?},body_height_mm:{:?},shoulder_rise_mm:{:?}",
-                    feature.id().0,
-                    feature.name(),
-                    feature.definition_id().0,
-                    profile.0,
-                    body_radius.millimetres(),
-                    body_height.millimetres(),
-                    shoulder_rise.millimetres()
-                )
-                .unwrap();
-            }
             crate::document::FeatureKind::Revolve {
                 profile,
                 axis_start_mm,
@@ -1513,56 +1474,6 @@ pub fn encode_semantic_state_with_results(
                         .map(crate::document::StableFaceRole::as_str)
                         .collect::<Vec<_>>(),
                     thickness.millimetres()
-                )
-                .unwrap();
-            }
-            crate::document::FeatureKind::BottleEdgeFinish {
-                target,
-                edges,
-                kind,
-                amount,
-            } => {
-                let kind = match kind {
-                    crate::document::BottleEdgeFinishKind::Fillet => "fillet",
-                    crate::document::BottleEdgeFinishKind::Chamfer => "chamfer",
-                };
-                writeln!(
-                    complete,
-                    "feature.{}.kind=bottle_edge_finish",
-                    feature.id().0
-                )
-                .unwrap();
-                writeln!(complete, "feature.{}.target={}", feature.id().0, target.0).unwrap();
-                writeln!(
-                    complete,
-                    "feature.{}.edges={:?}",
-                    feature.id().0,
-                    edges
-                        .iter()
-                        .map(crate::document::StableEdgeRole::as_str)
-                        .collect::<Vec<_>>()
-                )
-                .unwrap();
-                writeln!(complete, "feature.{}.finish_kind={kind}", feature.id().0).unwrap();
-                writeln!(
-                    complete,
-                    "feature.{}.amount.f64_bits={:016x}",
-                    feature.id().0,
-                    amount.millimetres().to_bits()
-                )
-                .unwrap();
-                writeln!(
-                    agent,
-                    "feature.{}=name:{:?},kind:bottle_edge_finish,definition:{},target:{},edges:{:?},finish_kind:{kind},amount_mm:{:?}",
-                    feature.id().0,
-                    feature.name(),
-                    feature.definition_id().0,
-                    target.0,
-                    edges
-                        .iter()
-                        .map(crate::document::StableEdgeRole::as_str)
-                        .collect::<Vec<_>>(),
-                    amount.millimetres()
                 )
                 .unwrap();
             }

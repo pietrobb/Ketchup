@@ -13,7 +13,6 @@ use crate::exact_brep_graph::{
     MAX_EXACT_BREP_REGION_HOLES, MAX_EXACT_BREP_REGION_SEGMENTS,
     MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM, MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM,
 };
-use crate::exact_revolve::{ExactRevolveRequest, reference_matches_revolve_request};
 use crate::graph::{DerivedIdentity, sha256_hex};
 use crate::import::StepImportMesh;
 use crate::sketch::{
@@ -80,24 +79,6 @@ pub enum ExactFaceRole {
     PocketEast,
     PocketSouth,
     PocketNorth,
-    RevolveBottom,
-    RevolveBody,
-    RevolveShoulder,
-    RevolveNeck,
-    RevolveMouth,
-    RevolveSide0,
-    RevolveSide1,
-    RevolveStart,
-    RevolveEnd,
-    ShellOuterBottom,
-    ShellOuterBody,
-    ShellOuterShoulder,
-    ShellOuterNeck,
-    ShellRim,
-    ShellInnerBottom,
-    ShellInnerBody,
-    ShellInnerShoulder,
-    ShellInnerNeck,
     BoxShellOuterBottom,
     BoxShellOuterEast,
     BoxShellRim,
@@ -237,24 +218,6 @@ impl ExactFaceRole {
             Self::PocketEast => "pocket.wall.east",
             Self::PocketSouth => "pocket.wall.south",
             Self::PocketNorth => "pocket.wall.north",
-            Self::RevolveBottom => "revolve.bottom",
-            Self::RevolveBody => "revolve.body",
-            Self::RevolveShoulder => "revolve.shoulder",
-            Self::RevolveNeck => "revolve.neck",
-            Self::RevolveMouth => "revolve.mouth",
-            Self::RevolveSide0 => "revolve.side.0",
-            Self::RevolveSide1 => "revolve.side.1",
-            Self::RevolveStart => "revolve.start",
-            Self::RevolveEnd => "revolve.end",
-            Self::ShellOuterBottom => "shell.outer.bottom",
-            Self::ShellOuterBody => "shell.outer.body",
-            Self::ShellOuterShoulder => "shell.outer.shoulder",
-            Self::ShellOuterNeck => "shell.outer.neck",
-            Self::ShellRim => "shell.rim",
-            Self::ShellInnerBottom => "shell.inner.bottom",
-            Self::ShellInnerBody => "shell.inner.body",
-            Self::ShellInnerShoulder => "shell.inner.shoulder",
-            Self::ShellInnerNeck => "shell.inner.neck",
             Self::BoxShellOuterBottom => "shell.box.outer.bottom",
             Self::BoxShellOuterEast => "shell.box.outer.east",
             Self::BoxShellRim => "shell.box.rim",
@@ -292,23 +255,6 @@ impl ExactFaceRole {
             Self::PocketEast => "pocket_profile.edge.east",
             Self::PocketSouth => "pocket_profile.edge.south",
             Self::PocketNorth => "pocket_profile.edge.north",
-            Self::RevolveBottom => "profile.edge.0",
-            Self::RevolveBody => "profile.edge.1",
-            Self::RevolveShoulder => "profile.edge.2",
-            Self::RevolveNeck => "profile.edge.3",
-            Self::RevolveMouth => "profile.edge.4",
-            Self::RevolveSide0 => "profile.edge.0",
-            Self::RevolveSide1 => "profile.edge.1",
-            Self::RevolveStart | Self::RevolveEnd => "profile.face",
-            Self::ShellOuterBottom => "revolve.face.bottom",
-            Self::ShellOuterBody => "revolve.face.body",
-            Self::ShellOuterShoulder => "revolve.face.shoulder",
-            Self::ShellOuterNeck => "revolve.face.neck",
-            Self::ShellRim => "revolve.face.mouth",
-            Self::ShellInnerBottom => "shell.offset.bottom",
-            Self::ShellInnerBody => "shell.offset.body",
-            Self::ShellInnerShoulder => "shell.offset.shoulder",
-            Self::ShellInnerNeck => "shell.offset.neck",
             Self::BoxShellOuterBottom => "extrusion.bottom",
             Self::BoxShellOuterEast => "extrusion.side(profile_edge=east)",
             Self::BoxShellRim => "extrusion.top",
@@ -350,26 +296,7 @@ impl ExactFaceRole {
             | Self::LoftStart
             | Self::LoftEnd => "planar_face",
             Self::CircleSide | Self::CutCircle => "cylindrical_face",
-            Self::ArcSide
-            | Self::CutArc
-            | Self::RevolveBottom
-            | Self::RevolveBody
-            | Self::RevolveShoulder
-            | Self::RevolveNeck
-            | Self::RevolveMouth
-            | Self::RevolveSide0
-            | Self::RevolveSide1
-            | Self::RevolveStart
-            | Self::RevolveEnd
-            | Self::ShellOuterBottom
-            | Self::ShellOuterBody
-            | Self::ShellOuterShoulder
-            | Self::ShellOuterNeck
-            | Self::ShellRim
-            | Self::ShellInnerBottom
-            | Self::ShellInnerBody
-            | Self::ShellInnerShoulder
-            | Self::ShellInnerNeck => "face",
+            Self::ArcSide | Self::CutArc => "face",
             Self::BoxShellOuterBottom | Self::BoxShellOuterEast | Self::BoxShellRim => {
                 "planar_face"
             }
@@ -454,24 +381,6 @@ impl BodySubshapeRef {
             ExactFaceRole::PocketEast,
             ExactFaceRole::PocketSouth,
             ExactFaceRole::PocketNorth,
-            ExactFaceRole::RevolveBottom,
-            ExactFaceRole::RevolveBody,
-            ExactFaceRole::RevolveShoulder,
-            ExactFaceRole::RevolveNeck,
-            ExactFaceRole::RevolveMouth,
-            ExactFaceRole::RevolveSide0,
-            ExactFaceRole::RevolveSide1,
-            ExactFaceRole::RevolveStart,
-            ExactFaceRole::RevolveEnd,
-            ExactFaceRole::ShellOuterBottom,
-            ExactFaceRole::ShellOuterBody,
-            ExactFaceRole::ShellOuterShoulder,
-            ExactFaceRole::ShellOuterNeck,
-            ExactFaceRole::ShellRim,
-            ExactFaceRole::ShellInnerBottom,
-            ExactFaceRole::ShellInnerBody,
-            ExactFaceRole::ShellInnerShoulder,
-            ExactFaceRole::ShellInnerNeck,
             ExactFaceRole::BoxShellOuterBottom,
             ExactFaceRole::BoxShellOuterEast,
             ExactFaceRole::BoxShellRim,
@@ -1259,7 +1168,6 @@ impl ExactBRepGraphPackage {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExactBodyPackage {
     Rectangle(ExactRenderPackage),
-    Revolve(crate::exact_revolve::ExactRevolvePackage),
     Graph(ExactBRepGraphPackage),
     Imported(ImportedExactPackage),
 }
@@ -1572,7 +1480,6 @@ impl ExactBodyPackage {
     pub fn definition_id(&self) -> DefinitionId {
         match self {
             Self::Rectangle(package) => package.identity.definition_id,
-            Self::Revolve(package) => package.identity.definition_id,
             Self::Graph(package) => package.identity.definition_id,
             Self::Imported(package) => package.identity.definition_id,
         }
@@ -1582,7 +1489,6 @@ impl ExactBodyPackage {
     pub fn producer_feature_id(&self) -> FeatureId {
         match self {
             Self::Rectangle(package) => package.identity.producer_feature_id,
-            Self::Revolve(package) => package.identity.producer_feature_id,
             Self::Graph(package) => package.identity.producer_feature_id,
             Self::Imported(package) => package.identity.producer_feature_id,
         }
@@ -1592,20 +1498,6 @@ impl ExactBodyPackage {
     pub fn result_key(&self) -> ExactResultKey {
         match self {
             Self::Rectangle(package) => ExactResultKey {
-                document_id: package.identity.document_id,
-                source_revision: package.identity.source_revision,
-                source_digest: package.identity.source_digest.clone(),
-                definition_id: package.identity.definition_id,
-                producer_feature_id: package.identity.producer_feature_id,
-                canonical_input_digest: package.identity.canonical_input_digest.clone(),
-                exact_input_digest: package.identity.exact_input_digest.clone(),
-                evaluator: package.identity.evaluator.clone(),
-                backend: package.identity.backend.clone(),
-                tolerance: package.identity.tolerance.clone(),
-                schema: package.identity.schema.clone(),
-                result_fingerprint: package.identity.result_fingerprint.clone(),
-            },
-            Self::Revolve(package) => ExactResultKey {
                 document_id: package.identity.document_id,
                 source_revision: package.identity.source_revision,
                 source_digest: package.identity.source_digest.clone(),
@@ -1654,7 +1546,6 @@ impl ExactBodyPackage {
     pub fn is_current(&self, snapshot: &Snapshot) -> bool {
         match self {
             Self::Rectangle(package) => package.is_current(snapshot),
-            Self::Revolve(package) => package.is_current(snapshot),
             Self::Graph(package) => package.is_current(snapshot),
             Self::Imported(package) => package.is_current(snapshot),
         }
@@ -1681,31 +1572,6 @@ impl ExactBodyPackage {
                 rebound.validate_for_request(&request).ok()?;
                 Some(Self::Rectangle(rebound))
             }
-            Self::Revolve(package) => {
-                let request = crate::exact_revolve::ExactRevolveRequest::from_snapshot(
-                    snapshot,
-                    package.identity.definition_id,
-                )
-                .ok()?;
-                if request.producer_feature_id() != package.identity.producer_feature_id
-                    || request.canonical_input_digest_for_envelope(
-                        package.identity.source_revision,
-                        &package.identity.source_digest,
-                    ) != package.identity.canonical_input_digest
-                    || request.evaluator() != package.identity.evaluator
-                {
-                    return None;
-                }
-                let mut rebound = package.clone();
-                rebound.identity.source_revision = snapshot.revision_id();
-                rebound.identity.source_digest = snapshot.canonical_digest();
-                rebound.identity.canonical_input_digest = request.canonical_input_digest.clone();
-                for reference in &mut rebound.references {
-                    reference.canonical_input_digest = request.canonical_input_digest.clone();
-                }
-                rebound.validate_for_request(&request).ok()?;
-                Some(Self::Revolve(rebound))
-            }
             Self::Graph(package) => package.rebound_to(snapshot).map(Self::Graph),
             Self::Imported(package) => package.rebound_to(snapshot).map(Self::Imported),
         }
@@ -1715,7 +1581,6 @@ impl ExactBodyPackage {
     pub fn bounds_mm(&self) -> [[f64; 3]; 2] {
         match self {
             Self::Rectangle(package) => package.bounds_mm,
-            Self::Revolve(package) => package.bounds_mm,
             Self::Graph(package) => package.bounds_mm,
             Self::Imported(package) => package.bounds_mm,
         }
@@ -1725,7 +1590,6 @@ impl ExactBodyPackage {
     pub fn vertices(&self) -> &[ExactVertex] {
         match self {
             Self::Rectangle(package) => &package.vertices,
-            Self::Revolve(package) => &package.vertices,
             Self::Graph(package) => &package.vertices,
             Self::Imported(package) => &package.vertices,
         }
@@ -1735,7 +1599,6 @@ impl ExactBodyPackage {
     pub fn triangles(&self) -> &[ExactTriangle] {
         match self {
             Self::Rectangle(package) => &package.triangles,
-            Self::Revolve(package) => &package.triangles,
             Self::Graph(package) => &package.triangles,
             Self::Imported(package) => &package.triangles,
         }
@@ -1745,7 +1608,6 @@ impl ExactBodyPackage {
     pub fn references(&self) -> &[BodySubshapeRef] {
         match self {
             Self::Rectangle(package) => &package.references,
-            Self::Revolve(package) => &package.references,
             Self::Graph(package) => &package.references,
             Self::Imported(_) => &[],
         }
@@ -1756,7 +1618,7 @@ impl ExactBodyPackage {
         match self {
             Self::Graph(package) => &package.topological_references,
             Self::Imported(package) => &package.topological_references,
-            Self::Rectangle(_) | Self::Revolve(_) => &[],
+            Self::Rectangle(_) => &[],
         }
     }
 
@@ -1764,7 +1626,7 @@ impl ExactBodyPackage {
     pub fn edge_evidence(&self) -> &[ExactBRepGraphEdgeEvidence] {
         match self {
             Self::Graph(package) => &package.edge_evidence,
-            Self::Rectangle(_) | Self::Revolve(_) | Self::Imported(_) => &[],
+            Self::Rectangle(_) | Self::Imported(_) => &[],
         }
     }
 
@@ -1788,7 +1650,7 @@ impl ExactBodyPackage {
         let face_ordinal = match self {
             Self::Graph(package) => package.triangle_face_ordinals.get(triangle_index),
             Self::Imported(package) => package.triangle_face_ordinals.get(triangle_index),
-            Self::Rectangle(_) | Self::Revolve(_) => None,
+            Self::Rectangle(_) => None,
         }?;
         self.topological_reference(TopologicalElementKind::Face, *face_ordinal)
     }
@@ -1803,14 +1665,6 @@ impl ExactBodyPackage {
     #[must_use]
     pub fn mesh_export(&self, transform: Transform) -> ExactMeshExport {
         mesh_export_from_view(self, transform)
-    }
-
-    #[must_use]
-    pub fn revolve(&self) -> Option<&crate::exact_revolve::ExactRevolvePackage> {
-        match self {
-            Self::Revolve(package) => Some(package),
-            Self::Rectangle(_) | Self::Graph(_) | Self::Imported(_) => None,
-        }
     }
 
     pub fn detached_mesh_conversion_batch(
@@ -1914,14 +1768,13 @@ impl ExactBodyView for ExactBodyPackage {
                 || "unreferenced".to_owned(),
                 |ordinal| format!("imported.face.{ordinal}"),
             ),
-            Self::Rectangle(_) | Self::Revolve(_) => self.triangle_group(index).to_owned(),
+            Self::Rectangle(_) => self.triangle_group(index).to_owned(),
         }
     }
 
     fn tolerance(&self) -> &str {
         match self {
             Self::Rectangle(package) => &package.identity.tolerance,
-            Self::Revolve(package) => &package.identity.tolerance,
             Self::Graph(package) => &package.identity.tolerance,
             Self::Imported(package) => &package.identity.tolerance,
         }
@@ -1930,7 +1783,6 @@ impl ExactBodyView for ExactBodyPackage {
     fn source_digest(&self) -> &str {
         match self {
             Self::Rectangle(package) => &package.identity.source_digest,
-            Self::Revolve(package) => &package.identity.source_digest,
             Self::Graph(package) => &package.identity.source_digest,
             Self::Imported(package) => &package.identity.source_digest,
         }
@@ -1943,7 +1795,6 @@ impl ExactBodyView for ExactBodyPackage {
     fn result_fingerprint(&self) -> &str {
         match self {
             Self::Rectangle(package) => &package.identity.result_fingerprint,
-            Self::Revolve(package) => &package.identity.result_fingerprint,
             Self::Graph(package) => &package.identity.result_fingerprint,
             Self::Imported(package) => &package.identity.result_fingerprint,
         }
@@ -2134,12 +1985,6 @@ fn transform_exact_point(matrix: &[f64; 16], point: [f64; 3]) -> [f64; 3] {
 impl From<ExactRenderPackage> for ExactBodyPackage {
     fn from(package: ExactRenderPackage) -> Self {
         Self::Rectangle(package)
-    }
-}
-
-impl From<crate::exact_revolve::ExactRevolvePackage> for ExactBodyPackage {
-    fn from(package: crate::exact_revolve::ExactRevolvePackage) -> Self {
-        Self::Revolve(package)
     }
 }
 
@@ -2590,7 +2435,7 @@ impl ExactResultRegistry {
                 .planar_face_attachments
                 .iter()
                 .find(|attachment| attachment.reference() == reference),
-            ExactBodyPackage::Revolve(_) | ExactBodyPackage::Imported(_) => None,
+            ExactBodyPackage::Imported(_) => None,
         }
     }
 
@@ -2620,7 +2465,7 @@ impl ExactResultRegistry {
                 .axial_attachments
                 .iter()
                 .find(|attachment| attachment.reference() == reference),
-            ExactBodyPackage::Revolve(_) | ExactBodyPackage::Imported(_) => None,
+            ExactBodyPackage::Imported(_) => None,
         }
     }
 
@@ -8208,7 +8053,6 @@ pub enum ExactProducerPlan {
         request: Box<ExactFeatureChainRequest>,
         topology: Option<Box<ExactBRepGraph>>,
     },
-    Revolve(Box<ExactRevolveRequest>),
     Graph(Box<ExactBRepGraph>),
     Imported(Box<ImportedExactBodySpec>),
 }
@@ -8309,12 +8153,6 @@ impl<'a> ExactProducerCompilation<'a> {
             self.feature_id,
         )
         .is_ok_and(|request| reference.matches_request(&request))
-            || ExactRevolveRequest::from_snapshot(self.snapshot, self.definition_id).is_ok_and(
-                |request| {
-                    request.producer_feature_id() == self.feature_id
-                        && reference_matches_revolve_request(reference, &request)
-                },
-            )
             || ExactBRepGraph::from_snapshot(self.snapshot, self.definition_id, self.feature_id)
                 .is_ok_and(|graph| reference.matches_exact_brep_graph(&graph))
     }
@@ -8424,12 +8262,9 @@ impl ExactFeatureChainRequest {
             return Self::from_pad_pocket_snapshot(snapshot, definition_id, *producer);
         }
         if feature_ids.iter().any(|feature_id| {
-            snapshot.feature(*feature_id).is_some_and(|feature| {
-                matches!(
-                    feature.kind(),
-                    FeatureKind::BottleProfileControl { .. } | FeatureKind::Revolve { .. }
-                )
-            })
+            snapshot
+                .feature(*feature_id)
+                .is_some_and(|feature| matches!(feature.kind(), FeatureKind::Revolve { .. }))
         }) {
             return Err(ExactProductError::UnsupportedDefinition);
         }
@@ -8497,22 +8332,6 @@ impl ExactFeatureChainRequest {
                     return None;
                 };
                 Some((*id, *target, removed_faces, thickness.millimetres()))
-            })
-            .collect::<Vec<_>>();
-        let finishes = feature_ids
-            .iter()
-            .filter_map(|id| {
-                let feature = snapshot.feature(*id)?;
-                let FeatureKind::BottleEdgeFinish {
-                    target,
-                    edges,
-                    kind,
-                    amount,
-                } = feature.kind()
-                else {
-                    return None;
-                };
-                Some((*id, *target, edges, *kind, amount.millimetres()))
             })
             .collect::<Vec<_>>();
         let (extrusion_feature_id, profile_feature_id, height_mm, boolean_source, pocket_depth_mm) =
@@ -8605,9 +8424,9 @@ impl ExactFeatureChainRequest {
                 }
                 _ => return Err(ExactProductError::UnsupportedDefinition),
             };
-        let shell = match (shells.as_slice(), finishes.as_slice()) {
-            ([], []) => None,
-            ([(shell_id, target, removed_faces, thickness)], [])
+        let shell = match shells.as_slice() {
+            [] => None,
+            [(shell_id, target, removed_faces, thickness)]
                 if *target == extrusion_feature_id
                     && removed_faces.len() == 1
                     && removed_faces[0].as_str() == "extrusion.top"
@@ -8620,28 +8439,6 @@ impl ExactFeatureChainRequest {
                     edge_finish_feature_id: None,
                     edge_finish_kind: None,
                     edge_finish_amount_bits: None,
-                })
-            }
-            (
-                [(shell_id, target, removed_faces, thickness)],
-                [(finish_id, finish_target, edges, kind, amount)],
-            ) if *target == extrusion_feature_id
-                && *finish_target == *shell_id
-                && removed_faces.len() == 1
-                && removed_faces[0].as_str() == "extrusion.top"
-                && edges.len() == 1
-                && edges[0].as_str() == "shell.edge.top-east"
-                && thickness.is_finite()
-                && *thickness > 0.0
-                && amount.is_finite()
-                && *amount > 0.0 =>
-            {
-                Some(ExactBoxShellRequest {
-                    shell_feature_id: *shell_id,
-                    thickness_bits: thickness.to_bits(),
-                    edge_finish_feature_id: Some(*finish_id),
-                    edge_finish_kind: Some(*kind),
-                    edge_finish_amount_bits: Some(amount.to_bits()),
                 })
             }
             _ => return Err(ExactProductError::UnsupportedDefinition),
@@ -9990,25 +9787,8 @@ impl ExactFeatureChainRequest {
             | ExactFaceRole::PocketEast
             | ExactFaceRole::PocketSouth
             | ExactFaceRole::PocketNorth => self.boolean.as_ref().map(|cut| cut.profile_feature_id),
-            ExactFaceRole::RevolveBottom
-            | ExactFaceRole::RevolveBody
-            | ExactFaceRole::RevolveShoulder
-            | ExactFaceRole::RevolveNeck
-            | ExactFaceRole::RevolveMouth
-            | ExactFaceRole::RevolveSide0
-            | ExactFaceRole::RevolveSide1
-            | ExactFaceRole::RevolveStart
-            | ExactFaceRole::RevolveEnd
-            | ExactFaceRole::ShellOuterBottom
-            | ExactFaceRole::ShellOuterBody
-            | ExactFaceRole::ShellOuterShoulder
-            | ExactFaceRole::ShellOuterNeck
-            | ExactFaceRole::ShellRim
-            | ExactFaceRole::ShellInnerBottom
-            | ExactFaceRole::ShellInnerBody
-            | ExactFaceRole::ShellInnerShoulder
-            | ExactFaceRole::ShellInnerNeck
-            | ExactFaceRole::PlanarOffsetFace
+
+            ExactFaceRole::PlanarOffsetFace
             | ExactFaceRole::SweepStart
             | ExactFaceRole::SweepEnd
             | ExactFaceRole::SweepSide0
@@ -10246,8 +10026,9 @@ impl fmt::Display for ExactProductError {
                 formatter,
                 "exact feature-chain evaluator does not support {operation:?} in this envelope"
             ),
-            Self::UnsupportedShell => formatter
-                .write_str("exact M6 shell thickness is outside the conservative bottle envelope"),
+            Self::UnsupportedShell => {
+                formatter.write_str("exact shell thickness is outside the supported envelope")
+            }
             Self::EmptyModelExport => formatter.write_str("the visible exact model is empty"),
             Self::InvalidMeshExport => {
                 formatter.write_str("the accepted exact tessellation contains an invalid facet")

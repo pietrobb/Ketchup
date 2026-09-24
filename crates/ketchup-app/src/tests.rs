@@ -2322,15 +2322,6 @@ fn interaction_projection_refresh_defers_while_the_current_frame_reads_the_cache
 fn only_body_producing_features_are_export_candidates() {
     assert!(!FeatureKind::Profile { points_mm: vec![] }.produces_body());
     assert!(
-        !FeatureKind::BottleProfileControl {
-            profile: FeatureId(1),
-            body_radius: Dimension::new("1", 1.0).unwrap(),
-            body_height: Dimension::new("1", 1.0).unwrap(),
-            shoulder_rise: Dimension::new("1", 1.0).unwrap(),
-        }
-        .produces_body()
-    );
-    assert!(
         FeatureKind::Extrusion {
             profile: FeatureId(1),
             height: Dimension::new("1", 1.0).unwrap(),

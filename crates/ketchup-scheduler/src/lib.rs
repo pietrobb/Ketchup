@@ -40,9 +40,6 @@ use ketchup_core::exact_product::{
     build_box_render_package_with_typed_attachments, build_loft_package,
     build_planar_offset_package, build_sweep_package, canonical_reference_lineage_digest,
 };
-use ketchup_core::exact_revolve::{
-    ExactRevolvePackage, ExactRevolveRequest, build_revolve_package, expected_volume_mm3,
-};
 use ketchup_core::fea::{
     FEA_MODEL_SCHEMA_V1, FeaConstraint, FeaElement, FeaElementKind, FeaLoad, FeaMaterial, FeaModel,
     FeaNode,
@@ -945,9 +942,6 @@ const P3_CIRCLE_CAPABILITY: &str = "P3_CIRCLE_V1";
 const P3_CIRCLE_AXIAL_CAPABILITY: &str = "P3_CIRCLE_V2";
 const P3_ARC_CAPABILITY: &str = "P3_ARC_V1";
 const P3_POLYGON_CUT_CAPABILITY: &str = "P3_POLYGON_CUT_V1";
-const M6_REVOLVE_CAPABILITY: &str = "M6_REVOLVE_V1";
-const M6_SHELL_CAPABILITY: &str = "M6_SHELL_V1";
-const M14_STEP_CAPABILITY: &str = "M14_STEP_V1";
 const M21_STEP_MODEL_CAPABILITY: &str = "M21_STEP_MODEL_V1";
 const M21_STEP_XDE_CAPABILITY: &str = "M21_STEP_XDE_V1";
 const M21_IGES_CAPABILITY: &str = "M21_IGES_V1";
@@ -1011,48 +1005,6 @@ pub enum StepProfileSegment {
         center_bits: [u64; 2],
         clockwise: bool,
     },
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct StepRevolveExportSpec {
-    pub segments: Vec<StepProfileSegment>,
-    pub axis_start_bits: [u64; 2],
-    pub axis_end_bits: [u64; 2],
-    pub angle_degrees_bits: u64,
-}
-
-impl From<&ExactRevolveRequest> for StepRevolveExportSpec {
-    fn from(request: &ExactRevolveRequest) -> Self {
-        Self {
-            segments: request
-                .profile_segments()
-                .into_iter()
-                .map(|segment| match segment {
-                    ExactProfileSegment::Line {
-                        start_bits,
-                        end_bits,
-                    } => StepProfileSegment::Line {
-                        start_bits,
-                        end_bits,
-                    },
-                    ExactProfileSegment::CircularArc {
-                        start_bits,
-                        end_bits,
-                        center_bits,
-                        clockwise,
-                    } => StepProfileSegment::Arc {
-                        start_bits,
-                        end_bits,
-                        center_bits,
-                        clockwise,
-                    },
-                })
-                .collect(),
-            axis_start_bits: request.axis_start_bits,
-            axis_end_bits: request.axis_end_bits,
-            angle_degrees_bits: request.angle_degrees_bits,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1690,42 +1642,6 @@ impl ExactWorkerClient {
         } else {
             self.terminate_worker();
             Err(WorkerError::MissingCapability(capability.to_owned()))
-        }
-    }
-
-    fn verify_m6_revolve_capability(&mut self, cancelled: &AtomicBool) -> Result<(), WorkerError> {
-        let response = self.request_with_cancellation("CAPS M6_REVOLVE_V1", cancelled)?;
-        if response == "CAPS M6_REVOLVE_V1" {
-            Ok(())
-        } else {
-            self.terminate_worker();
-            Err(WorkerError::MissingCapability(
-                M6_REVOLVE_CAPABILITY.to_owned(),
-            ))
-        }
-    }
-
-    fn verify_m6_shell_capability(&mut self, cancelled: &AtomicBool) -> Result<(), WorkerError> {
-        let response = self.request_with_cancellation("CAPS M6_SHELL_V1", cancelled)?;
-        if response == "CAPS M6_SHELL_V1" {
-            Ok(())
-        } else {
-            self.terminate_worker();
-            Err(WorkerError::MissingCapability(
-                M6_SHELL_CAPABILITY.to_owned(),
-            ))
-        }
-    }
-
-    fn verify_m14_step_capability(&mut self, cancelled: &AtomicBool) -> Result<(), WorkerError> {
-        let response = self.request_with_cancellation("CAPS M14_STEP_V1", cancelled)?;
-        if response == "CAPS M14_STEP_V1" {
-            Ok(())
-        } else {
-            self.terminate_worker();
-            Err(WorkerError::MissingCapability(
-                M14_STEP_CAPABILITY.to_owned(),
-            ))
         }
     }
 
@@ -2914,232 +2830,6 @@ impl ExactWorkerClient {
         match parsed {
             Err(WorkerError::Protocol(response)) => self.fail_protocol(response),
             result => result,
-        }
-    }
-
-    fn evaluate_revolve_request_with_cancellation(
-        &mut self,
-        request: &ExactRevolveRequest,
-        cancelled: &AtomicBool,
-    ) -> Result<WorkerRevolveResult, WorkerError> {
-        let mut line = if request.general {
-            let response = self.request_with_cancellation("CAPS P4_REVOLVE_V1", cancelled)?;
-            if response != "CAPS P4_REVOLVE_V1" {
-                self.terminate_worker();
-                return Err(WorkerError::MissingCapability("P4_REVOLVE_V1".to_owned()));
-            }
-            let segments = request.profile_segments();
-            let mut line = format!(
-                "REVOLVE_P4_V1 {} {} {} {:016x} {:016x} {:016x} {:016x} {:016x} {}",
-                request.document_id.0,
-                request.revolve_feature_id.0,
-                request.canonical_input_digest,
-                request.axis_start_bits[0],
-                request.axis_start_bits[1],
-                request.axis_end_bits[0],
-                request.axis_end_bits[1],
-                request.angle_degrees_bits,
-                segments.len(),
-            );
-            for segment in &segments {
-                match segment {
-                    ExactProfileSegment::Line {
-                        start_bits,
-                        end_bits,
-                    } => write!(
-                        line,
-                        " L,{:016x},{:016x},{:016x},{:016x}",
-                        start_bits[0], start_bits[1], end_bits[0], end_bits[1]
-                    )
-                    .expect("writing to String cannot fail"),
-                    ExactProfileSegment::CircularArc {
-                        start_bits,
-                        end_bits,
-                        center_bits,
-                        clockwise,
-                    } => write!(
-                        line,
-                        " A,{:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{}",
-                        start_bits[0],
-                        start_bits[1],
-                        end_bits[0],
-                        end_bits[1],
-                        center_bits[0],
-                        center_bits[1],
-                        u8::from(*clockwise),
-                    )
-                    .expect("writing to String cannot fail"),
-                }
-            }
-            line
-        } else if let (
-            Some(finish_feature_id),
-            Some(finish_kind),
-            Some(amount_bits),
-            Some(thickness_bits),
-        ) = (
-            request.edge_finish_feature_id,
-            request.edge_finish_kind,
-            request.edge_finish_amount_bits,
-            request.thickness_bits,
-        ) {
-            let response = self.request_with_cancellation("CAPS M6_FINISH_V1", cancelled)?;
-            if response != "CAPS M6_FINISH_V1" {
-                self.terminate_worker();
-                return Err(WorkerError::MissingCapability("M6_FINISH_V1".to_owned()));
-            }
-            format!(
-                "FINISH_M6_V1 {} {} {} {:016x} {} {:016x}",
-                request.document_id.0,
-                finish_feature_id.0,
-                request.canonical_input_digest,
-                thickness_bits,
-                match finish_kind {
-                    ketchup_core::document::EdgeFinishKind::Fillet => "fillet",
-                    ketchup_core::document::EdgeFinishKind::Chamfer => "chamfer",
-                },
-                amount_bits,
-            )
-        } else if let (Some(shell_feature_id), Some(thickness_bits)) =
-            (request.shell_feature_id, request.thickness_bits)
-        {
-            self.verify_m6_shell_capability(cancelled)?;
-            format!(
-                "SHELL_M6_V1 {} {} {} {:016x}",
-                request.document_id.0,
-                shell_feature_id.0,
-                request.canonical_input_digest,
-                thickness_bits,
-            )
-        } else {
-            self.verify_m6_revolve_capability(cancelled)?;
-            format!(
-                "REVOLVE_M6_V1 {} {} {}",
-                request.document_id.0, request.revolve_feature_id.0, request.canonical_input_digest,
-            )
-        };
-        if !request.general {
-            for point in &request.points_bits {
-                line.push_str(&format!(" {:016x} {:016x}", point[0], point[1]));
-            }
-        }
-        let response = self.request_with_cancellation(&line, cancelled)?;
-        match parse_m6_revolve_result(&response) {
-            Err(WorkerError::Protocol(response)) => self.fail_protocol(response),
-            result => result,
-        }
-    }
-
-    fn export_revolve_step_request_with_cancellation(
-        &mut self,
-        request: &ExactRevolveRequest,
-        expected_result_fingerprint: &str,
-        path: &Path,
-        cancelled: &AtomicBool,
-    ) -> Result<(), WorkerError> {
-        self.verify_m14_step_capability(cancelled)?;
-        let (kind, thickness, amount) = match (
-            request.edge_finish_kind,
-            request.thickness_bits,
-            request.edge_finish_amount_bits,
-        ) {
-            (
-                Some(ketchup_core::document::EdgeFinishKind::Fillet),
-                Some(thickness),
-                Some(amount),
-            ) => (
-                "fillet",
-                format!("{thickness:016x}"),
-                format!("{amount:016x}"),
-            ),
-            (
-                Some(ketchup_core::document::EdgeFinishKind::Chamfer),
-                Some(thickness),
-                Some(amount),
-            ) => (
-                "chamfer",
-                format!("{thickness:016x}"),
-                format!("{amount:016x}"),
-            ),
-            (None, Some(thickness), None) => ("shell", format!("{thickness:016x}"), "-".to_owned()),
-            (None, None, None) => ("revolve", "-".to_owned(), "-".to_owned()),
-            _ => {
-                return Err(WorkerError::Protocol(
-                    "incomplete STEP export request".to_owned(),
-                ));
-            }
-        };
-        let mut line = format!(
-            "EXPORT_STEP_M14_V1 {} {} {} {} {kind} {thickness} {amount} {}",
-            request.document_id.0,
-            request.producer_feature_id().0,
-            request.canonical_input_digest,
-            expected_result_fingerprint,
-            hex_encode(path.to_string_lossy().as_bytes()),
-        );
-        for point in &request.points_bits {
-            line.push_str(&format!(" {:016x} {:016x}", point[0], point[1]));
-        }
-        let response = self.request_with_cancellation(&line, cancelled)?;
-        let fields = response.split_whitespace().collect::<Vec<_>>();
-        if fields.first() == Some(&"ERR") {
-            return match parse_error_response(&response, &fields) {
-                WorkerError::Protocol(response) => self.fail_protocol(response),
-                error => Err(error),
-            };
-        }
-        if fields.as_slice()
-            == [
-                "OK_M14_STEP_V1",
-                request.canonical_input_digest.as_str(),
-                expected_result_fingerprint,
-            ]
-        {
-            Ok(())
-        } else {
-            self.fail_protocol(response)
-        }
-    }
-
-    fn export_general_revolve_step_request_with_cancellation(
-        &mut self,
-        request: &ExactRevolveRequest,
-        expected_result_fingerprint: &str,
-        path: &Path,
-        cancelled: &AtomicBool,
-    ) -> Result<(), WorkerError> {
-        self.verify_m21_step_model_capability(cancelled)?;
-        let specification = serde_json::to_vec(&StepRevolveExportSpec::from(request))
-            .map_err(|error| WorkerError::Protocol(error.to_string()))?;
-        let response = self.request_with_cancellation(
-            &format!(
-                "EXPORT_REVOLVE_STEP_M21_V1 {} {} {} {} {} {}",
-                request.document_id.0,
-                request.producer_feature_id().0,
-                request.canonical_input_digest,
-                expected_result_fingerprint,
-                hex_encode(path.to_string_lossy().as_bytes()),
-                hex_encode(&specification),
-            ),
-            cancelled,
-        )?;
-        let fields = response.split_whitespace().collect::<Vec<_>>();
-        if fields.first() == Some(&"ERR") || fields.first() == Some(&"ERR_DETAIL") {
-            return match parse_error_response(&response, &fields) {
-                WorkerError::Protocol(response) => self.fail_protocol(response),
-                error => Err(error),
-            };
-        }
-        if fields.as_slice()
-            == [
-                "OK_M21_REVOLVE_STEP_V1",
-                request.canonical_input_digest.as_str(),
-                expected_result_fingerprint,
-            ]
-        {
-            Ok(())
-        } else {
-            self.fail_protocol(response)
         }
     }
 
@@ -5480,92 +5170,6 @@ impl ExactWorkerSupervisor {
         Ok(package)
     }
 
-    pub fn evaluate_revolve(
-        &mut self,
-        request: &ExactRevolveRequest,
-    ) -> Result<ExactRevolvePackage, M6EvaluationError> {
-        self.evaluate_revolve_with_cancellation(request, &NEVER_CANCELLED)
-    }
-
-    pub fn evaluate_revolve_with_cancellation(
-        &mut self,
-        request: &ExactRevolveRequest,
-        cancelled: &AtomicBool,
-    ) -> Result<ExactRevolvePackage, M6EvaluationError> {
-        self.client.ensure_not_cancelled(cancelled)?;
-        let result = match self
-            .client
-            .evaluate_revolve_request_with_cancellation(request, cancelled)
-        {
-            Ok(result) => result,
-            Err(error) if error.permits_restart() => {
-                self.client = Self::spawn_verified_client(
-                    &self.executable,
-                    &self.executable_sha256,
-                    cancelled,
-                )?;
-                self.client
-                    .evaluate_revolve_request_with_cancellation(request, cancelled)?
-            }
-            Err(error) => return Err(error.into()),
-        };
-        self.client.ensure_not_cancelled(cancelled)?;
-        validate_m6_worker_result(request, &result)?;
-        let package = build_m6_revolve_package(request, &result)?;
-        self.client.ensure_not_cancelled(cancelled)?;
-        Ok(package)
-    }
-
-    pub fn export_revolve_step(
-        &mut self,
-        snapshot: &Snapshot,
-        request: &ExactRevolveRequest,
-        expected: &ExactRevolvePackage,
-        path: &Path,
-    ) -> Result<(), M6EvaluationError> {
-        if !expected.is_current(snapshot)
-            || ExactRevolveRequest::from_snapshot(snapshot, request.definition_id).as_ref()
-                != Ok(request)
-        {
-            return Err(ExactProductError::InvalidWorkerEvidence.into());
-        }
-        expected.validate_for_request(request)?;
-        let parent = path.parent().unwrap_or_else(|| Path::new("."));
-        let temporary = tempfile::Builder::new()
-            .prefix(".ketchup-step-")
-            .suffix(".tmp")
-            .tempfile_in(parent)
-            .map_err(|error| WorkerError::Transport(error.to_string()))?;
-        let temporary = temporary.into_temp_path();
-        let export = self.client.export_revolve_step_request_with_cancellation(
-            request,
-            &expected.identity.result_fingerprint,
-            &temporary,
-            &NEVER_CANCELLED,
-        );
-        match export {
-            Ok(()) => {}
-            Err(error) if error.permits_restart() => {
-                self.client = Self::spawn_verified_client(
-                    &self.executable,
-                    &self.executable_sha256,
-                    &NEVER_CANCELLED,
-                )?;
-                self.client.export_revolve_step_request_with_cancellation(
-                    request,
-                    &expected.identity.result_fingerprint,
-                    &temporary,
-                    &NEVER_CANCELLED,
-                )?;
-            }
-            Err(error) => return Err(error.into()),
-        }
-        temporary
-            .persist(path)
-            .map_err(|error| WorkerError::Transport(error.error.to_string()))?;
-        Ok(())
-    }
-
     pub fn export_exact_brep_graph_step(
         &mut self,
         snapshot: &Snapshot,
@@ -5717,13 +5321,6 @@ impl ExactWorkerSupervisor {
                     )?;
                     expected.validate_for_request(&request)?;
                 }
-                ExactBodyPackage::Revolve(expected) => {
-                    let request = ExactRevolveRequest::from_snapshot(
-                        snapshot,
-                        expected.identity.definition_id,
-                    )?;
-                    expected.validate_for_request(&request)?;
-                }
                 ExactBodyPackage::Graph(expected) => {
                     if ExactBRepGraph::from_snapshot(
                         snapshot,
@@ -5789,28 +5386,6 @@ impl ExactWorkerSupervisor {
                         &NEVER_CANCELLED,
                     )
                 }
-                ExactBodyPackage::Revolve(expected) => {
-                    let request = ExactRevolveRequest::from_snapshot(
-                        snapshot,
-                        expected.identity.definition_id,
-                    )?;
-                    if request.general {
-                        self.client
-                            .export_general_revolve_step_request_with_cancellation(
-                                &request,
-                                &expected.identity.result_fingerprint,
-                                &source,
-                                &NEVER_CANCELLED,
-                            )
-                    } else {
-                        self.client.export_revolve_step_request_with_cancellation(
-                            &request,
-                            &expected.identity.result_fingerprint,
-                            &source,
-                            &NEVER_CANCELLED,
-                        )
-                    }
-                }
                 ExactBodyPackage::Graph(expected) => self
                     .export_exact_brep_graph_step_from_blobs_once(
                         &expected.graph,
@@ -5856,28 +5431,6 @@ impl ExactWorkerSupervisor {
                                 &source,
                                 &NEVER_CANCELLED,
                             )?;
-                        }
-                        ExactBodyPackage::Revolve(expected) => {
-                            let request = ExactRevolveRequest::from_snapshot(
-                                snapshot,
-                                expected.identity.definition_id,
-                            )?;
-                            if request.general {
-                                self.client
-                                    .export_general_revolve_step_request_with_cancellation(
-                                        &request,
-                                        &expected.identity.result_fingerprint,
-                                        &source,
-                                        &NEVER_CANCELLED,
-                                    )?;
-                            } else {
-                                self.client.export_revolve_step_request_with_cancellation(
-                                    &request,
-                                    &expected.identity.result_fingerprint,
-                                    &source,
-                                    &NEVER_CANCELLED,
-                                )?;
-                            }
                         }
                         ExactBodyPackage::Graph(expected) => {
                             self.export_exact_brep_graph_step_from_blobs_once(
@@ -6213,160 +5766,6 @@ fn build_step_assembly_nodes(
         return Err(ExactProductError::EmptyModelExport);
     }
     Ok(nodes)
-}
-
-fn validate_m6_worker_result(
-    request: &ExactRevolveRequest,
-    result: &WorkerRevolveResult,
-) -> Result<(), ExactProductError> {
-    if request.general {
-        let expected_roles = request.face_roles();
-        let evidence_valid = result.faces.len() == expected_roles.len()
-            && result
-                .faces
-                .iter()
-                .zip(expected_roles.iter().copied())
-                .enumerate()
-                .all(|(index, (evidence, role))| {
-                    evidence.ordinal < result.topology_counts[2]
-                        && result.faces[..index]
-                            .iter()
-                            .all(|prior| prior.ordinal != evidence.ordinal)
-                        && !evidence.geometric_fingerprint.is_empty()
-                        && evidence.lineage_digest
-                            == canonical_reference_lineage_digest(
-                                request.document_id,
-                                request.producer_feature_id(),
-                                role.semantic_role(),
-                                role.source_element_id(),
-                                role.expected_type(),
-                            )
-                });
-        let bounds_valid = result.bounds_mm.into_iter().all(f64::is_finite)
-            && result.bounds_mm[0] < result.bounds_mm[3]
-            && result.bounds_mm[1] < result.bounds_mm[4]
-            && result.bounds_mm[2] < result.bounds_mm[5];
-        if result.request_digest != request.canonical_input_digest
-            || !is_sha256_digest(&result.request_digest)
-            || !is_fnv1a64_digest(&result.exact_input_digest)
-            || !is_fnv1a64_digest(&result.result_fingerprint)
-            || result.backend != ketchup_exact::backend_fingerprint()
-            || result.tolerance != ketchup_exact::tolerance_profile()
-            || !evidence_valid
-            || !bounds_valid
-            || !result.volume_mm3.is_finite()
-            || result.volume_mm3 <= 0.0
-            || result.topology_counts[2] < expected_roles.len() as u32
-            || result.topology_counts[3] != 1
-            || result.topology_counts[4] != 1
-        {
-            return Err(ExactProductError::InvalidWorkerEvidence);
-        }
-        return Ok(());
-    }
-    let points = request.points_mm();
-    let max_radius = points.iter().map(|point| point[0]).fold(0.0_f64, f64::max);
-    let expected_bounds = [
-        -max_radius,
-        -max_radius,
-        points[0][1],
-        max_radius,
-        max_radius,
-        points[5][1],
-    ];
-    let expected_volume = expected_volume_mm3(request);
-    let expected_roles = request.face_roles();
-    let volume_valid = expected_volume.is_some_and(|expected| {
-        let tolerance = 1.0e-6_f64.max(expected.abs() * 1.0e-10);
-        (result.volume_mm3 - expected).abs() <= tolerance
-    }) || request.edge_finish_feature_id.is_some()
-        && result.volume_mm3.is_finite()
-        && result.volume_mm3 > 0.0;
-    let topology_face_count_valid = if request.edge_finish_feature_id.is_some() {
-        result.topology_counts[2] >= expected_roles.len() as u32
-    } else {
-        result.topology_counts[2] == expected_roles.len() as u32
-    };
-    let evidence_valid = result.faces.len() == expected_roles.len()
-        && result
-            .faces
-            .iter()
-            .zip(expected_roles.iter().copied())
-            .enumerate()
-            .all(|(index, (evidence, role))| {
-                evidence.ordinal < result.topology_counts[2]
-                    && result.faces[..index]
-                        .iter()
-                        .all(|prior| prior.ordinal != evidence.ordinal)
-                    && !evidence.geometric_fingerprint.is_empty()
-                    && evidence.lineage_digest
-                        == canonical_reference_lineage_digest(
-                            request.document_id,
-                            request.producer_feature_id(),
-                            role.semantic_role(),
-                            role.source_element_id(),
-                            role.expected_type(),
-                        )
-            });
-    if result.request_digest != request.canonical_input_digest
-        || !is_sha256_digest(&result.request_digest)
-        || !is_fnv1a64_digest(&result.exact_input_digest)
-        || !is_fnv1a64_digest(&result.result_fingerprint)
-        || result.backend != ketchup_exact::backend_fingerprint()
-        || result.tolerance != ketchup_exact::tolerance_profile()
-        || !evidence_valid
-        || !volume_valid
-        || result
-            .bounds_mm
-            .into_iter()
-            .zip(expected_bounds)
-            .any(|(actual, expected)| !actual.is_finite() || (actual - expected).abs() > 1.0e-6)
-        || !topology_face_count_valid
-        || result.topology_counts[3] != 1
-        || result.topology_counts[4] != 1
-    {
-        return Err(ExactProductError::InvalidWorkerEvidence);
-    }
-    Ok(())
-}
-
-fn build_m6_revolve_package(
-    request: &ExactRevolveRequest,
-    result: &WorkerRevolveResult,
-) -> Result<ExactRevolvePackage, ExactProductError> {
-    let face_evidence = request
-        .face_roles()
-        .iter()
-        .copied()
-        .zip(&result.faces)
-        .map(|(role, evidence)| {
-            (
-                role,
-                evidence.lineage_digest.clone(),
-                evidence.geometric_fingerprint.clone(),
-            )
-        })
-        .collect();
-    build_revolve_package(
-        request,
-        result.exact_input_digest.clone(),
-        result.result_fingerprint.clone(),
-        result.backend.clone(),
-        result.tolerance.clone(),
-        [
-            [
-                result.bounds_mm[0],
-                result.bounds_mm[1],
-                result.bounds_mm[2],
-            ],
-            [
-                result.bounds_mm[3],
-                result.bounds_mm[4],
-                result.bounds_mm[5],
-            ],
-        ],
-        face_evidence,
-    )
 }
 
 fn validate_loft_worker_result(
@@ -8977,90 +8376,6 @@ fn parse_p6_offset_result(response: &str) -> Result<WorkerPlanarOffsetResult, Wo
             axis_origin_mm: None,
             unit_axis_direction: None,
         },
-    })
-}
-
-fn parse_m6_revolve_result(response: &str) -> Result<WorkerRevolveResult, WorkerError> {
-    let fields = response.split_whitespace().collect::<Vec<_>>();
-    if fields.first() == Some(&"ERR") {
-        return Err(parse_error_response(response, &fields));
-    }
-    let (face_count, evidence_offset) = match fields.first().copied() {
-        Some("OK_M6_REVOLVE_V1") => (5, 19),
-        Some("OK_M6_SHELL_V1") | Some("OK_M6_FINISH_V1") => (9, 19),
-        Some("OK_P4_REVOLVE_V1") => {
-            let count = fields
-                .get(19)
-                .and_then(|value| value.parse::<usize>().ok())
-                .ok_or_else(|| WorkerError::Protocol(response.to_owned()))?;
-            if !matches!(count, 2 | 4) {
-                return Err(WorkerError::Protocol(response.to_owned()));
-            }
-            (count, 20)
-        }
-        _ => return Err(WorkerError::Protocol(response.to_owned())),
-    };
-    let expected_len = evidence_offset + face_count * 3;
-    if fields.len() != expected_len
-        || fields[1].parse::<u128>().is_err()
-        || !is_fnv1a64_digest(fields[2])
-        || !is_sha256_digest(fields[15])
-        || !is_fnv1a64_digest(fields[16])
-        || fields[17].is_empty()
-        || fields[18].is_empty()
-        || (0..face_count).any(|index| {
-            let offset = evidence_offset + index * 3;
-            !is_fnv1a64_digest(fields[offset + 1]) || !is_fnv1a64_digest(fields[offset + 2])
-        })
-    {
-        return Err(WorkerError::Protocol(response.to_owned()));
-    }
-    let parse_f64 = |index: usize| {
-        u64::from_str_radix(fields[index], 16)
-            .map(f64::from_bits)
-            .map_err(|_| WorkerError::Protocol(response.to_owned()))
-    };
-    let parse_u32 = |index: usize| {
-        fields[index]
-            .parse::<u32>()
-            .map_err(|_| WorkerError::Protocol(response.to_owned()))
-    };
-    let mut faces = Vec::with_capacity(face_count);
-    for index in 0..face_count {
-        let offset = evidence_offset + index * 3;
-        faces.push(WorkerFaceEvidence {
-            ordinal: parse_u32(offset)?,
-            geometric_fingerprint: fields[offset + 1].to_owned(),
-            lineage_digest: fields[offset + 2].to_owned(),
-            centroid_mm: None,
-            unit_normal: None,
-            axis_origin_mm: None,
-            unit_axis_direction: None,
-        });
-    }
-    Ok(WorkerRevolveResult {
-        result_fingerprint: fields[2].to_owned(),
-        volume_mm3: parse_f64(3)?,
-        bounds_mm: [
-            parse_f64(4)?,
-            parse_f64(5)?,
-            parse_f64(6)?,
-            parse_f64(7)?,
-            parse_f64(8)?,
-            parse_f64(9)?,
-        ],
-        topology_counts: [
-            parse_u32(10)?,
-            parse_u32(11)?,
-            parse_u32(12)?,
-            parse_u32(13)?,
-            parse_u32(14)?,
-        ],
-        request_digest: fields[15].to_owned(),
-        exact_input_digest: fields[16].to_owned(),
-        backend: fields[17].to_owned(),
-        tolerance: fields[18].to_owned(),
-        faces,
     })
 }
 

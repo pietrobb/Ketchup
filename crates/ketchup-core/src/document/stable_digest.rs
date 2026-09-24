@@ -1473,19 +1473,6 @@ impl StableDigest {
                 }
                 self.u64(angle_degrees.to_bits());
             }
-            FeatureKind::BottleProfileControl {
-                profile,
-                body_radius,
-                body_height,
-                shoulder_rise,
-            } => {
-                self.byte(6);
-                self.u64(profile.0);
-                for dimension in [body_radius, body_height, shoulder_rise] {
-                    self.bytes(dimension.source_token.as_bytes());
-                    self.u64(dimension.millimetres.to_bits());
-                }
-            }
             FeatureKind::Shell {
                 target,
                 removed_faces,
@@ -1499,25 +1486,6 @@ impl StableDigest {
                 }
                 self.bytes(thickness.source_token.as_bytes());
                 self.u64(thickness.millimetres.to_bits());
-            }
-            FeatureKind::BottleEdgeFinish {
-                target,
-                edges,
-                kind,
-                amount,
-            } => {
-                self.byte(7);
-                self.u64(target.0);
-                self.u64(edges.len() as u64);
-                for role in edges {
-                    self.bytes(role.as_str().as_bytes());
-                }
-                self.byte(match kind {
-                    EdgeFinishKind::Fillet => 1,
-                    EdgeFinishKind::Chamfer => 2,
-                });
-                self.bytes(amount.source_token.as_bytes());
-                self.u64(amount.millimetres.to_bits());
             }
             FeatureKind::TopologyShell {
                 target,
@@ -3091,29 +3059,6 @@ impl StableDigest {
                 self.u64(id.0);
                 self.u64(delta_mm[0].to_bits());
                 self.u64(delta_mm[1].to_bits());
-            }
-            CanonicalCommand::SetBottleControlDimension {
-                id,
-                control,
-                dimension,
-            } => {
-                self.byte(31);
-                self.u64(id.0);
-                self.byte(match control {
-                    BottleControlDimension::BodyRadius => 1,
-                    BottleControlDimension::BodyHeight => 2,
-                    BottleControlDimension::ShoulderRise => 3,
-                });
-                self.bytes(dimension.source_token.as_bytes());
-                self.u64(dimension.millimetres.to_bits());
-            }
-            CanonicalCommand::SetBottleEdgeFinishKind { id, kind } => {
-                self.byte(32);
-                self.u64(id.0);
-                self.byte(match kind {
-                    EdgeFinishKind::Fillet => 1,
-                    EdgeFinishKind::Chamfer => 2,
-                });
             }
             CanonicalCommand::SetProfilePoints { id, points_mm } => {
                 self.byte(27);

@@ -407,9 +407,6 @@ fn prepare_requests(
                     definition_id,
                     ExactEvaluationRequest::Rectangle { request, topology },
                 ))),
-                ExactProducerPlan::Revolve(_) => {
-                    unreachable!("legacy revolve planning is disabled")
-                }
                 ExactProducerPlan::Graph(graph) => {
                     let mut imported_sources = Vec::new();
                     let mut imported_hashes = Vec::new();
