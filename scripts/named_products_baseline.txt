@@ -1,0 +1,12 @@
+# Remaining named-product occurrences; may only shrink.
+crates/ketchup-app/src/lib.rs:capsule 6
+crates/ketchup-app/src/lib.rs:drawer 1
+crates/ketchup-application/src/validation.rs:drawer 13
+crates/ketchup-core/src/exact_product.rs:capsule 50
+crates/ketchup-core/src/exact_product.rs:d_profile 26
+crates/ketchup-core/src/joinery.rs:cabinet 2
+crates/ketchup-exact/src/lib.rs:capsule 5
+crates/ketchup-headless/src/protocol/model_tools.rs:nightstand 1
+crates/ketchup-scheduler/src/bin/pair_query/mod.rs:nightstand 1
+crates/ketchup-scheduler/src/lib.rs:capsule 13
+crates/ketchup-scheduler/src/lib.rs:d_profile 8
