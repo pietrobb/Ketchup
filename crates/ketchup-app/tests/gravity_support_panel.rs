@@ -5,9 +5,10 @@
 //! freshly built model ever declares — so a frame with a beam hanging in
 //! mid-air was reported as "not evaluated" rather than rejected. The roles are
 //! now read from what the document already states: every visible solid is a
-//! body, and the occurrences the document grounds are the only support seeds.
-//! No floor is invented — without a grounded occurrence there is still no seed
-//! and the validator stays honestly unevaluated.
+//! body, and support is seeded by the occurrences the document grounds and by
+//! the world XY plane (z = 0) acting as the floor. A structure that neither
+//! touches the floor nor has a grounded occurrence has no seed, and the
+//! validator stays honestly unevaluated.
 //!
 //! The same structure is driven through the operator's validator panel twice:
 //! rejected by name while the ridge beam floats, accepted once it is lowered
@@ -62,29 +63,35 @@ fn timber(name: &str, size_mm: [f64; 3], origin_mm: [f64; 3]) -> AssistantBoxInt
 /// A minimal frame: a foundation on the ground, two posts standing on it, and
 /// a ridge beam left hanging above the posts instead of resting on them.
 fn build_frame_with_a_floating_ridge(shell: &mut Shell) {
+    build_frame_with_a_floating_ridge_at(shell, 0.0);
+}
+
+/// The same frame with every member raised by `elevation_mm` above the floor.
+fn build_frame_with_a_floating_ridge_at(shell: &mut Shell, elevation_mm: f64) {
     let post_height_mm = POST_TOP_MM - FOUNDATION_TOP_MM;
+    let z = elevation_mm;
     assert!(shell.app_mut().prepare_assistant_model_intent(model_intent(
         true,
         vec![
             timber(
                 "Foundation",
                 [4_000.0, 400.0, FOUNDATION_TOP_MM],
-                [0.0, 0.0, 0.0],
+                [0.0, 0.0, z],
             ),
             timber(
                 "Post left",
                 [200.0, 200.0, post_height_mm],
-                [0.0, 0.0, FOUNDATION_TOP_MM],
+                [0.0, 0.0, z + FOUNDATION_TOP_MM],
             ),
             timber(
                 "Post right",
                 [200.0, 200.0, post_height_mm],
-                [3_800.0, 0.0, FOUNDATION_TOP_MM],
+                [3_800.0, 0.0, z + FOUNDATION_TOP_MM],
             ),
             timber(
                 "Ridge beam",
                 [4_000.0, 200.0, 200.0],
-                [0.0, 0.0, POST_TOP_MM + FLOATING_GAP_MM],
+                [0.0, 0.0, z + POST_TOP_MM + FLOATING_GAP_MM],
             ),
         ],
         Vec::new(),
@@ -168,9 +175,36 @@ fn unsupported_parts(report: &ValidatorPanelReport) -> Vec<String> {
 }
 
 #[test]
-fn a_structure_with_nothing_grounded_is_not_silently_approved() {
+fn a_structure_standing_on_the_xy_plane_is_judged_without_explicit_grounding() {
     let mut shell = Shell::new();
     build_frame_with_a_floating_ridge(&mut shell);
+    shell.settle();
+    let foundation = occurrence_id_of(&shell, "Foundation");
+    assert!(!shell.app().document_snapshot().occurrence_is_grounded(foundation));
+
+    let report = run_validators(&mut shell);
+    assert_eq!(
+        gravity_not_evaluated_reason(&report),
+        None,
+        "the foundation rests on z = 0, so the floor seeds support: {report:#?}"
+    );
+    let floating = unsupported_parts(&report);
+    assert!(
+        floating.iter().any(|part| part.starts_with("Ridge beam")),
+        "the hanging ridge beam must still be named, got {floating:#?}"
+    );
+    assert!(
+        !floating
+            .iter()
+            .any(|part| part.starts_with("Post") || part.starts_with("Foundation")),
+        "the foundation stands on the floor and carries the posts, got {floating:#?}"
+    );
+}
+
+#[test]
+fn a_structure_above_the_floor_with_nothing_grounded_is_not_silently_approved() {
+    let mut shell = Shell::new();
+    build_frame_with_a_floating_ridge_at(&mut shell, 500.0);
     shell.settle();
 
     let report = run_validators(&mut shell);

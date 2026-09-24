@@ -11,9 +11,14 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
     use ketchup_core::document::FeatureParameterTarget;
     use ketchup_core::joinery::project_dowel_joint_contract;
 
-    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
         "../ketchup-application/tests/fixtures/fast_assembly/nightstand_v9_retention.ketchup",
     );
+    // Open a private copy: editing the fixture in place leaves recovery
+    // sidecars beside it that the next run would silently load.
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("nightstand_v9_retention.ketchup");
+    std::fs::copy(&fixture, &source).unwrap();
     let (mut app, mut bridge) = setup();
     if let Some(path) = std::env::var_os("KETCHUP_TEST_EXACT_WORKER") {
         let path = std::path::PathBuf::from(path);
@@ -25,14 +30,14 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
         app.exact_worker_attempted = true;
     }
     assert!(app.open_document_path(&source));
-    // The fixture was saved without grounding; gravity support needs to know
-    // which parts stand on the floor (both sides, bottom shelf, drawer front).
+    // The fixture was saved without grounding. Parts resting on the XY plane
+    // (both sides, bottom shelf, drawer front) stand on the floor by default.
     // The drawer box (8-11) rides on runners the fixture does not model, so it
-    // is declared carried as well. Everything else must be carried by contact
-    // or by the verified dowel joints.
+    // is declared carried explicitly. Everything else must be carried by
+    // contact or by the verified dowel joints.
     app.document
         .apply_batch(&CommandBatch::new(
-            [2, 3, 4, 7, 8, 9, 10, 11]
+            [8, 9, 10, 11]
                 .map(|id| CanonicalCommand::SetOccurrenceGrounded {
                     id: OccurrenceId(id),
                     grounded: true,

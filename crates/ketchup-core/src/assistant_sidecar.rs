@@ -2052,6 +2052,10 @@ pub enum AssistantCadEditOperation {
         selector: AssistantCadEntitySelector,
         color: Option<[u8; 3]>,
     },
+    SetGrounded {
+        selector: AssistantCadEntitySelector,
+        grounded: bool,
+    },
     CreateTag {
         tag_id: u64,
         name: String,
@@ -2845,6 +2849,7 @@ impl AssistantCadEditProgram {
                 | AssistantCadEditOperation::CreateThread { .. } => 1,
                 AssistantCadEditOperation::Delete { selector, .. }
                 | AssistantCadEditOperation::SetColor { selector, .. }
+                | AssistantCadEditOperation::SetGrounded { selector, .. }
                 | AssistantCadEditOperation::SetOccurrenceTag { selector, .. }
                 | AssistantCadEditOperation::SetOccurrenceClassification { selector, .. }
                 | AssistantCadEditOperation::Transform { selector, .. }
@@ -3583,6 +3588,7 @@ impl AssistantCadEditProgram {
                     0
                 }
                 AssistantCadEditOperation::SetColor { .. }
+                | AssistantCadEditOperation::SetGrounded { .. }
                 | AssistantCadEditOperation::Delete { .. } => 0,
                 AssistantCadEditOperation::Transform {
                     translation_mm,

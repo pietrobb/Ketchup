@@ -596,7 +596,7 @@ fn sdk_and_builtin_assistant_share_apply_and_verify_success_contract() {
                 expected: Some(sdk_before.clone()),
                 selection: Some(vec![]),
                 program: program(),
-                validators: mandatory_validators(),
+                validators: Vec::new(),
                 timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
                 save: None,
             },
@@ -605,6 +605,8 @@ fn sdk_and_builtin_assistant_share_apply_and_verify_success_contract() {
         .unwrap();
 
     assert_eq!(contract(&assistant_result), contract(&sdk_result));
+    // Collision is the only check every edit pays for; gravity is on demand.
+    assert_eq!(sdk_result["validation"]["requested"], json!(["collision"]));
     assert_eq!(
         assistant_app.live_bridge_stamp().revision,
         assistant_before.revision + 1
@@ -619,15 +621,8 @@ fn sdk_and_builtin_assistant_share_apply_and_verify_success_contract() {
 
 #[test]
 fn apply_and_verify_needs_only_a_program() {
+    // Nothing is grounded: gravity is not requested, so it cannot block the edit.
     let (mut app, mut bridge) = setup();
-    app.document
-        .apply_batch(&CommandBatch::new(vec![
-            CanonicalCommand::SetOccurrenceGrounded {
-                id: OccurrenceId(1),
-                grounded: true,
-            },
-        ]))
-        .unwrap();
     crate::tests::install_initial_graph_result(&mut app);
     let before_steps = app.undo_step_count();
     let request: Request = serde_json::from_value(json!({

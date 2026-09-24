@@ -4177,6 +4177,42 @@ fn missing_topology_evidence_cannot_authorize_a_finish() {
 }
 
 #[test]
+fn set_grounded_program_grounds_and_ungrounds_selected_occurrences_in_one_undo_step() {
+    let mut document = seeded();
+    let registry = ExactResultRegistry::default();
+    let before = document.current();
+    let ground = program(vec![AssistantCadEditOperation::SetGrounded {
+        selector: explicit(1),
+        grounded: true,
+    }]);
+    document
+        .apply_batch(&plan(&document, &BTreeSet::new(), &registry, &ground).unwrap())
+        .unwrap();
+    assert!(document.current().occurrence_is_grounded(OccurrenceId(1)));
+    document.undo().unwrap();
+    assert_eq!(
+        document.current().canonical_digest(),
+        before.canonical_digest()
+    );
+    document.redo().unwrap();
+    let unground = program(vec![AssistantCadEditOperation::SetGrounded {
+        selector: explicit(1),
+        grounded: false,
+    }]);
+    document
+        .apply_batch(&plan(&document, &BTreeSet::new(), &registry, &unground).unwrap())
+        .unwrap();
+    assert!(!document.current().occurrence_is_grounded(OccurrenceId(1)));
+    let missing = program(vec![AssistantCadEditOperation::SetGrounded {
+        selector: AssistantCadEntitySelector::Occurrences {
+            occurrence_ids: vec![999],
+        },
+        grounded: true,
+    }]);
+    assert!(plan(&document, &BTreeSet::new(), &registry, &missing).is_err());
+}
+
+#[test]
 fn color_program_is_atomic_and_copy_pattern_mirror_preserve_accumulated_color() {
     let mut document = seeded();
     let registry = ExactResultRegistry::default();

@@ -480,6 +480,7 @@ fn bind_assistant_cad_current_selection(
             | AssistantCadEditOperation::CreateEvaluatorInput { .. } => None,
             AssistantCadEditOperation::Delete { selector, .. }
             | AssistantCadEditOperation::SetColor { selector, .. }
+            | AssistantCadEditOperation::SetGrounded { selector, .. }
             | AssistantCadEditOperation::SetOccurrenceClassification { selector, .. }
             | AssistantCadEditOperation::Transform { selector, .. }
             | AssistantCadEditOperation::Copy { selector, .. }

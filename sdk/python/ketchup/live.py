@@ -1194,7 +1194,7 @@ class LiveSession:
                          selection: list[int] | tuple[int, ...] | None = None,
                          validators: list[str] | None = None, timeout_ms: int = 10_000,
                          save: dict | None = None) -> dict:
-        """One atomic, verified edit (collision + gravity_support always run).
+        """One atomic, verified edit (collision always runs; add gravity_support to validators on demand).
 
         `expected`/`selection` are optional guards against a concurrent human edit.
         Never resend after a transport error without re-observing: there is no replay.

@@ -168,8 +168,8 @@ pub enum Request {
         expected: Option<Stamp>,
         proposal_id: u64,
     },
-    /// Plan, evaluate exact geometry, run collision + gravity_support (plus any
-    /// extra `validators`) and publish as one Undo step. `expected` and
+    /// Plan, evaluate exact geometry, run collision (plus any extra
+    /// `validators`, e.g. gravity_support on demand) and publish as one Undo step. `expected` and
     /// `selection` are optional guards against concurrent human edits.
     ApplyAndVerify {
         #[serde(default)]
@@ -851,6 +851,7 @@ impl LiveBridge {
                 AssistantCadEditOperation::Delete { selector, .. }
                 | AssistantCadEditOperation::Transform { selector, .. }
                 | AssistantCadEditOperation::SetColor { selector, .. }
+                | AssistantCadEditOperation::SetGrounded { selector, .. }
                 | AssistantCadEditOperation::SetOccurrenceClassification { selector, .. }
                 | AssistantCadEditOperation::Copy { selector, .. }
                 | AssistantCadEditOperation::LinearPattern { selector, .. }
@@ -917,7 +918,7 @@ impl LiveBridge {
     fn mandatory_validation_selection(
         validators: &[String],
     ) -> Result<AssistantValidationSelection, &'static str> {
-        let mut validator_names = vec!["collision", "gravity_support"];
+        let mut validator_names = vec!["collision"];
         for name in validators {
             if !validator_names.contains(&name.as_str()) {
                 validator_names.push(name.as_str());

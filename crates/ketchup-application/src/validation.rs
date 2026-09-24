@@ -2851,36 +2851,42 @@ pub fn assistant_passage_clearance_report(
 const DERIVED_GRAVITY_SUPPORT_GROUP: &str = "document";
 /// Standard gravity, used when the document declares no gravity vector.
 const CANONICAL_GRAVITY_M_S2: [f64; 3] = [0.0, 0.0, -9.81];
-const DERIVED_GRAVITY_ROLE_ASSUMPTION: &str = "gravity roles were read from the document: every visible solid is a body, and only the occurrences the document grounds seed support";
+const DERIVED_GRAVITY_ROLE_ASSUMPTION: &str = "gravity roles were read from the document: every visible solid is a body; occurrences the document grounds, and bodies whose lowest point lies on or below the world XY plane (z = 0) under -Z gravity, seed support";
+/// A body whose lowest point is within this distance above z = 0 stands on the floor.
+const FLOOR_CONTACT_TOLERANCE_MM: f64 = 0.01;
 const DERIVED_GRAVITY_VECTOR_ASSUMPTION: &str =
     "no gravity vector is declared, so standard gravity 9.81 m/s² along -Z was assumed";
 
 /// Gravity participants read straight from what the document already states.
 ///
-/// No floor is invented here. Support still has to be earned by real contact
-/// with an occurrence the document explicitly grounds; this only spares the
-/// operator from restating, as classification roles, two facts the document
-/// already holds — which solids are visible, and which of them are grounded.
-/// Without a single grounded occurrence there is no seed, so nothing is
-/// derived and the validator stays honestly unevaluated.
+/// Support is seeded by occurrences the document explicitly grounds and, when
+/// gravity points along -Z, by the world XY plane: a body whose lowest point
+/// is on (or below) z = 0 stands on the floor. Everything else still has to
+/// earn support through real contact or verified joinery. Without any seed
+/// nothing is derived and the validator stays honestly unevaluated.
 pub fn assistant_derived_gravity_participants(
     snapshot: &Snapshot,
     participants: &[GeneralBodyParticipant],
+    floor_is_world_xy: bool,
 ) -> Vec<GravitySupportParticipant> {
-    if snapshot.grounded_occurrences().next().is_none() {
-        return Vec::new();
-    }
-    participants
+    let derived = participants
         .iter()
         .map(|body| {
             let occurrence_id = body.instance_path().root_occurrence();
+            let on_floor =
+                floor_is_world_xy && body.bounds().min()[2] <= FLOOR_CONTACT_TOLERANCE_MM;
             GravitySupportParticipant::new(
                 body.clone(),
                 DERIVED_GRAVITY_SUPPORT_GROUP,
-                snapshot.occurrence_is_grounded(occurrence_id),
+                on_floor || snapshot.occurrence_is_grounded(occurrence_id),
             )
         })
-        .collect()
+        .collect::<Vec<_>>();
+    if derived.iter().any(|participant| participant.explicitly_grounded) {
+        derived
+    } else {
+        Vec::new()
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -3636,13 +3642,17 @@ pub(crate) fn assistant_validation_context_base(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    let declared_gravity = assistant_gravity_input(snapshot).ok();
     if gravity_participants.is_empty() {
-        gravity_participants = assistant_derived_gravity_participants(snapshot, &participants);
+        let floor_is_world_xy = declared_gravity.is_none_or(|gravity| {
+            gravity.direction[2] < 0.0 && (1.0 + gravity.direction[2]).abs() <= 1.0e-9
+        });
+        gravity_participants =
+            assistant_derived_gravity_participants(snapshot, &participants, floor_is_world_xy);
         if !gravity_participants.is_empty() {
             gravity_derivations.push(DERIVED_GRAVITY_ROLE_ASSUMPTION.to_owned());
         }
     }
-    let declared_gravity = assistant_gravity_input(snapshot).ok();
     if declared_gravity.is_none() && !gravity_participants.is_empty() {
         gravity_derivations.push(DERIVED_GRAVITY_VECTOR_ASSUMPTION.to_owned());
     }

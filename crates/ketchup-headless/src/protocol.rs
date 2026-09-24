@@ -1812,7 +1812,7 @@ mod tests {
             caps["result"]["cad_program_schema"]["$defs"]["AssistantCadEditOperation"]["oneOf"]
                 .as_array()
                 .unwrap();
-        assert_eq!(variants.len(), 40);
+        assert_eq!(variants.len(), 41);
         for operation in [
             "append_feature",
             "create_panel",

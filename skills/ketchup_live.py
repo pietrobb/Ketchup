@@ -489,7 +489,7 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
             targets: For edit_context, 1 to 8 observed instance paths using stable root/local IDs.
             selection: Optional root occurrence IDs the GUI selection must equal.
             program: For apply_and_verify, one typed semantic CAD patch containing operations.
-            validators: Optional extra validator IDs; collision and gravity_support always run.
+            validators: Optional extra validator IDs; collision always runs; pass ["gravity_support"] for an occasional gravity check.
             timeout_ms: Whole host-job deadline from 1 through 10000 ms.
             save: Optional tagged save request: {"mode":"current"} or {"mode":"path","path":"..."}.
         """

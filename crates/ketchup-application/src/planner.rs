@@ -1716,6 +1716,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
             AssistantCadEditOperation::Delete { .. } => "delete_occurrence",
             AssistantCadEditOperation::Transform { .. } => "transform_occurrence",
             AssistantCadEditOperation::SetColor { .. } => "set_color",
+            AssistantCadEditOperation::SetGrounded { .. } => "set_grounded",
             AssistantCadEditOperation::CreateTag { .. } => "create_tag",
             AssistantCadEditOperation::SetOccurrenceTag { .. } => "set_occurrence_tag",
             AssistantCadEditOperation::SetTagVisibility { .. } => "set_tag_visibility",
@@ -1849,6 +1850,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
             AssistantCadEditOperation::Delete { selector, .. }
             | AssistantCadEditOperation::Transform { selector, .. }
             | AssistantCadEditOperation::SetColor { selector, .. }
+            | AssistantCadEditOperation::SetGrounded { selector, .. }
             | AssistantCadEditOperation::SetOccurrenceTag { selector, .. }
             | AssistantCadEditOperation::SetOccurrenceClassification { selector, .. }
             | AssistantCadEditOperation::Copy { selector, .. }
@@ -3398,6 +3400,14 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                 for id in targets {
                     staged_planning
                         .push(CanonicalCommand::SetOccurrenceColor { id, color: *color });
+                }
+            }
+            AssistantCadEditOperation::SetGrounded { grounded, .. } => {
+                for id in targets {
+                    staged_planning.push(CanonicalCommand::SetOccurrenceGrounded {
+                        id,
+                        grounded: *grounded,
+                    });
                 }
             }
             AssistantCadEditOperation::CreateTag {
