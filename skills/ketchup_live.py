@@ -479,7 +479,7 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
                     targets: list[dict] | None = None,
                     selection: list[int] | None = None,
                     program: dict | None = None, validators: list[str] | None = None,
-                    timeout_ms: int = 10_000, save: dict | None = None) -> str:
+                    timeout_ms: int = 60_000, save: dict | None = None) -> str:
         """Read a narrow semantic edit context or apply one program as a verified single Undo step.
 
         Args:
@@ -490,7 +490,7 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
             selection: Optional root occurrence IDs the GUI selection must equal.
             program: For apply_and_verify, one typed semantic CAD patch containing operations.
             validators: Optional extra validator IDs; collision always runs; pass ["gravity_support"] for an occasional gravity check.
-            timeout_ms: Whole host-job deadline from 1 through 10000 ms.
+            timeout_ms: Whole host-job deadline from 1 through 120000 ms (default 60000); on timeout nothing is applied.
             save: Optional tagged save request: {"mode":"current"} or {"mode":"path","path":"..."}.
         """
         def job():
@@ -499,7 +499,7 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
             stamp = runtime.expected(expected)
             if action == "edit_context":
                 if (selection is not None or program is not None
-                        or validators is not None or timeout_ms != 10_000 or save is not None):
+                        or validators is not None or timeout_ms != 60_000 or save is not None):
                     raise Rejection("invalid_arguments", "edit_context accepts only targets.")
                 return live_session.edit_context(stamp, targets)
             runtime.guard()

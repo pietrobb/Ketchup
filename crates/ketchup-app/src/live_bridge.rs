@@ -66,9 +66,10 @@ pub const MIN_IMAGE_SIDE_PX: u32 = 512;
 pub const MAX_IMAGE_SIDE_PX: u32 = 1600;
 pub const QUEUE_CAPACITY: usize = 8;
 pub const MAX_SELECTION: usize = 100;
-pub const MAX_APPLY_VERIFY_TIMEOUT_MS: u64 = 10_000;
+pub const MAX_APPLY_VERIFY_TIMEOUT_MS: u64 = 120_000;
+pub const DEFAULT_APPLY_VERIFY_TIMEOUT_MS: u64 = 60_000;
 const fn default_apply_verify_timeout_ms() -> u64 {
-    MAX_APPLY_VERIFY_TIMEOUT_MS
+    DEFAULT_APPLY_VERIFY_TIMEOUT_MS
 }
 pub const MAX_BATCH_JOBS: usize = 16;
 pub const IMAGE_PROTOCOL_VERSION: u32 = 4;
@@ -1441,7 +1442,7 @@ impl LiveBridge {
                 selection: None,
                 program,
                 validators: Vec::new(),
-                timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
+                timeout_ms: DEFAULT_APPLY_VERIFY_TIMEOUT_MS,
                 save: None,
             },
             false,

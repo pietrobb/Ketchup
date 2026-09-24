@@ -1192,7 +1192,7 @@ class LiveSession:
 
     def apply_and_verify(self, program: dict, *, expected: Stamp | dict | None = None,
                          selection: list[int] | tuple[int, ...] | None = None,
-                         validators: list[str] | None = None, timeout_ms: int = 10_000,
+                         validators: list[str] | None = None, timeout_ms: int = 60_000,
                          save: dict | None = None) -> dict:
         """One atomic, verified edit (collision always runs; add gravity_support to validators on demand).
 
@@ -1209,7 +1209,7 @@ class LiveSession:
         if type(validators) is not list or any(
                 type(validator) is not str or not validator for validator in validators):
             raise ValueError("validators must be a list of names")
-        _uint(timeout_ms, 1, 10_000)
+        _uint(timeout_ms, 1, 120_000)
         if save is not None and type(save) is not dict:
             raise ValueError("save must be a tagged object")
         return self._request(
