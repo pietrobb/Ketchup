@@ -11799,17 +11799,34 @@ impl KetchupApp {
                                 });
                             }
                         }
-                        Err(code) => self.assistant_messages.push(AssistantChatMessage {
-                            role: AssistantMessageRole::Error,
-                            text: match live_bridge::take_error_details()
-                                .and_then(|details| details["message"].as_str().map(str::to_owned))
-                            {
-                                Some(message) => format!("apply_and_verify: {code}: {message}"),
-                                None => format!("apply_and_verify: {code}"),
-                            },
-                            source: pending.source,
-                            diagnostic: None,
-                        }),
+                        Err(
+                            live_bridge::PlanRejection::Planning(diagnostic)
+                            | live_bridge::PlanRejection::CapabilityGap(diagnostic),
+                        ) => {
+                            self.record_assistant_rejection(*diagnostic, false);
+                        }
+                        Err(live_bridge::PlanRejection::Code(code)) => {
+                            let details = live_bridge::take_error_details();
+                            let detail = |key: &str| {
+                                details
+                                    .as_ref()
+                                    .and_then(|details| details[key].as_str())
+                                    .map(str::to_owned)
+                            };
+                            let mut text = format!("apply_and_verify: {code}");
+                            if let Some(message) = detail("message") {
+                                text.push_str(&format!(": {message}"));
+                            }
+                            if let Some(hint) = detail("hint") {
+                                text.push_str(&format!(" ({hint})"));
+                            }
+                            self.assistant_messages.push(AssistantChatMessage {
+                                role: AssistantMessageRole::Error,
+                                text,
+                                source: pending.source,
+                                diagnostic: None,
+                            });
+                        }
                     }
                 }
             } else {

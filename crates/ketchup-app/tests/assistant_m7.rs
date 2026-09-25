@@ -2390,7 +2390,7 @@ fn scripted_append_pocket_rejects_missing_profile_without_false_success() {
     shell.settle();
     assert_eq!(rejection.role, AssistantMessageRole::Error, "{rejection:?}");
     assert!(
-        rejection.text.starts_with("apply_and_verify: ") && rejection.text.contains("999"),
+        rejection.diagnostic.is_some() && rejection.text.contains("999"),
         "{rejection:?}"
     );
     assert!(shell.has_visible_label(&rejection.text));
@@ -3304,10 +3304,7 @@ fn integrated_finishing_chain_rebuilds_exactly_through_headless_assistant() {
     shell.press_key(egui::Key::Enter);
     let rejection = wait_for_assistant_reply(&mut shell);
     assert_eq!(rejection.role, AssistantMessageRole::Error, "{rejection:?}");
-    assert!(
-        rejection.text.starts_with("apply_and_verify: "),
-        "{rejection:?}"
-    );
+    assert!(rejection.diagnostic.is_some(), "{rejection:?}");
     assert!(shell.app().assistant_proposal().is_none());
     assert_eq!(shell.app().document_revision(), before_rejection_revision);
     assert_eq!(shell.app().canonical_digest(), before_rejection_digest);
@@ -3650,10 +3647,7 @@ fn scripted_sketch_program_rejects_invalid_constraint_without_mutation() {
     invalid_shell.press_key(egui::Key::Enter);
     let rejection = wait_for_assistant_reply(&mut invalid_shell);
     assert_eq!(rejection.role, AssistantMessageRole::Error, "{rejection:?}");
-    assert!(
-        rejection.text.starts_with("apply_and_verify: "),
-        "{rejection:?}"
-    );
+    assert!(rejection.diagnostic.is_some(), "{rejection:?}");
     assert!(invalid_shell.app().assistant_proposal().is_none());
     assert_eq!(invalid_shell.app().document_revision(), before_revision);
     assert_eq!(invalid_shell.app().canonical_digest(), before_digest);

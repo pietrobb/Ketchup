@@ -545,7 +545,7 @@ fn sdk_and_builtin_assistant_share_apply_and_verify_error_codes() {
         )
         .unwrap_err();
 
-    assert_eq!(assistant_error, sdk_error);
+    assert_eq!(assistant_error.into_code(), sdk_error);
     assert_eq!(assistant_app.live_bridge_stamp(), assistant_before);
     assert_eq!(sdk_app.live_bridge_stamp(), sdk_before);
     assert_eq!(assistant_app.undo_step_count(), assistant_undo);

@@ -424,13 +424,26 @@ struct Pending {
     selection: SelectionGuard,
     proposal: Proposal,
 }
-enum PlanRejection {
+#[derive(Debug)]
+pub(crate) enum PlanRejection {
     Code(&'static str),
+    /// The program could not be planned; the diagnostic says why.
+    Planning(Box<AssistantRejectionDiagnostic>),
     CapabilityGap(Box<AssistantRejectionDiagnostic>),
 }
 impl From<&'static str> for PlanRejection {
     fn from(code: &'static str) -> Self {
         Self::Code(code)
+    }
+}
+impl PlanRejection {
+    /// The bridge error code, with the diagnostic recorded as its details.
+    fn into_code(self) -> &'static str {
+        match self {
+            Self::Code(code) => code,
+            Self::Planning(diagnostic) => planning_failure("planning_rejected", &diagnostic),
+            Self::CapabilityGap(diagnostic) => planning_failure("capability_gap", &diagnostic),
+        }
     }
 }
 pub(crate) struct ApplyAndVerifyRequest {
@@ -1211,7 +1224,7 @@ impl LiveBridge {
                 if Self::is_capability_gap(&diagnostic) {
                     PlanRejection::CapabilityGap(diagnostic)
                 } else {
-                    PlanRejection::Code(planning_failure("planning_rejected", &diagnostic))
+                    PlanRejection::Planning(diagnostic)
                 }
             })?;
         #[cfg(test)]
@@ -1271,8 +1284,8 @@ impl LiveBridge {
                 Self::reply_capability_gap(app, id, &reply, &diagnostic);
                 return;
             }
-            Err(PlanRejection::Code(code)) => {
-                Self::reply(app, id, &reply, Err(code));
+            Err(rejection) => {
+                Self::reply(app, id, &reply, Err(rejection.into_code()));
                 return;
             }
         };
@@ -1495,18 +1508,14 @@ impl LiveBridge {
         ui_busy: bool,
         cancelled: &Arc<AtomicBool>,
         #[cfg(test)] fault: Option<ApplyAndVerifyFault>,
-    ) -> Result<Value, &'static str> {
+    ) -> Result<Value, PlanRejection> {
         let (plan, exact_selection, validation_selection) = Self::plan_apply_and_verify(
             app,
             request,
             ui_busy,
             #[cfg(test)]
             fault,
-        )
-        .map_err(|rejection| match rejection {
-            PlanRejection::Code(code) => code,
-            PlanRejection::CapabilityGap(_) => "capability_gap",
-        })?;
+        )?;
         let prepared = Self::evaluate_apply_and_verify_candidate(
             &plan.candidate,
             &app.container_data,
@@ -1521,7 +1530,7 @@ impl LiveBridge {
             #[cfg(test)]
             fault,
         )?;
-        Self::publish_apply_and_verify(
+        Ok(Self::publish_apply_and_verify(
             app,
             &plan,
             prepared,
@@ -1529,13 +1538,13 @@ impl LiveBridge {
             cancelled,
             #[cfg(test)]
             fault,
-        )
+        )?)
     }
 
     pub(crate) fn apply_assistant_cad_program(
         app: &mut KetchupApp,
         program: AssistantCadEditProgram,
-    ) -> Result<Value, &'static str> {
+    ) -> Result<Value, PlanRejection> {
         take_error_details();
         Self::apply_and_verify_now(
             app,
@@ -1827,7 +1836,8 @@ impl LiveBridge {
                 cancelled,
                 #[cfg(test)]
                 self.apply_and_verify_fault,
-            ),
+            )
+            .map_err(PlanRejection::into_code),
             Request::Undo { expected } => {
                 Self::guard(app, &expected)?;
                 Self::available(app, ui_busy)?;
