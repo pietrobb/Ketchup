@@ -20,6 +20,14 @@
 
 Build a testy bežia aj na Linuxe (OCCT 8.0.1 zo zdrojov, `KETCHUP_OCCT_ROOT` + rpath, pozri README).
 
+Poznámky pre ďalšiu prácu:
+- Starlark je pripnutý na 0.13 (+ `allocative` 0.3.4). Verzia 0.14 zapína v `serde_json` funkciu
+  `arbitrary_precision` a tá rozbije deserializáciu všetkých tagovaných enumov s číslami v celom
+  workspace. Stráži to test `the_interpreter_leaves_workspace_json_parsing_intact`.
+- Niektoré GUI testy nechávajú vedľa fixtúr súbory `*.save-lock` a `*.work-recovery` (sú v
+  `.gitignore`). Zvyšný `work-recovery` pri ďalšom behu zmení výsledok `ai_house_schema_36…`;
+  pred plným behom ich zmažte. Testy by mali pracovať na kópii v dočasnom adresári.
+
 ## 1. Cieľ
 
 1. **Z jadra zmizne všetko, čo je robené na mieru.** Fľaša, čajník, balónové písmená, strechy,
