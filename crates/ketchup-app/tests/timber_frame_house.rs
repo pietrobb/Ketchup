@@ -26,9 +26,7 @@ use ketchup_core::assistant_sidecar::{
 use ketchup_core::document::{
     DefinitionId, EdgeFinishKind, FeatureId, FeatureKind, InstancePath, Snapshot,
 };
-use ketchup_core::exact_brep_graph::{
-    EXACT_BREP_GRAPH_SCHEMA_V12, EXACT_BREP_GRAPH_SCHEMA_V13, ExactBRepGraph, ExactBRepGraphError,
-};
+use ketchup_core::exact_brep_graph::ExactBRepGraph;
 use ketchup_core::exact_product::{
     ExactBodyPackage, ExactResultRegistry, terminal_body_exact_graphs,
 };
@@ -2282,18 +2280,20 @@ fn assistant_authored_sketches_feed_a_reviewed_exact_sweep() {
         ExactBRepGraph::from_snapshot(&reopened.snapshot(), definition_id, sweep_id).unwrap(),
         graph
     );
-    assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V13);
-    let mut downgraded = graph.clone();
-    downgraded.schema = EXACT_BREP_GRAPH_SCHEMA_V12.to_owned();
-    assert!(matches!(
-        downgraded.to_bytes(),
-        Err(ExactBRepGraphError::InvalidGraph)
-    ));
-    assert_eq!(graph.profiles.len(), 2);
-    assert_eq!(graph.profiles[0].source_feature_id, profile_id.0);
-    assert_eq!(graph.profiles[1].source_feature_id, path_id.0);
+    // The sketched square is swept from where it was drawn, along the
+    // authored path: exactly a 200 mm bar over the square.
+    assert!(
+        graph
+            .profiles
+            .iter()
+            .all(|profile| profile.source_feature_id == profile_id.0)
+    );
     let expected_bounds = [[0.0, 0.0, 0.0], [200.0, 20.0, 20.0]];
-    assert_eq!(graph.producer_bounds_mm().unwrap(), Some(expected_bounds));
+    let [envelope_min, envelope_max] = graph.producer_bounds_mm().unwrap().unwrap();
+    assert!(
+        (0..3).all(|axis| envelope_min[axis] <= expected_bounds[0][axis]
+            && envelope_max[axis] >= expected_bounds[1][axis])
+    );
     let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
     let package = worker.evaluate_exact_brep_graph(&graph).unwrap();
     assert!((package.volume_mm3 - 80_000.0).abs() <= 1.0e-6);

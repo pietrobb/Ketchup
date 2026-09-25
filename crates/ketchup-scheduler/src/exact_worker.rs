@@ -23,8 +23,7 @@ use ketchup_core::exact_brep_graph::{
     ExactBRepSheetMetalEdge, ExactBRepSheetMetalFlange, ExactBRepShellDirection,
     ExactBRepSpatialPath, ExactBRepSpatialPathSegment, ExactBRepTopologyKind,
     ExactBRepTopologySelector, ExactBRepWeldmentJointPolicy, ExactBRepWeldmentJointPrimary,
-    MAX_EXACT_BREP_COORDINATE_MM, MAX_EXACT_BREP_GRAPH_BYTES, SKETCH_SWEEP_FRAME_EPSILON_MM,
-    exact_brep_planar_rectangle_bounds,
+    MAX_EXACT_BREP_COORDINATE_MM, MAX_EXACT_BREP_GRAPH_BYTES, exact_brep_planar_rectangle_bounds,
 };
 use ketchup_core::exact_product::EXACT_BREP_GRAPH_EVALUATOR_V1;
 use ketchup_core::graph::sha256_hex;
@@ -1553,13 +1552,6 @@ fn evaluate_exact_brep_graph(
                 backend,
                 &graph.profiles[profile.0 as usize],
                 &graph.profiles[path.0 as usize],
-                false,
-            )?,
-            ExactBRepOperation::SketchSweep { profile, path } => exact_brep_sweep(
-                backend,
-                &graph.profiles[profile.0 as usize],
-                &graph.profiles[path.0 as usize],
-                true,
             )?,
             ExactBRepOperation::SpatialSweep { profile, path } => exact_brep_spatial_sweep(
                 backend,
@@ -2251,7 +2243,6 @@ fn exact_brep_sweep(
     backend: &ExactBackend,
     profile: &ExactBRepProfile,
     path: &ExactBRepProfile,
-    sketch_sweep: bool,
 ) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
     let ExactBRepPlanarGeometry::Boundary {
         closed: false,
@@ -2284,43 +2275,6 @@ fn exact_brep_sweep(
     let end = end_bits.map(f64::from_bits);
     let direction = [end[0] - start[0], end[1] - start[1]];
     let length = direction[0].hypot(direction[1]);
-    if sketch_sweep {
-        let path_frame = path.frame_bits.map(f64::from_bits);
-        let to_world = |point: [f64; 2]| {
-            [0, 1, 2].map(|axis| {
-                path_frame[axis] + path_frame[3 + axis] * point[0] + path_frame[6 + axis] * point[1]
-            })
-        };
-        let world_start = to_world(start);
-        let world_end = to_world(end);
-        let world_delta = [0, 1, 2].map(|axis| world_end[axis] - world_start[axis]);
-        let world_length = world_delta[0].hypot(world_delta[1]).hypot(world_delta[2]);
-        let world_direction = world_delta.map(|component| component / world_length);
-        let profile_frame = profile.frame_bits.map(f64::from_bits);
-        let starts_at_profile = [0, 1, 2].into_iter().all(|axis| {
-            (world_start[axis] - profile_frame[axis]).abs() <= SKETCH_SWEEP_FRAME_EPSILON_MM
-        });
-        let aligned = [0, 1, 2]
-            .into_iter()
-            .map(|axis| world_direction[axis] * profile_frame[9 + axis])
-            .sum::<f64>()
-            >= 1.0 - SKETCH_SWEEP_FRAME_EPSILON_MM;
-        if !world_length.is_finite() || world_length <= 1.0e-9 || !starts_at_profile || !aligned {
-            return Err(exact_brep_profile_error(
-                profile,
-                "Sketch Sweep requires the path to start at the profile frame origin and follow its normal",
-            ));
-        }
-        return exact_brep_profile_body(
-            backend,
-            profile,
-            ExactBRepLinearInterval {
-                direction_bits: world_direction.map(f64::to_bits),
-                start_bits: 0.0_f64.to_bits(),
-                end_bits: world_length.to_bits(),
-            },
-        );
-    }
     let tangent = [direction[0] / length, direction[1] / length];
     let section = [tangent[1], -tangent[0]];
     let local = exact_brep_profile_body(
@@ -4154,43 +4108,6 @@ mod tests {
                 operation, schema
             ));
         }
-    }
-
-    #[test]
-    fn legacy_sweep_does_not_infer_sketch_semantics_from_region_metadata() {
-        let line = |start: [f64; 2], end: [f64; 2]| ExactBRepPlanarSegment::Line {
-            start_bits: start.map(f64::to_bits),
-            end_bits: end.map(f64::to_bits),
-        };
-        let profile = ExactBRepProfile {
-            id: ketchup_core::exact_brep_graph::ExactBRepProfileId(0),
-            source_feature_id: 1,
-            region_id: Some(1),
-            frame_bits: [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
-                .map(f64::to_bits),
-            geometry: ExactBRepPlanarGeometry::Boundary {
-                closed: true,
-                segments: vec![
-                    line([-2.0, -1.0], [2.0, -1.0]),
-                    line([2.0, -1.0], [2.0, 1.0]),
-                    line([2.0, 1.0], [-2.0, 1.0]),
-                    line([-2.0, 1.0], [-2.0, -1.0]),
-                ],
-            },
-        };
-        let path = ExactBRepProfile {
-            id: ketchup_core::exact_brep_graph::ExactBRepProfileId(1),
-            source_feature_id: 2,
-            region_id: None,
-            frame_bits: profile.frame_bits,
-            geometry: ExactBRepPlanarGeometry::Boundary {
-                closed: false,
-                segments: vec![line([0.0, 0.0], [100.0, 0.0])],
-            },
-        };
-        let backend = ExactBackend::new();
-        assert!(exact_brep_sweep(&backend, &profile, &path, false).is_ok());
-        assert!(exact_brep_sweep(&backend, &profile, &path, true).is_err());
     }
 
     #[test]
