@@ -731,12 +731,12 @@ impl ExactBRepGraphPackage {
     pub fn is_current(&self, snapshot: &Snapshot) -> bool {
         self.identity.source_revision == snapshot.revision_id()
             && self.identity.source_digest == snapshot.canonical_digest()
-            && ExactBRepGraph::from_snapshot(
-                snapshot,
-                self.identity.definition_id,
-                self.identity.producer_feature_id,
-            )
-            .is_ok_and(|graph| self.matches_graph(&graph))
+            && snapshot
+                .exact_brep_graph(
+                    self.identity.definition_id,
+                    self.identity.producer_feature_id,
+                )
+                .is_some_and(|graph| self.matches_graph(&graph))
     }
 
     #[must_use]

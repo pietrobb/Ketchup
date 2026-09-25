@@ -599,7 +599,9 @@ fn exact_brep_graph_mesh_response(
         Ok(sources) => sources,
         Err(response) => return response,
     };
-    let output = match evaluate_exact_brep_graph(backend, &graph, &sources) {
+    // The client asks for topology evidence first; reuse that evaluation
+    // instead of rebuilding the whole feature chain a second time.
+    let output = match evaluate_exact_brep_graph_cached(backend, &graph, &sources) {
         Ok(output) if output.body.result_fingerprint == fields[0] => output,
         Ok(_) => return "ERR invalid_result".to_owned(),
         Err(error) => return geometry_error_response(&error),

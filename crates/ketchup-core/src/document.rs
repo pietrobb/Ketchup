@@ -1984,6 +1984,25 @@ pub(crate) struct ProductModel {
     pub(crate) production_codes: BTreeMap<InstancePath, String>,
     pub(crate) instance_transform_overrides: BTreeMap<InstancePath, Transform>,
     pub(crate) canonical_digest: DigestCache,
+    pub(crate) exact_graphs: ExactGraphCache,
+}
+
+/// Exact B-Rep graphs compiled from one immutable product model.
+///
+/// Checking whether an exact result is still current recompiles the producer's
+/// whole feature chain, and interactive tools ask that many times per frame, so
+/// the cost grew with every feature added to a body. The model never changes
+/// after publication; the revision is part of the key because the graph embeds
+/// it. A clone starts empty for the same reason as [`DigestCache`].
+#[derive(Default)]
+pub(crate) struct ExactGraphCache(
+    std::sync::Mutex<BTreeMap<(u64, DefinitionId, FeatureId), Option<Arc<ExactBRepGraph>>>>,
+);
+
+impl Clone for ExactGraphCache {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
 }
 
 /// The canonical digest of one immutable product model, computed at most once.
@@ -2042,6 +2061,7 @@ impl Default for ProductModel {
             production_codes: BTreeMap::new(),
             instance_transform_overrides: BTreeMap::new(),
             canonical_digest: DigestCache::default(),
+            exact_graphs: ExactGraphCache::default(),
         }
     }
 }
@@ -3627,6 +3647,30 @@ impl Snapshot {
         report.revision_id = Some(self.revision_id());
         report.canonical_digest = Some(self.canonical_digest());
         Ok(report)
+    }
+
+    /// The exact B-Rep graph of one body producer, compiled at most once per
+    /// snapshot; `None` when the producer cannot be compiled.
+    #[must_use]
+    pub fn exact_brep_graph(
+        &self,
+        definition_id: DefinitionId,
+        producer_feature_id: FeatureId,
+    ) -> Option<Arc<ExactBRepGraph>> {
+        let key = (self.revision_id, definition_id, producer_feature_id);
+        if let Some(graph) = self.product.exact_graphs.0.lock().ok()?.get(&key) {
+            return graph.clone();
+        }
+        let graph = ExactBRepGraph::from_snapshot(self, definition_id, producer_feature_id)
+            .ok()
+            .map(Arc::new);
+        self.product
+            .exact_graphs
+            .0
+            .lock()
+            .ok()?
+            .insert(key, graph.clone());
+        graph
     }
 
     #[must_use]
