@@ -15,7 +15,7 @@ from anthropic.lib.tools import beta_async_tool
 
 MAX_OUTPUT = 32 * 1024
 PROGRAM_LIBRARY = Path(__file__).resolve().parents[1] / "crates" / "ketchup-program" / "library" / "prelude.star"
-PROGRAM_EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "programs" / "cabinet.star"
+PROGRAM_EXAMPLES = Path(__file__).resolve().parents[1] / "examples" / "programs"
 MAX_REPORT_ISSUES = 50
 MAX_SESSIONS = 4
 
@@ -228,7 +228,8 @@ def register_tools() -> list:
             _action(section, ("overview", "program", "methods", "operations", "operation", "definition", "validators"))
             if section == "program":
                 return {"language": "Starlark (Python subset)", "library": PROGRAM_LIBRARY.read_text(encoding="utf-8"),
-                        "example": PROGRAM_EXAMPLE.read_text(encoding="utf-8")}
+                        "examples": {path.name: path.read_text(encoding="utf-8")
+                                     for path in sorted(PROGRAM_EXAMPLES.glob("*.star"))}}
             if section == "overview":
                 return {"mode": "owned_headless_not_live_GUI", "max_sessions": MAX_SESSIONS,
                         "max_output_bytes": MAX_OUTPUT, "plan_guard_bound": runtime.plan_state is not None,

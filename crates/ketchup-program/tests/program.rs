@@ -254,3 +254,16 @@ fn panel_operations_carry_holes_and_pockets_in_panel_coordinates() {
     assert_eq!(pockets[0].min_local_mm[0], 0.0);
     assert!(holes.iter().all(|hole| hole.entry_local_mm[0] == 0.0));
 }
+
+#[test]
+fn the_interpreter_leaves_workspace_json_parsing_intact() {
+    // serde_json's `arbitrary_precision` is unified into every crate of a
+    // build and makes tagged enums reject plain numbers.
+    #[derive(serde::Deserialize)]
+    #[serde(tag = "kind")]
+    enum Tagged {
+        Length { mm: f64 },
+    }
+    let Tagged::Length { mm } = serde_json::from_str(r#"{"kind":"Length","mm":1.5}"#).unwrap();
+    assert_eq!(mm, 1.5);
+}

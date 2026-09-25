@@ -110,7 +110,7 @@ fn number(value: Value, what: &str) -> anyhow::Result<f64> {
 
 fn numbers<'v, const N: usize>(
     value: Value<'v>,
-    heap: Heap<'v>,
+    heap: &'v Heap,
     what: &str,
 ) -> anyhow::Result<[f64; N]> {
     let items = value
@@ -127,7 +127,7 @@ fn numbers<'v, const N: usize>(
     Ok(out)
 }
 
-fn part_name<'v>(value: Value<'v>, heap: Heap<'v>) -> anyhow::Result<String> {
+fn part_name<'v>(value: Value<'v>, heap: &'v Heap) -> anyhow::Result<String> {
     if let Some(name) = value.unpack_str() {
         return Ok(name.to_owned());
     }
@@ -149,7 +149,7 @@ fn face(value: &str) -> anyhow::Result<Face> {
         .ok_or_else(|| anyhow::anyhow!("face must be one of x-, x+, y-, y+, z-, z+; got {value:?}"))
 }
 
-fn part_value<'v>(part: &Part, heap: Heap<'v>) -> Value<'v> {
+fn part_value<'v>(part: &Part, heap: &'v Heap) -> Value<'v> {
     heap.alloc(AllocStruct([
         ("name", heap.alloc(part.name.as_str())),
         (
@@ -576,16 +576,15 @@ fn evaluation_error(code: &'static str, error: impl std::fmt::Display) -> Progra
 fn prelude(globals: &Globals) -> Result<FrozenModule, ProgramError> {
     let ast = AstModule::parse("prelude.star", PRELUDE.to_owned(), &dialect())
         .map_err(|error| evaluation_error("prelude_invalid", error))?;
-    Module::with_temp_heap(|module| {
-        {
-            let mut eval = Evaluator::new(&module);
-            eval.eval_module(ast, globals)
-                .map_err(|error| evaluation_error("prelude_invalid", error))?;
-        }
-        module
-            .freeze()
-            .map_err(|error| evaluation_error("prelude_invalid", format!("{error:?}")))
-    })
+    let module = Module::new();
+    {
+        let mut eval = Evaluator::new(&module);
+        eval.eval_module(ast, globals)
+            .map_err(|error| evaluation_error("prelude_invalid", error))?;
+    }
+    module
+        .freeze()
+        .map_err(|error| evaluation_error("prelude_invalid", format!("{error:?}")))
 }
 
 /// Evaluates `source` (a Starlark program) with parameter `overrides`.
@@ -607,14 +606,16 @@ pub fn evaluate(
         ..State::default()
     });
     STATE.with(|slot| *slot.borrow_mut() = Some(state.clone()));
-    let result = Module::with_temp_heap(|module| {
-        module.import_public_symbols(&prelude);
+    let module = Module::new();
+    module.import_public_symbols(&prelude);
+    let result = {
         let mut eval = Evaluator::new(&module);
         eval.set_print_handler(state.as_ref());
         eval.eval_module(ast, &globals)
-            .map_err(|error| evaluation_error("evaluation_error", error))?;
-        Ok::<(), ProgramError>(())
-    });
+            .map(|_| ())
+            .map_err(|error| evaluation_error("evaluation_error", error))
+    };
+    drop(module);
     STATE.with(|slot| *slot.borrow_mut() = None);
     result?;
     let state = std::rc::Rc::try_unwrap(state)

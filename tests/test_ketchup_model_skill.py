@@ -113,7 +113,8 @@ def test_registration_schema_and_real_decorator_calls(monkeypatch):
     async def scenario():
         assert (await call(registered, "KetchupDiscover"))["result"]["backend_compact"]
         library = (await call(registered, "KetchupDiscover", section="program"))["result"]
-        assert "def dowels(" in library["library"] and "dowels(" in library["example"]
+        assert "def dowels(" in library["library"]
+        assert any("dowels(" in example for example in library["examples"].values())
         assert (await call(registered, "KetchupProgram", action="check", handle="bad", source="x = 1"))["error"]["code"] == "invalid_handle"
         for name in ("KetchupSession", "KetchupInspect", "KetchupEdit", "KetchupVerify"):
             args = {"action": "invalid", "handle": "bad"}
