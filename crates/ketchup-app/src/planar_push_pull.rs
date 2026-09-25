@@ -203,7 +203,6 @@ impl KetchupApp {
                 current_extent_mm_bits: 0.0_f64.to_bits(),
                 new_extent_mm_bits: distance.to_bits(),
                 commands: batch.commands().to_vec(),
-                exact_request: None,
                 preview_box: source.target_box.clone(),
                 shared_count,
             },
@@ -270,7 +269,7 @@ impl KetchupApp {
             let package = self
                 .topology_results_for_snapshot(&snapshot)?
                 .get_render(&snapshot, hit.definition_id)?;
-            return face_ordinal(&package, &target.target().reference)
+            return face_ordinal(package, &target.target().reference)
                 .map(ElementId::TopologicalFace);
         }
         hit.durable_target
@@ -297,7 +296,7 @@ impl KetchupApp {
             .scene_query()
             .into_iter()
             .find(|item| item.instance_path == target.instance_path)?;
-        planar_face(&package, &resolved.reference, occurrence.transform)
+        planar_face(package, &resolved.reference, occurrence.transform)
     }
 
     pub(super) fn select_push_pull_target(

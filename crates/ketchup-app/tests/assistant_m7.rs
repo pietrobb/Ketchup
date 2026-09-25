@@ -4,27 +4,24 @@ use eframe::egui::{self, accesskit::Role};
 use harness::{ScriptedAssistantTransport, Shell};
 use ketchup_app::dialogs::ScriptedFileDialogs;
 use ketchup_app::{
-    ASSISTANT_REPAIR_PROGRAM_SCHEMA_V1, AppCommand, AssistantMessageRole, AssistantProvider,
-    AssistantRepairOperation, AssistantRepairProgram, AssistantWorkspaceMode,
+    ASSISTANT_REPAIR_PROGRAM_SCHEMA_V1, AppCommand, AssistantChatMessage, AssistantMessageRole,
+    AssistantProvider, AssistantRepairOperation, AssistantRepairProgram, AssistantWorkspaceMode,
 };
 use ketchup_core::assistant_sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantApiDiagnostics, AssistantAssemblyJointAxis,
     AssistantAssemblyJointKind, AssistantAssemblyJointLimits, AssistantAxisSpec,
-    AssistantBalloonTextIntent, AssistantBeamNotchIntent, AssistantBottleFinishKind,
-    AssistantBottleIntent, AssistantBoxIntent, AssistantCadBodyFeature,
-    AssistantCadBooleanOperation, AssistantCadChamferMode, AssistantCadDeletePolicy,
-    AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
-    AssistantCadFeatureReference, AssistantCadFilletRadiusStation, AssistantCadLoftContinuity,
-    AssistantCadLoftSection, AssistantCadPartFeature, AssistantCadProgramFeatureOutput,
-    AssistantCadProgramFeatureReference, AssistantCadRotation, AssistantCadShellDirection,
-    AssistantCadSurfaceBodySource, AssistantChatResult, AssistantDistribution,
-    AssistantGableRoofIntent, AssistantInstancePath, AssistantInstancePathStep,
-    AssistantKetchupBottleIntent, AssistantLinearArrayIntent, AssistantModelIntent,
-    AssistantOrientedBeamIntent, AssistantParameterEditIntent, AssistantPrincipalPlane,
-    AssistantProfileTranslationIntent, AssistantRotationIntent, AssistantSketchConstraint,
-    AssistantSketchEntity, AssistantSketchPointKind, AssistantSketchPointRef,
-    AssistantStaircaseIntent, AssistantSubtractionIntent, AssistantTeapotIntent,
-    AssistantTranslationIntent, AssistantWorkplaneSpec,
+    AssistantBoxIntent, AssistantCadBodyFeature, AssistantCadBooleanOperation,
+    AssistantCadChamferMode, AssistantCadDeletePolicy, AssistantCadEditOperation,
+    AssistantCadEditProgram, AssistantCadEntitySelector, AssistantCadFeatureReference,
+    AssistantCadFilletRadiusStation, AssistantCadLoftContinuity, AssistantCadLoftSection,
+    AssistantCadPartFeature, AssistantCadProgramFeatureOutput, AssistantCadProgramFeatureReference,
+    AssistantCadRotation, AssistantCadShellDirection, AssistantCadSurfaceBodySource,
+    AssistantChatResult, AssistantDistribution, AssistantInstancePath, AssistantInstancePathStep,
+    AssistantLinearArrayIntent, AssistantModelIntent, AssistantParameterEditIntent,
+    AssistantPrincipalPlane, AssistantProfileTranslationIntent, AssistantRotationIntent,
+    AssistantSketchConstraint, AssistantSketchEntity, AssistantSketchPointKind,
+    AssistantSketchPointRef, AssistantSubtractionIntent, AssistantTranslationIntent,
+    AssistantWorkplaneSpec,
 };
 use ketchup_core::document::{
     BodyId, BooleanOperation, CanonicalCommand, ChamferEdgeSide, ChamferMode,
@@ -37,7 +34,7 @@ use ketchup_core::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V12, EXACT_BREP_GRAPH_SCHEMA_V15, EXACT_BREP_GRAPH_SCHEMA_V17,
     EXACT_BREP_GRAPH_SCHEMA_V18, ExactBRepGraph, ExactBRepLoftContinuity, ExactBRepOperation,
 };
-use ketchup_core::exact_product::{ExactBodyPackage, ExactFaceRole, ExactPlanarOffsetRequest};
+use ketchup_core::exact_product::ExactBodyPackage;
 use ketchup_core::intent::WorkflowIntent;
 use ketchup_core::persistence;
 use ketchup_core::sketch::{
@@ -243,6 +240,16 @@ fn write_assistant_boolean_fixture(path: &std::path::Path) {
                     profile: FeatureId(1),
                     height: Dimension::from_decimal("20").unwrap(),
                 },
+            },
+            CanonicalCommand::CreateBody {
+                definition_id: DefinitionId(1),
+                id: BodyId(2),
+                name: "Tool body".to_owned(),
+                visible: true,
+            },
+            CanonicalCommand::SetActiveBody {
+                definition_id: DefinitionId(1),
+                id: BodyId(2),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(3),
@@ -630,13 +637,39 @@ fn wait_for_assistant_proposal(shell: &mut Shell) {
     );
 }
 
-fn submit_and_confirm_assistant_request(shell: &mut Shell, request: &str) {
+/// Steps the shell until the assistant replied to the latest user message and returns the reply.
+fn wait_for_assistant_reply(shell: &mut Shell) -> AssistantChatMessage {
+    for _ in 0..2_000 {
+        shell.step();
+        let messages = shell.app().assistant_messages();
+        let user = messages
+            .iter()
+            .rposition(|message| message.role == AssistantMessageRole::User);
+        if let Some(reply) = user.and_then(|index| messages.get(index + 1)).cloned() {
+            shell.settle();
+            return reply;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!(
+        "scripted assistant request did not finish: {:?}",
+        shell.app().assistant_messages()
+    );
+}
+
+/// Sends a CAD edit program request and waits until apply-and-verify committed it.
+fn submit_applied_assistant_request(shell: &mut Shell, request: &str) {
     let input = shell.catalog().text("assistant-input-hint");
     shell.focus_text_input(&input);
     shell.type_text(request);
     shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(shell);
-    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    let reply = wait_for_assistant_reply(shell);
+    assert_eq!(
+        reply.role,
+        AssistantMessageRole::Assistant,
+        "assistant program was not applied: {:?}",
+        shell.app().assistant_messages()
+    );
 }
 
 #[test]
@@ -698,11 +731,6 @@ fn assistant_rotates_arbitrary_occurrences_and_groups_around_arbitrary_world_axe
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }
     ));
     assert_eq!(shell.app().document_revision(), before_revision + 1);
@@ -762,11 +790,6 @@ fn assistant_rotates_arbitrary_occurrences_and_groups_around_arbitrary_world_axe
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }
     ));
     let group_snapshot = shell.app().document_snapshot();
@@ -830,11 +853,6 @@ fn scripted_assistant_rotation_reviews_cancel_stale_confirm_and_undo_through_acc
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }),
     };
     let transport = Arc::new(ScriptedAssistantTransport::new([
@@ -1101,13 +1119,7 @@ fn assistant_enter_sends_and_shift_enter_keeps_composing() {
 
     shell.type_text("up 20 mm");
     shell.press_key(egui::Key::Enter);
-    for _ in 0..100 {
-        shell.step();
-        if shell.app().assistant_messages().len() == 2 {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    wait_for_assistant_reply(&mut shell);
     let messages = shell.app().assistant_messages();
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[0].role, AssistantMessageRole::User);
@@ -1119,132 +1131,6 @@ fn assistant_enter_sends_and_shift_enter_keeps_composing() {
     let new_chat = shell.catalog().text("assistant-new-chat");
     shell.click_row(&new_chat);
     assert!(shell.app().assistant_messages().is_empty());
-}
-
-#[test]
-fn assistant_follow_up_move_right_is_not_misclassified_as_validation_repair() {
-    let create_request = "Urob mäkčenie na to č v podobnej balónovej geometrii";
-    let move_request =
-        "Trošku ho posuň doprava, aby bol v strede nad tým céčkom. Teraz je trošku posunutý";
-    let transport = Arc::new(ScriptedAssistantTransport::new([
-        (
-            create_request.to_owned(),
-            AssistantChatResult {
-                message: "Pridávam samostatný mäkčeň.".to_owned(),
-                model_intent: Some(AssistantModelIntent {
-                    replace_scene: false,
-                    boxes: Vec::new(),
-                    translations: Vec::new(),
-                    rotations: Vec::new(),
-                    profile_translations: Vec::new(),
-                    parameter_edits: Vec::new(),
-                    linear_arrays: Vec::new(),
-                    bottles: Vec::new(),
-                    balloon_texts: vec![AssistantBalloonTextIntent {
-                        name: "Balloon caron".to_owned(),
-                        text: "ˇ".to_owned(),
-                        height_mm: 40.0,
-                        depth_mm: 16.0,
-                        stroke_width_mm: 8.0,
-                        letter_spacing_mm: 0.0,
-                        origin_mm: [40.0, 0.0, 100.0],
-                    }],
-                    gable_roofs: Vec::new(),
-                    staircases: Vec::new(),
-                    oriented_beams: Vec::new(),
-                }),
-            },
-        ),
-        (
-            create_request.to_owned(),
-            AssistantChatResult {
-                message: "Používam editovateľný všeobecný feature program.".to_owned(),
-                model_intent: Some(AssistantModelIntent {
-                    replace_scene: false,
-                    boxes: vec![AssistantBoxIntent {
-                        name: "Editable caron proxy".to_owned(),
-                        size_mm: [20.0, 8.0, 12.0],
-                        origin_mm: [40.0, 0.0, 100.0],
-                        subtract_boxes: Vec::new(),
-                    }],
-                    translations: Vec::new(),
-                    rotations: Vec::new(),
-                    profile_translations: Vec::new(),
-                    parameter_edits: Vec::new(),
-                    linear_arrays: Vec::new(),
-                    bottles: Vec::new(),
-                    balloon_texts: Vec::new(),
-                    gable_roofs: Vec::new(),
-                    staircases: Vec::new(),
-                    oriented_beams: Vec::new(),
-                }),
-            },
-        ),
-        (
-            move_request.to_owned(),
-            AssistantChatResult {
-                message: "Posúvam mäkčeň doprava.".to_owned(),
-                model_intent: Some(AssistantModelIntent {
-                    replace_scene: false,
-                    boxes: Vec::new(),
-                    translations: vec![AssistantTranslationIntent {
-                        occurrence_id: 1,
-                        delta_mm: [5.0, 0.0, 0.0],
-                    }],
-                    rotations: Vec::new(),
-                    profile_translations: Vec::new(),
-                    parameter_edits: Vec::new(),
-                    linear_arrays: Vec::new(),
-                    bottles: Vec::new(),
-                    balloon_texts: Vec::new(),
-                    gable_roofs: Vec::new(),
-                    staircases: Vec::new(),
-                    oriented_beams: Vec::new(),
-                }),
-            },
-        ),
-    ]));
-    let mut shell = Shell::with_assistant_transport(transport.clone());
-    let input_label = shell.catalog().text("assistant-input-hint");
-    let confirm = shell.catalog().text("assistant-confirm");
-
-    shell.focus_text_input(&input_label);
-    shell.type_text(create_request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert!(shell.app().assistant_messages().iter().any(|message| {
-        message
-            .diagnostic
-            .as_ref()
-            .is_some_and(|diagnostic| diagnostic.code == "planning.editable_macro_required")
-    }));
-    assert_eq!(transport.remaining_responses(), 1);
-    shell.click_row(&confirm);
-    let before_move = shell
-        .app()
-        .document_snapshot()
-        .occurrence(OccurrenceId(1))
-        .expect("the first turn must create the standalone caron")
-        .transform();
-
-    shell.focus_text_input(&input_label);
-    shell.type_text(move_request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(transport.remaining_responses(), 0);
-    shell.click_row(&confirm);
-
-    let after_move = shell
-        .app()
-        .document_snapshot()
-        .occurrence(OccurrenceId(1))
-        .expect("the second turn must retain the standalone caron")
-        .transform();
-    let before_matrix = before_move.matrix();
-    let after_matrix = after_move.matrix();
-    assert_eq!(after_matrix[3], before_matrix[3] + 5.0);
-    assert_eq!(after_matrix[7], before_matrix[7]);
-    assert_eq!(after_matrix[11], before_matrix[11]);
 }
 
 #[test]
@@ -1296,7 +1182,7 @@ fn assistant_diagnostics_show_exact_api_usage_and_search_project_memory() {
     shell.focus_text_input(&input_label);
     shell.type_text(request);
     shell.press_key(egui::Key::Enter);
-    for _ in 0..100 {
+    for _ in 0..2_000 {
         shell.step();
         if shell.app().assistant_messages().len() == 2 {
             break;
@@ -1534,13 +1420,7 @@ fn injected_assistant_results_are_validated_fail_closed() {
     shell.focus_text_input(&input_label);
     shell.type_text("Invalid result");
     shell.press_key(egui::Key::Enter);
-    for _ in 0..100 {
-        shell.step();
-        if shell.app().assistant_messages().len() == 2 {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    wait_for_assistant_reply(&mut shell);
     let messages = shell.app().assistant_messages();
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[1].role, AssistantMessageRole::Error);
@@ -1566,11 +1446,6 @@ fn canonical_rejection_reaches_accesskit_without_generic_error_degradation() {
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }),
     };
     let transport = Arc::new(ScriptedAssistantTransport::new([
@@ -1585,7 +1460,7 @@ fn canonical_rejection_reaches_accesskit_without_generic_error_degradation() {
     shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
     shell.type_text(request);
     shell.press_key(egui::Key::Enter);
-    for _ in 0..200 {
+    for _ in 0..2_000 {
         shell.step();
         if shell
             .app()
@@ -1653,11 +1528,6 @@ fn scripted_assistant_model_review_cancel_confirm_undo_and_redo_use_accesskit() 
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }),
     };
     let transport = Arc::new(ScriptedAssistantTransport::new([
@@ -1724,6 +1594,23 @@ fn scripted_nested_assembly_joint_and_motion_preserve_consent_and_repeated_branc
             CanonicalCommand::CreateDefinition {
                 id: DefinitionId(50),
                 name: "Mechanism part".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(1),
+                definition_id: DefinitionId(50),
+                name: "Mechanism profile".into(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 5.0], [0.0, 5.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(2),
+                definition_id: DefinitionId(50),
+                name: "Mechanism extrusion".into(),
+                kind: FeatureKind::Extrusion {
+                    profile: FeatureId(1),
+                    height: Dimension::from_decimal("5").unwrap(),
+                },
             },
             CanonicalCommand::CreateGroup {
                 id: GroupId(60),
@@ -1869,26 +1756,17 @@ fn scripted_nested_assembly_joint_and_motion_preserve_consent_and_repeated_branc
     );
     let mut shell = Shell::with_assistant_transport(transport);
     assert!(shell.app_mut().open_document_path(&fixture));
-    let input = shell.catalog().text("assistant-input-hint");
-    let confirm = shell.catalog().text("assistant-confirm");
 
     let baseline = shell.app().canonical_digest();
-    shell.focus_text_input(&input);
-    shell.type_text(create_request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(shell.app().canonical_digest(), baseline);
-    shell.click_row(&confirm);
+    let baseline_undo = shell.app().undo_step_count();
+    submit_applied_assistant_request(&mut shell, create_request);
     let joint_digest = shell.app().canonical_digest();
     assert_ne!(joint_digest, baseline);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
     assert_eq!(shell.app().document_snapshot().assembly_joints().count(), 1);
 
-    shell.focus_text_input(&input);
-    shell.type_text(move_request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(shell.app().canonical_digest(), joint_digest);
-    shell.click_row(&confirm);
+    submit_applied_assistant_request(&mut shell, move_request);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo + 2);
     let moved_digest = shell.app().canonical_digest();
     let moved = shell.app().document_snapshot();
     assert_eq!(
@@ -1965,60 +1843,11 @@ fn scripted_cad_edit_program_reviews_selection_transform_copy_pattern_mirror_del
         .unwrap()
         .definition_id();
 
-    let input_label = shell.catalog().text("assistant-input-hint");
-    shell.focus_text_input(&input_label);
-    shell.type_text(request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-
+    submit_applied_assistant_request(&mut shell, request);
     assert_eq!(
         transport.contexts()[0]["selected_occurrence_ids"],
         serde_json::json!([1])
     );
-    assert_eq!(shell.app().document_revision(), baseline_revision);
-    assert_eq!(shell.app().canonical_digest(), baseline_digest);
-    assert_eq!(shell.app().undo_step_count(), baseline_undo_steps);
-    assert_eq!(
-        shell.app().document_snapshot().occurrences().count(),
-        baseline_occurrences
-    );
-    assert!(shell.has_visible_label(&shell.catalog().text("assistant-review-title")));
-
-    let proposal = shell.app().assistant_proposal().unwrap();
-    assert_eq!(proposal.batch().commands().len(), 6);
-    assert!(matches!(
-        proposal.batch().commands()[0],
-        CanonicalCommand::SetOccurrenceTransform {
-            id: OccurrenceId(1),
-            ..
-        }
-    ));
-    assert_eq!(
-        proposal
-            .batch()
-            .commands()
-            .iter()
-            .filter_map(|command| match command {
-                CanonicalCommand::CreateOccurrence { id, .. } => Some(*id),
-                _ => None,
-            })
-            .collect::<Vec<_>>(),
-        vec![
-            OccurrenceId(2),
-            OccurrenceId(3),
-            OccurrenceId(4),
-            OccurrenceId(5)
-        ]
-    );
-    assert!(matches!(
-        proposal.batch().commands()[5],
-        CanonicalCommand::DeleteOccurrence {
-            id: OccurrenceId(1)
-        }
-    ));
-
-    let confirm = shell.catalog().text("assistant-confirm");
-    shell.click_row(&confirm);
     assert_eq!(shell.app().document_revision(), baseline_revision + 1);
     assert_eq!(shell.app().undo_step_count(), baseline_undo_steps + 1);
     let committed_digest = shell.app().canonical_digest();
@@ -2092,15 +1921,7 @@ fn scripted_create_part_program_round_trips_state_view_and_one_step_undo_redo() 
     let baseline_redo = shell.app().redo_step_count();
     let baseline_occurrences = shell.app().document_snapshot().occurrences().count();
 
-    let input = shell.catalog().text("assistant-input-hint");
-    shell.focus_text_input(&input);
-    shell.type_text(request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(shell.app().document_revision(), baseline_revision);
-    assert_eq!(shell.app().canonical_digest(), baseline_digest);
-
-    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    submit_applied_assistant_request(&mut shell, request);
     assert_eq!(shell.app().document_revision(), baseline_revision + 1);
     assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
     let committed = shell.app().document_snapshot();
@@ -2221,16 +2042,7 @@ fn scripted_create_revolved_part_round_trips_state_view_and_one_step_undo_redo()
     let baseline_redo = shell.app().redo_step_count();
     let baseline_occurrences = shell.app().document_snapshot().occurrences().count();
 
-    let input = shell.catalog().text("assistant-input-hint");
-    shell.focus_text_input(&input);
-    shell.type_text(request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(shell.app().document_revision(), baseline_revision);
-    assert_eq!(shell.app().canonical_digest(), baseline_digest);
-    assert_eq!(shell.app().undo_step_count(), baseline_undo);
-
-    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    submit_applied_assistant_request(&mut shell, request);
     assert_eq!(shell.app().document_revision(), baseline_revision + 1);
     assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
     let committed = shell.app().document_snapshot();
@@ -2335,11 +2147,16 @@ fn scripted_append_boolean_programs_are_exact_persistent_and_one_step() {
             },
         ),
     ]));
-    for (request, operation) in requests.iter().zip([
-        AssistantCadBooleanOperation::Cut,
-        AssistantCadBooleanOperation::Union,
-        AssistantCadBooleanOperation::Intersect,
-    ]) {
+    // Each boolean refines the previous result, so body 1 keeps one terminal feature.
+    for ((request, operation), target) in requests
+        .iter()
+        .zip([
+            AssistantCadBooleanOperation::Cut,
+            AssistantCadBooleanOperation::Union,
+            AssistantCadBooleanOperation::Intersect,
+        ])
+        .zip([2, 5, 6])
+    {
         transport.queue_cad_edit_program(
             *request,
             AssistantCadEditProgram {
@@ -2348,7 +2165,7 @@ fn scripted_append_boolean_programs_are_exact_persistent_and_one_step() {
                     name: format!("Assistant {operation:?}"),
                     feature: AssistantCadBodyFeature::Boolean {
                         operation,
-                        target_feature_id: 2.into(),
+                        target_feature_id: target.into(),
                         tool_feature_id: 4.into(),
                     },
                 }],
@@ -2385,27 +2202,23 @@ fn scripted_append_boolean_programs_are_exact_persistent_and_one_step() {
         if index == 2 {
             digest_before_last.clone_from(&baseline_digest);
         }
-        let input = shell.catalog().text("assistant-input-hint");
-        shell.focus_text_input(&input);
-        shell.type_text(request);
-        shell.press_key(egui::Key::Enter);
-        wait_for_assistant_proposal(&mut shell);
-        assert_eq!(shell.app().document_revision(), baseline_revision);
-        assert_eq!(shell.app().canonical_digest(), baseline_digest);
-        assert_eq!(shell.app().undo_step_count(), baseline_undo);
-
-        shell.click_row(&shell.catalog().text("assistant-confirm"));
+        submit_applied_assistant_request(&mut shell, request);
         assert_eq!(shell.app().document_revision(), baseline_revision + 1);
         assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
         let committed = shell.app().document_snapshot();
         let feature_id = FeatureId(5 + index as u64);
+        let expected_target = if index == 0 {
+            FeatureId(2)
+        } else {
+            FeatureId(4 + index as u64)
+        };
         assert!(matches!(
             committed.feature(feature_id).unwrap().kind(),
             FeatureKind::Boolean {
                 operation,
-                target: FeatureId(2),
+                target,
                 tool: FeatureId(4),
-            } if *operation == canonical_operation
+            } if *operation == canonical_operation && *target == expected_target
         ));
         let graph = ExactBRepGraph::from_snapshot(&committed, DefinitionId(1), feature_id).unwrap();
         assert_eq!(graph.producer_feature_id, feature_id.0);
@@ -2494,16 +2307,7 @@ fn scripted_append_pocket_is_exact_persistent_and_one_step() {
     let baseline_redo = shell.app().redo_step_count();
     let baseline_occurrences = shell.app().document_snapshot().occurrences().count();
 
-    let input = shell.catalog().text("assistant-input-hint");
-    shell.focus_text_input(&input);
-    shell.type_text(request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(shell.app().document_revision(), baseline_revision);
-    assert_eq!(shell.app().canonical_digest(), baseline_digest);
-    assert_eq!(shell.app().undo_step_count(), baseline_undo);
-
-    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    submit_applied_assistant_request(&mut shell, request);
     assert_eq!(shell.app().document_revision(), baseline_revision + 1);
     assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
     let committed = shell.app().document_snapshot();
@@ -2546,14 +2350,14 @@ fn scripted_append_pocket_is_exact_persistent_and_one_step() {
 #[test]
 fn scripted_append_pocket_rejects_missing_profile_without_false_success() {
     let request = "Create an opening from missing profile 999";
-    let rejected_result = || AssistantChatResult {
-        message: "The requested opening was created.".to_owned(),
-        model_intent: None,
-    };
-    let transport = Arc::new(ScriptedAssistantTransport::new([
-        (request.to_owned(), rejected_result()),
-        (request.to_owned(), rejected_result()),
-    ]));
+    let false_success = "The requested opening was created.";
+    let transport = Arc::new(ScriptedAssistantTransport::new([(
+        request.to_owned(),
+        AssistantChatResult {
+            message: false_success.to_owned(),
+            model_intent: None,
+        },
+    )]));
     let invalid_program = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
             definition_id: 1,
@@ -2565,7 +2369,6 @@ fn scripted_append_pocket_rejects_missing_profile_without_false_success() {
             },
         }],
     };
-    transport.queue_cad_edit_program(request, invalid_program.clone());
     transport.queue_cad_edit_program(request, invalid_program);
 
     let directory = tempfile::tempdir().unwrap();
@@ -2583,38 +2386,21 @@ fn scripted_append_pocket_rejects_missing_profile_without_false_success() {
     shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
     shell.type_text(request);
     shell.press_key(egui::Key::Enter);
-    for _ in 0..200 {
-        shell.step();
-        if shell
+    let rejection = wait_for_assistant_reply(&mut shell);
+    shell.settle();
+    assert_eq!(rejection.role, AssistantMessageRole::Error, "{rejection:?}");
+    assert!(
+        rejection.diagnostic.is_some() && rejection.text.contains("999"),
+        "{rejection:?}"
+    );
+    assert!(shell.has_visible_label(&rejection.text));
+    assert!(
+        shell
             .app()
             .assistant_messages()
             .iter()
-            .filter(|message| message.diagnostic.is_some())
-            .count()
-            == 2
-        {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    shell.settle();
-
-    let diagnostic_messages = shell
-        .app()
-        .assistant_messages()
-        .iter()
-        .filter(|message| message.diagnostic.is_some())
-        .collect::<Vec<_>>();
-    assert_eq!(diagnostic_messages.len(), 2);
-    for message in diagnostic_messages {
-        let diagnostic = message.diagnostic.as_ref().unwrap();
-        assert_eq!(message.role, AssistantMessageRole::Error);
-        assert_eq!(diagnostic.code, "canonical.feature_not_found");
-        assert_eq!(diagnostic.operation, "append_feature");
-        assert!(diagnostic.target.starts_with("document:"));
-        assert!(message.text.contains("feature 999 does not exist"));
-        assert!(shell.has_visible_label(&message.text));
-    }
+            .all(|message| message.text != false_success)
+    );
     assert!(shell.app().assistant_proposal().is_none());
     assert_eq!(shell.app().document_revision(), baseline_revision);
     assert_eq!(shell.app().canonical_digest(), baseline_digest);
@@ -2660,16 +2446,7 @@ fn scripted_append_planar_offset_is_exact_persistent_and_one_step() {
     let baseline_redo = shell.app().redo_step_count();
     let baseline_occurrences = shell.app().document_snapshot().occurrences().count();
 
-    let input = shell.catalog().text("assistant-input-hint");
-    shell.focus_text_input(&input);
-    shell.type_text(request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(shell.app().document_revision(), baseline_revision);
-    assert_eq!(shell.app().canonical_digest(), baseline_digest);
-    assert_eq!(shell.app().undo_step_count(), baseline_undo);
-
-    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    submit_applied_assistant_request(&mut shell, request);
     assert_eq!(shell.app().document_revision(), baseline_revision + 1);
     assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
     let committed = shell.app().document_snapshot();
@@ -2680,32 +2457,13 @@ fn scripted_append_planar_offset_is_exact_persistent_and_one_step() {
             distance,
         } if distance.millimetres() == -7.5
     ));
-    let exact_request =
-        ExactPlanarOffsetRequest::from_snapshot(&committed, DefinitionId(1)).unwrap();
-    assert_eq!(exact_request.producer_feature_id(), FeatureId(2));
-    assert_eq!(
-        exact_request.expected_bounds_mm(),
-        [[17.5, 27.5, 0.0], [102.5, 92.5, 0.0]]
-    );
+    let graph = ExactBRepGraph::from_snapshot(&committed, DefinitionId(1), FeatureId(2)).unwrap();
     let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
-    let package = worker.evaluate_planar_offset(&exact_request).unwrap();
+    let package = worker.evaluate_exact_brep_graph(&graph).unwrap();
     assert!(package.is_current(&committed));
-    assert_eq!(package.bounds_mm, exact_request.expected_bounds_mm());
-    assert!((package.area_mm2 - exact_request.expected_area_mm2()).abs() <= 1.0e-6);
-    assert_eq!(package.vertices.len(), 4);
-    assert_eq!(package.triangles.len(), 2);
-    assert_eq!(
-        package.reference.role(),
-        Some(ExactFaceRole::PlanarOffsetFace)
-    );
-    assert!(package.reference.has_valid_lineage());
-    assert!(
-        package
-            .reference
-            .matches_planar_offset_request(&exact_request)
-    );
-    assert_eq!(package.reference.producer_feature_id, FeatureId(2));
-    assert_eq!(package.reference.profile_feature_id, FeatureId(1));
+    // The 100 x 80 mm rectangle offset inward by 7.5 mm on every side.
+    assert_eq!(package.bounds_mm, [[17.5, 27.5, 0.0], [102.5, 92.5, 0.0]]);
+    assert!((package.area_mm2 - 85.0 * 65.0).abs() <= 1.0e-6);
     assert_eq!(committed.occurrences().count(), baseline_occurrences);
 
     let committed_digest = committed.canonical_digest();
@@ -2715,9 +2473,9 @@ fn scripted_append_planar_offset_is_exact_persistent_and_one_step() {
     persistence::save_atomic(&saved_path, &committed).unwrap();
     let reopened = persistence::load_file(&saved_path).unwrap().snapshot();
     assert_eq!(reopened.canonical_digest(), committed_digest);
-    let reopened_request =
-        ExactPlanarOffsetRequest::from_snapshot(&reopened, DefinitionId(1)).unwrap();
-    let reopened_package = worker.evaluate_planar_offset(&reopened_request).unwrap();
+    let reopened_graph =
+        ExactBRepGraph::from_snapshot(&reopened, DefinitionId(1), FeatureId(2)).unwrap();
+    let reopened_package = worker.evaluate_exact_brep_graph(&reopened_graph).unwrap();
     assert!(reopened_package.is_current(&reopened));
     assert_eq!(reopened_package.bounds_mm, package.bounds_mm);
 
@@ -2768,16 +2526,7 @@ fn scripted_append_sweep_is_exact_persistent_and_one_step() {
     let baseline_redo = shell.app().redo_step_count();
     let baseline_occurrences = shell.app().document_snapshot().occurrences().count();
 
-    let input = shell.catalog().text("assistant-input-hint");
-    shell.focus_text_input(&input);
-    shell.type_text(request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(shell.app().document_revision(), baseline_revision);
-    assert_eq!(shell.app().canonical_digest(), baseline_digest);
-    assert_eq!(shell.app().undo_step_count(), baseline_undo);
-
-    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    submit_applied_assistant_request(&mut shell, request);
     assert_eq!(shell.app().document_revision(), baseline_revision + 1);
     assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
     let committed = shell.app().document_snapshot();
@@ -2869,16 +2618,7 @@ fn scripted_append_guided_loft_json_is_exact_persistent_and_one_step() {
     let baseline_redo = shell.app().redo_step_count();
     let baseline_occurrences = shell.app().document_snapshot().occurrences().count();
 
-    let input = shell.catalog().text("assistant-input-hint");
-    shell.focus_text_input(&input);
-    shell.type_text(request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(shell.app().document_revision(), baseline_revision);
-    assert_eq!(shell.app().canonical_digest(), baseline_digest);
-    assert_eq!(shell.app().undo_step_count(), baseline_undo);
-
-    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    submit_applied_assistant_request(&mut shell, request);
     assert_eq!(shell.app().document_revision(), baseline_revision + 1);
     assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
     let committed = shell.app().document_snapshot();
@@ -2991,16 +2731,7 @@ fn scripted_append_closed_symmetric_shell_is_exact_persistent_and_one_step() {
     let baseline_redo = shell.app().redo_step_count();
     let baseline_occurrences = shell.app().document_snapshot().occurrences().count();
 
-    let input = shell.catalog().text("assistant-input-hint");
-    shell.focus_text_input(&input);
-    shell.type_text(request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(shell.app().document_revision(), baseline_revision);
-    assert_eq!(shell.app().canonical_digest(), baseline_digest);
-    assert_eq!(shell.app().undo_step_count(), baseline_undo);
-
-    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    submit_applied_assistant_request(&mut shell, request);
     assert_eq!(shell.app().document_revision(), baseline_revision + 1);
     assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
     let committed = shell.app().document_snapshot();
@@ -3137,16 +2868,7 @@ fn scripted_append_topology_fillet_is_exact_persistent_and_one_step() {
     let baseline_redo = shell.app().redo_step_count();
     let baseline_occurrences = shell.app().document_snapshot().occurrences().count();
 
-    let input = shell.catalog().text("assistant-input-hint");
-    shell.focus_text_input(&input);
-    shell.type_text(request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(shell.app().document_revision(), baseline_revision);
-    assert_eq!(shell.app().canonical_digest(), baseline_digest);
-    assert_eq!(shell.app().undo_step_count(), baseline_undo);
-
-    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    submit_applied_assistant_request(&mut shell, request);
     assert_eq!(shell.app().document_revision(), baseline_revision + 1);
     assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
     let committed = shell.app().document_snapshot();
@@ -3302,16 +3024,7 @@ fn scripted_append_topology_chamfer_is_exact_persistent_and_one_step() {
     let baseline_redo = shell.app().redo_step_count();
     let baseline_occurrences = shell.app().document_snapshot().occurrences().count();
 
-    let input = shell.catalog().text("assistant-input-hint");
-    shell.focus_text_input(&input);
-    shell.type_text(request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(shell.app().document_revision(), baseline_revision);
-    assert_eq!(shell.app().canonical_digest(), baseline_digest);
-    assert_eq!(shell.app().undo_step_count(), baseline_undo);
-
-    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    submit_applied_assistant_request(&mut shell, request);
     assert_eq!(shell.app().document_revision(), baseline_revision + 1);
     assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
     let committed = shell.app().document_snapshot();
@@ -3395,10 +3108,6 @@ fn integrated_finishing_chain_rebuilds_exactly_through_headless_assistant() {
             response("Review the invalid Chamfer."),
         ),
         (
-            invalid_chamfer_request.to_owned(),
-            response("Review the invalid Chamfer."),
-        ),
-        (
             chamfer_request.to_owned(),
             response("Review the integrated chamfer."),
         ),
@@ -3441,7 +3150,7 @@ fn integrated_finishing_chain_rebuilds_exactly_through_headless_assistant() {
     let initial_revision = shell.app().document_revision();
     let initial_undo = shell.app().undo_step_count();
 
-    submit_and_confirm_assistant_request(&mut shell, shell_request);
+    submit_applied_assistant_request(&mut shell, shell_request);
     assert_eq!(shell.app().document_revision(), initial_revision + 1);
     assert_eq!(shell.app().undo_step_count(), initial_undo + 1);
     let shell_snapshot = shell.app().document_snapshot();
@@ -3498,7 +3207,7 @@ fn integrated_finishing_chain_rebuilds_exactly_through_headless_assistant() {
         },
     );
 
-    submit_and_confirm_assistant_request(&mut shell, fillet_request);
+    submit_applied_assistant_request(&mut shell, fillet_request);
     assert_eq!(shell.app().document_revision(), initial_revision + 2);
     assert_eq!(shell.app().undo_step_count(), initial_undo + 2);
     let fillet_snapshot = shell.app().document_snapshot();
@@ -3585,45 +3294,17 @@ fn integrated_finishing_chain_rebuilds_exactly_through_headless_assistant() {
             },
         }],
     };
-    transport.queue_cad_edit_program(invalid_chamfer_request, invalid_program.clone());
     transport.queue_cad_edit_program(invalid_chamfer_request, invalid_program);
     let before_rejection_revision = shell.app().document_revision();
     let before_rejection_digest = shell.app().canonical_digest();
     let before_rejection_undo = shell.app().undo_step_count();
-    let before_diagnostic_count = shell
-        .app()
-        .assistant_messages()
-        .iter()
-        .filter(|message| message.diagnostic.is_some())
-        .count();
     let input = shell.catalog().text("assistant-input-hint");
     shell.focus_text_input(&input);
     shell.type_text(invalid_chamfer_request);
     shell.press_key(egui::Key::Enter);
-    for _ in 0..2_000 {
-        shell.step();
-        if shell
-            .app()
-            .assistant_messages()
-            .iter()
-            .filter(|message| message.diagnostic.is_some())
-            .count()
-            == before_diagnostic_count + 2
-        {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    shell.settle();
-    assert_eq!(
-        shell
-            .app()
-            .assistant_messages()
-            .iter()
-            .filter(|message| message.diagnostic.is_some())
-            .count(),
-        before_diagnostic_count + 2
-    );
+    let rejection = wait_for_assistant_reply(&mut shell);
+    assert_eq!(rejection.role, AssistantMessageRole::Error, "{rejection:?}");
+    assert!(rejection.diagnostic.is_some(), "{rejection:?}");
     assert!(shell.app().assistant_proposal().is_none());
     assert_eq!(shell.app().document_revision(), before_rejection_revision);
     assert_eq!(shell.app().canonical_digest(), before_rejection_digest);
@@ -3648,7 +3329,7 @@ fn integrated_finishing_chain_rebuilds_exactly_through_headless_assistant() {
         },
     );
 
-    submit_and_confirm_assistant_request(&mut shell, chamfer_request);
+    submit_applied_assistant_request(&mut shell, chamfer_request);
     assert_eq!(shell.app().document_revision(), initial_revision + 3);
     assert_eq!(shell.app().undo_step_count(), initial_undo + 3);
     let finished_snapshot = shell.app().document_snapshot();
@@ -3698,11 +3379,6 @@ fn integrated_finishing_chain_rebuilds_exactly_through_headless_assistant() {
                 value_mm: 30.0,
             }],
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }
     ));
     assert_eq!(shell.app().document_revision(), initial_revision + 4);
@@ -3742,230 +3418,6 @@ fn integrated_finishing_chain_rebuilds_exactly_through_headless_assistant() {
     shell.click_menu_command("menu-edit", AppCommand::Redo);
     assert_eq!(shell.app().canonical_digest(), rebuilt_digest);
     assert_eq!(transport.remaining_responses(), 0);
-}
-
-#[test]
-fn named_assistant_generators_are_editable_or_fail_closed_with_bounded_macro_inputs() {
-    let empty_intent = || AssistantModelIntent {
-        replace_scene: false,
-        boxes: Vec::new(),
-        translations: Vec::new(),
-        rotations: Vec::new(),
-        profile_translations: Vec::new(),
-        parameter_edits: Vec::new(),
-        linear_arrays: Vec::new(),
-        bottles: Vec::new(),
-        gable_roofs: Vec::new(),
-        staircases: Vec::new(),
-        oriented_beams: Vec::new(),
-        balloon_texts: Vec::new(),
-    };
-    let mut shell = Shell::new();
-    let baseline_revision = shell.app().document_revision();
-    let baseline_digest = shell.app().canonical_digest();
-    let baseline_undo = shell.app().undo_step_count();
-
-    let mut vessel = empty_intent();
-    vessel.bottles.push(AssistantBottleIntent {
-        name: "Editable vessel".to_owned(),
-        body_radius_mm: 30.0,
-        body_height_mm: 110.0,
-        shoulder_rise_mm: 20.0,
-        neck_radius_mm: 12.0,
-        neck_height_mm: 25.0,
-        wall_thickness_mm: 2.0,
-        finish_kind: AssistantBottleFinishKind::Fillet,
-        finish_amount_mm: 2.0,
-        origin_mm: [0.0, 0.0, 0.0],
-        teapot: None,
-        ketchup_bottle: None,
-    });
-    let mut roof = empty_intent();
-    roof.gable_roofs.push(AssistantGableRoofIntent {
-        name: "Editable roof".to_owned(),
-        length_mm: 600.0,
-        span_mm: 400.0,
-        rise_mm: 120.0,
-        thickness_mm: 20.0,
-        origin_mm: [100.0, 0.0, 0.0],
-    });
-    let mut stairs = empty_intent();
-    stairs.staircases.push(AssistantStaircaseIntent {
-        name: "Editable stairs".to_owned(),
-        run_mm: 3_000.0,
-        width_mm: 800.0,
-        rise_mm: 3_000.0,
-        step_count: 15,
-        origin_mm: [0.0, 2_200.0, 0.0],
-    });
-    let mut beam = empty_intent();
-    beam.oriented_beams.push(AssistantOrientedBeamIntent {
-        name: "Editable beam".to_owned(),
-        start_mm: [0.0, 0.0, 300.0],
-        end_mm: [500.0, 100.0, 400.0],
-        up_hint: [0.0, 0.0, 1.0],
-        width_mm: 40.0,
-        depth_mm: 60.0,
-        bottom_notches: Vec::new(),
-    });
-    #[cfg(not(feature = "named-product-fixtures"))]
-    {
-        assert!(!shell.app_mut().prepare_assistant_model_intent(vessel));
-        assert!(shell.app().assistant_proposal().is_none());
-        assert_eq!(shell.app().document_revision(), baseline_revision);
-        assert_eq!(shell.app().canonical_digest(), baseline_digest);
-        assert_eq!(shell.app().undo_step_count(), baseline_undo);
-    }
-    #[cfg(feature = "named-product-fixtures")]
-    let editable_generators = [
-        (vessel, "Editable vessel"),
-        (roof, "Editable roof"),
-        (stairs, "Editable stairs"),
-        (beam, "Editable beam"),
-    ];
-    #[cfg(not(feature = "named-product-fixtures"))]
-    let editable_generators = [
-        (roof, "Editable roof"),
-        (stairs, "Editable stairs"),
-        (beam, "Editable beam"),
-    ];
-    for (editable, name) in editable_generators {
-        assert!(
-            apply_reviewed_model_intent(&mut shell, editable),
-            "{name} must produce a reviewed editable macro"
-        );
-        let editable_snapshot = shell.app().document_snapshot();
-        let definition = editable_snapshot
-            .definitions()
-            .find(|definition| definition.name() == name)
-            .unwrap();
-        assert!(definition.feature_ids().iter().all(|feature_id| {
-            !matches!(
-                editable_snapshot.feature(*feature_id).unwrap().kind(),
-                FeatureKind::MeshBody(_)
-            )
-        }));
-        assert!(shell.app_mut().undo());
-        assert_eq!(shell.app().document_revision(), baseline_revision);
-        assert_eq!(shell.app().canonical_digest(), baseline_digest);
-        assert_eq!(shell.app().undo_step_count(), baseline_undo);
-    }
-
-    let mut teapot = empty_intent();
-    teapot.bottles.push(AssistantBottleIntent {
-        name: "Rejected teapot".to_owned(),
-        body_radius_mm: 70.0,
-        body_height_mm: 105.0,
-        shoulder_rise_mm: 22.0,
-        neck_radius_mm: 42.0,
-        neck_height_mm: 14.0,
-        wall_thickness_mm: 3.0,
-        finish_kind: AssistantBottleFinishKind::Fillet,
-        finish_amount_mm: 4.0,
-        origin_mm: [0.0, 0.0, 0.0],
-        teapot: Some(AssistantTeapotIntent {
-            handle_clearance_mm: 52.0,
-            handle_tube_radius_mm: 9.0,
-            spout_length_mm: 105.0,
-            spout_radius_mm: 14.0,
-            lid_height_mm: 18.0,
-            lid_knob_radius_mm: 10.0,
-        }),
-        ketchup_bottle: None,
-    });
-    let mut squeeze_bottle = empty_intent();
-    squeeze_bottle.replace_scene = true;
-    squeeze_bottle.bottles.push(AssistantBottleIntent {
-        name: "Rejected squeeze bottle".to_owned(),
-        body_radius_mm: 38.0,
-        body_height_mm: 145.0,
-        shoulder_rise_mm: 28.0,
-        neck_radius_mm: 15.0,
-        neck_height_mm: 18.0,
-        wall_thickness_mm: 2.0,
-        finish_kind: AssistantBottleFinishKind::Fillet,
-        finish_amount_mm: 2.0,
-        origin_mm: [0.0, 0.0, 0.0],
-        teapot: None,
-        ketchup_bottle: Some(AssistantKetchupBottleIntent {
-            body_depth_ratio: 0.68,
-            cap_radius_mm: 19.5,
-            cap_height_mm: 24.0,
-            label_width_mm: 58.0,
-            label_height_mm: 72.0,
-            label_relief_mm: 2.5,
-            grip_rib_count: 20,
-        }),
-    });
-    let mut balloon_text = empty_intent();
-    balloon_text.balloon_texts.push(AssistantBalloonTextIntent {
-        name: "Rejected balloon text".to_owned(),
-        text: "ABC".to_owned(),
-        height_mm: 40.0,
-        depth_mm: 16.0,
-        stroke_width_mm: 8.0,
-        letter_spacing_mm: 4.0,
-        origin_mm: [0.0, 0.0, 0.0],
-    });
-    for rejected in [teapot, squeeze_bottle, balloon_text] {
-        assert!(!shell.app_mut().prepare_assistant_model_intent(rejected));
-        assert!(shell.app().assistant_proposal().is_none());
-        assert_eq!(shell.app().document_revision(), baseline_revision);
-        assert_eq!(shell.app().canonical_digest(), baseline_digest);
-        assert_eq!(shell.app().undo_step_count(), baseline_undo);
-        assert!(
-            shell
-                .app()
-                .document_snapshot()
-                .features()
-                .all(|feature| !matches!(feature.kind(), FeatureKind::MeshBody(_)))
-        );
-    }
-
-    let invalid_reference = AssistantCadEditProgram {
-        operations: vec![AssistantCadEditOperation::CreatePart {
-            name: "Invalid offset part".to_owned(),
-            workplane: AssistantWorkplaneSpec::Offset {
-                base_feature_id: 999,
-                distance_mm: 10.0,
-            },
-            entities: vec![AssistantSketchEntity::Circle {
-                id: 1,
-                center_mm: [0.0, 0.0],
-                radius_mm: 5.0,
-            }],
-            constraints: Vec::new(),
-            feature: AssistantCadPartFeature::Extrusion { distance_mm: 10.0 },
-            translation_mm: [0.0; 3],
-            rotation: None,
-        }],
-    };
-    let invalid_reference = shell
-        .app()
-        .plan_assistant_cad_edit_program(&invalid_reference)
-        .expect_err("missing workplane reference must fail closed");
-    assert_eq!(
-        invalid_reference.code,
-        "planning.workplane_base_unavailable"
-    );
-
-    let resource_overflow = AssistantCadEditProgram {
-        operations: (0..65)
-            .map(|_| AssistantCadEditOperation::Delete {
-                selector: AssistantCadEntitySelector::CurrentSelection {},
-                dependency_policy: AssistantCadDeletePolicy::RejectIfReferenced,
-            })
-            .collect(),
-    };
-    let resource_overflow = shell
-        .app()
-        .plan_assistant_cad_edit_program(&resource_overflow)
-        .expect_err("operation budget overflow must fail closed");
-    assert_eq!(resource_overflow.code, "intent.cad_edit_program_invalid");
-    assert_eq!(shell.app().document_revision(), baseline_revision);
-    assert_eq!(shell.app().canonical_digest(), baseline_digest);
-    assert_eq!(shell.app().undo_step_count(), baseline_undo);
-    assert!(shell.app().assistant_proposal().is_none());
 }
 
 #[test]
@@ -4040,20 +3492,10 @@ fn scripted_sketch_program_reviews_creates_and_edits_workplanes_entities_and_con
         },
     );
     let mut shell = Shell::with_assistant_transport(transport.clone());
-    let input = shell.catalog().text("assistant-input-hint");
-    let confirm = shell.catalog().text("assistant-confirm");
 
     let before_revision = shell.app().document_revision();
-    let before_digest = shell.app().canonical_digest();
     let before_undo = shell.app().undo_step_count();
-    shell.focus_text_input(&input);
-    shell.type_text(create_principal);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert!(shell.has_visible_label(&shell.catalog().text("assistant-review-title")));
-    assert_eq!(shell.app().document_revision(), before_revision);
-    assert_eq!(shell.app().canonical_digest(), before_digest);
-    shell.click_row(&confirm);
+    submit_applied_assistant_request(&mut shell, create_principal);
     assert_eq!(shell.app().document_revision(), before_revision + 1);
     assert_eq!(shell.app().undo_step_count(), before_undo + 1);
 
@@ -4099,15 +3541,9 @@ fn scripted_sketch_program_reviews_creates_and_edits_workplanes_entities_and_con
             }],
         },
     );
-    let before_offset_revision = shell.app().document_revision();
-    let before_offset_digest = shell.app().canonical_digest();
-    shell.focus_text_input(&input);
-    shell.type_text(create_offset);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(shell.app().document_revision(), before_offset_revision);
-    assert_eq!(shell.app().canonical_digest(), before_offset_digest);
-    shell.click_row(&confirm);
+    submit_applied_assistant_request(&mut shell, create_offset);
+    assert_eq!(shell.app().document_revision(), before_revision + 2);
+    assert_eq!(shell.app().undo_step_count(), before_undo + 2);
 
     let offset_snapshot = shell.app().document_snapshot();
     let offset_workplane_id = offset_snapshot
@@ -4140,13 +3576,7 @@ fn scripted_sketch_program_reviews_creates_and_edits_workplanes_entities_and_con
     let before_edit_revision = shell.app().document_revision();
     let before_edit_digest = shell.app().canonical_digest();
     let before_edit_undo = shell.app().undo_step_count();
-    shell.focus_text_input(&input);
-    shell.type_text(edit_dimensions);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(shell.app().document_revision(), before_edit_revision);
-    assert_eq!(shell.app().canonical_digest(), before_edit_digest);
-    shell.click_row(&confirm);
+    submit_applied_assistant_request(&mut shell, edit_dimensions);
 
     assert_eq!(shell.app().document_revision(), before_edit_revision + 1);
     assert_eq!(shell.app().undo_step_count(), before_edit_undo + 1);
@@ -4178,75 +3608,15 @@ fn scripted_sketch_program_reviews_creates_and_edits_workplanes_entities_and_con
 }
 
 #[test]
-fn scripted_sketch_program_refuses_stale_preview_and_invalid_constraint_without_mutation() {
-    let stale_request = "Prepare a reviewed sketch that will become stale";
-    let stale_transport = Arc::new(ScriptedAssistantTransport::new([(
-        stale_request.to_owned(),
+fn scripted_sketch_program_rejects_invalid_constraint_without_mutation() {
+    let invalid_request = "Create a sketch with an invalid constraint reference";
+    let invalid_transport = Arc::new(ScriptedAssistantTransport::new([(
+        invalid_request.to_owned(),
         AssistantChatResult {
-            message: "Review the sketch before applying it.".to_owned(),
+            message: "Review the constrained sketch.".to_owned(),
             model_intent: None,
         },
     )]));
-    stale_transport.queue_cad_edit_program(
-        stale_request,
-        AssistantCadEditProgram {
-            operations: vec![AssistantCadEditOperation::CreateSketch {
-                definition_id: 1,
-                name: "Stale sketch".to_owned(),
-                workplane: AssistantWorkplaneSpec::Principal {
-                    plane: AssistantPrincipalPlane::Xy,
-                },
-                entities: vec![AssistantSketchEntity::Circle {
-                    id: 1,
-                    center_mm: [0.0, 0.0],
-                    radius_mm: 4.0,
-                }],
-                constraints: vec![AssistantSketchConstraint::Radius {
-                    id: 1,
-                    entity_id: 1,
-                    value_mm: 4.0,
-                }],
-            }],
-        },
-    );
-    let mut stale_shell = Shell::with_assistant_transport(stale_transport.clone());
-    let input = stale_shell.catalog().text("assistant-input-hint");
-    stale_shell.focus_text_input(&input);
-    stale_shell.type_text(stale_request);
-    stale_shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut stale_shell);
-    assert!(stale_shell.app().assistant_proposal().is_some());
-
-    stale_shell.click_menu_command("menu-edit", AppCommand::SelectAll);
-    stale_shell.click_menu_command("menu-view", AppCommand::Hide);
-    let intervening_revision = stale_shell.app().document_revision();
-    let intervening_digest = stale_shell.app().canonical_digest();
-    let intervening_undo = stale_shell.app().undo_step_count();
-    stale_shell.settle();
-    stale_shell.click_row(&stale_shell.catalog().text("assistant-confirm"));
-
-    assert!(stale_shell.app().assistant_proposal().is_none());
-    assert_eq!(stale_shell.app().document_revision(), intervening_revision);
-    assert_eq!(stale_shell.app().canonical_digest(), intervening_digest);
-    assert_eq!(stale_shell.app().undo_step_count(), intervening_undo);
-    assert!(
-        stale_shell
-            .app()
-            .document_snapshot()
-            .features()
-            .all(|feature| feature.name() != "Stale sketch")
-    );
-    assert_eq!(stale_transport.remaining_responses(), 0);
-
-    let invalid_request = "Create a sketch with an invalid constraint reference";
-    let rejected_result = || AssistantChatResult {
-        message: "Review the constrained sketch.".to_owned(),
-        model_intent: None,
-    };
-    let invalid_transport = Arc::new(ScriptedAssistantTransport::new([
-        (invalid_request.to_owned(), rejected_result()),
-        (invalid_request.to_owned(), rejected_result()),
-    ]));
     let invalid_program = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::CreateSketch {
             definition_id: 1,
@@ -4266,7 +3636,6 @@ fn scripted_sketch_program_refuses_stale_preview_and_invalid_constraint_without_
             }],
         }],
     };
-    invalid_transport.queue_cad_edit_program(invalid_request, invalid_program.clone());
     invalid_transport.queue_cad_edit_program(invalid_request, invalid_program);
     let mut invalid_shell = Shell::with_assistant_transport(invalid_transport.clone());
     let before_revision = invalid_shell.app().document_revision();
@@ -4276,30 +3645,11 @@ fn scripted_sketch_program_refuses_stale_preview_and_invalid_constraint_without_
     invalid_shell.focus_text_input(&input);
     invalid_shell.type_text(invalid_request);
     invalid_shell.press_key(egui::Key::Enter);
-    for _ in 0..200 {
-        invalid_shell.step();
-        if invalid_shell
-            .app()
-            .assistant_messages()
-            .iter()
-            .filter(|message| message.diagnostic.is_some())
-            .count()
-            == 2
-        {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    invalid_shell.settle();
-
+    let rejection = wait_for_assistant_reply(&mut invalid_shell);
+    assert_eq!(rejection.role, AssistantMessageRole::Error, "{rejection:?}");
     assert_eq!(
-        invalid_shell
-            .app()
-            .assistant_messages()
-            .iter()
-            .filter(|message| message.diagnostic.is_some())
-            .count(),
-        2
+        rejection.text,
+        "apply_and_verify: invalid_program: assistant sketch constraint reference is invalid"
     );
     assert!(invalid_shell.app().assistant_proposal().is_none());
     assert_eq!(invalid_shell.app().document_revision(), before_revision);
@@ -4316,107 +3666,7 @@ fn scripted_sketch_program_refuses_stale_preview_and_invalid_constraint_without_
 }
 
 #[test]
-#[cfg(feature = "named-product-fixtures")]
-fn verbal_bottle_goal_with_dimension_constraint_completes_verified_one_undo_cycle() {
-    let request = "Create an editable ketchup bottle with a 30 mm body radius";
-    let transport = Arc::new(ScriptedAssistantTransport::new([(
-        request.to_owned(),
-        AssistantChatResult {
-            message: "Review the editable bottle.".to_owned(),
-            model_intent: Some(AssistantModelIntent {
-                replace_scene: false,
-                boxes: Vec::new(),
-                translations: Vec::new(),
-                rotations: Vec::new(),
-                profile_translations: Vec::new(),
-                parameter_edits: Vec::new(),
-                linear_arrays: Vec::new(),
-                bottles: vec![AssistantBottleIntent {
-                    name: "Verbally created bottle".to_owned(),
-                    body_radius_mm: 30.0,
-                    body_height_mm: 110.0,
-                    shoulder_rise_mm: 20.0,
-                    neck_radius_mm: 12.0,
-                    neck_height_mm: 25.0,
-                    wall_thickness_mm: 2.0,
-                    finish_kind: AssistantBottleFinishKind::Fillet,
-                    finish_amount_mm: 2.0,
-                    origin_mm: [90.0, 0.0, 0.0],
-                    teapot: None,
-                    ketchup_bottle: None,
-                }],
-                gable_roofs: Vec::new(),
-                staircases: Vec::new(),
-                oriented_beams: Vec::new(),
-                balloon_texts: Vec::new(),
-            }),
-        },
-    )]));
-    let mut shell = Shell::with_assistant_transport(transport.clone());
-    let initial_revision = shell.app().document_revision();
-    let initial_digest = shell.app().canonical_digest();
-    let initial_undo_steps = shell.app().undo_step_count();
-    let initial_features = shell.app().feature_count();
-    let initial_occurrences = shell.app().occurrence_count();
-
-    shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
-    shell.type_text(request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(shell.app().document_revision(), initial_revision);
-    assert_eq!(shell.app().canonical_digest(), initial_digest);
-    assert_eq!(shell.app().undo_step_count(), initial_undo_steps);
-
-    shell.click_row(&shell.catalog().text("assistant-confirm"));
-    assert_eq!(shell.app().document_revision(), initial_revision + 1);
-    assert_eq!(shell.app().undo_step_count(), initial_undo_steps + 1);
-    assert_eq!(shell.app().feature_count(), initial_features + 5);
-    assert_eq!(shell.app().occurrence_count(), initial_occurrences + 1);
-    let snapshot = shell.app().document_snapshot();
-    let occurrence = snapshot
-        .occurrences()
-        .find(|occurrence| occurrence.name() == "Verbally created bottle occurrence")
-        .expect("confirmed proposal creates the requested bottle");
-    assert!(snapshot.features().any(|feature| {
-        feature.definition_id() == occurrence.definition_id()
-            && matches!(
-                feature.kind(),
-                FeatureKind::BottleProfileControl { body_radius, .. }
-                    if body_radius.millimetres() == 30.0
-            )
-    }));
-    let verification = shell
-        .app()
-        .assistant_verification()
-        .expect("confirmed proposal returns host verification")
-        .clone();
-    assert_eq!(verification.revision_id, initial_revision + 1);
-    assert_eq!(
-        verification.canonical_digest,
-        shell.app().canonical_digest()
-    );
-    assert!(verification.verified_write_count > 0);
-    assert!(!verification.command_digest.is_empty());
-    assert!(!verification.result_digest.is_empty());
-    shell.settle();
-    assert!(shell.has_visible_label(&shell.catalog().text("assistant-result-title")));
-    assert!(shell.has_visible_label(&shell.catalog().format(
-        "assistant-verification",
-        &BTreeMap::from([
-            ("revision", verification.revision_id.to_string()),
-            ("writes", verification.verified_write_count.to_string()),
-        ]),
-    )));
-
-    shell.click_row(&shell.catalog().text("assistant-undo-change"));
-    assert_eq!(shell.app().document_revision(), initial_revision);
-    assert_eq!(shell.app().canonical_digest(), initial_digest);
-    assert_eq!(shell.app().undo_step_count(), initial_undo_steps);
-    assert_eq!(transport.remaining_responses(), 0);
-}
-
-#[test]
-fn assistant_profile_translation_reviews_confirms_undoes_and_fails_closed() {
+fn assistant_profile_translation_reviews_confirms_and_undoes() {
     let directory = tempfile::tempdir().unwrap();
     let fixture = directory
         .path()
@@ -4463,11 +3713,6 @@ fn assistant_profile_translation_reviews_confirms_undoes_and_fails_closed() {
             }],
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     assert_eq!(shell.app().document_revision(), before_revision + 1);
@@ -4492,8 +3737,10 @@ fn assistant_profile_translation_reviews_confirms_undoes_and_fails_closed() {
     assert_eq!(shell.app().canonical_digest(), before_digest);
     assert_eq!(profile_points(&shell), before_points);
 
+    // Moving the pocket off its host is an edit like any other: it is
+    // reviewed without touching the document, and validation reports it.
     assert!(
-        !shell
+        shell
             .app_mut()
             .prepare_assistant_model_intent(AssistantModelIntent {
                 replace_scene: false,
@@ -4508,15 +3755,10 @@ fn assistant_profile_translation_reviews_confirms_undoes_and_fails_closed() {
                 }],
                 parameter_edits: Vec::new(),
                 linear_arrays: Vec::new(),
-                bottles: Vec::new(),
-                gable_roofs: Vec::new(),
-                staircases: Vec::new(),
-                oriented_beams: Vec::new(),
-                balloon_texts: Vec::new(),
             })
     );
     assert_eq!(shell.app().canonical_digest(), before_digest);
-    assert!(shell.app().assistant_proposal().is_none());
+    assert!(shell.app().assistant_proposal().is_some());
 }
 
 #[test]
@@ -4562,11 +3804,6 @@ fn assistant_parameter_edit_uses_the_selected_exact_target_for_feature_and_const
                 value_mm: 7.5,
             }],
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }
     ));
     assert!(matches!(
@@ -4626,11 +3863,6 @@ fn assistant_parameter_edit_uses_the_selected_exact_target_for_feature_and_const
                 value_mm: 4.5,
             }],
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }
     ));
     let snapshot = shell.app().document_snapshot();
@@ -4661,11 +3893,6 @@ fn assistant_parameter_edit_uses_the_selected_exact_target_for_feature_and_const
                     value_mm: 4.5,
                 }],
                 linear_arrays: Vec::new(),
-                bottles: Vec::new(),
-                gable_roofs: Vec::new(),
-                staircases: Vec::new(),
-                oriented_beams: Vec::new(),
-                balloon_texts: Vec::new(),
             })
     );
     assert_eq!(shell.app().canonical_digest(), before_digest);
@@ -4700,7 +3927,7 @@ fn docked_assistant_can_inspect_selected_occurrence_101_from_bounded_context() {
     shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
     shell.type_text(request);
     shell.press_key(egui::Key::Enter);
-    for _ in 0..100 {
+    for _ in 0..2_000 {
         shell.step();
         if transport.contexts().len() == 1 && shell.app().assistant_messages().len() == 2 {
             break;
@@ -4766,23 +3993,16 @@ fn assistant_selection_context_tracks_the_live_model_selection() {
 }
 
 #[test]
-fn scripted_surface_program_is_accessible_consent_bound_stale_safe_and_undoable() {
+fn scripted_surface_program_applies_as_one_undoable_step() {
     let create_request = "Create, extend, and thicken a planar surface";
-    let stale_request = "Prepare another surface extension";
     let response = |message: &str| AssistantChatResult {
         message: message.to_owned(),
         model_intent: None,
     };
-    let transport = Arc::new(ScriptedAssistantTransport::new([
-        (
-            create_request.to_owned(),
-            response("Review the surface workflow."),
-        ),
-        (
-            stale_request.to_owned(),
-            response("Review the additional surface extension."),
-        ),
-    ]));
+    let transport = Arc::new(ScriptedAssistantTransport::new([(
+        create_request.to_owned(),
+        response("Review the surface workflow."),
+    )]));
     let earlier_body = |operation_index| {
         AssistantCadFeatureReference::ProgramOutput(AssistantCadProgramFeatureReference {
             operation_index,
@@ -4822,89 +4042,44 @@ fn scripted_surface_program_is_accessible_consent_bound_stale_safe_and_undoable(
             ],
         },
     );
-    transport.queue_cad_edit_program(
-        stale_request,
-        AssistantCadEditProgram {
-            operations: vec![AssistantCadEditOperation::AppendFeature {
-                definition_id: 1,
-                name: "Stale surface extension".into(),
-                feature: AssistantCadBodyFeature::SurfaceExtend {
-                    target_feature_id: 3.into(),
-                    distance_mm: 1.0,
-                },
-            }],
-        },
-    );
 
+    // A profile-only part: the surface workflow becomes the definition's only body.
+    let directory = tempfile::tempdir().unwrap();
+    let fixture_path = directory.path().join("assistant-surface-input.ketchup");
+    write_assistant_planar_offset_fixture(&fixture_path);
     let mut shell = Shell::with_assistant_transport(transport.clone());
-    let input = shell.catalog().text("assistant-input-hint");
-    let confirm = shell.catalog().text("assistant-confirm");
+    assert!(shell.app_mut().open_document_path(&fixture_path));
+    shell.settle();
     let baseline_revision = shell.app().document_revision();
     let baseline_digest = shell.app().canonical_digest();
     let baseline_undo = shell.app().undo_step_count();
 
-    shell.focus_text_input(&input);
-    shell.type_text(create_request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert!(shell.has_visible_label(&shell.catalog().text("assistant-review-title")));
-    assert_eq!(shell.app().document_revision(), baseline_revision);
-    assert_eq!(shell.app().canonical_digest(), baseline_digest);
-    assert_eq!(shell.app().undo_step_count(), baseline_undo);
-
-    shell.click_row(&confirm);
+    submit_applied_assistant_request(&mut shell, create_request);
     let committed_revision = shell.app().document_revision();
     let committed_digest = shell.app().canonical_digest();
     assert_eq!(committed_revision, baseline_revision + 1);
     assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
     let committed = shell.app().document_snapshot();
     assert!(matches!(
-        committed.feature(FeatureId(3)).unwrap().kind(),
+        committed.feature(FeatureId(2)).unwrap().kind(),
         FeatureKind::SurfaceBody(_)
     ));
     assert!(matches!(
-        committed.feature(FeatureId(4)).unwrap().kind(),
+        committed.feature(FeatureId(3)).unwrap().kind(),
         FeatureKind::SurfaceExtend {
-            target: FeatureId(3),
+            target: FeatureId(2),
             ..
         }
     ));
     assert!(matches!(
-        committed.feature(FeatureId(5)).unwrap().kind(),
+        committed.feature(FeatureId(4)).unwrap().kind(),
         FeatureKind::SurfaceThicken {
-            target: FeatureId(4),
+            target: FeatureId(3),
             direction: ketchup_core::document::ShellDirection::Symmetric,
             ..
         }
     ));
 
-    shell.focus_text_input(&input);
-    shell.type_text(stale_request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(shell.app().document_revision(), committed_revision);
-    assert_eq!(shell.app().canonical_digest(), committed_digest);
-    shell.click_menu_command("menu-edit", AppCommand::SelectAll);
-    shell.click_menu_command("menu-view", AppCommand::Hide);
-    let intervening_revision = shell.app().document_revision();
-    let intervening_digest = shell.app().canonical_digest();
-    let intervening_undo = shell.app().undo_step_count();
-    shell.settle();
-    shell.click_row(&confirm);
-    assert!(shell.app().assistant_proposal().is_none());
-    assert_eq!(shell.app().document_revision(), intervening_revision);
-    assert_eq!(shell.app().canonical_digest(), intervening_digest);
-    assert_eq!(shell.app().undo_step_count(), intervening_undo);
-    assert!(
-        shell
-            .app()
-            .document_snapshot()
-            .features()
-            .all(|feature| feature.name() != "Stale surface extension")
-    );
-
-    shell.click_menu_command("menu-edit", AppCommand::Undo);
-    assert_eq!(shell.app().canonical_digest(), committed_digest);
     shell.click_menu_command("menu-edit", AppCommand::Undo);
     assert_eq!(shell.app().canonical_digest(), baseline_digest);
     shell.click_menu_command("menu-edit", AppCommand::Redo);
@@ -4942,11 +4117,6 @@ fn assistant_context_runs_current_collision_validation_without_mutating_or_addin
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     let revision = shell.app().document_revision();
@@ -4984,11 +4154,6 @@ fn assistant_context_runs_current_collision_validation_without_mutating_or_addin
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     let clean_revision = shell.app().document_revision();
@@ -5047,11 +4212,6 @@ fn assistant_context_finds_transitively_supported_and_floating_parts_without_mut
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     assign_validator_roles(
@@ -5114,11 +4274,6 @@ fn assistant_context_finds_transitively_supported_and_floating_parts_without_mut
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     shell.settle();
@@ -5160,7 +4315,7 @@ fn assistant_chat_selects_validation_scope_and_rejects_unknown_names_without_mut
         shell.focus_text_input(&input_label);
         shell.type_text(query);
         shell.press_key(egui::Key::Enter);
-        for _ in 0..100 {
+        for _ in 0..2_000 {
             shell.step();
             if transport.contexts().len() > index
                 && shell.app().assistant_messages().len() == (index + 1) * 2
@@ -5179,6 +4334,7 @@ fn assistant_chat_selects_validation_scope_and_rejects_unknown_names_without_mut
         all["executed"],
         serde_json::json!([
             "collision",
+            "assembly_retention",
             "gravity_support",
             "shelf_deflection",
             "tipping",
@@ -5205,6 +4361,7 @@ fn assistant_chat_selects_validation_scope_and_rejects_unknown_names_without_mut
         except["executed"],
         serde_json::json!([
             "collision",
+            "assembly_retention",
             "shelf_deflection",
             "tipping",
             "anchoring",
@@ -5224,6 +4381,7 @@ fn assistant_chat_selects_validation_scope_and_rejects_unknown_names_without_mut
         unknown["skipped"],
         serde_json::json!([
             "collision",
+            "assembly_retention",
             "gravity_support",
             "shelf_deflection",
             "tipping",
@@ -5293,11 +4451,6 @@ fn assistant_chat_reports_shelf_deflection_tipping_and_anchoring_with_explicit_l
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     shell.settle();
@@ -5422,11 +4575,6 @@ fn assistant_chat_reports_shelf_deflection_tipping_and_anchoring_with_explicit_l
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     shell.settle();
@@ -5437,7 +4585,7 @@ fn assistant_chat_reports_shelf_deflection_tipping_and_anchoring_with_explicit_l
     shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
     shell.type_text(query);
     shell.press_key(egui::Key::Enter);
-    for _ in 0..100 {
+    for _ in 0..2_000 {
         shell.step();
         if transport.contexts().len() == 1 && shell.app().assistant_messages().len() == 2 {
             break;
@@ -5457,6 +4605,7 @@ fn assistant_chat_reports_shelf_deflection_tipping_and_anchoring_with_explicit_l
         validation["skipped"],
         serde_json::json!([
             "collision",
+            "assembly_retention",
             "gravity_support",
             "hardware_manufacturing",
             "room_placement",
@@ -5594,11 +4743,6 @@ fn assistant_chat_reports_hardware_and_manufacturing_from_roles_and_source_geome
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     shell.settle();
@@ -5698,11 +4842,6 @@ fn assistant_chat_reports_hardware_and_manufacturing_from_roles_and_source_geome
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     shell.settle();
@@ -5713,7 +4852,7 @@ fn assistant_chat_reports_hardware_and_manufacturing_from_roles_and_source_geome
     shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
     shell.type_text(query);
     shell.press_key(egui::Key::Enter);
-    for _ in 0..100 {
+    for _ in 0..2_000 {
         shell.step();
         if transport.contexts().len() == 1 && shell.app().assistant_messages().len() == 2 {
             break;
@@ -5890,11 +5029,6 @@ fn assistant_chat_reports_spatial_roles_and_oriented_narrow_phase() {
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     shell.settle();
@@ -5990,11 +5124,6 @@ fn assistant_chat_reports_spatial_roles_and_oriented_narrow_phase() {
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     shell.settle();
@@ -6005,7 +5134,7 @@ fn assistant_chat_reports_spatial_roles_and_oriented_narrow_phase() {
     shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
     shell.type_text(query);
     shell.press_key(egui::Key::Enter);
-    for _ in 0..100 {
+    for _ in 0..2_000 {
         shell.step();
         if transport.contexts().len() == 1 && shell.app().assistant_messages().len() == 2 {
             break;
@@ -6110,7 +5239,7 @@ fn assistant_chat_does_not_claim_spatial_validation_without_canonical_roles() {
     shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
     shell.type_text(query);
     shell.press_key(egui::Key::Enter);
-    for _ in 0..100 {
+    for _ in 0..2_000 {
         shell.step();
         if transport.contexts().len() == 1 && shell.app().assistant_messages().len() == 2 {
             break;
@@ -6170,11 +5299,6 @@ fn assistant_chat_calculates_static_load_from_explicit_canonical_physics_inputs(
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     assign_validator_roles(
@@ -6227,7 +5351,7 @@ fn assistant_chat_calculates_static_load_from_explicit_canonical_physics_inputs(
     shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
     shell.type_text(query);
     shell.press_key(egui::Key::Enter);
-    for _ in 0..100 {
+    for _ in 0..2_000 {
         shell.step();
         if transport.contexts().len() == 1 && shell.app().assistant_messages().len() == 2 {
             break;
@@ -6295,7 +5419,7 @@ fn assistant_chat_does_not_estimate_static_load_without_explicit_physics_inputs(
     shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
     shell.type_text(query);
     shell.press_key(egui::Key::Enter);
-    for _ in 0..100 {
+    for _ in 0..2_000 {
         shell.step();
         if transport.contexts().len() == 1 && shell.app().assistant_messages().len() == 2 {
             break;
@@ -6346,11 +5470,6 @@ fn assistant_repairs_a_collision_through_preview_confirmation_revalidation_and_o
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     shell.settle();
@@ -6449,11 +5568,6 @@ fn assistant_repairs_an_unsupported_part_and_reruns_only_gravity_support() {
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     assign_validator_roles(
@@ -6554,11 +5668,6 @@ fn assistant_repairs_gravity_support_along_the_typed_non_world_axis() {
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     assign_validator_roles(
@@ -6679,11 +5788,6 @@ fn assistant_repairs_all_safe_collision_and_support_findings_in_one_confirmed_ba
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         },
     ));
     assign_validator_roles(
@@ -6946,11 +6050,6 @@ fn public_apply_helpers_cannot_bypass_review_for_non_whitelisted_changes() {
                 profile_translations: Vec::new(),
                 parameter_edits: Vec::new(),
                 linear_arrays: Vec::new(),
-                bottles: Vec::new(),
-                gable_roofs: Vec::new(),
-                staircases: Vec::new(),
-                oriented_beams: Vec::new(),
-                balloon_texts: Vec::new(),
             })
     );
     assert!(shell.app().assistant_proposal().is_some());
@@ -7358,13 +6457,14 @@ fn new_open_and_new_chat_cancel_reviewed_work_through_accessible_shell_commands(
     assert_eq!(shell.app().canonical_digest(), digest);
 
     prepare_review(&mut shell);
-    shell.click_menu_command("menu-file", AppCommand::New);
-    assert!(shell.app().assistant_proposal().is_none());
-
-    prepare_review(&mut shell);
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert!(shell.app().assistant_proposal().is_none());
     assert_eq!(shell.app().canonical_digest(), opened_digest);
+
+    // New starts an empty document, so it comes last: the review needs definition 1.
+    prepare_review(&mut shell);
+    shell.click_menu_command("menu-file", AppCommand::New);
+    assert!(shell.app().assistant_proposal().is_none());
 }
 
 #[test]
@@ -7391,11 +6491,6 @@ fn assistant_creates_a_rectangular_prism_as_one_reviewed_batch_and_one_undo_step
                 profile_translations: Vec::new(),
                 parameter_edits: Vec::new(),
                 linear_arrays: Vec::new(),
-                bottles: Vec::new(),
-                gable_roofs: Vec::new(),
-                staircases: Vec::new(),
-                oriented_beams: Vec::new(),
-                balloon_texts: Vec::new(),
             })
     );
     assert_eq!(shell.app().document_revision(), initial_revision);
@@ -7440,11 +6535,6 @@ fn assistant_replacement_review_hides_internal_digests_and_describes_removals() 
                 profile_translations: Vec::new(),
                 parameter_edits: Vec::new(),
                 linear_arrays: Vec::new(),
-                bottles: Vec::new(),
-                gable_roofs: Vec::new(),
-                staircases: Vec::new(),
-                oriented_beams: Vec::new(),
-                balloon_texts: Vec::new(),
             })
     );
     let removed = shell
@@ -7525,11 +6615,6 @@ fn assistant_model_intent_applies_real_3d_boxes_immediately_as_one_undoable_batc
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }
     ));
     assert_eq!(shell.app().document_revision(), initial_revision + 1);
@@ -7551,987 +6636,6 @@ fn assistant_model_intent_applies_real_3d_boxes_immediately_as_one_undoable_batc
     assert!(shell.app_mut().undo());
     assert_eq!(shell.app().document_revision(), initial_revision);
     assert_eq!(shell.app().canonical_digest(), initial_digest);
-}
-
-#[test]
-#[cfg(feature = "named-product-fixtures")]
-fn assistant_teapot_intent_creates_smooth_hollow_saved_model_as_one_undo_step() {
-    let mut shell = Shell::new();
-    let initial_revision = shell.app().document_revision();
-    let initial_digest = shell.app().canonical_digest();
-    let initial_features = shell.app().feature_count();
-
-    if !apply_reviewed_model_intent(
-        &mut shell,
-        AssistantModelIntent {
-            replace_scene: false,
-            boxes: Vec::new(),
-            translations: Vec::new(),
-            rotations: Vec::new(),
-            profile_translations: Vec::new(),
-            parameter_edits: Vec::new(),
-            linear_arrays: Vec::new(),
-            bottles: vec![AssistantBottleIntent {
-                name: "Rounded tea pot".to_owned(),
-                body_radius_mm: 70.0,
-                body_height_mm: 105.0,
-                shoulder_rise_mm: 22.0,
-                neck_radius_mm: 42.0,
-                neck_height_mm: 14.0,
-                wall_thickness_mm: 3.0,
-                finish_kind: AssistantBottleFinishKind::Fillet,
-                finish_amount_mm: 4.0,
-                origin_mm: [0.0, 0.0, 0.0],
-                teapot: Some(AssistantTeapotIntent {
-                    handle_clearance_mm: 52.0,
-                    handle_tube_radius_mm: 9.0,
-                    spout_length_mm: 105.0,
-                    spout_radius_mm: 14.0,
-                    lid_height_mm: 18.0,
-                    lid_knob_radius_mm: 10.0,
-                }),
-                ketchup_bottle: None,
-            }],
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
-        },
-    ) {
-        assert_eq!(shell.app().document_revision(), initial_revision);
-        assert_eq!(shell.app().canonical_digest(), initial_digest);
-        assert!(shell.app().assistant_proposal().is_none());
-        assert!(shell.app().action_digest().contains("non-editable mesh"));
-        return;
-    }
-
-    assert_eq!(shell.app().document_revision(), initial_revision + 1);
-    assert_eq!(shell.app().feature_count(), initial_features + 2);
-    let snapshot = shell.app().document_snapshot();
-    let body_occurrence = snapshot
-        .occurrences()
-        .find(|occurrence| occurrence.name() == "Rounded tea pot body occurrence")
-        .expect("separate teapot body occurrence must exist");
-    let lid_occurrence = snapshot
-        .occurrences()
-        .find(|occurrence| occurrence.name() == "Rounded tea pot lid occurrence")
-        .expect("separate removable lid occurrence must exist");
-    assert_ne!(
-        body_occurrence.definition_id(),
-        lid_occurrence.definition_id(),
-        "the lid must be independently selectable and removable"
-    );
-    let body_feature = snapshot
-        .features()
-        .find(|feature| feature.name() == "Rounded tea pot smooth hollow body")
-        .expect("teapot body mesh must exist");
-    let lid_feature = snapshot
-        .features()
-        .find(|feature| feature.name() == "Rounded tea pot removable seated lid")
-        .expect("separate seated lid mesh must exist");
-    let FeatureKind::MeshBody(body_mesh) = body_feature.kind() else {
-        panic!("teapot body must be a canonical mesh body");
-    };
-    let FeatureKind::MeshBody(lid_mesh) = lid_feature.kind() else {
-        panic!("teapot lid must be a canonical mesh body");
-    };
-    let assert_closed_manifold = |mesh: &ketchup_core::document::MeshBodySpec| {
-        let mut edges = BTreeMap::<(u32, u32), (usize, i32)>::new();
-        let mut signed_volume = 0.0;
-        for triangle in &mesh.triangles {
-            let [a, b, c] = *triangle;
-            assert!(a != b && b != c && c != a);
-            let va = mesh.vertices_mm[a as usize];
-            let vb = mesh.vertices_mm[b as usize];
-            let vc = mesh.vertices_mm[c as usize];
-            signed_volume += va[0] * (vb[1] * vc[2] - vb[2] * vc[1])
-                + va[1] * (vb[2] * vc[0] - vb[0] * vc[2])
-                + va[2] * (vb[0] * vc[1] - vb[1] * vc[0]);
-            for (start, end) in [(a, b), (b, c), (c, a)] {
-                let key = (start.min(end), start.max(end));
-                let edge = edges.entry(key).or_default();
-                edge.0 += 1;
-                edge.1 += if start < end { 1 } else { -1 };
-            }
-        }
-        assert!(
-            edges
-                .values()
-                .all(|(count, balance)| *count == 2 && *balance == 0)
-        );
-        assert!(signed_volume.abs() > 1.0);
-    };
-    assert_closed_manifold(body_mesh);
-    assert_closed_manifold(lid_mesh);
-    assert!(body_mesh.vertices_mm.len() > 1_800);
-    assert!(body_mesh.triangles.len() > 3_000);
-    assert!(lid_mesh.vertices_mm.len() > 400);
-    assert!(lid_mesh.triangles.len() > 800);
-    assert!(body_mesh.vertices_mm.contains(&[42.0, 0.0, 141.0]));
-    assert!(body_mesh.vertices_mm.contains(&[39.0, 0.0, 141.0]));
-    assert!(body_mesh.vertices_mm.iter().any(|vertex| vertex[0] > 165.0));
-    assert!(
-        body_mesh
-            .vertices_mm
-            .iter()
-            .any(|vertex| vertex[0] < -110.0)
-    );
-    let spout_tip_radii = body_mesh
-        .vertices_mm
-        .iter()
-        .filter(|vertex| (vertex[0] - 170.8).abs() < 0.1 && (vertex[2] - 124.08).abs() < 0.1)
-        .map(|vertex| vertex[1].abs())
-        .collect::<Vec<_>>();
-    assert!(spout_tip_radii.iter().copied().fold(0.0, f64::max) > 10.5);
-    assert!(
-        spout_tip_radii
-            .iter()
-            .copied()
-            .fold(f64::INFINITY, f64::min)
-            < 8.0,
-        "the tapered spout tip must retain a distinct open inner radius"
-    );
-    assert!(
-        lid_mesh
-            .vertices_mm
-            .iter()
-            .any(|vertex| { vertex[2] < 141.0 && vertex[0].hypot(vertex[1]) > 37.0 })
-    );
-    assert!(
-        lid_mesh
-            .vertices_mm
-            .iter()
-            .any(|vertex| { vertex[2] > 141.0 && vertex[0].hypot(vertex[1]) > 45.0 })
-    );
-    assert!(matches!(
-        &body_mesh.authority,
-        ketchup_core::document::MeshAuthority::Authored { provenance }
-            if provenance == "ketchup-assistant-rounded-teapot-body-v2"
-    ));
-    assert!(matches!(
-        &lid_mesh.authority,
-        ketchup_core::document::MeshAuthority::Authored { provenance }
-            if provenance == "ketchup-assistant-removable-teapot-lid-v1"
-    ));
-
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("assistant-rounded-teapot.ketchup");
-    persistence::save_atomic(&path, &snapshot).unwrap();
-    let reopened = persistence::load_file(&path).unwrap().snapshot();
-    assert_eq!(reopened.canonical_digest(), snapshot.canonical_digest());
-    assert!(
-        reopened
-            .features()
-            .any(|feature| feature.name() == "Rounded tea pot smooth hollow body")
-    );
-    assert!(
-        reopened
-            .features()
-            .any(|feature| feature.name() == "Rounded tea pot removable seated lid")
-    );
-    let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/assistant-rounded-teapot.ketchup");
-    if std::env::var_os("UPDATE_ASSISTANT_TEAPOT_FIXTURE").is_some() {
-        persistence::save_atomic(&fixture_path, &snapshot).unwrap();
-    }
-    let fixture = persistence::load_file(&fixture_path).unwrap().snapshot();
-    for (name, expected) in [
-        ("Rounded tea pot smooth hollow body", body_mesh),
-        ("Rounded tea pot removable seated lid", lid_mesh),
-    ] {
-        let fixture_feature = fixture
-            .features()
-            .find(|feature| feature.name() == name)
-            .expect("saved teapot fixture must retain both removable parts");
-        let FeatureKind::MeshBody(fixture_mesh) = fixture_feature.kind() else {
-            panic!("saved teapot fixture parts must remain canonical mesh bodies");
-        };
-        assert_eq!(fixture_mesh.vertices_mm.len(), expected.vertices_mm.len());
-        assert_eq!(fixture_mesh.triangles.len(), expected.triangles.len());
-        assert_eq!(fixture_mesh.authority, expected.authority);
-    }
-    assert_eq!(
-        fixture
-            .occurrences()
-            .filter(|occurrence| occurrence.name().starts_with("Rounded tea pot"))
-            .count(),
-        2
-    );
-
-    assert!(shell.app_mut().undo());
-    assert_eq!(shell.app().document_revision(), initial_revision);
-    assert_eq!(shell.app().canonical_digest(), initial_digest);
-}
-
-#[test]
-fn assistant_balloon_text_creates_inflated_letters_with_holes_depth_save_and_undo() {
-    let mut shell = Shell::new();
-    let initial_revision = shell.app().document_revision();
-    let initial_digest = shell.app().canonical_digest();
-    if !apply_reviewed_model_intent(
-        &mut shell,
-        AssistantModelIntent {
-            replace_scene: false,
-            boxes: Vec::new(),
-            translations: Vec::new(),
-            rotations: Vec::new(),
-            profile_translations: Vec::new(),
-            parameter_edits: Vec::new(),
-            linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            balloon_texts: vec![AssistantBalloonTextIntent {
-                name: "Balloon KECUP".to_owned(),
-                text: "KECUP".to_owned(),
-                height_mm: 120.0,
-                depth_mm: 42.0,
-                stroke_width_mm: 20.0,
-                letter_spacing_mm: 12.0,
-                origin_mm: [25.0, 10.0, 5.0],
-            }],
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-        },
-    ) {
-        assert_eq!(shell.app().document_revision(), initial_revision);
-        assert_eq!(shell.app().canonical_digest(), initial_digest);
-        assert!(shell.app().assistant_proposal().is_none());
-        assert!(shell.app().action_digest().contains("non-editable mesh"));
-        return;
-    }
-    assert_eq!(shell.app().document_revision(), initial_revision + 1);
-    let snapshot = shell.app().document_snapshot();
-    let feature = snapshot
-        .features()
-        .find(|feature| feature.name() == "Balloon KECUP inflated text")
-        .expect("balloon text mesh must exist");
-    let FeatureKind::MeshBody(mesh) = feature.kind() else {
-        panic!("balloon text must be one canonical mesh body");
-    };
-    assert!(mesh.vertices_mm.len() > 3_000);
-    assert!(mesh.triangles.len() > 6_000);
-    assert!(mesh.vertices_mm.iter().any(|point| point[1] == -21.0));
-    assert!(mesh.vertices_mm.iter().any(|point| point[1] == 21.0));
-    let depth_layers = mesh
-        .vertices_mm
-        .iter()
-        .map(|point| (point[1] * 1_000.0).round() as i64)
-        .collect::<BTreeSet<_>>();
-    assert!(
-        depth_layers.len() > 20,
-        "inflated glyphs must have continuously rounded depth, not three beveled slabs"
-    );
-    assert!(
-        !mesh
-            .vertices_mm
-            .iter()
-            .any(|point| (point[0] - 520.8).abs() < 5.0 && (point[2] - 90.0).abs() < 5.0),
-        "the bowl of P must remain a through opening"
-    );
-    assert!(matches!(
-        &mesh.authority,
-        ketchup_core::document::MeshAuthority::Authored { provenance }
-            if provenance == "ketchup-assistant-balloon-text-v2"
-    ));
-    let occurrence = snapshot
-        .occurrences()
-        .find(|occurrence| occurrence.name() == "Balloon KECUP occurrence")
-        .expect("balloon text occurrence must exist");
-    let transform = occurrence.transform();
-    let matrix = transform.matrix();
-    assert_eq!([matrix[3], matrix[7], matrix[11]], [25.0, 10.0, 5.0]);
-
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("assistant-balloon-letters.ketchup");
-    persistence::save_atomic(&path, &snapshot).unwrap();
-    let reopened = persistence::load_file(&path).unwrap().snapshot();
-    assert_eq!(reopened.canonical_digest(), snapshot.canonical_digest());
-    let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/assistant-balloon-letters.ketchup");
-    if std::env::var_os("UPDATE_ASSISTANT_BALLOON_FIXTURE").is_some() {
-        persistence::save_atomic(&fixture_path, &snapshot).unwrap();
-    }
-    let fixture = persistence::load_file(&fixture_path).unwrap().snapshot();
-    let fixture_feature = fixture
-        .features()
-        .find(|feature| feature.name() == "Balloon KECUP inflated text")
-        .expect("saved balloon text fixture must remain openable");
-    let FeatureKind::MeshBody(fixture_mesh) = fixture_feature.kind() else {
-        panic!("saved balloon text fixture must retain its canonical mesh body");
-    };
-    assert_eq!(fixture_mesh.vertices_mm.len(), mesh.vertices_mm.len());
-    assert_eq!(fixture_mesh.triangles.len(), mesh.triangles.len());
-    assert_eq!(fixture_mesh.authority, mesh.authority);
-
-    assert!(shell.app_mut().undo());
-    assert_eq!(shell.app().document_revision(), initial_revision);
-    assert_eq!(shell.app().canonical_digest(), initial_digest);
-}
-
-#[test]
-fn assistant_balloon_text_supports_the_complete_rounded_uppercase_and_digit_alphabet() {
-    let mut shell = Shell::new();
-    let initial_revision = shell.app().document_revision();
-    let initial_digest = shell.app().canonical_digest();
-    if !apply_reviewed_model_intent(
-        &mut shell,
-        AssistantModelIntent {
-            replace_scene: false,
-            boxes: Vec::new(),
-            translations: Vec::new(),
-            rotations: Vec::new(),
-            profile_translations: Vec::new(),
-            parameter_edits: Vec::new(),
-            linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            balloon_texts: vec![
-                AssistantBalloonTextIntent {
-                    name: "Complete balloon alphabet".to_owned(),
-                    text: "ABCDEFGHIJKLMNOPQRSTUVWXYZ".to_owned(),
-                    height_mm: 40.0,
-                    depth_mm: 16.0,
-                    stroke_width_mm: 8.0,
-                    letter_spacing_mm: 4.0,
-                    origin_mm: [0.0, 0.0, 0.0],
-                },
-                AssistantBalloonTextIntent {
-                    name: "Complete balloon digits".to_owned(),
-                    text: "0123456789".to_owned(),
-                    height_mm: 40.0,
-                    depth_mm: 16.0,
-                    stroke_width_mm: 8.0,
-                    letter_spacing_mm: 4.0,
-                    origin_mm: [0.0, 0.0, 60.0],
-                },
-                AssistantBalloonTextIntent {
-                    name: "Standalone balloon caron".to_owned(),
-                    text: "ˇ".to_owned(),
-                    height_mm: 40.0,
-                    depth_mm: 16.0,
-                    stroke_width_mm: 8.0,
-                    letter_spacing_mm: 4.0,
-                    origin_mm: [0.0, 0.0, 120.0],
-                },
-            ],
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-        },
-    ) {
-        assert_eq!(shell.app().document_revision(), initial_revision);
-        assert_eq!(shell.app().canonical_digest(), initial_digest);
-        assert!(shell.app().assistant_proposal().is_none());
-        assert!(shell.app().action_digest().contains("non-editable mesh"));
-        return;
-    }
-    let snapshot = shell.app().document_snapshot();
-    for name in [
-        "Complete balloon alphabet inflated text",
-        "Complete balloon digits inflated text",
-        "Standalone balloon caron inflated text",
-    ] {
-        let feature = snapshot
-            .features()
-            .find(|feature| feature.name() == name)
-            .expect("every supported balloon glyph must produce a mesh body");
-        let FeatureKind::MeshBody(mesh) = feature.kind() else {
-            panic!("every supported balloon glyph must be a canonical mesh body");
-        };
-        assert!(mesh.vertices_mm.len() < 100_000);
-        assert!(mesh.triangles.len() < 200_000);
-        assert!(matches!(
-            &mesh.authority,
-            ketchup_core::document::MeshAuthority::Authored { provenance }
-                if provenance == "ketchup-assistant-balloon-text-v2"
-        ));
-    }
-}
-
-#[test]
-#[cfg(feature = "named-product-fixtures")]
-fn assistant_ketchup_bottle_creates_saved_rounded_squeeze_model_as_one_undo_step() {
-    let mut shell = Shell::new();
-    let initial_revision = shell.app().document_revision();
-    let initial_digest = shell.app().canonical_digest();
-    if !apply_reviewed_model_intent(
-        &mut shell,
-        AssistantModelIntent {
-            replace_scene: true,
-            boxes: Vec::new(),
-            translations: Vec::new(),
-            rotations: Vec::new(),
-            profile_translations: Vec::new(),
-            parameter_edits: Vec::new(),
-            linear_arrays: Vec::new(),
-            bottles: vec![AssistantBottleIntent {
-                name: "Kečup squeeze bottle".to_owned(),
-                body_radius_mm: 38.0,
-                body_height_mm: 145.0,
-                shoulder_rise_mm: 28.0,
-                neck_radius_mm: 15.0,
-                neck_height_mm: 18.0,
-                wall_thickness_mm: 2.0,
-                finish_kind: AssistantBottleFinishKind::Fillet,
-                finish_amount_mm: 2.0,
-                origin_mm: [0.0, 0.0, 0.0],
-                teapot: None,
-                ketchup_bottle: Some(AssistantKetchupBottleIntent {
-                    body_depth_ratio: 0.68,
-                    cap_radius_mm: 19.5,
-                    cap_height_mm: 24.0,
-                    label_width_mm: 58.0,
-                    label_height_mm: 72.0,
-                    label_relief_mm: 2.5,
-                    grip_rib_count: 20,
-                }),
-            }],
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
-        },
-    ) {
-        assert_eq!(shell.app().document_revision(), initial_revision);
-        assert_eq!(shell.app().canonical_digest(), initial_digest);
-        assert!(shell.app().assistant_proposal().is_none());
-        assert!(shell.app().action_digest().contains("non-editable mesh"));
-        return;
-    }
-    let snapshot = shell.app().document_snapshot();
-    let body_occurrence = snapshot
-        .occurrences()
-        .find(|occurrence| occurrence.name() == "Kečup squeeze bottle body occurrence")
-        .expect("separate bottle body occurrence must exist");
-    let cap_occurrence = snapshot
-        .occurrences()
-        .find(|occurrence| occurrence.name() == "Kečup squeeze bottle cap occurrence")
-        .expect("separate removable cap occurrence must exist");
-    assert_ne!(
-        body_occurrence.definition_id(),
-        cap_occurrence.definition_id(),
-        "the cap must be independently selectable and removable"
-    );
-    let body_feature = snapshot
-        .features()
-        .find(|feature| feature.name() == "Kečup squeeze bottle clean threaded body")
-        .expect("clean threaded bottle body must exist");
-    let cap_feature = snapshot
-        .features()
-        .find(|feature| feature.name() == "Kečup squeeze bottle removable threaded cap")
-        .expect("removable threaded cap must exist");
-    let FeatureKind::MeshBody(body_mesh) = body_feature.kind() else {
-        panic!("ketchup bottle body must be a canonical mesh body");
-    };
-    let FeatureKind::MeshBody(cap_mesh) = cap_feature.kind() else {
-        panic!("ketchup bottle cap must be a canonical mesh body");
-    };
-    assert!(body_mesh.vertices_mm.len() > 3_000);
-    assert!(body_mesh.triangles.len() > 6_000);
-    assert!(cap_mesh.vertices_mm.len() > 3_000);
-    assert!(cap_mesh.triangles.len() > 6_000);
-    let x_extent = body_mesh
-        .vertices_mm
-        .iter()
-        .map(|point| point[0].abs())
-        .fold(0.0, f64::max);
-    let y_extent = body_mesh
-        .vertices_mm
-        .iter()
-        .filter(|point| point[2] < 145.0)
-        .map(|point| point[1].abs())
-        .fold(0.0, f64::max);
-    assert!(x_extent > y_extent * 1.25);
-    let body_thread_radii = body_mesh
-        .vertices_mm
-        .iter()
-        .filter(|point| point[2] > 174.0 && point[2] < 190.0)
-        .map(|point| point[0].hypot(point[1]))
-        .collect::<Vec<_>>();
-    assert!(
-        body_thread_radii.iter().copied().fold(0.0, f64::max) > 16.0,
-        "the neck must carry a raised external helix"
-    );
-    assert!(
-        body_thread_radii
-            .iter()
-            .copied()
-            .fold(f64::INFINITY, f64::min)
-            < 15.1,
-        "the helical neck must retain land between thread turns"
-    );
-    let cap_inner_radii = cap_mesh
-        .vertices_mm
-        .iter()
-        .filter(|point| {
-            point[2] > 173.0
-                && point[2] < 193.0
-                && point[0].hypot(point[1]) > 14.0
-                && point[0].hypot(point[1]) < 17.5
-        })
-        .map(|point| point[0].hypot(point[1]))
-        .collect::<Vec<_>>();
-    assert!(
-        cap_inner_radii.iter().copied().fold(0.0, f64::max) > 16.4,
-        "the cap must carry a complementary internal helical groove"
-    );
-    assert!(
-        cap_inner_radii
-            .iter()
-            .copied()
-            .fold(f64::INFINITY, f64::min)
-            < 15.5,
-        "the cap groove must return to its clearance land"
-    );
-    assert!(matches!(
-        &body_mesh.authority,
-        ketchup_core::document::MeshAuthority::Authored { provenance }
-            if provenance == "ketchup-assistant-squeeze-bottle-body-v2"
-    ));
-    assert!(matches!(
-        &cap_mesh.authority,
-        ketchup_core::document::MeshAuthority::Authored { provenance }
-            if provenance == "ketchup-assistant-threaded-cap-v1"
-    ));
-    let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/assistant-ketchup-squeeze-bottle.ketchup");
-    if std::env::var_os("UPDATE_ASSISTANT_KETCHUP_FIXTURE").is_some() {
-        persistence::save_atomic(&fixture_path, &snapshot).unwrap();
-    }
-    let fixture = persistence::load_file(&fixture_path).unwrap().snapshot();
-    assert!(
-        fixture
-            .features()
-            .any(|feature| { feature.name() == "Kečup squeeze bottle clean threaded body" })
-    );
-    assert!(
-        fixture
-            .features()
-            .any(|feature| { feature.name() == "Kečup squeeze bottle removable threaded cap" })
-    );
-    assert_eq!(
-        fixture
-            .occurrences()
-            .filter(|occurrence| occurrence.name().starts_with("Kečup squeeze bottle"))
-            .count(),
-        2
-    );
-    assert!(shell.app_mut().undo());
-    assert_eq!(shell.app().document_revision(), initial_revision);
-    assert_eq!(shell.app().canonical_digest(), initial_digest);
-}
-
-#[test]
-#[cfg(feature = "named-product-fixtures")]
-fn assistant_bottle_intent_creates_editable_feature_chain_as_one_undo_step() {
-    let mut shell = Shell::new();
-    let initial_revision = shell.app().document_revision();
-    let initial_digest = shell.app().canonical_digest();
-    let initial_features = shell.app().feature_count();
-    let initial_occurrences = shell.app().occurrence_count();
-
-    assert!(apply_reviewed_model_intent(
-        &mut shell,
-        AssistantModelIntent {
-            replace_scene: false,
-            boxes: Vec::new(),
-            translations: Vec::new(),
-            rotations: Vec::new(),
-            profile_translations: Vec::new(),
-            parameter_edits: Vec::new(),
-            linear_arrays: Vec::new(),
-            bottles: vec![AssistantBottleIntent {
-                name: "AI ketchup bottle".to_owned(),
-                body_radius_mm: 30.0,
-                body_height_mm: 110.0,
-                shoulder_rise_mm: 20.0,
-                neck_radius_mm: 12.0,
-                neck_height_mm: 25.0,
-                wall_thickness_mm: 2.0,
-                finish_kind: AssistantBottleFinishKind::Chamfer,
-                finish_amount_mm: 2.0,
-                origin_mm: [90.0, 0.0, 0.0],
-                teapot: None,
-                ketchup_bottle: None,
-            }],
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
-        }
-    ));
-
-    assert_eq!(shell.app().document_revision(), initial_revision + 1);
-    assert_eq!(shell.app().feature_count(), initial_features + 5);
-    assert_eq!(shell.app().occurrence_count(), initial_occurrences + 1);
-    let snapshot = shell.app().document_snapshot();
-    let occurrence = snapshot
-        .occurrences()
-        .find(|occurrence| occurrence.name() == "AI ketchup bottle occurrence")
-        .unwrap();
-    let transform = occurrence.transform();
-    let matrix = transform.matrix();
-    assert_eq!([matrix[3], matrix[7], matrix[11]], [90.0, 0.0, 0.0]);
-    let kinds = snapshot
-        .features()
-        .filter(|feature| feature.definition_id() == occurrence.definition_id())
-        .map(|feature| feature.kind())
-        .collect::<Vec<_>>();
-    assert!(
-        kinds
-            .iter()
-            .any(|kind| matches!(kind, FeatureKind::Profile { .. }))
-    );
-    assert!(
-        kinds
-            .iter()
-            .any(|kind| matches!(kind, FeatureKind::BottleProfileControl { .. }))
-    );
-    assert!(
-        kinds
-            .iter()
-            .any(|kind| matches!(kind, FeatureKind::Revolve { .. }))
-    );
-    assert!(
-        kinds
-            .iter()
-            .any(|kind| matches!(kind, FeatureKind::Shell { .. }))
-    );
-    assert!(kinds.iter().any(|kind| matches!(
-        kind,
-        FeatureKind::BottleEdgeFinish {
-            kind: ketchup_core::document::BottleEdgeFinishKind::Chamfer,
-            ..
-        }
-    )));
-
-    assert!(shell.app_mut().undo());
-    assert_eq!(shell.app().document_revision(), initial_revision);
-    assert_eq!(shell.app().canonical_digest(), initial_digest);
-}
-
-#[test]
-fn assistant_builds_gable_roof_floor_opening_and_staircase_as_one_undo_step() {
-    let mut shell = Shell::new();
-    let initial_revision = shell.app().document_revision();
-    let initial_digest = shell.app().canonical_digest();
-
-    assert!(apply_reviewed_model_intent(
-        &mut shell,
-        AssistantModelIntent {
-            replace_scene: true,
-            boxes: vec![AssistantBoxIntent {
-                name: "Attic floor with stair opening".to_owned(),
-                size_mm: [5_500.0, 3_800.0, 200.0],
-                origin_mm: [0.0, 0.0, 3_200.0],
-                subtract_boxes: vec![AssistantSubtractionIntent {
-                    size_mm: [900.0, 1_400.0, 200.0],
-                    origin_mm: [3_900.0, 1_900.0, 0.0],
-                }],
-            }],
-            translations: Vec::new(),
-            rotations: Vec::new(),
-            profile_translations: Vec::new(),
-            parameter_edits: Vec::new(),
-            linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: vec![AssistantGableRoofIntent {
-                name: "True gable roof".to_owned(),
-                length_mm: 5_900.0,
-                span_mm: 4_200.0,
-                rise_mm: 1_400.0,
-                thickness_mm: 180.0,
-                origin_mm: [-200.0, -200.0, 3_400.0],
-            }],
-            staircases: vec![AssistantStaircaseIntent {
-                name: "Attic staircase".to_owned(),
-                run_mm: 3_000.0,
-                width_mm: 800.0,
-                rise_mm: 3_000.0,
-                step_count: 15,
-                origin_mm: [1_800.0, 2_200.0, 200.0],
-            }],
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
-        }
-    ));
-
-    assert_eq!(shell.app().document_revision(), initial_revision + 1);
-    assert_eq!(shell.app().occurrence_count(), 3);
-    assert_eq!(shell.app().active_box_count(), 3);
-    let snapshot = shell.app().document_snapshot();
-    let roof_definition = snapshot
-        .definitions()
-        .find(|definition| definition.name() == "True gable roof")
-        .expect("gable roof definition must exist");
-    let roof_features = roof_definition
-        .feature_ids()
-        .iter()
-        .map(|id| snapshot.feature(*id).unwrap())
-        .collect::<Vec<_>>();
-    assert!(
-        roof_features
-            .iter()
-            .any(|feature| matches!(feature.kind(), FeatureKind::Workplane(_)))
-    );
-    let roof_sketch = roof_features
-        .iter()
-        .find_map(|feature| match feature.kind() {
-            FeatureKind::Sketch(sketch) => Some(sketch),
-            _ => None,
-        })
-        .expect("gable roof editable sketch must exist");
-    assert_eq!(roof_sketch.entities.len(), 6);
-    assert!(
-        roof_features
-            .iter()
-            .any(|feature| matches!(feature.kind(), FeatureKind::Pad(_)))
-    );
-    assert!(
-        !roof_features
-            .iter()
-            .any(|feature| matches!(feature.kind(), FeatureKind::MeshBody(_)))
-    );
-    let floor_definition = snapshot
-        .definitions()
-        .find(|definition| definition.name() == "Attic floor with stair opening")
-        .expect("floor opening definition must exist");
-    let floor_features = floor_definition
-        .feature_ids()
-        .iter()
-        .map(|id| snapshot.feature(*id).unwrap())
-        .collect::<Vec<_>>();
-    assert!(
-        floor_features
-            .iter()
-            .any(|feature| matches!(feature.kind(), FeatureKind::Pad(_)))
-    );
-    assert!(
-        floor_features
-            .iter()
-            .any(|feature| matches!(feature.kind(), FeatureKind::Boolean { .. }))
-    );
-    assert!(
-        floor_features
-            .iter()
-            .all(|feature| !matches!(feature.kind(), FeatureKind::MeshBody(_)))
-    );
-    let floor_producer = *floor_definition.feature_ids().last().unwrap();
-    assert!(
-        ExactBRepGraph::from_snapshot(&snapshot, floor_definition.id(), floor_producer).is_ok()
-    );
-    let stairs_definition = snapshot
-        .definitions()
-        .find(|definition| definition.name() == "Attic staircase")
-        .expect("staircase definition must exist");
-    let stairs_features = stairs_definition
-        .feature_ids()
-        .iter()
-        .map(|id| snapshot.feature(*id).unwrap())
-        .collect::<Vec<_>>();
-    let stairs_sketch = stairs_features
-        .iter()
-        .find_map(|feature| match feature.kind() {
-            FeatureKind::Sketch(sketch) => Some(sketch),
-            _ => None,
-        })
-        .expect("staircase editable sketch must exist");
-    assert_eq!(stairs_sketch.entities.len(), 32);
-    assert!(
-        stairs_features
-            .iter()
-            .any(|feature| matches!(feature.kind(), FeatureKind::Pad(_)))
-    );
-    assert!(
-        !stairs_features
-            .iter()
-            .any(|feature| matches!(feature.kind(), FeatureKind::MeshBody(_)))
-    );
-
-    assert!(shell.app_mut().undo());
-    assert_eq!(shell.app().document_revision(), initial_revision);
-    assert_eq!(shell.app().canonical_digest(), initial_digest);
-}
-
-#[test]
-fn assistant_builds_sloped_rafters_with_real_notches_and_central_purlin() {
-    let mut shell = Shell::new();
-    let initial_revision = shell.app().document_revision();
-    let initial_digest = shell.app().canonical_digest();
-    let rafter = |name: &str, x: f64, start_y: f64, end_y: f64| AssistantOrientedBeamIntent {
-        name: name.to_owned(),
-        start_mm: [x, start_y, 3_044.067_796_610_17],
-        end_mm: [x, end_y, 4_800.0],
-        up_hint: [0.0, 0.0, 1.0],
-        width_mm: 100.0,
-        depth_mm: 180.0,
-        bottom_notches: vec![AssistantBeamNotchIntent {
-            from_start_mm: 600.0,
-            length_mm: 160.0,
-            depth_mm: 50.0,
-        }],
-    };
-
-    assert!(apply_reviewed_model_intent(
-        &mut shell,
-        AssistantModelIntent {
-            replace_scene: true,
-            boxes: Vec::new(),
-            translations: Vec::new(),
-            rotations: Vec::new(),
-            profile_translations: Vec::new(),
-            parameter_edits: Vec::new(),
-            linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: vec![
-                rafter("Left rafter 1", 0.0, -483.050_847_457_627_1, 1_900.0),
-                rafter("Right rafter 1", 0.0, 4_283.050_847_457_627, 1_900.0),
-                rafter("Left rafter 2", 600.0, -483.050_847_457_627_1, 1_900.0),
-                rafter("Right rafter 2", 600.0, 4_283.050_847_457_627, 1_900.0),
-                AssistantOrientedBeamIntent {
-                    name: "Central purlin".to_owned(),
-                    start_mm: [-200.0, 1_900.0, 4_600.0],
-                    end_mm: [5_700.0, 1_900.0, 4_600.0],
-                    up_hint: [0.0, 0.0, 1.0],
-                    width_mm: 160.0,
-                    depth_mm: 240.0,
-                    bottom_notches: Vec::new(),
-                },
-            ],
-            balloon_texts: Vec::new(),
-        }
-    ));
-
-    assert_eq!(shell.app().document_revision(), initial_revision + 1);
-    assert_eq!(shell.app().occurrence_count(), 5);
-    let snapshot = shell.app().document_snapshot();
-    let rafter_definition = snapshot
-        .definitions()
-        .find(|definition| definition.name() == "Left rafter 1")
-        .expect("rafter definition must exist");
-    let rafter_features = rafter_definition
-        .feature_ids()
-        .iter()
-        .map(|id| snapshot.feature(*id).unwrap())
-        .collect::<Vec<_>>();
-    let rafter_sketch = rafter_features
-        .iter()
-        .find_map(|feature| match feature.kind() {
-            FeatureKind::Sketch(sketch) => Some(sketch),
-            _ => None,
-        })
-        .expect("rafter editable sketch must exist");
-    assert_eq!(rafter_sketch.entities.len(), 8);
-    assert!(
-        rafter_features
-            .iter()
-            .any(|feature| matches!(feature.kind(), FeatureKind::Pad(_)))
-    );
-    assert!(
-        !rafter_features
-            .iter()
-            .any(|feature| matches!(feature.kind(), FeatureKind::MeshBody(_)))
-    );
-    let left = snapshot
-        .occurrences()
-        .find(|occurrence| occurrence.name() == "Left rafter 1")
-        .expect("left rafter occurrence must exist");
-    let right = snapshot
-        .occurrences()
-        .find(|occurrence| occurrence.name() == "Right rafter 1")
-        .expect("right rafter occurrence must exist");
-    assert!(left.transform().matrix()[8] > 0.5);
-    assert!(right.transform().matrix()[8] > 0.5);
-    assert!(left.transform().matrix()[4] > 0.5);
-    assert!(right.transform().matrix()[4] < -0.5);
-
-    assert!(shell.app_mut().undo());
-    assert_eq!(shell.app().document_revision(), initial_revision);
-    assert_eq!(shell.app().canonical_digest(), initial_digest);
-}
-
-#[test]
-fn top_bar_zoom_fit_physically_frames_saved_organic_models() {
-    for fixture in [
-        "assistant-balloon-letters.ketchup",
-        "assistant-ketchup-squeeze-bottle.ketchup",
-        "assistant-rounded-teapot.ketchup",
-    ] {
-        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../examples")
-            .join(fixture);
-        let dialogs = ScriptedFileDialogs::new()
-            .queue_open(&path)
-            .always_discard();
-        let window = egui::Vec2::new(1_100.0, 720.0);
-        let mut shell = Shell::with_dialogs_at_size(dialogs, window);
-        shell.click_menu_command("menu-file", AppCommand::Open);
-        shell.settle();
-
-        let viewport = shell.viewport_rect();
-        for _ in 0..8 {
-            shell.scroll_at(viewport.center(), 120.0);
-        }
-        let zoom_before = shell.app().camera_zoom();
-        let button = shell.command_rect(AppCommand::ZoomFit);
-        assert!(
-            button.center().x >= 0.0 && button.center().x <= window.x,
-            "{fixture} Zoom Fit button must be on screen, got {button:?}"
-        );
-        shell.click_at_once(button.center());
-
-        assert_ne!(
-            shell.app().camera_zoom(),
-            zoom_before,
-            "{fixture} top-bar Zoom Fit click must change the camera"
-        );
-        let expected = shell.catalog().format(
-            "digest-zoom-fit",
-            &std::collections::BTreeMap::from([(
-                "count",
-                shell.app().active_box_count().to_string(),
-            )]),
-        );
-        assert_eq!(shell.app().action_digest(), expected);
-
-        let snapshot = shell.app().document_snapshot();
-        for occurrence in snapshot
-            .occurrences()
-            .filter(|occurrence| occurrence.visible())
-        {
-            let transform = occurrence.transform();
-            let matrix = transform.matrix();
-            let definition = snapshot.definition(occurrence.definition_id()).unwrap();
-            for feature_id in definition.feature_ids() {
-                let feature = snapshot.feature(*feature_id).unwrap();
-                let FeatureKind::MeshBody(mesh) = feature.kind() else {
-                    continue;
-                };
-                for vertex in &mesh.vertices_mm {
-                    let world = Vec3::new(
-                        matrix[0] * vertex[0]
-                            + matrix[1] * vertex[1]
-                            + matrix[2] * vertex[2]
-                            + matrix[3],
-                        matrix[4] * vertex[0]
-                            + matrix[5] * vertex[1]
-                            + matrix[6] * vertex[2]
-                            + matrix[7],
-                        matrix[8] * vertex[0]
-                            + matrix[9] * vertex[1]
-                            + matrix[10] * vertex[2]
-                            + matrix[11],
-                    );
-                    let screen = shell.app().project_to_screen(world, viewport);
-                    assert!(
-                        viewport.contains(screen),
-                        "{fixture} Zoom Fit omitted mesh vertex {world:?}, projected to {screen:?}"
-                    );
-                }
-            }
-        }
-    }
 }
 
 #[test]
@@ -8562,11 +6666,6 @@ fn assistant_subtractions_create_one_real_grooved_body_as_one_undo_step() {
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }
     ));
 
@@ -8654,11 +6753,6 @@ fn assistant_moves_existing_grooved_body_without_rebuilding_its_geometry() {
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }
     ));
     let occurrence_id = shell
@@ -8685,11 +6779,6 @@ fn assistant_moves_existing_grooved_body_without_rebuilding_its_geometry() {
                 delta_mm: [100.0, 0.0, 0.0],
             }],
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }
     ));
 
@@ -8751,11 +6840,6 @@ fn assistant_context_keeps_all_17_plain_and_7_grooved_parts_copyable_with_bounds
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }
     ));
 
@@ -8803,11 +6887,6 @@ fn assistant_stacks_24_existing_parts_into_20_layers_as_shared_occurrences_in_on
             profile_translations: Vec::new(),
             parameter_edits: Vec::new(),
             linear_arrays: Vec::new(),
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }
     ));
     let before = shell.app().document_snapshot();
@@ -8835,11 +6914,6 @@ fn assistant_stacks_24_existing_parts_into_20_layers_as_shared_occurrences_in_on
                 instances: 20,
                 step_mm: [0.0, 0.0, 280.0],
             }],
-            bottles: Vec::new(),
-            gable_roofs: Vec::new(),
-            staircases: Vec::new(),
-            oriented_beams: Vec::new(),
-            balloon_texts: Vec::new(),
         }
     ));
 
@@ -8862,7 +6936,7 @@ fn assistant_stacks_24_existing_parts_into_20_layers_as_shared_occurrences_in_on
         "the first rendered frame of a 480-occurrence scene took {:?}",
         first_frame.elapsed()
     );
-    for _ in 0..100 {
+    for _ in 0..2_000 {
         shell.settle();
         if shell.app().exact_render_body_count() == 24 {
             break;

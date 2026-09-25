@@ -1,7 +1,7 @@
 # Handoff: Ketchup — Modeler Main Window (R0/C interaction shell)
 
 ## Overview
-The design is the main desktop window of **Ketchup**, a fast parametric modeler for architecture, interiors and furniture (see `EXECUTION_CONTRACT.md`, the frozen Architecture V3 execution contract that this UI must serve). It covers the *First Lovable Product* interaction surface: draw an exact profile, extrude it, edit dimensions, organise definitions/occurrences/tags, move/copy/pattern, measure, undo/redo, and drive a **Proposal-only** AI assistant.
+The design is the main desktop window of **Ketchup**, a fast parametric modeler for architecture, interiors and furniture (see `AGENTS.md` and the ADRs in `docs/adr` for the binding rules). It covers the *First Lovable Product* interaction surface: draw an exact profile, extrude it, edit dimensions, organise definitions/occurrences/tags, move/copy/pattern, measure, undo/redo, and drive a **Proposal-only** AI assistant.
 
 Target platform: Windows desktop, ultrawide/large monitor. UI language: English (ADR 0001 — all user-facing strings must come from localization resources, never hard-coded in widgets).
 
@@ -349,7 +349,7 @@ None external. All icons are inline stroke SVG authored in the prototype (select
 - **`Ketchup Modeler (standalone, open this).html`** — the prototype as one self-contained offline file. **Open this one in a browser to try the design.** No server, no dependencies.
 - `Ketchup Modeler.dc.html` + `support.js` — the readable source of the same prototype (markup and logic separated by the runtime in `support.js`). Keep the two files side by side; opening the `.dc.html` without `support.js` in the same folder shows raw `{{ placeholders }}` instead of values.
 - `Ketchup Modeler.dc.html` — the full prototype (template markup + logic class in one file; open directly in a browser). Layout, copy and tokens live in the markup; camera math, picking, snapping, tools, history and the proposal planner live in the logic class.
-- `EXECUTION_CONTRACT.md` — the frozen Architecture V3 contract this UI is bound to. Where the prototype and the contract disagree, **the contract wins**: preview is not a promise of exact geometry, only validated command batches mutate the document, and no user-facing string may be hard-coded in a widget.
+- `AGENTS.md` and `docs/adr` hold the binding rules. Where the prototype and the rules disagree, **the rules win**: preview is not a promise of exact geometry, only validated command batches mutate the document, and no user-facing string may be hard-coded in a widget.
 
 ## Notes for the implementer
 1. The prototype mutates the document directly on drag; the real client must keep drags ephemeral and emit exactly one `CanonicalCommandBatch` on release.

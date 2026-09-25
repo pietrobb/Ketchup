@@ -6,14 +6,14 @@ use eframe::egui::{Key, accesskit::Role};
 use harness::{Shell, ctrl};
 use ketchup_app::{AppCommand, dialogs::ScriptedFileDialogs};
 use ketchup_core::assembly::{
-    AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind,
+    AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind, PlanarFaceAttachment,
 };
 use ketchup_core::document::{
     BodyId, BooleanOperation, CanonicalCommand, CommandBatch, DefinitionId, Dimension,
-    DocumentStore, FeatureId, FeatureKind, OccurrenceId, Transform,
+    DocumentStore, FeatureId, FeatureKind, OccurrenceId, Snapshot, Transform,
 };
 use ketchup_core::drawing::{DrawingSheet, DrawingSheetId, DrawingSource};
-use ketchup_core::exact_product::{ExactFaceRole, ExactFeatureChainRequest};
+use ketchup_core::exact_product::{ExactBodyPackage, ExactFaceRole, body_exact_graph};
 use ketchup_core::intent::WorkflowIntent;
 use ketchup_core::persistence;
 use ketchup_scheduler::ExactWorkerSupervisor;
@@ -62,6 +62,31 @@ enum ReplacementFixture {
     OverConstrained,
     Lost,
     UnsupportedMate,
+}
+
+/// The result of `body_id`, evaluated by the exact worker the app uses.
+fn evaluate_exact(
+    snapshot: &Snapshot,
+    definition_id: DefinitionId,
+    body_id: BodyId,
+) -> ExactBodyPackage {
+    let graph = body_exact_graph(snapshot, definition_id, body_id).unwrap();
+    let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
+    ExactBodyPackage::Graph(worker.evaluate_exact_brep_graph(&graph).unwrap())
+}
+
+/// The planar attachment of the face `role` names on an exact result.
+fn planar_attachment(package: &ExactBodyPackage, role: ExactFaceRole) -> PlanarFaceAttachment {
+    let ExactBodyPackage::Graph(graph) = package else {
+        unreachable!("the exact worker returns a graph package");
+    };
+    let reference = package.reference(role).unwrap();
+    graph
+        .planar_face_attachments
+        .iter()
+        .find(|attachment| attachment.reference() == reference)
+        .unwrap()
+        .clone()
 }
 
 fn open_history(shell: &mut Shell) {
@@ -142,9 +167,11 @@ fn feature_label(shell: &Shell, feature_id: FeatureId) -> String {
     )
 }
 
+/// A square that starts on its east edge, so the exact worker names the east
+/// side face as the first line's side.
 fn profile(size: f64) -> FeatureKind {
     FeatureKind::Profile {
-        points_mm: vec![[0.0, 0.0], [size, 0.0], [size, size], [0.0, size]],
+        points_mm: vec![[size, 0.0], [size, size], [0.0, size], [0.0, 0.0]],
     }
 }
 
@@ -228,7 +255,7 @@ fn write_component_replacement_fixture(path: &Path, variant: ReplacementFixture)
             definition_id: REPLACEMENT_TARGET,
             name: "Target profile".to_owned(),
             kind: FeatureKind::Profile {
-                points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 8.0], [0.0, 8.0]],
+                points_mm: vec![[10.0, 0.0], [10.0, 8.0], [0.0, 8.0], [0.0, 0.0]],
             },
         },
         CanonicalCommand::CreateFeature {
@@ -281,15 +308,8 @@ fn write_component_replacement_fixture(path: &Path, variant: ReplacementFixture)
     document.apply_batch(&CommandBatch::new(commands)).unwrap();
 
     let snapshot = document.current();
-    let source_request =
-        ExactFeatureChainRequest::from_snapshot_for_body(&snapshot, REPLACEMENT_SOURCE, BodyId(1))
-            .unwrap();
-    let target_request =
-        ExactFeatureChainRequest::from_snapshot_for_body(&snapshot, REPLACEMENT_TARGET, BodyId(1))
-            .unwrap();
-    let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
-    let source = worker.evaluate_rectangle(&source_request).unwrap();
-    let target = worker.evaluate_rectangle(&target_request).unwrap();
+    let source = evaluate_exact(&snapshot, REPLACEMENT_SOURCE, BodyId(1));
+    let target = evaluate_exact(&snapshot, REPLACEMENT_TARGET, BodyId(1));
     if matches!(variant, ReplacementFixture::Failed) {
         document
             .apply_batch(&CommandBatch::new(vec![
@@ -312,16 +332,13 @@ fn write_component_replacement_fixture(path: &Path, variant: ReplacementFixture)
     }
     let selected_endpoint = AssemblyMateEndpoint::resolved_planar_face(
         REPLACEMENT_SELECTED,
-        source
-            .planar_face_attachment(source.reference(ExactFaceRole::Top).unwrap())
-            .unwrap()
-            .clone(),
+        planar_attachment(&source, ExactFaceRole::Top),
     );
     let planar_kind = if matches!(variant, ReplacementFixture::UnsupportedMate) {
         AssemblyMateKind::Distance { distance_mm: 4.0 }
     } else {
         AssemblyMateKind::CoincidentPlanar {
-            offset_mm: 10.0,
+            offset_mm: -10.0,
             reversed: false,
         }
     };
@@ -330,10 +347,7 @@ fn write_component_replacement_fixture(path: &Path, variant: ReplacementFixture)
         selected_endpoint,
         AssemblyMateEndpoint::resolved_planar_face(
             REPLACEMENT_TARGET_OCCURRENCE,
-            target
-                .planar_face_attachment(target.reference(ExactFaceRole::Bottom).unwrap())
-                .unwrap()
-                .clone(),
+            planar_attachment(&target, ExactFaceRole::Bottom),
         ),
         planar_kind,
     ))];
@@ -342,20 +356,14 @@ fn write_component_replacement_fixture(path: &Path, variant: ReplacementFixture)
             REPLACEMENT_SECOND_PLANAR_MATE,
             AssemblyMateEndpoint::resolved_planar_face(
                 REPLACEMENT_SELECTED,
-                source
-                    .planar_face_attachment(source.reference(ExactFaceRole::East).unwrap())
-                    .unwrap()
-                    .clone(),
+                planar_attachment(&source, ExactFaceRole::LinearSide),
             ),
             AssemblyMateEndpoint::resolved_planar_face(
                 REPLACEMENT_TARGET_OCCURRENCE,
-                target
-                    .planar_face_attachment(target.reference(ExactFaceRole::East).unwrap())
-                    .unwrap()
-                    .clone(),
+                planar_attachment(&target, ExactFaceRole::LinearSide),
             ),
             AssemblyMateKind::CoincidentPlanar {
-                offset_mm: -50.0,
+                offset_mm: 50.0,
                 reversed: true,
             },
         )));
@@ -521,22 +529,10 @@ fn write_shared_fixture(
     }
     if with_dependencies {
         let snapshot = document.current();
-        let request =
-            ExactFeatureChainRequest::from_snapshot_for_body(&snapshot, DEFINITION, BODY).unwrap();
-        let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
-        let package = worker.evaluate_rectangle(&request).unwrap();
-        let first_bottom = package
-            .planar_face_attachment(package.reference(ExactFaceRole::Bottom).unwrap())
-            .unwrap()
-            .clone();
-        let second_bottom = package
-            .planar_face_attachment(package.reference(ExactFaceRole::Bottom).unwrap())
-            .unwrap()
-            .clone();
-        let east = package
-            .planar_face_attachment(package.reference(ExactFaceRole::East).unwrap())
-            .unwrap()
-            .clone();
+        let package = evaluate_exact(&snapshot, DEFINITION, BODY);
+        let first_bottom = planar_attachment(&package, ExactFaceRole::Bottom);
+        let second_bottom = planar_attachment(&package, ExactFaceRole::Bottom);
+        let east = planar_attachment(&package, ExactFaceRole::LinearSide);
         document
             .apply_batch(&CommandBatch::new(vec![
                 CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
@@ -553,7 +549,7 @@ fn write_shared_fixture(
                     AssemblyMateEndpoint::resolved_planar_face(FIRST, east.clone()),
                     AssemblyMateEndpoint::resolved_planar_face(SECOND, east),
                     AssemblyMateKind::CoincidentPlanar {
-                        offset_mm: -30.0,
+                        offset_mm: 30.0,
                         reversed: true,
                     },
                 )),

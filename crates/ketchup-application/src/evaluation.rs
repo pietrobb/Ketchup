@@ -3,12 +3,9 @@ use ketchup_core::document::{
 };
 use ketchup_core::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation};
 use ketchup_core::exact_product::{
-    ExactBodyPackage, ExactFeatureChainRequest, ExactProducerCompilation,
-    ExactProducerEvidenceContext, ExactProducerPlan, ExactResultRegistry, ImportedExactPackage,
-    exact_body_terminal_features,
+    ExactBodyPackage, ExactProducerCompilation, ExactProducerEvidenceContext, ExactProducerPlan,
+    ExactResultRegistry, ImportedExactPackage, exact_body_terminal_features,
 };
-#[cfg(feature = "named-product-fixtures")]
-use ketchup_core::exact_revolve::ExactRevolveRequest;
 use ketchup_core::graph::sha256_bytes;
 use ketchup_core::import::{
     IGES_PARSER_ID, IGES_PARSER_VERSION, IGES_XDE_PARSER_VERSION, ImportFormat,
@@ -38,12 +35,6 @@ enum ExactEvaluationRequest {
         graph: Box<ExactBRepGraph>,
         imported_sources: Vec<Vec<u8>>,
     },
-    Rectangle {
-        request: Box<ExactFeatureChainRequest>,
-        topology: Option<Box<ExactBRepGraph>>,
-    },
-    #[cfg(feature = "named-product-fixtures")]
-    Revolve(Box<ExactRevolveRequest>),
     Imported(DefinitionId, Vec<u8>),
 }
 
@@ -75,10 +66,8 @@ pub fn plan_incremental_exact_evaluation(
     after: &Snapshot,
     full_baseline: Option<&ExactSource>,
 ) -> Result<IncrementalExactPlan, String> {
-    let scope = plan_incremental_exact_scope(before, after)?;
-    let expected_baseline = exact_source(before);
-    if full_baseline != Some(&expected_baseline) {
-        return Ok(IncrementalExactPlan {
+    let full = |reason: String, changed_feature_count, changed_scene_occurrence_count| {
+        IncrementalExactPlan {
             selection: ExactEvaluationSelection::Full,
             collision_occurrences: after
                 .scene_query()
@@ -87,10 +76,24 @@ pub fn plan_incremental_exact_evaluation(
                 .map(|occurrence| occurrence.instance_path.root_occurrence())
                 .collect(),
             baseline_reused: false,
-            fallback_reason: Some("missing or stale complete exact baseline".to_owned()),
-            changed_feature_count: scope.changed_feature_count,
-            changed_scene_occurrence_count: scope.changed_scene_occurrence_count,
-        });
+            fallback_reason: Some(reason),
+            changed_feature_count,
+            changed_scene_occurrence_count,
+        }
+    };
+    // A document the scope cannot be derived for (e.g. two independent solids
+    // in one body) is still editable: it is evaluated in full instead.
+    let scope = match plan_incremental_exact_scope(before, after) {
+        Ok(scope) => scope,
+        Err(reason) => return Ok(full(reason, 0, 0)),
+    };
+    let expected_baseline = exact_source(before);
+    if full_baseline != Some(&expected_baseline) {
+        return Ok(full(
+            "missing or stale complete exact baseline".to_owned(),
+            scope.changed_feature_count,
+            scope.changed_scene_occurrence_count,
+        ));
     }
     Ok(IncrementalExactPlan {
         selection: ExactEvaluationSelection::Scoped(scope.producers),
@@ -396,32 +399,17 @@ fn prepare_requests(
                 feature_id,
             )
             .map_err(|error| error.to_string())?;
-            let Some(plan) = producer
-                .plan(cfg!(feature = "named-product-fixtures"))
-                .map_err(|error| {
-                    eprintln!(
-                        "exact producer compilation rejected producer {}: {error}",
-                        feature_id.0
-                    );
-                    "unsupported or unavailable exact producer/source".to_owned()
-                })?
+            let Some(plan) = producer.plan().map_err(|error| {
+                eprintln!(
+                    "exact producer compilation rejected producer {}: {error}",
+                    feature_id.0
+                );
+                "unsupported or unavailable exact producer/source".to_owned()
+            })?
             else {
                 return Ok(None);
             };
             match plan {
-                ExactProducerPlan::Rectangle { request, topology } => Ok(Some((
-                    definition_id,
-                    ExactEvaluationRequest::Rectangle { request, topology },
-                ))),
-                #[cfg(feature = "named-product-fixtures")]
-                ExactProducerPlan::Revolve(request) => Ok(Some((
-                    definition_id,
-                    ExactEvaluationRequest::Revolve(request),
-                ))),
-                #[cfg(not(feature = "named-product-fixtures"))]
-                ExactProducerPlan::Revolve(_) => {
-                    unreachable!("legacy revolve planning is disabled")
-                }
                 ExactProducerPlan::Graph(graph) => {
                     let mut imported_sources = Vec::new();
                     let mut imported_hashes = Vec::new();
@@ -535,19 +523,6 @@ fn prepare_requests(
                     ExactEvaluationRequest::Topology {
                         graph,
                         imported_sources,
-                    },
-                ))),
-                Ok(Some((
-                    id,
-                    ExactEvaluationRequest::Rectangle {
-                        topology: Some(graph),
-                        ..
-                    },
-                ))) => Ok(Some((
-                    id,
-                    ExactEvaluationRequest::Topology {
-                        graph,
-                        imported_sources: Vec::new(),
                     },
                 ))),
                 Ok(Some((id, request @ ExactEvaluationRequest::Imported(..)))) => {
@@ -788,7 +763,6 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                                     .find(|entry| entry.key == key)
                                     .expect("selected producer");
                                 let topology_only = entry.render.is_evaluated();
-                                let mut topology_failure = None;
                                 let evaluated =
     (|| -> Result<(ExactBodyPackage, Option<ExactBodyPackage>), String> {
         Ok(match request {
@@ -810,40 +784,6 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                     .map_err(|error| error.to_string())?;
                 (package.clone(), Some(package))
             }
-            ExactEvaluationRequest::Rectangle { request, topology } => {
-                let package = worker
-                    .evaluate_rectangle_with_cancellation(
-                        &request,
-                        &worker_cancelled,
-                    )
-                    .map(ExactBodyPackage::from)
-                    .map_err(|error| error.to_string())?;
-                let topology_package = topology.and_then(|graph| {
-                    match worker.evaluate_exact_brep_graph_with_imported_sources_and_cancellation(&graph, &[], &worker_cancelled) {
-                        Ok(package) => Some(ExactBodyPackage::Graph(package)),
-                        Err(error) => {
-                            eprintln!(
-                                "exact topology evaluation rejected definition {}: {error}",
-                                definition_id.0
-                            );
-                            topology_failure = Some(error.to_string());
-                            None
-                        }
-                    }
-                });
-                (package, topology_package)
-            }
-            #[cfg(feature = "named-product-fixtures")]
-            ExactEvaluationRequest::Revolve(request) => (
-                worker
-                    .evaluate_revolve_with_cancellation(
-                        &request,
-                        &worker_cancelled,
-                    )
-                    .map(ExactBodyPackage::from)
-                    .map_err(|error| error.to_string())?,
-                None,
-            ),
             ExactEvaluationRequest::Imported(definition_id, source) => {
                 let definition =
                     snapshot.definition(definition_id).ok_or_else(|| {
@@ -1063,8 +1003,6 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                                 }
                                 entry.topology = if topology_package.is_some() {
                                     EvidenceStatus::Evaluated
-                                } else if let Some(reason) = topology_failure {
-                                    EvidenceStatus::Failed { reason }
                                 } else {
                                     EvidenceStatus::not_evaluated(
                                         "topology not provided by this request",

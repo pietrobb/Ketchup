@@ -19,14 +19,12 @@ use ketchup_core::drawing_export::export_drawing;
 use ketchup_core::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V14, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry,
 };
-use ketchup_core::exact_product::{
-    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactResultRegistry,
-    build_box_render_package, canonical_reference_lineage_digest,
-};
+use ketchup_core::exact_product::{ExactBodyPackage, ExactFaceRole, ExactResultRegistry};
 use ketchup_core::persistence::{ContainerData, LoadOutcome, load, save, save_document_store};
 use ketchup_core::sketch::{
     PrincipalPlane, SketchEntity, SketchEntityId, SketchSpec, WorkplaneSpec,
 };
+use ketchup_core::testing::box_package;
 use std::sync::Arc;
 
 fn part() -> AssistantCadEditOperation {
@@ -147,37 +145,19 @@ fn exact_box_package(
     definition_id: DefinitionId,
     feature_id: FeatureId,
 ) -> Arc<ExactBodyPackage> {
-    let request = ExactFeatureChainRequest::from_snapshot(snapshot, definition_id).unwrap();
-    let evidence = [
-        ExactFaceRole::Top,
-        ExactFaceRole::Bottom,
-        ExactFaceRole::East,
-    ]
-    .map(|role| {
-        (
-            role,
-            canonical_reference_lineage_digest(
-                snapshot.document_id(),
-                feature_id,
-                role.semantic_role(),
-                role.source_element_id(),
-                role.expected_type(),
-            ),
-            format!("geometry:{role:?}:public-nested-assembly"),
-        )
-    });
     Arc::new(
-        build_box_render_package(
-            &request,
-            "public-nested-assembly-input".into(),
-            "public-nested-assembly-result".into(),
-            "occt".into(),
-            "r0".into(),
-            [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]],
-            evidence,
+        box_package(
+            snapshot,
+            definition_id,
+            feature_id,
+            "public-nested-assembly-result",
+            &[
+                ExactFaceRole::Top,
+                ExactFaceRole::Bottom,
+                ExactFaceRole::LinearSide,
+            ],
         )
-        .unwrap()
-        .into(),
+        .unwrap(),
     )
 }
 
@@ -2416,6 +2396,7 @@ fn one_panel_operation_creates_named_physical_holes_and_one_local_edit_moves_one
             diameter_mm: 8.0,
             depth_mm: 16.0,
         }],
+        pockets: Vec::new(),
         translation_mm: [0.0, 0.0, 0.0],
         rotation: None,
     };
@@ -2475,6 +2456,7 @@ fn one_dowel_joint_operation_derives_matching_sixteen_millimetre_holes_for_both_
         name: name.into(),
         dimensions_mm: [100.0, 50.0, 18.0],
         holes: Vec::new(),
+        pockets: Vec::new(),
         translation_mm,
         rotation: None,
     };
@@ -2536,12 +2518,86 @@ fn one_dowel_joint_operation_derives_matching_sixteen_millimetre_holes_for_both_
 }
 
 #[test]
+fn physical_dowel_split_fits_a_thin_face_to_board_end_corner_in_one_program() {
+    let face = |occurrence_id, origin, inward, maximum| AssistantDowelJointFace {
+        instance_path: AssistantInstancePath {
+            root_occurrence_id: occurrence_id,
+            steps: Vec::new(),
+        },
+        face_origin_local_mm: origin,
+        inward_unit_local: inward,
+        bounds_min_local_mm: [0.0; 3],
+        bounds_max_local_mm: maximum,
+    };
+    let corner = |first_insertion_mm| {
+        program(vec![
+            AssistantCadEditOperation::CreatePanel {
+                name: "Front 15".into(),
+                dimensions_mm: [100.0, 15.0, 60.0],
+                holes: Vec::new(),
+                pockets: Vec::new(),
+                translation_mm: [0.0, 0.0, 0.0],
+                rotation: None,
+            },
+            AssistantCadEditOperation::CreatePanel {
+                name: "Side 15".into(),
+                dimensions_mm: [15.0, 50.0, 60.0],
+                holes: Vec::new(),
+                pockets: Vec::new(),
+                translation_mm: [0.0, 15.0, 0.0],
+                rotation: None,
+            },
+            AssistantCadEditOperation::CreatePhysicalDowelJoint {
+                joint_id: None,
+                name: "Corner".into(),
+                first: face(2, [0.0; 3], [0.0, 1.0, 0.0], [15.0, 50.0, 60.0]),
+                second: face(1, [0.0, 15.0, 0.0], [0.0, -1.0, 0.0], [100.0, 15.0, 60.0]),
+                first_center_local_mm: [7.5, 0.0, 15.0],
+                row_unit_first_local: [0.0, 0.0, 1.0],
+                count: 2,
+                spacing_mm: 30.0,
+                dowel: AssistantStandardDowel::D8x30,
+                first_insertion_mm,
+            },
+        ])
+    };
+    let mut document = DocumentStore::new();
+    let empty = BTreeSet::new();
+    let exact = ExactResultRegistry::default();
+    // Half of a 30 mm dowel plus clearance would drill through the 15 mm face.
+    assert!(plan(&document, &empty, &exact, &corner(None)).is_err());
+    assert!(plan(&document, &empty, &exact, &corner(Some(30.0))).is_err());
+
+    let input: AssistantCadEditProgram =
+        serde_json::from_slice(&serde_json::to_vec(&corner(Some(20.0))).unwrap()).unwrap();
+    let batch = plan(&document, &empty, &exact, &input).unwrap();
+    document.apply_batch(&batch).unwrap();
+    assert_eq!(document.visible_undo_steps(), 1);
+    let committed = document.current();
+    let joint = committed.dowel_joints().next().unwrap();
+    assert_eq!(joint.dowel.first_insertion_mm, 20.0);
+    assert_eq!(joint.dowel.second_insertion_mm, 10.0);
+    let projection =
+        ketchup_core::joinery::project_dowel_joint_contract(&committed, joint).unwrap();
+    assert_eq!(projection.pairs.len(), 2);
+    assert!(projection.pairs.iter().all(|pair| {
+        pair.first.depth_mm == 21.0
+            && pair.second.depth_mm == 11.0
+            && pair
+                .physical_probe_coincidence
+                .as_ref()
+                .is_some_and(|probe| probe.maximum_endpoint_error_mm < 1e-9)
+    }));
+}
+
+#[test]
 fn one_physical_dowel_joint_operation_creates_both_hole_rows_atomically() {
     let mut document = DocumentStore::new();
     let panel = |name: &str, translation_mm| AssistantCadEditOperation::CreatePanel {
         name: name.into(),
         dimensions_mm: [100.0, 50.0, 18.0],
         holes: Vec::new(),
+        pockets: Vec::new(),
         translation_mm,
         rotation: None,
     };
@@ -2578,6 +2634,7 @@ fn one_physical_dowel_joint_operation_creates_both_hole_rows_atomically() {
         count: 3,
         spacing_mm: 25.0,
         dowel: AssistantStandardDowel::D8x30,
+        first_insertion_mm: None,
     }]);
     let input: AssistantCadEditProgram =
         serde_json::from_slice(&serde_json::to_vec(&input).unwrap()).unwrap();
@@ -2662,6 +2719,7 @@ fn one_physical_dowel_joint_operation_creates_both_hole_rows_atomically() {
         count: 2,
         spacing_mm: 30.0,
         dowel: AssistantStandardDowel::D8x30,
+        first_insertion_mm: None,
     }]);
     let update_batch = plan(
         &document,
@@ -2812,6 +2870,7 @@ fn physical_dowel_joint_geometry_regressions_fail_closed_without_mutation() {
             name: name.into(),
             dimensions_mm: [100.0, 50.0, 18.0],
             holes,
+            pockets: Vec::new(),
             translation_mm,
             rotation: None,
         };
@@ -2849,6 +2908,7 @@ fn physical_dowel_joint_geometry_regressions_fail_closed_without_mutation() {
             count,
             spacing_mm,
             dowel,
+            first_insertion_mm: None,
         }
     };
     let assert_rejected_without_mutation =
@@ -2961,6 +3021,7 @@ fn physical_dowel_joint_refuses_shared_root_and_nested_definitions_without_mutat
                             name: format!("Panel {z}"),
                             dimensions_mm: [100.0, 50.0, 18.0],
                             holes: vec![],
+                            pockets: Vec::new(),
                             translation_mm: [0.0, 0.0, z],
                             rotation: None,
                         })
@@ -3031,6 +3092,7 @@ fn physical_dowel_joint_refuses_shared_root_and_nested_definitions_without_mutat
                     count: 3,
                     spacing_mm: 25.0,
                     dowel: AssistantStandardDowel::D8x30,
+                    first_insertion_mm: None,
                 }]),
             )
             .unwrap_err();
@@ -3056,6 +3118,7 @@ fn physical_dowel_joint_supports_both_rotated_sides_and_preserves_existing_work(
             name: name.into(),
             dimensions_mm: [100.0, 50.0, 18.0],
             holes,
+            pockets: Vec::new(),
             translation_mm,
             rotation,
         }
@@ -3115,6 +3178,7 @@ fn physical_dowel_joint_supports_both_rotated_sides_and_preserves_existing_work(
         count: 2,
         spacing_mm: 40.0,
         dowel: AssistantStandardDowel::D8x30,
+        first_insertion_mm: None,
     };
     let top_batch = plan(
         &document,
@@ -3145,6 +3209,7 @@ fn physical_dowel_joint_supports_both_rotated_sides_and_preserves_existing_work(
             count: 2,
             spacing_mm: 20.0,
             dowel: AssistantStandardDowel::D8x30,
+            first_insertion_mm: None,
         }
     };
     let sides = program(vec![
@@ -3268,6 +3333,7 @@ fn named_program_outputs_create_panels_physical_holes_and_joint_in_one_atomic_ba
                 diameter_mm: 8.0,
                 depth_mm: 16.0,
             }],
+            pockets: Vec::new(),
             translation_mm,
             rotation: None,
         }
@@ -3515,7 +3581,7 @@ fn named_program_outputs_reject_duplicates_forward_wrong_types_and_late_failure_
 }
 
 #[test]
-fn bound_dowel_joint_rejects_moving_only_one_physical_hole() {
+fn bound_dowel_joint_moves_one_paired_hole_and_rejects_invalid_shifts() {
     let mut document = DocumentStore::new();
     let holes = |entry_z, inward_unit_local| {
         [20.0, 45.0, 70.0]
@@ -3535,6 +3601,7 @@ fn bound_dowel_joint_rejects_moving_only_one_physical_hole() {
             name: name.into(),
             dimensions_mm: [100.0, 50.0, 18.0],
             holes: holes(entry_z, inward_unit_local),
+            pockets: Vec::new(),
             translation_mm,
             rotation: None,
         }
@@ -3663,6 +3730,81 @@ fn bound_dowel_joint_rejects_moving_only_one_physical_hole() {
     assert_eq!(
         document.current().revision_id(),
         revision_before_invalid_move
+    );
+    for offset in [[25.0, 0.0, 0.0], [100.0, 0.0, 0.0], [0.0, 0.0, 1.0]] {
+        let invalid = program(vec![AssistantCadEditOperation::MovePhysicalDowelPair {
+            joint_id: 1,
+            pair_index: 1,
+            offset_first_local_mm: offset,
+        }]);
+        assert!(
+            plan(
+                &document,
+                &BTreeSet::new(),
+                &ExactResultRegistry::default(),
+                &invalid
+            )
+            .is_err()
+        );
+        assert_eq!(
+            document.current().canonical_digest(),
+            bound.canonical_digest()
+        );
+    }
+    let move_pair = program(vec![AssistantCadEditOperation::MovePhysicalDowelPair {
+        joint_id: 1,
+        pair_index: 1,
+        offset_first_local_mm: [50.0, 0.0, 0.0],
+    }]);
+    let batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &move_pair,
+    )
+    .unwrap();
+    document.apply_batch(&batch).unwrap();
+    let moved = document.current();
+    let joint = moved
+        .dowel_joint(ketchup_core::joinery::DowelJointId(1))
+        .unwrap();
+    assert_eq!(
+        joint.physical_hole_pairs.as_ref().unwrap()[1].first_pocket_feature_id,
+        first_pockets[1]
+    );
+    assert_eq!(
+        joint.physical_hole_pairs.as_ref().unwrap()[1].second_pocket_feature_id,
+        second_pockets[1]
+    );
+    let projected = ketchup_core::joinery::project_dowel_joint_contract(&moved, joint).unwrap();
+    assert_eq!(
+        projected
+            .pairs
+            .iter()
+            .map(|pair| pair.first.shared_center_world_mm[0])
+            .collect::<Vec<_>>(),
+        vec![20.0, 95.0, 70.0]
+    );
+    assert!(
+        projected
+            .pairs
+            .iter()
+            .all(|pair| pair.physical_probe_coincidence.is_some())
+    );
+    let reopened = load(&save(&moved)).unwrap();
+    assert_eq!(
+        reopened.snapshot().canonical_digest(),
+        moved.canonical_digest()
+    );
+    document.undo().unwrap();
+    assert_eq!(
+        document.current().canonical_digest(),
+        bound.canonical_digest()
+    );
+    document.redo().unwrap();
+    assert_eq!(
+        document.current().canonical_digest(),
+        moved.canonical_digest()
     );
 }
 

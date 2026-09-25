@@ -9,7 +9,6 @@ repository.workspace = true
 
 [features]
 default = []
-named-product-fixtures = ["ketchup-core/named-product-fixtures", "ketchup-scheduler/named-product-fixtures"]
 
 [dependencies]
 ketchup-core = { path = "../ketchup-core" }
@@ -21,3 +20,6 @@ tempfile = "3.23.0"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+ketchup-core = { path = "../ketchup-core", features = ["testing"] }

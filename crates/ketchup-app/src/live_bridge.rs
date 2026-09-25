@@ -66,6 +66,7 @@ pub const MIN_IMAGE_SIDE_PX: u32 = 512;
 pub const MAX_IMAGE_SIDE_PX: u32 = 1600;
 pub const QUEUE_CAPACITY: usize = 8;
 pub const MAX_SELECTION: usize = 100;
+const MAX_INVALID_PARAMS_REASON_CHARS: usize = 512;
 pub const MAX_APPLY_VERIFY_TIMEOUT_MS: u64 = 120_000;
 pub const DEFAULT_APPLY_VERIFY_TIMEOUT_MS: u64 = 60_000;
 const fn default_apply_verify_timeout_ms() -> u64 {
@@ -110,6 +111,11 @@ pub enum ApplyAndVerifySave {
 pub enum Request {
     Status {},
     Summary {},
+    /// CAD program operation catalog; one operation with its types when named.
+    Operations {
+        #[serde(default)]
+        name: Option<String>,
+    },
     EditContext {
         #[serde(default)]
         expected: Option<Stamp>,
@@ -184,6 +190,10 @@ pub enum Request {
         timeout_ms: u64,
         #[serde(default)]
         save: Option<ApplyAndVerifySave>,
+        /// Reject the edit when a validator fails. By default the edit is
+        /// published and the issues are reported.
+        #[serde(default)]
+        strict: bool,
     },
     Undo {
         #[serde(default)]
@@ -294,6 +304,86 @@ pub struct Response {
     pub result: Option<Value>,
     pub error: Option<String>,
 }
+thread_local! {
+    /// Why the next error response failed. Set right before an error code is
+    /// returned on the UI thread and attached to that response.
+    static ERROR_DETAILS: std::cell::RefCell<Option<Value>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Records the cause of `code` for the client and returns the code.
+fn failure(code: &'static str, message: impl Into<String>, details: Value) -> &'static str {
+    let mut value = json!({"kind": "diagnostic", "code": code, "message": message.into()});
+    if let (Some(value), Some(details)) = (value.as_object_mut(), details.as_object()) {
+        for (key, item) in details {
+            value.insert(key.clone(), item.clone());
+        }
+    }
+    ERROR_DETAILS.with(|slot| *slot.borrow_mut() = Some(value));
+    code
+}
+
+fn planning_failure(code: &'static str, diagnostic: &AssistantRejectionDiagnostic) -> &'static str {
+    failure(
+        code,
+        diagnostic.failed_invariant.clone(),
+        json!({
+            "reason": diagnostic.code,
+            "operation": diagnostic.operation,
+            "target": diagnostic.target,
+            "hint": diagnostic.repair_hint,
+            "retryable": diagnostic.retryable,
+        }),
+    )
+}
+
+/// Takes the cause recorded by the last `failure`, if any. Callers that turn
+/// an error code into something other than a bridge response use this.
+pub(crate) fn take_error_details() -> Option<Value> {
+    ERROR_DETAILS.with(|slot| slot.borrow_mut().take())
+}
+
+const MAX_REPORTED_ISSUES: usize = 12;
+const MAX_ISSUE_BYTES: usize = 1024;
+
+/// One issue reduced to its scalar fields when it is too large for a frame.
+fn compact_issue(issue: &Value) -> Value {
+    if serde_json::to_vec(issue).map_or(0, |bytes| bytes.len()) <= MAX_ISSUE_BYTES {
+        return issue.clone();
+    }
+    let mut compact = serde_json::Map::new();
+    let mut size = 0;
+    for (key, value) in issue.as_object().into_iter().flatten() {
+        let scalar = value.is_string() || value.is_number() || value.is_boolean();
+        let length = serde_json::to_vec(value).map_or(usize::MAX, |bytes| bytes.len());
+        if scalar && size + key.len() + length < MAX_ISSUE_BYTES {
+            size += key.len() + length;
+            compact.insert(key.clone(), value.clone());
+        }
+    }
+    compact.insert("truncated".to_owned(), json!(true));
+    Value::Object(compact)
+}
+
+/// Issues of every validator that reported any, flattened and bounded so the
+/// response stays inside one bridge frame. `validation.issue_count` keeps the total.
+fn validation_issues(validation: &Value) -> Vec<Value> {
+    let mut issues = Vec::new();
+    if let Some(validators) = validation.as_object() {
+        for (validator, report) in validators {
+            for issue in report["issues"].as_array().into_iter().flatten() {
+                if issues.len() < MAX_REPORTED_ISSUES {
+                    let mut issue = compact_issue(issue);
+                    if let Some(object) = issue.as_object_mut() {
+                        object.insert("validator".to_owned(), json!(validator));
+                    }
+                    issues.push(issue);
+                }
+            }
+        }
+    }
+    issues
+}
+
 impl Response {
     fn error(id: u64, code: &str) -> Self {
         Self {
@@ -301,8 +391,25 @@ impl Response {
             id,
             ok: false,
             stamp: None,
-            result: None,
+            result: ERROR_DETAILS.with(|slot| slot.borrow_mut().take()),
             error: Some(code.into()),
+        }
+    }
+
+    /// Non-fatal answer to a request body that does not match the protocol;
+    /// `reason` is the parser's schema message so the caller can fix it.
+    fn invalid_params(id: u64, reason: &str) -> Self {
+        let reason: String = reason
+            .chars()
+            .take(MAX_INVALID_PARAMS_REASON_CHARS)
+            .collect();
+        Self {
+            version: 1,
+            id,
+            ok: false,
+            stamp: None,
+            result: Some(json!({ "reason": reason })),
+            error: Some("invalid_params".into()),
         }
     }
 
@@ -340,13 +447,26 @@ struct Pending {
     selection: SelectionGuard,
     proposal: Proposal,
 }
-enum PlanRejection {
+#[derive(Debug)]
+pub(crate) enum PlanRejection {
     Code(&'static str),
+    /// The program could not be planned; the diagnostic says why.
+    Planning(Box<AssistantRejectionDiagnostic>),
     CapabilityGap(Box<AssistantRejectionDiagnostic>),
 }
 impl From<&'static str> for PlanRejection {
     fn from(code: &'static str) -> Self {
         Self::Code(code)
+    }
+}
+impl PlanRejection {
+    /// The bridge error code, with the diagnostic recorded as its details.
+    fn into_code(self) -> &'static str {
+        match self {
+            Self::Code(code) => code,
+            Self::Planning(diagnostic) => planning_failure("planning_rejected", &diagnostic),
+            Self::CapabilityGap(diagnostic) => planning_failure("capability_gap", &diagnostic),
+        }
     }
 }
 pub(crate) struct ApplyAndVerifyRequest {
@@ -356,6 +476,7 @@ pub(crate) struct ApplyAndVerifyRequest {
     validators: Vec<String>,
     timeout_ms: u64,
     save: Option<ApplyAndVerifySave>,
+    strict: bool,
 }
 /// Everything decided on the UI thread before the off-thread exact/validation work.
 struct ApplyAndVerifyPlan {
@@ -365,6 +486,7 @@ struct ApplyAndVerifyPlan {
     candidate: Snapshot,
     save_path: Option<PathBuf>,
     timeout_ms: u64,
+    strict: bool,
     started: Instant,
     planned_at: Instant,
 }
@@ -568,6 +690,7 @@ impl KetchupApp {
                     validators,
                     timeout_ms,
                     save,
+                    strict,
                 } => {
                     bridge.start_queued_apply_and_verify(
                         self,
@@ -582,6 +705,7 @@ impl KetchupApp {
                             validators,
                             timeout_ms,
                             save,
+                            strict,
                         },
                         ui_busy,
                     );
@@ -615,6 +739,7 @@ impl KetchupApp {
         }
         if revoke_consent {
             self.live_consent_attached = false;
+            self.poll_live_consent(context);
         } else {
             self.live_bridge = Some(bridge);
         }
@@ -747,13 +872,6 @@ impl LiveBridge {
             || app.face_workflow.xray_preview()
             || Self::fixture_busy(app)
     }
-    #[cfg(feature = "named-product-fixtures")]
-    fn fixture_busy(app: &KetchupApp) -> bool {
-        app.bottle_direct_drag.is_some()
-            || app.bottle_editor.is_some()
-            || app.part_authoring_preview_pending()
-    }
-    #[cfg(not(feature = "named-product-fixtures"))]
     fn fixture_busy(_app: &KetchupApp) -> bool {
         false
     }
@@ -800,6 +918,147 @@ impl LiveBridge {
             }
             _ => Ok(()),
         }
+    }
+
+    fn selected_context(app: &KetchupApp) -> Value {
+        let snapshot = app.document.current();
+        let paths = app.selected_instance_paths();
+        if paths.len() > MAX_SELECTION {
+            return json!({"state":"selection_limit"});
+        }
+        let selected_paths = paths
+            .iter()
+            .map(|path| {
+                json!({"root_occurrence_id":path.root_occurrence().0,
+                "steps":path.steps().iter().map(|step| match step {
+                    ketchup_core::document::InstancePathStep::Group(id) =>
+                        json!({"kind":"group","local_id":id.0}),
+                    ketchup_core::document::InstancePathStep::Occurrence(id) =>
+                        json!({"kind":"occurrence","local_id":id.0}),
+                }).collect::<Vec<_>>()})
+            })
+            .collect::<Vec<_>>();
+        if app.selection.topological.is_empty() {
+            return json!({"state":if app.selection.selected_group.is_some() {"group_only"}
+                else if paths.is_empty() {"empty"} else {"part_only"},
+                "instance_paths":selected_paths,"selected_group_id":app.selection.selected_group.map(|id|id.0),
+                "dowel_pair":Value::Null});
+        }
+        if app.selection.topological.len() != 1 || paths.len() != 1 {
+            return json!({"state":"multiple_topological_elements",
+                "instance_paths":selected_paths,"dowel_pair":Value::Null});
+        }
+        let target = app.selection.topological[0]
+            .1
+            .resolve_current(&snapshot, &app.topology_results);
+        let Ok(target) = target else {
+            return json!({"state":"stale_topology","instance_paths":selected_paths,
+                "dowel_pair":Value::Null});
+        };
+        let reference = &target.reference;
+        let edges = snapshot
+            .resolve_instance_path(&target.instance_path)
+            .ok()
+            .and_then(|instance| {
+                app.topology_results
+                    .get_render(&snapshot, instance.definition_id)
+            })
+            .map(|package| {
+                let ordinal = package
+                    .topological_references()
+                    .iter()
+                    .filter(|candidate| candidate.kind == reference.kind)
+                    .position(|candidate| candidate == reference);
+                package
+                    .edge_evidence()
+                    .iter()
+                    .filter(|edge| match (reference.kind, ordinal) {
+                        (ketchup_core::topology::TopologicalElementKind::Edge, Some(index)) => {
+                            edge.edge_ordinal == index as u32
+                        }
+                        (ketchup_core::topology::TopologicalElementKind::Face, Some(index)) => {
+                            edge.adjacent_face_ordinals.contains(&(index as u32))
+                        }
+                        _ => false,
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let matches = snapshot
+            .dowel_joints()
+            .filter_map(|joint| {
+                let bindings = joint.physical_hole_pairs.as_ref()?;
+                let projection =
+                    ketchup_core::joinery::project_dowel_joint_contract(&snapshot, joint).ok()?;
+                Some(
+                    bindings
+                        .iter()
+                        .zip(projection.pairs.iter())
+                        .enumerate()
+                        .filter_map(|(index, (binding, pair))| {
+                            let (hole, side) = if target.instance_path == pair.first.instance_path {
+                                (&pair.first, "first")
+                            } else if target.instance_path == pair.second.instance_path {
+                                (&pair.second, "second")
+                            } else {
+                                return None;
+                            };
+                            let matches_hole = edges.iter().any(|edge| {
+                                let (Some(radius), Some(center), Some(axis)) = (
+                                    edge.circle_radius_mm,
+                                    edge.axis_origin_mm,
+                                    edge.unit_axis_direction,
+                                ) else {
+                                    return false;
+                                };
+                                let delta = std::array::from_fn::<_, 3, _>(|i| {
+                                    center[i] - hole.entry_local_mm[i]
+                                });
+                                let depth = (0..3)
+                                    .map(|i| delta[i] * hole.inward_unit_local[i])
+                                    .sum::<f64>();
+                                (radius - hole.diameter_mm / 2.0).abs() < 1e-4
+                                    && (0..3)
+                                        .map(|i| axis[i] * hole.inward_unit_local[i])
+                                        .sum::<f64>()
+                                        .abs()
+                                        > 1.0 - 1e-5
+                                    && depth >= -1e-4
+                                    && depth <= hole.depth_mm + 1e-4
+                                    && (0..3)
+                                        .map(|i| {
+                                            (delta[i] - depth * hole.inward_unit_local[i]).powi(2)
+                                        })
+                                        .sum::<f64>()
+                                        < 1e-8
+                            });
+                            matches_hole.then(|| {
+                                json!({"joint_id":joint.id.0,
+                    "joint_name":joint.name,"pair_index":index,
+                    "first_pocket_feature_id":binding.first_pocket_feature_id.0,
+                    "second_pocket_feature_id":binding.second_pocket_feature_id.0,
+                    "selected_side":side})
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .flatten()
+            .take(2)
+            .collect::<Vec<_>>();
+        json!({"state":if matches.len() == 1 {"dowel_pair"}
+            else if matches.is_empty() {"topological_element"} else {"ambiguous_dowel_pair"},
+            "instance_paths":selected_paths,
+            "topology":{"definition_id":reference.definition_id.0,
+                "source_feature_id":reference.source_feature_id.0,
+                "producer_feature_id":reference.producer_feature_id.0,
+                "kind":match reference.kind {
+                    ketchup_core::topology::TopologicalElementKind::Face => "face",
+                    ketchup_core::topology::TopologicalElementKind::Edge => "edge",
+                    ketchup_core::topology::TopologicalElementKind::Vertex => "vertex",
+                }},
+            "dowel_pair":if matches.len() == 1 {matches.into_iter().next()} else {None}})
     }
 
     fn selection(app: &KetchupApp) -> Result<Vec<u64>, &'static str> {
@@ -866,6 +1125,7 @@ impl LiveBridge {
                 | AssistantCadEditOperation::CreateProgramDowelJoint { .. }
                 | AssistantCadEditOperation::CreatePhysicalDowelJoint { .. }
                 | AssistantCadEditOperation::DeletePhysicalDowelJoint { .. }
+                | AssistantCadEditOperation::MovePhysicalDowelPair { .. }
                 | AssistantCadEditOperation::CreateTag { .. }
                 | AssistantCadEditOperation::SetOccurrenceTag { .. }
                 | AssistantCadEditOperation::SetTagVisibility { .. }
@@ -1009,9 +1269,7 @@ impl LiveBridge {
             // A wait timeout also raises the shared cancel flag; report it as a timeout.
             if error.contains("timed out") {
                 "job_timeout"
-            } else if cancelled.load(Ordering::Acquire) {
-                "request_cancelled"
-            } else if error.contains("cancelled") {
+            } else if cancelled.load(Ordering::Acquire) || error.contains("cancelled") {
                 "request_cancelled"
             } else if error.contains("disconnected") {
                 "exact_worker_disconnected"
@@ -1025,7 +1283,13 @@ impl LiveBridge {
         let (candidate_exact, candidate_topology, exact_report) =
             materialize_exact_products(candidate, render, topology, &exact_task, products)
                 .map_err(|_| "exact_evaluation_rejected")?;
-        if !exact_report.complete || !exact_report.topology_complete {
+        // A candidate without exact geometry (e.g. a cleared document) has
+        // nothing to verify; every producer it does have must be evaluated.
+        if exact_report
+            .producers
+            .iter()
+            .any(|producer| !producer.render.is_evaluated() || !producer.topology.is_evaluated())
+        {
             return Err("exact_evaluation_incomplete");
         }
         let exact_at = Instant::now();
@@ -1051,12 +1315,6 @@ impl LiveBridge {
             return Err("job_timeout");
         }
         Self::require_request_authority(&cancelled)?;
-        if validation["state"] == "failed" {
-            return Err("validation_failed");
-        }
-        if validation["state"] != "passed" || validation["complete"] != true {
-            return Err("validation_incomplete");
-        }
         Ok(PreparedApplyAndVerify {
             candidate_exact,
             candidate_topology,
@@ -1098,6 +1356,7 @@ impl LiveBridge {
             validators,
             timeout_ms,
             save,
+            strict,
         } = request;
         let started = Instant::now();
         if timeout_ms == 0 || timeout_ms > MAX_APPLY_VERIFY_TIMEOUT_MS {
@@ -1123,7 +1382,9 @@ impl LiveBridge {
         Self::guard(app, &expected)?;
         Self::available(app, ui_busy)?;
         let selection = Self::selection_guard(app, selection)?;
-        program.validate().map_err(|_| "invalid_program")?;
+        program
+            .validate()
+            .map_err(|error| failure("invalid_program", error, json!({})))?;
         Self::program_scope(app, &program)?;
         #[cfg(test)]
         if fault == Some(ApplyAndVerifyFault::Planning) {
@@ -1135,7 +1396,7 @@ impl LiveBridge {
                 if Self::is_capability_gap(&diagnostic) {
                     PlanRejection::CapabilityGap(diagnostic)
                 } else {
-                    PlanRejection::Code("planning_rejected")
+                    PlanRejection::Planning(diagnostic)
                 }
             })?;
         #[cfg(test)]
@@ -1145,13 +1406,13 @@ impl LiveBridge {
         let candidate = app
             .document
             .preview_verified_proposal(&proposal)
-            .map_err(|_| "candidate_rejected")?;
+            .map_err(|error| failure("candidate_rejected", format!("{error:?}"), json!({})))?;
         let exact_selection = plan_incremental_exact_evaluation(
             &app.document.current(),
             &candidate,
             app.exact_source.as_ref(),
         )
-        .map_err(|_| "planning_rejected")?
+        .map_err(|error| failure("planning_rejected", format!("{error:?}"), json!({})))?
         .selection;
         let plan = ApplyAndVerifyPlan {
             before: app.live_bridge_stamp(),
@@ -1160,6 +1421,7 @@ impl LiveBridge {
             candidate,
             save_path,
             timeout_ms,
+            strict,
             started,
             planned_at: Instant::now(),
         };
@@ -1177,6 +1439,7 @@ impl LiveBridge {
         request: ApplyAndVerifyRequest,
         ui_busy: bool,
     ) {
+        take_error_details();
         if self.apply_and_verify_job.is_some() {
             Self::reply(app, id, &reply, Err("apply_and_verify_busy"));
             return;
@@ -1193,8 +1456,8 @@ impl LiveBridge {
                 Self::reply_capability_gap(app, id, &reply, &diagnostic);
                 return;
             }
-            Err(PlanRejection::Code(code)) => {
-                Self::reply(app, id, &reply, Err(code));
+            Err(rejection) => {
+                Self::reply(app, id, &reply, Err(rejection.into_code()));
                 return;
             }
         };
@@ -1260,6 +1523,7 @@ impl LiveBridge {
             candidate,
             save_path,
             timeout_ms,
+            strict,
             started,
             planned_at,
         } = plan;
@@ -1285,6 +1549,23 @@ impl LiveBridge {
             validated_at,
             _exact_task,
         } = prepared;
+        let issues = validation_issues(&validation);
+        if *strict && validation["state"] != "passed" {
+            let code = if validation["state"] == "failed" {
+                "validation_failed"
+            } else {
+                "validation_incomplete"
+            };
+            return Err(failure(
+                code,
+                format!(
+                    "validation {} with {} issue(s); the edit was not published (strict)",
+                    validation["state"].as_str().unwrap_or("did not pass"),
+                    validation["issue_count"]
+                ),
+                json!({"issues": issues, "not_evaluated": validation["not_evaluated"]}),
+            ));
+        }
         let diff_targets = proposal
             .authoritative_diff()
             .iter()
@@ -1302,9 +1583,12 @@ impl LiveBridge {
         let committed = app
             .complete_mutation_and_exact_results_with_work_recovery(
                 |document, exact_results, topology_results| {
-                    let committed = document
-                        .commit_verified_proposal(proposal)
-                        .map_err(|_| "commit_rejected")?;
+                    let committed =
+                        document
+                            .commit_verified_proposal(proposal)
+                            .map_err(|error| {
+                                failure("commit_rejected", format!("{error:?}"), json!({}))
+                            })?;
                     for reference in exact_references {
                         document
                             .register_exact_reference_evidence(reference)
@@ -1368,6 +1652,8 @@ impl LiveBridge {
                 "complete": validation["complete"],
                 "issue_count": validation["issue_count"],
                 "requested": validation["requested"],
+                "issues": issues,
+                "not_evaluated": validation["not_evaluated"],
             },
             "timing_ms": {
                 "planning": planned_at.duration_since(*started).as_millis() as u64,
@@ -1394,18 +1680,14 @@ impl LiveBridge {
         ui_busy: bool,
         cancelled: &Arc<AtomicBool>,
         #[cfg(test)] fault: Option<ApplyAndVerifyFault>,
-    ) -> Result<Value, &'static str> {
+    ) -> Result<Value, PlanRejection> {
         let (plan, exact_selection, validation_selection) = Self::plan_apply_and_verify(
             app,
             request,
             ui_busy,
             #[cfg(test)]
             fault,
-        )
-        .map_err(|rejection| match rejection {
-            PlanRejection::Code(code) => code,
-            PlanRejection::CapabilityGap(_) => "capability_gap",
-        })?;
+        )?;
         let prepared = Self::evaluate_apply_and_verify_candidate(
             &plan.candidate,
             &app.container_data,
@@ -1420,7 +1702,7 @@ impl LiveBridge {
             #[cfg(test)]
             fault,
         )?;
-        Self::publish_apply_and_verify(
+        Ok(Self::publish_apply_and_verify(
             app,
             &plan,
             prepared,
@@ -1428,13 +1710,14 @@ impl LiveBridge {
             cancelled,
             #[cfg(test)]
             fault,
-        )
+        )?)
     }
 
     pub(crate) fn apply_assistant_cad_program(
         app: &mut KetchupApp,
         program: AssistantCadEditProgram,
-    ) -> Result<Value, &'static str> {
+    ) -> Result<Value, PlanRejection> {
+        take_error_details();
         Self::apply_and_verify_now(
             app,
             ApplyAndVerifyRequest {
@@ -1444,6 +1727,7 @@ impl LiveBridge {
                 validators: Vec::new(),
                 timeout_ms: DEFAULT_APPLY_VERIFY_TIMEOUT_MS,
                 save: None,
+                strict: false,
             },
             false,
             &Arc::new(AtomicBool::new(false)),
@@ -1515,6 +1799,7 @@ impl LiveBridge {
         ui_busy: bool,
         cancelled: &Arc<AtomicBool>,
     ) -> Result<Value, &'static str> {
+        take_error_details();
         Self::require_request_authority(cancelled)?;
         match request {
             Request::Status {} => Ok(
@@ -1522,12 +1807,16 @@ impl LiveBridge {
                 "image_protocol":{"version":IMAGE_PROTOCOL_VERSION,"capabilities":["capture_mode","capture_metadata","render_metadata","variable_size","selection_framing","detail_selection_framing"],"capture_modes":["offscreen","visible_viewport"],"default_capture_mode":"offscreen","framing_modes":["viewport","selection","detail_selection"],"default_framing":"viewport","min_side_px":MIN_IMAGE_SIDE_PX,"max_side_px":MAX_IMAGE_SIDE_PX,"default_side_px":512},
                 "busy":ui_busy || Self::busy(app),"read_only":app.review_candidate.is_some(),
                 "selection":Self::selection(app).ok(),"selection_scope":"root_occurrences_only",
+                "selected_context":Self::selected_context(app),
                 "undo_steps":app.undo_step_count(),"redo_steps":app.redo_step_count(),
                 "pending_proposal_id":self.pending.as_ref().map(|p|p.id),
                 "limits":{"frame_bytes":MAX_FRAME_BYTES,"image_frame_bytes":MAX_IMAGE_FRAME_BYTES,"queue":QUEUE_CAPACITY,"selection":MAX_SELECTION,"apply_verify_timeout_ms":MAX_APPLY_VERIFY_TIMEOUT_MS,"batch_jobs":MAX_BATCH_JOBS},
-                "methods":["status","summary","edit_context","query","detail","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","undo","redo","save","save_as","open","selection","view","image","disconnect"]}),
+                "methods":["status","summary","operations","edit_context","query","detail","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","undo","redo","save","save_as","open","selection","view","image","disconnect"]}),
             ),
             Request::Summary {} => Ok(self.query.summary(&app.document.current())),
+            Request::Operations { name } => {
+                ketchup_core::cad_catalog::cad_operation_catalog(name.as_deref())
+            }
             Request::EditContext { targets, .. } => self
                 .query
                 .edit_context(
@@ -1648,11 +1937,13 @@ impl LiveBridge {
                 Self::guard(app, &expected)?;
                 Self::available(app, ui_busy)?;
                 let selection = Self::selection_guard(app, selection)?;
-                program.validate().map_err(|_| "invalid_program")?;
+                program
+                    .validate()
+                    .map_err(|error| failure("invalid_program", error, json!({})))?;
                 Self::program_scope(app, &program)?;
                 let proposal = app
                     .derive_assistant_cad_edit_proposal(&program)
-                    .map_err(|_| "planning_rejected")?;
+                    .map_err(|diagnostic| planning_failure("planning_rejected", &diagnostic))?;
                 let id = self.next_proposal;
                 self.next_proposal = id.checked_add(1).ok_or("proposal_ids_exhausted")?;
                 let value = json!({"proposal_id":id,
@@ -1705,6 +1996,7 @@ impl LiveBridge {
                 validators,
                 timeout_ms,
                 save,
+                strict,
             } => Self::apply_and_verify_now(
                 app,
                 ApplyAndVerifyRequest {
@@ -1714,12 +2006,14 @@ impl LiveBridge {
                     validators,
                     timeout_ms,
                     save,
+                    strict,
                 },
                 ui_busy,
                 cancelled,
                 #[cfg(test)]
                 self.apply_and_verify_fault,
-            ),
+            )
+            .map_err(PlanRejection::into_code),
             Request::Undo { expected } => {
                 Self::guard(app, &expected)?;
                 Self::available(app, ui_busy)?;

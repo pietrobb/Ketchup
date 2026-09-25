@@ -6,14 +6,15 @@ use eframe::egui::{Key, accesskit::Role};
 use harness::{Shell, ctrl};
 use ketchup_app::{AppCommand, dialogs::ScriptedFileDialogs};
 use ketchup_core::assembly::{
-    AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind,
+    AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind, PlanarFaceAttachment,
 };
 use ketchup_core::document::{
     BodyId, CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
-    FeatureKind, OccurrenceId, ProfileSegment, ProposalPrincipal, RevisionOrigin, Transform,
+    FeatureKind, OccurrenceId, ProfileSegment, ProposalPrincipal, RevisionOrigin, Snapshot,
+    Transform,
 };
 use ketchup_core::drawing::{DrawingSheet, DrawingSheetId, DrawingSource};
-use ketchup_core::exact_product::{ExactFaceRole, ExactFeatureChainRequest};
+use ketchup_core::exact_product::{ExactBodyPackage, ExactFaceRole, body_exact_graph};
 use ketchup_core::persistence;
 use ketchup_core::sketch::{
     FeatureDirection, FeatureExtent, PadSpec, PrincipalPlane, SketchConstraint, SketchConstraintId,
@@ -81,6 +82,34 @@ fn wait_for_exact_bodies(shell: &mut Shell, expected: usize) {
     );
 }
 
+/// The result of `body_id`, evaluated by the exact worker the app uses.
+fn evaluate_exact(
+    snapshot: &Snapshot,
+    definition_id: DefinitionId,
+    body_id: BodyId,
+) -> ExactBodyPackage {
+    let graph = body_exact_graph(snapshot, definition_id, body_id).unwrap();
+    let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
+    ExactBodyPackage::Graph(worker.evaluate_exact_brep_graph(&graph).unwrap())
+}
+
+/// The planar attachment of the face `role` names on an exact result.
+fn planar_attachment(package: &ExactBodyPackage, role: ExactFaceRole) -> PlanarFaceAttachment {
+    let ExactBodyPackage::Graph(graph) = package else {
+        unreachable!("the exact worker returns a graph package");
+    };
+    let reference = package.reference(role).unwrap();
+    graph
+        .planar_face_attachments
+        .iter()
+        .find(|attachment| attachment.reference() == reference)
+        .unwrap()
+        .clone()
+}
+
+/// The profiles start on their east edge, so the exact worker names the
+/// east side face as the first line's side. Mate offsets are measured along
+/// the outward normal of the first face and hold for the placed occurrences.
 fn write_component_replacement_fixture(path: &Path) {
     let mut document = DocumentStore::new();
     document
@@ -98,7 +127,7 @@ fn write_component_replacement_fixture(path: &Path) {
                 definition_id: REPLACEMENT_SOURCE,
                 name: "Source profile".to_owned(),
                 kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+                    points_mm: vec![[10.0, 0.0], [10.0, 10.0], [0.0, 10.0], [0.0, 0.0]],
                 },
             },
             CanonicalCommand::CreateFeature {
@@ -115,7 +144,7 @@ fn write_component_replacement_fixture(path: &Path) {
                 definition_id: REPLACEMENT_TARGET,
                 name: "Target profile".to_owned(),
                 kind: FeatureKind::Profile {
-                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+                    points_mm: vec![[10.0, 0.0], [10.0, 10.0], [0.0, 10.0], [0.0, 0.0]],
                 },
             },
             CanonicalCommand::CreateFeature {
@@ -157,35 +186,22 @@ fn write_component_replacement_fixture(path: &Path) {
         ]))
         .unwrap();
     let snapshot = document.current();
-    let source_request =
-        ExactFeatureChainRequest::from_snapshot_for_body(&snapshot, REPLACEMENT_SOURCE, BodyId(1))
-            .unwrap();
-    let target_request =
-        ExactFeatureChainRequest::from_snapshot_for_body(&snapshot, REPLACEMENT_TARGET, BodyId(1))
-            .unwrap();
-    let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
-    let source = worker.evaluate_rectangle(&source_request).unwrap();
-    let target = worker.evaluate_rectangle(&target_request).unwrap();
+    let source = evaluate_exact(&snapshot, REPLACEMENT_SOURCE, BodyId(1));
+    let target = evaluate_exact(&snapshot, REPLACEMENT_TARGET, BodyId(1));
     document
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
                 REPLACEMENT_PLANAR_MATE,
                 AssemblyMateEndpoint::resolved_planar_face(
                     REPLACEMENT_SELECTED,
-                    source
-                        .planar_face_attachment(source.reference(ExactFaceRole::Top).unwrap())
-                        .unwrap()
-                        .clone(),
+                    planar_attachment(&source, ExactFaceRole::Top),
                 ),
                 AssemblyMateEndpoint::resolved_planar_face(
                     REPLACEMENT_TARGET_OCCURRENCE,
-                    target
-                        .planar_face_attachment(target.reference(ExactFaceRole::Bottom).unwrap())
-                        .unwrap()
-                        .clone(),
+                    planar_attachment(&target, ExactFaceRole::Bottom),
                 ),
                 AssemblyMateKind::CoincidentPlanar {
-                    offset_mm: 10.0,
+                    offset_mm: -10.0,
                     reversed: false,
                 },
             )),
@@ -193,20 +209,14 @@ fn write_component_replacement_fixture(path: &Path) {
                 REPLACEMENT_SECOND_PLANAR_MATE,
                 AssemblyMateEndpoint::resolved_planar_face(
                     REPLACEMENT_SELECTED,
-                    source
-                        .planar_face_attachment(source.reference(ExactFaceRole::East).unwrap())
-                        .unwrap()
-                        .clone(),
+                    planar_attachment(&source, ExactFaceRole::LinearSide),
                 ),
                 AssemblyMateEndpoint::resolved_planar_face(
                     REPLACEMENT_TARGET_OCCURRENCE,
-                    target
-                        .planar_face_attachment(target.reference(ExactFaceRole::East).unwrap())
-                        .unwrap()
-                        .clone(),
+                    planar_attachment(&target, ExactFaceRole::LinearSide),
                 ),
                 AssemblyMateKind::CoincidentPlanar {
-                    offset_mm: -50.0,
+                    offset_mm: 50.0,
                     reversed: true,
                 },
             )),
@@ -1054,9 +1064,11 @@ fn move_tool_repositions_exact_pocket_floor_instead_of_the_panel_occurrence() {
         !preview_paths.is_empty(),
         "profile Move must expose a live outline"
     );
+    // The drag follows a screen pointer, so the outline is exact only to the
+    // pointer's resolution; typed values below check exact placement.
     assert!(
         preview_paths.iter().flatten().any(|point| {
-            point.distance(ketchup_interaction::Vec3::new(20.0, 10.0, 4.0)) < 1.0e-6
+            point.distance(ketchup_interaction::Vec3::new(20.0, 10.0, 4.0)) < 1.0e-3
         })
     );
     assert_eq!(

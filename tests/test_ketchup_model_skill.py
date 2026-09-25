@@ -32,9 +32,9 @@ def test_output_is_bounded_real_json():
         skill._output({"result": float("nan")})
 
 
-def test_guard_fails_closed_and_tracks_shared_state():
-    with pytest.raises(skill.Rejection, match="No Supervisor"):
-        skill.Runtime(None).guard()
+def test_guard_allows_hosts_without_plan_mode_and_tracks_shared_state():
+    skill.Runtime(None).guard()
+    skill.Runtime(SimpleNamespace()).guard()
     state = SimpleNamespace(active=False)
     runtime = skill.Runtime(state)
     runtime.guard()
@@ -102,7 +102,7 @@ async def call(registered, name, **kwargs):
 
 def test_registration_schema_and_real_decorator_calls(monkeypatch):
     registered = tools(monkeypatch)
-    assert set(registered) == {"KetchupDiscover", "KetchupSession", "KetchupInspect", "KetchupEdit", "KetchupBatch", "KetchupSave", "KetchupVerify"}
+    assert set(registered) == {"KetchupDiscover", "KetchupSession", "KetchupProgram", "KetchupInspect", "KetchupEdit", "KetchupBatch", "KetchupSave", "KetchupVerify"}
     for tool in registered.values():
         schema = tool.to_dict()
         assert schema["input_schema"]["type"] == "object"
@@ -112,6 +112,10 @@ def test_registration_schema_and_real_decorator_calls(monkeypatch):
     assert set(required) == {"handle", "action"}
     async def scenario():
         assert (await call(registered, "KetchupDiscover"))["result"]["backend_compact"]
+        library = (await call(registered, "KetchupDiscover", section="program"))["result"]
+        assert "def dowels(" in library["library"]
+        assert any("dowels(" in example for example in library["examples"].values())
+        assert (await call(registered, "KetchupProgram", action="check", handle="bad", source="x = 1"))["error"]["code"] == "invalid_handle"
         for name in ("KetchupSession", "KetchupInspect", "KetchupEdit", "KetchupVerify"):
             args = {"action": "invalid", "handle": "bad"}
             if name == "KetchupEdit":
@@ -500,7 +504,10 @@ def test_plan_tools_reject_and_missing_binding(monkeypatch, doubles):
         await call(registered, "KetchupSession", action="close", handle=opened["handle"], discard=True, **expected(opened))
         monkeypatch.setattr(skill, "_plan_state", lambda: None)
         unbound = {t.name: t for t in skill.register_tools()}
-        assert (await call(unbound, "KetchupSession", action="new"))["error"]["code"] == "plan_guard_unavailable"
+        created = await call(unbound, "KetchupSession", action="new")
+        assert created.get("error", {}).get("code") != "plan_guard_unavailable"
+        if created.get("ok"):
+            await call(unbound, "KetchupSession", action="close", handle=created["result"]["handle"], discard=True)
     asyncio.run(scenario())
 
 

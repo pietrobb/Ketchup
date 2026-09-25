@@ -1,11 +1,11 @@
 use crate::document::{
-    AuthoritativeDependency, BottleControlDimension, BottleEdgeFinishKind, CanonicalCommand,
-    CanonicalOverride, CloneDefinitionPlan, CollectionId, CommandBatch, ConvertGroupPlan,
-    DefinitionId, DerivedIdentity, Dimension, DocumentStore, EvaluationIdentity, FeatureId,
-    FeatureKind, FeatureParameterBinding, FeatureParameterTarget, GroupId, NodeId, OccurrenceId,
-    PersistentDimension, PersistentDimensionTarget, Proposal, ProposalAssumption, ProposalBudget,
-    ProposalConfirmation, ProposalContext, ProposalGoal, ProposalPrepareError, ProposalPrincipal,
-    ProposalRisk, SlotPath, SlotResolution, SlotSegment, TagId, Transform,
+    AuthoritativeDependency, CanonicalCommand, CanonicalOverride, CloneDefinitionPlan,
+    CollectionId, CommandBatch, ConvertGroupPlan, DefinitionId, DerivedIdentity, Dimension,
+    DocumentStore, EvaluationIdentity, FeatureId, FeatureKind, FeatureParameterBinding,
+    FeatureParameterTarget, GroupId, NodeId, OccurrenceId, PersistentDimension,
+    PersistentDimensionTarget, Proposal, ProposalAssumption, ProposalBudget, ProposalConfirmation,
+    ProposalContext, ProposalGoal, ProposalPrepareError, ProposalPrincipal, ProposalRisk, SlotPath,
+    SlotResolution, SlotSegment, TagId, Transform,
 };
 use crate::graph::ExpressionAst;
 use std::collections::BTreeSet;
@@ -34,8 +34,6 @@ pub enum IntentCapability {
     SetEvaluatorExpression,
     SetRuleOutputs,
     SetFeatureDimension,
-    SetBottleControlDimension,
-    SetBottleEdgeFinishKind,
     SetProfilePoints,
     RenameDefinition,
     SetOccurrenceVisibility,
@@ -114,8 +112,6 @@ impl IntentGrant {
                 IntentCapability::SetEvaluatorExpression,
                 IntentCapability::SetRuleOutputs,
                 IntentCapability::SetFeatureDimension,
-                IntentCapability::SetBottleControlDimension,
-                IntentCapability::SetBottleEdgeFinishKind,
                 IntentCapability::SetProfilePoints,
                 IntentCapability::RenameDefinition,
                 IntentCapability::SetOccurrenceVisibility,
@@ -265,15 +261,6 @@ pub enum WorkflowIntent {
         target: FeatureId,
         value_text: String,
     },
-    SetBottleControlDimension {
-        target: FeatureId,
-        control: BottleControlDimension,
-        value_text: String,
-    },
-    SetBottleEdgeFinishKind {
-        target: FeatureId,
-        kind: BottleEdgeFinishKind,
-    },
     SetProfilePoints {
         target: FeatureId,
         points_mm: Vec<[f64; 2]>,
@@ -420,8 +407,6 @@ impl WorkflowIntent {
             Self::SetEvaluatorExpression { .. } => IntentCapability::SetEvaluatorExpression,
             Self::SetRuleOutputs { .. } => IntentCapability::SetRuleOutputs,
             Self::SetFeatureDimension { .. } => IntentCapability::SetFeatureDimension,
-            Self::SetBottleControlDimension { .. } => IntentCapability::SetBottleControlDimension,
-            Self::SetBottleEdgeFinishKind { .. } => IntentCapability::SetBottleEdgeFinishKind,
             Self::SetProfilePoints { .. } => IntentCapability::SetProfilePoints,
             Self::RenameDefinition { .. } => IntentCapability::RenameDefinition,
             Self::SetOccurrenceVisibility { .. } => IntentCapability::SetOccurrenceVisibility,
@@ -991,30 +976,6 @@ pub fn propose_intent(
                 },
             )
         }
-        WorkflowIntent::SetBottleControlDimension {
-            target,
-            control,
-            value_text,
-        } => {
-            let authority = AuthoritativeDependency::Feature(target);
-            (
-                ProposalGoal::SetBottleControlDimension(target, control),
-                authority,
-                CanonicalCommand::SetBottleControlDimension {
-                    id: target,
-                    control,
-                    dimension: Dimension::from_decimal(value_text)?,
-                },
-            )
-        }
-        WorkflowIntent::SetBottleEdgeFinishKind { target, kind } => {
-            let authority = AuthoritativeDependency::Feature(target);
-            (
-                ProposalGoal::SetBottleEdgeFinishKind(target),
-                authority,
-                CanonicalCommand::SetBottleEdgeFinishKind { id: target, kind },
-            )
-        }
         WorkflowIntent::SetProfilePoints { target, points_mm } => {
             let authority = AuthoritativeDependency::Feature(target);
             (
@@ -1410,8 +1371,6 @@ pub fn propose_intent(
         IntentCapability::RenameEvaluatorNode
             | IntentCapability::SetEvaluatorExpression
             | IntentCapability::SetRuleOutputs
-            | IntentCapability::SetBottleControlDimension
-            | IntentCapability::SetBottleEdgeFinishKind
             | IntentCapability::SetProfilePoints
             | IntentCapability::RenameDefinition
             | IntentCapability::SetOccurrenceVisibility

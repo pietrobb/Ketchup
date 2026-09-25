@@ -1,10 +1,5 @@
 app-title = Kečup
-live-consent-title = Povoliť pripojenie lokálnej aplikácie?
-live-consent-description = Neoverený lokálny proces žiada dočasné ovládanie tohto okna Kečupu. Jeho identitu ani vydavateľa nemožno overiť. Kým ho nepovolíte, nemá žiadny prístup.
-live-consent-document = Dokument: { $document }
 live-consent-untitled = Bez názvu
-live-consent-allow = Povoliť
-live-consent-reject = Odmietnuť
 live-consent-connected-title = Lokálna aplikácia je pripojená
 live-consent-connected-description = Povolená lokálna aplikácia môže kontrolovať a upravovať tento dokument, kým ju neodpojíte. Jej identita zostáva neoverená.
 live-consent-disconnect = Odpojiť lokálnu aplikáciu

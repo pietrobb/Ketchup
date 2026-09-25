@@ -146,11 +146,6 @@ fn live_oauth_tools_reject_floating_ridge_and_accept_supported_ridge() {
         profile_translations: Vec::new(),
         parameter_edits: Vec::new(),
         linear_arrays: Vec::new(),
-        bottles: Vec::new(),
-        gable_roofs: Vec::new(),
-        staircases: Vec::new(),
-        oriented_beams: Vec::new(),
-        balloon_texts: Vec::new(),
     };
     assert!(
         shell

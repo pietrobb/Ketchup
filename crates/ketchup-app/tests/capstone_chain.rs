@@ -517,7 +517,10 @@ fn empty_document_manual_ux_capstone_has_rendered_and_native_exact_evidence() {
         source_geometry.1.y,
         source_geometry.1.z,
     ]) {
-        assert!((actual - expected).abs() < 1.0e-9);
+        assert!(
+            (actual - expected).abs() < 1.0e-9,
+            "copy {copied_geometry:?} must land on source {source_geometry:?}"
+        );
     }
     wait_for_exact_bodies(&mut shell, 1);
 

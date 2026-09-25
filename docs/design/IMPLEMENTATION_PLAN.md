@@ -3,7 +3,7 @@
 **Status:** implementation baseline  
 **Date:** 2026-08-02  
 **Scope:** manual desktop modeler foundations and discoverable interface  
-**Authority:** `EXECUTION_CONTRACT.md` wins over this plan; `README.md` is the interaction and visual specification.
+**Authority:** `AGENTS.md` and the ADRs win over this plan; `README.md` is the interaction and visual specification.
 
 ## 1. Why this plan exists
 
@@ -15,7 +15,7 @@ The correction is not to finish an isolated engine before building the interface
 
 Use this precedence when requirements disagree:
 
-1. `docs/architecture/EXECUTION_CONTRACT.md` — product and architecture invariants.
+1. `AGENTS.md` and `docs/adr` — product and architecture rules.
 2. `docs/design/README.md` — interaction behavior, layout, states, copy, and visual tokens.
 3. This document — implementation order, boundaries, and acceptance workflows.
 4. `Ketchup Modeler.dc.html` — visual and behavioral reference, not production geometry code.

@@ -29,6 +29,7 @@ pub struct DowelJointContract {
     pub count: u32,
     pub spacing_mm: f64,
     pub dowel: DowelSpec,
+    pub pair_offsets_first_local_mm: Vec<[f64; 3]>,
     pub physical_hole_pairs: Option<Vec<DowelPhysicalHolePair>>,
 }
 
@@ -263,6 +264,78 @@ pub fn project_dowel_joint_contract(
         spacing_mm: contract.spacing_mm,
         dowel: contract.dowel,
     })?;
+    if !contract.pair_offsets_first_local_mm.is_empty() {
+        if contract.pair_offsets_first_local_mm.len() != projection.pairs.len() {
+            return Err(DowelJointError::InvalidRow);
+        }
+        let first_side = DowelJointSide {
+            instance_path: contract.first.instance_path.clone(),
+            world_from_local: first_resolved.world_transform,
+            face_origin_local_mm: contract.first.face_origin_local_mm,
+            inward_unit_local: contract.first.inward_unit_local,
+            bounds_min_local_mm: contract.first.bounds_min_local_mm,
+            bounds_max_local_mm: contract.first.bounds_max_local_mm,
+        };
+        let second_side = DowelJointSide {
+            instance_path: contract.second.instance_path.clone(),
+            world_from_local: second_resolved.world_transform,
+            face_origin_local_mm: contract.second.face_origin_local_mm,
+            inward_unit_local: contract.second.inward_unit_local,
+            bounds_min_local_mm: contract.second.bounds_min_local_mm,
+            bounds_max_local_mm: contract.second.bounds_max_local_mm,
+        };
+        for (pair, offset) in projection
+            .pairs
+            .iter_mut()
+            .zip(&contract.pair_offsets_first_local_mm)
+        {
+            if offset.iter().any(|value| !value.is_finite())
+                || dot(*offset, contract.first.inward_unit_local).abs() > GEOMETRY_TOLERANCE
+            {
+                return Err(DowelJointError::InvalidRow);
+            }
+            let center = transform_point(
+                first_resolved.world_transform,
+                add(pair.first.entry_local_mm, *offset),
+            );
+            pair.first = derive_hole(
+                &projection.stable_joint_id,
+                pair.index,
+                "first",
+                &first_side,
+                first_resolved
+                    .world_transform
+                    .rigid_inverse()
+                    .ok_or(DowelJointError::NonRigidTransform)?,
+                center,
+                contract.dowel.diameter_mm,
+                contract.dowel.first_hole_depth_mm(),
+            )?;
+            pair.second = derive_hole(
+                &projection.stable_joint_id,
+                pair.index,
+                "second",
+                &second_side,
+                second_resolved
+                    .world_transform
+                    .rigid_inverse()
+                    .ok_or(DowelJointError::NonRigidTransform)?,
+                center,
+                contract.dowel.diameter_mm,
+                contract.dowel.second_hole_depth_mm(),
+            )?;
+        }
+        for (index, pair) in projection.pairs.iter().enumerate() {
+            if projection.pairs[..index].iter().any(|other| {
+                distance(
+                    pair.first.shared_center_world_mm,
+                    other.first.shared_center_world_mm,
+                ) < contract.dowel.diameter_mm - GEOMETRY_TOLERANCE
+            }) {
+                return Err(DowelJointError::InvalidRow);
+            }
+        }
+    }
     if let Some(bindings) = &contract.physical_hole_pairs {
         let diagnostics = validate_physical_hole_pairs(snapshot, contract, &projection, bindings)?;
         for (pair, diagnostic) in projection.pairs.iter_mut().zip(diagnostics) {
@@ -902,6 +975,7 @@ mod tests {
             count: 3,
             spacing_mm: 32.0,
             dowel: StandardDowel::D8x30.symmetric_spec(),
+            pair_offsets_first_local_mm: Vec::new(),
             physical_hole_pairs: None,
         };
         document

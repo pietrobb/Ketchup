@@ -100,22 +100,40 @@ fn batch_error(error: OccurrenceBatchError) -> Error {
     }
 }
 
+/// Largest error message sent to a client. Messages carry the cause and the
+/// fix (for rule programs: file, line and source excerpt), so they are not cut
+/// to the short limit used for names in query results.
+const MAX_ERROR_MESSAGE_BYTES: usize = 4 * 1024;
+const MAX_ERROR_DETAILS_BYTES: usize = 16 * 1024;
+
+fn truncate(text: &mut String, limit: usize) -> bool {
+    if text.len() <= limit {
+        return false;
+    }
+    let mut end = limit;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+    true
+}
+
 pub(super) fn bounded_error(mut error: Error) -> Error {
-    let message = model_query::bounded_text(&error.message);
-    let code = model_query::bounded_text(&error.code);
-    let oversized = error
-        .details
-        .as_ref()
-        .is_some_and(|d| serde_json::to_vec(d).map_or(true, |v| v.len() > 16 * 1024));
-    if message["truncated"] == true || code["truncated"] == true || oversized {
-        error.message = message["text"]
-            .as_str()
-            .unwrap_or("diagnostic omitted")
-            .to_owned();
-        error.code = code["text"].as_str().unwrap_or("error").to_owned();
-        error.details = Some(
-            json!({"diagnostic_truncated":true,"original_message_bytes":message["original_bytes"]}),
-        );
+    let original_bytes = error.message.len();
+    let message_truncated = truncate(&mut error.message, MAX_ERROR_MESSAGE_BYTES);
+    truncate(&mut error.code, model_query::MAX_TEXT_BYTES);
+    let oversized = error.details.as_ref().is_some_and(|details| {
+        serde_json::to_vec(details).map_or(true, |bytes| bytes.len() > MAX_ERROR_DETAILS_BYTES)
+    });
+    if oversized {
+        error.details = Some(json!({"details_omitted":true}));
+    }
+    if message_truncated {
+        let details = error.details.get_or_insert_with(|| json!({}));
+        if let Some(object) = details.as_object_mut() {
+            object.insert("message_truncated".to_owned(), json!(true));
+            object.insert("original_message_bytes".to_owned(), json!(original_bytes));
+        }
     }
     error
 }
@@ -450,7 +468,7 @@ impl Server {
         }
         let mutation = matches!(
             method,
-            "new" | "open" | "apply" | "set_grounded" | "undo" | "redo" | "save"
+            "new" | "open" | "apply" | "program_apply" | "set_grounded" | "undo" | "redo" | "save"
         );
         self.compact_result = false;
         if mutation && let Some(response) = p.remove("response") {

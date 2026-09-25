@@ -25,8 +25,7 @@ use crate::cam::{
     CamUnits, CamWorkOffset,
 };
 use crate::document::{
-    BOTTLE_SHELL_OPENING_FACE_ROLE, BOTTLE_SHOULDER_EDGE_ROLE, Body, BodyId, BodyKind,
-    BooleanOperation, BottleEdgeFinishKind, CanonicalCommand, CanonicalError, ChamferEdgeSide,
+    Body, BodyId, BodyKind, BooleanOperation, CanonicalCommand, CanonicalError, ChamferEdgeSide,
     ChamferMode, ClassificationCategory, ClassificationCategoryId, ClassificationDimension,
     ClassificationDimensionId, Collection, CollectionId, CommandBatch, Definition, DefinitionId,
     Dimension, DimensionDisplayUnit, DimensionPresentation, DocumentStore, EdgeFinishKind,
@@ -39,8 +38,8 @@ use crate::document::{
     Occurrence, OccurrenceId, ParameterPath, ParameterValueType, PersistentDimension,
     PersistentDimensionId, PersistentDimensionTarget, ProductModel, ProfileSegment,
     ProposalPrincipal, Revision, RevisionOrigin, ShellDirection, Snapshot, SpatialPathSegment,
-    StableEdgeRole, StableFaceRole, SurfaceBodySpec, Tag, TagId, Transform, UnitSystem,
-    WeldmentJointPolicy, WeldmentJointPrimary, WeldmentJointSpec, WeldmentMemberSpec,
+    StableFaceRole, SurfaceBodySpec, Tag, TagId, Transform, UnitSystem, WeldmentJointPolicy,
+    WeldmentJointPrimary, WeldmentJointSpec, WeldmentMemberSpec,
 };
 use crate::drawing::{
     DrawingAngularDimension, DrawingAnnotations, DrawingBomBalloon, DrawingBomBalloonId,
@@ -176,7 +175,8 @@ const DOWEL_JOINERY_SCHEMA: u16 = 90;
 const PRODUCTION_CODE_SCHEMA: u16 = 91;
 const DOWEL_PHYSICAL_HOLE_BINDING_SCHEMA: u16 = 92;
 const ASSEMBLY_RECIPE_SCHEMA: u16 = 93;
-pub const CURRENT_SCHEMA: u16 = ASSEMBLY_RECIPE_SCHEMA;
+const DOWEL_PAIR_OFFSET_SCHEMA: u16 = 94;
+pub const CURRENT_SCHEMA: u16 = DOWEL_PAIR_OFFSET_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -184,7 +184,7 @@ const PROFILE_CONSTRAINT_SCHEMA: u16 = 12;
 const PARAMETRIC_PROVENANCE_SCHEMA: u16 = 11;
 const PARAMETRIC_BINDING_SCHEMA: u16 = 10;
 const BOOLEAN_SCHEMA: u16 = 9;
-const BOTTLE_FINISH_SCHEMA: u16 = 8;
+const EDGE_FINISH_SCHEMA: u16 = 8;
 const SHELL_SCHEMA: u16 = 7;
 const REVOLVE_SCHEMA: u16 = 6;
 const THROUGH_CUT_SCHEMA: u16 = 5;
@@ -201,7 +201,6 @@ struct ProductSchemaCapabilities {
     through_cut: bool,
     revolve: bool,
     shell: bool,
-    bottle_finish: bool,
     boolean: bool,
     parametric_bindings: bool,
     parametric_provenance: bool,
@@ -284,6 +283,7 @@ struct ProductSchemaCapabilities {
     dowel_joinery: bool,
     production_codes: bool,
     dowel_physical_hole_bindings: bool,
+    dowel_pair_offsets: bool,
     assembly_recipe: bool,
 }
 
@@ -294,7 +294,6 @@ impl ProductSchemaCapabilities {
         through_cut: false,
         revolve: false,
         shell: false,
-        bottle_finish: false,
         boolean: false,
         parametric_bindings: false,
         parametric_provenance: false,
@@ -377,6 +376,7 @@ impl ProductSchemaCapabilities {
         dowel_joinery: false,
         production_codes: false,
         dowel_physical_hole_bindings: false,
+        dowel_pair_offsets: false,
         assembly_recipe: false,
     };
 
@@ -387,7 +387,6 @@ impl ProductSchemaCapabilities {
             through_cut: schema >= THROUGH_CUT_SCHEMA,
             revolve: schema >= REVOLVE_SCHEMA,
             shell: schema >= SHELL_SCHEMA,
-            bottle_finish: schema >= BOTTLE_FINISH_SCHEMA,
             boolean: schema >= BOOLEAN_SCHEMA,
             parametric_bindings: schema >= PARAMETRIC_BINDING_SCHEMA,
             parametric_provenance: schema >= PARAMETRIC_PROVENANCE_SCHEMA,
@@ -470,6 +469,7 @@ impl ProductSchemaCapabilities {
             dowel_joinery: schema >= DOWEL_JOINERY_SCHEMA,
             production_codes: schema >= PRODUCTION_CODE_SCHEMA,
             dowel_physical_hole_bindings: schema >= DOWEL_PHYSICAL_HOLE_BINDING_SCHEMA,
+            dowel_pair_offsets: schema >= DOWEL_PAIR_OFFSET_SCHEMA,
             assembly_recipe: schema >= ASSEMBLY_RECIPE_SCHEMA,
         }
     }
@@ -618,9 +618,7 @@ pub enum LoadDisposition {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LegacyFeatureKind {
-    BottleProfileControl,
     RoleStringShell,
-    BottleEdgeFinish,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1080,6 +1078,7 @@ fn save_with_schema(snapshot: &Snapshot, schema: u16) -> Vec<u8> {
                 &mut payload,
                 joint,
                 capabilities.dowel_physical_hole_bindings,
+                capabilities.dowel_pair_offsets,
             );
         }
     }
@@ -1215,6 +1214,7 @@ fn write_dowel_joint(
     bytes: &mut Vec<u8>,
     joint: &DowelJointContract,
     write_physical_hole_bindings: bool,
+    write_pair_offsets: bool,
 ) {
     push_u64(bytes, joint.id.0);
     push_string(bytes, &joint.name);
@@ -1247,6 +1247,14 @@ fn write_dowel_joint(
         joint.dowel.bottom_clearance_mm,
     ] {
         push_u64(bytes, value.to_bits());
+    }
+    if write_pair_offsets {
+        push_u32(bytes, joint.pair_offsets_first_local_mm.len() as u32);
+        for offset in &joint.pair_offsets_first_local_mm {
+            for value in offset {
+                push_u64(bytes, value.to_bits());
+            }
+        }
     }
     if write_physical_hole_bindings {
         if let Some(bindings) = &joint.physical_hole_pairs {
@@ -2475,19 +2483,6 @@ fn write_features(
                 }
                 push_u64(bytes, angle_degrees.to_bits());
             }
-            FeatureKind::BottleProfileControl {
-                profile,
-                body_radius,
-                body_height,
-                shoulder_rise,
-            } => {
-                push_u8(bytes, 6);
-                push_u64(bytes, profile.0);
-                for dimension in [body_radius, body_height, shoulder_rise] {
-                    push_string(bytes, dimension.source_token());
-                    push_u64(bytes, dimension.millimetres().to_bits());
-                }
-            }
             FeatureKind::Shell {
                 target,
                 removed_faces,
@@ -2501,28 +2496,6 @@ fn write_features(
                 }
                 push_string(bytes, thickness.source_token());
                 push_u64(bytes, thickness.millimetres().to_bits());
-            }
-            FeatureKind::BottleEdgeFinish {
-                target,
-                edges,
-                kind,
-                amount,
-            } => {
-                push_u8(bytes, 7);
-                push_u64(bytes, target.0);
-                push_u32(bytes, edges.len() as u32);
-                for role in edges {
-                    push_string(bytes, role.as_str());
-                }
-                push_u8(
-                    bytes,
-                    match kind {
-                        BottleEdgeFinishKind::Fillet => 1,
-                        BottleEdgeFinishKind::Chamfer => 2,
-                    },
-                );
-                push_string(bytes, amount.source_token());
-                push_u64(bytes, amount.millimetres().to_bits());
             }
             FeatureKind::TopologyShell {
                 target,
@@ -4306,7 +4279,7 @@ fn load_document(
             | THROUGH_CUT_SCHEMA
             | REVOLVE_SCHEMA
             | SHELL_SCHEMA
-            | BOTTLE_FINISH_SCHEMA
+            | EDGE_FINISH_SCHEMA
             | BOOLEAN_SCHEMA
             | PARAMETRIC_BINDING_SCHEMA
             | PARAMETRIC_PROVENANCE_SCHEMA
@@ -4389,6 +4362,7 @@ fn load_document(
             | DOWEL_JOINERY_SCHEMA
             | PRODUCTION_CODE_SCHEMA
             | DOWEL_PHYSICAL_HOLE_BINDING_SCHEMA
+            | ASSEMBLY_RECIPE_SCHEMA
             | CURRENT_SCHEMA
     ) {
         return Err(PersistenceError::UnsupportedSchema(schema));
@@ -4518,48 +4492,20 @@ fn load_document(
         }
         Arc::make_mut(&mut container_data.imported_source_blobs).insert(hash);
     }
+    // A stored face or edge reference must still name the body its producer
+    // builds. Evaluator digests may differ: older files were evaluated by other
+    // code paths, and the next evaluation refreshes the evidence.
     for reference in loaded_snapshot.exact_reference_evidence() {
-        let matches_current_request =
-            crate::exact_product::ExactFeatureChainRequest::from_snapshot_for_producer(
-                &loaded_snapshot,
-                reference.definition_id,
-                reference.producer_feature_id,
-            )
-            .is_ok_and(|request| {
-                reference.matches_request(&request) || reference.matches_legacy_request(&request)
-            }) || crate::exact_revolve::ExactRevolveRequest::from_snapshot(
-                &loaded_snapshot,
-                reference.definition_id,
-            )
-            .is_ok_and(|request| {
-                crate::exact_revolve::reference_matches_revolve_request(reference, &request)
-            }) || crate::exact_brep_graph::ExactBRepGraph::from_snapshot(
-                &loaded_snapshot,
-                reference.definition_id,
-                reference.producer_feature_id,
-            )
-            .is_ok_and(|graph| reference.matches_exact_brep_graph(&graph));
-        let matches_durable_anchor =
-            crate::exact_product::ExactFeatureChainRequest::from_snapshot_for_producer(
-                &loaded_snapshot,
-                reference.definition_id,
-                reference.producer_feature_id,
-            )
-            .is_ok_and(|request| reference.matches_durable_request_identity(&request))
-                && loaded_snapshot.features().any(|feature| {
-                    matches!(
-                        feature.kind(),
-                        FeatureKind::Workplane(WorkplaneSpec {
-                            support: WorkplaneSupport::PlanarFace { reference: support, .. },
-                            ..
-                        }) if support.as_ref() == reference
-                    )
-                });
-        if !matches_current_request && !matches_durable_anchor {
+        let names_current_body = crate::exact_brep_graph::ExactBRepGraph::from_snapshot(
+            &loaded_snapshot,
+            reference.definition_id,
+            reference.producer_feature_id,
+        )
+        .is_ok_and(|graph| reference.matches_durable_graph_identity(&graph));
+        if !names_current_body {
             return Err(PersistenceError::InvalidExactReference);
         }
     }
-    #[cfg(not(feature = "named-product-fixtures"))]
     reject_legacy_feature_authority(&loaded_snapshot)?;
     if review_required || container_data.requires_unknown_extension() {
         Ok(LoadOutcome::ReviewOnly(ReviewCandidate {
@@ -4576,13 +4522,10 @@ fn load_document(
     }
 }
 
-#[cfg(not(feature = "named-product-fixtures"))]
 fn reject_legacy_feature_authority(snapshot: &Snapshot) -> Result<(), PersistenceError> {
     for feature in snapshot.features() {
         let kind = match feature.kind() {
-            FeatureKind::BottleProfileControl { .. } => LegacyFeatureKind::BottleProfileControl,
             FeatureKind::Shell { .. } => LegacyFeatureKind::RoleStringShell,
-            FeatureKind::BottleEdgeFinish { .. } => LegacyFeatureKind::BottleEdgeFinish,
             _ => continue,
         };
         return Err(PersistenceError::LegacyFeatureRequiresMigration {
@@ -6355,6 +6298,7 @@ fn read_cam_plan(reader: &mut Reader<'_>) -> Result<CamPlan, PersistenceError> {
 fn read_dowel_joint(
     reader: &mut Reader<'_>,
     read_physical_hole_bindings: bool,
+    read_pair_offsets: bool,
 ) -> Result<DowelJointContract, PersistenceError> {
     let id = DowelJointId(reader.u64()?);
     let name = reader.string()?;
@@ -6387,6 +6331,14 @@ fn read_dowel_joint(
         second_insertion_mm: f64::from_bits(reader.u64()?),
         bottom_clearance_mm: f64::from_bits(reader.u64()?),
     };
+    let pair_offsets_first_local_mm = if read_pair_offsets {
+        let count = reader.count_with_limit(128)?;
+        (0..count)
+            .map(|_| point3(reader))
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        Vec::new()
+    };
     let physical_hole_pairs = if read_physical_hole_bindings && reader.u8()? != 0 {
         let count = reader.count_with_limit(MAX_COLLECTION_ITEMS)?;
         let mut bindings = Vec::with_capacity(count as usize);
@@ -6410,6 +6362,7 @@ fn read_dowel_joint(
         count,
         spacing_mm,
         dowel,
+        pair_offsets_first_local_mm,
         physical_hole_pairs,
     })
 }
@@ -6886,49 +6839,13 @@ fn read_product(
                     }
                     roles
                 } else {
-                    vec![
-                        StableFaceRole::new(BOTTLE_SHELL_OPENING_FACE_ROLE)
-                            .expect("built-in bottle face role is valid"),
-                    ]
+                    // Pre-role shell features are no longer supported.
+                    return Err(PersistenceError::InvalidStableSubshapeRole);
                 };
                 FeatureKind::Shell {
                     target,
                     removed_faces,
                     thickness: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
-                }
-            }
-            6 if capabilities.bottle_finish => FeatureKind::BottleProfileControl {
-                profile: FeatureId(reader.u64()?),
-                body_radius: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
-                body_height: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
-                shoulder_rise: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
-            },
-            7 if capabilities.bottle_finish => {
-                let target = FeatureId(reader.u64()?);
-                let edges = if capabilities.stable_subshape_roles {
-                    let mut roles = Vec::new();
-                    for _ in 0..reader.count_with_limit(64)? {
-                        roles.push(
-                            StableEdgeRole::new(reader.string()?)
-                                .map_err(|_| PersistenceError::InvalidStableSubshapeRole)?,
-                        );
-                    }
-                    roles
-                } else {
-                    vec![
-                        StableEdgeRole::new(BOTTLE_SHOULDER_EDGE_ROLE)
-                            .expect("built-in bottle edge role is valid"),
-                    ]
-                };
-                FeatureKind::BottleEdgeFinish {
-                    target,
-                    edges,
-                    kind: match reader.u8()? {
-                        1 => BottleEdgeFinishKind::Fillet,
-                        2 => BottleEdgeFinishKind::Chamfer,
-                        value => return Err(PersistenceError::InvalidFeatureKind(value)),
-                    },
-                    amount: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
                 }
             }
             21 if capabilities.topological_feature_references => {
@@ -7643,6 +7560,24 @@ fn read_product(
                         ));
                     }
                 }
+                // Older files stored planar offsets as features without a body;
+                // they now produce a surface body on the active body.
+                for (feature_id, ownership) in &mut feature_body_ownership {
+                    if ownership.output_body_id().is_none()
+                        && matches!(
+                            product
+                                .features
+                                .get(feature_id)
+                                .map(|feature| &feature.kind),
+                            Some(FeatureKind::PlanarOffset { .. })
+                        )
+                    {
+                        *ownership = FeatureBodyOwnership::new(
+                            ownership.input_body_ids().to_vec(),
+                            Some(active_body_id),
+                        )?;
+                    }
+                }
                 product.definitions.insert(
                     definition_id,
                     Arc::new(Definition {
@@ -7835,7 +7770,11 @@ fn read_product(
         }
         if capabilities.dowel_joinery && !reader.is_finished() {
             for _ in 0..reader.count_with_limit(MAX_COLLECTION_ITEMS)? {
-                let joint = read_dowel_joint(reader, capabilities.dowel_physical_hole_bindings)?;
+                let joint = read_dowel_joint(
+                    reader,
+                    capabilities.dowel_physical_hole_bindings,
+                    capabilities.dowel_pair_offsets,
+                )?;
                 if product
                     .dowel_joints
                     .insert(joint.id, Arc::new(joint))
@@ -8224,9 +8163,7 @@ impl fmt::Display for PersistenceError {
             ),
             Self::LegacyFeatureRequiresMigration { feature_id, kind } => {
                 let kind = match kind {
-                    LegacyFeatureKind::BottleProfileControl => "BottleProfileControl",
                     LegacyFeatureKind::RoleStringShell => "role-string Shell",
-                    LegacyFeatureKind::BottleEdgeFinish => "BottleEdgeFinish",
                 };
                 write!(
                     formatter,

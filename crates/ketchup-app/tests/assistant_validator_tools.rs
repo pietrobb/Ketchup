@@ -28,11 +28,6 @@ fn empty_intent(boxes: Vec<AssistantBoxIntent>) -> AssistantModelIntent {
         profile_translations: Vec::new(),
         parameter_edits: Vec::new(),
         linear_arrays: Vec::new(),
-        bottles: Vec::new(),
-        gable_roofs: Vec::new(),
-        staircases: Vec::new(),
-        oriented_beams: Vec::new(),
-        balloon_texts: Vec::new(),
     }
 }
 

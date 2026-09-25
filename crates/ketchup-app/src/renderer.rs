@@ -1268,7 +1268,7 @@ mod tests {
         let edges = feature_edges(
             &POSITIONS,
             &TRIANGLES,
-            &[Some(ExactFaceRole::Top), Some(ExactFaceRole::East)],
+            &[Some(ExactFaceRole::Top), Some(ExactFaceRole::LinearSide)],
         );
 
         assert_eq!(edges.len(), 5);

@@ -22,7 +22,7 @@ use ketchup_core::exact_brep_graph::{
 };
 use ketchup_core::exact_product::{
     ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence, ExactBodyPackage, ExactFaceRole,
-    ExactFeatureChainRequest, ExactPlanarOffsetRequest, ExactProductError, ExactResultRegistry,
+    ExactProductError, ExactResultRegistry,
 };
 use ketchup_core::fea::{FeaMaterial, FeaSolveSettings};
 use ketchup_core::graph::sha256_hex;
@@ -36,7 +36,6 @@ use ketchup_core::sketch::{
 use ketchup_core::topology::{
     TopologicalElementKind, TopologicalElementRef, TopologicalReferenceStability,
 };
-use ketchup_exact::{ExactBackend, RectangleExtrudeSpec};
 use ketchup_scheduler::{
     DerivedResult, EvaluationScheduler, ExactFeaFaceTraction, ExactFeaSetup, ExactFeaSetupError,
     ExactVolumeMeshWireOptions, ExactWorkerSupervisor, InsertOutcome, WorkerError,
@@ -1803,16 +1802,8 @@ fn generated_boolean_graph_preserves_legacy_export_and_stale_contracts() {
             },
         ]))
         .unwrap();
-    let intersect = operations[2].0;
     let split = operations[3].0;
     let snapshot = document.current();
-    assert_eq!(
-        ExactFeatureChainRequest::from_snapshot_for_producer(&snapshot, definition, intersect),
-        Err(ExactProductError::UnsupportedBoolean(
-            BooleanOperation::Intersect
-        ))
-    );
-
     let split_graph = ExactBRepGraph::from_snapshot(&snapshot, definition, split).unwrap();
     let mut supervisor =
         ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
@@ -4315,8 +4306,6 @@ fn worker_evaluates_planar_offset_face_through_exact_brep_graph() {
 
     let mut supervisor =
         ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
-    let request = ExactPlanarOffsetRequest::from_snapshot(&snapshot, definition).unwrap();
-    let dedicated = supervisor.evaluate_planar_offset(&request).unwrap();
     let package = supervisor.evaluate_exact_brep_graph(&graph).unwrap();
     assert_eq!(
         supervisor.evaluate_exact_brep_graph(&graph).unwrap(),
@@ -4380,15 +4369,19 @@ fn worker_evaluates_planar_offset_face_through_exact_brep_graph() {
             .iter()
             .all(|ordinal| *ordinal == 0)
     );
-    assert_eq!(
-        package.identity.exact_input_digest,
-        dedicated.identity.exact_input_digest
-    );
-    assert_eq!(
-        package.identity.result_fingerprint,
-        dedicated.identity.result_fingerprint
-    );
-    assert_eq!(package.bounds_mm, dedicated.bounds_mm);
+    // The capsule (x 0..20, y 0..10) grown by 2 mm on every side.
+    for (actual, expected) in package
+        .bounds_mm
+        .into_iter()
+        .flatten()
+        .zip([-2.0, -2.0, 0.0, 22.0, 12.0, 0.0])
+    {
+        assert!(
+            (actual - expected).abs() <= 1.0e-6,
+            "{:?}",
+            package.bounds_mm
+        );
+    }
 }
 
 #[test]
@@ -4547,20 +4540,22 @@ fn worker_evaluates_signed_circle_offset_through_exact_brep_graph_v6() {
             ],
         );
 
-        let dedicated_request =
-            ExactPlanarOffsetRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
-        let dedicated = supervisor
-            .evaluate_planar_offset(&dedicated_request)
-            .unwrap();
         let package = supervisor.evaluate_exact_brep_graph(&graph).unwrap();
         assert!(package.is_current(&snapshot));
         assert_eq!(package.identity.producer_feature_id.0, OFFSET.0);
-        assert_eq!(
-            package.identity.result_fingerprint,
-            dedicated.identity.result_fingerprint
+        assert_bounds_close(
+            package.bounds_mm,
+            [
+                12.0 - output_radius_mm,
+                -8.0 - output_radius_mm,
+                0.0,
+                12.0 + output_radius_mm,
+                -8.0 + output_radius_mm,
+                0.0,
+            ],
         );
-        assert_eq!(package.bounds_mm, dedicated.bounds_mm);
-        assert_eq!(package.area_mm2, dedicated.area_mm2);
+        let disc_area_mm2 = std::f64::consts::PI * output_radius_mm * output_radius_mm;
+        assert!((package.area_mm2 - disc_area_mm2).abs() <= disc_area_mm2 * 1.0e-9);
         assert_eq!(package.topology_counts, [1, 1, 1, 0, 0]);
         assert!(!package.vertices.is_empty());
         assert!(!package.triangles.is_empty());
@@ -5815,43 +5810,42 @@ fn worker_evaluates_oriented_advanced_chamfers_and_rejects_non_adjacent_faces() 
         ]))
         .unwrap();
 
-    let native_base = ExactBackend::new()
-        .extrude_rectangle(RectangleExtrudeSpec {
-            width_mm: 37.0,
-            depth_mm: 23.0,
-            height_mm: 19.0,
-        })
-        .unwrap();
-    let selected_edge = native_base
-        .body
-        .topology
-        .edges
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let base_graph = ExactBRepGraph::from_snapshot(&document.current(), definition, base).unwrap();
+    let base_package = supervisor.evaluate_exact_brep_graph(&base_graph).unwrap();
+    let selected_edge = base_package
+        .edge_evidence
         .iter()
         .find(|edge| edge.adjacent_face_ordinals.len() == 2)
         .unwrap();
     let first_face = selected_edge.adjacent_face_ordinals[0];
     let second_face = selected_edge.adjacent_face_ordinals[1];
-    let invalid_face = native_base
-        .body
-        .topology
-        .faces
-        .iter()
-        .map(|face| face.ordinal)
+    let invalid_face = (0..base_package.topology_counts[2])
         .find(|ordinal| !selected_edge.adjacent_face_ordinals.contains(ordinal))
         .unwrap();
-    let shared_face = native_base
-        .body
-        .topology
-        .faces
+    // Two opposite (parallel) edges bounding the same face.
+    let shared_face = first_face;
+    let direction = |bounds: [[f64; 3]; 2]| {
+        (0..3)
+            .max_by(|left, right| {
+                (bounds[1][*left] - bounds[0][*left])
+                    .total_cmp(&(bounds[1][*right] - bounds[0][*right]))
+            })
+            .unwrap()
+    };
+    let face_edges = base_package
+        .edge_evidence
         .iter()
-        .find(|face| face.edge_ordinals.len() >= 4)
+        .filter(|edge| edge.adjacent_face_ordinals.contains(&shared_face))
+        .collect::<Vec<_>>();
+    assert_eq!(face_edges.len(), 4);
+    let opposite = face_edges[1..]
+        .iter()
+        .find(|edge| direction(edge.bounds_mm) == direction(face_edges[0].bounds_mm))
         .unwrap();
-    let shared_edge_ordinals = [shared_face.edge_ordinals[0], shared_face.edge_ordinals[2]];
+    let shared_edge_ordinals = [face_edges[0].edge_ordinal, opposite.edge_ordinal];
 
-    let mut supervisor =
-        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
-    let base_graph = ExactBRepGraph::from_snapshot(&document.current(), definition, base).unwrap();
-    let base_package = supervisor.evaluate_exact_brep_graph(&base_graph).unwrap();
     let reference_for = |kind: TopologicalElementKind, ordinal: u32| {
         base_package
             .topological_references
@@ -5861,7 +5855,7 @@ fn worker_evaluates_oriented_advanced_chamfers_and_rejects_non_adjacent_faces() 
             .cloned()
             .unwrap()
     };
-    let edge = reference_for(TopologicalElementKind::Edge, selected_edge.ordinal);
+    let edge = reference_for(TopologicalElementKind::Edge, selected_edge.edge_ordinal);
     let side_a = reference_for(TopologicalElementKind::Face, first_face);
     let side_b = reference_for(TopologicalElementKind::Face, second_face);
     let wrong_side = reference_for(TopologicalElementKind::Face, invalid_face);
@@ -5869,7 +5863,7 @@ fn worker_evaluates_oriented_advanced_chamfers_and_rejects_non_adjacent_faces() 
         .into_iter()
         .map(|ordinal| ChamferEdgeSide {
             edge: reference_for(TopologicalElementKind::Edge, ordinal),
-            side_face: reference_for(TopologicalElementKind::Face, shared_face.ordinal),
+            side_face: reference_for(TopologicalElementKind::Face, shared_face),
         })
         .collect::<Vec<_>>();
     shared_sides.sort_unstable_by(|left, right| left.edge.cmp(&right.edge));
@@ -6618,12 +6612,11 @@ fn worker_cuts_a_compound_sketch_pocket_while_preserving_its_inner_island() {
         .unwrap();
     let mut supervisor =
         ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
-    let base_request =
-        ExactFeatureChainRequest::from_snapshot_for_producer(&document.current(), definition, base)
-            .unwrap();
-    let base_package = supervisor.evaluate_rectangle(&base_request).unwrap();
+    let base_graph = ExactBRepGraph::from_snapshot(&document.current(), definition, base).unwrap();
+    let base_package =
+        ExactBodyPackage::from(supervisor.evaluate_exact_brep_graph(&base_graph).unwrap());
     let top = base_package.reference(ExactFaceRole::Top).unwrap().clone();
-    for reference in base_package.references {
+    for reference in base_package.references().iter().cloned() {
         document
             .register_exact_reference_evidence(reference)
             .unwrap();

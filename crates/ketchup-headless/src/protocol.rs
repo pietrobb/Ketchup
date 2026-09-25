@@ -68,6 +68,8 @@ const METHODS: &[&str] = &[
     "batch_job_step",
     "batch_job_cancel",
     "apply",
+    "program_check",
+    "program_apply",
     "set_production_codes",
     "production_job",
     "cam_preview",
@@ -92,6 +94,7 @@ const GUARDED_METHODS: &[&str] = &[
     "new",
     "open",
     "apply",
+    "program_apply",
     "set_production_codes",
     "production_job",
     "cam_preview",
@@ -743,13 +746,15 @@ impl Server {
         Ok(())
     }
     fn discard_guard(&self, p: &Map<String, Value>) -> Result<()> {
+        let empty = self.session.snapshot().definitions().next().is_none();
         if !boolean(p, "discard_unsaved", false)?
             && !self.initial_placeholder
+            && !empty
             && self.session.is_modified()
         {
             return Err(Error::new(
                 "unsaved_changes",
-                "new/open requires discard_unsaved=true for unsaved changes",
+                "replacing the document would lose unsaved changes; save first or pass discard_unsaved=true",
             ));
         }
         Ok(())
@@ -763,6 +768,8 @@ impl Server {
             "new" => (&["discard_unsaved"], true),
             "open" => (&["path", "discard_unsaved"], true),
             "apply" => (&["program", "selection"], true),
+            "program_check" => (&["source", "file_name", "params", "include_model"], false),
+            "program_apply" => (&["source", "file_name", "params", "discard_unsaved"], true),
             "set_production_codes" => (&["assignments"], true),
             "production_job" => (
                 &["adapters", "vertical_pocket_tool_number", "timeout_ms"],
@@ -827,7 +834,7 @@ impl Server {
         match method {
             "capabilities" => Ok(
                 json!({"methods":METHODS.iter().map(|name| json!({"name":name,"mutates":method_requires_guard(name)})).collect::<Vec<_>>(),
-                "cad_program_schema":serde_json::from_str::<Value>(include_str!(concat!(env!("OUT_DIR"),"/cad-program-schema.json"))).expect("build-generated schema"),
+                "cad_program_schema":ketchup_core::cad_catalog::cad_program_schema(),
                 "bounds":{"max_line_bytes":MAX_LINE_BYTES,"max_output_bytes":MAX_LINE_BYTES,"max_selection":100,"max_operations":64,"max_batch_jobs":MAX_BATCH_JOBS,"max_verify_jobs":MAX_VERIFY_JOBS,"evaluation_timeout_ms":{"default":30000,"min":1,"max":300000}},
                 "optional_mutation_preconditions":["expected_revision","expected_digest","expected_mutation_epoch"],"units":"mm","transform":"row-major 4x4 local occurrence transform","transactions":"one apply = one atomic CAD program; newly allocated Definition, Sketch and body references use zero-based earlier operation_index plus a typed output, never guessed IDs","protocol":PROTOCOL}),
             ),
@@ -880,6 +887,27 @@ impl Server {
                 } else {
                     created(&before, &self.session.snapshot())
                 };
+                Ok(result)
+            }
+            "program_check" => {
+                let (evaluated, report) = run_program(p)?;
+                let mut result = json!(report);
+                if boolean(p, "include_model", false)? {
+                    result["model"] = json!(evaluated.model);
+                }
+                Ok(result)
+            }
+            "program_apply" => {
+                self.discard_guard(p)?;
+                let (evaluated, report) = run_program(p)?;
+                let panels = ketchup_program::cad::panel_operations(&evaluated.model);
+                let mut session = DocumentSession::new(self.settings.clone());
+                session.apply_panels(&panels)?;
+                self.session = session;
+                self.revoke_jobs();
+                self.initial_placeholder = false;
+                let mut result = self.state_result();
+                result["program"] = json!(report);
                 Ok(result)
             }
             "cam_preview" => {
@@ -1114,6 +1142,35 @@ fn string<'a>(p: &'a Map<String, Value>, key: &str) -> Result<&'a str> {
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| Error::invalid(format!("{key} must be nonempty string")))
+}
+/// Evaluates the `source` rule program with numeric `params` overrides.
+fn run_program(
+    p: &Map<String, Value>,
+) -> Result<(ketchup_program::Evaluated, ketchup_program::Report)> {
+    let source = string(p, "source")?;
+    let file_name = p.get("file_name").map_or(Ok("program.star"), |value| {
+        value
+            .as_str()
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| Error::invalid("file_name must be a nonempty string"))
+    })?;
+    let mut overrides = std::collections::BTreeMap::new();
+    if let Some(params) = p.get("params") {
+        let params = params
+            .as_object()
+            .ok_or_else(|| Error::invalid("params must be an object of name: number"))?;
+        for (name, value) in params {
+            let value = value
+                .as_f64()
+                .ok_or_else(|| Error::invalid(format!("params.{name} must be a number")))?;
+            overrides.insert(name.clone(), value);
+        }
+    }
+    ketchup_program::run(file_name, source, &overrides).map_err(|error| Error {
+        code: format!("program.{}", error.code),
+        message: error.message,
+        details: None,
+    })
 }
 fn boolean(p: &Map<String, Value>, key: &str, default: bool) -> Result<bool> {
     p.get(key).map_or(Ok(default), |v| {
@@ -1472,9 +1529,9 @@ fn geometry(
             let [a,b,c]=t.vertex_indices.map(|i|vertices[i as usize].position_mm);
             (a[0]*(b[1]*c[2]-b[2]*c[1])+a[1]*(b[2]*c[0]-b[0]*c[2])+a[2]*(b[0]*c[1]-b[1]*c[0]))/6.0
         }).sum();
-        let kind=match p.as_ref() { ExactBodyPackage::Rectangle(_)=>"rectangle",ExactBodyPackage::Revolve(_)=>"revolve",ExactBodyPackage::Graph(_)=>"graph",ExactBodyPackage::Imported(_)=>"imported" };
+        let kind=match p.as_ref() { ExactBodyPackage::Graph(_)=>"graph",ExactBodyPackage::Imported(_)=>"imported" };
         json!({"definition_id":p.definition_id().0,"feature_id":p.producer_feature_id().0,"kind":kind,"bounds_mm":p.bounds_mm(),
-            "mesh_signed_volume_mm3":volume,"native_evidence":match p.as_ref() { ExactBodyPackage::Graph(g)=>json!({"volume_mm3":g.volume_mm3,"area_mm2":g.area_mm2,"topology_counts":g.topology_counts}), ExactBodyPackage::Imported(g)=>json!({"volume_mm3":g.volume_mm3,"topology_counts":g.topology_counts}), _=>Value::Null },"vertex_count":vertices.len(),"triangle_count":p.triangles().len(),
+            "mesh_signed_volume_mm3":volume,"native_evidence":match p.as_ref() { ExactBodyPackage::Graph(g)=>json!({"volume_mm3":g.volume_mm3,"area_mm2":g.area_mm2,"topology_counts":g.topology_counts}), ExactBodyPackage::Imported(g)=>json!({"volume_mm3":g.volume_mm3,"topology_counts":g.topology_counts}) },"vertex_count":vertices.len(),"triangle_count":p.triangles().len(),
             "result_fingerprint":key.result_fingerprint,"canonical_input_digest":key.canonical_input_digest,"exact_input_digest":key.exact_input_digest,"backend":key.backend,"evaluator":key.evaluator,"tolerance":key.tolerance})
     }).collect()
 }
@@ -1812,8 +1869,9 @@ mod tests {
             caps["result"]["cad_program_schema"]["$defs"]["AssistantCadEditOperation"]["oneOf"]
                 .as_array()
                 .unwrap();
-        assert_eq!(variants.len(), 41);
+        assert_eq!(variants.len(), 42);
         for operation in [
+            "move_physical_dowel_pair",
             "append_feature",
             "create_panel",
             "create_dowel_joint",

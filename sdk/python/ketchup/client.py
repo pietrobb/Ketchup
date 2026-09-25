@@ -283,11 +283,15 @@ class Session:
                 "expected_mutation_epoch": self._state["mutation_epoch"]}
 
     def _replace(self, method, *, discard_unsaved=False, **params):
+        return self._replace_with_result(method, discard_unsaved=discard_unsaved, **params)[0]
+
+    def _replace_with_result(self, method, *, discard_unsaved=False, **params):
         with self._lock:
             params.update(self._expected(), **({"response": "compact"} if self.compact else {}))
             params["discard_unsaved"] = discard_unsaved
             try:
-                self._observe(self._request(method, params))
+                result = self._request(method, params)
+                self._observe(result)
             except HeadlessError as error:
                 if (isinstance(error.details, dict)
                         and error.details.get("mutation_outcome") == "possibly_applied"):
@@ -297,7 +301,29 @@ class Session:
                     self._state = None
                 raise
             self._generation += 1
-            return Document(self, self._generation)
+            return Document(self, self._generation), result
+
+    def check_program(self, source, *, params=None, file_name="program.star", include_model=False):
+        """Evaluate a Starlark rule program without touching the document.
+
+        Returns issues (errors and warnings with part names, location and a
+        hint), parameters, cut list, hardware and machining. An interpreter
+        error raises HeadlessError whose message names the line and cause.
+        """
+        return self._request("program_check", {
+            "source": source, "file_name": file_name,
+            "params": dict(params or {}), "include_model": include_model})
+
+    def program_document(self, source, *, params=None, file_name="program.star",
+                         discard_unsaved=False):
+        """Replace the document with the parts a rule program generates.
+
+        Returns (Document, report); the whole program is one undo step.
+        """
+        document, result = self._replace_with_result(
+            "program_apply", discard_unsaved=discard_unsaved, source=source,
+            file_name=file_name, params=dict(params or {}))
+        return document, result.get("program")
 
     def new_document(self, *, discard_unsaved=False):
         return self._replace("new", discard_unsaved=discard_unsaved)

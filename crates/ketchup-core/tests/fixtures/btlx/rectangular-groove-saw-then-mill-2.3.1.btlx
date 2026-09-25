@@ -6,46 +6,46 @@
         <UserReferencePlanes>
           <UserReferencePlane ID="100">
             <Position>
-              <ReferencePoint X="0" Y="0" Z="0"/>
+              <ReferencePoint X="1000" Y="0" Z="0"/>
               <XVector X="0" Y="1" Z="0"/>
-              <YVector X="0" Y="0" Z="1"/>
+              <YVector X="0" Y="0" Z="-1"/>
             </Position>
           </UserReferencePlane>
           <UserReferencePlane ID="101">
             <Position>
-              <ReferencePoint X="0" Y="0" Z="0"/>
+              <ReferencePoint X="1000" Y="0" Z="0"/>
               <XVector X="0" Y="1" Z="0"/>
-              <YVector X="0" Y="0" Z="1"/>
+              <YVector X="0" Y="0" Z="-1"/>
             </Position>
           </UserReferencePlane>
           <UserReferencePlane ID="102">
             <Position>
-              <ReferencePoint X="0" Y="0" Z="0"/>
+              <ReferencePoint X="1000" Y="0" Z="0"/>
               <XVector X="0" Y="1" Z="0"/>
-              <YVector X="0" Y="0" Z="1"/>
+              <YVector X="0" Y="0" Z="-1"/>
             </Position>
           </UserReferencePlane>
         </UserReferencePlanes>
         <Processings>
-          <SawContour Name="Ketchup groove edge pre-cut" ProcessID="1" ReferencePlaneID="100" ToolPosition="left">
+          <SawContour Name="Ketchup groove edge pre-cut" ProcessID="1" ReferencePlaneID="100" ToolPosition="right">
             <Contour DepthBounded="yes" Depth="20" Inclination="0">
-              <StartPoint X="10" Y="10" Z="0"/>
-              <Line><EndPoint X="30" Y="10" Z="0"/></Line>
+              <StartPoint X="10" Y="-10" Z="0"/>
+              <Line><EndPoint X="30" Y="-10" Z="0"/></Line>
             </Contour>
           </SawContour>
-          <SawContour Name="Ketchup groove edge pre-cut" ProcessID="2" ReferencePlaneID="101" ToolPosition="left">
+          <SawContour Name="Ketchup groove edge pre-cut" ProcessID="2" ReferencePlaneID="101" ToolPosition="right">
             <Contour DepthBounded="yes" Depth="20" Inclination="0">
-              <StartPoint X="30" Y="25" Z="0"/>
-              <Line><EndPoint X="10" Y="25" Z="0"/></Line>
+              <StartPoint X="30" Y="-25" Z="0"/>
+              <Line><EndPoint X="10" Y="-25" Z="0"/></Line>
             </Contour>
           </SawContour>
-          <MillContour Name="Ketchup groove interior milling" ProcessID="3" ReferencePlaneID="102" ToolPosition="left">
+          <MillContour Name="Ketchup groove interior milling" ProcessID="3" ReferencePlaneID="102" ToolPosition="right">
             <Contour DepthBounded="yes" Depth="20" Inclination="0">
-              <StartPoint X="10" Y="10" Z="0"/>
-              <Line><EndPoint X="30" Y="10" Z="0"/></Line>
-              <Line><EndPoint X="30" Y="25" Z="0"/></Line>
-              <Line><EndPoint X="10" Y="25" Z="0"/></Line>
-              <Line><EndPoint X="10" Y="10" Z="0"/></Line>
+              <StartPoint X="10" Y="-10" Z="0"/>
+              <Line><EndPoint X="30" Y="-10" Z="0"/></Line>
+              <Line><EndPoint X="30" Y="-25" Z="0"/></Line>
+              <Line><EndPoint X="10" Y="-25" Z="0"/></Line>
+              <Line><EndPoint X="10" Y="-10" Z="0"/></Line>
             </Contour>
           </MillContour>
         </Processings>

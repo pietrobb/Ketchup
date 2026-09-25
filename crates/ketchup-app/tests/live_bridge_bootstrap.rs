@@ -341,15 +341,18 @@ fn request_consent(address: std::net::SocketAddr, nonce: &str) -> serde_json::Va
     request_broker(address, "attach", nonce)
 }
 
-fn wait_for_consent(shell: &mut Shell) {
-    for _ in 0..100 {
+fn finish_attach(
+    shell: &mut Shell,
+    client: std::thread::JoinHandle<serde_json::Value>,
+) -> serde_json::Value {
+    for _ in 0..200 {
         shell.step();
-        if shell.app().live_consent_pending() {
-            return;
+        if client.is_finished() {
+            return client.join().unwrap();
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    panic!("consent request did not reach the target window");
+    panic!("attach request did not reach the target window");
 }
 
 #[test]
@@ -365,7 +368,6 @@ fn failed_optional_broker_leaves_manual_cad_available_without_ai_authority() {
     assert!(result.is_err());
     assert!(shell.app().live_consent_address().is_none());
     assert!(shell.app().live_consent_instance_id().is_none());
-    assert!(!shell.app().live_consent_pending());
     assert!(!shell.app().live_consent_attached());
     assert!(shell.app().live_bridge_credentials().is_none());
 
@@ -373,6 +375,112 @@ fn failed_optional_broker_leaves_manual_cad_available_without_ai_authority() {
     assert!(shell.app().document_revision() > before_revision);
     assert_eq!(shell.app().occurrence_count(), before_occurrences + 1);
     assert!(shell.app().live_bridge_credentials().is_none());
+}
+
+#[test]
+fn bootstrap_window_reconnects_in_place_after_client_loss() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut shell = Shell::new();
+    let before = shell.app().live_bridge_stamp();
+    let output = Output::default();
+    pending()
+        .enable(
+            shell.app_mut(),
+            &eframe::egui::Context::default(),
+            output.clone(),
+        )
+        .unwrap();
+    let original = shell.app().live_bridge_credentials().unwrap();
+    let broker = shell
+        .app_mut()
+        .enable_live_consent_broker_in(&eframe::egui::Context::default(), directory.path())
+        .unwrap();
+    let instance_id = shell.app().live_consent_instance_id().unwrap().to_owned();
+    assert!(
+        directory
+            .path()
+            .join(format!("{instance_id}.json"))
+            .is_file()
+    );
+    assert!(shell.app().live_consent_attached());
+    assert_eq!(
+        request_broker(broker, "list", &"a".repeat(64))["status"],
+        "busy"
+    );
+
+    let mut original_client = TcpStream::connect(original.address).unwrap();
+    assert!(
+        call(
+            &mut shell,
+            &mut original_client,
+            &original.token,
+            Request::Status {}
+        )
+        .ok
+    );
+    assert!(
+        call(
+            &mut shell,
+            &mut original_client,
+            &original.token,
+            Request::Disconnect {}
+        )
+        .ok
+    );
+    drop(original_client);
+    shell.step();
+    assert!(shell.app().live_bridge_credentials().is_none());
+    assert!(!shell.app().live_consent_attached());
+    assert_eq!(
+        request_broker(broker, "list", &"b".repeat(64))["status"],
+        "available"
+    );
+
+    let reconnect = std::thread::spawn(move || request_consent(broker, &"c".repeat(64)));
+    let allowed = finish_attach(&mut shell, reconnect);
+    assert_eq!(allowed["status"], "allowed");
+    let new_token = allowed["token"].as_str().unwrap();
+    assert_ne!(new_token, original.token);
+    let mut new_client =
+        TcpStream::connect(allowed["live_bridge_address"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        call(&mut shell, &mut new_client, new_token, Request::Status {}).stamp,
+        Some(before)
+    );
+    assert!(shell.app().live_consent_attached());
+    assert_eq!(
+        request_broker(broker, "list", &"d".repeat(64))["status"],
+        "busy"
+    );
+    let mut stale = TcpStream::connect(allowed["live_bridge_address"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        call(&mut shell, &mut stale, &original.token, Request::Status {})
+            .error
+            .as_deref(),
+        Some("unauthorized")
+    );
+    drop(stale);
+    new_client.shutdown(std::net::Shutdown::Both).unwrap();
+    drop(new_client);
+    for _ in 0..100 {
+        shell.step();
+        if !shell.app().live_consent_attached() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        !shell.app().live_consent_attached(),
+        "dropped client must free the same window"
+    );
+    assert_eq!(
+        request_broker(broker, "list", &"e".repeat(64))["status"],
+        "available"
+    );
+    assert_eq!(
+        output.bytes().iter().filter(|&&byte| byte == b'\n').count(),
+        1
+    );
 }
 
 #[test]
@@ -415,7 +523,6 @@ fn per_user_registry_lists_only_nonce_verified_live_window_metadata() {
         assert_eq!(listed["instance_id"], instance_id);
         assert_eq!(listed["document"], "Untitled");
         assert!(shell.app().live_bridge_credentials().is_none());
-        assert!(!shell.app().live_consent_pending());
     }
     assert!(!registry_path.exists());
 }
@@ -490,7 +597,7 @@ fn consent_broker_request_deadline_is_cumulative_across_slow_bytes() {
     let response: serde_json::Value = serde_json::from_str(&response).unwrap();
     assert_eq!(response["status"], "available");
     assert_eq!(response["nonce"], "6".repeat(64));
-    assert!(!shell.app().live_consent_pending());
+    assert!(!shell.app().live_consent_attached());
 }
 
 #[test]
@@ -523,7 +630,7 @@ fn consent_broker_accepts_a_request_arriving_after_the_connection() {
 }
 
 #[test]
-fn claimed_requester_identity_is_rejected_and_the_ui_discloses_unverified_origin() {
+fn malformed_attach_request_with_claimed_identity_is_rejected() {
     let directory = tempfile::tempdir().unwrap();
     let mut shell = Shell::new();
     let address = shell
@@ -551,47 +658,16 @@ fn claimed_requester_identity_is_rejected_and_the_ui_discloses_unverified_origin
     spoofed.read_to_string(&mut response).unwrap();
     shell.step();
     assert!(response.is_empty());
-    assert!(!shell.app().live_consent_pending());
+    assert!(!shell.app().live_consent_attached());
     assert!(shell.app().live_bridge_credentials().is_none());
-
-    let nonce = "9".repeat(64);
-    let client = std::thread::spawn(move || request_consent(address, &nonce));
-    wait_for_consent(&mut shell);
-    let description = shell.catalog().text("live-consent-description");
-    assert!(description.contains("unauthenticated local process"));
-    assert!(description.contains("identity and publisher cannot be verified"));
-    assert!(shell.has_visible_label(&description));
-    shell.click_button_label(&shell.catalog().text("live-consent-reject"));
-    assert_eq!(client.join().unwrap()["status"], "rejected");
 }
 
 #[test]
-fn in_window_consent_is_required_and_disconnect_revokes_the_automatic_credential() {
+fn local_attach_is_granted_without_prompt_and_disconnect_revokes_the_credential() {
     let mut shell = Shell::new();
     shell.enable_live_consent_broker();
     let consent_address = shell.app().live_consent_address().unwrap();
     assert!(consent_address.ip().is_loopback());
-    assert!(shell.app().live_bridge_credentials().is_none());
-
-    let rejected_nonce = "1".repeat(64);
-    let reject_client = std::thread::spawn({
-        let rejected_nonce = rejected_nonce.clone();
-        move || request_consent(consent_address, &rejected_nonce)
-    });
-    wait_for_consent(&mut shell);
-    assert!(shell.has_visible_label(&shell.catalog().text("live-consent-title")));
-    assert!(shell.app().live_bridge_credentials().is_none());
-    shell.click_button_label(&shell.catalog().text("live-consent-reject"));
-    let rejected = reject_client.join().unwrap();
-    assert_eq!(rejected["nonce"], rejected_nonce);
-    assert_eq!(rejected["status"], "rejected");
-    assert_eq!(
-        rejected["instance_id"],
-        shell.app().live_consent_instance_id().unwrap()
-    );
-    assert!(rejected.get("token").is_none());
-    assert!(rejected.get("live_bridge_address").is_none());
-    assert!(!shell.app().live_consent_attached());
     assert!(shell.app().live_bridge_credentials().is_none());
 
     let allowed_nonce = "2".repeat(64);
@@ -599,9 +675,7 @@ fn in_window_consent_is_required_and_disconnect_revokes_the_automatic_credential
         let allowed_nonce = allowed_nonce.clone();
         move || request_consent(consent_address, &allowed_nonce)
     });
-    wait_for_consent(&mut shell);
-    shell.click_button_label(&shell.catalog().text("live-consent-allow"));
-    let allowed = allow_client.join().unwrap();
+    let allowed = finish_attach(&mut shell, allow_client);
     assert_eq!(allowed["nonce"], allowed_nonce);
     assert_eq!(allowed["status"], "allowed");
     assert_eq!(
@@ -614,6 +688,13 @@ fn in_window_consent_is_required_and_disconnect_revokes_the_automatic_credential
     assert!(address.starts_with("127.0.0.1:"));
     assert!(shell.app().live_consent_attached());
     assert!(shell.has_visible_label(&shell.catalog().text("live-consent-connected-title")));
+
+    // A second requester cannot steal an attached window.
+    let second = std::thread::spawn(move || request_consent(consent_address, &"3".repeat(64)));
+    let second = finish_attach(&mut shell, second);
+    assert_eq!(second["status"], "rejected");
+    assert!(second.get("token").is_none());
+    assert!(shell.app().live_consent_attached());
 
     let mut live = TcpStream::connect(address).unwrap();
     assert!(call(&mut shell, &mut live, token, Request::Status {}).ok);
@@ -645,9 +726,7 @@ fn attached_live_open_requires_explicit_consent_for_the_exact_path() {
     shell.enable_live_consent_broker();
     let consent_address = shell.app().live_consent_address().unwrap();
     let attach = std::thread::spawn(move || request_consent(consent_address, &"c".repeat(64)));
-    wait_for_consent(&mut shell);
-    shell.click_button_label(&shell.catalog().text("live-consent-allow"));
-    let allowed = attach.join().unwrap();
+    let allowed = finish_attach(&mut shell, attach);
     let token = allowed["token"].as_str().unwrap();
     let mut live = TcpStream::connect(allowed["live_bridge_address"].as_str().unwrap()).unwrap();
 
@@ -702,26 +781,22 @@ fn disconnected_attach_requester_cannot_leave_window_busy() {
         })
     )
     .unwrap();
-    wait_for_consent(&mut shell);
+    // The requester leaves before the window gets a frame to grant it.
+    std::thread::sleep(Duration::from_millis(100));
     abandoned.shutdown(std::net::Shutdown::Both).unwrap();
     drop(abandoned);
     std::thread::sleep(Duration::from_millis(100));
 
-    for _ in 0..100 {
+    for _ in 0..20 {
         shell.step();
-        if !shell.app().live_consent_pending() {
-            break;
-        }
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert!(!shell.app().live_consent_pending());
     assert!(!shell.app().live_consent_attached());
     assert!(shell.app().live_bridge_credentials().is_none());
 
     let client = std::thread::spawn(move || request_consent(consent_address, &"b".repeat(64)));
-    wait_for_consent(&mut shell);
-    shell.click_button_label(&shell.catalog().text("live-consent-reject"));
-    assert_eq!(client.join().unwrap()["status"], "rejected");
+    assert_eq!(finish_attach(&mut shell, client)["status"], "allowed");
+    assert!(shell.app().live_consent_attached());
 }
 
 #[test]
@@ -742,9 +817,7 @@ fn file_new_preserves_window_live_services_and_invalidates_document_authority() 
         let nonce = nonce.clone();
         move || request_consent(consent_address, &nonce)
     });
-    wait_for_consent(&mut shell);
-    shell.click_button_label(&shell.catalog().text("live-consent-allow"));
-    let allowed = attach.join().unwrap();
+    let allowed = finish_attach(&mut shell, attach);
     assert_eq!(allowed["status"], "allowed");
     let token = allowed["token"].as_str().unwrap().to_owned();
     let live_address = allowed["live_bridge_address"]

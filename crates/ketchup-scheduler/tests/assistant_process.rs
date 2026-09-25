@@ -177,6 +177,7 @@ fn assistant_process_isolated_launch_uses_explicit_cwd_and_minimal_environment()
     let temp = TempDir::new().unwrap();
     let working_directory = temp.path().canonicalize().unwrap();
     let script = write_mock(&temp, "isolated").canonicalize().unwrap();
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut environment = vec![(OsString::from("KETCHUP_ALLOWED"), OsString::from("yes"))];
     #[cfg(windows)]
     if let Some(system_root) = std::env::var_os("SYSTEMROOT") {
@@ -234,6 +235,7 @@ fn isolated_launch_keeps_environment_files_until_client_drop() {
     let snapshot = tempfile::NamedTempFile::new().unwrap();
     let snapshot_path = snapshot.path().to_path_buf();
     let executable = absolute_python();
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut environment = Vec::new();
     #[cfg(windows)]
     if let Some(system_root) = std::env::var_os("SYSTEMROOT") {

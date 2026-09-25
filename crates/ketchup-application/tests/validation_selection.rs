@@ -625,6 +625,7 @@ fn physical_dowel_document(count: u32, duplicate_joint: bool) -> DocumentStore {
         name: name.into(),
         dimensions_mm: [100.0, 50.0, 18.0],
         holes: Vec::new(),
+        pockets: Vec::new(),
         translation_mm,
         rotation: None,
     };
@@ -661,6 +662,7 @@ fn physical_dowel_document(count: u32, duplicate_joint: bool) -> DocumentStore {
         count,
         spacing_mm: if count > 1 { 40.0 } else { 0.0 },
         dowel: AssistantStandardDowel::D8x30,
+        first_insertion_mm: None,
     };
     let dowels = plan_assistant_cad_edit_program(
         &document,

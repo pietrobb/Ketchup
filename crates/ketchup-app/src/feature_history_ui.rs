@@ -1,5 +1,6 @@
 use super::*;
 use ketchup_core::document::FeatureParameterTarget;
+use ketchup_core::exact_product::body_exact_graph;
 use ketchup_core::feature_history::{
     BodyHistoryMutation, BodyHistoryMutationRequest, BodyProfileTranslationRequest,
     ExactParameterEdit, ExactParameterEditTarget, FeatureHistoryProjection, FeatureHistoryQuery,
@@ -368,21 +369,17 @@ impl KetchupApp {
         if selection.definition_id != definition_id {
             return None;
         }
-        let role = match selection.element {
-            ElementId::Face {
-                axis: Axis::Z,
-                side: Side::Maximum,
-            } => ExactFaceRole::Top,
-            ElementId::Face {
-                axis: Axis::Z,
-                side: Side::Minimum,
-            } => ExactFaceRole::Bottom,
-            ElementId::Face {
-                axis: Axis::X,
-                side: Side::Maximum,
-            } => ExactFaceRole::East,
-            _ => return None,
+        // The selected box face, found among the result's named planar faces by
+        // its outward normal in definition coordinates.
+        let ElementId::Face { axis, side } = selection.element else {
+            return None;
         };
+        let mut normal = [0.0; 3];
+        normal[match axis {
+            Axis::X => 0,
+            Axis::Y => 1,
+            Axis::Z => 2,
+        }] = if side == Side::Maximum { 1.0 } else { -1.0 };
         let mut references = self
             .exact_results
             .values()
@@ -390,7 +387,19 @@ impl KetchupApp {
                 package.definition_id() == definition_id
                     && package.producer_feature_id() == feature_id
             })
-            .filter_map(|package| package.reference(role).cloned());
+            .filter_map(|package| match package.as_ref() {
+                ExactBodyPackage::Graph(package) => Some(package),
+                ExactBodyPackage::Imported(_) => None,
+            })
+            .flat_map(|package| &package.planar_face_attachments)
+            .filter(|attachment| {
+                attachment
+                    .local_unit_normal()
+                    .iter()
+                    .zip(normal)
+                    .all(|(actual, expected)| (actual - expected).abs() <= 1.0e-9)
+            })
+            .map(|attachment| attachment.reference().clone());
         let reference = references.next()?;
         references.next().is_none().then_some(reference)
     }
@@ -1318,18 +1327,14 @@ impl KetchupApp {
             };
             let mut packages = Vec::with_capacity(missing_target_bodies.len());
             for body_id in missing_target_bodies {
-                let request = match ExactFeatureChainRequest::from_snapshot_for_body(
-                    &snapshot,
-                    target_definition_id,
-                    body_id,
-                ) {
-                    Ok(request) => request,
+                let graph = match body_exact_graph(&snapshot, target_definition_id, body_id) {
+                    Ok(graph) => graph,
                     Err(error) => {
                         self.feature_history_error(error);
                         return false;
                     }
                 };
-                let package = match worker.evaluate_rectangle(&request) {
+                let package = match worker.evaluate_exact_brep_graph(&graph) {
                     Ok(package) => Arc::new(ExactBodyPackage::from(package)),
                     Err(error) => {
                         self.feature_history_error(error);
@@ -1425,9 +1430,9 @@ impl KetchupApp {
                                     document,
                                     exact_results,
                                     impact,
-                                    |request| {
+                                    |graph| {
                                         worker
-                                            .evaluate_rectangle(request)
+                                            .evaluate_exact_brep_graph(graph)
                                             .map(ExactBodyPackage::from)
                                             .map(Arc::new)
                                             .map_err(|error| error.to_string())
@@ -1444,9 +1449,9 @@ impl KetchupApp {
                                     document,
                                     exact_results,
                                     impact,
-                                    |request| {
+                                    |graph| {
                                         worker
-                                            .evaluate_rectangle(request)
+                                            .evaluate_exact_brep_graph(graph)
                                             .map(ExactBodyPackage::from)
                                             .map(Arc::new)
                                             .map_err(|error| error.to_string())

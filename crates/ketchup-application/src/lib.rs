@@ -21,7 +21,7 @@ pub mod workflow_trace;
 
 pub use planner::{
     AssistantCadProgramPlan, AssistantCadResolvedProgramOutput, plan_assistant_cad_edit_program,
-    plan_assistant_cad_edit_program_with_outputs,
+    plan_assistant_cad_edit_program_with_outputs, plan_panel_batch,
 };
 
 mod session;

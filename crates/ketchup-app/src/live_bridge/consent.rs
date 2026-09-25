@@ -57,7 +57,6 @@ struct DiscoveryState {
 
 pub(crate) struct PendingConsent {
     decision: mpsc::SyncSender<ConsentDecision>,
-    requester_closed: mpsc::Receiver<()>,
 }
 
 enum ConsentDecision {
@@ -126,9 +125,11 @@ impl KetchupApp {
             context.clone(),
             discovery_root,
             self.live_consent_document(),
+            self.live_bridge.is_none(),
         )?;
         let address = broker.address;
         self.live_consent_broker = Some(broker);
+        self.live_consent_attached = self.live_bridge.is_some();
         Ok(address)
     }
 
@@ -147,24 +148,13 @@ impl KetchupApp {
     }
 
     #[must_use]
-    pub fn live_consent_pending(&self) -> bool {
-        self.live_pending_consent.is_some()
-    }
-
-    #[must_use]
     pub fn live_consent_attached(&self) -> bool {
         self.live_consent_attached
     }
 
-    pub(crate) fn poll_live_consent(&mut self) {
-        if self.live_pending_consent.as_ref().is_some_and(|pending| {
-            matches!(
-                pending.requester_closed.try_recv(),
-                Err(mpsc::TryRecvError::Disconnected)
-            )
-        }) {
-            self.live_pending_consent = None;
-        }
+    /// Local attach requests are granted immediately; the window stays usable and
+    /// shows only a passive "connected" panel with a disconnect button.
+    pub(crate) fn poll_live_consent(&mut self, context: &egui::Context) {
         let delivery_failed = self.live_consent_broker.as_ref().is_some_and(|broker| {
             let mut failed = false;
             while let Ok(delivered) = broker.deliveries.try_recv() {
@@ -182,23 +172,19 @@ impl KetchupApp {
         };
         if let Ok(mut discovery) = broker.discovery.lock() {
             discovery.document = document;
-            discovery.available =
-                self.live_pending_consent.is_none() && !self.live_consent_attached;
+            discovery.available = !self.live_consent_attached;
         }
         let Ok(request) = broker.requests.try_recv() else {
             return;
         };
-        if self.live_pending_consent.is_some() || self.live_consent_attached {
+        if self.live_consent_attached {
             let _ = request.decision.try_send(ConsentDecision::Reject);
         } else {
-            self.live_pending_consent = Some(request);
+            self.allow_live_consent(context, request);
         }
     }
 
-    fn allow_live_consent(&mut self, context: &egui::Context) {
-        let Some(pending) = self.live_pending_consent.take() else {
-            return;
-        };
+    fn allow_live_consent(&mut self, context: &egui::Context, pending: PendingConsent) {
         if self.live_bridge.is_none() {
             let Ok(bridge) = transport::start(context.clone()) else {
                 let _ = pending.decision.try_send(ConsentDecision::Reject);
@@ -224,14 +210,7 @@ impl KetchupApp {
         }
     }
 
-    fn reject_live_consent(&mut self) {
-        if let Some(pending) = self.live_pending_consent.take() {
-            let _ = pending.decision.try_send(ConsentDecision::Reject);
-        }
-    }
-
     pub fn revoke_live_consent(&mut self) {
-        self.reject_live_consent();
         self.live_consent_attached = false;
         self.disable_live_bridge();
     }
@@ -263,35 +242,7 @@ impl KetchupApp {
     }
 
     pub(crate) fn show_live_consent(&mut self, context: &egui::Context) {
-        if self.live_pending_consent.is_some() {
-            let title = self.catalog.text("live-consent-title");
-            let description = self.catalog.text("live-consent-description");
-            let document = self.live_consent_document();
-            let mut allow = false;
-            let mut reject = false;
-            egui::Window::new(title)
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-                .show(context, |ui| {
-                    ui.label(description);
-                    ui.label(self.catalog.format(
-                        "live-consent-document",
-                        &std::collections::BTreeMap::from([("document", document)]),
-                    ));
-                    ui.horizontal(|ui| {
-                        allow = ui.button(self.catalog.text("live-consent-allow")).clicked();
-                        reject = ui
-                            .button(self.catalog.text("live-consent-reject"))
-                            .clicked();
-                    });
-                });
-            if allow {
-                self.allow_live_consent(context);
-            } else if reject {
-                self.reject_live_consent();
-            }
-        } else if self.live_consent_attached {
+        if self.live_consent_attached {
             let mut revoke = false;
             egui::Window::new(self.catalog.text("live-consent-connected-title"))
                 .collapsible(false)
@@ -413,6 +364,7 @@ fn start(
     context: egui::Context,
     discovery_root: &Path,
     document: String,
+    available: bool,
 ) -> io::Result<ConsentBroker> {
     let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
     listener.set_nonblocking(true)?;
@@ -422,7 +374,7 @@ fn start(
         publish_registry_entry(discovery_root, &instance_id, address)?;
     let discovery = Arc::new(Mutex::new(DiscoveryState {
         document,
-        available: true,
+        available,
     }));
     let worker_discovery = Arc::clone(&discovery);
     let worker_instance_id = instance_id.clone();
@@ -518,14 +470,7 @@ fn serve(
             return write_list_response(&mut stream, &nonce, instance_id, &state, stop);
         }
         let (decision, receiver) = mpsc::sync_channel(1);
-        let (requester_alive, requester_closed) = mpsc::sync_channel(0);
-        if sender
-            .try_send(PendingConsent {
-                decision,
-                requester_closed,
-            })
-            .is_err()
-        {
+        if sender.try_send(PendingConsent { decision }).is_err() {
             return write_response(
                 &mut stream,
                 &nonce,
@@ -537,9 +482,13 @@ fn serve(
         context.request_repaint();
         stream.set_nonblocking(true)?;
         let decision = wait_for_decision(&stream, &receiver, stop);
-        drop(requester_alive);
         context.request_repaint();
-        let decision = decision?;
+        let decision = decision.inspect_err(|_| {
+            // The window granted access to a requester that already left: free it.
+            if matches!(receiver.try_recv(), Ok(ConsentDecision::Allow { .. })) {
+                let _ = delivery_sender.send(false);
+            }
+        })?;
         stream.set_nonblocking(false)?;
         let allowed = matches!(decision, ConsentDecision::Allow { .. });
         let result = write_response(&mut stream, &nonce, instance_id, decision, stop);
@@ -760,6 +709,7 @@ mod tests {
             egui::Context::default(),
             directory.path(),
             "Untitled".to_owned(),
+            true,
         )
         .unwrap();
         let mut attach = TcpStream::connect(broker.address).unwrap();
@@ -801,6 +751,7 @@ mod tests {
             egui::Context::default(),
             directory.path(),
             "Untitled".to_owned(),
+            true,
         )
         .unwrap();
         let mut attach = TcpStream::connect(broker.address).unwrap();

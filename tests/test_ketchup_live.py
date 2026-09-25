@@ -246,6 +246,27 @@ def test_discovery_uses_one_global_timeout_budget(tmp_path):
     assert elapsed < 0.1
 
 
+def test_discovery_stale_broker_does_not_hide_next_live_window(tmp_path):
+    stale = "1" * 32
+    live = "2" * 32
+
+    def broker(_endpoint, _action, instance_id, nonce, timeout):
+        if instance_id == stale:
+            time.sleep(timeout)
+            raise TimeoutError
+        return {"version": 1, "nonce": nonce, "status": "available",
+                "instance_id": live, "document": "nightstand.ketchup"}
+
+    entries = [tmp_path / f"{stale}.json", tmp_path / f"{live}.json"]
+    with patch.object(Path, "iterdir", return_value=iter(entries)), \
+            patch.object(live_module, "_registry_endpoint", return_value=("127.0.0.1", 1)), \
+            patch.object(live_module, "_broker_exchange", side_effect=broker):
+        result = _list_live_instances(tmp_path, timeout=0.25)
+
+    assert result == [{"instance_id": live, "document": "nightstand.ketchup",
+                       "status": "available"}]
+
+
 def test_attach_revalidates_instance_and_uses_credential_only_internally(tmp_path):
     instance_id = "3" * 32
     broker_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -635,6 +656,35 @@ def test_capability_gap_exposes_only_bounded_machine_fields():
         assert len(peer.requests) == 1
 
 
+def test_invalid_params_exposes_bounded_schema_reason_and_keeps_connection():
+    reason = "unknown variant `set_colour`, expected one of `set_color`"
+
+    def answer(request, _stream):
+        if request["request"]["method"] == "apply_and_verify":
+            value = response(request, error="invalid_params", stamp=None)
+            value["result"] = {"reason": reason}
+            return value
+        return response(request)
+
+    with Peer(answer) as peer, LiveSession(peer.address, TOKEN) as live:
+        with pytest.raises(LiveBridgeError) as caught:
+            live.apply_and_verify(PROGRAM, expected=STAMP)
+        assert caught.value.code == "invalid_params"
+        assert caught.value.details == {"reason": reason}
+        assert not live.closed and live.status()["ok"]
+
+
+def test_apply_and_verify_waits_for_its_own_job_deadline_not_the_session_timeout():
+    def answer(request, _stream):
+        if request["request"]["method"] == "apply_and_verify":
+            time.sleep(1.5)
+        return response(request)
+
+    with Peer(answer) as peer, LiveSession(peer.address, TOKEN, timeout=0.5) as live:
+        assert live.apply_and_verify(PROGRAM, expected=STAMP, timeout_ms=60_000)["ok"]
+        assert peer.requests[0]["request"]["timeout_ms"] == 60_000
+
+
 @pytest.mark.parametrize("where", ["error", "result", "key", "stamp", "malformed"])
 def test_server_cannot_leak_token_in_return_error_repr_or_traceback(where):
     def answer(req, stream):
@@ -968,6 +1018,16 @@ def image_answer(value):
             return response(req, result=image_capability())
         return {**value, "id": req["id"]}
     return answer
+
+
+def test_image_without_stamp_is_saved_against_the_stamp_the_session_observed(tmp_path):
+    value = image_response()
+    destination = tmp_path / "unstamped.png"
+    with Peer(image_answer(value)) as peer, LiveSession(peer.address, TOKEN) as live:
+        receipt = save_image(live.image(None), None, str(destination))
+        assert not live.closed
+    assert destination.read_bytes() == png_fixture()
+    assert receipt["result"]["artifact"]["artifact_saved"] is True
 
 
 def test_image_artifact_preserves_metadata_and_original_hash(tmp_path):

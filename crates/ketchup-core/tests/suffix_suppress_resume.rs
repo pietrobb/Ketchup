@@ -1,9 +1,9 @@
 use ketchup_core::document::{
     BodyId, CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, Dimension, DocumentStore,
-    FeatureId, FeatureKind, ProposalCommitError, ProposalPrincipal,
+    FeatureId, FeatureKind, ProposalCommitError, ProposalPrincipal, Snapshot,
 };
 use ketchup_core::exact_product::{
-    ExactFeatureChainRequest, ExactResultRegistry, exact_body_terminal_features,
+    ExactResultRegistry, body_exact_graph, exact_body_terminal_features,
 };
 use ketchup_core::feature_history::{
     BodyHistoryMutation, BodyHistoryMutationError, BodyHistoryMutationRequest, FeatureHistoryQuery,
@@ -109,6 +109,15 @@ fn request(mutation: BodyHistoryMutation) -> BodyHistoryMutationRequest {
     }
 }
 
+/// Whether the exact solid of body 1 includes the pocket cut.
+fn body_is_pocketed(snapshot: &Snapshot) -> bool {
+    body_exact_graph(snapshot, DEFINITION, BodyId(1))
+        .unwrap()
+        .nodes
+        .iter()
+        .any(|node| node.source_feature_id == POCKET.0)
+}
+
 fn stamp(document: &DocumentStore) -> (u64, String, usize, usize) {
     (
         document.current().revision_id(),
@@ -137,12 +146,7 @@ fn suppress_suffix_is_reviewed_atomic_and_body_scoped() {
             .get(&BodyId(1)),
         Some(&POCKET)
     );
-    assert!(
-        ExactFeatureChainRequest::from_snapshot_for_body(&snapshot, DEFINITION, BodyId(1))
-            .unwrap()
-            .pocket_depth_bits
-            .is_some()
-    );
+    assert!(body_is_pocketed(&snapshot));
 
     let manual = prepare_body_history_mutation(
         &document,
@@ -179,10 +183,9 @@ fn suppress_suffix_is_reviewed_atomic_and_body_scoped() {
             .get(&BodyId(1)),
         Some(&BASE_EXTRUSION)
     );
-    let rolled_back =
-        ExactFeatureChainRequest::from_snapshot_for_body(&after, DEFINITION, BodyId(1)).unwrap();
-    assert_eq!(rolled_back.producer_feature_id(), BASE_EXTRUSION);
-    assert!(rolled_back.pocket_depth_bits.is_none());
+    let rolled_back = body_exact_graph(&after, DEFINITION, BodyId(1)).unwrap();
+    assert_eq!(rolled_back.producer_feature_id, BASE_EXTRUSION.0);
+    assert!(!body_is_pocketed(&after));
     assert_eq!(
         after.definition(DEFINITION).unwrap().body(BodyId(2)),
         Some(&unrelated_body)
@@ -268,12 +271,7 @@ fn resume_restores_the_suffix_with_one_undo_and_redo() {
             .get(&BodyId(1)),
         Some(&POCKET)
     );
-    assert!(
-        ExactFeatureChainRequest::from_snapshot_for_body(&resumed, DEFINITION, BodyId(1))
-            .unwrap()
-            .pocket_depth_bits
-            .is_some()
-    );
+    assert!(body_is_pocketed(&resumed));
 
     document.undo().unwrap();
     assert_eq!(document.current().canonical_digest(), suppressed_digest);

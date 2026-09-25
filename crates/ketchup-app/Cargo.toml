@@ -10,11 +10,6 @@ repository.workspace = true
 [features]
 default = ["private-oauth"]
 private-oauth = ["ketchup-core/private-oauth", "ketchup-scheduler/private-oauth"]
-named-product-fixtures = [
-    "ketchup-core/named-product-fixtures",
-    "ketchup-scheduler/named-product-fixtures",
-    "ketchup-application/named-product-fixtures",
-]
 manual-alpha = ["private-oauth"]
 
 [dependencies]
@@ -35,6 +30,7 @@ wgpu = { version = "25.0.2", default-features = false, features = ["dx12"] }
 winreg = "0.56.0"
 
 [dev-dependencies]
+ketchup-core = { path = "../ketchup-core", features = ["testing"] }
 egui_kittest = { version = "0.32.0", features = ["wgpu"] }
 pollster = "0.4.0"
 

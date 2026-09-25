@@ -178,6 +178,9 @@ impl KetchupApp {
         faces: impl Iterator<Item = &'a ProjectedFace>,
     ) {
         let faces = faces.collect::<Vec<_>>();
+        // Cycling to a hidden overlap is an explicit choice that must stay visible.
+        let choosing_hidden_target =
+            self.face_workflow.xray_preview() || self.hover_overlap_index != 0;
         // Draw the hovered target last, including when it is behind another body.
         for hovered_pass in [false, true] {
             for face in &faces {
@@ -191,10 +194,14 @@ impl KetchupApp {
                 let selected = self.selection.primary.as_ref() == Some(&face.selection);
                 let fill = if face.out_of_context && !self.selection.edit_context.is_empty() {
                     Color32::from_rgba_unmultiplied(190, 195, 205, 95)
-                } else if hovered {
+                } else if hovered && choosing_hidden_target {
                     HOVER_FILL
                 } else if selected {
+                    // A click must visibly hold: the selection wins over the
+                    // transient hover so pointer movement never masks it.
                     SELECTED_FILL
+                } else if hovered {
+                    HOVER_FILL
                 } else {
                     continue;
                 };
@@ -405,6 +412,62 @@ mod tests {
                 .any(|shape| matches!(shape.shape, egui::Shape::Callback(_)))
         );
         assert_eq!(app.document_revision(), revision);
+    }
+
+    #[test]
+    fn clicked_selection_stays_visible_while_the_pointer_keeps_moving() {
+        let mut app = KetchupApp::new();
+        app.wgpu_target_format = Some(eframe::wgpu::TextureFormat::Rgba8Unorm);
+        let context = egui::Context::default();
+        let input = || egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1600.0, 1000.0))),
+            ..Default::default()
+        };
+        let _ = context.run(input(), |context| app.ui(context));
+        let pointer = app.viewport_position(Vec3::new(50.0, 30.0, 20.0)).unwrap();
+        let mut raw = input();
+        raw.events.push(egui::Event::PointerMoved(pointer));
+        let _ = context.run(raw, |context| app.ui(context));
+        for pressed in [true, false] {
+            let mut raw = input();
+            raw.events.push(egui::Event::PointerButton {
+                pos: pointer,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+            let _ = context.run(raw, |context| app.ui(context));
+        }
+        let selected = app.selection.primary.clone().expect("click selects");
+        let selection_stroke = Color32::from_rgb(240, 78, 35);
+        for offset in [
+            Vec2::new(3.0, 2.0),
+            Vec2::new(-4.0, 3.0),
+            Vec2::splat(600.0),
+        ] {
+            let mut raw = input();
+            raw.events.push(egui::Event::PointerMoved(pointer + offset));
+            let output = context.run(raw, |context| app.ui(context));
+            assert_eq!(app.selection.primary.as_ref(), Some(&selected));
+            let fills = |fill| {
+                output.shapes.iter().any(
+                    |shape| matches!(&shape.shape, egui::Shape::Path(path) if path.fill == fill),
+                )
+            };
+            assert!(
+                fills(SELECTED_FILL),
+                "selected face lost its fill at {offset:?}"
+            );
+            assert!(
+                !fills(HOVER_FILL),
+                "hover masked the selection at {offset:?}"
+            );
+            assert!(
+                output.shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::LineSegment { stroke, .. } if stroke.color == selection_stroke)),
+                "selected part outline missing in the Select tool at {offset:?}"
+            );
+        }
     }
 
     #[test]

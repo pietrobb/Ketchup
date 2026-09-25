@@ -1,15 +1,13 @@
 use ketchup_core::document::{
-    AuthenticatedApprover, AuthoritativeDependency, BOTTLE_SHELL_OPENING_FACE_ROLE,
-    BOTTLE_SHOULDER_EDGE_ROLE, BottleControlDimension, BottleEdgeFinishKind, CanonicalCommand,
-    CollectionId, CommandBatch, DefinitionId, Dimension, DimensionDisplayUnit,
-    DimensionPresentation, DocumentStore, EvaluatorNodeKind, FeatureId, FeatureKind,
-    FeatureParameterTarget, GroupId, HighRiskClass, HighRiskScope, HumanConfirmationError,
-    MAX_HUMAN_CONFIRMATION_LIFETIME_MS, NodeId, OccurrenceId, OverrideParameterSpec,
-    ParameterValueType, PersistentDimension, PersistentDimensionId, PersistentDimensionTarget,
-    PortSpec, Proposal, ProposalBudget, ProposalCommitError, ProposalConfirmation, ProposalContext,
-    ProposalGoal, ProposalPrepareError, ProposalPrincipal, ProposalRisk, ProposalValue, RuleOutput,
-    SlotPath, SlotResolution, SlotSegment, StableEdgeRole, StableFaceRole, TagId, Transform,
-    TrustedConfirmationSurface,
+    AuthenticatedApprover, AuthoritativeDependency, CanonicalCommand, CollectionId, CommandBatch,
+    DefinitionId, Dimension, DimensionDisplayUnit, DimensionPresentation, DocumentStore,
+    EvaluatorNodeKind, FeatureId, FeatureKind, FeatureParameterTarget, GroupId, HighRiskClass,
+    HighRiskScope, HumanConfirmationError, MAX_HUMAN_CONFIRMATION_LIFETIME_MS, NodeId,
+    OccurrenceId, OverrideParameterSpec, ParameterValueType, PersistentDimension,
+    PersistentDimensionId, PersistentDimensionTarget, PortSpec, Proposal, ProposalBudget,
+    ProposalCommitError, ProposalConfirmation, ProposalContext, ProposalGoal, ProposalPrepareError,
+    ProposalPrincipal, ProposalRisk, ProposalValue, RuleOutput, SlotPath, SlotResolution,
+    SlotSegment, TagId, Transform, TrustedConfirmationSurface,
 };
 use ketchup_core::intent::{
     IntentCapability, IntentError, IntentGrant, IntentRequest, RequestingPrincipal, WorkflowIntent,
@@ -27,14 +25,8 @@ const EXPRESSION: NodeId = NodeId(3);
 const RULE_OUTPUTS: NodeId = NodeId(4);
 const DEFINITION: DefinitionId = DefinitionId(10);
 const SECOND_DEFINITION: DefinitionId = DefinitionId(15);
-const BOTTLE_DEFINITION: DefinitionId = DefinitionId(18);
 const PROFILE: FeatureId = FeatureId(11);
 const EXTRUSION: FeatureId = FeatureId(12);
-const BOTTLE_PROFILE: FeatureId = FeatureId(19);
-const BOTTLE_CONTROL: FeatureId = FeatureId(20);
-const BOTTLE_REVOLVE: FeatureId = FeatureId(21);
-const BOTTLE_SHELL: FeatureId = FeatureId(22);
-const BOTTLE_FINISH: FeatureId = FeatureId(23);
 const OCCURRENCE: OccurrenceId = OccurrenceId(13);
 const TAG: TagId = TagId(14);
 const GROUP: GroupId = GroupId(16);
@@ -96,10 +88,6 @@ fn seed() -> DocumentStore {
                 id: SECOND_DEFINITION,
                 name: "Housing".to_owned(),
             },
-            CanonicalCommand::CreateDefinition {
-                id: BOTTLE_DEFINITION,
-                name: "Bottle".to_owned(),
-            },
             CanonicalCommand::CreateFeature {
                 id: PROFILE,
                 definition_id: DEFINITION,
@@ -115,61 +103,6 @@ fn seed() -> DocumentStore {
                 kind: FeatureKind::Extrusion {
                     profile: PROFILE,
                     height: dimension("20", 20.0),
-                },
-            },
-            CanonicalCommand::CreateFeature {
-                id: BOTTLE_PROFILE,
-                definition_id: BOTTLE_DEFINITION,
-                name: "Bottle profile".to_owned(),
-                kind: FeatureKind::Profile {
-                    points_mm: vec![
-                        [0.0, 0.0],
-                        [30.0, 0.0],
-                        [30.0, 110.0],
-                        [12.0, 130.0],
-                        [12.0, 155.0],
-                        [0.0, 155.0],
-                    ],
-                },
-            },
-            CanonicalCommand::CreateFeature {
-                id: BOTTLE_CONTROL,
-                definition_id: BOTTLE_DEFINITION,
-                name: "Bottle controls".to_owned(),
-                kind: FeatureKind::BottleProfileControl {
-                    profile: BOTTLE_PROFILE,
-                    body_radius: dimension("30", 30.0),
-                    body_height: dimension("110", 110.0),
-                    shoulder_rise: dimension("20", 20.0),
-                },
-            },
-            CanonicalCommand::CreateFeature {
-                id: BOTTLE_REVOLVE,
-                definition_id: BOTTLE_DEFINITION,
-                name: "Bottle revolve".to_owned(),
-                kind: FeatureKind::full_revolve(BOTTLE_CONTROL),
-            },
-            CanonicalCommand::CreateFeature {
-                id: BOTTLE_SHELL,
-                definition_id: BOTTLE_DEFINITION,
-                name: "Bottle shell".to_owned(),
-                kind: FeatureKind::Shell {
-                    target: BOTTLE_REVOLVE,
-                    removed_faces: vec![
-                        StableFaceRole::new(BOTTLE_SHELL_OPENING_FACE_ROLE).unwrap(),
-                    ],
-                    thickness: dimension("2", 2.0),
-                },
-            },
-            CanonicalCommand::CreateFeature {
-                id: BOTTLE_FINISH,
-                definition_id: BOTTLE_DEFINITION,
-                name: "Edge finish".to_owned(),
-                kind: FeatureKind::BottleEdgeFinish {
-                    target: BOTTLE_SHELL,
-                    edges: vec![StableEdgeRole::new(BOTTLE_SHOULDER_EDGE_ROLE).unwrap()],
-                    kind: BottleEdgeFinishKind::Fillet,
-                    amount: dimension("2", 2.0),
                 },
             },
             CanonicalCommand::CreateTag {
@@ -551,278 +484,6 @@ fn gate_d_evaluator_expression_rejects_denied_invalid_wrong_kind_missing_and_sta
             .source(),
         "$1 * 2"
     );
-}
-
-#[test]
-fn gate_d_bottle_control_dimension_is_observational_typed_and_undoable() {
-    let mut store = seed();
-    let revision_before = store.current().revision_id();
-    let digest_before = store.current().canonical_digest();
-    let undo_before = store.visible_undo_steps();
-    let proposal = propose_intent(
-        &store,
-        IntentRequest::m7a(WorkflowIntent::SetBottleControlDimension {
-            target: BOTTLE_CONTROL,
-            control: BottleControlDimension::BodyRadius,
-            value_text: "32".to_owned(),
-        }),
-    )
-    .unwrap();
-
-    assert_eq!(
-        proposal.goal(),
-        ProposalGoal::SetBottleControlDimension(BOTTLE_CONTROL, BottleControlDimension::BodyRadius)
-    );
-    assert_eq!(
-        proposal.assumptions(),
-        &[ketchup_core::document::ProposalAssumption::TargetExists(
-            AuthoritativeDependency::Feature(BOTTLE_CONTROL)
-        )]
-    );
-    assert_eq!(
-        proposal.authoritative_writes(),
-        &std::collections::BTreeSet::from([AuthoritativeDependency::Feature(BOTTLE_CONTROL)])
-    );
-    assert_eq!(
-        proposal.authoritative_diff()[0].before,
-        ProposalValue::Dimension(dimension("30", 30.0))
-    );
-    assert_eq!(
-        proposal.authoritative_diff()[0].after,
-        ProposalValue::Dimension(dimension("32", 32.0))
-    );
-    assert_eq!(store.current().revision_id(), revision_before);
-    assert_eq!(store.current().canonical_digest(), digest_before);
-    assert_eq!(store.visible_undo_steps(), undo_before);
-
-    store.commit_verified_proposal(&proposal).unwrap();
-    assert!(matches!(
-        store.current().feature(BOTTLE_CONTROL).unwrap().kind(),
-        FeatureKind::BottleProfileControl { body_radius, .. }
-            if body_radius.millimetres() == 32.0
-    ));
-    assert_eq!(store.visible_undo_steps(), undo_before + 1);
-    store.undo().unwrap();
-    assert!(matches!(
-        store.current().feature(BOTTLE_CONTROL).unwrap().kind(),
-        FeatureKind::BottleProfileControl { body_radius, .. }
-            if body_radius.millimetres() == 30.0
-    ));
-}
-
-#[test]
-fn gate_d_bottle_control_dimension_rejects_denied_invalid_wrong_kind_missing_and_stale() {
-    let mut store = seed();
-    let digest_before = store.current().canonical_digest();
-    assert_eq!(
-        propose_intent(
-            &store,
-            IntentRequest {
-                grant: IntentGrant::new(
-                    RequestingPrincipal::LocalAssistant,
-                    [IntentCapability::SetFeatureDimension],
-                ),
-                intent: WorkflowIntent::SetBottleControlDimension {
-                    target: BOTTLE_CONTROL,
-                    control: BottleControlDimension::BodyHeight,
-                    value_text: "120".to_owned(),
-                },
-                requested_budget: ProposalBudget::M7A_SINGLE_CHANGE,
-            }
-        ),
-        Err(IntentError::CapabilityDenied(
-            IntentCapability::SetBottleControlDimension
-        ))
-    );
-    assert!(matches!(
-        propose_intent(
-            &store,
-            IntentRequest::m7a(WorkflowIntent::SetBottleControlDimension {
-                target: BOTTLE_CONTROL,
-                control: BottleControlDimension::BodyHeight,
-                value_text: "not-a-number".to_owned(),
-            })
-        ),
-        Err(IntentError::Canonical(_))
-    ));
-    for target in [EXTRUSION, FeatureId(999)] {
-        assert!(matches!(
-            propose_intent(
-                &store,
-                IntentRequest::m7a(WorkflowIntent::SetBottleControlDimension {
-                    target,
-                    control: BottleControlDimension::BodyHeight,
-                    value_text: "120".to_owned(),
-                })
-            ),
-            Err(IntentError::Proposal(ProposalPrepareError::Canonical(_)))
-        ));
-    }
-    assert_eq!(store.current().canonical_digest(), digest_before);
-
-    let proposal = propose_intent(
-        &store,
-        IntentRequest::m7a(WorkflowIntent::SetBottleControlDimension {
-            target: BOTTLE_CONTROL,
-            control: BottleControlDimension::BodyHeight,
-            value_text: "120".to_owned(),
-        }),
-    )
-    .unwrap();
-    store
-        .apply_batch(&CommandBatch::new(vec![
-            CanonicalCommand::SetBottleControlDimension {
-                id: BOTTLE_CONTROL,
-                control: BottleControlDimension::ShoulderRise,
-                dimension: dimension("21", 21.0),
-            },
-        ]))
-        .unwrap();
-    let changed_digest = store.current().canonical_digest();
-
-    assert!(matches!(
-        store.commit_verified_proposal(&proposal),
-        Err(ProposalCommitError::Stale(_))
-    ));
-    assert_eq!(store.current().canonical_digest(), changed_digest);
-    assert!(matches!(
-        store.current().feature(BOTTLE_CONTROL).unwrap().kind(),
-        FeatureKind::BottleProfileControl {
-            body_height,
-            shoulder_rise,
-            ..
-        } if body_height.millimetres() == 110.0 && shoulder_rise.millimetres() == 21.0
-    ));
-}
-
-#[test]
-fn gate_d_bottle_finish_kind_is_observational_typed_and_undoable() {
-    let mut store = seed();
-    let revision_before = store.current().revision_id();
-    let digest_before = store.current().canonical_digest();
-    let undo_before = store.visible_undo_steps();
-    let proposal = propose_intent(
-        &store,
-        IntentRequest::m7a(WorkflowIntent::SetBottleEdgeFinishKind {
-            target: BOTTLE_FINISH,
-            kind: BottleEdgeFinishKind::Chamfer,
-        }),
-    )
-    .unwrap();
-
-    assert_eq!(
-        proposal.goal(),
-        ProposalGoal::SetBottleEdgeFinishKind(BOTTLE_FINISH)
-    );
-    assert_eq!(
-        proposal.assumptions(),
-        &[ketchup_core::document::ProposalAssumption::TargetExists(
-            AuthoritativeDependency::Feature(BOTTLE_FINISH)
-        )]
-    );
-    assert_eq!(
-        proposal.authoritative_writes(),
-        &std::collections::BTreeSet::from([AuthoritativeDependency::Feature(BOTTLE_FINISH)])
-    );
-    assert_eq!(
-        proposal.authoritative_diff()[0].before,
-        ProposalValue::BottleEdgeFinishKind(BottleEdgeFinishKind::Fillet)
-    );
-    assert_eq!(
-        proposal.authoritative_diff()[0].after,
-        ProposalValue::BottleEdgeFinishKind(BottleEdgeFinishKind::Chamfer)
-    );
-    assert_eq!(store.current().revision_id(), revision_before);
-    assert_eq!(store.current().canonical_digest(), digest_before);
-    assert_eq!(store.visible_undo_steps(), undo_before);
-
-    store.commit_verified_proposal(&proposal).unwrap();
-    assert!(matches!(
-        store.current().feature(BOTTLE_FINISH).unwrap().kind(),
-        FeatureKind::BottleEdgeFinish {
-            kind: BottleEdgeFinishKind::Chamfer,
-            ..
-        }
-    ));
-    assert_eq!(store.visible_undo_steps(), undo_before + 1);
-    store.undo().unwrap();
-    assert!(matches!(
-        store.current().feature(BOTTLE_FINISH).unwrap().kind(),
-        FeatureKind::BottleEdgeFinish {
-            kind: BottleEdgeFinishKind::Fillet,
-            ..
-        }
-    ));
-}
-
-#[test]
-fn gate_d_bottle_finish_kind_rejects_denied_wrong_kind_missing_and_stale() {
-    let mut store = seed();
-    let digest_before = store.current().canonical_digest();
-    assert_eq!(
-        propose_intent(
-            &store,
-            IntentRequest {
-                grant: IntentGrant::new(
-                    RequestingPrincipal::LocalAssistant,
-                    [IntentCapability::SetFeatureDimension],
-                ),
-                intent: WorkflowIntent::SetBottleEdgeFinishKind {
-                    target: BOTTLE_FINISH,
-                    kind: BottleEdgeFinishKind::Chamfer,
-                },
-                requested_budget: ProposalBudget::M7A_SINGLE_CHANGE,
-            }
-        ),
-        Err(IntentError::CapabilityDenied(
-            IntentCapability::SetBottleEdgeFinishKind
-        ))
-    );
-    for target in [EXTRUSION, FeatureId(999)] {
-        assert!(matches!(
-            propose_intent(
-                &store,
-                IntentRequest::m7a(WorkflowIntent::SetBottleEdgeFinishKind {
-                    target,
-                    kind: BottleEdgeFinishKind::Chamfer,
-                })
-            ),
-            Err(IntentError::Proposal(ProposalPrepareError::Canonical(_)))
-        ));
-    }
-    assert_eq!(store.current().canonical_digest(), digest_before);
-
-    let proposal = propose_intent(
-        &store,
-        IntentRequest::m7a(WorkflowIntent::SetBottleEdgeFinishKind {
-            target: BOTTLE_FINISH,
-            kind: BottleEdgeFinishKind::Chamfer,
-        }),
-    )
-    .unwrap();
-    store
-        .apply_batch(&CommandBatch::new(vec![
-            CanonicalCommand::SetFeatureDimension {
-                id: BOTTLE_FINISH,
-                dimension: dimension("1.5", 1.5),
-            },
-        ]))
-        .unwrap();
-    let changed_digest = store.current().canonical_digest();
-
-    assert!(matches!(
-        store.commit_verified_proposal(&proposal),
-        Err(ProposalCommitError::Stale(_))
-    ));
-    assert_eq!(store.current().canonical_digest(), changed_digest);
-    assert!(matches!(
-        store.current().feature(BOTTLE_FINISH).unwrap().kind(),
-        FeatureKind::BottleEdgeFinish {
-            kind: BottleEdgeFinishKind::Fillet,
-            amount,
-            ..
-        } if amount.millimetres() == 1.5
-    ));
 }
 
 #[test]
@@ -5703,10 +5364,21 @@ fn gate_d_recompute_feature_parameter_rejects_denied_missing_multiple_and_stale(
         FeatureKind::Extrusion { height, .. } if height.millimetres() == 20.0
     ));
 
+    let second_extrusion = FeatureId(30);
     let second_target =
-        FeatureParameterTarget::new(BOTTLE_SHELL, "thickness", ParameterValueType::Length).unwrap();
+        FeatureParameterTarget::new(second_extrusion, "height", ParameterValueType::Length)
+            .unwrap();
     store
         .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateFeature {
+                id: second_extrusion,
+                definition_id: DEFINITION,
+                name: "Second extrusion".to_owned(),
+                kind: FeatureKind::Extrusion {
+                    profile: PROFILE,
+                    height: dimension("20", 20.0),
+                },
+            },
             CanonicalCommand::UpsertFeatureParameterBinding(binding(second_target)),
         ]))
         .unwrap();

@@ -89,7 +89,7 @@ SYSTEM_PROMPT = (
     "Copy has non-zero translation_mm. Linear_pattern has instances including originals and non-zero step_mm. Mirror has plane_origin_mm and non-zero plane_normal. "
     "Use at most 64 operations, 100 resolved occurrence targets, 4096 sketch entities, 8192 constraints, and 512 generated occurrences; never invent IDs for host-generated features or occurrences. "
     "Use model_intent only for legacy creation or feature-edit workflows; it is null otherwise. Its object has replace_scene boolean, boxes, "
-    "translations, rotations, profile_translations, parameter_edits, linear_arrays, bottles, balloon_texts, gable_roofs, staircases, and oriented_beams). For a whole-part move, use translations with occurrence_id and delta_mm "
+    "translations, rotations, profile_translations, parameter_edits, and linear_arrays). For a whole-part move, use translations with occurrence_id and delta_mm "
     "[x, y, z]; do not rebuild geometry. For a rigid rotation of existing objects, use rotations. Each rotation has exactly one target, either occurrence_id or group_id, plus pivot_mm [x, y, z], any non-zero axis [x, y, z], and angle_degrees. Use selected_occurrence_ids or selected_group_id when the user refers to the current selection; rotate the existing target regardless of its geometry type and never rebuild it as a special shape. To move the currently selected cut profile, use exactly one profile_translations entry copied from selected_profile_translation_target with definition_id, body_id, profile_id, and delta_mm [x, y] in its workplane; never mix it with another mutation. To change the currently selected feature or sketch-constraint dimension, use exactly one parameter_edits entry copied from selected_parameter_edit_target with definition_id, body_id, feature_id, constraint_id, and the requested value_mm; never mix it with another mutation. For stacking, repetition, or a linear array of existing "
     "parts, use linear_arrays with occurrence_ids, instances (total count including the originals), "
     "and step_mm [x, y, z]; never rebuild the repeated bodies. Interpret N-times stacking as N total "
@@ -103,19 +103,8 @@ SYSTEM_PROMPT = (
     "every visible, copyable selected/requested occurrence even when it has no legacy boxes entry. "
     "Geometry details are not required to copy an occurrence. Derive a touching, non-overlapping "
     "step from occurrence bounds in document context when possible. "
-    "For an editable rotational bottle, use bottles with name, body_radius_mm, body_height_mm, "
-    "shoulder_rise_mm, neck_radius_mm, neck_height_mm, wall_thickness_mm, finish_kind (fillet or "
-    "chamfer), finish_amount_mm, origin_mm [x, y, z], and no teapot field. Each ordinary bottle "
-    "becomes one editable profile→Revolve→Shell→Fillet/Chamfer feature chain. For a smooth hollow "
-    "tea pot, use one bottles item with the ordinary bottle fields and nest teapot inside that same item with exactly handle_clearance_mm, "
-    "handle_tube_radius_mm, spout_length_mm, spout_radius_mm, lid_height_mm, and "
-    "lid_knob_radius_mm. Keep handle clearance at least twice the handle tube radius, handle tube radius below 35% of body radius, spout length between 75% and 400% of body radius, spout radius above wall thickness and below 50% of body radius, lid height below 50% of body height, lid knob radius below 75% of neck radius, and finish_amount_mm below 25% of neck radius. This creates a rounded hollow body with an open mouth, curved tubular "
-    "handle, smooth tapered hollow rising spout, and a separate removable lid with a locating seat and integrated knob; never approximate a tea pot or cup with boxes. For a rounded squeeze ketchup bottle, use one bottles item with the ordinary bottle fields and nest ketchup_bottle inside that same item with exactly body_depth_ratio, cap_radius_mm, cap_height_mm, label_width_mm, label_height_mm, label_relief_mm, and grip_rib_count. Keep body_depth_ratio from 0.5 to 1.0, finish_amount_mm below 25% of neck radius, cap radius strictly between neck radius plus 1.75 wall thicknesses and 55% of body radius, cap height strictly between neck height plus twice wall thickness and 35% of body height, label width below 180% of body radius, label height below 70% of body height, and label_relief_mm positive but below 10% of body radius. This creates a clean oval squeezable body with smooth shoulders plus a separate removable ribbed cap; the neck has a true external helix and the hollow cap has a complementary internal helical groove with assembly clearance. Keep the body clean instead of adding a raised circular or oval badge, and never approximate the thread with stacked rings or the bottle with stacked cylinders or boxes. For inflated balloon-style 3D lettering, use balloon_texts with exactly name, text (uppercase A-Z, digits, spaces, and the standalone caron ˇ), height_mm, depth_mm, stroke_width_mm, letter_spacing_mm, and origin_mm [x, y, z]. Height must be 10-2000 mm, depth 10-80% of height, stroke width 8-24% of height, and spacing 0-100% of height. To add a caron above an existing balloon letter, create a separate balloon_texts item with text ˇ, matching rounded depth and stroke proportions, and position its origin over that letter. This creates continuous curved tubular glyphs that are fully rounded in every direction with spherical ends, preserves through openings in letters such as O, A, B, D, P, and R, and supports adjustable depth; never use flat-faced or digital display segments and never approximate balloon letters with boxes. "
-    "For a true gable roof, use gable_roofs with exactly name, length_mm along the ridge, span_mm across the gables, rise_mm from eave to ridge, thickness_mm, and origin_mm [x, y, z] at the lower outside corner; never approximate a pitched roof with stepped boxes. "
-    "For one solid straight staircase, use staircases with exactly name, run_mm, width_mm, rise_mm, step_count, and origin_mm [x, y, z]. Choose 150-450 mm going, 100-250 mm riser, and at least 500 mm width. "
-    "For rafters, purlins, braces, and any rotated rectangular timber, use oriented_beams with exactly name, start_mm and end_mm at the centres of the end faces, up_hint (normally [0,0,1]), width_mm, depth_mm, and optional bottom_notches. Each full-width bottom notch has exactly from_start_mm along the beam axis, length_mm, and depth_mm. Use real oriented beams and notches; never claim they are unsupported or replace a sloped beam with stepped boxes. Extend rafter endpoints by the requested overhang distance along their slope, not horizontally and not at gables. "
     "Each box has exactly name, size_mm [width, depth, height], origin_mm [x, y, z], and optional "
-    "subtract_boxes. Each subtraction has exactly size_mm and origin_mm LOCAL to its parent box. A stair or attic opening through a slab uses one strictly interior subtraction with the full slab height and local z=0. "
+    "subtract_boxes. Each subtraction has exactly size_mm and origin_mm LOCAL to its parent box. An opening through a slab uses one strictly interior subtraction with the full slab height and local z=0. "
     "Use subtract_boxes for grooves, notches, recesses, slots, openings, and removed material; never imitate "
     "a cut by adding thin boxes. When the user asks to create or change geometry, produce "
     "model_intent instead of merely describing it. Use at most 64 bodies and 64 non-overlapping "
@@ -566,130 +555,6 @@ def _validate_vector(values, label: str, *, positive: bool) -> None:
         for value in values
     ):
         raise ProtocolError(f"{label} is outside the envelope")
-
-
-def _validate_bottle(bottle: object) -> None:
-    fields = {
-        "name",
-        "body_radius_mm",
-        "body_height_mm",
-        "shoulder_rise_mm",
-        "neck_radius_mm",
-        "neck_height_mm",
-        "wall_thickness_mm",
-        "finish_kind",
-        "finish_amount_mm",
-        "origin_mm",
-    }
-    if (
-        not isinstance(bottle, dict)
-        or not fields <= set(bottle) <= fields | {"teapot", "ketchup_bottle"}
-    ):
-        raise ProtocolError("provider bottle contains missing or unknown fields")
-    name = bottle["name"]
-    if (
-        not isinstance(name, str)
-        or not name.strip()
-        or len(name.encode("utf-8")) > 128
-        or any(ord(character) < 32 or ord(character) == 127 for character in name)
-    ):
-        raise ProtocolError("provider bottle name is invalid")
-    _validate_vector(bottle["origin_mm"], "provider bottle origin_mm", positive=False)
-    dimension_names = (
-        "body_radius_mm",
-        "body_height_mm",
-        "shoulder_rise_mm",
-        "neck_radius_mm",
-        "neck_height_mm",
-        "wall_thickness_mm",
-        "finish_amount_mm",
-    )
-    if any(
-        not isinstance(bottle[field], (int, float))
-        or isinstance(bottle[field], bool)
-        or not 0 < bottle[field] <= 1_000_000
-        for field in dimension_names
-    ):
-        raise ProtocolError("provider bottle dimensions are outside the envelope")
-    body_radius = bottle["body_radius_mm"]
-    shoulder_rise = bottle["shoulder_rise_mm"]
-    neck_radius = bottle["neck_radius_mm"]
-    thickness = bottle["wall_thickness_mm"]
-    finish_amount = bottle["finish_amount_mm"]
-    shoulder_length = ((body_radius - neck_radius) ** 2 + shoulder_rise**2) ** 0.5
-    if (
-        neck_radius >= body_radius
-        or thickness >= min(body_radius, neck_radius, shoulder_length) * 0.5
-        or finish_amount >= min(neck_radius, shoulder_length) * 0.25
-        or bottle["finish_kind"] not in {"fillet", "chamfer"}
-    ):
-        raise ProtocolError("provider bottle geometry is unsupported")
-    teapot = bottle.get("teapot")
-    ketchup = bottle.get("ketchup_bottle")
-    if teapot is not None and ketchup is not None:
-        raise ProtocolError("provider bottle cannot combine vessel styles")
-    if teapot is not None:
-        teapot_fields = {
-            "handle_clearance_mm", "handle_tube_radius_mm", "spout_length_mm",
-            "spout_radius_mm", "lid_height_mm", "lid_knob_radius_mm",
-        }
-        if not isinstance(teapot, dict) or set(teapot) != teapot_fields:
-            raise ProtocolError("provider teapot contains missing or unknown fields")
-        if any(not isinstance(teapot[field], (int, float)) or isinstance(teapot[field], bool) or not 0 < teapot[field] <= 2_000 for field in teapot_fields):
-            raise ProtocolError("provider teapot dimensions are outside the envelope")
-        if (teapot["handle_clearance_mm"] < teapot["handle_tube_radius_mm"] * 2 or teapot["handle_tube_radius_mm"] >= body_radius * 0.35 or not body_radius * 0.75 <= teapot["spout_length_mm"] <= body_radius * 4 or not thickness < teapot["spout_radius_mm"] < body_radius * 0.5 or teapot["lid_height_mm"] >= bottle["body_height_mm"] * 0.5 or teapot["lid_knob_radius_mm"] >= neck_radius * 0.75):
-            raise ProtocolError("provider teapot geometry is unsupported")
-    if ketchup is None:
-        return
-    ketchup_fields = {"body_depth_ratio", "cap_radius_mm", "cap_height_mm", "label_width_mm", "label_height_mm", "label_relief_mm", "grip_rib_count"}
-    if not isinstance(ketchup, dict) or set(ketchup) != ketchup_fields:
-        raise ProtocolError("provider ketchup bottle contains missing or unknown fields")
-    if not isinstance(ketchup["grip_rib_count"], int) or isinstance(ketchup["grip_rib_count"], bool) or not 8 <= ketchup["grip_rib_count"] <= 48:
-        raise ProtocolError("provider ketchup bottle rib count is invalid")
-    numeric = [ketchup[field] for field in ketchup_fields - {"grip_rib_count"}]
-    if any(not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 < value <= 2_000 for value in numeric):
-        raise ProtocolError("provider ketchup bottle dimensions are outside the envelope")
-    if (not 0.5 <= ketchup["body_depth_ratio"] <= 1.0 or not neck_radius + thickness * 1.75 < ketchup["cap_radius_mm"] < body_radius * 0.55 or not bottle["neck_height_mm"] + thickness * 2 < ketchup["cap_height_mm"] < bottle["body_height_mm"] * 0.35 or ketchup["label_width_mm"] >= body_radius * 1.8 or ketchup["label_height_mm"] >= bottle["body_height_mm"] * 0.7 or ketchup["label_relief_mm"] >= body_radius * 0.1):
-        raise ProtocolError("provider ketchup bottle geometry is unsupported")
-
-
-def _validate_balloon_text(item: object) -> None:
-    fields = {
-        "name", "text", "height_mm", "depth_mm", "stroke_width_mm",
-        "letter_spacing_mm", "origin_mm",
-    }
-    if not isinstance(item, dict) or set(item) != fields:
-        raise ProtocolError("provider balloon text contains missing or unknown fields")
-    name = item["name"]
-    text = item["text"]
-    if (
-        not isinstance(name, str)
-        or not name.strip()
-        or len(name.encode("utf-8")) > 128
-        or any(ord(character) < 32 or ord(character) == 127 for character in name)
-        or not isinstance(text, str)
-        or not 1 <= len(text) <= 32
-        or not text.strip()
-        or any(character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ˇ" for character in text)
-    ):
-        raise ProtocolError("provider balloon text name or content is invalid")
-    dimensions = [item[field] for field in ("height_mm", "depth_mm", "stroke_width_mm", "letter_spacing_mm")]
-    if any(
-        not isinstance(value, (int, float))
-        or isinstance(value, bool)
-        or not math.isfinite(value)
-        for value in dimensions
-    ):
-        raise ProtocolError("provider balloon text dimensions are invalid")
-    height = item["height_mm"]
-    if (
-        not 10 <= height <= 2_000
-        or not height * 0.1 <= item["depth_mm"] <= height * 0.8
-        or not height * 0.08 <= item["stroke_width_mm"] <= height * 0.24
-        or not 0 <= item["letter_spacing_mm"] <= height
-    ):
-        raise ProtocolError("provider balloon text geometry is unsupported")
-    _validate_vector(item["origin_mm"], "provider balloon text origin_mm", positive=False)
 
 
 def _validate_cad_selector(selector: object) -> int:
@@ -2397,7 +2262,7 @@ def _parse_assistant_result(answer: str) -> dict:
             parsed["fea_review"] = None
         return parsed
     if not isinstance(intent, dict) or not {"replace_scene", "boxes"} <= set(intent) <= {
-        "replace_scene", "boxes", "translations", "rotations", "profile_translations", "parameter_edits", "linear_arrays", "bottles", "balloon_texts", "gable_roofs", "staircases", "oriented_beams"
+        "replace_scene", "boxes", "translations", "rotations", "profile_translations", "parameter_edits", "linear_arrays"
     }:
         raise ProtocolError("provider model intent contains missing or unknown fields")
     boxes = intent["boxes"]
@@ -2406,11 +2271,6 @@ def _parse_assistant_result(answer: str) -> dict:
     profile_translations = intent.setdefault("profile_translations", [])
     parameter_edits = intent.setdefault("parameter_edits", [])
     linear_arrays = intent.setdefault("linear_arrays", [])
-    bottles = intent.setdefault("bottles", [])
-    balloon_texts = intent.setdefault("balloon_texts", [])
-    gable_roofs = intent.setdefault("gable_roofs", [])
-    staircases = intent.setdefault("staircases", [])
-    oriented_beams = intent.setdefault("oriented_beams", [])
     if not isinstance(intent["replace_scene"], bool) or not isinstance(boxes, list):
         raise ProtocolError("provider model intent has invalid field types")
     if not isinstance(translations, list) or len(translations) > 100:
@@ -2423,23 +2283,13 @@ def _parse_assistant_result(answer: str) -> dict:
         raise ProtocolError("provider model intent has too many parameter edits")
     if not isinstance(linear_arrays, list) or len(linear_arrays) > 16:
         raise ProtocolError("provider model intent has too many linear arrays")
-    if not isinstance(bottles, list) or len(bottles) > 8:
-        raise ProtocolError("provider model intent has too many bottles")
-    if not isinstance(balloon_texts, list) or len(balloon_texts) > 8:
-        raise ProtocolError("provider model intent has too many balloon texts")
-    if not isinstance(gable_roofs, list) or len(gable_roofs) > 16:
-        raise ProtocolError("provider model intent has too many gable roofs")
-    if not isinstance(staircases, list) or len(staircases) > 16:
-        raise ProtocolError("provider model intent has too many staircases")
-    if not isinstance(oriented_beams, list) or len(oriented_beams) > 64:
-        raise ProtocolError("provider model intent has too many oriented beams")
-    if not boxes and not translations and not rotations and not profile_translations and not parameter_edits and not linear_arrays and not bottles and not balloon_texts and not gable_roofs and not staircases and not oriented_beams:
+    if not boxes and not translations and not rotations and not profile_translations and not parameter_edits and not linear_arrays:
         raise ProtocolError("provider model intent is empty")
     if len(boxes) > 64 or (intent["replace_scene"] and (translations or rotations or profile_translations or parameter_edits or linear_arrays)):
         raise ProtocolError("provider model intent has invalid geometry scope")
-    if profile_translations and (boxes or translations or rotations or parameter_edits or linear_arrays or bottles or balloon_texts or gable_roofs or staircases or oriented_beams):
+    if profile_translations and (boxes or translations or rotations or parameter_edits or linear_arrays):
         raise ProtocolError("provider profile translation cannot mix geometry mutations")
-    if parameter_edits and (boxes or translations or rotations or profile_translations or linear_arrays or bottles or balloon_texts or gable_roofs or staircases or oriented_beams):
+    if parameter_edits and (boxes or translations or rotations or profile_translations or linear_arrays):
         raise ProtocolError("provider parameter edit cannot mix geometry mutations")
     translated_ids = set()
     for translation in translations:
@@ -2567,71 +2417,6 @@ def _parse_assistant_result(answer: str) -> dict:
         array_outputs += len(array["occurrence_ids"]) * (array["instances"] - 1)
         if array_outputs > 512:
             raise ProtocolError("provider linear array creates too many occurrences")
-    for bottle in bottles:
-        _validate_bottle(bottle)
-    for text in balloon_texts:
-        _validate_balloon_text(text)
-    for roof in gable_roofs:
-        fields = {"name", "length_mm", "span_mm", "rise_mm", "thickness_mm", "origin_mm"}
-        if not isinstance(roof, dict) or set(roof) != fields:
-            raise ProtocolError("provider gable roof contains missing or unknown fields")
-        if not isinstance(roof["name"], str) or not roof["name"].strip() or len(roof["name"].encode("utf-8")) > 128:
-            raise ProtocolError("provider gable roof name is invalid")
-        dimensions = [roof[field] for field in ("length_mm", "span_mm", "rise_mm", "thickness_mm")]
-        if any(not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or not 0 < value <= 1_000_000 for value in dimensions) or roof["thickness_mm"] >= roof["rise_mm"]:
-            raise ProtocolError("provider gable roof dimensions are invalid")
-        _validate_vector(roof["origin_mm"], "provider gable roof origin_mm", positive=False)
-    for stairs in staircases:
-        fields = {"name", "run_mm", "width_mm", "rise_mm", "step_count", "origin_mm"}
-        if not isinstance(stairs, dict) or set(stairs) != fields:
-            raise ProtocolError("provider staircase contains missing or unknown fields")
-        if not isinstance(stairs["name"], str) or not stairs["name"].strip() or len(stairs["name"].encode("utf-8")) > 128:
-            raise ProtocolError("provider staircase name is invalid")
-        dimensions = [stairs[field] for field in ("run_mm", "width_mm", "rise_mm")]
-        if any(not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or not 0 < value <= 1_000_000 for value in dimensions) or not isinstance(stairs["step_count"], int) or isinstance(stairs["step_count"], bool) or not 2 <= stairs["step_count"] <= 64:
-            raise ProtocolError("provider staircase dimensions are invalid")
-        tread_mm = stairs["run_mm"] / stairs["step_count"]
-        riser_mm = stairs["rise_mm"] / stairs["step_count"]
-        if not 150 <= tread_mm <= 450 or not 100 <= riser_mm <= 250 or stairs["width_mm"] < 500:
-            raise ProtocolError("provider staircase proportions are invalid")
-        _validate_vector(stairs["origin_mm"], "provider staircase origin_mm", positive=False)
-    for beam in oriented_beams:
-        fields = {"name", "start_mm", "end_mm", "up_hint", "width_mm", "depth_mm", "bottom_notches"}
-        if not isinstance(beam, dict) or not {"name", "start_mm", "end_mm", "up_hint", "width_mm", "depth_mm"} <= set(beam) <= fields:
-            raise ProtocolError("provider oriented beam contains missing or unknown fields")
-        if not isinstance(beam["name"], str) or not beam["name"].strip() or len(beam["name"].encode("utf-8")) > 128:
-            raise ProtocolError("provider oriented beam name is invalid")
-        _validate_vector(beam["start_mm"], "provider oriented beam start_mm", positive=False)
-        _validate_vector(beam["end_mm"], "provider oriented beam end_mm", positive=False)
-        _validate_vector(beam["up_hint"], "provider oriented beam up_hint", positive=False)
-        dimensions = [beam["width_mm"], beam["depth_mm"]]
-        if any(not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or not 0 < value <= 1_000_000 for value in dimensions):
-            raise ProtocolError("provider oriented beam dimensions are invalid")
-        axis = [beam["end_mm"][index] - beam["start_mm"][index] for index in range(3)]
-        axis_length = math.sqrt(sum(value * value for value in axis))
-        up_length = math.sqrt(sum(value * value for value in beam["up_hint"]))
-        cross = [
-            axis[1] * beam["up_hint"][2] - axis[2] * beam["up_hint"][1],
-            axis[2] * beam["up_hint"][0] - axis[0] * beam["up_hint"][2],
-            axis[0] * beam["up_hint"][1] - axis[1] * beam["up_hint"][0],
-        ]
-        cross_length = math.sqrt(sum(value * value for value in cross))
-        if axis_length <= 0 or axis_length > 1_000_000 or up_length <= 0 or cross_length <= axis_length * up_length * 1.0e-6:
-            raise ProtocolError("provider oriented beam axis or up_hint is invalid")
-        notches = beam.setdefault("bottom_notches", [])
-        if not isinstance(notches, list) or len(notches) > 64:
-            raise ProtocolError("provider oriented beam has too many notches")
-        intervals = []
-        for notch in notches:
-            if not isinstance(notch, dict) or set(notch) != {"from_start_mm", "length_mm", "depth_mm"}:
-                raise ProtocolError("provider oriented beam notch contains missing or unknown fields")
-            values = [notch["from_start_mm"], notch["length_mm"], notch["depth_mm"]]
-            if any(not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) for value in values) or notch["from_start_mm"] < 0 or notch["length_mm"] <= 0 or notch["from_start_mm"] + notch["length_mm"] > axis_length or not 0 < notch["depth_mm"] < beam["depth_mm"]:
-                raise ProtocolError("provider oriented beam notch is invalid")
-            interval = (notch["from_start_mm"], notch["from_start_mm"] + notch["length_mm"])
-            if any(interval[0] < other[1] and other[0] < interval[1] for other in intervals):
-                raise ProtocolError("provider oriented beam notches overlap")
-            intervals.append(interval)
     for item in boxes:
         if not isinstance(item, dict) or not {"name", "size_mm", "origin_mm"} <= set(item) <= {
             "name",
@@ -2721,10 +2506,6 @@ def _validate_planned_placement_answer(answer: str, placements: list[dict]) -> N
         or intent["profile_translations"]
         or intent["parameter_edits"]
         or intent["linear_arrays"]
-        or intent["bottles"]
-        or intent["gable_roofs"]
-        or intent["staircases"]
-        or intent["oriented_beams"]
         or not translations
         or len({translation["occurrence_id"] for translation in translations})
         != len(translations)
@@ -2755,10 +2536,6 @@ def _validate_planned_linear_array_answer(answer: str, arrays: list[dict]) -> No
         or intent["translations"]
         or intent["profile_translations"]
         or intent["parameter_edits"]
-        or intent["bottles"]
-        or intent["gable_roofs"]
-        or intent["staircases"]
-        or intent["oriented_beams"]
         or not linear_arrays
     ):
         raise ProtocolError("planned linear array may only produce exact array proposals")
