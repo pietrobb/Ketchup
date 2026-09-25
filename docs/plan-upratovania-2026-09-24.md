@@ -15,7 +15,7 @@
 | 2 — vyhodiť showcase | **hotové**: čajník, balónové písmená aj s fontom, strechy, schody, trámy, Hettich, beam_m4ae/m5, capstone, gate binárky, `named-product-fixtures` |
 | 3 — dôkazová diéta, 1. časť | **hotové v CI a súboroch**: ADR 0008, preč governance, preregistrácie, 50 MB artefaktov a staré release-evidence skripty; nové jednoduché CI. Zostáva: podpisy ed25519, digesty návrhu, SHA kontrola workera |
 | 4 — pravidlový jazyk | **MVP hotové**: crate `ketchup-program` (Starlark), knižnica `board/dowels/groove/rabbet/hole_row/divide`, kontroly, kusovník, vŕtací plán, `create_panel` s výrezmi, `program_check`/`program_apply`, SDK a skill `KetchupProgram`, príklad `examples/programs/cabinet.star`, dokumentácia `docs/program-language.md`. Zostáva: program uložený v dokumente, override ručných úprav, rotované diely a profily |
-| 5 — fľaša a špeciálne evaluátory | **fľaša hotová** (aj v C++). Zostáva 16 evaluátorov a ručné siete (kapsuly, D-profily). Ťahajú sa cez smart Push/Pull a shared change v GUI, preto najprv test zhody |
+| 5 — fľaša a špeciálne evaluátory | **hotové**: fľaša aj celá stará cesta receptov (`ExactFeatureChainRequest`, ~20 príkazov workera, ručné siete, kapsuly/D-profily, staré ofset/sweep/loft vyhodnotenie). Každé teleso ide cez `ExactBRepGraph`. Pri prechode opravené: kapsa z profilu sa reže zhora (obrazovka a BTLx/woodWOP sa predtým nezhodovali), odtlačok vstupu telesa je lokálny (odkazy na plochy prežijú nesúvisiace úpravy), rovina skice na ploche môže mať počiatok kdekoľvek na ploche. Zostáva: `ExactPlanarOffsetRequest`/`Sweep`/`Loft` sa ešte používajú na náhľady v GUI |
 | 6–9 | neotvorené |
 
 Build a testy bežia aj na Linuxe (OCCT 8.0.1 zo zdrojov, `KETCHUP_OCCT_ROOT` + rpath, pozri README).
