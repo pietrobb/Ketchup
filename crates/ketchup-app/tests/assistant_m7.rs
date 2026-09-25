@@ -3647,7 +3647,10 @@ fn scripted_sketch_program_rejects_invalid_constraint_without_mutation() {
     invalid_shell.press_key(egui::Key::Enter);
     let rejection = wait_for_assistant_reply(&mut invalid_shell);
     assert_eq!(rejection.role, AssistantMessageRole::Error, "{rejection:?}");
-    assert!(rejection.diagnostic.is_some(), "{rejection:?}");
+    assert_eq!(
+        rejection.text,
+        "apply_and_verify: invalid_program: assistant sketch constraint reference is invalid"
+    );
     assert!(invalid_shell.app().assistant_proposal().is_none());
     assert_eq!(invalid_shell.app().document_revision(), before_revision);
     assert_eq!(invalid_shell.app().canonical_digest(), before_digest);
