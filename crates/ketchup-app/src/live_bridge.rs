@@ -1117,7 +1117,13 @@ impl LiveBridge {
         let (candidate_exact, candidate_topology, exact_report) =
             materialize_exact_products(candidate, render, topology, &exact_task, products)
                 .map_err(|_| "exact_evaluation_rejected")?;
-        if !exact_report.complete || !exact_report.topology_complete {
+        // A candidate without exact geometry (e.g. a cleared document) has
+        // nothing to verify; every producer it does have must be evaluated.
+        if exact_report
+            .producers
+            .iter()
+            .any(|producer| !producer.render.is_evaluated() || !producer.topology.is_evaluated())
+        {
             return Err("exact_evaluation_incomplete");
         }
         let exact_at = Instant::now();
