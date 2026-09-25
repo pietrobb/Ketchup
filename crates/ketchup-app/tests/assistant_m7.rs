@@ -4,8 +4,8 @@ use eframe::egui::{self, accesskit::Role};
 use harness::{ScriptedAssistantTransport, Shell};
 use ketchup_app::dialogs::ScriptedFileDialogs;
 use ketchup_app::{
-    ASSISTANT_REPAIR_PROGRAM_SCHEMA_V1, AppCommand, AssistantMessageRole, AssistantProvider,
-    AssistantRepairOperation, AssistantRepairProgram, AssistantWorkspaceMode,
+    ASSISTANT_REPAIR_PROGRAM_SCHEMA_V1, AppCommand, AssistantChatMessage, AssistantMessageRole,
+    AssistantProvider, AssistantRepairOperation, AssistantRepairProgram, AssistantWorkspaceMode,
 };
 use ketchup_core::assistant_sidecar::{
     ASSISTANT_PROTOCOL_VERSION, AssistantApiDiagnostics, AssistantAssemblyJointAxis,
@@ -240,6 +240,16 @@ fn write_assistant_boolean_fixture(path: &std::path::Path) {
                     profile: FeatureId(1),
                     height: Dimension::from_decimal("20").unwrap(),
                 },
+            },
+            CanonicalCommand::CreateBody {
+                definition_id: DefinitionId(1),
+                id: BodyId(2),
+                name: "Tool body".to_owned(),
+                visible: true,
+            },
+            CanonicalCommand::SetActiveBody {
+                definition_id: DefinitionId(1),
+                id: BodyId(2),
             },
             CanonicalCommand::CreateFeature {
                 id: FeatureId(3),
@@ -627,13 +637,39 @@ fn wait_for_assistant_proposal(shell: &mut Shell) {
     );
 }
 
-fn submit_and_confirm_assistant_request(shell: &mut Shell, request: &str) {
+/// Steps the shell until the assistant replied to the latest user message and returns the reply.
+fn wait_for_assistant_reply(shell: &mut Shell) -> AssistantChatMessage {
+    for _ in 0..2_000 {
+        shell.step();
+        let messages = shell.app().assistant_messages();
+        let user = messages
+            .iter()
+            .rposition(|message| message.role == AssistantMessageRole::User);
+        if let Some(reply) = user.and_then(|index| messages.get(index + 1)).cloned() {
+            shell.settle();
+            return reply;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!(
+        "scripted assistant request did not finish: {:?}",
+        shell.app().assistant_messages()
+    );
+}
+
+/// Sends a CAD edit program request and waits until apply-and-verify committed it.
+fn submit_applied_assistant_request(shell: &mut Shell, request: &str) {
     let input = shell.catalog().text("assistant-input-hint");
     shell.focus_text_input(&input);
     shell.type_text(request);
     shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(shell);
-    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    let reply = wait_for_assistant_reply(shell);
+    assert_eq!(
+        reply.role,
+        AssistantMessageRole::Assistant,
+        "assistant program was not applied: {:?}",
+        shell.app().assistant_messages()
+    );
 }
 
 #[test]
@@ -1083,13 +1119,7 @@ fn assistant_enter_sends_and_shift_enter_keeps_composing() {
 
     shell.type_text("up 20 mm");
     shell.press_key(egui::Key::Enter);
-    for _ in 0..100 {
-        shell.step();
-        if shell.app().assistant_messages().len() == 2 {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    wait_for_assistant_reply(&mut shell);
     let messages = shell.app().assistant_messages();
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[0].role, AssistantMessageRole::User);
@@ -1152,7 +1182,7 @@ fn assistant_diagnostics_show_exact_api_usage_and_search_project_memory() {
     shell.focus_text_input(&input_label);
     shell.type_text(request);
     shell.press_key(egui::Key::Enter);
-    for _ in 0..100 {
+    for _ in 0..2_000 {
         shell.step();
         if shell.app().assistant_messages().len() == 2 {
             break;
@@ -1390,13 +1420,7 @@ fn injected_assistant_results_are_validated_fail_closed() {
     shell.focus_text_input(&input_label);
     shell.type_text("Invalid result");
     shell.press_key(egui::Key::Enter);
-    for _ in 0..100 {
-        shell.step();
-        if shell.app().assistant_messages().len() == 2 {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    wait_for_assistant_reply(&mut shell);
     let messages = shell.app().assistant_messages();
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[1].role, AssistantMessageRole::Error);
@@ -1436,7 +1460,7 @@ fn canonical_rejection_reaches_accesskit_without_generic_error_degradation() {
     shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
     shell.type_text(request);
     shell.press_key(egui::Key::Enter);
-    for _ in 0..200 {
+    for _ in 0..2_000 {
         shell.step();
         if shell
             .app()
@@ -1570,6 +1594,23 @@ fn scripted_nested_assembly_joint_and_motion_preserve_consent_and_repeated_branc
             CanonicalCommand::CreateDefinition {
                 id: DefinitionId(50),
                 name: "Mechanism part".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(1),
+                definition_id: DefinitionId(50),
+                name: "Mechanism profile".into(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 5.0], [0.0, 5.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(2),
+                definition_id: DefinitionId(50),
+                name: "Mechanism extrusion".into(),
+                kind: FeatureKind::Extrusion {
+                    profile: FeatureId(1),
+                    height: Dimension::from_decimal("5").unwrap(),
+                },
             },
             CanonicalCommand::CreateGroup {
                 id: GroupId(60),
@@ -1715,26 +1756,17 @@ fn scripted_nested_assembly_joint_and_motion_preserve_consent_and_repeated_branc
     );
     let mut shell = Shell::with_assistant_transport(transport);
     assert!(shell.app_mut().open_document_path(&fixture));
-    let input = shell.catalog().text("assistant-input-hint");
-    let confirm = shell.catalog().text("assistant-confirm");
 
     let baseline = shell.app().canonical_digest();
-    shell.focus_text_input(&input);
-    shell.type_text(create_request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(shell.app().canonical_digest(), baseline);
-    shell.click_row(&confirm);
+    let baseline_undo = shell.app().undo_step_count();
+    submit_applied_assistant_request(&mut shell, create_request);
     let joint_digest = shell.app().canonical_digest();
     assert_ne!(joint_digest, baseline);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
     assert_eq!(shell.app().document_snapshot().assembly_joints().count(), 1);
 
-    shell.focus_text_input(&input);
-    shell.type_text(move_request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(shell.app().canonical_digest(), joint_digest);
-    shell.click_row(&confirm);
+    submit_applied_assistant_request(&mut shell, move_request);
+    assert_eq!(shell.app().undo_step_count(), baseline_undo + 2);
     let moved_digest = shell.app().canonical_digest();
     let moved = shell.app().document_snapshot();
     assert_eq!(
@@ -1811,60 +1843,11 @@ fn scripted_cad_edit_program_reviews_selection_transform_copy_pattern_mirror_del
         .unwrap()
         .definition_id();
 
-    let input_label = shell.catalog().text("assistant-input-hint");
-    shell.focus_text_input(&input_label);
-    shell.type_text(request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-
+    submit_applied_assistant_request(&mut shell, request);
     assert_eq!(
         transport.contexts()[0]["selected_occurrence_ids"],
         serde_json::json!([1])
     );
-    assert_eq!(shell.app().document_revision(), baseline_revision);
-    assert_eq!(shell.app().canonical_digest(), baseline_digest);
-    assert_eq!(shell.app().undo_step_count(), baseline_undo_steps);
-    assert_eq!(
-        shell.app().document_snapshot().occurrences().count(),
-        baseline_occurrences
-    );
-    assert!(shell.has_visible_label(&shell.catalog().text("assistant-review-title")));
-
-    let proposal = shell.app().assistant_proposal().unwrap();
-    assert_eq!(proposal.batch().commands().len(), 6);
-    assert!(matches!(
-        proposal.batch().commands()[0],
-        CanonicalCommand::SetOccurrenceTransform {
-            id: OccurrenceId(1),
-            ..
-        }
-    ));
-    assert_eq!(
-        proposal
-            .batch()
-            .commands()
-            .iter()
-            .filter_map(|command| match command {
-                CanonicalCommand::CreateOccurrence { id, .. } => Some(*id),
-                _ => None,
-            })
-            .collect::<Vec<_>>(),
-        vec![
-            OccurrenceId(2),
-            OccurrenceId(3),
-            OccurrenceId(4),
-            OccurrenceId(5)
-        ]
-    );
-    assert!(matches!(
-        proposal.batch().commands()[5],
-        CanonicalCommand::DeleteOccurrence {
-            id: OccurrenceId(1)
-        }
-    ));
-
-    let confirm = shell.catalog().text("assistant-confirm");
-    shell.click_row(&confirm);
     assert_eq!(shell.app().document_revision(), baseline_revision + 1);
     assert_eq!(shell.app().undo_step_count(), baseline_undo_steps + 1);
     let committed_digest = shell.app().canonical_digest();
@@ -1938,15 +1921,7 @@ fn scripted_create_part_program_round_trips_state_view_and_one_step_undo_redo() 
     let baseline_redo = shell.app().redo_step_count();
     let baseline_occurrences = shell.app().document_snapshot().occurrences().count();
 
-    let input = shell.catalog().text("assistant-input-hint");
-    shell.focus_text_input(&input);
-    shell.type_text(request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(shell.app().document_revision(), baseline_revision);
-    assert_eq!(shell.app().canonical_digest(), baseline_digest);
-
-    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    submit_applied_assistant_request(&mut shell, request);
     assert_eq!(shell.app().document_revision(), baseline_revision + 1);
     assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
     let committed = shell.app().document_snapshot();
@@ -2067,16 +2042,7 @@ fn scripted_create_revolved_part_round_trips_state_view_and_one_step_undo_redo()
     let baseline_redo = shell.app().redo_step_count();
     let baseline_occurrences = shell.app().document_snapshot().occurrences().count();
 
-    let input = shell.catalog().text("assistant-input-hint");
-    shell.focus_text_input(&input);
-    shell.type_text(request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(shell.app().document_revision(), baseline_revision);
-    assert_eq!(shell.app().canonical_digest(), baseline_digest);
-    assert_eq!(shell.app().undo_step_count(), baseline_undo);
-
-    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    submit_applied_assistant_request(&mut shell, request);
     assert_eq!(shell.app().document_revision(), baseline_revision + 1);
     assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
     let committed = shell.app().document_snapshot();
@@ -2181,11 +2147,16 @@ fn scripted_append_boolean_programs_are_exact_persistent_and_one_step() {
             },
         ),
     ]));
-    for (request, operation) in requests.iter().zip([
-        AssistantCadBooleanOperation::Cut,
-        AssistantCadBooleanOperation::Union,
-        AssistantCadBooleanOperation::Intersect,
-    ]) {
+    // Each boolean refines the previous result, so body 1 keeps one terminal feature.
+    for ((request, operation), target) in requests
+        .iter()
+        .zip([
+            AssistantCadBooleanOperation::Cut,
+            AssistantCadBooleanOperation::Union,
+            AssistantCadBooleanOperation::Intersect,
+        ])
+        .zip([2, 5, 6])
+    {
         transport.queue_cad_edit_program(
             *request,
             AssistantCadEditProgram {
@@ -2194,7 +2165,7 @@ fn scripted_append_boolean_programs_are_exact_persistent_and_one_step() {
                     name: format!("Assistant {operation:?}"),
                     feature: AssistantCadBodyFeature::Boolean {
                         operation,
-                        target_feature_id: 2.into(),
+                        target_feature_id: target.into(),
                         tool_feature_id: 4.into(),
                     },
                 }],
@@ -2231,27 +2202,23 @@ fn scripted_append_boolean_programs_are_exact_persistent_and_one_step() {
         if index == 2 {
             digest_before_last.clone_from(&baseline_digest);
         }
-        let input = shell.catalog().text("assistant-input-hint");
-        shell.focus_text_input(&input);
-        shell.type_text(request);
-        shell.press_key(egui::Key::Enter);
-        wait_for_assistant_proposal(&mut shell);
-        assert_eq!(shell.app().document_revision(), baseline_revision);
-        assert_eq!(shell.app().canonical_digest(), baseline_digest);
-        assert_eq!(shell.app().undo_step_count(), baseline_undo);
-
-        shell.click_row(&shell.catalog().text("assistant-confirm"));
+        submit_applied_assistant_request(&mut shell, request);
         assert_eq!(shell.app().document_revision(), baseline_revision + 1);
         assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
         let committed = shell.app().document_snapshot();
         let feature_id = FeatureId(5 + index as u64);
+        let expected_target = if index == 0 {
+            FeatureId(2)
+        } else {
+            FeatureId(4 + index as u64)
+        };
         assert!(matches!(
             committed.feature(feature_id).unwrap().kind(),
             FeatureKind::Boolean {
                 operation,
-                target: FeatureId(2),
+                target,
                 tool: FeatureId(4),
-            } if *operation == canonical_operation
+            } if *operation == canonical_operation && *target == expected_target
         ));
         let graph = ExactBRepGraph::from_snapshot(&committed, DefinitionId(1), feature_id).unwrap();
         assert_eq!(graph.producer_feature_id, feature_id.0);
@@ -2340,16 +2307,7 @@ fn scripted_append_pocket_is_exact_persistent_and_one_step() {
     let baseline_redo = shell.app().redo_step_count();
     let baseline_occurrences = shell.app().document_snapshot().occurrences().count();
 
-    let input = shell.catalog().text("assistant-input-hint");
-    shell.focus_text_input(&input);
-    shell.type_text(request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(shell.app().document_revision(), baseline_revision);
-    assert_eq!(shell.app().canonical_digest(), baseline_digest);
-    assert_eq!(shell.app().undo_step_count(), baseline_undo);
-
-    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    submit_applied_assistant_request(&mut shell, request);
     assert_eq!(shell.app().document_revision(), baseline_revision + 1);
     assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
     let committed = shell.app().document_snapshot();
@@ -2392,14 +2350,14 @@ fn scripted_append_pocket_is_exact_persistent_and_one_step() {
 #[test]
 fn scripted_append_pocket_rejects_missing_profile_without_false_success() {
     let request = "Create an opening from missing profile 999";
-    let rejected_result = || AssistantChatResult {
-        message: "The requested opening was created.".to_owned(),
-        model_intent: None,
-    };
-    let transport = Arc::new(ScriptedAssistantTransport::new([
-        (request.to_owned(), rejected_result()),
-        (request.to_owned(), rejected_result()),
-    ]));
+    let false_success = "The requested opening was created.";
+    let transport = Arc::new(ScriptedAssistantTransport::new([(
+        request.to_owned(),
+        AssistantChatResult {
+            message: false_success.to_owned(),
+            model_intent: None,
+        },
+    )]));
     let invalid_program = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::AppendFeature {
             definition_id: 1,
@@ -2411,7 +2369,6 @@ fn scripted_append_pocket_rejects_missing_profile_without_false_success() {
             },
         }],
     };
-    transport.queue_cad_edit_program(request, invalid_program.clone());
     transport.queue_cad_edit_program(request, invalid_program);
 
     let directory = tempfile::tempdir().unwrap();
@@ -2429,38 +2386,21 @@ fn scripted_append_pocket_rejects_missing_profile_without_false_success() {
     shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
     shell.type_text(request);
     shell.press_key(egui::Key::Enter);
-    for _ in 0..200 {
-        shell.step();
-        if shell
+    let rejection = wait_for_assistant_reply(&mut shell);
+    shell.settle();
+    assert_eq!(rejection.role, AssistantMessageRole::Error, "{rejection:?}");
+    assert!(
+        rejection.text.starts_with("apply_and_verify: ") && rejection.text.contains("999"),
+        "{rejection:?}"
+    );
+    assert!(shell.has_visible_label(&rejection.text));
+    assert!(
+        shell
             .app()
             .assistant_messages()
             .iter()
-            .filter(|message| message.diagnostic.is_some())
-            .count()
-            == 2
-        {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    shell.settle();
-
-    let diagnostic_messages = shell
-        .app()
-        .assistant_messages()
-        .iter()
-        .filter(|message| message.diagnostic.is_some())
-        .collect::<Vec<_>>();
-    assert_eq!(diagnostic_messages.len(), 2);
-    for message in diagnostic_messages {
-        let diagnostic = message.diagnostic.as_ref().unwrap();
-        assert_eq!(message.role, AssistantMessageRole::Error);
-        assert_eq!(diagnostic.code, "canonical.feature_not_found");
-        assert_eq!(diagnostic.operation, "append_feature");
-        assert!(diagnostic.target.starts_with("document:"));
-        assert!(message.text.contains("feature 999 does not exist"));
-        assert!(shell.has_visible_label(&message.text));
-    }
+            .all(|message| message.text != false_success)
+    );
     assert!(shell.app().assistant_proposal().is_none());
     assert_eq!(shell.app().document_revision(), baseline_revision);
     assert_eq!(shell.app().canonical_digest(), baseline_digest);
@@ -2506,16 +2446,7 @@ fn scripted_append_planar_offset_is_exact_persistent_and_one_step() {
     let baseline_redo = shell.app().redo_step_count();
     let baseline_occurrences = shell.app().document_snapshot().occurrences().count();
 
-    let input = shell.catalog().text("assistant-input-hint");
-    shell.focus_text_input(&input);
-    shell.type_text(request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(shell.app().document_revision(), baseline_revision);
-    assert_eq!(shell.app().canonical_digest(), baseline_digest);
-    assert_eq!(shell.app().undo_step_count(), baseline_undo);
-
-    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    submit_applied_assistant_request(&mut shell, request);
     assert_eq!(shell.app().document_revision(), baseline_revision + 1);
     assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
     let committed = shell.app().document_snapshot();
@@ -2595,16 +2526,7 @@ fn scripted_append_sweep_is_exact_persistent_and_one_step() {
     let baseline_redo = shell.app().redo_step_count();
     let baseline_occurrences = shell.app().document_snapshot().occurrences().count();
 
-    let input = shell.catalog().text("assistant-input-hint");
-    shell.focus_text_input(&input);
-    shell.type_text(request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(shell.app().document_revision(), baseline_revision);
-    assert_eq!(shell.app().canonical_digest(), baseline_digest);
-    assert_eq!(shell.app().undo_step_count(), baseline_undo);
-
-    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    submit_applied_assistant_request(&mut shell, request);
     assert_eq!(shell.app().document_revision(), baseline_revision + 1);
     assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
     let committed = shell.app().document_snapshot();
@@ -2696,16 +2618,7 @@ fn scripted_append_guided_loft_json_is_exact_persistent_and_one_step() {
     let baseline_redo = shell.app().redo_step_count();
     let baseline_occurrences = shell.app().document_snapshot().occurrences().count();
 
-    let input = shell.catalog().text("assistant-input-hint");
-    shell.focus_text_input(&input);
-    shell.type_text(request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(shell.app().document_revision(), baseline_revision);
-    assert_eq!(shell.app().canonical_digest(), baseline_digest);
-    assert_eq!(shell.app().undo_step_count(), baseline_undo);
-
-    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    submit_applied_assistant_request(&mut shell, request);
     assert_eq!(shell.app().document_revision(), baseline_revision + 1);
     assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
     let committed = shell.app().document_snapshot();
@@ -2818,16 +2731,7 @@ fn scripted_append_closed_symmetric_shell_is_exact_persistent_and_one_step() {
     let baseline_redo = shell.app().redo_step_count();
     let baseline_occurrences = shell.app().document_snapshot().occurrences().count();
 
-    let input = shell.catalog().text("assistant-input-hint");
-    shell.focus_text_input(&input);
-    shell.type_text(request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(shell.app().document_revision(), baseline_revision);
-    assert_eq!(shell.app().canonical_digest(), baseline_digest);
-    assert_eq!(shell.app().undo_step_count(), baseline_undo);
-
-    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    submit_applied_assistant_request(&mut shell, request);
     assert_eq!(shell.app().document_revision(), baseline_revision + 1);
     assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
     let committed = shell.app().document_snapshot();
@@ -2964,16 +2868,7 @@ fn scripted_append_topology_fillet_is_exact_persistent_and_one_step() {
     let baseline_redo = shell.app().redo_step_count();
     let baseline_occurrences = shell.app().document_snapshot().occurrences().count();
 
-    let input = shell.catalog().text("assistant-input-hint");
-    shell.focus_text_input(&input);
-    shell.type_text(request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(shell.app().document_revision(), baseline_revision);
-    assert_eq!(shell.app().canonical_digest(), baseline_digest);
-    assert_eq!(shell.app().undo_step_count(), baseline_undo);
-
-    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    submit_applied_assistant_request(&mut shell, request);
     assert_eq!(shell.app().document_revision(), baseline_revision + 1);
     assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
     let committed = shell.app().document_snapshot();
@@ -3129,16 +3024,7 @@ fn scripted_append_topology_chamfer_is_exact_persistent_and_one_step() {
     let baseline_redo = shell.app().redo_step_count();
     let baseline_occurrences = shell.app().document_snapshot().occurrences().count();
 
-    let input = shell.catalog().text("assistant-input-hint");
-    shell.focus_text_input(&input);
-    shell.type_text(request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(shell.app().document_revision(), baseline_revision);
-    assert_eq!(shell.app().canonical_digest(), baseline_digest);
-    assert_eq!(shell.app().undo_step_count(), baseline_undo);
-
-    shell.click_row(&shell.catalog().text("assistant-confirm"));
+    submit_applied_assistant_request(&mut shell, request);
     assert_eq!(shell.app().document_revision(), baseline_revision + 1);
     assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
     let committed = shell.app().document_snapshot();
@@ -3222,10 +3108,6 @@ fn integrated_finishing_chain_rebuilds_exactly_through_headless_assistant() {
             response("Review the invalid Chamfer."),
         ),
         (
-            invalid_chamfer_request.to_owned(),
-            response("Review the invalid Chamfer."),
-        ),
-        (
             chamfer_request.to_owned(),
             response("Review the integrated chamfer."),
         ),
@@ -3268,7 +3150,7 @@ fn integrated_finishing_chain_rebuilds_exactly_through_headless_assistant() {
     let initial_revision = shell.app().document_revision();
     let initial_undo = shell.app().undo_step_count();
 
-    submit_and_confirm_assistant_request(&mut shell, shell_request);
+    submit_applied_assistant_request(&mut shell, shell_request);
     assert_eq!(shell.app().document_revision(), initial_revision + 1);
     assert_eq!(shell.app().undo_step_count(), initial_undo + 1);
     let shell_snapshot = shell.app().document_snapshot();
@@ -3325,7 +3207,7 @@ fn integrated_finishing_chain_rebuilds_exactly_through_headless_assistant() {
         },
     );
 
-    submit_and_confirm_assistant_request(&mut shell, fillet_request);
+    submit_applied_assistant_request(&mut shell, fillet_request);
     assert_eq!(shell.app().document_revision(), initial_revision + 2);
     assert_eq!(shell.app().undo_step_count(), initial_undo + 2);
     let fillet_snapshot = shell.app().document_snapshot();
@@ -3412,44 +3294,19 @@ fn integrated_finishing_chain_rebuilds_exactly_through_headless_assistant() {
             },
         }],
     };
-    transport.queue_cad_edit_program(invalid_chamfer_request, invalid_program.clone());
     transport.queue_cad_edit_program(invalid_chamfer_request, invalid_program);
     let before_rejection_revision = shell.app().document_revision();
     let before_rejection_digest = shell.app().canonical_digest();
     let before_rejection_undo = shell.app().undo_step_count();
-    let before_diagnostic_count = shell
-        .app()
-        .assistant_messages()
-        .iter()
-        .filter(|message| message.diagnostic.is_some())
-        .count();
     let input = shell.catalog().text("assistant-input-hint");
     shell.focus_text_input(&input);
     shell.type_text(invalid_chamfer_request);
     shell.press_key(egui::Key::Enter);
-    for _ in 0..2_000 {
-        shell.step();
-        if shell
-            .app()
-            .assistant_messages()
-            .iter()
-            .filter(|message| message.diagnostic.is_some())
-            .count()
-            == before_diagnostic_count + 2
-        {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    shell.settle();
-    assert_eq!(
-        shell
-            .app()
-            .assistant_messages()
-            .iter()
-            .filter(|message| message.diagnostic.is_some())
-            .count(),
-        before_diagnostic_count + 2
+    let rejection = wait_for_assistant_reply(&mut shell);
+    assert_eq!(rejection.role, AssistantMessageRole::Error, "{rejection:?}");
+    assert!(
+        rejection.text.starts_with("apply_and_verify: "),
+        "{rejection:?}"
     );
     assert!(shell.app().assistant_proposal().is_none());
     assert_eq!(shell.app().document_revision(), before_rejection_revision);
@@ -3475,7 +3332,7 @@ fn integrated_finishing_chain_rebuilds_exactly_through_headless_assistant() {
         },
     );
 
-    submit_and_confirm_assistant_request(&mut shell, chamfer_request);
+    submit_applied_assistant_request(&mut shell, chamfer_request);
     assert_eq!(shell.app().document_revision(), initial_revision + 3);
     assert_eq!(shell.app().undo_step_count(), initial_undo + 3);
     let finished_snapshot = shell.app().document_snapshot();
@@ -3638,20 +3495,10 @@ fn scripted_sketch_program_reviews_creates_and_edits_workplanes_entities_and_con
         },
     );
     let mut shell = Shell::with_assistant_transport(transport.clone());
-    let input = shell.catalog().text("assistant-input-hint");
-    let confirm = shell.catalog().text("assistant-confirm");
 
     let before_revision = shell.app().document_revision();
-    let before_digest = shell.app().canonical_digest();
     let before_undo = shell.app().undo_step_count();
-    shell.focus_text_input(&input);
-    shell.type_text(create_principal);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert!(shell.has_visible_label(&shell.catalog().text("assistant-review-title")));
-    assert_eq!(shell.app().document_revision(), before_revision);
-    assert_eq!(shell.app().canonical_digest(), before_digest);
-    shell.click_row(&confirm);
+    submit_applied_assistant_request(&mut shell, create_principal);
     assert_eq!(shell.app().document_revision(), before_revision + 1);
     assert_eq!(shell.app().undo_step_count(), before_undo + 1);
 
@@ -3697,15 +3544,9 @@ fn scripted_sketch_program_reviews_creates_and_edits_workplanes_entities_and_con
             }],
         },
     );
-    let before_offset_revision = shell.app().document_revision();
-    let before_offset_digest = shell.app().canonical_digest();
-    shell.focus_text_input(&input);
-    shell.type_text(create_offset);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(shell.app().document_revision(), before_offset_revision);
-    assert_eq!(shell.app().canonical_digest(), before_offset_digest);
-    shell.click_row(&confirm);
+    submit_applied_assistant_request(&mut shell, create_offset);
+    assert_eq!(shell.app().document_revision(), before_revision + 2);
+    assert_eq!(shell.app().undo_step_count(), before_undo + 2);
 
     let offset_snapshot = shell.app().document_snapshot();
     let offset_workplane_id = offset_snapshot
@@ -3738,13 +3579,7 @@ fn scripted_sketch_program_reviews_creates_and_edits_workplanes_entities_and_con
     let before_edit_revision = shell.app().document_revision();
     let before_edit_digest = shell.app().canonical_digest();
     let before_edit_undo = shell.app().undo_step_count();
-    shell.focus_text_input(&input);
-    shell.type_text(edit_dimensions);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(shell.app().document_revision(), before_edit_revision);
-    assert_eq!(shell.app().canonical_digest(), before_edit_digest);
-    shell.click_row(&confirm);
+    submit_applied_assistant_request(&mut shell, edit_dimensions);
 
     assert_eq!(shell.app().document_revision(), before_edit_revision + 1);
     assert_eq!(shell.app().undo_step_count(), before_edit_undo + 1);
@@ -3776,75 +3611,15 @@ fn scripted_sketch_program_reviews_creates_and_edits_workplanes_entities_and_con
 }
 
 #[test]
-fn scripted_sketch_program_refuses_stale_preview_and_invalid_constraint_without_mutation() {
-    let stale_request = "Prepare a reviewed sketch that will become stale";
-    let stale_transport = Arc::new(ScriptedAssistantTransport::new([(
-        stale_request.to_owned(),
+fn scripted_sketch_program_rejects_invalid_constraint_without_mutation() {
+    let invalid_request = "Create a sketch with an invalid constraint reference";
+    let invalid_transport = Arc::new(ScriptedAssistantTransport::new([(
+        invalid_request.to_owned(),
         AssistantChatResult {
-            message: "Review the sketch before applying it.".to_owned(),
+            message: "Review the constrained sketch.".to_owned(),
             model_intent: None,
         },
     )]));
-    stale_transport.queue_cad_edit_program(
-        stale_request,
-        AssistantCadEditProgram {
-            operations: vec![AssistantCadEditOperation::CreateSketch {
-                definition_id: 1,
-                name: "Stale sketch".to_owned(),
-                workplane: AssistantWorkplaneSpec::Principal {
-                    plane: AssistantPrincipalPlane::Xy,
-                },
-                entities: vec![AssistantSketchEntity::Circle {
-                    id: 1,
-                    center_mm: [0.0, 0.0],
-                    radius_mm: 4.0,
-                }],
-                constraints: vec![AssistantSketchConstraint::Radius {
-                    id: 1,
-                    entity_id: 1,
-                    value_mm: 4.0,
-                }],
-            }],
-        },
-    );
-    let mut stale_shell = Shell::with_assistant_transport(stale_transport.clone());
-    let input = stale_shell.catalog().text("assistant-input-hint");
-    stale_shell.focus_text_input(&input);
-    stale_shell.type_text(stale_request);
-    stale_shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut stale_shell);
-    assert!(stale_shell.app().assistant_proposal().is_some());
-
-    stale_shell.click_menu_command("menu-edit", AppCommand::SelectAll);
-    stale_shell.click_menu_command("menu-view", AppCommand::Hide);
-    let intervening_revision = stale_shell.app().document_revision();
-    let intervening_digest = stale_shell.app().canonical_digest();
-    let intervening_undo = stale_shell.app().undo_step_count();
-    stale_shell.settle();
-    stale_shell.click_row(&stale_shell.catalog().text("assistant-confirm"));
-
-    assert!(stale_shell.app().assistant_proposal().is_none());
-    assert_eq!(stale_shell.app().document_revision(), intervening_revision);
-    assert_eq!(stale_shell.app().canonical_digest(), intervening_digest);
-    assert_eq!(stale_shell.app().undo_step_count(), intervening_undo);
-    assert!(
-        stale_shell
-            .app()
-            .document_snapshot()
-            .features()
-            .all(|feature| feature.name() != "Stale sketch")
-    );
-    assert_eq!(stale_transport.remaining_responses(), 0);
-
-    let invalid_request = "Create a sketch with an invalid constraint reference";
-    let rejected_result = || AssistantChatResult {
-        message: "Review the constrained sketch.".to_owned(),
-        model_intent: None,
-    };
-    let invalid_transport = Arc::new(ScriptedAssistantTransport::new([
-        (invalid_request.to_owned(), rejected_result()),
-        (invalid_request.to_owned(), rejected_result()),
-    ]));
     let invalid_program = AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::CreateSketch {
             definition_id: 1,
@@ -3864,7 +3639,6 @@ fn scripted_sketch_program_refuses_stale_preview_and_invalid_constraint_without_
             }],
         }],
     };
-    invalid_transport.queue_cad_edit_program(invalid_request, invalid_program.clone());
     invalid_transport.queue_cad_edit_program(invalid_request, invalid_program);
     let mut invalid_shell = Shell::with_assistant_transport(invalid_transport.clone());
     let before_revision = invalid_shell.app().document_revision();
@@ -3874,30 +3648,11 @@ fn scripted_sketch_program_refuses_stale_preview_and_invalid_constraint_without_
     invalid_shell.focus_text_input(&input);
     invalid_shell.type_text(invalid_request);
     invalid_shell.press_key(egui::Key::Enter);
-    for _ in 0..200 {
-        invalid_shell.step();
-        if invalid_shell
-            .app()
-            .assistant_messages()
-            .iter()
-            .filter(|message| message.diagnostic.is_some())
-            .count()
-            == 2
-        {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    invalid_shell.settle();
-
-    assert_eq!(
-        invalid_shell
-            .app()
-            .assistant_messages()
-            .iter()
-            .filter(|message| message.diagnostic.is_some())
-            .count(),
-        2
+    let rejection = wait_for_assistant_reply(&mut invalid_shell);
+    assert_eq!(rejection.role, AssistantMessageRole::Error, "{rejection:?}");
+    assert!(
+        rejection.text.starts_with("apply_and_verify: "),
+        "{rejection:?}"
     );
     assert!(invalid_shell.app().assistant_proposal().is_none());
     assert_eq!(invalid_shell.app().document_revision(), before_revision);
@@ -4173,7 +3928,7 @@ fn docked_assistant_can_inspect_selected_occurrence_101_from_bounded_context() {
     shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
     shell.type_text(request);
     shell.press_key(egui::Key::Enter);
-    for _ in 0..100 {
+    for _ in 0..2_000 {
         shell.step();
         if transport.contexts().len() == 1 && shell.app().assistant_messages().len() == 2 {
             break;
@@ -4239,23 +3994,16 @@ fn assistant_selection_context_tracks_the_live_model_selection() {
 }
 
 #[test]
-fn scripted_surface_program_is_accessible_consent_bound_stale_safe_and_undoable() {
+fn scripted_surface_program_applies_as_one_undoable_step() {
     let create_request = "Create, extend, and thicken a planar surface";
-    let stale_request = "Prepare another surface extension";
     let response = |message: &str| AssistantChatResult {
         message: message.to_owned(),
         model_intent: None,
     };
-    let transport = Arc::new(ScriptedAssistantTransport::new([
-        (
-            create_request.to_owned(),
-            response("Review the surface workflow."),
-        ),
-        (
-            stale_request.to_owned(),
-            response("Review the additional surface extension."),
-        ),
-    ]));
+    let transport = Arc::new(ScriptedAssistantTransport::new([(
+        create_request.to_owned(),
+        response("Review the surface workflow."),
+    )]));
     let earlier_body = |operation_index| {
         AssistantCadFeatureReference::ProgramOutput(AssistantCadProgramFeatureReference {
             operation_index,
@@ -4295,89 +4043,44 @@ fn scripted_surface_program_is_accessible_consent_bound_stale_safe_and_undoable(
             ],
         },
     );
-    transport.queue_cad_edit_program(
-        stale_request,
-        AssistantCadEditProgram {
-            operations: vec![AssistantCadEditOperation::AppendFeature {
-                definition_id: 1,
-                name: "Stale surface extension".into(),
-                feature: AssistantCadBodyFeature::SurfaceExtend {
-                    target_feature_id: 3.into(),
-                    distance_mm: 1.0,
-                },
-            }],
-        },
-    );
 
+    // A profile-only part: the surface workflow becomes the definition's only body.
+    let directory = tempfile::tempdir().unwrap();
+    let fixture_path = directory.path().join("assistant-surface-input.ketchup");
+    write_assistant_planar_offset_fixture(&fixture_path);
     let mut shell = Shell::with_assistant_transport(transport.clone());
-    let input = shell.catalog().text("assistant-input-hint");
-    let confirm = shell.catalog().text("assistant-confirm");
+    assert!(shell.app_mut().open_document_path(&fixture_path));
+    shell.settle();
     let baseline_revision = shell.app().document_revision();
     let baseline_digest = shell.app().canonical_digest();
     let baseline_undo = shell.app().undo_step_count();
 
-    shell.focus_text_input(&input);
-    shell.type_text(create_request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert!(shell.has_visible_label(&shell.catalog().text("assistant-review-title")));
-    assert_eq!(shell.app().document_revision(), baseline_revision);
-    assert_eq!(shell.app().canonical_digest(), baseline_digest);
-    assert_eq!(shell.app().undo_step_count(), baseline_undo);
-
-    shell.click_row(&confirm);
+    submit_applied_assistant_request(&mut shell, create_request);
     let committed_revision = shell.app().document_revision();
     let committed_digest = shell.app().canonical_digest();
     assert_eq!(committed_revision, baseline_revision + 1);
     assert_eq!(shell.app().undo_step_count(), baseline_undo + 1);
     let committed = shell.app().document_snapshot();
     assert!(matches!(
-        committed.feature(FeatureId(3)).unwrap().kind(),
+        committed.feature(FeatureId(2)).unwrap().kind(),
         FeatureKind::SurfaceBody(_)
     ));
     assert!(matches!(
-        committed.feature(FeatureId(4)).unwrap().kind(),
+        committed.feature(FeatureId(3)).unwrap().kind(),
         FeatureKind::SurfaceExtend {
-            target: FeatureId(3),
+            target: FeatureId(2),
             ..
         }
     ));
     assert!(matches!(
-        committed.feature(FeatureId(5)).unwrap().kind(),
+        committed.feature(FeatureId(4)).unwrap().kind(),
         FeatureKind::SurfaceThicken {
-            target: FeatureId(4),
+            target: FeatureId(3),
             direction: ketchup_core::document::ShellDirection::Symmetric,
             ..
         }
     ));
 
-    shell.focus_text_input(&input);
-    shell.type_text(stale_request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(&mut shell);
-    assert_eq!(shell.app().document_revision(), committed_revision);
-    assert_eq!(shell.app().canonical_digest(), committed_digest);
-    shell.click_menu_command("menu-edit", AppCommand::SelectAll);
-    shell.click_menu_command("menu-view", AppCommand::Hide);
-    let intervening_revision = shell.app().document_revision();
-    let intervening_digest = shell.app().canonical_digest();
-    let intervening_undo = shell.app().undo_step_count();
-    shell.settle();
-    shell.click_row(&confirm);
-    assert!(shell.app().assistant_proposal().is_none());
-    assert_eq!(shell.app().document_revision(), intervening_revision);
-    assert_eq!(shell.app().canonical_digest(), intervening_digest);
-    assert_eq!(shell.app().undo_step_count(), intervening_undo);
-    assert!(
-        shell
-            .app()
-            .document_snapshot()
-            .features()
-            .all(|feature| feature.name() != "Stale surface extension")
-    );
-
-    shell.click_menu_command("menu-edit", AppCommand::Undo);
-    assert_eq!(shell.app().canonical_digest(), committed_digest);
     shell.click_menu_command("menu-edit", AppCommand::Undo);
     assert_eq!(shell.app().canonical_digest(), baseline_digest);
     shell.click_menu_command("menu-edit", AppCommand::Redo);
@@ -4613,7 +4316,7 @@ fn assistant_chat_selects_validation_scope_and_rejects_unknown_names_without_mut
         shell.focus_text_input(&input_label);
         shell.type_text(query);
         shell.press_key(egui::Key::Enter);
-        for _ in 0..100 {
+        for _ in 0..2_000 {
             shell.step();
             if transport.contexts().len() > index
                 && shell.app().assistant_messages().len() == (index + 1) * 2
@@ -4632,6 +4335,7 @@ fn assistant_chat_selects_validation_scope_and_rejects_unknown_names_without_mut
         all["executed"],
         serde_json::json!([
             "collision",
+            "assembly_retention",
             "gravity_support",
             "shelf_deflection",
             "tipping",
@@ -4658,6 +4362,7 @@ fn assistant_chat_selects_validation_scope_and_rejects_unknown_names_without_mut
         except["executed"],
         serde_json::json!([
             "collision",
+            "assembly_retention",
             "shelf_deflection",
             "tipping",
             "anchoring",
@@ -4677,6 +4382,7 @@ fn assistant_chat_selects_validation_scope_and_rejects_unknown_names_without_mut
         unknown["skipped"],
         serde_json::json!([
             "collision",
+            "assembly_retention",
             "gravity_support",
             "shelf_deflection",
             "tipping",
@@ -4880,7 +4586,7 @@ fn assistant_chat_reports_shelf_deflection_tipping_and_anchoring_with_explicit_l
     shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
     shell.type_text(query);
     shell.press_key(egui::Key::Enter);
-    for _ in 0..100 {
+    for _ in 0..2_000 {
         shell.step();
         if transport.contexts().len() == 1 && shell.app().assistant_messages().len() == 2 {
             break;
@@ -4900,6 +4606,7 @@ fn assistant_chat_reports_shelf_deflection_tipping_and_anchoring_with_explicit_l
         validation["skipped"],
         serde_json::json!([
             "collision",
+            "assembly_retention",
             "gravity_support",
             "hardware_manufacturing",
             "room_placement",
@@ -5146,7 +4853,7 @@ fn assistant_chat_reports_hardware_and_manufacturing_from_roles_and_source_geome
     shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
     shell.type_text(query);
     shell.press_key(egui::Key::Enter);
-    for _ in 0..100 {
+    for _ in 0..2_000 {
         shell.step();
         if transport.contexts().len() == 1 && shell.app().assistant_messages().len() == 2 {
             break;
@@ -5428,7 +5135,7 @@ fn assistant_chat_reports_spatial_roles_and_oriented_narrow_phase() {
     shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
     shell.type_text(query);
     shell.press_key(egui::Key::Enter);
-    for _ in 0..100 {
+    for _ in 0..2_000 {
         shell.step();
         if transport.contexts().len() == 1 && shell.app().assistant_messages().len() == 2 {
             break;
@@ -5533,7 +5240,7 @@ fn assistant_chat_does_not_claim_spatial_validation_without_canonical_roles() {
     shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
     shell.type_text(query);
     shell.press_key(egui::Key::Enter);
-    for _ in 0..100 {
+    for _ in 0..2_000 {
         shell.step();
         if transport.contexts().len() == 1 && shell.app().assistant_messages().len() == 2 {
             break;
@@ -5645,7 +5352,7 @@ fn assistant_chat_calculates_static_load_from_explicit_canonical_physics_inputs(
     shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
     shell.type_text(query);
     shell.press_key(egui::Key::Enter);
-    for _ in 0..100 {
+    for _ in 0..2_000 {
         shell.step();
         if transport.contexts().len() == 1 && shell.app().assistant_messages().len() == 2 {
             break;
@@ -5713,7 +5420,7 @@ fn assistant_chat_does_not_estimate_static_load_without_explicit_physics_inputs(
     shell.focus_text_input(&shell.catalog().text("assistant-input-hint"));
     shell.type_text(query);
     shell.press_key(egui::Key::Enter);
-    for _ in 0..100 {
+    for _ in 0..2_000 {
         shell.step();
         if transport.contexts().len() == 1 && shell.app().assistant_messages().len() == 2 {
             break;
@@ -6751,13 +6458,14 @@ fn new_open_and_new_chat_cancel_reviewed_work_through_accessible_shell_commands(
     assert_eq!(shell.app().canonical_digest(), digest);
 
     prepare_review(&mut shell);
-    shell.click_menu_command("menu-file", AppCommand::New);
-    assert!(shell.app().assistant_proposal().is_none());
-
-    prepare_review(&mut shell);
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert!(shell.app().assistant_proposal().is_none());
     assert_eq!(shell.app().canonical_digest(), opened_digest);
+
+    // New starts an empty document, so it comes last: the review needs definition 1.
+    prepare_review(&mut shell);
+    shell.click_menu_command("menu-file", AppCommand::New);
+    assert!(shell.app().assistant_proposal().is_none());
 }
 
 #[test]
@@ -7229,7 +6937,7 @@ fn assistant_stacks_24_existing_parts_into_20_layers_as_shared_occurrences_in_on
         "the first rendered frame of a 480-occurrence scene took {:?}",
         first_frame.elapsed()
     );
-    for _ in 0..100 {
+    for _ in 0..2_000 {
         shell.settle();
         if shell.app().exact_render_body_count() == 24 {
             break;

@@ -2,8 +2,8 @@
 //! empty document through the generic Assistant CAD edit program only.
 //!
 //! No named-shape intent, no fixture, no mesh shortcut. Every step is a natural
-//! language request that the host compiles into canonical commands, reviews as
-//! a proposal, and commits as exactly one undo step.
+//! language request that the host compiles into canonical commands, applies,
+//! verifies, and commits as exactly one undo step.
 //!
 //! The second test pins the two generality limits this scenario hit, so that a
 //! later change which lifts them fails loudly instead of silently.
@@ -120,21 +120,6 @@ fn timber(
     }
 }
 
-fn wait_for_assistant_proposal(shell: &mut Shell) {
-    let confirm = shell.catalog().text("assistant-confirm");
-    for _ in 0..1_000 {
-        shell.step();
-        if shell.app().assistant_proposal().is_some() && shell.has_visible_label(&confirm) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    panic!(
-        "scripted assistant response did not reach accessible proposal review: {:?}",
-        shell.app().assistant_messages()
-    );
-}
-
 fn json_string_ending_with<'a>(value: &'a serde_json::Value, suffix: &str) -> Option<&'a str> {
     match value {
         serde_json::Value::String(text) => text.ends_with(suffix).then_some(text),
@@ -148,34 +133,57 @@ fn json_string_ending_with<'a>(value: &'a serde_json::Value, suffix: &str) -> Op
     }
 }
 
-fn wait_for_live_assistant_proposal(shell: &mut Shell) {
-    let confirm = shell.catalog().text("assistant-confirm");
-    let deadline = Instant::now() + Duration::from_secs(300);
-    loop {
+/// Send one request, step the shell until the assistant answered it, and
+/// prove its program was applied as exactly one revision and one undo step.
+fn submit_applied_request(shell: &mut Shell, request: &str, timeout: Duration) {
+    let revision_before = shell.app().document_revision();
+    let digest_before = shell.app().canonical_digest();
+    let undo_before = shell.app().undo_step_count();
+    let input = shell.catalog().text("assistant-input-hint");
+    shell.focus_text_input(&input);
+    shell.type_text(request);
+    shell.press_key(egui::Key::Enter);
+    let deadline = Instant::now() + timeout;
+    let reply = loop {
         shell.step();
-        if shell.app().assistant_proposal().is_some() && shell.has_visible_label(&confirm) {
-            return;
+        let messages = shell.app().assistant_messages();
+        let user = messages
+            .iter()
+            .rposition(|message| message.role == AssistantMessageRole::User);
+        if let Some(reply) = user.and_then(|index| messages.get(index + 1)) {
+            break reply.clone();
         }
         assert!(
-            !shell
-                .app()
-                .assistant_messages()
-                .iter()
-                .any(|message| message.role == AssistantMessageRole::Error),
-            "live assistant returned an error: {:?}",
-            shell.app().assistant_messages()
-        );
-        assert!(
             Instant::now() < deadline,
-            "live assistant did not reach proposal review: {:?}",
+            "{request}: the assistant did not answer: {:?}",
             shell.app().assistant_messages()
         );
-        std::thread::sleep(Duration::from_millis(25));
-    }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert_eq!(
+        reply.role,
+        AssistantMessageRole::Assistant,
+        "{request}: the program must apply: {:?}",
+        shell.app().assistant_messages()
+    );
+    assert_eq!(
+        shell.app().document_revision(),
+        revision_before + 1,
+        "{request}: the edit must add exactly one revision"
+    );
+    assert_eq!(
+        shell.app().undo_step_count(),
+        undo_before + 1,
+        "{request}: the edit must add exactly one undo step"
+    );
+    assert_ne!(
+        shell.app().canonical_digest(),
+        digest_before,
+        "{request}: the edit must change the canonical digest"
+    );
 }
 
-/// Send one natural-language request, prove preview mutates nothing, confirm it,
-/// and prove the commit is exactly one revision and one undo step.
+/// Queue one scripted CAD program and submit its natural-language request.
 fn build_step(
     shell: &mut Shell,
     transport: &Arc<ScriptedAssistantTransport>,
@@ -183,48 +191,7 @@ fn build_step(
     program: AssistantCadEditProgram,
 ) {
     transport.queue_cad_edit_program(request, program);
-    let revision_before = shell.app().document_revision();
-    let digest_before = shell.app().canonical_digest();
-    let undo_before = shell.app().undo_step_count();
-
-    let input = shell.catalog().text("assistant-input-hint");
-    shell.focus_text_input(&input);
-    shell.type_text(request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_assistant_proposal(shell);
-
-    assert_eq!(
-        shell.app().document_revision(),
-        revision_before,
-        "{request}: preview must not change the revision"
-    );
-    assert_eq!(
-        shell.app().canonical_digest(),
-        digest_before,
-        "{request}: preview must not change the canonical digest"
-    );
-    assert_eq!(
-        shell.app().undo_step_count(),
-        undo_before,
-        "{request}: preview must not add an undo step"
-    );
-
-    shell.click_row(&shell.catalog().text("assistant-confirm"));
-    assert_eq!(
-        shell.app().document_revision(),
-        revision_before + 1,
-        "{request}: confirmation must add exactly one revision"
-    );
-    assert_eq!(
-        shell.app().undo_step_count(),
-        undo_before + 1,
-        "{request}: confirmation must add exactly one undo step"
-    );
-    assert_ne!(
-        shell.app().canonical_digest(),
-        digest_before,
-        "{request}: confirmation must change the canonical digest"
-    );
+    submit_applied_request(shell, request, Duration::from_secs(60));
 }
 
 fn definition_id_of(shell: &Shell, name: &str) -> DefinitionId {
@@ -546,7 +513,9 @@ fn build_timber_frame_house() -> (Shell, Arc<ScriptedAssistantTransport>, u64, S
         "every stud instance must reuse the same parametric definition"
     );
 
-    // 4. Front sheathing standing on the XZ plane.
+    // 4. Front sheathing standing on the XZ plane. The plane's normal is -y,
+    //    so the sketch is placed one thickness in and extrudes back onto the
+    //    front sill plate.
     let (sheathing_entities, sheathing_constraints) = rectangle(HOUSE_LENGTH_MM, WALL_HEIGHT_MM);
     build_step(
         &mut shell,
@@ -563,7 +532,7 @@ fn build_timber_frame_house() -> (Shell, Arc<ScriptedAssistantTransport>, u64, S
                 feature: AssistantCadPartFeature::Extrusion {
                     distance_mm: SHEATHING_THICKNESS_MM,
                 },
-                translation_mm: [0.0, 0.0, PLATE_THICKNESS_MM],
+                translation_mm: [0.0, SHEATHING_THICKNESS_MM, PLATE_THICKNESS_MM],
                 rotation: None,
             }],
         },
@@ -709,14 +678,7 @@ fn live_oauth_assistant_builds_a_roofed_house_frame_across_turns() {
     assert!(shell.app().document_snapshot().occurrences().count() > 0);
 
     let request = "Use one typed cad_edit_program, not model_intent and not prose alone. First delete every existing occurrence listed in the current document context with remove_references so the site is empty. Then create exactly four separate rectangular extruded parts on the XY plane, all dimensions in millimetres: 'Foundation beam' is 4000 by 400 and extruded 300 at translation [0,0,0]; 'Left post' is 200 by 200 and extruded 2500 at [0,0,300]; 'Right post' is 200 by 200 and extruded 2500 at [3800,0,300]; 'Header beam' is 4000 by 200 and extruded 200 at [0,0,2800]. Omit the optional rotation field entirely for every part. Draw the Foundation beam rectangle with corners [0,0], [4000,0], [4000,400], [0,400]; both post rectangles with corners [0,0], [200,0], [200,200], [0,200]; and the Header beam rectangle with corners [0,0], [4000,0], [4000,200], [0,200]. Close each rectangle with four line entities and set constraints to an empty array for every part. Do not emit any constraint object. Do not add any other part and do not approximate with mesh geometry.";
-    let input = shell.catalog().text("assistant-input-hint");
-    shell.focus_text_input(&input);
-    shell.type_text(request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_live_assistant_proposal(&mut shell);
-
-    assert_eq!(shell.app().document_revision(), baseline_revision);
-    assert_eq!(shell.app().canonical_digest(), baseline_digest);
+    submit_applied_request(&mut shell, request, Duration::from_secs(300));
     assert!(shell.app().assistant_messages().iter().any(|message| {
         message.role == AssistantMessageRole::Assistant
             && message.source.contains("gpt-5.6-sol")
@@ -739,8 +701,6 @@ fn live_oauth_assistant_builds_a_roofed_house_frame_across_turns() {
         5
     );
 
-    shell.click_row(&shell.catalog().text("assistant-confirm"));
-    assert_eq!(shell.app().document_revision(), baseline_revision + 1);
     let committed = shell.app().document_snapshot();
     assert_eq!(committed.occurrences().count(), 4);
     let expected = [
@@ -795,13 +755,7 @@ fn live_oauth_assistant_builds_a_roofed_house_frame_across_turns() {
     let first_revision = shell.app().document_revision();
     let first_digest = shell.app().canonical_digest();
     let second_request = "Use one typed cad_edit_program, not model_intent and not prose alone. Extend the existing front portal into a supported 4000 by 4000 mm house frame by creating exactly six additional separate rectangular extruded parts on the XY plane. Keep every existing occurrence and do not modify or delete it. 'Rear foundation beam' is 4000 by 400 and extruded 300 at translation [0,3600,0]. 'Rear left post' and 'Rear right post' are each 200 by 200 and extruded 2500 at [0,3800,300] and [3800,3800,300]. 'Rear header beam' is 4000 by 200 and extruded 200 at [0,3800,2800]. 'Left top tie' and 'Right top tie' are each 200 by 3600 and extruded 200 at [0,200,2800] and [3800,200,2800]. Draw each 4000 by 400 rectangle with corners [0,0], [4000,0], [4000,400], [0,400]; each 200 by 200 rectangle with corners [0,0], [200,0], [200,200], [0,200]; the 4000 by 200 rectangle with corners [0,0], [4000,0], [4000,200], [0,200]; and each 200 by 3600 rectangle with corners [0,0], [200,0], [200,3600], [0,3600]. Close every rectangle with four line entities whose objects use exactly the keys type, id, start_mm and end_mm; never use start or end. Set constraints to an empty array and omit the optional rotation field entirely for every part. Do not emit any constraint object, add any other part, or approximate with mesh geometry.";
-    shell.focus_text_input(&input);
-    shell.type_text(second_request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_live_assistant_proposal(&mut shell);
-
-    assert_eq!(shell.app().document_revision(), first_revision);
-    assert_eq!(shell.app().canonical_digest(), first_digest);
+    submit_applied_request(&mut shell, second_request, Duration::from_secs(300));
     let diagnostics = shell
         .app()
         .last_assistant_api_diagnostics()
@@ -860,8 +814,6 @@ fn live_oauth_assistant_builds_a_roofed_house_frame_across_turns() {
         "turn two may only append the six requested parts"
     );
 
-    shell.click_row(&shell.catalog().text("assistant-confirm"));
-    assert_eq!(shell.app().document_revision(), first_revision + 1);
     assert_ne!(shell.app().canonical_digest(), first_digest);
     let committed = shell.app().document_snapshot();
     assert_eq!(committed.occurrences().count(), 10);
@@ -966,19 +918,7 @@ fn live_oauth_assistant_builds_a_roofed_house_frame_across_turns() {
     let frame_revision = shell.app().document_revision();
     let frame_digest = shell.app().canonical_digest();
     let roof_request = "Use one typed cad_edit_program, not model_intent and not prose alone. Add a pitched roof to the existing 4000 by 4000 mm house frame by creating exactly two separate prismatic parts. Keep every existing occurrence unchanged and do not delete it. Create both parts on the YZ principal plane, extruded 4000 mm through the house length, translated [0,0,3000], with constraints as an empty array and with the optional rotation field omitted. 'Left roof plane' has one closed four-line profile with corners [0,0], [2000,1000], [2000,1100], [0,100]. 'Right roof plane' has one closed four-line profile with corners [2000,1000], [4000,0], [4000,100], [2000,1100]. For each profile use four line entity objects with exactly the keys type, id, start_mm and end_mm, where each end_mm equals the next line's start_mm and the fourth end_mm closes at the first start_mm. Use extrusion as the part feature with distance_mm 4000. Do not emit any constraint object, add any other part, or approximate with mesh geometry.";
-    shell.focus_text_input(&input);
-    shell.type_text(roof_request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_live_assistant_proposal(&mut shell);
-
-    assert_eq!(shell.app().document_revision(), frame_revision);
-    assert_eq!(shell.app().canonical_digest(), frame_digest);
-    let proposal = shell
-        .app()
-        .assistant_proposal()
-        .expect("the roof response must create a reviewable proposal");
-    assert_eq!(proposal.provenance_revision(), frame_revision);
-    assert_eq!(proposal.provenance_digest(), frame_digest);
+    submit_applied_request(&mut shell, roof_request, Duration::from_secs(300));
     let diagnostics = shell
         .app()
         .last_assistant_api_diagnostics()
@@ -1072,9 +1012,6 @@ fn live_oauth_assistant_builds_a_roofed_house_frame_across_turns() {
     )
     .expect("the roof response must deserialize through the public typed contract");
     assert_eq!(roof_program, expected_roof_program);
-
-    shell.click_row(&shell.catalog().text("assistant-confirm"));
-    assert_eq!(shell.app().document_revision(), frame_revision + 1);
     assert_ne!(shell.app().canonical_digest(), frame_digest);
     let roof_revision = shell.app().document_revision();
     let roof_digest = shell.app().canonical_digest();
@@ -1084,19 +1021,7 @@ fn live_oauth_assistant_builds_a_roofed_house_frame_across_turns() {
     let static_request = format!(
         "Use one typed cad_edit_program, not model_intent and not prose alone. Keep all 12 existing occurrences and their geometry unchanged. Add the canonical classification roles and explicit numeric evaluator inputs for a complete static-load check by returning exactly this cad_edit_program object: {static_program_json} Do not add, delete, transform or recolor any occurrence and do not emit any additional operation."
     );
-    shell.focus_text_input(&input);
-    shell.type_text(&static_request);
-    shell.press_key(egui::Key::Enter);
-    wait_for_live_assistant_proposal(&mut shell);
-
-    assert_eq!(shell.app().document_revision(), roof_revision);
-    assert_eq!(shell.app().canonical_digest(), roof_digest);
-    let proposal = shell
-        .app()
-        .assistant_proposal()
-        .expect("the static metadata response must create a reviewable proposal");
-    assert_eq!(proposal.provenance_revision(), roof_revision);
-    assert_eq!(proposal.provenance_digest(), roof_digest);
+    submit_applied_request(&mut shell, &static_request, Duration::from_secs(300));
     let diagnostics = shell
         .app()
         .last_assistant_api_diagnostics()
@@ -1124,9 +1049,6 @@ fn live_oauth_assistant_builds_a_roofed_house_frame_across_turns() {
     )
     .expect("the static metadata response must deserialize through the public typed contract");
     assert_eq!(static_program, expected_static_program);
-
-    shell.click_row(&shell.catalog().text("assistant-confirm"));
-    assert_eq!(shell.app().document_revision(), roof_revision + 1);
     assert_ne!(shell.app().canonical_digest(), roof_digest);
     let committed = shell.app().document_snapshot();
     assert_eq!(committed.occurrences().count(), 12);
@@ -2022,9 +1944,26 @@ fn the_timber_frame_house_must_stand_up_under_gravity() {
         unsupported.len(),
         unsupported
     );
+    // The rafter is pitched: it bears on the plate arris and the ridge face
+    // along lines, so no positive bearing area can be proven for it. It is
+    // reported as unproven rather than supported; every other member is proven.
+    let unproven = report
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code == "gravity.contact-unproven")
+        .filter_map(|diagnostic| {
+            snapshot.scene_query().into_iter().find(|occurrence| {
+                diagnostic
+                    .evidence
+                    .starts_with(&format!("body=occurrence:{};", occurrence.occurrence_id.0))
+            })
+        })
+        .map(|occurrence| occurrence.occurrence_name)
+        .collect::<Vec<_>>();
+    assert_eq!(unproven, ["Rafter"], "{:#?}", report.diagnostics);
     assert_eq!(
         report.state,
-        ValidationState::Passed,
+        ValidationState::NotEvaluated,
         "{:#?}",
         report.diagnostics
     );

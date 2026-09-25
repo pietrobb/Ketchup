@@ -1825,11 +1825,9 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         assert_eq!(status["result"]["state"], "completed", "{status}");
-        assert_eq!(status["result"]["report"]["complete"], false);
-        assert_eq!(
-            status["result"]["report"]["not_evaluated"],
-            "no exact producers selected"
-        );
+        // An empty document has nothing to evaluate, so nothing is missing.
+        assert_eq!(status["result"]["report"]["complete"], true);
+        assert_eq!(status["result"]["report"]["producers"], json!([]));
         let unknown = request(&mut server, "verify_job_status", json!({"handle":"forged"}));
         assert_eq!(unknown["error"]["code"], "verify_job_not_found");
     }

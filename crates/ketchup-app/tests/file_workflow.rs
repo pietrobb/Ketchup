@@ -12,8 +12,8 @@ use std::time::Duration;
 
 use eframe::egui::{Key, Pos2, accesskit::Role};
 use harness::{ScriptedAssistantTransport, Shell};
-use ketchup_app::AppCommand;
 use ketchup_app::dialogs::ScriptedFileDialogs;
+use ketchup_app::{AppCommand, AssistantMessageRole};
 use ketchup_core::assistant_sidecar::{
     AssistantCadBodyFeature, AssistantCadEditOperation, AssistantCadEditProgram,
     AssistantCadFeatureReference, AssistantCadParameterValueType, AssistantCadProgramFeatureOutput,
@@ -172,6 +172,43 @@ fn wait_for_hovered_pick(shell: &mut Shell, position: Pos2) {
         shell.app().exact_current_producer_ids(),
         shell.app().instanced_scene_triangle_count()
     );
+}
+
+/// Send one Assistant request, step the shell until the assistant answered it,
+/// and prove its CAD program was applied as one revision and one undo step.
+fn submit_applied_assistant_request(shell: &mut Shell, request: &str) {
+    let before = canonical_state(shell);
+    let input = shell.catalog().text("assistant-input-hint");
+    shell.focus_text_input(&input);
+    shell.type_text(request);
+    shell.press_key(Key::Enter);
+    let reply = (0..2_000)
+        .find_map(|_| {
+            shell.step();
+            let messages = shell.app().assistant_messages();
+            let user = messages
+                .iter()
+                .rposition(|message| message.role == AssistantMessageRole::User);
+            let reply = user.and_then(|index| messages.get(index + 1)).cloned();
+            if reply.is_none() {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            reply
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "{request}: the assistant did not answer: {:?}",
+                shell.app().assistant_messages()
+            )
+        });
+    assert_eq!(
+        reply.role,
+        AssistantMessageRole::Assistant,
+        "{request}: the program must apply: {:?}",
+        shell.app().assistant_messages()
+    );
+    assert_eq!(shell.app().document_revision(), before.revision + 1);
+    assert_eq!(shell.app().undo_step_count(), before.undo_steps + 1);
 }
 
 fn wait_for_current_exact_body(shell: &mut Shell) {
@@ -475,14 +512,8 @@ fn assistant_sheet_metal_reaches_exact_worker_and_file_export_through_accesskit(
         .connect_exact_worker(exact_worker_path())
         .unwrap();
 
-    let input = shell.catalog().text("assistant-input-hint");
-    shell.focus_text_input(&input);
-    shell.type_text(request);
-    shell.press_key(Key::Enter);
-    let confirm = shell.catalog().text("assistant-confirm");
-    wait_for_visible_label(&mut shell, &confirm);
     assert_eq!(shell.app().document_snapshot().features().count(), 0);
-    shell.click_row(&confirm);
+    submit_applied_assistant_request(&mut shell, request);
 
     let feature_id = shell
         .app()
@@ -490,7 +521,7 @@ fn assistant_sheet_metal_reaches_exact_worker_and_file_export_through_accesskit(
         .features()
         .find(|feature| matches!(feature.kind(), FeatureKind::SheetMetal(_)))
         .map(ketchup_core::document::Feature::id)
-        .expect("confirmed Assistant proposal must create one canonical sheet-metal feature");
+        .expect("the applied Assistant program must create one canonical sheet-metal feature");
     wait_for_current_exact_body(&mut shell);
     assert_eq!(shell.app().exact_current_producer_ids(), [feature_id]);
     let before_export = canonical_state(&shell);
@@ -609,13 +640,7 @@ fn assistant_cam_setup_reviews_exact_simulation_and_exports_through_accesskit() 
         .unwrap();
     let baseline = canonical_state(&shell);
 
-    let input = shell.catalog().text("assistant-input-hint");
-    shell.focus_text_input(&input);
-    shell.type_text(request);
-    shell.press_key(Key::Enter);
-    let assistant_confirm = shell.catalog().text("assistant-confirm");
-    wait_for_visible_label(&mut shell, &assistant_confirm);
-    shell.click_row(&assistant_confirm);
+    submit_applied_assistant_request(&mut shell, request);
     assert!(
         shell
             .app()
@@ -623,7 +648,6 @@ fn assistant_cam_setup_reviews_exact_simulation_and_exports_through_accesskit() 
             .cam_plan(ketchup_core::cam::CamPlanId(95))
             .is_some()
     );
-    assert_eq!(shell.app().undo_step_count(), baseline.undo_steps + 1);
     let setup_state = canonical_state(&shell);
 
     shell.click_menu_command("menu-file", AppCommand::ReviewCamExport);
@@ -1090,13 +1114,7 @@ fn assistant_weldment_recomputes_and_exports_cut_list_through_accesskit() {
         .connect_exact_worker(exact_worker_path())
         .unwrap();
 
-    let input = shell.catalog().text("assistant-input-hint");
-    let confirm = shell.catalog().text("assistant-confirm");
-    shell.focus_text_input(&input);
-    shell.type_text(create_request);
-    shell.press_key(Key::Enter);
-    wait_for_visible_label(&mut shell, &confirm);
-    shell.click_row(&confirm);
+    submit_applied_assistant_request(&mut shell, create_request);
     assert_eq!(
         shell
             .app()
@@ -1141,11 +1159,7 @@ fn assistant_weldment_recomputes_and_exports_cut_list_through_accesskit() {
         .collect::<Vec<_>>();
     let before_digest = before.cut_list_envelope.source_digest;
 
-    shell.focus_text_input(&input);
-    shell.type_text(resize_request);
-    shell.press_key(Key::Enter);
-    wait_for_visible_label(&mut shell, &confirm);
-    shell.click_row(&confirm);
+    submit_applied_assistant_request(&mut shell, resize_request);
     wait_for_current_exact_body(&mut shell);
     assert_eq!(shell.app().exact_current_producer_ids(), [joint_id]);
     let after = shell
@@ -1227,7 +1241,7 @@ fn save_as_then_new_then_open_restores_the_same_canonical_document() {
     shell.click_menu_command("menu-file", AppCommand::New);
     assert_eq!(
         shell.app().active_box_count(),
-        1,
+        0,
         "New must replace the composed model with an empty document"
     );
     assert_eq!(shell.app().document_path(), None);

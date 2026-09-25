@@ -4,7 +4,8 @@ use crate::document::{
     DefinitionId, FeatureId, FeatureKind, InstancePath, InstancePathStep, Snapshot, Transform,
 };
 use crate::exact_brep_graph::{
-    ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarSegment,
+    ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop,
+    ExactBRepPlanarSegment,
 };
 use crate::exact_product::{ExactBodyPackage, ExactResultKey, ExactResultRegistry};
 use crate::graph::sha256_hex;
@@ -1555,7 +1556,8 @@ fn is_translation_only(transform: Transform) -> bool {
             .all(|index| matrix[index] == 0.0)
 }
 
-/// A single extrusion of an axis-aligned rectangle along the z axis: the body is
+/// A single extrusion of a rectangle whose sides, and the extrusion itself,
+/// run along world axes (in any of the three principal planes): the body is
 /// exactly its bounding box.
 fn graph_is_axis_aligned_box(graph: &ExactBRepGraph) -> bool {
     let [node] = graph.nodes.as_slice() else {
@@ -1571,13 +1573,21 @@ fn graph_is_axis_aligned_box(graph: &ExactBRepGraph) -> bool {
         return false;
     };
     let frame = profile.frame_bits.map(f64::from_bits);
-    let direction = interval.direction();
-    let ExactBRepPlanarGeometry::Boundary {
-        closed: true,
-        segments,
-    } = &profile.geometry
-    else {
-        return false;
+    let is_world_axis = |vector: [f64; 3]| {
+        vector.iter().filter(|value| value.abs() == 1.0).count() == 1
+            && vector.iter().filter(|value| **value == 0.0).count() == 2
+    };
+    // A plain profile, or a solved sketch region without holes.
+    let segments = match &profile.geometry {
+        ExactBRepPlanarGeometry::Boundary {
+            closed: true,
+            segments,
+        } => segments,
+        ExactBRepPlanarGeometry::Region {
+            outer: ExactBRepPlanarLoop::Boundary { segments },
+            holes,
+        } if holes.is_empty() => segments,
+        _ => return false,
     };
     let points = segments
         .iter()
@@ -1586,21 +1596,23 @@ fn graph_is_axis_aligned_box(graph: &ExactBRepGraph) -> bool {
             _ => None,
         })
         .collect::<Option<Vec<_>>>();
-    frame[3..9] == [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
-        && direction[0] == 0.0
-        && direction[1] == 0.0
-        && direction[2].abs() == 1.0
+    is_world_axis([frame[3], frame[4], frame[5]])
+        && is_world_axis([frame[6], frame[7], frame[8]])
+        && is_world_axis(interval.direction())
         && points.is_some_and(|points| is_axis_aligned_rectangle_profile(&points))
 }
 
+/// Four corners joined by sides that alternate between the two axes.
 fn is_axis_aligned_rectangle_profile(points_mm: &[[f64; 2]]) -> bool {
-    points_mm.len() == 4
-        && points_mm[0][1] == points_mm[1][1]
-        && points_mm[1][0] == points_mm[2][0]
-        && points_mm[2][1] == points_mm[3][1]
-        && points_mm[3][0] == points_mm[0][0]
-        && points_mm[1][0] > points_mm[0][0]
-        && points_mm[3][1] > points_mm[0][1]
+    let [a, b, c, d] = points_mm else {
+        return false;
+    };
+    // Solved sketch coordinates carry rounding noise far below any tolerance.
+    let same = |left: f64, right: f64| (left - right).abs() <= 1.0e-9;
+    let horizontal = |from: &[f64; 2], to: &[f64; 2]| same(from[1], to[1]) && !same(from[0], to[0]);
+    let vertical = |from: &[f64; 2], to: &[f64; 2]| same(from[0], to[0]) && !same(from[1], to[1]);
+    (horizontal(a, b) && vertical(b, c) && horizontal(c, d) && vertical(d, a))
+        || (vertical(a, b) && horizontal(b, c) && vertical(c, d) && horizontal(d, a))
 }
 
 fn canonical_extrusion_geometry_digest(points_mm: &[[f64; 2]], height_mm: f64) -> String {

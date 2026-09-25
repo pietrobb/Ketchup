@@ -66,10 +66,8 @@ pub fn plan_incremental_exact_evaluation(
     after: &Snapshot,
     full_baseline: Option<&ExactSource>,
 ) -> Result<IncrementalExactPlan, String> {
-    let scope = plan_incremental_exact_scope(before, after)?;
-    let expected_baseline = exact_source(before);
-    if full_baseline != Some(&expected_baseline) {
-        return Ok(IncrementalExactPlan {
+    let full = |reason: String, changed_feature_count, changed_scene_occurrence_count| {
+        IncrementalExactPlan {
             selection: ExactEvaluationSelection::Full,
             collision_occurrences: after
                 .scene_query()
@@ -78,10 +76,24 @@ pub fn plan_incremental_exact_evaluation(
                 .map(|occurrence| occurrence.instance_path.root_occurrence())
                 .collect(),
             baseline_reused: false,
-            fallback_reason: Some("missing or stale complete exact baseline".to_owned()),
-            changed_feature_count: scope.changed_feature_count,
-            changed_scene_occurrence_count: scope.changed_scene_occurrence_count,
-        });
+            fallback_reason: Some(reason),
+            changed_feature_count,
+            changed_scene_occurrence_count,
+        }
+    };
+    // A document the scope cannot be derived for (e.g. two independent solids
+    // in one body) is still editable: it is evaluated in full instead.
+    let scope = match plan_incremental_exact_scope(before, after) {
+        Ok(scope) => scope,
+        Err(reason) => return Ok(full(reason, 0, 0)),
+    };
+    let expected_baseline = exact_source(before);
+    if full_baseline != Some(&expected_baseline) {
+        return Ok(full(
+            "missing or stale complete exact baseline".to_owned(),
+            scope.changed_feature_count,
+            scope.changed_scene_occurrence_count,
+        ));
     }
     Ok(IncrementalExactPlan {
         selection: ExactEvaluationSelection::Scoped(scope.producers),
