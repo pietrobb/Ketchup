@@ -1995,9 +1995,8 @@ pub(crate) struct ProductModel {
 /// after publication; the revision is part of the key because the graph embeds
 /// it. A clone starts empty for the same reason as [`DigestCache`].
 #[derive(Default)]
-pub(crate) struct ExactGraphCache(
-    std::sync::Mutex<BTreeMap<(u64, DefinitionId, FeatureId), Option<Arc<ExactBRepGraph>>>>,
-);
+pub(crate) struct ExactGraphCache(std::sync::Mutex<ExactGraphsByProducer>);
+type ExactGraphsByProducer = BTreeMap<(u64, DefinitionId, FeatureId), Option<Arc<ExactBRepGraph>>>;
 
 impl Clone for ExactGraphCache {
     fn clone(&self) -> Self {
