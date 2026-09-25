@@ -2882,7 +2882,10 @@ pub fn assistant_derived_gravity_participants(
             )
         })
         .collect::<Vec<_>>();
-    if derived.iter().any(|participant| participant.explicitly_grounded) {
+    if derived
+        .iter()
+        .any(|participant| participant.explicitly_grounded)
+    {
         derived
     } else {
         Vec::new()

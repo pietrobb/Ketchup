@@ -123,6 +123,33 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
     })
 }
 
+/// Envelope whose request body is parsed only after authentication, so a
+/// malformed body can be answered on the same connection with its id.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawEnvelope {
+    version: u32,
+    id: u64,
+    token: String,
+    request: Value,
+}
+
+const DEFAULT_RESPONSE_WAIT: Duration = Duration::from_secs(30);
+/// Queueing and publishing on the UI thread come on top of the job deadline.
+const APPLY_AND_VERIFY_RESPONSE_MARGIN: Duration = Duration::from_secs(15);
+
+/// How long the connection waits for the UI thread's answer. A verified edit
+/// may legitimately run up to its own `timeout_ms`, so the connection must not
+/// give up (and cancel it) before the job's deadline does.
+fn response_wait(request: &Request) -> Duration {
+    match request {
+        Request::ApplyAndVerify { timeout_ms, .. } => (Duration::from_millis(*timeout_ms)
+            + APPLY_AND_VERIFY_RESPONSE_MARGIN)
+            .max(DEFAULT_RESPONSE_WAIT),
+        _ => DEFAULT_RESPONSE_WAIT,
+    }
+}
+
 fn authenticated(supplied: &str, expected: &str) -> bool {
     if supplied.len() != 64 {
         return false;
@@ -268,7 +295,7 @@ fn serve(
     let mut session_authenticated = false;
     while !stop.load(Ordering::Acquire) {
         let bytes = read_frame(&mut stream, session_authenticated, stop)?;
-        let envelope: Envelope = match serde_json::from_slice(&bytes) {
+        let envelope: RawEnvelope = match serde_json::from_slice(&bytes) {
             Ok(envelope) => envelope,
             Err(_) => {
                 write_response(&mut stream, Response::error(0, "invalid_request"))?;
@@ -288,7 +315,25 @@ fn serve(
         }
         session_authenticated = true;
         authenticated_session.store(true, Ordering::Release);
+        // A malformed request body from an authenticated client is a fixable
+        // argument mistake, not a reason to drop the connection.
+        let envelope = match serde_json::from_value::<Request>(envelope.request) {
+            Ok(request) => Envelope {
+                version: envelope.version,
+                id: envelope.id,
+                token: envelope.token,
+                request,
+            },
+            Err(error) => {
+                write_response(
+                    &mut stream,
+                    Response::invalid_params(envelope.id, &error.to_string()),
+                )?;
+                continue;
+            }
+        };
         let disconnect = matches!(envelope.request, Request::Disconnect {});
+        let response_wait = response_wait(&envelope.request);
         let (reply, receiver) = mpsc::sync_channel(1);
         let queued = Queued {
             session,
@@ -306,7 +351,7 @@ fn serve(
             return Ok(());
         }
         context.request_repaint();
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + response_wait;
         stream.set_nonblocking(true)?;
         let response = loop {
             if stop.load(Ordering::Acquire) || Instant::now() >= deadline {
@@ -404,5 +449,73 @@ mod tests {
         })
         .unwrap();
         assert_eq!(complete, [0, 0, 0, 4, b'b', b'o', b'd', b'y']);
+    }
+
+    fn exchange(stream: &mut TcpStream, value: &Value) -> Value {
+        let body = serde_json::to_vec(value).unwrap();
+        stream
+            .write_all(&(body.len() as u32).to_be_bytes())
+            .unwrap();
+        stream.write_all(&body).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut header = [0; 4];
+        stream.read_exact(&mut header).unwrap();
+        let mut response = vec![0; u32::from_be_bytes(header) as usize];
+        stream.read_exact(&mut response).unwrap();
+        serde_json::from_slice(&response).unwrap()
+    }
+
+    #[test]
+    fn malformed_request_body_is_answered_with_its_id_and_keeps_the_connection() {
+        let token = "a".repeat(64);
+        let bridge = start_with_token(egui::Context::default(), token.clone()).unwrap();
+        let mut stream = TcpStream::connect(bridge.address).unwrap();
+        let answer = exchange(
+            &mut stream,
+            &json!({"version":1,"id":7,"token":token,"request":{"method":"no_such_method"}}),
+        );
+        assert_eq!(answer["id"], 7);
+        assert_eq!(answer["ok"], false);
+        assert_eq!(answer["error"], "invalid_params");
+        let reason = answer["result"]["reason"].as_str().unwrap();
+        assert!(reason.contains("no_such_method"), "{reason}");
+
+        // The same connection still accepts a well-formed request.
+        let body = serde_json::to_vec(
+            &json!({"version":1,"id":8,"token":token,"request":{"method":"status"}}),
+        )
+        .unwrap();
+        stream
+            .write_all(&(body.len() as u32).to_be_bytes())
+            .unwrap();
+        stream.write_all(&body).unwrap();
+        let queued = bridge
+            .queue
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the well-formed request reaches the UI queue");
+        assert_eq!(queued.id, 8);
+        assert!(matches!(queued.request, Request::Status { .. }));
+    }
+
+    #[test]
+    fn apply_and_verify_response_wait_covers_its_own_job_deadline() {
+        let long: Request = serde_json::from_value(json!({
+            "method": "apply_and_verify",
+            "program": {"operations": []},
+            "timeout_ms": 120_000,
+        }))
+        .unwrap();
+        assert_eq!(response_wait(&long), Duration::from_secs(135));
+        let short: Request = serde_json::from_value(json!({
+            "method": "apply_and_verify",
+            "program": {"operations": []},
+            "timeout_ms": 1_000,
+        }))
+        .unwrap();
+        assert_eq!(response_wait(&short), DEFAULT_RESPONSE_WAIT);
+        let status: Request = serde_json::from_value(json!({"method": "status"})).unwrap();
+        assert_eq!(response_wait(&status), DEFAULT_RESPONSE_WAIT);
     }
 }

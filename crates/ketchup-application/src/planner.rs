@@ -706,6 +706,7 @@ fn reject_colliding_physical_dowel_hole(
     definition_id: DefinitionId,
     hole: &DowelHole,
     operation: &str,
+    excluded_feature_id: Option<FeatureId>,
 ) -> AssistantPlanningResult<()> {
     let proposed_end = [
         hole.entry_local_mm[0] + hole.inward_unit_local[0] * hole.depth_mm,
@@ -721,6 +722,9 @@ fn reject_colliding_physical_dowel_hole(
         )
     })?;
     for feature_id in definition.feature_ids() {
+        if Some(*feature_id) == excluded_feature_id {
+            continue;
+        }
         let Some((existing_start, existing_end, existing_radius)) =
             circular_pocket_axis(snapshot, *feature_id)
         else {
@@ -761,6 +765,7 @@ fn append_physical_dowel_hole(
         definition_id,
         hole,
         "create_physical_dowel_joint",
+        None,
     )?;
     let panel_hole = AssistantPanelHole {
         id: hole.stable_hole_id.clone(),
@@ -1708,6 +1713,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
             AssistantCadEditOperation::DeletePhysicalDowelJoint { .. } => {
                 "delete_physical_dowel_joint"
             }
+            AssistantCadEditOperation::MovePhysicalDowelPair { .. } => "move_physical_dowel_pair",
             AssistantCadEditOperation::SetAssemblyJointPosition { .. } => {
                 "set_assembly_joint_position"
             }
@@ -1840,6 +1846,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
             | AssistantCadEditOperation::CreateProgramDowelJoint { .. }
             | AssistantCadEditOperation::CreatePhysicalDowelJoint { .. }
             | AssistantCadEditOperation::DeletePhysicalDowelJoint { .. }
+            | AssistantCadEditOperation::MovePhysicalDowelPair { .. }
             | AssistantCadEditOperation::SetAssemblyJointPosition { .. }
             | AssistantCadEditOperation::CreateDrawing { .. }
             | AssistantCadEditOperation::UpsertCamPlan { .. }
@@ -2656,6 +2663,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                         AssistantStandardDowel::D10x40 => StandardDowel::D10x40,
                     }
                     .symmetric_spec(),
+                    pair_offsets_first_local_mm: Vec::new(),
                     physical_hole_pairs: (!physical_hole_pairs.is_empty()).then(|| {
                         physical_hole_pairs
                             .iter()
@@ -2762,6 +2770,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                         AssistantStandardDowel::D10x40 => StandardDowel::D10x40,
                     }
                     .symmetric_spec(),
+                    pair_offsets_first_local_mm: Vec::new(),
                     physical_hole_pairs: Some(pairs),
                 };
                 project_dowel_joint_contract(staged_planning.staged_snapshot(), &contract).map_err(
@@ -2788,8 +2797,29 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                 count,
                 spacing_mm,
                 dowel,
+                first_insertion_mm,
             } => {
                 staged_planning.refresh(operation_name, &document_target)?;
+                let mut dowel_spec = match dowel {
+                    AssistantStandardDowel::D6x30 => StandardDowel::D6x30,
+                    AssistantStandardDowel::D8x30 => StandardDowel::D8x30,
+                    AssistantStandardDowel::D8x40 => StandardDowel::D8x40,
+                    AssistantStandardDowel::D10x40 => StandardDowel::D10x40,
+                }
+                .symmetric_spec();
+                if let Some(first_insertion) = *first_insertion_mm {
+                    if !(first_insertion > 0.0 && first_insertion < dowel_spec.length_mm) {
+                        return Err(assistant_planning_rejection(
+                            "planning.physical_dowel_insertion_invalid",
+                            operation_name,
+                            &document_target,
+                            "first_insertion_mm must be greater than 0 and shorter than the dowel.",
+                            "Split the dowel length between both parts.",
+                        ));
+                    }
+                    dowel_spec.first_insertion_mm = first_insertion;
+                    dowel_spec.second_insertion_mm = dowel_spec.length_mm - first_insertion;
+                }
                 let id = if let Some(id) = joint_id {
                     DowelJointId(*id)
                 } else {
@@ -2837,13 +2867,8 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                     row_unit_first_local: *row_unit_first_local,
                     count: *count,
                     spacing_mm: *spacing_mm,
-                    dowel: match dowel {
-                        AssistantStandardDowel::D6x30 => StandardDowel::D6x30,
-                        AssistantStandardDowel::D8x30 => StandardDowel::D8x30,
-                        AssistantStandardDowel::D8x40 => StandardDowel::D8x40,
-                        AssistantStandardDowel::D10x40 => StandardDowel::D10x40,
-                    }
-                    .symmetric_spec(),
+                    dowel: dowel_spec,
+                    pair_offsets_first_local_mm: Vec::new(),
                     physical_hole_pairs: None,
                 };
                 if joint_id.is_some() {
@@ -2993,6 +3018,195 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                     },
                 )?;
                 staged_planning.push(CanonicalCommand::UpsertDowelJoint(contract));
+                staged_planning.record_output(operation_index, StagedProgramOutput::DowelJoint(id));
+            }
+            AssistantCadEditOperation::MovePhysicalDowelPair {
+                joint_id,
+                pair_index,
+                offset_first_local_mm,
+            } => {
+                let current = staged_planning.staged_snapshot();
+                let id = DowelJointId(*joint_id);
+                let existing = current.dowel_joint(id).ok_or_else(|| {
+                    assistant_planning_rejection(
+                        "planning.physical_dowel_joint_not_found",
+                        operation_name,
+                        &document_target,
+                        "The dowel joint does not exist.",
+                        "Inspect the current dowel joints.",
+                    )
+                })?;
+                let bindings = existing.physical_hole_pairs.as_ref().ok_or_else(|| {
+                    assistant_planning_rejection(
+                        "planning.physical_dowel_joint_not_owned",
+                        operation_name,
+                        &document_target,
+                        "The joint has no paired physical holes.",
+                        "Select a physical dowel joint.",
+                    )
+                })?;
+                let index = *pair_index as usize;
+                let binding = bindings.get(index).ok_or_else(|| {
+                    assistant_planning_rejection(
+                        "planning.physical_dowel_pair_not_found",
+                        operation_name,
+                        &document_target,
+                        "The pair index is outside this joint.",
+                        "Inspect the joint's pair indices.",
+                    )
+                })?;
+                let before = project_dowel_joint_contract(current, existing).map_err(|error| {
+                    assistant_planning_rejection(
+                        "planning.physical_dowel_joint_invalid",
+                        operation_name,
+                        &document_target,
+                        error.to_string(),
+                        "Repair the physical joint before moving a pair.",
+                    )
+                })?;
+                let mut updated = existing.clone();
+                if updated.pair_offsets_first_local_mm.is_empty() {
+                    updated.pair_offsets_first_local_mm = vec![[0.0; 3]; updated.count as usize];
+                }
+                updated.pair_offsets_first_local_mm[index] = *offset_first_local_mm;
+                let mut unbound = updated.clone();
+                unbound.physical_hole_pairs = None;
+                let after = project_dowel_joint_contract(current, &unbound).map_err(|error| {
+                    assistant_planning_rejection(
+                        "planning.physical_dowel_pair_invalid",
+                        operation_name,
+                        &document_target,
+                        error.to_string(),
+                        "Keep the moved pair inside both panels and away from other dowels.",
+                    )
+                })?;
+                let current_pair = &before.pairs[index];
+                let new_pair = &after.pairs[index];
+                let instances = current
+                    .scene_query_bounded(
+                        MAX_AXIS_INSTANCE_OCCURRENCES,
+                        MAX_AXIS_INSTANCE_PATH_STEPS,
+                        MAX_AXIS_INSTANCE_TEXT_BYTES,
+                    )
+                    .map_err(|_| {
+                        assistant_planning_rejection(
+                            "planning.physical_dowel_scope_incomplete",
+                            operation_name,
+                            &document_target,
+                            "The bounded instance query could not prove exclusive part ownership.",
+                            "Reduce the assembly scope before moving physical holes.",
+                        )
+                    })?;
+                let mut moves = Vec::new();
+                for (face, old_hole, new_hole, pocket_id) in [
+                    (
+                        &existing.first,
+                        &current_pair.first,
+                        &new_pair.first,
+                        binding.first_pocket_feature_id,
+                    ),
+                    (
+                        &existing.second,
+                        &current_pair.second,
+                        &new_pair.second,
+                        binding.second_pocket_feature_id,
+                    ),
+                ] {
+                    let definition_id = current
+                        .resolve_instance_path(&face.instance_path)
+                        .map_err(|_| {
+                            assistant_planning_rejection(
+                                "planning.physical_dowel_pair_invalid",
+                                operation_name,
+                                &document_target,
+                                "The joint participant cannot be resolved.",
+                                "Inspect the joint participants.",
+                            )
+                        })?
+                        .definition_id;
+                    if instances.iter().any(|instance| {
+                        instance.definition_id == definition_id
+                            && instance.shared_occurrence_count > 1
+                    }) {
+                        return Err(assistant_planning_rejection(
+                            "planning.physical_dowel_shared_definition",
+                            operation_name,
+                            &document_target,
+                            "Moving this hole would change other instances of a shared part.",
+                            "Make the target part unique first.",
+                        ));
+                    }
+                    reject_colliding_physical_dowel_hole(
+                        current,
+                        definition_id,
+                        new_hole,
+                        operation_name,
+                        Some(pocket_id),
+                    )?;
+                    let profile_id = match current.feature(pocket_id).map(|feature| feature.kind())
+                    {
+                        Some(FeatureKind::Pocket { profile, .. }) => *profile,
+                        _ => {
+                            return Err(assistant_planning_rejection(
+                                "planning.physical_dowel_pair_invalid",
+                                operation_name,
+                                &document_target,
+                                "The owned hole is not a pocket.",
+                                "Inspect the physical hole binding.",
+                            ));
+                        }
+                    };
+                    let workplane_id =
+                        match current.feature(profile_id).map(|feature| feature.kind()) {
+                            Some(FeatureKind::Sketch(sketch)) => sketch.workplane,
+                            _ => {
+                                return Err(assistant_planning_rejection(
+                                    "planning.physical_dowel_pair_invalid",
+                                    operation_name,
+                                    &document_target,
+                                    "The owned hole has no sketch.",
+                                    "Inspect the physical hole binding.",
+                                ));
+                            }
+                        };
+                    let frame = match current.feature(workplane_id).map(|feature| feature.kind()) {
+                        Some(FeatureKind::Workplane(spec))
+                            if spec.support == WorkplaneSupport::Free =>
+                        {
+                            spec.frame
+                        }
+                        _ => {
+                            return Err(assistant_planning_rejection(
+                                "planning.physical_dowel_pair_invalid",
+                                operation_name,
+                                &document_target,
+                                "The owned hole does not have a free workplane.",
+                                "Inspect the physical hole binding.",
+                            ));
+                        }
+                    };
+                    let origin: [f64; 3] = std::array::from_fn(|axis| {
+                        frame.origin_mm[axis] + new_hole.entry_local_mm[axis]
+                            - old_hole.entry_local_mm[axis]
+                    });
+                    moves.push((workplane_id, origin));
+                }
+                for (workplane_id, origin) in moves {
+                    for (axis, value) in ["x", "y", "z"].into_iter().zip(origin) {
+                        staged_planning.push(CanonicalCommand::SetFeatureParameter {
+                            target: FeatureParameterTarget {
+                                feature_id: workplane_id,
+                                path: ParameterPath::new(format!("frame.origin.{axis}"))
+                                    .expect("valid workplane parameter"),
+                                value_type: ParameterValueType::Length,
+                            },
+                            dimension: Dimension::new(value.to_string(), value)
+                                .expect("bounded workplane origin"),
+                        });
+                    }
+                }
+                staged_planning.push(CanonicalCommand::UpsertDowelJoint(updated));
+                staged_planning.refresh(operation_name, &document_target)?;
                 staged_planning.record_output(operation_index, StagedProgramOutput::DowelJoint(id));
             }
             AssistantCadEditOperation::DeletePhysicalDowelJoint { joint_id } => {

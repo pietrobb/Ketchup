@@ -200,6 +200,7 @@ fn physical_recipe_save_open_history_recomputes_full_exact_without_cached_eviden
                     count: 2,
                     spacing_mm: 32.0,
                     dowel: AssistantStandardDowel::D8x30,
+                    first_insertion_mm: None,
                 }],
             },
             &BTreeSet::new(),

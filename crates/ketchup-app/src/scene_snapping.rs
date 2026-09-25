@@ -170,7 +170,7 @@ impl SceneSnapGeometry {
                 self.edge(&edge_ref, points, !closed && linear);
             }
         }
-        for e in evidence.iter().filter(|e| e.closed) {
+        for e in evidence {
             let (Some(radius), Some(c), Some(n)) =
                 (e.circle_radius_mm, e.axis_origin_mm, e.unit_axis_direction)
             else {
@@ -198,7 +198,9 @@ impl SceneSnapGeometry {
             }
             self.points
                 .push((circle_ref.clone(), SnapKind::Center, world_center));
-            self.circles.push((circle_ref, world_center, x, y, radius));
+            if e.closed {
+                self.circles.push((circle_ref, world_center, x, y, radius));
+            }
         }
     }
 
@@ -474,6 +476,108 @@ impl KetchupApp {
             }
         }
         geometry
+    }
+
+    /// World-space polylines of the selected topological edges. A hole mouth
+    /// split into several open arcs is returned whole: every edge sharing the
+    /// selected edge's circle centre on the same instance is included.
+    pub(super) fn selected_topological_edge_paths(&self) -> Vec<Vec<Vec3>> {
+        let selected: Vec<_> = self
+            .selection
+            .topological
+            .iter()
+            .map(|(selection, _)| selection)
+            .filter(|selection| matches!(selection.element, ElementId::TopologicalEdge { .. }))
+            .collect();
+        if selected.is_empty() {
+            return Vec::new();
+        }
+        let snapshot = self.document.current();
+        self.refresh_interaction_projection_cache(&snapshot);
+        let cache = self.interaction_projection_cache.borrow();
+        let Some(cache) = cache.as_ref() else {
+            return Vec::new();
+        };
+        let geometry = cache
+            .snap_geometry
+            .get_or_init(|| self.build_scene_snap_geometry(&snapshot));
+        let centers: Vec<_> = geometry
+            .points
+            .iter()
+            .filter(|(reference, kind, _)| {
+                *kind == SnapKind::Center && selected.contains(&reference)
+            })
+            .map(|(reference, _, center)| (&reference.instance_path, *center))
+            .collect();
+        let highlighted = |reference: &SelectionId| {
+            selected.contains(&reference)
+                || geometry.points.iter().any(|(candidate, kind, center)| {
+                    *kind == SnapKind::Center
+                        && candidate == reference
+                        && centers.iter().any(|(path, selected_center)| {
+                            **path == reference.instance_path
+                                && (*center - *selected_center).length() <= 1e-6
+                        })
+                })
+        };
+        let mut paths: Vec<Vec<Vec3>> = geometry
+            .edges
+            .iter()
+            .filter(|(reference, _)| highlighted(reference))
+            .map(|(_, points)| points.clone())
+            .collect();
+        for (reference, center, x, y, radius) in &geometry.circles {
+            if highlighted(reference) {
+                paths.push(
+                    (0..=48)
+                        .map(|step| {
+                            let angle = std::f64::consts::TAU * f64::from(step) / 48.0;
+                            *center + (*x * angle.cos() + *y * angle.sin()) * *radius
+                        })
+                        .collect(),
+                );
+            }
+        }
+        paths
+    }
+
+    pub(super) fn select_circle_center_at_screen(
+        &self,
+        pointer: Pos2,
+        rect: Rect,
+    ) -> Option<SnapResult> {
+        let hovered = self.hovered.as_ref()?;
+        let snapshot = self.document.current();
+        self.refresh_interaction_projection_cache(&snapshot);
+        let cache = self.interaction_projection_cache.borrow();
+        let geometry = cache
+            .as_ref()?
+            .snap_geometry
+            .get_or_init(|| self.build_scene_snap_geometry(&snapshot));
+        geometry
+            .points
+            .iter()
+            .filter(|(reference, kind, _)| {
+                *kind == SnapKind::Center
+                    && matches!(reference.element, ElementId::TopologicalEdge { .. })
+                    && reference.instance_path == hovered.instance_path
+            })
+            .filter_map(|(reference, kind, position_mm)| {
+                let distance = self.project(*position_mm, rect).distance(pointer);
+                (distance <= 3.0).then(|| {
+                    (
+                        distance,
+                        SnapResult {
+                            kind: *kind,
+                            reference: reference.clone(),
+                            position_mm: *position_mm,
+                            distance_mm: distance.into(),
+                        },
+                    )
+                })
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, snap)| snap)
     }
 
     pub(super) fn scene_snap_at_screen(

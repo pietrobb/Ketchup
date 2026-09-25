@@ -85,6 +85,7 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
             count: 3,
             spacing_mm: spacing,
             dowel: AssistantStandardDowel::D8x30,
+            first_insertion_mm: None,
         };
     let program = AssistantCadEditProgram {
         operations: vec![
@@ -188,6 +189,209 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
             );
         }
     }
+    let empty = bridge.execute(&mut app, Request::Status {}, false).unwrap();
+    assert_eq!(empty["selected_context"]["state"], "empty");
+    let joint = repaired
+        .dowel_joints()
+        .find(|joint| {
+            joint.first.instance_path.root_occurrence() == OccurrenceId(6)
+                && joint.second.instance_path.root_occurrence() == OccurrenceId(1)
+        })
+        .unwrap();
+    let binding = joint.physical_hole_pairs.as_ref().unwrap()[1];
+    let path = joint.first.instance_path.clone();
+    let definition_id = repaired.resolve_instance_path(&path).unwrap().definition_id;
+    let package = app
+        .topology_results
+        .get_render(&repaired, definition_id)
+        .unwrap()
+        .clone();
+    let hole = &project_dowel_joint_contract(&repaired, joint)
+        .unwrap()
+        .pairs[1]
+        .first;
+    let edges = package.edge_evidence();
+    let matching_edges = edges
+        .iter()
+        .filter(|edge| {
+            edge.circle_radius_mm
+                .is_some_and(|radius| (radius - hole.diameter_mm / 2.0).abs() < 1e-5)
+                && edge.axis_origin_mm.is_some_and(|origin| {
+                    origin
+                        .into_iter()
+                        .zip(hole.entry_local_mm)
+                        .all(|(a, b)| (a - b).abs() < 1e-5)
+                })
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !matching_edges.is_empty(),
+        "no circular edge at the selected hole entry"
+    );
+    let ordinal = matching_edges[0].edge_ordinal;
+    assert!(app.select_topological_locator(
+        ketchup_interaction::exact_projection::TopologicalPickLocator {
+            instance_path: path,
+            producer_feature_id: package.producer_feature_id(),
+            kind: ketchup_core::topology::TopologicalElementKind::Edge,
+            ordinal,
+        }
+    ));
+    let selected = bridge.execute(&mut app, Request::Status {}, false).unwrap();
+    assert_eq!(selected["selected_context"]["state"], "dowel_pair");
+    assert_eq!(
+        selected["selected_context"]["dowel_pair"]["joint_id"],
+        joint.id.0
+    );
+    assert_eq!(selected["selected_context"]["dowel_pair"]["pair_index"], 1);
+    assert_eq!(
+        selected["selected_context"]["dowel_pair"]["first_pocket_feature_id"],
+        binding.first_pocket_feature_id.0
+    );
+    assert_eq!(
+        selected["selected_context"]["dowel_pair"]["second_pocket_feature_id"],
+        binding.second_pocket_feature_id.0
+    );
+    for index in [0, 2] {
+        let pair = &project_dowel_joint_contract(&repaired, joint)
+            .unwrap()
+            .pairs[index];
+        let ordinal = edges
+            .iter()
+            .find(|edge| {
+                edge.circle_radius_mm
+                    .is_some_and(|radius| (radius - pair.first.diameter_mm / 2.0).abs() < 1e-5)
+                    && edge.axis_origin_mm.is_some_and(|origin| {
+                        origin
+                            .into_iter()
+                            .zip(pair.first.entry_local_mm)
+                            .all(|(a, b)| (a - b).abs() < 1e-5)
+                    })
+            })
+            .unwrap()
+            .edge_ordinal;
+        assert!(app.select_topological_locator(
+            ketchup_interaction::exact_projection::TopologicalPickLocator {
+                instance_path: joint.first.instance_path.clone(),
+                producer_feature_id: package.producer_feature_id(),
+                kind: ketchup_core::topology::TopologicalElementKind::Edge,
+                ordinal,
+            }
+        ));
+        let status = bridge.execute(&mut app, Request::Status {}, false).unwrap();
+        assert_eq!(status["selected_context"]["state"], "dowel_pair");
+        assert_eq!(
+            status["selected_context"]["dowel_pair"]["joint_id"],
+            joint.id.0
+        );
+        assert_eq!(
+            status["selected_context"]["dowel_pair"]["pair_index"],
+            index
+        );
+    }
+    let second = &project_dowel_joint_contract(&repaired, joint)
+        .unwrap()
+        .pairs[1]
+        .second;
+    let second_definition = repaired
+        .resolve_instance_path(&second.instance_path)
+        .unwrap()
+        .definition_id;
+    let second_package = app
+        .topology_results
+        .get_render(&repaired, second_definition)
+        .unwrap()
+        .clone();
+    let second_edge = second_package
+        .edge_evidence()
+        .iter()
+        .find(|edge| {
+            edge.circle_radius_mm
+                .is_some_and(|radius| (radius - second.diameter_mm / 2.0).abs() < 1e-5)
+                && edge.axis_origin_mm.is_some_and(|origin| {
+                    origin
+                        .into_iter()
+                        .zip(second.entry_local_mm)
+                        .all(|(a, b)| (a - b).abs() < 1e-5)
+                })
+        })
+        .unwrap();
+    assert!(app.select_topological_locator(
+        ketchup_interaction::exact_projection::TopologicalPickLocator {
+            instance_path: second.instance_path.clone(),
+            producer_feature_id: second_package.producer_feature_id(),
+            kind: ketchup_core::topology::TopologicalElementKind::Edge,
+            ordinal: second_edge.edge_ordinal,
+        }
+    ));
+    let opposite = bridge.execute(&mut app, Request::Status {}, false).unwrap();
+    assert_eq!(opposite["selected_context"]["state"], "dowel_pair");
+    assert_eq!(
+        opposite["selected_context"]["dowel_pair"]["joint_id"],
+        joint.id.0
+    );
+    assert_eq!(opposite["selected_context"]["dowel_pair"]["pair_index"], 1);
+    assert_eq!(
+        opposite["selected_context"]["dowel_pair"]["selected_side"],
+        "second"
+    );
+    assert!(app.select_topological_locator(
+        ketchup_interaction::exact_projection::TopologicalPickLocator {
+            instance_path: joint.first.instance_path.clone(),
+            producer_feature_id: package.producer_feature_id(),
+            kind: ketchup_core::topology::TopologicalElementKind::Edge,
+            ordinal,
+        }
+    ));
+    assert!(
+        app.select_topological_locator_additive(
+            ketchup_interaction::exact_projection::TopologicalPickLocator {
+                instance_path: joint.first.instance_path.clone(),
+                producer_feature_id: package.producer_feature_id(),
+                kind: ketchup_core::topology::TopologicalElementKind::Edge,
+                ordinal: edges
+                    .iter()
+                    .find(|edge| {
+                        edge.axis_origin_mm.is_some_and(|origin| {
+                            origin
+                                .into_iter()
+                                .zip(
+                                    project_dowel_joint_contract(&repaired, joint)
+                                        .unwrap()
+                                        .pairs[0]
+                                        .first
+                                        .entry_local_mm,
+                                )
+                                .all(|(a, b)| (a - b).abs() < 1e-5)
+                        }) && edge.circle_radius_mm == Some(4.0)
+                    })
+                    .unwrap()
+                    .edge_ordinal,
+            },
+            true
+        )
+    );
+    let multiple = bridge.execute(&mut app, Request::Status {}, false).unwrap();
+    assert_eq!(
+        multiple["selected_context"]["state"],
+        "multiple_topological_elements"
+    );
+    assert!(multiple["selected_context"]["dowel_pair"].is_null());
+    let other = edges
+        .iter()
+        .find(|edge| edge.circle_radius_mm.is_none() && edge.edge_ordinal != ordinal)
+        .unwrap();
+    assert!(app.select_topological_locator(
+        ketchup_interaction::exact_projection::TopologicalPickLocator {
+            instance_path: joint.first.instance_path.clone(),
+            producer_feature_id: package.producer_feature_id(),
+            kind: ketchup_core::topology::TopologicalElementKind::Edge,
+            ordinal: other.edge_ordinal,
+        }
+    ));
+    let non_hole = bridge.execute(&mut app, Request::Status {}, false).unwrap();
+    assert_eq!(non_hole["selected_context"]["state"], "topological_element");
+    assert!(non_hole["selected_context"]["dowel_pair"].is_null());
     let after = app.live_bridge_stamp();
     assert!(app.undo());
     assert_eq!(
@@ -198,6 +402,100 @@ fn original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geom
     assert_eq!(
         app.live_bridge_stamp().canonical_digest,
         after.canonical_digest
+    );
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceVisibility {
+                id: OccurrenceId(1),
+                visible: false,
+            },
+        ]))
+        .unwrap();
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::Vec2::new(1600.0, 1000.0))
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+    harness.step();
+    harness.state_mut().dispatch_command(AppCommand::ViewBack);
+    harness.state_mut().dispatch_command(AppCommand::ZoomFit);
+    harness.step();
+    let center = hole.shared_center_world_mm;
+    let pointer = harness
+        .state()
+        .viewport_position(Vec3::new(center[0], center[1], center[2]))
+        .unwrap();
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::PointerMoved(pointer));
+    harness.step();
+    assert_eq!(
+        harness.state().hover_snap.as_ref().map(|snap| snap.kind),
+        Some(ketchup_interaction::SnapKind::Center),
+        "pointer={pointer:?} rect={:?} hovered={:?} snap={:?}",
+        harness.state().viewport_rect(),
+        harness.state().hovered,
+        harness.state().hover_snap
+    );
+    harness.input_mut().events.push(egui::Event::PointerButton {
+        pos: pointer,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.step();
+    let clicked = bridge
+        .execute(harness.state_mut(), Request::Status {}, false)
+        .unwrap();
+    assert_eq!(clicked["selected_context"]["state"], "dowel_pair");
+    assert_eq!(
+        clicked["selected_context"]["dowel_pair"]["joint_id"],
+        joint.id.0
+    );
+    assert_eq!(clicked["selected_context"]["dowel_pair"]["pair_index"], 1);
+    harness.input_mut().events.push(egui::Event::PointerButton {
+        pos: pointer,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.step();
+    let away = pointer + egui::Vec2::new(250.0, 180.0);
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::PointerMoved(away));
+    harness.step();
+    let moved = bridge
+        .execute(harness.state_mut(), Request::Status {}, false)
+        .unwrap();
+    assert_eq!(moved["selected_context"]["dowel_pair"]["pair_index"], 1);
+    let highlight = harness.state().selected_topological_edge_paths();
+    assert!(
+        !highlight.is_empty(),
+        "selected hole mouth must stay highlighted"
+    );
+    let hole_center = Vec3::new(center[0], center[1], center[2]);
+    let radius = hole.diameter_mm / 2.0;
+    let ring_points: Vec<_> = highlight.iter().flatten().collect();
+    assert!(ring_points.len() >= 8);
+    for point in &ring_points {
+        let distance = (**point - hole_center).length();
+        assert!(
+            (distance - radius).abs() <= 0.25,
+            "highlight point {point:?} is {distance} mm from the hole centre"
+        );
+    }
+    let span = |axis: fn(&Vec3) -> f64| {
+        let values = ring_points.iter().map(|point| axis(point));
+        values.clone().fold(f64::NEG_INFINITY, f64::max) - values.fold(f64::INFINITY, f64::min)
+    };
+    assert!(
+        [span(|p| p.x), span(|p| p.y), span(|p| p.z)]
+            .iter()
+            .filter(|extent| **extent >= hole.diameter_mm - 0.5)
+            .count()
+            == 2,
+        "the highlight must cover the whole hole mouth, not one arc"
     );
 }
 

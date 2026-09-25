@@ -88,6 +88,7 @@ fn dowel_joint() -> DowelJointContract {
         count: 3,
         spacing_mm: 32.0,
         dowel: StandardDowel::D8x30.symmetric_spec(),
+        pair_offsets_first_local_mm: Vec::new(),
         physical_hole_pairs: None,
     }
 }
@@ -1615,6 +1616,7 @@ fn dependent_joinery_document_with_physical_holes(
         count: if physical_holes { 1 } else { 3 },
         spacing_mm: 32.0,
         dowel: StandardDowel::D8x30.symmetric_spec(),
+        pair_offsets_first_local_mm: Vec::new(),
         physical_hole_pairs: physical_holes.then(|| {
             vec![DowelPhysicalHolePair {
                 first_pocket_feature_id: FeatureId(7),

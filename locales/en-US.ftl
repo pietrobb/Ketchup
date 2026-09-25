@@ -1,10 +1,5 @@
 app-title = Ketchup
-live-consent-title = Allow a local application to connect?
-live-consent-description = An unauthenticated local process is requesting temporary control of this Ketchup window. Its identity and publisher cannot be verified. No access is granted until you allow it.
-live-consent-document = Document: { $document }
 live-consent-untitled = Untitled
-live-consent-allow = Allow
-live-consent-reject = Reject
 live-consent-connected-title = Local application connected
 live-consent-connected-description = The local application you approved can inspect and edit this document until you disconnect it. Its identity remains unverified.
 live-consent-disconnect = Disconnect local application

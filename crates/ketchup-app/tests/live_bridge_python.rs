@@ -128,7 +128,6 @@ fn registered_disconnect_releases_consent_and_allows_reattach() {
         }
     });
     let deadline = Instant::now() + Duration::from_secs(60);
-    let mut approvals = 0;
     for expected in [
         "attached_0",
         "disconnected_0",
@@ -139,12 +138,6 @@ fn registered_disconnect_releases_consent_and_allows_reattach() {
         let message = loop {
             assert!(Instant::now() < deadline, "timeout at {expected}");
             shell.step();
-            if shell.app().live_consent_pending() {
-                assert!(expected.starts_with("attached_"));
-                assert!(shell.app().live_bridge_credentials().is_none());
-                shell.click_button_label(&shell.catalog().text("live-consent-allow"));
-                approvals += 1;
-            }
             match rx.try_recv() {
                 Ok(line) => break line.expect("read checkpoint"),
                 Err(mpsc::TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(5)),
@@ -172,7 +165,6 @@ fn registered_disconnect_releases_consent_and_allows_reattach() {
         shell.step();
         input.write_all(b"continue\n").unwrap();
     }
-    assert_eq!(approvals, 2);
     loop {
         if let Some(status) = child.0.try_wait().unwrap() {
             assert!(status.success());

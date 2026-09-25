@@ -180,7 +180,12 @@ fn a_structure_standing_on_the_xy_plane_is_judged_without_explicit_grounding() {
     build_frame_with_a_floating_ridge(&mut shell);
     shell.settle();
     let foundation = occurrence_id_of(&shell, "Foundation");
-    assert!(!shell.app().document_snapshot().occurrence_is_grounded(foundation));
+    assert!(
+        !shell
+            .app()
+            .document_snapshot()
+            .occurrence_is_grounded(foundation)
+    );
 
     let report = run_validators(&mut shell);
     assert_eq!(

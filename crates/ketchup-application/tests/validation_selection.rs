@@ -661,6 +661,7 @@ fn physical_dowel_document(count: u32, duplicate_joint: bool) -> DocumentStore {
         count,
         spacing_mm: if count > 1 { 40.0 } else { 0.0 },
         dowel: AssistantStandardDowel::D8x30,
+        first_insertion_mm: None,
     };
     let dowels = plan_assistant_cad_edit_program(
         &document,

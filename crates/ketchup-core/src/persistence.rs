@@ -176,7 +176,8 @@ const DOWEL_JOINERY_SCHEMA: u16 = 90;
 const PRODUCTION_CODE_SCHEMA: u16 = 91;
 const DOWEL_PHYSICAL_HOLE_BINDING_SCHEMA: u16 = 92;
 const ASSEMBLY_RECIPE_SCHEMA: u16 = 93;
-pub const CURRENT_SCHEMA: u16 = ASSEMBLY_RECIPE_SCHEMA;
+const DOWEL_PAIR_OFFSET_SCHEMA: u16 = 94;
+pub const CURRENT_SCHEMA: u16 = DOWEL_PAIR_OFFSET_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -284,6 +285,7 @@ struct ProductSchemaCapabilities {
     dowel_joinery: bool,
     production_codes: bool,
     dowel_physical_hole_bindings: bool,
+    dowel_pair_offsets: bool,
     assembly_recipe: bool,
 }
 
@@ -377,6 +379,7 @@ impl ProductSchemaCapabilities {
         dowel_joinery: false,
         production_codes: false,
         dowel_physical_hole_bindings: false,
+        dowel_pair_offsets: false,
         assembly_recipe: false,
     };
 
@@ -470,6 +473,7 @@ impl ProductSchemaCapabilities {
             dowel_joinery: schema >= DOWEL_JOINERY_SCHEMA,
             production_codes: schema >= PRODUCTION_CODE_SCHEMA,
             dowel_physical_hole_bindings: schema >= DOWEL_PHYSICAL_HOLE_BINDING_SCHEMA,
+            dowel_pair_offsets: schema >= DOWEL_PAIR_OFFSET_SCHEMA,
             assembly_recipe: schema >= ASSEMBLY_RECIPE_SCHEMA,
         }
     }
@@ -1080,6 +1084,7 @@ fn save_with_schema(snapshot: &Snapshot, schema: u16) -> Vec<u8> {
                 &mut payload,
                 joint,
                 capabilities.dowel_physical_hole_bindings,
+                capabilities.dowel_pair_offsets,
             );
         }
     }
@@ -1215,6 +1220,7 @@ fn write_dowel_joint(
     bytes: &mut Vec<u8>,
     joint: &DowelJointContract,
     write_physical_hole_bindings: bool,
+    write_pair_offsets: bool,
 ) {
     push_u64(bytes, joint.id.0);
     push_string(bytes, &joint.name);
@@ -1247,6 +1253,14 @@ fn write_dowel_joint(
         joint.dowel.bottom_clearance_mm,
     ] {
         push_u64(bytes, value.to_bits());
+    }
+    if write_pair_offsets {
+        push_u32(bytes, joint.pair_offsets_first_local_mm.len() as u32);
+        for offset in &joint.pair_offsets_first_local_mm {
+            for value in offset {
+                push_u64(bytes, value.to_bits());
+            }
+        }
     }
     if write_physical_hole_bindings {
         if let Some(bindings) = &joint.physical_hole_pairs {
@@ -4389,6 +4403,7 @@ fn load_document(
             | DOWEL_JOINERY_SCHEMA
             | PRODUCTION_CODE_SCHEMA
             | DOWEL_PHYSICAL_HOLE_BINDING_SCHEMA
+            | ASSEMBLY_RECIPE_SCHEMA
             | CURRENT_SCHEMA
     ) {
         return Err(PersistenceError::UnsupportedSchema(schema));
@@ -6355,6 +6370,7 @@ fn read_cam_plan(reader: &mut Reader<'_>) -> Result<CamPlan, PersistenceError> {
 fn read_dowel_joint(
     reader: &mut Reader<'_>,
     read_physical_hole_bindings: bool,
+    read_pair_offsets: bool,
 ) -> Result<DowelJointContract, PersistenceError> {
     let id = DowelJointId(reader.u64()?);
     let name = reader.string()?;
@@ -6387,6 +6403,14 @@ fn read_dowel_joint(
         second_insertion_mm: f64::from_bits(reader.u64()?),
         bottom_clearance_mm: f64::from_bits(reader.u64()?),
     };
+    let pair_offsets_first_local_mm = if read_pair_offsets {
+        let count = reader.count_with_limit(128)?;
+        (0..count)
+            .map(|_| point3(reader))
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        Vec::new()
+    };
     let physical_hole_pairs = if read_physical_hole_bindings && reader.u8()? != 0 {
         let count = reader.count_with_limit(MAX_COLLECTION_ITEMS)?;
         let mut bindings = Vec::with_capacity(count as usize);
@@ -6410,6 +6434,7 @@ fn read_dowel_joint(
         count,
         spacing_mm,
         dowel,
+        pair_offsets_first_local_mm,
         physical_hole_pairs,
     })
 }
@@ -7835,7 +7860,11 @@ fn read_product(
         }
         if capabilities.dowel_joinery && !reader.is_finished() {
             for _ in 0..reader.count_with_limit(MAX_COLLECTION_ITEMS)? {
-                let joint = read_dowel_joint(reader, capabilities.dowel_physical_hole_bindings)?;
+                let joint = read_dowel_joint(
+                    reader,
+                    capabilities.dowel_physical_hole_bindings,
+                    capabilities.dowel_pair_offsets,
+                )?;
                 if product
                     .dowel_joints
                     .insert(joint.id, Arc::new(joint))

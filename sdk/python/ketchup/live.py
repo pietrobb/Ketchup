@@ -37,6 +37,8 @@ MIN_IMAGE_SIDE_PX = 512
 MAX_IMAGE_SIDE_PX = 1600
 DEFAULT_IMAGE_SIDE_PX = 512
 MAX_TIMEOUT = 30.0
+# Must exceed the host's own queue/publish margin (15 s) on top of timeout_ms.
+APPLY_AND_VERIFY_RESPONSE_MARGIN_S = 20.0
 MAX_DISCOVERY_BYTES = 512
 MAX_DISCOVERY_INSTANCES = 64
 MAX_DISCOVERY_REGISTRY_ENTRIES = 4096
@@ -73,6 +75,7 @@ _ERROR_CODES = frozenset({
     "validation_incomplete",
     "apply_and_verify_worker_disconnected", "exact_reference_rejected",
     "save_path_required", "save_rejected", "open_rejected", "invalid_path",
+    "unknown_operation",
 })
 _FATAL_CODES = frozenset({"invalid_request", "unauthorized", "unsupported_version", "queue_unavailable"})
 Kind = Literal["occurrences", "instances", "definitions", "features", "relations", "faces", "edges"]
@@ -99,12 +102,20 @@ def _capability_gap(value: object) -> dict:
     return value
 
 
+def _invalid_params(value: object) -> dict:
+    """The host's schema message for a malformed request body, bounded."""
+    if (type(value) is not dict or set(value) != {"reason"}
+            or type(value["reason"]) is not str or not 1 <= len(value["reason"]) <= 512):
+        raise ValueError("invalid params detail")
+    return value
+
+
 class LiveBridgeError(RuntimeError):
     """Definite server rejection; only locally allowlisted fields are exposed."""
 
     def __init__(self, code: str, details: dict | None = None):
         self.code = code if code in _ERROR_CODES else "remote_error"
-        self.details = details if self.code == "capability_gap" else None
+        self.details = details if self.code in ("capability_gap", "invalid_params") else None
         super().__init__("live bridge rejected request: " + self.code)
 
 
@@ -726,6 +737,10 @@ def save_image(response: dict, expected: Stamp | dict, image_path: str,
         snapshot = _json_copy(
             response, budget=[MAX_IMAGE_FRAME_BYTES], text_limit=MAX_IMAGE_FRAME_BYTES
         )
+        if expected is None:
+            # LiveSession.image already correlated the render with an observed
+            # stamp when the caller supplied none; that stamp is the response's.
+            expected = snapshot["stamp"]
         result = snapshot["result"]
         data = _image_bytes(
             snapshot, expected, result["data"], capture_mode, max_side_px, framing,
@@ -909,7 +924,7 @@ def _list_live_instances(discovery_root: Path | None = None,
             registry_candidates += 1
             nonce = secrets.token_hex(32)
             listed = _broker_exchange(
-                endpoint, "list", instance_id, nonce, _remaining(deadline)
+                endpoint, "list", instance_id, nonce, min(_remaining(deadline), 0.1)
             )
             if listed["instance_id"] != instance_id:
                 continue
@@ -1104,6 +1119,8 @@ class LiveSession:
             raise ValueError("invalid or unavailable response; response_limit can follow execution")
         elif response["error"] == "capability_gap":
             response["result"] = _capability_gap(response["result"])
+        elif response["error"] == "invalid_params" and response["result"] is not None:
+            response["result"] = _invalid_params(response["result"])
         elif response["result"] is not None:
             raise ValueError("error response must not include a result")
         return response
@@ -1183,6 +1200,12 @@ class LiveSession:
     def summary(self) -> dict:
         return self._request("summary")
 
+    def operations(self, name: str = "") -> dict:
+        """CAD program operation catalog; with name, one operation plus its types."""
+        if name:
+            return self._request("operations", name=_text(name, 128))
+        return self._request("operations")
+
     def edit_context(self, expected: Stamp | dict, targets: list[dict]) -> dict:
         if type(targets) is not list or not 1 <= len(targets) <= 8:
             raise ValueError("edit context requires 1 to 8 instance paths")
@@ -1212,8 +1235,11 @@ class LiveSession:
         _uint(timeout_ms, 1, 120_000)
         if save is not None and type(save) is not dict:
             raise ValueError("save must be a tagged object")
+        # The host may legitimately work until timeout_ms; waiting less would
+        # abandon (and cancel) an edit the host is still allowed to finish.
+        wait = max(self._timeout, timeout_ms / 1000 + APPLY_AND_VERIFY_RESPONSE_MARGIN_S)
         return self._request(
-            "apply_and_verify", expected=_stamp(expected),
+            "apply_and_verify", _deadline=time.monotonic() + wait, expected=_stamp(expected),
             selection=None if selection is None else _ids(selection), program=program,
             validators=validators, timeout_ms=timeout_ms, save=save,
         )

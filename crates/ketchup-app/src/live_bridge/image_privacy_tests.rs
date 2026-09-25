@@ -434,6 +434,36 @@ fn native_pixel_proof(ppp: f32) -> Value {
     image
 }
 
+/// A client that asks for Zoom Fit and an image right after the model changed
+/// (e.g. right after launch) must receive the framed view, not the camera
+/// that existed before the fit could be applied.
+#[test]
+fn image_requested_during_a_pending_zoom_fit_shows_the_framed_camera() {
+    let _gpu = gpu_test_guard();
+    let mut h = native_harness(1.0);
+    assert!(h.state_mut().create_box());
+    // The new box's exact evaluation starts on the next frame; let it land so
+    // the only thing the image waits for is the pending fit.
+    h.step();
+    settle_exact(&mut h);
+    h.state_mut().zoom = 0.05;
+    h.state_mut().zoom_fit_pending = true;
+    let rx = queue(&mut h, 41);
+    h.step();
+    assert!(!h.state().zoom_fit_pending);
+    render_private_capture(&mut h, "image after a deferred zoom fit");
+    let response = response(&mut h, &rx);
+    assert!(response.ok, "{:?}", response.error);
+    assert!(!h.state().zoom_fit_pending);
+    let framed_zoom = f64::from(h.state().zoom);
+    let result = response.result.unwrap();
+    let image_zoom = result["view"]["zoom"].as_f64().unwrap();
+    assert!(
+        (image_zoom - framed_zoom).abs() < 1e-6 && image_zoom > 0.05,
+        "image zoom {image_zoom} must be the framed zoom {framed_zoom}"
+    );
+}
+
 #[test]
 fn native_scene_callback_draws_default_box_pixels() {
     let _gpu = gpu_test_guard();
