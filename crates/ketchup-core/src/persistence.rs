@@ -7535,6 +7535,24 @@ fn read_product(
                         ));
                     }
                 }
+                // Older files stored planar offsets as features without a body;
+                // they now produce a surface body on the active body.
+                for (feature_id, ownership) in &mut feature_body_ownership {
+                    if ownership.output_body_id().is_none()
+                        && matches!(
+                            product
+                                .features
+                                .get(feature_id)
+                                .map(|feature| &feature.kind),
+                            Some(FeatureKind::PlanarOffset { .. })
+                        )
+                    {
+                        *ownership = FeatureBodyOwnership::new(
+                            ownership.input_body_ids().to_vec(),
+                            Some(active_body_id),
+                        )?;
+                    }
+                }
                 product.definitions.insert(
                     definition_id,
                     Arc::new(Definition {

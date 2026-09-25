@@ -5400,6 +5400,9 @@ pub struct KetchupApp {
     selection_window: Option<SelectionWindowDrag>,
     selection: SelectionState,
     hovered: Option<SelectionId>,
+    /// The profile a drawing tool just created, with the revision it created;
+    /// Push/Pull targets it next while that revision is current.
+    drawn_profile: Option<(u64, SelectionId)>,
     hover_pick: Option<PickResult>,
     hover_snap: Option<SnapResult>,
     hover_overlap_index: usize,
@@ -5668,6 +5671,7 @@ impl KetchupApp {
             selection_window: None,
             selection: SelectionState::default(),
             hovered: None,
+            drawn_profile: None,
             hover_pick: None,
             hover_snap: None,
             hover_overlap_index: 0,
@@ -15794,9 +15798,19 @@ impl KetchupApp {
             self.cancel_rectangle_sketch();
             self.active_tool = tool;
             if tool == ActiveTool::PushPull {
-                let target = self
-                    .hovered
+                // A profile just drawn is pushed next, even when the pointer still
+                // rests on the face it was drawn on.
+                let revision = self.document.current().revision_id();
+                let drawn = self
+                    .drawn_profile
                     .clone()
+                    .filter(|(drawn_revision, selection)| {
+                        *drawn_revision == revision
+                            && self.selection.primary.as_ref() == Some(selection)
+                    })
+                    .map(|(_, selection)| selection);
+                let target = drawn
+                    .or_else(|| self.hovered.clone())
                     .filter(|selection| {
                         matches!(
                             selection.element,
@@ -19843,18 +19857,21 @@ impl KetchupApp {
         }
         self.clear_ephemeral_edit_state();
         self.push_pull_distance_input.clear();
-        self.selection.select_exact(
-            SelectionId {
-                definition_id,
-                instance_path: InstancePath::root(occurrence_id),
-                element: ElementId::Face {
-                    axis: Axis::Z,
-                    side: Side::Maximum,
-                },
-            },
-            false,
-        );
+        self.select_drawn_profile(definition_id, occurrence_id);
         true
+    }
+
+    fn select_drawn_profile(&mut self, definition_id: DefinitionId, occurrence_id: OccurrenceId) {
+        let selection = SelectionId {
+            definition_id,
+            instance_path: InstancePath::root(occurrence_id),
+            element: ElementId::Face {
+                axis: Axis::Z,
+                side: Side::Maximum,
+            },
+        };
+        self.selection.select_exact(selection.clone(), false);
+        self.drawn_profile = Some((self.document.current().revision_id(), selection));
     }
 
     fn create_profile_at(&mut self, origin_mm: Vec3, points_mm: Vec<[f64; 2]>) -> bool {
@@ -19924,17 +19941,7 @@ impl KetchupApp {
         }
         self.clear_ephemeral_edit_state();
         self.push_pull_distance_input.clear();
-        self.selection.select_exact(
-            SelectionId {
-                definition_id,
-                instance_path: InstancePath::root(occurrence_id),
-                element: ElementId::Face {
-                    axis: Axis::Z,
-                    side: Side::Maximum,
-                },
-            },
-            false,
-        );
+        self.select_drawn_profile(definition_id, occurrence_id);
         self.status_key = "status-sketch-created";
         true
     }
@@ -25538,10 +25545,9 @@ impl KetchupApp {
         }
         if let Some(face) = self.selected_planar_face(&drag.selection) {
             let distance = dot(target.position_mm - face.origin, face.normal);
-            return (distance.is_finite()
-                && (target.reference.instance_path != drag.selection.instance_path
-                    || distance.abs() >= 0.01))
-                .then_some(distance);
+            // A face in the start plane (the one a profile was drawn on, say)
+            // would push by nothing.
+            return (distance.is_finite() && distance.abs() >= 0.01).then_some(distance);
         }
         let ElementId::Face {
             axis: source_axis,
@@ -25590,8 +25596,7 @@ impl KetchupApp {
         };
         let distance = (target_coordinate - source_coordinate) * outward_sign;
         (distance.is_finite()
-            && (target.reference.instance_path != drag.selection.instance_path
-                || distance.abs() >= 0.01)
+            && distance.abs() >= 0.01
             && (drag.extent_start_mm <= 0.01 || distance > -drag.extent_start_mm + 0.01))
             .then_some(distance)
     }
@@ -28125,17 +28130,7 @@ impl KetchupApp {
         self.line_chain_points.clear();
         self.line_chain_items.clear();
         self.value_input.clear();
-        self.selection.select_exact(
-            SelectionId {
-                definition_id,
-                instance_path: InstancePath::root(occurrence_id),
-                element: ElementId::Face {
-                    axis: Axis::Z,
-                    side: Side::Maximum,
-                },
-            },
-            false,
-        );
+        self.select_drawn_profile(definition_id, occurrence_id);
         self.status_key = "status-line-closed";
         self.digest = self.catalog.format(
             "digest-line-closed",
@@ -31289,21 +31284,22 @@ impl KetchupApp {
             // under an unmoved pointer. Resetting blindly would throw away the
             // choice the user just cycled to with Tab and select whatever is
             // frontmost instead, so the choice is carried over whenever the
-            // chosen body is still under the pointer.
-            self.hover_overlap_index =
-                if self.active_tool == ActiveTool::PushPull && self.hover_overlap_index == 0 {
-                    0
-                } else {
-                    self.hovered
-                        .as_ref()
-                        .and_then(|chosen| {
-                            current
-                                .as_ref()?
-                                .iter()
-                                .position(|candidate| candidate == chosen)
-                        })
-                        .unwrap_or(0)
-                };
+            // chosen body is still under the pointer. Without such a choice
+            // the front body stays hovered: a profile just drawn on a face is
+            // in front of that face.
+            self.hover_overlap_index = if self.hover_overlap_index == 0 {
+                0
+            } else {
+                self.hovered
+                    .as_ref()
+                    .and_then(|chosen| {
+                        current
+                            .as_ref()?
+                            .iter()
+                            .position(|candidate| candidate == chosen)
+                    })
+                    .unwrap_or(0)
+            };
             if current.is_none() {
                 self.face_workflow.set_xray_preview(false);
             }

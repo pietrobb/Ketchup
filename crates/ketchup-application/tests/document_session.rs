@@ -1599,3 +1599,56 @@ fn typed_cad_program_commits_static_metadata_atomically() {
         geometry.canonical_digest()
     );
 }
+
+#[test]
+fn planar_offset_is_evaluated_as_an_exact_surface_body() {
+    let mut session = DocumentSession::new(worker_settings());
+    let proposal = session
+        .plan_commands(CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Offset plate".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(1),
+                definition_id: DefinitionId(1),
+                name: "Plate outline".into(),
+                kind: FeatureKind::Profile {
+                    points_mm: vec![[10.0, 20.0], [110.0, 20.0], [110.0, 100.0], [10.0, 100.0]],
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(2),
+                definition_id: DefinitionId(1),
+                name: "Inward offset".into(),
+                kind: FeatureKind::PlanarOffset {
+                    profile: FeatureId(1),
+                    distance: Dimension::from_decimal("-7.5").unwrap(),
+                },
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(1),
+                definition_id: DefinitionId(1),
+                name: "Offset plate".into(),
+                transform: Transform::identity(),
+                parent: None,
+                tag: None,
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    let snapshot = session.apply_proposal(&proposal).unwrap();
+
+    let report = session.evaluate().unwrap();
+    assert!(report.complete && report.topology_complete, "{report:?}");
+    let package = session
+        .exact_results()
+        .get_render(&snapshot, DefinitionId(1))
+        .expect("the offset publishes an exact result");
+    let ExactBodyPackage::Graph(offset) = package.as_ref() else {
+        panic!("offsets are evaluated through the exact graph");
+    };
+    assert_eq!(offset.identity.producer_feature_id, FeatureId(2));
+    assert_eq!(offset.bounds_mm, [[17.5, 27.5, 0.0], [102.5, 92.5, 0.0]]);
+    assert!((offset.area_mm2 - 85.0 * 65.0).abs() <= 1.0e-6);
+}

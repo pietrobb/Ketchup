@@ -1255,9 +1255,10 @@ impl FeatureKind {
     #[must_use]
     pub const fn body_kind(&self) -> Option<BodyKind> {
         match self {
-            Self::SurfaceBody(_) | Self::SurfaceTrim { .. } | Self::SurfaceExtend { .. } => {
-                Some(BodyKind::Surface)
-            }
+            Self::SurfaceBody(_)
+            | Self::SurfaceTrim { .. }
+            | Self::SurfaceExtend { .. }
+            | Self::PlanarOffset { .. } => Some(BodyKind::Surface),
             Self::SurfaceKnit { make_solid, .. } => Some(if *make_solid {
                 BodyKind::Solid
             } else {
