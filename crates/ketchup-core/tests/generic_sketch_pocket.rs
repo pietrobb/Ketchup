@@ -267,7 +267,7 @@ fn geometry_edit_recomputes_only_the_dependent_cut_graph() {
 }
 
 #[test]
-fn legacy_profile_and_segment_pockets_keep_blind_xy_behavior() {
+fn plain_profile_pockets_cut_down_from_the_target_top() {
     for segments in [false, true] {
         let points = vec![[40.0, 40.0], [80.0, 40.0], [80.0, 80.0], [40.0, 80.0]];
         let cut_kind = if segments {
@@ -316,7 +316,8 @@ fn legacy_profile_and_segment_pockets_keep_blind_xy_behavior() {
         };
         assert_eq!(graph.profiles[profile.0 as usize].region_id, None);
         assert_eq!(interval.direction(), [0.0, 0.0, 1.0]);
-        assert_eq!((interval.start_mm(), interval.end_mm()), (0.0, 10.0));
+        // 20 mm pad, 10 mm pocket: the tool spans the top 10 mm.
+        assert_eq!((interval.start_mm(), interval.end_mm()), (10.0, 20.0));
         let before = document.current().canonical_digest();
         assert_eq!(
             document

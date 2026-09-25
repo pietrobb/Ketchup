@@ -6,16 +6,16 @@
         <UserReferencePlanes>
           <UserReferencePlane ID="100">
             <Position>
-              <ReferencePoint X="0" Y="0" Z="0"/>
+              <ReferencePoint X="1000" Y="0" Z="0"/>
               <XVector X="0" Y="1" Z="0"/>
-              <YVector X="0" Y="0" Z="1"/>
+              <YVector X="0" Y="0" Z="-1"/>
             </Position>
           </UserReferencePlane>
         </UserReferencePlanes>
         <Processings>
           <Drilling Name="Ketchup circular drilling" ProcessID="1" ReferencePlaneID="100">
             <StartX>50</StartX>
-            <StartY>25</StartY>
+            <StartY>-25</StartY>
             <Angle>0</Angle>
             <Inclination>90</Inclination>
             <DepthLimited>yes</DepthLimited>

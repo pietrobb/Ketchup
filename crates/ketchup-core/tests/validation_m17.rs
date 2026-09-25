@@ -490,18 +490,12 @@ fn btlx_2_3_1_straight_timber_export_is_pinned_deterministic_and_fail_closed() {
     let projection = exact_document_fabrication_projection(&document).unwrap();
     assert!(projection.weldment.is_none());
     let export = projection.btlx_2_3_1_export(&snapshot).unwrap();
-    assert_eq!(
-        export,
-        include_bytes!("fixtures/btlx/straight-timber-2.3.1.btlx")
-    );
+    assert_btlx_golden(&export, "straight-timber-2.3.1.btlx");
     assert_eq!(export, projection.btlx_2_3_1_export(&snapshot).unwrap());
 
     let (machined_snapshot, machined) = circular_drill_fabrication_projection();
     let machined_export = machined.btlx_2_3_1_export(&machined_snapshot).unwrap();
-    assert_eq!(
-        machined_export,
-        include_bytes!("fixtures/btlx/circular-drilling-2.3.1.btlx")
-    );
+    assert_btlx_golden(&machined_export, "circular-drilling-2.3.1.btlx");
     assert_eq!(
         machined_export,
         machined.btlx_2_3_1_export(&machined_snapshot).unwrap()
@@ -511,10 +505,7 @@ fn btlx_2_3_1_straight_timber_export_is_pinned_deterministic_and_fail_closed() {
     let profile_cut_export = profile_cut
         .btlx_2_3_1_export(&profile_cut_snapshot)
         .unwrap();
-    assert_eq!(
-        profile_cut_export,
-        include_bytes!("fixtures/btlx/rectangular-profile-cut-2.3.1.btlx")
-    );
+    assert_btlx_golden(&profile_cut_export, "rectangular-profile-cut-2.3.1.btlx");
     assert_eq!(
         profile_cut_export,
         profile_cut
@@ -524,9 +515,9 @@ fn btlx_2_3_1_straight_timber_export_is_pinned_deterministic_and_fail_closed() {
     let saw_then_mill_export = profile_cut
         .btlx_2_3_1_export_with_options(&profile_cut_snapshot, BtlxExportOptions::default())
         .unwrap();
-    assert_eq!(
-        saw_then_mill_export,
-        include_bytes!("fixtures/btlx/rectangular-groove-saw-then-mill-2.3.1.btlx")
+    assert_btlx_golden(
+        &saw_then_mill_export,
+        "rectangular-groove-saw-then-mill-2.3.1.btlx",
     );
     let intermediate_saw_export = profile_cut
         .btlx_2_3_1_export_with_options(
@@ -542,10 +533,10 @@ fn btlx_2_3_1_straight_timber_export_is_pinned_deterministic_and_fail_closed() {
     let intermediate_saw_xml = String::from_utf8(intermediate_saw_export).unwrap();
     assert_eq!(intermediate_saw_xml.matches("<SawContour ").count(), 4);
     assert!(intermediate_saw_xml.contains(
-        "<StartPoint X=\"10\" Y=\"15\" Z=\"0\"/>\n              <Line><EndPoint X=\"30\" Y=\"15\" Z=\"0\"/></Line>"
+        "<StartPoint X=\"10\" Y=\"-15\" Z=\"0\"/>\n              <Line><EndPoint X=\"30\" Y=\"-15\" Z=\"0\"/></Line>"
     ));
     assert!(intermediate_saw_xml.contains(
-        "<StartPoint X=\"10\" Y=\"20\" Z=\"0\"/>\n              <Line><EndPoint X=\"30\" Y=\"20\" Z=\"0\"/></Line>"
+        "<StartPoint X=\"10\" Y=\"-20\" Z=\"0\"/>\n              <Line><EndPoint X=\"30\" Y=\"-20\" Z=\"0\"/></Line>"
     ));
     assert!(
         intermediate_saw_xml.rfind("</SawContour>").unwrap()
@@ -566,10 +557,7 @@ fn btlx_2_3_1_straight_timber_export_is_pinned_deterministic_and_fail_closed() {
 
     let (arc_cut_snapshot, arc_cut) = arc_profile_cut_fabrication_projection();
     let arc_cut_export = arc_cut.btlx_2_3_1_export(&arc_cut_snapshot).unwrap();
-    assert_eq!(
-        arc_cut_export,
-        include_bytes!("fixtures/btlx/arc-profile-cut-2.3.1.btlx")
-    );
+    assert_btlx_golden(&arc_cut_export, "arc-profile-cut-2.3.1.btlx");
     assert_eq!(
         arc_cut.btlx_2_3_1_export_with_options(&arc_cut_snapshot, BtlxExportOptions::default()),
         Err(GeneralFabricationError::BtlxProfileRequestUnsupported)
@@ -578,10 +566,7 @@ fn btlx_2_3_1_straight_timber_export_is_pinned_deterministic_and_fail_closed() {
     let irregular_cut_export = irregular_cut
         .btlx_2_3_1_export(&irregular_cut_snapshot)
         .unwrap();
-    assert_eq!(
-        irregular_cut_export,
-        include_bytes!("fixtures/btlx/irregular-profile-cut-2.3.1.btlx")
-    );
+    assert_btlx_golden(&irregular_cut_export, "irregular-profile-cut-2.3.1.btlx");
     assert_eq!(
         irregular_cut_export,
         irregular_cut
@@ -1416,11 +1401,14 @@ fn exact_profile_cut_projects_btl_ready_timber_stock_and_circular_drilling() {
     else {
         panic!("expected circular drilling geometry")
     };
+    // The 50 mm pocket is cut down from the far end (z = 1000), so the drill
+    // enters there: the frame turns around and the interval is negative.
     assert_eq!(frame.origin_mm, [0.0, 0.0, 0.0]);
-    assert_eq!(frame.normal, [0.0, 0.0, 1.0]);
-    assert_eq!(*center_mm, [50.0, 25.0]);
+    assert_eq!(frame.normal, [0.0, 0.0, -1.0]);
+    assert_eq!(frame.y_axis, [0.0, -1.0, 0.0]);
+    assert_eq!(*center_mm, [50.0, -25.0]);
     assert_eq!(*diameter_mm, 10.0);
-    assert_eq!((*start_mm, *end_mm), (0.0, 50.0));
+    assert_eq!((*start_mm, *end_mm), (-1000.0, -950.0));
 
     let export = String::from_utf8(projection.manufacturing_export(&snapshot).unwrap()).unwrap();
     assert!(export.starts_with("ketchup.general-manufacturing-export.v2\n"));
@@ -1428,7 +1416,7 @@ fn exact_profile_cut_projects_btl_ready_timber_stock_and_circular_drilling() {
         "machining=timber-stock:frame(0,0,0/1,0,0/0,1,0/0,0,1):section(line(0,0,100,0)|line(100,0,100,50)|line(100,50,0,50)|line(0,50,0,0)):start(0,0,0):axis(0,0,1):length(1000):cross(100,50)"
     ));
     assert!(export.contains(
-        "kind=circular-drill;frame=definition-local;inputs=42,43;length_mm=100;width_mm=50;height_mm=1000;machining=circular-drill:frame(0,0,0/1,0,0/0,1,0/0,0,1):center(50,25):diameter(10):interval(0,50)"
+        "kind=circular-drill;frame=definition-local;inputs=42,43;length_mm=100;width_mm=50;height_mm=1000;machining=circular-drill:frame(0,0,0/1,0,0/0,-1,0/0,0,-1):center(50,-25):diameter(10):interval(-1000,-950)"
     ));
     let mpr =
         String::from_utf8(projection.woodwop_mpr_4_0_drill_export(&snapshot).unwrap()).unwrap();
@@ -1438,7 +1426,7 @@ fn exact_profile_cut_projects_btl_ready_timber_stock_and_circular_drilling() {
     );
     assert!(mpr.contains("<100 \\WerkStck\\\nLA=\"1000\"\nBR=\"100\"\nDI=\"50\"\n"));
     assert!(mpr.contains(
-        "<103 \\BohrHoriz\\\nXA=\"0\"\nYA=\"50\"\nZA=\"25\"\nBM=\"XP\"\nTI=\"50\"\nDU=\"10\"\n"
+        "<103 \\BohrHoriz\\\nXA=\"1000\"\nYA=\"50\"\nZA=\"25\"\nBM=\"XM\"\nTI=\"50\"\nDU=\"10\"\n"
     ));
     assert_eq!(mpr.matches("<103 \\BohrHoriz\\").count(), 1);
     assert!(mpr.ends_with("!\n"));
@@ -1485,7 +1473,9 @@ fn exact_profile_cut_projects_btl_ready_timber_stock_and_circular_drilling() {
     )));
     assert!(drawing.contains("data-kind=\"circular-drill\""));
     assert!(drawing.contains("<circle"));
-    assert!(drawing.contains("circular-drill: center=(50, 25) mm, diameter=10 mm, depth=50 mm"));
+    // Drill centres are given in the drill's own frame, which enters from the
+    // far end of the timber.
+    assert!(drawing.contains("circular-drill: center=(50, -25) mm, diameter=10 mm, depth=50 mm"));
     assert!(drawing.contains("overall: x=100 mm, y=50 mm, z=1000 mm"));
 
     let mut tampered_drawing = projection.clone();
@@ -2533,4 +2523,16 @@ fn exact_package(snapshot: &ketchup_core::document::Snapshot) -> ExactBodyPackag
         ],
     )
     .unwrap()
+}
+
+/// Compares an export with its golden file; `KETCHUP_REGENERATE_BTLX=1`
+/// rewrites the golden instead (review the diff before committing).
+fn assert_btlx_golden(actual: &[u8], name: &str) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/btlx")
+        .join(name);
+    if std::env::var_os("KETCHUP_REGENERATE_BTLX").is_some() {
+        std::fs::write(&path, actual).unwrap();
+    }
+    assert_eq!(actual, std::fs::read(&path).unwrap().as_slice(), "{name}");
 }

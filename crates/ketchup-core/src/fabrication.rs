@@ -3,8 +3,8 @@ use crate::document::{
     Snapshot, SpatialPathSegment, Transform, WeldmentJointPolicy, WeldmentJointPrimary,
 };
 use crate::exact_brep_graph::{
-    ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepLinearInterval, ExactBRepOperation,
-    ExactBRepPlanarGeometry, ExactBRepPlanarSegment, ExactBRepProfile,
+    ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepLinearInterval, ExactBRepNode,
+    ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarSegment, ExactBRepProfile,
 };
 use crate::exact_product::{ExactBodyPackage, ExactResultRegistry};
 use crate::exact_validation::{
@@ -2957,7 +2957,10 @@ fn graph_manufacturing_operations(
             return None;
         }
         let profile = graph.profiles.get(profile.0 as usize)?;
-        let machining = profile_cut_geometry(profile, interval)?;
+        let mut machining = profile_cut_geometry(profile, interval)?;
+        if depth_bits.is_some() && blind_cut_enters_at_end(graph, stock, profile, interval)? {
+            machining = entering_from_end(machining);
+        }
         let kind = if matches!(machining, GeneralMachiningGeometry::CircularDrill { .. }) {
             GeneralManufacturingKind::CircularDrill
         } else if depth_bits.is_none() {
@@ -3162,6 +3165,97 @@ fn profile_cut_geometry(
         start_mm: interval.start_mm(),
         end_mm: interval.end_mm(),
     })
+}
+
+/// A blind cut is machined from the stock face it opens on. Returns whether
+/// that face is at the end of `interval` rather than at its start.
+fn blind_cut_enters_at_end(
+    graph: &ExactBRepGraph,
+    stock: &ExactBRepNode,
+    profile: &ExactBRepProfile,
+    interval: ExactBRepLinearInterval,
+) -> Option<bool> {
+    let [minimum, maximum] = graph.node_bounds_mm(stock.id).ok().flatten()?;
+    let origin = [0, 1, 2].map(|axis| f64::from_bits(profile.frame_bits[axis]));
+    let direction = interval.direction();
+    let (low, high) = (0..8)
+        .map(|corner| {
+            (0..3)
+                .map(|axis| {
+                    let bound = if corner >> axis & 1 == 1 {
+                        maximum[axis]
+                    } else {
+                        minimum[axis]
+                    };
+                    (bound - origin[axis]) * direction[axis]
+                })
+                .sum::<f64>()
+        })
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), along| {
+            (low.min(along), high.max(along))
+        });
+    let tolerance = 1.0e-9;
+    Some((interval.end_mm() - high).abs() <= tolerance && interval.start_mm() > low + tolerance)
+}
+
+/// The same cut described from its other end: the frame turns around (normal
+/// and y axis flip, so it stays right-handed) and profile y coordinates flip.
+fn entering_from_end(machining: GeneralMachiningGeometry) -> GeneralMachiningGeometry {
+    // `0.0 - value` keeps exact zeros positive for the exporters.
+    let flip_frame = |frame: GeneralMachiningFrame| GeneralMachiningFrame {
+        y_axis: frame.y_axis.map(|value| 0.0 - value),
+        normal: frame.normal.map(|value| 0.0 - value),
+        ..frame
+    };
+    let flip = |point: [f64; 2]| [point[0], 0.0 - point[1]];
+    match machining {
+        GeneralMachiningGeometry::CircularDrill {
+            frame,
+            center_mm,
+            diameter_mm,
+            start_mm,
+            end_mm,
+        } => GeneralMachiningGeometry::CircularDrill {
+            frame: flip_frame(frame),
+            center_mm: flip(center_mm),
+            diameter_mm,
+            start_mm: -end_mm,
+            end_mm: -start_mm,
+        },
+        GeneralMachiningGeometry::ProfileCut {
+            frame,
+            segments,
+            start_mm,
+            end_mm,
+        } => GeneralMachiningGeometry::ProfileCut {
+            frame: flip_frame(frame),
+            segments: segments
+                .into_iter()
+                .map(|segment| match segment {
+                    GeneralMachiningSegment::Line { start_mm, end_mm } => {
+                        GeneralMachiningSegment::Line {
+                            start_mm: flip(start_mm),
+                            end_mm: flip(end_mm),
+                        }
+                    }
+                    GeneralMachiningSegment::CircularArc {
+                        start_mm,
+                        end_mm,
+                        center_mm,
+                        clockwise,
+                    } => GeneralMachiningSegment::CircularArc {
+                        start_mm: flip(start_mm),
+                        end_mm: flip(end_mm),
+                        center_mm: flip(center_mm),
+                        clockwise: !clockwise,
+                    },
+                })
+                .collect(),
+            start_mm: -end_mm,
+            end_mm: -start_mm,
+        },
+        other @ GeneralMachiningGeometry::TimberStock { .. } => other,
+    }
 }
 
 fn machining_frame(
