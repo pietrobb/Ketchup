@@ -16,10 +16,12 @@ use crate::drawing::{
     DrawingSheetId, DrawingSource, OrthographicDrawing, OrthographicViewKind,
     project_orthographic_drawing, validate_source,
 };
+use crate::exact_brep_graph::ExactBRepGraph;
 use crate::exact_product::{
-    BodySubshapeRef, ExactBodyPackage, ExactFeatureChainRequest, ExactProductError,
-    ExactReferenceResolution, ExactResultRegistry, canonical_reference_lineage_digest,
-    exact_model_stl_export,
+    BodySubshapeRef, EXACT_BREP_GRAPH_EVALUATOR_V1, ExactBodyPackage, ExactProductError,
+    ExactReferenceResolution, ExactResultRegistry, body_exact_graph,
+    canonical_reference_lineage_digest, exact_model_stl_export, producer_exact_graph,
+    terminal_body_exact_graphs,
 };
 use crate::feature_history::{
     BodyHistoryMutationRequest, BodyParameterEditRequest, prepare_body_history_mutation,
@@ -1192,7 +1194,7 @@ pub fn commit_occurrence_fork_change<E>(
     document: &mut DocumentStore,
     exact_results: &mut ExactResultRegistry,
     impact: &OccurrenceForkImpactProjection,
-    mut evaluate: impl FnMut(&ExactFeatureChainRequest) -> Result<Arc<ExactBodyPackage>, E>,
+    mut evaluate: impl FnMut(&ExactBRepGraph) -> Result<Arc<ExactBodyPackage>, E>,
 ) -> Result<OccurrenceForkCommitReceipt, OccurrenceForkPropagationError>
 where
     E: fmt::Display,
@@ -1520,21 +1522,17 @@ where
     if previous.result_key().result_fingerprint != job.last_valid_result_fingerprint {
         return Err(OccurrenceForkPropagationError::Stale);
     }
-    let request = ExactFeatureChainRequest::from_snapshot_for_body(
-        &candidate,
-        impact.fork_definition_id,
-        *body_id,
-    )
-    .map_err(|error| OccurrenceForkPropagationError::InvalidImpact(error.to_string()))?;
-    if request.producer_feature_id() != job.producer_feature_id
-        || request.canonical_input_digest != job.canonical_input_digest
+    let graph = body_exact_graph(&candidate, impact.fork_definition_id, *body_id)
+        .map_err(|error| OccurrenceForkPropagationError::InvalidImpact(error.to_string()))?;
+    if FeatureId(graph.producer_feature_id) != job.producer_feature_id
+        || graph.canonical_input_digest != job.canonical_input_digest
     {
         return Err(OccurrenceForkPropagationError::InvalidImpact(
             "occurrence fork exact job changed".to_owned(),
         ));
     }
 
-    let package = evaluate(&request)
+    let package = evaluate(&graph)
         .map_err(|error| OccurrenceForkPropagationError::Evaluation(error.to_string()))?;
     let staged_results = ExactResultRegistry::publish_body_results(
         &candidate,
@@ -1927,7 +1925,7 @@ fn refresh_occurrence_fork_exports(
                         "fork export occurrence path {path:?} has no current exact body"
                     ))
                 })?;
-            ExactFeatureChainRequest::from_snapshot_for_producer(
+            producer_exact_graph(
                 snapshot,
                 occurrence.definition_id,
                 package.producer_feature_id(),
@@ -1952,7 +1950,7 @@ pub fn commit_shared_definition_change<E>(
     document: &mut DocumentStore,
     exact_results: &mut ExactResultRegistry,
     impact: &SharedChangeImpactProjection,
-    mut evaluate: impl FnMut(&ExactFeatureChainRequest) -> Result<Arc<ExactBodyPackage>, E>,
+    mut evaluate: impl FnMut(&ExactBRepGraph) -> Result<Arc<ExactBodyPackage>, E>,
 ) -> Result<SharedDefinitionPropagationReceipt, SharedChangePropagationError>
 where
     E: fmt::Display,
@@ -2047,18 +2045,17 @@ where
             "shared-definition candidate digest changed".to_owned(),
         ));
     }
-    let request =
-        ExactFeatureChainRequest::from_snapshot_for_body(&candidate, impact.definition_id, body_id)
-            .map_err(|error| SharedChangePropagationError::InvalidImpact(error.to_string()))?;
-    if request.producer_feature_id() != job.producer_feature_id
-        || request.canonical_input_digest != job.canonical_input_digest
+    let graph = body_exact_graph(&candidate, impact.definition_id, body_id)
+        .map_err(|error| SharedChangePropagationError::InvalidImpact(error.to_string()))?;
+    if FeatureId(graph.producer_feature_id) != job.producer_feature_id
+        || graph.canonical_input_digest != job.canonical_input_digest
     {
         return Err(SharedChangePropagationError::InvalidImpact(
             "shared-definition exact job changed".to_owned(),
         ));
     }
 
-    let package = evaluate(&request)
+    let package = evaluate(&graph)
         .map_err(|error| SharedChangePropagationError::Evaluation(error.to_string()))?;
     let staged_results = ExactResultRegistry::publish_body_results(
         &candidate,
@@ -2406,7 +2403,7 @@ fn refresh_export_eligibility(
                         "export occurrence path {path:?} has no current exact body"
                     ))
                 })?;
-            ExactFeatureChainRequest::from_snapshot_for_producer(
+            producer_exact_graph(
                 snapshot,
                 occurrence.definition_id,
                 package.producer_feature_id(),
@@ -2821,7 +2818,7 @@ pub fn project_component_replacement_impact_for_principal(
                 body_mapping.source_body_id.0, body_mapping.target_body_id.0
             )));
         }
-        let exact_request = ExactFeatureChainRequest::from_snapshot_for_producer(
+        let exact_graph = producer_exact_graph(
             &source,
             *target_definition_id,
             target_package.producer_feature_id(),
@@ -2831,7 +2828,7 @@ pub fn project_component_replacement_impact_for_principal(
             definition_id: *target_definition_id,
             body_id: body_mapping.target_body_id,
             producer_feature_id: target_package.producer_feature_id(),
-            canonical_input_digest: exact_request.canonical_input_digest,
+            canonical_input_digest: exact_graph.canonical_input_digest,
             last_valid_result_fingerprint: target_package.result_key().result_fingerprint.clone(),
         });
     }
@@ -3578,15 +3575,11 @@ pub fn commit_component_replacement(
                     job.definition_id.0, job.body_id.0
                 ))
             })?;
-        let request = ExactFeatureChainRequest::from_snapshot_for_body(
-            &candidate,
-            job.definition_id,
-            job.body_id,
-        )
-        .map_err(|error| ComponentReplacementCommitError::InvalidImpact(error.to_string()))?;
+        let graph = body_exact_graph(&candidate, job.definition_id, job.body_id)
+            .map_err(|error| ComponentReplacementCommitError::InvalidImpact(error.to_string()))?;
         if package.producer_feature_id() != job.producer_feature_id
-            || request.producer_feature_id() != job.producer_feature_id
-            || request.canonical_input_digest != job.canonical_input_digest
+            || FeatureId(graph.producer_feature_id) != job.producer_feature_id
+            || graph.canonical_input_digest != job.canonical_input_digest
             || package.result_key().result_fingerprint != job.last_valid_result_fingerprint
         {
             return Err(ComponentReplacementCommitError::Stale);
@@ -3786,7 +3779,7 @@ fn replacement_body_signature(
     snapshot: &Snapshot,
     package: &ExactBodyPackage,
 ) -> Result<ReplacementBodySignature, ComponentReplacementImpactError> {
-    let request = ExactFeatureChainRequest::from_snapshot_for_producer(
+    producer_exact_graph(
         snapshot,
         package.definition_id(),
         package.producer_feature_id(),
@@ -3809,7 +3802,7 @@ fn replacement_body_signature(
             "exact body contains duplicate semantic subshape identities".to_owned(),
         ));
     }
-    Ok((request.evaluator().to_owned(), references))
+    Ok((EXACT_BREP_GRAPH_EVALUATOR_V1.to_owned(), references))
 }
 
 fn replacement_current_body_result<'a>(
@@ -4181,9 +4174,8 @@ pub fn project_occurrence_fork_impact(
         ));
     }
 
-    let exact_request =
-        ExactFeatureChainRequest::from_snapshot_for_body(&candidate, fork_definition_id, body_id)
-            .map_err(|error| match error {
+    let exact_graph =
+        body_exact_graph(&candidate, fork_definition_id, body_id).map_err(|error| match error {
             ExactProductError::ConflictingBodyTerminals { .. }
             | ExactProductError::ConflictingBodyPublication { .. } => {
                 OccurrenceForkImpactError::Ambiguous(body_id)
@@ -4193,8 +4185,8 @@ pub fn project_occurrence_fork_impact(
     let exact_jobs = vec![SharedChangeExactJob {
         definition_id: fork_definition_id,
         body_id,
-        producer_feature_id: exact_request.producer_feature_id(),
-        canonical_input_digest: exact_request.canonical_input_digest.clone(),
+        producer_feature_id: FeatureId(exact_graph.producer_feature_id),
+        canonical_input_digest: exact_graph.canonical_input_digest.clone(),
         last_valid_result_fingerprint: last_valid.result_key().result_fingerprint.clone(),
     }];
 
@@ -4224,22 +4216,16 @@ pub fn project_occurrence_fork_impact(
                 ))
             })
     };
-    let fork_producer_feature_id = exact_request.producer_feature_id();
+    let fork_producer_feature_id = FeatureId(exact_graph.producer_feature_id);
     let source_producer_feature_id = source_feature(fork_producer_feature_id)?;
-    let mut subshape_lineage = exact_request
-        .expected_face_roles()
+    // A fork copies the source definition, so it produces the same faces as the
+    // source body's last valid exact result.
+    let mut subshape_lineage = last_valid
+        .references()
         .iter()
-        .copied()
-        .map(|role| {
-            let fork_profile_feature_id = exact_request
-                .profile_feature_id_for_role(role)
-                .ok_or_else(|| {
-                    OccurrenceForkImpactError::Unsupported(format!(
-                        "fork face role {} has no supported profile lineage",
-                        role.semantic_role()
-                    ))
-                })?;
-            let source_profile_feature_id = source_feature(fork_profile_feature_id)?;
+        .map(|reference| {
+            let source_profile_feature_id = reference.profile_feature_id;
+            let fork_profile_feature_id = mapped_feature(source_profile_feature_id)?;
             Ok(OccurrenceForkSubshapeLineage {
                 source_definition_id,
                 source_profile_feature_id,
@@ -4247,9 +4233,9 @@ pub fn project_occurrence_fork_impact(
                 source_lineage_digest: canonical_reference_lineage_digest(
                     source.document_id(),
                     source_producer_feature_id,
-                    role.semantic_role(),
-                    role.source_element_id(),
-                    role.expected_type(),
+                    &reference.semantic_role,
+                    &reference.source_element_id,
+                    &reference.expected_type,
                 ),
                 fork_definition_id,
                 fork_profile_feature_id,
@@ -4257,13 +4243,13 @@ pub fn project_occurrence_fork_impact(
                 fork_lineage_digest: canonical_reference_lineage_digest(
                     source.document_id(),
                     fork_producer_feature_id,
-                    role.semantic_role(),
-                    role.source_element_id(),
-                    role.expected_type(),
+                    &reference.semantic_role,
+                    &reference.source_element_id,
+                    &reference.expected_type,
                 ),
-                semantic_role: role.semantic_role().to_owned(),
-                source_element_id: role.source_element_id().to_owned(),
-                expected_type: role.expected_type().to_owned(),
+                semantic_role: reference.semantic_role.clone(),
+                source_element_id: reference.source_element_id.clone(),
+                expected_type: reference.expected_type.clone(),
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -4442,20 +4428,19 @@ pub fn project_shared_change_impact(
     let candidate = document
         .preview_dependency_staging_batch(proposal.batch())
         .map_err(|error| SharedChangeImpactError::Unsupported(error.to_string()))?;
-    let terminal_requests =
-        ExactFeatureChainRequest::terminal_body_requests(&candidate, definition_id)
-            .map_err(|error| map_exact_request_error(error, body_id))?;
-    let exact_jobs = terminal_requests
+    let terminal_graphs = terminal_body_exact_graphs(&candidate, definition_id)
+        .map_err(|error| map_exact_request_error(error, body_id))?;
+    let exact_jobs = terminal_graphs
         .into_iter()
         .filter(|(terminal_body_id, _)| affected_body_ids.contains(terminal_body_id))
-        .map(|(terminal_body_id, exact_request)| {
+        .map(|(terminal_body_id, exact_graph)| {
             let last_valid =
                 current_body_result(exact_results, &source, definition_id, terminal_body_id)?;
             Ok(SharedChangeExactJob {
                 definition_id,
                 body_id: terminal_body_id,
-                producer_feature_id: exact_request.producer_feature_id(),
-                canonical_input_digest: exact_request.canonical_input_digest,
+                producer_feature_id: FeatureId(exact_graph.producer_feature_id),
+                canonical_input_digest: exact_graph.canonical_input_digest,
                 last_valid_result_fingerprint: last_valid.result_key().result_fingerprint,
             })
         })

@@ -9,16 +9,14 @@ use ketchup_app::{
     dialogs::ScriptedFileDialogs,
     renderer::{DerivedRenderCache, InstancedRenderPlan},
 };
-use ketchup_core::document::{FeatureId, FeatureKind, InstancePath, OccurrenceId, ProfileSegment};
+use ketchup_core::document::{
+    DefinitionId, FeatureId, FeatureKind, InstancePath, OccurrenceId, ProfileSegment, Snapshot,
+};
 use ketchup_core::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry,
     ExactBRepPlanarSegment,
 };
-use ketchup_core::exact_product::{
-    EXACT_ARC_PROFILE_EVALUATOR_V1, EXACT_BREP_GRAPH_EVALUATOR_V1, EXACT_CIRCLE_EVALUATOR_V1,
-    EXACT_LINEAR_PROFILE_EVALUATOR_V1, EXACT_POCKET_EVALUATOR_V1, ExactFeatureChainRequest,
-    ExactResultRegistry,
-};
+use ketchup_core::exact_product::{EXACT_BREP_GRAPH_EVALUATOR_V1, ExactResultRegistry};
 use ketchup_core::sketch::{PrincipalPlane, WorkplaneSupport};
 use ketchup_interaction::{ElementId, SnapKind, Vec3};
 use std::collections::BTreeMap;
@@ -74,6 +72,45 @@ fn cut_tool_profile_geometry(graph: &ExactBRepGraph) -> Option<&ExactBRepPlanarG
         return None;
     };
     Some(&graph.profiles.get(profile.0 as usize)?.geometry)
+}
+
+/// The length and profile of the extrusion or depth-limited cut that produces
+/// `definition_id`'s body.
+fn terminal_profile_operation(
+    snapshot: &Snapshot,
+    definition_id: DefinitionId,
+) -> (f64, ExactBRepPlanarGeometry) {
+    let producer = *snapshot
+        .definition(definition_id)
+        .unwrap()
+        .feature_ids()
+        .last()
+        .unwrap();
+    let graph = ExactBRepGraph::from_snapshot(snapshot, definition_id, producer).unwrap();
+    let (profile, length_bits) = match &graph.nodes.last().unwrap().operation {
+        ExactBRepOperation::Extrude {
+            profile,
+            distance_bits,
+            ..
+        } => (profile, distance_bits),
+        ExactBRepOperation::ProfileCut {
+            profile,
+            depth_bits: Some(depth_bits),
+            ..
+        } => (profile, depth_bits),
+        operation => panic!("{operation:?} is neither an extrusion nor a depth-limited cut"),
+    };
+    (
+        f64::from_bits(*length_bits),
+        graph.profiles[profile.0 as usize].geometry.clone(),
+    )
+}
+
+fn arc_count(segments: &[ExactBRepPlanarSegment]) -> usize {
+    segments
+        .iter()
+        .filter(|segment| matches!(segment, ExactBRepPlanarSegment::CircularArc { .. }))
+        .count()
 }
 
 #[test]
@@ -439,7 +476,9 @@ fn failed_ambiguous_and_lost_ui_paths_preserve_history_and_last_valid_exact_outp
     let mut shell = Shell::new();
     shell
         .app_mut()
-        .seed_headless_face_workflow_last_valid_output()
+        .seed_headless_face_workflow_last_valid_output(std::path::Path::new(env!(
+            "CARGO_BIN_EXE_ketchup-performance-exact-worker"
+        )))
         .unwrap();
     let top = shell.top_face_centre(1);
     let before = (
@@ -913,7 +952,7 @@ fn line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical() {
     assert!(shell.app_mut().start_preview());
     assert_eq!(
         shell.app().push_pull_preview_exact_evaluator(),
-        Some(EXACT_LINEAR_PROFILE_EVALUATOR_V1)
+        Some(EXACT_BREP_GRAPH_EVALUATOR_V1)
     );
     assert_eq!(shell.app().document_revision(), before_push.0);
     assert_eq!(shell.app().canonical_digest(), before_push.1);
@@ -951,12 +990,11 @@ fn line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical() {
                 FeatureKind::Extrusion { .. }
             ))
     );
-    assert_eq!(
-        ExactFeatureChainRequest::from_snapshot(&pushed_snapshot, closed_definition_id)
-            .unwrap()
-            .evaluator(),
-        EXACT_LINEAR_PROFILE_EVALUATOR_V1
-    );
+    assert!(matches!(
+        terminal_profile_operation(&pushed_snapshot, closed_definition_id),
+        (8.0, ExactBRepPlanarGeometry::Boundary { closed: true, segments })
+            if segments.len() == 3
+    ));
     let pushed_digest = shell.app().canonical_digest();
     let exact_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while shell.app().exact_render_body_count() < 2 {
@@ -1121,15 +1159,11 @@ fn line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical() {
     shell.click_menu_command("menu-file", AppCommand::New);
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), pushed_digest);
-    assert_eq!(
-        ExactFeatureChainRequest::from_snapshot(
-            &shell.app().document_snapshot(),
-            closed_definition_id,
-        )
-        .unwrap()
-        .evaluator(),
-        EXACT_LINEAR_PROFILE_EVALUATOR_V1
-    );
+    assert!(matches!(
+        terminal_profile_operation(&shell.app().document_snapshot(), closed_definition_id),
+        (8.0, ExactBRepPlanarGeometry::Boundary { closed: true, segments })
+            if segments.len() == 3
+    ));
     assert!(shell.app().can_undo());
 }
 
@@ -1576,7 +1610,7 @@ fn semicircular_arc_profile_negative_push_pull_creates_exact_depth_limited_pocke
         assert!(shell.app().has_occurrence_operation_preview());
         assert_eq!(
             shell.app().push_pull_preview_exact_evaluator(),
-            Some(EXACT_POCKET_EVALUATOR_V1)
+            Some(EXACT_BREP_GRAPH_EVALUATOR_V1)
         );
     };
 
@@ -1592,20 +1626,11 @@ fn semicircular_arc_profile_negative_push_pull_creates_exact_depth_limited_pocke
     assert_eq!(shell.app().document_revision(), before.0 + 1);
     assert_eq!(shell.app().undo_step_count(), before.1 + 1);
     let result_definition = shell.app().selected_reference().unwrap().definition_id;
-    let request = ExactFeatureChainRequest::from_snapshot(
-        &shell.app().document_snapshot(),
-        result_definition,
-    )
-    .unwrap();
-    assert_eq!(request.evaluator(), EXACT_POCKET_EVALUATOR_V1);
-    assert_eq!(request.pocket_depth_bits, Some(8.0_f64.to_bits()));
-    assert!(
-        request
-            .boolean
-            .as_ref()
-            .and_then(|boolean| boolean.profile.as_ref())
-            .is_some_and(|profile| profile.is_line_arc_d_profile())
-    );
+    assert!(matches!(
+        terminal_profile_operation(&shell.app().document_snapshot(), result_definition),
+        (8.0, ExactBRepPlanarGeometry::Boundary { closed: true, segments })
+            if segments.len() == 2 && arc_count(&segments) == 1
+    ));
     let pocket_digest = shell.app().canonical_digest();
     shell.click_menu_command("menu-edit", AppCommand::Undo);
     assert_eq!(shell.app().canonical_digest(), profile_digest);
@@ -1616,26 +1641,17 @@ fn semicircular_arc_profile_negative_push_pull_creates_exact_depth_limited_pocke
     shell.click_menu_command("menu-file", AppCommand::New);
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), pocket_digest);
-    let reopened = ExactFeatureChainRequest::from_snapshot(
-        &shell.app().document_snapshot(),
-        result_definition,
-    )
-    .unwrap();
-    assert_eq!(reopened.evaluator(), EXACT_POCKET_EVALUATOR_V1);
-    assert_eq!(reopened.pocket_depth_bits, Some(8.0_f64.to_bits()));
-    assert!(
-        reopened
-            .boolean
-            .as_ref()
-            .and_then(|boolean| boolean.profile.as_ref())
-            .is_some_and(|profile| profile.is_line_arc_d_profile())
-    );
+    assert!(matches!(
+        terminal_profile_operation(&shell.app().document_snapshot(), result_definition),
+        (8.0, ExactBRepPlanarGeometry::Boundary { closed: true, segments })
+            if segments.len() == 2 && arc_count(&segments) == 1
+    ));
 }
 
 #[test]
-fn capsule_profile_negative_push_pull_creates_exact_depth_limited_pocket_atomically() {
+fn line_arc_profile_negative_push_pull_creates_exact_depth_limited_pocket_atomically() {
     let directory = tempfile::tempdir().unwrap();
-    let saved = directory.path().join("capsule-pocket.ketchup");
+    let saved = directory.path().join("line-arc-pocket.ketchup");
     let dialogs = ScriptedFileDialogs::new()
         .queue_save(&saved)
         .queue_open(&saved)
@@ -1666,7 +1682,7 @@ fn capsule_profile_negative_push_pull_creates_exact_depth_limited_pocket_atomica
     assert!(
         shell
             .app_mut()
-            .create_capsule_profile(Vec3::new(30.0, 20.0, 20.0), segments)
+            .create_closed_segment_profile(Vec3::new(30.0, 20.0, 20.0), segments)
     );
     let profile_digest = shell.app().canonical_digest();
     let before = (
@@ -1711,7 +1727,7 @@ fn capsule_profile_negative_push_pull_creates_exact_depth_limited_pocket_atomica
         assert!(shell.app().has_occurrence_operation_preview());
         assert_eq!(
             shell.app().push_pull_preview_exact_evaluator(),
-            Some(EXACT_POCKET_EVALUATOR_V1)
+            Some(EXACT_BREP_GRAPH_EVALUATOR_V1)
         );
     };
 
@@ -1727,20 +1743,11 @@ fn capsule_profile_negative_push_pull_creates_exact_depth_limited_pocket_atomica
     assert_eq!(shell.app().document_revision(), before.0 + 1);
     assert_eq!(shell.app().undo_step_count(), before.1 + 1);
     let result_definition = shell.app().selected_reference().unwrap().definition_id;
-    let request = ExactFeatureChainRequest::from_snapshot(
-        &shell.app().document_snapshot(),
-        result_definition,
-    )
-    .unwrap();
-    assert_eq!(request.evaluator(), EXACT_POCKET_EVALUATOR_V1);
-    assert_eq!(request.pocket_depth_bits, Some(8.0_f64.to_bits()));
-    assert!(
-        request
-            .boolean
-            .as_ref()
-            .and_then(|boolean| boolean.profile.as_ref())
-            .is_some_and(|profile| profile.is_line_arc_capsule_profile())
-    );
+    assert!(matches!(
+        terminal_profile_operation(&shell.app().document_snapshot(), result_definition),
+        (8.0, ExactBRepPlanarGeometry::Boundary { closed: true, segments })
+            if segments.len() == 4 && arc_count(&segments) == 2
+    ));
     let pocket_digest = shell.app().canonical_digest();
     shell.click_menu_command("menu-edit", AppCommand::Undo);
     assert_eq!(shell.app().canonical_digest(), profile_digest);
@@ -1751,20 +1758,11 @@ fn capsule_profile_negative_push_pull_creates_exact_depth_limited_pocket_atomica
     shell.click_menu_command("menu-file", AppCommand::New);
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), pocket_digest);
-    let reopened = ExactFeatureChainRequest::from_snapshot(
-        &shell.app().document_snapshot(),
-        result_definition,
-    )
-    .unwrap();
-    assert_eq!(reopened.evaluator(), EXACT_POCKET_EVALUATOR_V1);
-    assert_eq!(reopened.pocket_depth_bits, Some(8.0_f64.to_bits()));
-    assert!(
-        reopened
-            .boolean
-            .as_ref()
-            .and_then(|boolean| boolean.profile.as_ref())
-            .is_some_and(|profile| profile.is_line_arc_capsule_profile())
-    );
+    assert!(matches!(
+        terminal_profile_operation(&shell.app().document_snapshot(), result_definition),
+        (8.0, ExactBRepPlanarGeometry::Boundary { closed: true, segments })
+            if segments.len() == 4 && arc_count(&segments) == 2
+    ));
 }
 
 #[test]
@@ -1840,7 +1838,7 @@ fn slanted_line_profile_negative_push_pull_creates_exact_depth_limited_pocket_at
     );
     assert_eq!(
         shell.app().push_pull_preview_exact_evaluator(),
-        Some(EXACT_POCKET_EVALUATOR_V1)
+        Some(EXACT_BREP_GRAPH_EVALUATOR_V1)
     );
     assert_eq!(shell.app().document_revision(), before.0);
     assert_eq!(shell.app().canonical_digest(), profile_digest);
@@ -1849,21 +1847,11 @@ fn slanted_line_profile_negative_push_pull_creates_exact_depth_limited_pocket_at
     assert_eq!(shell.app().document_revision(), before.0 + 1);
     assert_eq!(shell.app().undo_step_count(), before.1 + 1);
     let result_definition = shell.app().selected_reference().unwrap().definition_id;
-    let pocket_request = ExactFeatureChainRequest::from_snapshot(
-        &shell.app().document_snapshot(),
-        result_definition,
-    )
-    .unwrap();
-    assert_eq!(pocket_request.evaluator(), EXACT_POCKET_EVALUATOR_V1);
-    assert_eq!(pocket_request.pocket_depth_bits, Some(8.0_f64.to_bits()));
-    assert_eq!(
-        pocket_request
-            .boolean
-            .as_ref()
-            .and_then(|boolean| boolean.profile.as_ref())
-            .map(|profile| profile.segments.len()),
-        Some(4)
-    );
+    assert!(matches!(
+        terminal_profile_operation(&shell.app().document_snapshot(), result_definition),
+        (8.0, ExactBRepPlanarGeometry::Boundary { closed: true, segments })
+            if segments.len() == 4 && arc_count(&segments) == 0
+    ));
     let pocket_digest = shell.app().canonical_digest();
     shell.click_menu_command("menu-edit", AppCommand::Undo);
     assert_eq!(shell.app().canonical_digest(), profile_digest);
@@ -1874,13 +1862,11 @@ fn slanted_line_profile_negative_push_pull_creates_exact_depth_limited_pocket_at
     shell.click_menu_command("menu-file", AppCommand::New);
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), pocket_digest);
-    let reopened_request = ExactFeatureChainRequest::from_snapshot(
-        &shell.app().document_snapshot(),
-        result_definition,
-    )
-    .unwrap();
-    assert_eq!(reopened_request.evaluator(), EXACT_POCKET_EVALUATOR_V1);
-    assert_eq!(reopened_request.pocket_depth_bits, Some(8.0_f64.to_bits()));
+    assert!(matches!(
+        terminal_profile_operation(&shell.app().document_snapshot(), result_definition),
+        (8.0, ExactBRepPlanarGeometry::Boundary { closed: true, segments })
+            if segments.len() == 4 && arc_count(&segments) == 0
+    ));
 }
 
 #[test]
@@ -1952,7 +1938,7 @@ fn circular_profile_negative_push_pull_creates_exact_depth_limited_pocket_atomic
     );
     assert_eq!(
         shell.app().push_pull_preview_exact_evaluator(),
-        Some(EXACT_POCKET_EVALUATOR_V1)
+        Some(EXACT_BREP_GRAPH_EVALUATOR_V1)
     );
     assert_eq!(shell.app().document_revision(), before.0);
     assert_eq!(shell.app().canonical_digest(), profile_digest);
@@ -1961,19 +1947,10 @@ fn circular_profile_negative_push_pull_creates_exact_depth_limited_pocket_atomic
     assert_eq!(shell.app().document_revision(), before.0 + 1);
     assert_eq!(shell.app().undo_step_count(), before.1 + 1);
     let result_definition = shell.app().selected_reference().unwrap().definition_id;
-    let pocket_request = ExactFeatureChainRequest::from_snapshot(
-        &shell.app().document_snapshot(),
-        result_definition,
-    )
-    .unwrap();
-    assert_eq!(pocket_request.evaluator(), EXACT_POCKET_EVALUATOR_V1);
-    assert_eq!(pocket_request.pocket_depth_bits, Some(8.0_f64.to_bits()));
-    assert!(
-        pocket_request
-            .boolean
-            .as_ref()
-            .is_some_and(|boolean| boolean.circle.is_some())
-    );
+    assert!(matches!(
+        terminal_profile_operation(&shell.app().document_snapshot(), result_definition),
+        (8.0, ExactBRepPlanarGeometry::Circle { .. })
+    ));
     let pocket_digest = shell.app().canonical_digest();
     shell.click_menu_command("menu-edit", AppCommand::Undo);
     assert_eq!(shell.app().canonical_digest(), profile_digest);
@@ -1984,19 +1961,10 @@ fn circular_profile_negative_push_pull_creates_exact_depth_limited_pocket_atomic
     shell.click_menu_command("menu-file", AppCommand::New);
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), pocket_digest);
-    let reopened_request = ExactFeatureChainRequest::from_snapshot(
-        &shell.app().document_snapshot(),
-        result_definition,
-    )
-    .unwrap();
-    assert_eq!(reopened_request.evaluator(), EXACT_POCKET_EVALUATOR_V1);
-    assert_eq!(reopened_request.pocket_depth_bits, Some(8.0_f64.to_bits()));
-    assert!(
-        reopened_request
-            .boolean
-            .as_ref()
-            .is_some_and(|boolean| boolean.circle.is_some())
-    );
+    assert!(matches!(
+        terminal_profile_operation(&shell.app().document_snapshot(), result_definition),
+        (8.0, ExactBRepPlanarGeometry::Circle { .. })
+    ));
 }
 
 #[test]
@@ -2047,7 +2015,7 @@ fn circular_profile_positive_push_pull_creates_exact_extrusion_atomically() {
     assert!(shell.app_mut().start_preview());
     assert_eq!(
         shell.app().push_pull_preview_exact_evaluator(),
-        Some(EXACT_CIRCLE_EVALUATOR_V1)
+        Some(EXACT_BREP_GRAPH_EVALUATOR_V1)
     );
     assert_eq!(shell.app().document_revision(), before.0);
     assert_eq!(shell.app().canonical_digest(), profile_digest);
@@ -2067,12 +2035,10 @@ fn circular_profile_positive_push_pull_creates_exact_extrusion_atomically() {
     }
     assert_eq!(shell.app().document_revision(), before.0 + 1);
     assert_eq!(shell.app().undo_step_count(), before.1 + 1);
-    let request =
-        ExactFeatureChainRequest::from_snapshot(&shell.app().document_snapshot(), definition_id)
-            .unwrap();
-    assert_eq!(request.evaluator(), EXACT_CIRCLE_EVALUATOR_V1);
-    assert_eq!(f64::from_bits(request.height_bits), 7.0);
-    assert!(request.circle.is_some());
+    assert!(matches!(
+        terminal_profile_operation(&shell.app().document_snapshot(), definition_id),
+        (7.0, ExactBRepPlanarGeometry::Circle { .. })
+    ));
 
     let extrusion_digest = shell.app().canonical_digest();
     shell.click_menu_command("menu-edit", AppCommand::Undo);
@@ -2084,12 +2050,10 @@ fn circular_profile_positive_push_pull_creates_exact_extrusion_atomically() {
     shell.click_menu_command("menu-file", AppCommand::New);
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), extrusion_digest);
-    let reopened_request =
-        ExactFeatureChainRequest::from_snapshot(&shell.app().document_snapshot(), definition_id)
-            .unwrap();
-    assert_eq!(reopened_request.evaluator(), EXACT_CIRCLE_EVALUATOR_V1);
-    assert_eq!(f64::from_bits(reopened_request.height_bits), 7.0);
-    assert!(reopened_request.circle.is_some());
+    assert!(matches!(
+        terminal_profile_operation(&shell.app().document_snapshot(), definition_id),
+        (7.0, ExactBRepPlanarGeometry::Circle { .. })
+    ));
 }
 
 #[test]
@@ -2142,7 +2106,7 @@ fn semicircular_arc_profile_positive_push_pull_creates_exact_extrusion_atomicall
     assert!(shell.app_mut().start_preview());
     assert_eq!(
         shell.app().push_pull_preview_exact_evaluator(),
-        Some(EXACT_ARC_PROFILE_EVALUATOR_V1)
+        Some(EXACT_BREP_GRAPH_EVALUATOR_V1)
     );
     assert_eq!(shell.app().document_revision(), before.0);
     assert_eq!(shell.app().canonical_digest(), profile_digest);
@@ -2162,12 +2126,11 @@ fn semicircular_arc_profile_positive_push_pull_creates_exact_extrusion_atomicall
     }
     assert_eq!(shell.app().document_revision(), before.0 + 1);
     assert_eq!(shell.app().undo_step_count(), before.1 + 1);
-    let request =
-        ExactFeatureChainRequest::from_snapshot(&shell.app().document_snapshot(), definition_id)
-            .unwrap();
-    assert_eq!(request.evaluator(), EXACT_ARC_PROFILE_EVALUATOR_V1);
-    assert_eq!(f64::from_bits(request.height_bits), 7.0);
-    assert!(request.mixed_profile.is_some());
+    assert!(matches!(
+        terminal_profile_operation(&shell.app().document_snapshot(), definition_id),
+        (7.0, ExactBRepPlanarGeometry::Boundary { closed: true, segments })
+            if arc_count(&segments) == 1
+    ));
 
     let extrusion_digest = shell.app().canonical_digest();
     shell.click_menu_command("menu-edit", AppCommand::Undo);
@@ -2179,10 +2142,9 @@ fn semicircular_arc_profile_positive_push_pull_creates_exact_extrusion_atomicall
     shell.click_menu_command("menu-file", AppCommand::New);
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), extrusion_digest);
-    let reopened_request =
-        ExactFeatureChainRequest::from_snapshot(&shell.app().document_snapshot(), definition_id)
-            .unwrap();
-    assert_eq!(reopened_request.evaluator(), EXACT_ARC_PROFILE_EVALUATOR_V1);
-    assert_eq!(f64::from_bits(reopened_request.height_bits), 7.0);
-    assert!(reopened_request.mixed_profile.is_some());
+    assert!(matches!(
+        terminal_profile_operation(&shell.app().document_snapshot(), definition_id),
+        (7.0, ExactBRepPlanarGeometry::Boundary { closed: true, segments })
+            if arc_count(&segments) == 1
+    ));
 }

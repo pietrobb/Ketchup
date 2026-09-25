@@ -13,16 +13,14 @@ use ketchup_core::exact_brep_graph::{
     MAX_EXACT_BREP_GRAPH_SEGMENTS, MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS,
     MAX_EXACT_BREP_REGION_HOLES, MAX_EXACT_BREP_REGION_SEGMENTS,
 };
-use ketchup_core::exact_product::{
-    ExactFaceRole, ExactFeatureChainRequest, ExactProductError, build_box_render_package,
-    canonical_reference_lineage_digest,
-};
+use ketchup_core::exact_product::ExactFaceRole;
 use ketchup_core::persistence;
 use ketchup_core::sketch::{
     FeatureDirection, FeatureExtent, FeatureExtentEnd, PadSpec, PocketSpec, PrincipalPlane,
     SketchEntity, SketchEntityId, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
     WorkplaneSupportHealth,
 };
+use ketchup_core::testing::box_package;
 use ketchup_core::topology::{
     TopologicalElementKind, TopologicalElementRef, TopologicalReferenceStability,
 };
@@ -182,12 +180,6 @@ fn stepped_profile_revolves_through_the_general_graph() {
 fn compiler_preserves_arbitrary_unequal_extrusions_as_a_topological_graph() {
     let mut document = arbitrary_boolean_document();
     let before = document.current();
-    assert_eq!(
-        ExactFeatureChainRequest::from_snapshot(&before, DEFINITION),
-        Err(ExactProductError::UnsupportedBoolean(
-            BooleanOperation::Intersect
-        ))
-    );
 
     let graph = ExactBRepGraph::from_snapshot(&before, DEFINITION, BOOLEAN).unwrap();
     assert_eq!(graph.profiles.len(), 2);
@@ -241,10 +233,6 @@ fn compiler_preserves_arbitrary_unequal_extrusions_as_a_topological_graph() {
     let with_unrelated_branch =
         ExactBRepGraph::from_snapshot(&document.current(), DEFINITION, BOOLEAN).unwrap();
     assert_eq!(with_unrelated_branch.graph_digest, graph.graph_digest);
-    assert_ne!(
-        with_unrelated_branch.canonical_input_digest,
-        graph.canonical_input_digest
-    );
 }
 
 #[test]
@@ -1046,35 +1034,16 @@ fn generalized_extents_compile_to_bounded_signed_intervals_and_fail_closed() {
         .unwrap();
 
     let target_snapshot = document.current();
-    let request =
-        ExactFeatureChainRequest::from_snapshot_for_producer(&target_snapshot, DEFINITION, target)
-            .unwrap();
-    let evidence = [
-        ExactFaceRole::Top,
-        ExactFaceRole::Bottom,
-        ExactFaceRole::East,
-    ]
-    .map(|role| {
-        (
-            role,
-            canonical_reference_lineage_digest(
-                request.document_id,
-                request.producer_feature_id(),
-                role.semantic_role(),
-                role.source_element_id(),
-                role.expected_type(),
-            ),
-            format!("extent-resolution.{role:?}"),
-        )
-    });
-    let package = build_box_render_package(
-        &request,
-        "extent-resolution-input".into(),
-        "extent-resolution-result".into(),
-        "test-backend".into(),
-        "test-tolerance".into(),
-        request.expected_bounds_mm(),
-        evidence,
+    let package = box_package(
+        &target_snapshot,
+        DEFINITION,
+        target,
+        "extent-resolution-result",
+        &[
+            ExactFaceRole::Top,
+            ExactFaceRole::Bottom,
+            ExactFaceRole::East,
+        ],
     )
     .unwrap();
     let top = package.reference(ExactFaceRole::Top).unwrap().clone();

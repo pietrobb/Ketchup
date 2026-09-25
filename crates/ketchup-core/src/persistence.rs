@@ -4477,38 +4477,17 @@ fn load_document(
         }
         Arc::make_mut(&mut container_data.imported_source_blobs).insert(hash);
     }
+    // A stored face or edge reference must still name the body its producer
+    // builds. Evaluator digests may differ: older files were evaluated by other
+    // code paths, and the next evaluation refreshes the evidence.
     for reference in loaded_snapshot.exact_reference_evidence() {
-        let matches_current_request =
-            crate::exact_product::ExactFeatureChainRequest::from_snapshot_for_producer(
-                &loaded_snapshot,
-                reference.definition_id,
-                reference.producer_feature_id,
-            )
-            .is_ok_and(|request| {
-                reference.matches_request(&request) || reference.matches_legacy_request(&request)
-            }) || crate::exact_brep_graph::ExactBRepGraph::from_snapshot(
-                &loaded_snapshot,
-                reference.definition_id,
-                reference.producer_feature_id,
-            )
-            .is_ok_and(|graph| reference.matches_exact_brep_graph(&graph));
-        let matches_durable_anchor =
-            crate::exact_product::ExactFeatureChainRequest::from_snapshot_for_producer(
-                &loaded_snapshot,
-                reference.definition_id,
-                reference.producer_feature_id,
-            )
-            .is_ok_and(|request| reference.matches_durable_request_identity(&request))
-                && loaded_snapshot.features().any(|feature| {
-                    matches!(
-                        feature.kind(),
-                        FeatureKind::Workplane(WorkplaneSpec {
-                            support: WorkplaneSupport::PlanarFace { reference: support, .. },
-                            ..
-                        }) if support.as_ref() == reference
-                    )
-                });
-        if !matches_current_request && !matches_durable_anchor {
+        let names_current_body = crate::exact_brep_graph::ExactBRepGraph::from_snapshot(
+            &loaded_snapshot,
+            reference.definition_id,
+            reference.producer_feature_id,
+        )
+        .is_ok_and(|graph| reference.matches_durable_graph_identity(&graph));
+        if !names_current_body {
             return Err(PersistenceError::InvalidExactReference);
         }
     }

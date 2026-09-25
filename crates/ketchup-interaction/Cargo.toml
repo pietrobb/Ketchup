@@ -12,3 +12,6 @@ ketchup-core = { path = "../ketchup-core" }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+ketchup-core = { path = "../ketchup-core", features = ["testing"] }

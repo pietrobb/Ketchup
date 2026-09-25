@@ -7,8 +7,7 @@ use ketchup_core::document::{
 use ketchup_core::exact_brep_graph::ExactBRepGraph;
 use ketchup_core::exact_product::{
     ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence, ExactBodyPackage, ExactFaceRole,
-    ExactFeatureChainRequest, ExactResultRegistry, build_box_render_package,
-    canonical_reference_lineage_digest,
+    ExactResultRegistry,
 };
 use ketchup_core::exact_validation::{
     BuiltinGeneralBodyValidator, GeneralBodyParticipant, GeneralBodySource,
@@ -31,6 +30,7 @@ use ketchup_core::space::{
     CanonicalClearanceVolume, CanonicalSpace, ClearanceOwner, ClearanceSeverity,
     ClearanceValidationError, ClearanceVolumeId, SpaceId, validate_clearance_occupancy,
 };
+use ketchup_core::testing::box_package;
 use ketchup_core::validation::{
     EvidenceClass, EvidenceCounts, HostNeutralValidator, VALIDATOR_ROLE_DIMENSION_V1,
     ValidationExecution, ValidationInvocation, ValidationState, ValidatorRoleError,
@@ -187,9 +187,7 @@ fn general_collision_and_clearance_bind_current_exact_and_mesh_occurrences() {
     let mut document = mixed_document();
     let snapshot = document.current();
     let package = exact_package(&snapshot);
-    let registry =
-        ExactResultRegistry::accept(&snapshot, [Arc::new(ExactBodyPackage::from(package))])
-            .unwrap();
+    let registry = ExactResultRegistry::accept(&snapshot, [Arc::new(package)]).unwrap();
     let tolerance = TolerancePolicy::default();
 
     let exact_left = GeneralBodyParticipant::accept(
@@ -340,9 +338,7 @@ fn general_fabrication_regenerates_deterministically_and_exports_fail_closed() {
     let mut document = exact_only_document();
     let snapshot = document.current();
     let package = exact_package(&snapshot);
-    let registry =
-        ExactResultRegistry::accept(&snapshot, [Arc::new(ExactBodyPackage::from(package))])
-            .unwrap();
+    let registry = ExactResultRegistry::accept(&snapshot, [Arc::new(package)]).unwrap();
     let tolerance = TolerancePolicy::default();
     let left = GeneralBodyParticipant::accept(
         &snapshot,
@@ -446,9 +442,7 @@ fn general_fabrication_regenerates_deterministically_and_exports_fail_closed() {
     let scaled_snapshot = scaled.current();
     let scaled_registry = ExactResultRegistry::accept(
         &scaled_snapshot,
-        [Arc::new(ExactBodyPackage::from(exact_package(
-            &scaled_snapshot,
-        )))],
+        [Arc::new(exact_package(&scaled_snapshot))],
     )
     .unwrap();
     let scaled_left = GeneralBodyParticipant::accept(
@@ -780,9 +774,7 @@ fn mixed_mechanical_bom_keeps_make_buy_materials_positions_and_timber_export_bou
         .unwrap();
     let snapshot = document.current();
     let package = exact_package(&snapshot);
-    let registry =
-        ExactResultRegistry::accept(&snapshot, [Arc::new(ExactBodyPackage::from(package))])
-            .unwrap();
+    let registry = ExactResultRegistry::accept(&snapshot, [Arc::new(package)]).unwrap();
     let tolerance = TolerancePolicy::default();
     let left = GeneralBodyParticipant::accept(
         &snapshot,
@@ -965,9 +957,7 @@ fn nested_repeated_assemblies_roll_up_leaf_quantities_and_inherit_root_bom_metad
 
     let snapshot = document.current();
     let package = exact_package(&snapshot);
-    let registry =
-        ExactResultRegistry::accept(&snapshot, [Arc::new(ExactBodyPackage::from(package))])
-            .unwrap();
+    let registry = ExactResultRegistry::accept(&snapshot, [Arc::new(package)]).unwrap();
     let tolerance = TolerancePolicy::default();
     let mut participants = snapshot
         .scene_query()
@@ -1599,9 +1589,7 @@ fn canonical_mesh_keeps_bom_and_drawings_but_blocks_manufacturing_export() {
     let document = mixed_document();
     let snapshot = document.current();
     let package = exact_package(&snapshot);
-    let registry =
-        ExactResultRegistry::accept(&snapshot, [Arc::new(ExactBodyPackage::from(package))])
-            .unwrap();
+    let registry = ExactResultRegistry::accept(&snapshot, [Arc::new(package)]).unwrap();
     let tolerance = TolerancePolicy::default();
     let exact_left = GeneralBodyParticipant::accept(
         &snapshot,
@@ -1712,11 +1700,8 @@ fn canonical_space_and_rule_clearance_round_trip_and_fail_closed_when_slot_is_lo
         ]))
         .unwrap();
     let snapshot = document.current();
-    let registry = ExactResultRegistry::accept(
-        &snapshot,
-        [Arc::new(ExactBodyPackage::from(exact_package(&snapshot)))],
-    )
-    .unwrap();
+    let registry =
+        ExactResultRegistry::accept(&snapshot, [Arc::new(exact_package(&snapshot))]).unwrap();
     let result = validate_clearance_occupancy(
         &snapshot,
         &registry,
@@ -1804,11 +1789,8 @@ fn exact_document_fabrication_projection(
     document: &DocumentStore,
 ) -> Result<GeneralFabricationProjection, GeneralFabricationError> {
     let snapshot = document.current();
-    let registry = ExactResultRegistry::accept(
-        &snapshot,
-        [Arc::new(ExactBodyPackage::from(exact_package(&snapshot)))],
-    )
-    .unwrap();
+    let registry =
+        ExactResultRegistry::accept(&snapshot, [Arc::new(exact_package(&snapshot))]).unwrap();
     let tolerance = TolerancePolicy::default();
     let left = GeneralBodyParticipant::accept(
         &snapshot,
@@ -2538,64 +2520,17 @@ fn occurrence(id: OccurrenceId, definition_id: DefinitionId, x_mm: f64) -> Canon
     }
 }
 
-fn exact_package(
-    snapshot: &ketchup_core::document::Snapshot,
-) -> ketchup_core::exact_product::ExactRenderPackage {
-    let request = ExactFeatureChainRequest::from_snapshot(snapshot, EXACT_DEFINITION).unwrap();
-    let evidence = [
-        ExactFaceRole::Top,
-        ExactFaceRole::Bottom,
-        ExactFaceRole::East,
-    ]
-    .map(|role| {
-        (
-            role,
-            canonical_reference_lineage_digest(
-                request.document_id,
-                request.producer_feature_id(),
-                role.semantic_role(),
-                role.source_element_id(),
-                "planar_face",
-            ),
-            format!("geometry:{role:?}"),
-        )
-    });
-    let FeatureKind::Profile { points_mm } = snapshot.feature(EXACT_PROFILE).unwrap().kind() else {
-        unreachable!()
-    };
-    let FeatureKind::Extrusion { height, .. } = snapshot.feature(EXACT_BODY).unwrap().kind() else {
-        unreachable!()
-    };
-    let minimum = [
-        points_mm
-            .iter()
-            .map(|point| point[0])
-            .fold(f64::INFINITY, f64::min),
-        points_mm
-            .iter()
-            .map(|point| point[1])
-            .fold(f64::INFINITY, f64::min),
-        0.0,
-    ];
-    let maximum = [
-        points_mm
-            .iter()
-            .map(|point| point[0])
-            .fold(f64::NEG_INFINITY, f64::max),
-        points_mm
-            .iter()
-            .map(|point| point[1])
-            .fold(f64::NEG_INFINITY, f64::max),
-        height.millimetres(),
-    ];
-    build_box_render_package(
-        &request,
-        "m17-exact-input".to_owned(),
-        "m17-exact-result".to_owned(),
-        "m17-backend".to_owned(),
-        "m17-tolerance".to_owned(),
-        [minimum, maximum],
-        evidence,
+fn exact_package(snapshot: &ketchup_core::document::Snapshot) -> ExactBodyPackage {
+    box_package(
+        snapshot,
+        EXACT_DEFINITION,
+        EXACT_BODY,
+        "m17-exact-result",
+        &[
+            ExactFaceRole::Top,
+            ExactFaceRole::Bottom,
+            ExactFaceRole::East,
+        ],
     )
     .unwrap()
 }

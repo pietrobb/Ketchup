@@ -495,20 +495,6 @@ impl ExactInteractionProjection {
     }
 }
 
-#[cfg(test)]
-fn hit_occurrence<'a>(
-    ray: Ray,
-    occurrence: &'a ExactOccurrence,
-) -> Option<PhysicalTriangleHit<'a>> {
-    physical_hits(ray, occurrence)
-        .into_iter()
-        .min_by(|left, right| {
-            left.ray_distance_mm
-                .total_cmp(&right.ray_distance_mm)
-                .then_with(|| left.triangle_index.cmp(&right.triangle_index))
-        })
-}
-
 fn physical_hits<'a>(ray: Ray, occurrence: &'a ExactOccurrence) -> Vec<PhysicalTriangleHit<'a>> {
     if !ray_intersects_bounds(
         ray,
@@ -639,14 +625,14 @@ mod tests {
     };
     use ketchup_core::exact_brep_graph::ExactBRepGraph;
     use ketchup_core::exact_product::{
-        ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence, ExactFaceRole,
-        ExactFeatureChainRequest, ExactProductError, ExactRenderPackage, ImportedExactPackage,
-        build_box_render_package, canonical_reference_lineage_digest,
+        ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence, ExactFaceRole, ExactProductError,
+        ImportedExactPackage,
     };
     use ketchup_core::import::{
         ImportLengthUnit, StepImportEvidence, StepImportMesh, StepMeshTriangle, plan_step_import,
     };
     use ketchup_core::persistence;
+    use ketchup_core::testing::box_package;
 
     const DEFINITION: DefinitionId = DefinitionId(1);
     const EXTRUSION: FeatureId = FeatureId(2);
@@ -709,45 +695,39 @@ mod tests {
         store
     }
 
-    fn render_package(snapshot: &Snapshot) -> ExactRenderPackage {
-        let request = ExactFeatureChainRequest::from_snapshot(snapshot, DEFINITION).unwrap();
-        let evidence = [
-            ExactFaceRole::Top,
-            ExactFaceRole::Bottom,
-            ExactFaceRole::East,
-            ExactFaceRole::CutWest,
-            ExactFaceRole::CutEast,
-            ExactFaceRole::CutSouth,
-            ExactFaceRole::CutNorth,
-        ]
-        .map(|role| {
-            (
-                role,
-                canonical_reference_lineage_digest(
-                    request.document_id,
-                    request.producer_feature_id(),
-                    role.semantic_role(),
-                    role.source_element_id(),
-                    "planar_face",
-                ),
-                format!("geometry:{role:?}"),
-            )
-        });
-        build_box_render_package(
-            &request,
-            "exact-input".to_owned(),
-            "result".to_owned(),
-            "test-backend".to_owned(),
-            "test-tolerance".to_owned(),
-            [[0.0; 3], request.dimensions_mm()],
-            evidence,
+    /// The body as a box with named top, bottom and east faces; the west face
+    /// stays unreferenced.
+    fn render_package(snapshot: &Snapshot) -> ExactBodyPackage {
+        box_package(
+            snapshot,
+            DEFINITION,
+            CUT,
+            "result",
+            &[
+                ExactFaceRole::Top,
+                ExactFaceRole::Bottom,
+                ExactFaceRole::East,
+            ],
         )
         .unwrap()
     }
 
-    fn projection(snapshot: &Snapshot, package: ExactRenderPackage) -> ExactInteractionProjection {
-        let results = ExactResultRegistry::accept(snapshot, [Arc::new(package.into())]).unwrap();
+    fn projection(snapshot: &Snapshot, package: ExactBodyPackage) -> ExactInteractionProjection {
+        let results = ExactResultRegistry::accept(snapshot, [Arc::new(package)]).unwrap();
         ExactInteractionProjection::from_snapshot(snapshot, &results)
+    }
+
+    /// The named face a hit landed on, read from its topological reference.
+    fn named_face(hit: &ExactSurfaceHit) -> Option<ExactFaceRole> {
+        let reference = &hit.topological_target.as_ref()?.target().reference;
+        [
+            ExactFaceRole::Top,
+            ExactFaceRole::Bottom,
+            ExactFaceRole::East,
+            ExactFaceRole::West,
+        ]
+        .into_iter()
+        .find(|role| reference.producer_element_id == role.semantic_role())
     }
 
     #[test]
@@ -758,21 +738,9 @@ mod tests {
         let ray = Ray::new(Vec3::new(1.0, 1.0, 20.0), Vec3::new(0.0, 0.0, -1.0)).unwrap();
 
         let hits = projection.exact_surface_picks(ray);
-        let roles = hits
-            .iter()
-            .filter_map(|hit| hit.durable_target.as_ref()?.body.role())
-            .collect::<BTreeSet<_>>();
+        let roles = hits.iter().filter_map(named_face).collect::<BTreeSet<_>>();
 
-        assert_eq!(
-            hits.first()
-                .unwrap()
-                .durable_target
-                .as_ref()
-                .unwrap()
-                .body
-                .role(),
-            Some(ExactFaceRole::Top)
-        );
+        assert_eq!(named_face(hits.first().unwrap()), Some(ExactFaceRole::Top));
         assert!(roles.contains(&ExactFaceRole::Top));
         assert!(roles.contains(&ExactFaceRole::Bottom));
         assert!(
@@ -785,7 +753,7 @@ mod tests {
     fn registry_indexes_current_results_by_complete_derived_identity() {
         let store = through_cut_document();
         let snapshot = store.current();
-        let package: Arc<ExactBodyPackage> = Arc::new(render_package(&snapshot).into());
+        let package = Arc::new(render_package(&snapshot));
         let key = package.result_key();
         let mut results = ExactResultRegistry::accept(&snapshot, [Arc::clone(&package)]).unwrap();
 
@@ -803,75 +771,86 @@ mod tests {
     }
 
     #[test]
-    fn vertical_ray_through_hole_misses_physical_mesh() {
-        let store = through_cut_document();
+    fn ray_inside_transformed_bounds_but_outside_the_mesh_misses() {
+        let mut store = through_cut_document();
+        let half = std::f64::consts::FRAC_1_SQRT_2;
+        store
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetOccurrenceTransform {
+                    id: OCCURRENCE,
+                    transform: Transform::from_matrix([
+                        half, -half, 0.0, 0.0, half, half, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+                        0.0, 1.0,
+                    ])
+                    .unwrap(),
+                },
+            ]))
+            .unwrap();
         let snapshot = store.current();
         let projection = projection(&snapshot, render_package(&snapshot));
-        let ray = Ray::new(Vec3::new(5.0, 5.0, 20.0), Vec3::new(0.0, 0.0, -1.0)).unwrap();
+        // The box turned 45 degrees is a diamond; this corner of its bounds is empty.
+        let corner_ray = Ray::new(Vec3::new(6.0, 1.0, 20.0), Vec3::new(0.0, 0.0, -1.0)).unwrap();
+        let centre_ray = Ray::new(Vec3::new(0.0, 7.0, 20.0), Vec3::new(0.0, 0.0, -1.0)).unwrap();
 
         assert_eq!(projection.occurrence_count(), 1);
-        assert!(projection.exact_surface_pick(ray).is_none());
-        assert!(projection.exact_pick(ray).is_none());
+        assert!(projection.exact_surface_pick(corner_ray).is_none());
+        let top = projection.exact_surface_pick(centre_ray).unwrap();
+        assert_eq!(named_face(&top), Some(ExactFaceRole::Top));
+        assert!((top.position_mm.z - 10.0).abs() <= 1.0e-9);
     }
 
     #[test]
-    fn every_through_cut_wall_maps_to_its_durable_reference() {
+    fn every_named_face_maps_to_its_durable_reference() {
         let store = through_cut_document();
         let snapshot = store.current();
         let projection = projection(&snapshot, render_package(&snapshot));
 
-        for (role, direction) in [
-            (ExactFaceRole::CutWest, Vec3::new(-1.0, 0.0, 0.0)),
-            (ExactFaceRole::CutEast, Vec3::new(1.0, 0.0, 0.0)),
-            (ExactFaceRole::CutSouth, Vec3::new(0.0, -1.0, 0.0)),
-            (ExactFaceRole::CutNorth, Vec3::new(0.0, 1.0, 0.0)),
+        for (role, origin, direction) in [
+            (
+                ExactFaceRole::Top,
+                Vec3::new(5.0, 5.0, 20.0),
+                Vec3::new(0.0, 0.0, -1.0),
+            ),
+            (
+                ExactFaceRole::Bottom,
+                Vec3::new(5.0, 5.0, -20.0),
+                Vec3::new(0.0, 0.0, 1.0),
+            ),
+            (
+                ExactFaceRole::East,
+                Vec3::new(20.0, 5.0, 5.0),
+                Vec3::new(-1.0, 0.0, 0.0),
+            ),
         ] {
-            let ray = Ray::new(Vec3::new(5.0, 5.0, 5.0), direction).unwrap();
+            let ray = Ray::new(origin, direction).unwrap();
             let hit = projection
-                .exact_pick(ray)
-                .unwrap_or_else(|| panic!("cut wall {role:?} was not picked"));
-            assert_eq!(hit.target.body.role(), Some(role));
-            assert!(hit.target.body.has_valid_lineage());
-            assert_eq!(hit.target.instance_path, InstancePath::root(OCCURRENCE));
+                .exact_surface_pick(ray)
+                .unwrap_or_else(|| panic!("face {role:?} was not picked"));
+            assert_eq!(named_face(&hit), Some(role));
+            let selection = hit.topological_target.unwrap();
+            assert!(selection.target().reference.has_valid_lineage());
+            assert_eq!(
+                selection.target().instance_path,
+                InstancePath::root(OCCURRENCE)
+            );
         }
     }
 
     #[test]
-    fn unreferenced_front_triangle_occludes_referenced_triangles_behind_it() {
+    fn unnamed_front_face_occludes_named_faces_behind_it() {
         let store = through_cut_document();
         let snapshot = store.current();
         let projection = projection(&snapshot, render_package(&snapshot));
         let ray = Ray::new(Vec3::new(-5.0, 2.0, 5.0), Vec3::new(1.0, 0.0, -0.5)).unwrap();
-        let physical_hit = hit_occurrence(ray, &projection.occurrences[0]).unwrap();
 
-        assert_eq!(
-            physical_hit.occurrence.package.triangles()[physical_hit.triangle_index].face_role,
-            None
-        );
-        assert!(
-            physical_hit
-                .occurrence
-                .package
-                .triangles()
-                .iter()
-                .any(|triangle| {
-                    let [first, second, third] = triangle.vertex_indices.map(|index| {
-                        let position =
-                            physical_hit.occurrence.package.vertices()[index as usize].position_mm;
-                        Vec3::new(position[0], position[1], position[2])
-                    });
-                    triangle.face_role.is_some()
-                        && ray_triangle_distance(ray, first, second, third)
-                            .is_some_and(|distance| distance > physical_hit.ray_distance_mm)
-                })
-        );
-        let surface_hit = projection
-            .exact_surface_pick(ray)
-            .expect("the unreferenced front triangle is still a physical surface");
-        assert!(surface_hit.durable_target.is_none());
-        assert_eq!(surface_hit.instance_path, InstancePath::root(OCCURRENCE));
-        assert!(surface_hit.outward_normal.x < -0.999);
-        assert!(projection.exact_pick(ray).is_none());
+        let hits = projection.exact_surface_picks(ray);
+        assert_eq!(named_face(&hits[1]), Some(ExactFaceRole::Bottom));
+        let front = &hits[0];
+        assert_eq!(named_face(front), None);
+        assert!(front.topological_target.is_some());
+        assert_eq!(front.instance_path, InstancePath::root(OCCURRENCE));
+        assert!(front.outward_normal.x < -0.999);
+        assert!(front.position_mm.x.abs() <= 1.0e-9);
     }
 
     #[test]
@@ -893,7 +872,7 @@ mod tests {
             .unwrap();
         let changed_snapshot = store.current();
         assert!(matches!(
-            ExactResultRegistry::accept(&changed_snapshot, [Arc::new(initial_package.into())]),
+            ExactResultRegistry::accept(&changed_snapshot, [Arc::new(initial_package)]),
             Err(ExactProductError::StaleResult)
         ));
 
@@ -913,13 +892,17 @@ mod tests {
         let rotated = projection(&rotated_snapshot, render_package(&rotated_snapshot));
         assert_eq!(rotated.occurrence_count(), 1);
         assert!(rotated.contains_occurrence(&instance_path));
-        let hole_ray = Ray::new(Vec3::new(-5.0, 5.0, 20.0), Vec3::new(0.0, 0.0, -1.0)).unwrap();
-        assert!(rotated.exact_surface_pick(hole_ray).is_none());
-        let wall_ray = Ray::new(Vec3::new(-5.0, 5.0, 5.0), Vec3::new(0.0, -1.0, 0.0)).unwrap();
-        let wall = rotated.exact_pick(wall_ray).unwrap();
-        assert_eq!(wall.target.body.role(), Some(ExactFaceRole::CutWest));
-        assert!((wall.position_mm.y - 4.0).abs() <= 1.0e-9);
-        assert!(wall.position_mm.x.abs() > 4.999 && wall.position_mm.x.abs() < 5.001);
+        let top_ray = Ray::new(Vec3::new(-5.0, 5.0, 20.0), Vec3::new(0.0, 0.0, -1.0)).unwrap();
+        let top = rotated.exact_surface_pick(top_ray).unwrap();
+        assert_eq!(named_face(&top), Some(ExactFaceRole::Top));
+        assert!((top.position_mm.z - 12.0).abs() <= 1.0e-9);
+        // The east face (x = 10) turns to face +y.
+        let side_ray = Ray::new(Vec3::new(-5.0, 20.0, 5.0), Vec3::new(0.0, -1.0, 0.0)).unwrap();
+        let side = rotated.exact_surface_pick(side_ray).unwrap();
+        assert_eq!(named_face(&side), Some(ExactFaceRole::East));
+        assert!((side.position_mm.y - 10.0).abs() <= 1.0e-9);
+        assert!((side.position_mm.x + 5.0).abs() <= 1.0e-9);
+        assert!(side.outward_normal.y > 0.999);
     }
 
     #[test]

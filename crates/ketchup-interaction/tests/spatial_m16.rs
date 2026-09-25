@@ -2,10 +2,8 @@ use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
     InstancePath, MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, OccurrenceId, Transform,
 };
-use ketchup_core::exact_product::{
-    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactResultRegistry,
-    build_box_render_package, canonical_reference_lineage_digest,
-};
+use ketchup_core::exact_product::{ExactBodyPackage, ExactFaceRole, ExactResultRegistry};
+use ketchup_core::testing::box_package;
 use ketchup_interaction::exact_projection::ExactInteractionProjection;
 use ketchup_interaction::mesh_projection::MeshInteractionProjection;
 use ketchup_interaction::projection::CanonicalInteractionProjection;
@@ -83,36 +81,18 @@ fn assert_sublinear(stats: ketchup_interaction::spatial::SpatialQueryStats) {
 }
 
 fn exact_package(snapshot: &ketchup_core::document::Snapshot) -> ExactBodyPackage {
-    let request = ExactFeatureChainRequest::from_snapshot(snapshot, DEFINITION).unwrap();
-    let evidence = [
-        ExactFaceRole::Top,
-        ExactFaceRole::Bottom,
-        ExactFaceRole::East,
-    ]
-    .map(|role| {
-        (
-            role,
-            canonical_reference_lineage_digest(
-                request.document_id,
-                request.producer_feature_id(),
-                role.semantic_role(),
-                role.source_element_id(),
-                role.expected_type(),
-            ),
-            format!("geometry:{role:?}"),
-        )
-    });
-    build_box_render_package(
-        &request,
-        "exact-input".to_owned(),
-        "result".to_owned(),
-        "test-backend".to_owned(),
-        "test-tolerance".to_owned(),
-        [[0.0; 3], request.dimensions_mm()],
-        evidence,
+    box_package(
+        snapshot,
+        DEFINITION,
+        BODY,
+        "result",
+        &[
+            ExactFaceRole::Top,
+            ExactFaceRole::Bottom,
+            ExactFaceRole::East,
+        ],
     )
     .unwrap()
-    .into()
 }
 
 fn mesh_document() -> DocumentStore {
@@ -266,8 +246,12 @@ fn exact_bvh_preserves_durable_identity_with_sublinear_candidates() {
         InstancePath::root(OccurrenceId(target as u64 + 1))
     );
     assert_eq!(
-        hit.durable_target.unwrap().body.role(),
-        Some(ExactFaceRole::Top)
+        hit.topological_target
+            .unwrap()
+            .target()
+            .reference
+            .producer_element_id,
+        ExactFaceRole::Top.semantic_role()
     );
     assert_sublinear(stats);
 

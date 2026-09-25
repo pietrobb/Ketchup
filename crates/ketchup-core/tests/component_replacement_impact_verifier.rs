@@ -11,9 +11,7 @@ use ketchup_core::drawing::{
     DrawingSheet, DrawingSheetId, DrawingSource, OrthographicViewKind, project_orthographic_drawing,
 };
 use ketchup_core::exact_product::{
-    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactPlanarFaceAttachmentInput,
-    ExactRenderPackage, ExactResultRegistry, build_box_render_package_with_attachments,
-    canonical_reference_lineage_digest, exact_model_stl_export,
+    ExactBodyPackage, ExactFaceRole, ExactResultRegistry, body_exact_graph, exact_model_stl_export,
 };
 use ketchup_core::persistence;
 use ketchup_core::shared_change::{
@@ -22,6 +20,7 @@ use ketchup_core::shared_change::{
     commit_component_replacement, project_component_replacement_impact,
     project_component_replacement_impact_for_principal,
 };
+use ketchup_core::testing::box_package;
 use std::sync::Arc;
 
 const SOURCE: DefinitionId = DefinitionId(41);
@@ -40,7 +39,7 @@ const COLLECTION: CollectionId = CollectionId(4500);
 const ROLES: [ExactFaceRole; 3] = [
     ExactFaceRole::Top,
     ExactFaceRole::Bottom,
-    ExactFaceRole::East,
+    ExactFaceRole::West,
 ];
 
 #[derive(Debug, Eq, PartialEq)]
@@ -69,65 +68,21 @@ fn package<const N: usize>(
     definition_id: DefinitionId,
     fingerprint: &str,
     roles: [ExactFaceRole; N],
-) -> ExactRenderPackage {
-    let request =
-        ExactFeatureChainRequest::from_snapshot_for_body(snapshot, definition_id, BodyId(1))
-            .unwrap();
-    let evidence = roles.map(|role| {
-        (
-            role,
-            canonical_reference_lineage_digest(
-                snapshot.document_id(),
-                request.producer_feature_id(),
-                role.semantic_role(),
-                role.source_element_id(),
-                role.expected_type(),
-            ),
-            format!("geometry:{definition_id:?}:{role:?}:{fingerprint}"),
-        )
-    });
-    build_box_render_package_with_attachments(
-        &request,
-        format!("exact-input:{definition_id:?}:{fingerprint}"),
-        fingerprint.to_owned(),
-        "occt".into(),
-        "r0".into(),
-        request.expected_bounds_mm(),
-        evidence,
-        &[
-            ExactPlanarFaceAttachmentInput {
-                role: ExactFaceRole::Top,
-                local_origin_mm: [0.0; 3],
-                local_unit_normal: [0.0, 0.0, 1.0],
-            },
-            ExactPlanarFaceAttachmentInput {
-                role: ExactFaceRole::Bottom,
-                local_origin_mm: [0.0; 3],
-                local_unit_normal: [0.0, 0.0, -1.0],
-            },
-            ExactPlanarFaceAttachmentInput {
-                role: ExactFaceRole::East,
-                local_origin_mm: [0.0; 3],
-                local_unit_normal: [1.0, 0.0, 0.0],
-            },
-        ],
+) -> ExactBodyPackage {
+    let graph = body_exact_graph(snapshot, definition_id, BodyId(1)).unwrap();
+    box_package(
+        snapshot,
+        definition_id,
+        FeatureId(graph.producer_feature_id),
+        fingerprint,
+        &roles,
     )
     .unwrap()
 }
 
 fn registry(snapshot: &ketchup_core::document::Snapshot, reverse: bool) -> ExactResultRegistry {
-    let source = Arc::new(ExactBodyPackage::from(package(
-        snapshot,
-        SOURCE,
-        "source-current",
-        ROLES,
-    )));
-    let target = Arc::new(ExactBodyPackage::from(package(
-        snapshot,
-        TARGET,
-        "target-current",
-        ROLES,
-    )));
+    let source = Arc::new(package(snapshot, SOURCE, "source-current", ROLES));
+    let target = Arc::new(package(snapshot, TARGET, "target-current", ROLES));
     if reverse {
         ExactResultRegistry::accept(snapshot, [target, source]).unwrap()
     } else {
@@ -222,11 +177,11 @@ fn seed() -> DocumentStore {
                     SELECTED,
                     PlanarFaceAttachment::new(
                         source_package
-                            .reference(ExactFaceRole::Top)
+                            .reference(ExactFaceRole::Bottom)
                             .unwrap()
                             .clone(),
                         [0.0; 3],
-                        [0.0, 0.0, 1.0],
+                        [0.0, 0.0, -1.0],
                     )
                     .unwrap(),
                 ),
@@ -244,7 +199,7 @@ fn seed() -> DocumentStore {
                 ),
                 AssemblyMateKind::CoincidentPlanar {
                     offset_mm: 0.0,
-                    reversed: false,
+                    reversed: true,
                 },
             )),
             CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
@@ -253,11 +208,11 @@ fn seed() -> DocumentStore {
                     SELECTED,
                     PlanarFaceAttachment::new(
                         source_package
-                            .reference(ExactFaceRole::East)
+                            .reference(ExactFaceRole::West)
                             .unwrap()
                             .clone(),
                         [0.0; 3],
-                        [1.0, 0.0, 0.0],
+                        [-1.0, 0.0, 0.0],
                     )
                     .unwrap(),
                 ),
@@ -265,16 +220,16 @@ fn seed() -> DocumentStore {
                     TARGET_OCCURRENCE,
                     PlanarFaceAttachment::new(
                         target_package
-                            .reference(ExactFaceRole::East)
+                            .reference(ExactFaceRole::West)
                             .unwrap()
                             .clone(),
                         [0.0; 3],
-                        [1.0, 0.0, 0.0],
+                        [-1.0, 0.0, 0.0],
                     )
                     .unwrap(),
                 ),
                 AssemblyMateKind::CoincidentPlanar {
-                    offset_mm: 29.0,
+                    offset_mm: -29.0,
                     reversed: true,
                 },
             )),
@@ -364,14 +319,11 @@ fn ambiguity_topology_identity_and_unsupported_inputs_have_explicit_diagnostics(
     let snapshot = document.current();
     let before = store_stamp(&document);
 
-    let source = Arc::new(ExactBodyPackage::from(package(
-        &snapshot,
-        SOURCE,
-        "source-current",
-        ROLES,
-    )));
+    let source = Arc::new(package(&snapshot, SOURCE, "source-current", ROLES));
     let target = package(&snapshot, TARGET, "target-current", ROLES);
-    let mut alternate = target.clone();
+    let ExactBodyPackage::Graph(mut alternate) = target.clone() else {
+        panic!("box fixture is a graph package");
+    };
     alternate.identity.backend.push_str("-alternate");
     for reference in &mut alternate.references {
         reference.backend = alternate.identity.backend.clone();
@@ -398,8 +350,8 @@ fn ambiguity_topology_identity_and_unsupported_inputs_have_explicit_diagnostics(
         &snapshot,
         [
             Arc::clone(&source),
-            Arc::new(ExactBodyPackage::from(target)),
-            Arc::new(ExactBodyPackage::from(alternate)),
+            Arc::new(target),
+            Arc::new(ExactBodyPackage::Graph(alternate)),
         ],
     )
     .unwrap();
@@ -989,24 +941,26 @@ fn under_over_constrained_and_invalid_export_paths_preserve_last_valid_state() {
 
     let export_document = seed();
     let export_snapshot = export_document.current();
-    let source_package = Arc::new(ExactBodyPackage::from(package(
+    let source_package = Arc::new(package(
         &export_snapshot,
         SOURCE,
         "source-last-valid",
         ROLES,
-    )));
-    let mut invalid_target = package(
+    ));
+    let ExactBodyPackage::Graph(mut invalid_target) = package(
         &export_snapshot,
         TARGET,
         "target-last-valid-invalid-mesh",
         ROLES,
-    );
+    ) else {
+        panic!("box fixture is a graph package");
+    };
     invalid_target.triangles[0].vertex_indices = [0, 0, 0];
     let invalid_results = ExactResultRegistry::accept(
         &export_snapshot,
         [
             source_package,
-            Arc::new(ExactBodyPackage::from(invalid_target)),
+            Arc::new(ExactBodyPackage::Graph(invalid_target)),
         ],
     )
     .unwrap();
@@ -1079,12 +1033,12 @@ fn stale_failed_lost_and_cyclic_inputs_preserve_canonical_history_and_exact_outp
     let failed_snapshot = failed_document.current();
     let failed_results = ExactResultRegistry::accept(
         &failed_snapshot,
-        [Arc::new(ExactBodyPackage::from(package(
+        [Arc::new(package(
             &failed_snapshot,
             SOURCE,
             "source-last-valid",
             ROLES,
-        )))],
+        ))],
     )
     .unwrap();
     let failed_before = store_stamp(&failed_document);
@@ -1120,7 +1074,10 @@ fn stale_failed_lost_and_cyclic_inputs_preserve_canonical_history_and_exact_outp
                 MATE,
                 AssemblyMateEndpoint::lost(
                     SELECTED,
-                    lost_source.reference(ExactFaceRole::Top).unwrap().clone(),
+                    lost_source
+                        .reference(ExactFaceRole::Bottom)
+                        .unwrap()
+                        .clone(),
                 ),
                 mate.endpoint_b().clone(),
                 mate.kind(),

@@ -2,10 +2,8 @@ use ketchup_core::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
     GroupId, OccurrenceId, Transform,
 };
-use ketchup_core::exact_product::{
-    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactProductError,
-    build_box_render_package, canonical_reference_lineage_digest,
-};
+use ketchup_core::exact_product::{ExactBodyPackage, ExactFaceRole, ExactProductError};
+use ketchup_core::testing::box_package;
 use ketchup_core::three_mf_export::{
     ExactThreeMfInstance, MAX_THREE_MF_EXPORT_INSTANCES, exact_model_three_mf_export,
 };
@@ -84,36 +82,18 @@ fn seeded_document_with_definition_name(definition_name: &str) -> DocumentStore 
 }
 
 fn current_package(snapshot: &ketchup_core::document::Snapshot) -> ExactBodyPackage {
-    let request = ExactFeatureChainRequest::from_snapshot(snapshot, DEFINITION).unwrap();
-    let evidence = [
-        ExactFaceRole::Top,
-        ExactFaceRole::Bottom,
-        ExactFaceRole::East,
-    ]
-    .map(|role| {
-        (
-            role,
-            canonical_reference_lineage_digest(
-                snapshot.document_id(),
-                EXTRUSION,
-                role.semantic_role(),
-                role.source_element_id(),
-                role.expected_type(),
-            ),
-            format!("geometry:{role:?}"),
-        )
-    });
-    build_box_render_package(
-        &request,
-        "exact-input".into(),
-        "shared-result".into(),
-        "occt".into(),
-        "r0".into(),
-        [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]],
-        evidence,
+    box_package(
+        snapshot,
+        DEFINITION,
+        EXTRUSION,
+        "shared-result",
+        &[
+            ExactFaceRole::Top,
+            ExactFaceRole::Bottom,
+            ExactFaceRole::East,
+        ],
     )
     .unwrap()
-    .into()
 }
 
 fn stored_zip_entries(bytes: &[u8]) -> BTreeMap<String, Vec<u8>> {

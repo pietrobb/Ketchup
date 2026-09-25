@@ -3,13 +3,13 @@ use ketchup_core::document::{
     FeatureKind,
 };
 use ketchup_core::exact_product::{
-    BodySubshapeRef, ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactRenderPackage,
-    ExactResultRegistry, build_box_render_package, canonical_reference_lineage_digest,
+    BodySubshapeRef, ExactBodyPackage, ExactFaceRole, ExactResultRegistry,
 };
 use ketchup_core::feature_history::{
     FeatureHistoryError, FeatureHistoryQuery, FeatureHistoryState, RollbackPreviewRequest,
     project_feature_history,
 };
+use ketchup_core::testing::box_package;
 use std::sync::Arc;
 
 const DEFINITION: DefinitionId = DefinitionId(1);
@@ -62,34 +62,18 @@ fn seed_single_body() -> DocumentStore {
 
 fn exact_selection(
     snapshot: &ketchup_core::document::Snapshot,
-) -> (ExactRenderPackage, BodySubshapeRef) {
-    let request = ExactFeatureChainRequest::from_snapshot(snapshot, DEFINITION).unwrap();
-    let evidence = [
-        ExactFaceRole::Top,
-        ExactFaceRole::Bottom,
-        ExactFaceRole::East,
-    ]
-    .map(|role| {
-        (
-            role,
-            canonical_reference_lineage_digest(
-                snapshot.document_id(),
-                EXTRUSION,
-                role.semantic_role(),
-                role.source_element_id(),
-                role.expected_type(),
-            ),
-            format!("geometry:{role:?}:5"),
-        )
-    });
-    let package = build_box_render_package(
-        &request,
-        "exact-input-5".to_owned(),
-        "result-5".to_owned(),
-        "occt".to_owned(),
-        "r0".to_owned(),
-        [[0.0, 0.0, 0.0], [20.0, 20.0, 5.0]],
-        evidence,
+    result_fingerprint: &str,
+) -> (ExactBodyPackage, BodySubshapeRef) {
+    let package = box_package(
+        snapshot,
+        DEFINITION,
+        EXTRUSION,
+        result_fingerprint,
+        &[
+            ExactFaceRole::Top,
+            ExactFaceRole::Bottom,
+            ExactFaceRole::East,
+        ],
     )
     .unwrap();
     let top = package.reference(ExactFaceRole::Top).unwrap().clone();
@@ -260,12 +244,9 @@ fn hidden_body_selection_and_cancel_remain_observational_and_isolated() {
 fn stale_ambiguous_lost_and_cross_definition_inputs_fail_without_mutation() {
     let mut document = seed_single_body();
     let snapshot = document.current();
-    let (package, top) = exact_selection(&snapshot);
-    let current_registry = ExactResultRegistry::accept(
-        &snapshot,
-        [Arc::new(ExactBodyPackage::from(package.clone()))],
-    )
-    .unwrap();
+    let (package, top) = exact_selection(&snapshot, "result-5");
+    let current_registry =
+        ExactResultRegistry::accept(&snapshot, [Arc::new(package.clone())]).unwrap();
     let query = FeatureHistoryQuery {
         selected_feature_id: Some(EXTRUSION),
         selected_subshape: Some(top.clone()),
@@ -275,19 +256,9 @@ fn stale_ambiguous_lost_and_cross_definition_inputs_fail_without_mutation() {
     assert!(project_feature_history(&snapshot, &current_registry, DEFINITION, &query).is_ok());
     assert_eq!(stamp(&document), before_current);
 
-    let mut alternate = package.clone();
-    alternate.identity.backend.push_str("-alternate");
-    for reference in &mut alternate.references {
-        reference.backend = alternate.identity.backend.clone();
-    }
-    let ambiguous = ExactResultRegistry::accept(
-        &snapshot,
-        [
-            Arc::new(ExactBodyPackage::from(package)),
-            Arc::new(ExactBodyPackage::from(alternate)),
-        ],
-    )
-    .unwrap();
+    let (alternate, _) = exact_selection(&snapshot, "result-5-alternate");
+    let ambiguous =
+        ExactResultRegistry::accept(&snapshot, [Arc::new(package), Arc::new(alternate)]).unwrap();
     assert_eq!(
         project_feature_history(&snapshot, &ambiguous, DEFINITION, &query),
         Err(FeatureHistoryError::SubshapeAmbiguous(2))

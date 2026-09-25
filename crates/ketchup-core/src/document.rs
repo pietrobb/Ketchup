@@ -23,10 +23,10 @@ use crate::exact_brep_graph::{
     SKETCH_SWEEP_FRAME_EPSILON_MM, spatial_sweep_bounds_are_valid, sweep_profile_is_valid,
 };
 use crate::exact_product::{
-    BodySubshapeRef, EXACT_MIN_LENGTH_MM, ExactFaceRole, ExactFeatureChainRequest,
-    ExactProducerCompilation, ExactProducerEvidenceContext, ExactReferenceResolution,
-    ExactResultRegistry, MAX_EXACT_PLANAR_OFFSET_LENGTH_MM, accepts_planar_offset_solved_region,
-    accepts_sweep_segment_profile, canonical_reference_lineage_digest, exact_planar_offset_profile,
+    BodySubshapeRef, EXACT_MIN_LENGTH_MM, ExactProducerCompilation, ExactProducerEvidenceContext,
+    ExactReferenceResolution, ExactResultRegistry, MAX_EXACT_PLANAR_OFFSET_LENGTH_MM,
+    accepts_planar_offset_solved_region, accepts_sweep_segment_profile,
+    canonical_reference_lineage_digest, exact_planar_offset_profile,
 };
 pub use crate::graph::{
     CanonicalOverride, DerivedIdentity, DerivedOutput, EvaluationIdentity, EvaluationReport,
@@ -15198,87 +15198,51 @@ fn supported_planar_face_frame(
         revision_id: 0,
         product: Arc::new(product.clone()),
     };
-    let request = ExactFeatureChainRequest::from_snapshot_for_producer(
+    let graph = crate::exact_brep_graph::ExactBRepGraph::from_snapshot(
         &snapshot,
         reference.definition_id,
         reference.producer_feature_id,
     )
     .ok()?;
-    if !reference.matches_durable_request_identity(&request) {
+    if !reference.matches_durable_graph_identity(&graph) {
         return None;
     }
-    let width_mm = f64::from_bits(request.width_bits);
-    let height_mm = f64::from_bits(request.height_bits);
-    if let Some(frame_bits) = request.workplane_frame_bits {
-        let frame = frame_bits.map(f64::from_bits);
-        let origin = [frame[0], frame[1], frame[2]];
-        let x_axis = [frame[3], frame[4], frame[5]];
-        let y_axis = [frame[6], frame[7], frame[8]];
-        let normal = [frame[9], frame[10], frame[11]];
-        let cross_xy = [
-            x_axis[1] * y_axis[2] - x_axis[2] * y_axis[1],
-            x_axis[2] * y_axis[0] - x_axis[0] * y_axis[2],
-            x_axis[0] * y_axis[1] - x_axis[1] * y_axis[0],
-        ];
-        let right_handed =
-            cross_xy[0] * normal[0] + cross_xy[1] * normal[1] + cross_xy[2] * normal[2] > 0.0;
-        let negate = |axis: [f64; 3]| [-axis[0], -axis[1], -axis[2]];
-        let translated = |axis: [f64; 3], distance: f64| {
-            [
-                origin[0] + axis[0] * distance,
-                origin[1] + axis[1] * distance,
-                origin[2] + axis[2] * distance,
-            ]
-        };
-        return match reference.role()? {
-            ExactFaceRole::Top => Some(WorkplaneFrame {
-                origin_mm: translated(normal, height_mm),
-                x_axis: if right_handed { x_axis } else { negate(x_axis) },
-                y_axis,
-                normal,
-            }),
-            ExactFaceRole::Bottom => Some(WorkplaneFrame {
-                origin_mm: origin,
-                x_axis,
-                y_axis: if right_handed { negate(y_axis) } else { y_axis },
-                normal: negate(normal),
-            }),
-            ExactFaceRole::East
-                if request.boolean.is_none()
-                    && request.shell.is_none()
-                    && request.pocket_depth_bits.is_none() =>
-            {
-                Some(WorkplaneFrame {
-                    origin_mm: translated(x_axis, width_mm),
-                    x_axis: y_axis,
-                    y_axis: if right_handed { normal } else { negate(normal) },
-                    normal: x_axis,
-                })
-            }
-            _ => None,
-        };
-    }
-    match reference.role()? {
-        ExactFaceRole::Top => Some(WorkplaneFrame::principal(PrincipalPlane::Xy).offset(height_mm)),
-        ExactFaceRole::Bottom => Some(WorkplaneFrame {
-            origin_mm: [0.0, 0.0, 0.0],
-            x_axis: [1.0, 0.0, 0.0],
-            y_axis: [0.0, -1.0, 0.0],
-            normal: [0.0, 0.0, -1.0],
-        }),
-        ExactFaceRole::East
-            if request.boolean.is_none()
-                && request.shell.is_none()
-                && request.pocket_depth_bits.is_none() =>
-        {
-            Some(WorkplaneFrame {
-                origin_mm: [width_mm, 0.0, 0.0],
-                x_axis: [0.0, 1.0, 0.0],
-                y_axis: [0.0, 0.0, 1.0],
-                normal: [1.0, 0.0, 0.0],
-            })
-        }
-        _ => None,
+    graph.extrusion_face_frame(reference.profile_feature_id.0, &reference.semantic_role)
+}
+
+/// Tolerance for a workplane lying on the face it is attached to.
+const PLANAR_FACE_TOLERANCE_MM: f64 = 1.0e-7;
+
+/// A workplane lies on a face when it has the face's axes and its origin is in
+/// the face plane; where in the plane the origin sits is the author's choice.
+fn lies_on_planar_face(frame: WorkplaneFrame, face: WorkplaneFrame) -> bool {
+    let same = |left: [f64; 3], right: [f64; 3]| {
+        (0..3).all(|axis| (left[axis] - right[axis]).abs() <= PLANAR_FACE_TOLERANCE_MM)
+    };
+    let offset = (0..3)
+        .map(|axis| (frame.origin_mm[axis] - face.origin_mm[axis]) * face.normal[axis])
+        .sum::<f64>();
+    same(frame.x_axis, face.x_axis)
+        && same(frame.y_axis, face.y_axis)
+        && same(frame.normal, face.normal)
+        && offset.abs() <= PLANAR_FACE_TOLERANCE_MM
+}
+
+/// Moves a workplane onto its face after the face moved: the in-plane origin
+/// is kept when the face only moved along its normal, otherwise the face frame
+/// is adopted.
+fn frame_on_planar_face(stored: WorkplaneFrame, face: WorkplaneFrame) -> WorkplaneFrame {
+    let offset = (0..3)
+        .map(|axis| (face.origin_mm[axis] - stored.origin_mm[axis]) * face.normal[axis])
+        .sum::<f64>();
+    let moved = WorkplaneFrame {
+        origin_mm: [0, 1, 2].map(|axis| stored.origin_mm[axis] + face.normal[axis] * offset),
+        ..stored
+    };
+    if lies_on_planar_face(moved, face) {
+        moved
+    } else {
+        face
     }
 }
 
@@ -15448,7 +15412,7 @@ fn refresh_supported_planar_face_frames(
             unreachable!("collected feature is a workplane");
         };
         let mut updated = spec.clone();
-        updated.frame = frame;
+        updated.frame = frame_on_planar_face(spec.frame, frame);
         product.features.insert(
             id,
             Arc::new(Feature {
@@ -17034,7 +16998,7 @@ fn validate_product_with_drawing_sources(
                         WorkplaneSupportHealth::Resolved => {
                             evidence.is_some_and(|evidence| evidence.as_ref() == reference.as_ref())
                                 && supported_planar_face_frame(product, reference)
-                                    == Some(spec.frame)
+                                    .is_some_and(|face| lies_on_planar_face(spec.frame, face))
                         }
                         WorkplaneSupportHealth::Ambiguous
                         | WorkplaneSupportHealth::Lost

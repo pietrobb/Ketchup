@@ -3,12 +3,11 @@ use ketchup_core::document::{
     FeatureEvaluationState, FeatureId, FeatureKind,
 };
 use ketchup_core::exact_product::{
-    BodySubshapeRef, ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactProductError,
-    ExactRenderPackage, ExactResultRegistry, build_box_render_package,
-    canonical_reference_lineage_digest,
+    BodySubshapeRef, ExactBodyPackage, ExactFaceRole, ExactProductError, ExactResultRegistry,
 };
 use ketchup_core::persistence;
 use ketchup_core::sketch::{PrincipalPlane, WorkplaneFrame, WorkplaneSupportHealth};
+use ketchup_core::testing::box_package;
 use ketchup_interaction::face_intent::{
     FaceIntentError, FaceIntentSource, FaceIntentTarget, HoverFaceCandidate, TransientFaceIntent,
 };
@@ -30,37 +29,17 @@ const OTHER_EXTRUSION: FeatureId = FeatureId(21);
 fn exact_package(
     snapshot: &ketchup_core::document::Snapshot,
     producer: FeatureId,
-    bounds_mm: [[f64; 3]; 2],
-) -> ExactRenderPackage {
-    let request =
-        ExactFeatureChainRequest::from_snapshot_for_producer(snapshot, DEFINITION, producer)
-            .unwrap();
-    let evidence = [
-        ExactFaceRole::Top,
-        ExactFaceRole::Bottom,
-        ExactFaceRole::East,
-    ]
-    .map(|role| {
-        (
-            role,
-            canonical_reference_lineage_digest(
-                snapshot.document_id(),
-                producer,
-                role.semantic_role(),
-                role.source_element_id(),
-                role.expected_type(),
-            ),
-            format!("geometry:{producer:?}:{role:?}"),
-        )
-    });
-    build_box_render_package(
-        &request,
-        format!("input:{producer:?}"),
-        format!("result:{producer:?}"),
-        "occt".to_owned(),
-        "r0".to_owned(),
-        bounds_mm,
-        evidence,
+) -> ExactBodyPackage {
+    box_package(
+        snapshot,
+        DEFINITION,
+        producer,
+        &format!("result:{producer:?}"),
+        &[
+            ExactFaceRole::Top,
+            ExactFaceRole::Bottom,
+            ExactFaceRole::East,
+        ],
     )
     .unwrap()
 }
@@ -134,7 +113,7 @@ fn source_document() -> (DocumentStore, BodySubshapeRef, BodySubshapeRef) {
         ]))
         .unwrap();
     let snapshot = document.current();
-    let package = exact_package(&snapshot, EXTRUSION, [[0.0, 0.0, 0.0], [10.0, 8.0, 20.0]]);
+    let package = exact_package(&snapshot, EXTRUSION);
     let top = package.reference(ExactFaceRole::Top).unwrap().clone();
     let east = package.reference(ExactFaceRole::East).unwrap().clone();
     document
@@ -169,17 +148,13 @@ fn stamp(document: &DocumentStore) -> (u64, String, usize, usize) {
 fn p_binds_hover_before_selection_and_commits_pointer_or_exact_preview_as_one_undo() {
     let (mut document, top, east) = source_document();
     let snapshot = document.current();
-    let target_package = exact_package(&snapshot, EXTRUSION, [[0.0, 0.0, 0.0], [10.0, 8.0, 20.0]]);
-    let other_package = exact_package(
-        &snapshot,
-        OTHER_EXTRUSION,
-        [[0.0, 0.0, 0.0], [6.0, 5.0, 12.0]],
-    );
+    let target_package = exact_package(&snapshot, EXTRUSION);
+    let other_package = exact_package(&snapshot, OTHER_EXTRUSION);
     let last_valid = ExactResultRegistry::accept(
         &snapshot,
         [
-            Arc::new(ExactBodyPackage::from(target_package.clone())),
-            Arc::new(ExactBodyPackage::from(other_package.clone())),
+            Arc::new(target_package.clone()),
+            Arc::new(other_package.clone()),
         ],
     )
     .unwrap();
@@ -315,7 +290,7 @@ fn p_binds_hover_before_selection_and_commits_pointer_or_exact_preview_as_one_un
         ExactResultRegistry::publish_body_results(
             &committed_snapshot,
             &last_valid,
-            [Arc::new(ExactBodyPackage::from(target_package.clone()))]
+            [Arc::new(target_package.clone())]
         ),
         Err(ExactProductError::StaleResult)
     ));
@@ -343,11 +318,7 @@ fn p_binds_hover_before_selection_and_commits_pointer_or_exact_preview_as_one_un
             .is_some()
     );
 
-    let refreshed = exact_package(
-        &committed_snapshot,
-        EXTRUSION,
-        [[0.0, 0.0, 0.0], [10.0, 8.0, 10.0]],
-    );
+    let refreshed = exact_package(&committed_snapshot, EXTRUSION);
     let refreshed_top = refreshed.reference(ExactFaceRole::Top).unwrap();
     assert_eq!(refreshed_top.producer_feature_id, EXTRUSION);
     assert_eq!(refreshed_top.profile_feature_id, PROFILE);
@@ -459,16 +430,8 @@ fn unsupported_invalid_stale_and_cancelled_gestures_are_observational() {
     let last_valid = ExactResultRegistry::accept(
         &snapshot,
         [
-            Arc::new(ExactBodyPackage::from(exact_package(
-                &snapshot,
-                EXTRUSION,
-                [[0.0, 0.0, 0.0], [10.0, 8.0, 20.0]],
-            ))),
-            Arc::new(ExactBodyPackage::from(exact_package(
-                &snapshot,
-                OTHER_EXTRUSION,
-                [[0.0, 0.0, 0.0], [6.0, 5.0, 12.0]],
-            ))),
+            Arc::new(exact_package(&snapshot, EXTRUSION)),
+            Arc::new(exact_package(&snapshot, OTHER_EXTRUSION)),
         ],
     )
     .unwrap();

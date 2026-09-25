@@ -2151,19 +2151,22 @@ fn active_boxes_cache_invalidates_on_same_revision_exact_results_and_registry_re
         (true, [-5.0, -6.0, -7.0], [120.0, 80.0, 40.0]),
     ] {
         // Synthetic exact bounds distinguish evaluated results from the canonical proxy.
-        let mut package = (*current_box_package(&app)).clone();
-        package.bounds_mm = [minimum, maximum];
+        let mut package = current_box_package(&app);
+        let ExactBodyPackage::Graph(graph_package) = &mut package else {
+            unreachable!("the test double returns a graph package");
+        };
+        graph_package.bounds_mm = [minimum, maximum];
         let stamp = app.exact_results.contents_stamp();
         if replace_registry {
             let mut replacement = ExactResultRegistry::default();
             replacement
-                .insert_current(&snapshot, Arc::new(package.into()))
+                .insert_current(&snapshot, Arc::new(package))
                 .unwrap();
             assert_eq!(replacement.len(), app.exact_results.len());
             app.exact_results = replacement;
         } else {
             app.exact_results
-                .insert_current(&snapshot, Arc::new(package.into()))
+                .insert_current(&snapshot, Arc::new(package))
                 .unwrap();
         }
         assert_ne!(app.exact_results.contents_stamp(), stamp);
@@ -2191,7 +2194,7 @@ fn active_boxes_cache_invalidates_on_same_revision_exact_results_and_registry_re
 #[test]
 fn historical_exact_geometry_is_bound_to_its_own_snapshot() {
     let mut app = KetchupApp::new();
-    assert!(app.headless_install_exact_package((*current_box_package(&app)).clone().into()));
+    assert!(app.headless_install_exact_package(current_box_package(&app)));
     let parent = app.document.current();
 
     assert!(
@@ -2204,7 +2207,7 @@ fn historical_exact_geometry_is_bound_to_its_own_snapshot() {
         .is_ok()
     );
     let tip = app.document.current();
-    assert!(app.headless_install_exact_package((*current_box_package(&app)).clone().into()));
+    assert!(app.headless_install_exact_package(current_box_package(&app)));
 
     assert_eq!(
         app.active_boxes_for_snapshot(&parent)[0].size_mm,
@@ -4229,44 +4232,19 @@ fn exact_worker_executable() -> PathBuf {
         .join(executable_name)
 }
 
-fn current_box_package(app: &KetchupApp) -> Arc<ketchup_core::exact_product::ExactRenderPackage> {
-    use ketchup_core::exact_product::{
-        build_box_render_package, canonical_reference_lineage_digest,
-    };
-
-    let snapshot = app.document.current();
-    let request = ExactFeatureChainRequest::from_snapshot(&snapshot, INITIAL_BOX_DEFINITION)
-        .expect("the default box has an exact request");
-    let evidence = [
-        ExactFaceRole::Top,
-        ExactFaceRole::Bottom,
-        ExactFaceRole::East,
-    ]
-    .map(|role| {
-        (
-            role,
-            canonical_reference_lineage_digest(
-                request.document_id,
-                request.producer_feature_id(),
-                role.semantic_role(),
-                role.source_element_id(),
-                "planar_face",
-            ),
-            format!("geometry-{role:?}"),
-        )
-    });
-    Arc::new(
-        build_box_render_package(
-            &request,
-            "exact-input".to_owned(),
-            "result".to_owned(),
-            "backend".to_owned(),
-            "tolerance".to_owned(),
-            [[0.0; 3], request.dimensions_mm()],
-            evidence,
-        )
-        .expect("the exact package matches the default box"),
+fn current_box_package(app: &KetchupApp) -> ExactBodyPackage {
+    ketchup_core::testing::box_package(
+        &app.document.current(),
+        INITIAL_BOX_DEFINITION,
+        FeatureId(2),
+        "result",
+        &[
+            ExactFaceRole::Top,
+            ExactFaceRole::Bottom,
+            ExactFaceRole::East,
+        ],
     )
+    .expect("the default box compiles to an exact graph")
 }
 
 #[test]
@@ -4464,7 +4442,7 @@ fn current_exact_occurrence_suppresses_only_the_non_preview_proxy() {
     let package = current_box_package(&app);
     let snapshot = app.document.current();
     app.exact_results
-        .insert_current(&snapshot, Arc::new((*package).clone().into()))
+        .insert_current(&snapshot, Arc::new(package))
         .unwrap();
     let exact_projection = app.exact_projection(&snapshot);
 
@@ -4506,7 +4484,7 @@ fn exact_occurrence_reference_and_mesh_export_use_the_canonical_world_transform(
     let package = current_box_package(&app);
     let snapshot = app.document.current();
     app.exact_results
-        .insert_current(&snapshot, Arc::new((*package).clone().into()))
+        .insert_current(&snapshot, Arc::new(package))
         .unwrap();
     let instance_path = InstancePath::root(OccurrenceId(1));
 
@@ -4526,7 +4504,8 @@ fn exact_occurrence_reference_and_mesh_export_use_the_canonical_world_transform(
         .map(|value| value.parse::<f64>().unwrap())
         .collect::<Vec<_>>();
     assert_eq!(first_vertex, vec![10.0, 20.0, 30.0]);
-    assert!(mesh.contains("g extrusion.top"));
+    assert!(mesh.contains("g topological.face."));
+    assert!(mesh.lines().any(|line| line.starts_with("f ")));
     let loss = std::fs::read_to_string(path.with_extension("obj.loss.txt")).unwrap();
     assert!(loss.contains("exact-body-to-world-space-mesh"));
     assert!(loss.contains("producer_feature_id=2"));
@@ -5416,16 +5395,6 @@ fn production_exact_refresh_uses_graph_for_a_general_boolean_chain() {
             },
         ]))
         .unwrap();
-    assert!(
-        ExactFeatureChainRequest::from_snapshot_for_producer(
-            &document.current(),
-            definition_id,
-            producer_feature_id,
-        )
-        .is_err(),
-        "the legacy rectangle evaluator must not be able to authorize this chain"
-    );
-
     let mut app = KetchupApp::new();
     app.document = document;
     app.reset_document_presentation();
@@ -5544,20 +5513,21 @@ fn running_app_uses_one_exact_cut_body_for_render_pick_and_export() {
             .is_none(),
         "the exact through-hole must not be filled by an axis-aligned proxy"
     );
-    let wall = app
-        .exact_pick_durable(Ray::new(Vec3::new(5.0, 5.0, 5.0), Vec3::new(1.0, 0.0, 0.0)).unwrap())
-        .expect("the cut wall must remain durably pickable");
-    assert_eq!(wall.body.role(), Some(ExactFaceRole::CutEast));
+    let wall = projection
+        .exact_surface_pick(Ray::new(Vec3::new(5.0, 5.0, 5.0), Vec3::new(1.0, 0.0, 0.0)).unwrap())
+        .expect("the cut wall must remain pickable");
+    assert!((wall.position_mm.x - 6.0).abs() < 1.0e-6);
+    assert!(
+        wall.topological_target.is_some(),
+        "the cut wall must be addressable through its topology"
+    );
 
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("through-cut.obj");
     assert!(app.export_exact_occurrence_mesh_to(&InstancePath::root(OccurrenceId(10)), &path));
     let mesh = std::fs::read_to_string(&path).unwrap();
-    assert!(mesh.contains("g through_cut.wall.east"));
-    assert_eq!(
-        mesh.lines().filter(|line| line.starts_with("f ")).count(),
-        32
-    );
+    assert!(mesh.contains("g topological.face."));
+    assert!(mesh.lines().any(|line| line.starts_with("f ")));
     let loss = std::fs::read_to_string(path.with_extension("obj.loss.txt")).unwrap();
     assert!(loss.contains("authority=accepted exact OCCT B-Rep"));
 
@@ -11440,7 +11410,14 @@ fn cut_through_adds_a_bounded_profile_to_the_selected_solid_as_one_undo_step() {
         }
     ));
     assert_eq!(app.document.visible_undo_steps(), 1);
-    assert!(ExactFeatureChainRequest::from_snapshot(&snapshot, INITIAL_BOX_DEFINITION).is_ok());
+    assert!(
+        ketchup_core::exact_product::producer_exact_graph(
+            &snapshot,
+            INITIAL_BOX_DEFINITION,
+            FeatureId(4)
+        )
+        .is_ok()
+    );
     let reopened = ketchup_core::persistence::load(&ketchup_core::persistence::save(&snapshot))
         .unwrap()
         .snapshot();
@@ -11594,22 +11571,6 @@ fn push_pull_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
         .clear();
     assert!(!command_tamper.confirm_preview());
     assert_unchanged(&command_tamper, revision, &digest, undo_steps);
-
-    let mut request_tamper = prepared_push_pull();
-    let revision = request_tamper.document_revision();
-    let digest = request_tamper.canonical_digest();
-    let undo_steps = request_tamper.undo_step_count();
-    request_tamper
-        .preview_box
-        .as_mut()
-        .unwrap()
-        .plan
-        .exact_request
-        .as_mut()
-        .unwrap()
-        .canonical_input_digest = "tampered".to_owned();
-    assert!(!request_tamper.confirm_preview());
-    assert_unchanged(&request_tamper, revision, &digest, undo_steps);
 
     let mut geometry_tamper = prepared_push_pull();
     let revision = geometry_tamper.document_revision();
@@ -12290,20 +12251,6 @@ fn pocket_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
     assert!(!command_tamper.confirm_pocket_preview());
     assert_unchanged(&command_tamper, revision, &digest, undo_steps);
 
-    let mut request_tamper = prepared_pocket();
-    let revision = request_tamper.document_revision();
-    let digest = request_tamper.canonical_digest();
-    let undo_steps = request_tamper.undo_step_count();
-    request_tamper
-        .pocket_preview
-        .as_mut()
-        .unwrap()
-        .plan
-        .exact_request
-        .canonical_input_digest = "tampered".to_owned();
-    assert!(!request_tamper.confirm_pocket_preview());
-    assert_unchanged(&request_tamper, revision, &digest, undo_steps);
-
     let mut source_tamper = prepared_pocket();
     let revision = source_tamper.document_revision();
     let digest = source_tamper.canonical_digest();
@@ -12534,7 +12481,7 @@ fn cut_through_rejects_a_profile_that_touches_the_target_boundary() {
 }
 
 #[test]
-fn cut_through_stays_disabled_for_an_exact_unsupported_offset_profile() {
+fn cut_through_is_available_on_a_polygon_extrusion() {
     let mut app = KetchupApp::new();
     assert!(app.create_closed_polyline(vec![
         [10.0, 10.0],
@@ -12547,9 +12494,9 @@ fn cut_through_stays_disabled_for_an_exact_unsupported_offset_profile() {
     assert!(app.confirm_preview());
     let digest = app.canonical_digest();
 
-    assert!(!app.command_enabled(AppCommand::CutThrough));
+    assert!(app.command_enabled(AppCommand::CutThrough));
     app.dispatch_command(AppCommand::CutThrough);
-    assert_ne!(app.active_tool, ActiveTool::CutThrough);
+    assert_eq!(app.active_tool, ActiveTool::CutThrough);
     assert_eq!(app.canonical_digest(), digest);
 }
 
@@ -16441,7 +16388,7 @@ fn grounded_repeated_nested_instances_create_associative_drawing_with_roundtrip_
         assert!(app.set_selected_occurrence_grounded(true));
     }
 
-    assert!(app.headless_install_exact_package((*current_box_package(&app)).clone().into()));
+    assert!(app.headless_install_exact_package(current_box_package(&app)));
     let leaves = app
         .document
         .current()

@@ -2,15 +2,13 @@ use ketchup_core::document::{
     BodyId, BooleanOperation, CanonicalCommand, CommandBatch, DefinitionId, Dimension,
     DocumentStore, FeatureId, FeatureKind,
 };
-use ketchup_core::exact_product::{
-    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactResultRegistry,
-    build_box_render_package, canonical_reference_lineage_digest,
-};
+use ketchup_core::exact_product::{ExactFaceRole, ExactResultRegistry};
 use ketchup_core::feature_history::{
     FeatureHistoryError, FeatureHistoryQuery, FeatureHistoryState, RollbackPreviewRequest,
     project_feature_history,
 };
 use ketchup_core::persistence;
+use ketchup_core::testing::box_package;
 use std::sync::Arc;
 
 const DEFINITION: DefinitionId = DefinitionId(1);
@@ -259,40 +257,20 @@ fn rollback_preview_rejects_a_suffix_with_cross_body_dependents() {
 fn resolved_subshape_selection_projects_stable_provenance_without_mutation() {
     let document = seed_single_body();
     let snapshot = document.current();
-    let request = ExactFeatureChainRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
-    let document_id = snapshot.document_id();
-    let evidence = [
-        ExactFaceRole::Top,
-        ExactFaceRole::Bottom,
-        ExactFaceRole::East,
-    ]
-    .map(|role| {
-        (
-            role,
-            canonical_reference_lineage_digest(
-                document_id,
-                BASE_EXTRUSION,
-                role.semantic_role(),
-                role.source_element_id(),
-                role.expected_type(),
-            ),
-            format!("geometry:{role:?}:5"),
-        )
-    });
-    let package = build_box_render_package(
-        &request,
-        "exact-input-5".to_owned(),
-        "result-5".to_owned(),
-        "occt".to_owned(),
-        "r0".to_owned(),
-        [[0.0, 0.0, 0.0], [20.0, 10.0, 5.0]],
-        evidence,
+    let package = box_package(
+        &snapshot,
+        DEFINITION,
+        BASE_EXTRUSION,
+        "result-5",
+        &[
+            ExactFaceRole::Top,
+            ExactFaceRole::Bottom,
+            ExactFaceRole::East,
+        ],
     )
     .unwrap();
     let top = package.reference(ExactFaceRole::Top).unwrap().clone();
-    let registry =
-        ExactResultRegistry::accept(&snapshot, [Arc::new(ExactBodyPackage::from(package))])
-            .unwrap();
+    let registry = ExactResultRegistry::accept(&snapshot, [Arc::new(package)]).unwrap();
     let before = stamp(&document);
     let query = FeatureHistoryQuery {
         selected_feature_id: Some(BASE_EXTRUSION),

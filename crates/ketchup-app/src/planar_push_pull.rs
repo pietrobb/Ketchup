@@ -203,7 +203,6 @@ impl KetchupApp {
                 current_extent_mm_bits: 0.0_f64.to_bits(),
                 new_extent_mm_bits: distance.to_bits(),
                 commands: batch.commands().to_vec(),
-                exact_request: None,
                 preview_box: source.target_box.clone(),
                 shared_count,
             },

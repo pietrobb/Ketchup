@@ -6,8 +6,7 @@ use ketchup_core::document::{
     GroupId, MeshAuthority, OccurrenceId, Transform,
 };
 use ketchup_core::exact_product::{
-    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactProductError,
-    MAX_STL_EXPORT_INSTANCES, build_box_render_package, canonical_reference_lineage_digest,
+    ExactBodyPackage, ExactFaceRole, ExactProductError, MAX_STL_EXPORT_INSTANCES,
     exact_model_stl_export,
 };
 use ketchup_core::import::{
@@ -17,6 +16,7 @@ use ketchup_core::mesh_recognition::{
     MeshRecognition, MeshRecognitionCandidate, recognize_mesh_body,
 };
 use ketchup_core::persistence;
+use ketchup_core::testing::box_package;
 use serde_json::Value;
 
 const DEFINITION: DefinitionId = DefinitionId(1);
@@ -85,36 +85,18 @@ fn seeded_document(first_color: Option<[u8; 3]>, second_color: Option<[u8; 3]>) 
 }
 
 fn current_package(snapshot: &ketchup_core::document::Snapshot) -> ExactBodyPackage {
-    let request = ExactFeatureChainRequest::from_snapshot(snapshot, DEFINITION).unwrap();
-    let evidence = [
-        ExactFaceRole::Top,
-        ExactFaceRole::Bottom,
-        ExactFaceRole::East,
-    ]
-    .map(|role| {
-        (
-            role,
-            canonical_reference_lineage_digest(
-                snapshot.document_id(),
-                EXTRUSION,
-                role.semantic_role(),
-                role.source_element_id(),
-                role.expected_type(),
-            ),
-            format!("geometry:{role:?}"),
-        )
-    });
-    build_box_render_package(
-        &request,
-        "exact-input".into(),
-        "shared-result".into(),
-        "occt".into(),
-        "r0".into(),
-        [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]],
-        evidence,
+    box_package(
+        snapshot,
+        DEFINITION,
+        EXTRUSION,
+        "shared-result",
+        &[
+            ExactFaceRole::Top,
+            ExactFaceRole::Bottom,
+            ExactFaceRole::East,
+        ],
     )
     .unwrap()
-    .into()
 }
 
 fn sample_glb() -> Vec<u8> {

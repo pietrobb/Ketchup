@@ -10,7 +10,7 @@ use harness::Shell;
 use ketchup_app::AppCommand;
 use ketchup_app::dialogs::ScriptedFileDialogs;
 use ketchup_core::document::{BodyId, BooleanOperation, DefinitionId, FeatureId, FeatureKind};
-use ketchup_core::exact_product::ExactFeatureChainRequest;
+use ketchup_core::exact_product::producer_exact_graph;
 use ketchup_core::intent::WorkflowIntent;
 
 fn open_body_editor(shell: &mut Shell) {
@@ -444,13 +444,6 @@ fn serial_multibody_accesskit_workflow_recomputes_undoes_and_round_trips() {
     confirm_preview(&mut shell);
     wait_for_exact_bodies(&mut shell, 3);
     let failed_body_feature = FeatureId(5);
-    let before_request = ExactFeatureChainRequest::from_snapshot_for_producer(
-        &shell.app().document_snapshot(),
-        DEFINITION,
-        failed_body_feature,
-    )
-    .unwrap();
-
     shell
         .app_mut()
         .headless_force_exact_worker_path(directory.path().join("missing-body-worker.exe"));
@@ -471,17 +464,16 @@ fn serial_multibody_accesskit_workflow_recomputes_undoes_and_round_trips() {
         shell.app().undo_step_count(),
         shell.app().redo_step_count(),
     );
-    let after_request = ExactFeatureChainRequest::from_snapshot_for_producer(
+    let [minimum, maximum] = producer_exact_graph(
         &shell.app().document_snapshot(),
         DEFINITION,
         failed_body_feature,
     )
+    .unwrap()
+    .producer_bounds_mm()
+    .unwrap()
     .unwrap();
-    assert_eq!(f64::from_bits(after_request.height_bits), 120.0);
-    assert_ne!(
-        after_request.canonical_input_digest,
-        before_request.canonical_input_digest
-    );
+    assert_eq!(maximum[2] - minimum[2], 120.0);
     for _ in 0..20 {
         shell.step();
         shell.settle();

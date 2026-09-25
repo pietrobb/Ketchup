@@ -6,8 +6,7 @@ use crate::document::{
 };
 use crate::exact_brep_graph::ExactBRepGraph;
 use crate::exact_product::{
-    BodySubshapeRef, ExactFeatureChainRequest, ExactReferenceQuarantineReason,
-    ExactReferenceResolution, ExactResultRegistry,
+    BodySubshapeRef, ExactReferenceQuarantineReason, ExactReferenceResolution, ExactResultRegistry,
 };
 use crate::sketch::{SketchConstraintId, SketchConstraintKind, WorkplaneSupport};
 use std::collections::{BTreeMap, BTreeSet};
@@ -507,12 +506,6 @@ pub fn prepare_body_profile_translation(
     let candidate = document.preview_batch(proposal.batch()).map_err(|error| {
         BodyParameterEditError::Proposal(ProposalPrepareError::Canonical(error))
     })?;
-    let exact_feature_chain = ExactFeatureChainRequest::from_snapshot_for_body(
-        &candidate,
-        request.definition_id,
-        request.body_id,
-    )
-    .is_ok();
     let exact_brep_graph = definition
         .feature_ids()
         .iter()
@@ -526,7 +519,7 @@ pub fn prepare_body_profile_translation(
         .is_some_and(|producer_id| {
             ExactBRepGraph::from_snapshot(&candidate, request.definition_id, *producer_id).is_ok()
         });
-    if !exact_feature_chain && !exact_brep_graph {
+    if !exact_brep_graph {
         return Err(BodyParameterEditError::InvalidCutPosition);
     }
     // A compilable BRep graph is not evidence that a cutting tool reaches its host.

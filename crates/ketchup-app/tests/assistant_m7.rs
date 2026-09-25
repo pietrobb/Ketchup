@@ -34,7 +34,7 @@ use ketchup_core::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V12, EXACT_BREP_GRAPH_SCHEMA_V15, EXACT_BREP_GRAPH_SCHEMA_V17,
     EXACT_BREP_GRAPH_SCHEMA_V18, ExactBRepGraph, ExactBRepLoftContinuity, ExactBRepOperation,
 };
-use ketchup_core::exact_product::{ExactBodyPackage, ExactFaceRole, ExactPlanarOffsetRequest};
+use ketchup_core::exact_product::ExactBodyPackage;
 use ketchup_core::intent::WorkflowIntent;
 use ketchup_core::persistence;
 use ketchup_core::sketch::{
@@ -2526,32 +2526,13 @@ fn scripted_append_planar_offset_is_exact_persistent_and_one_step() {
             distance,
         } if distance.millimetres() == -7.5
     ));
-    let exact_request =
-        ExactPlanarOffsetRequest::from_snapshot(&committed, DefinitionId(1)).unwrap();
-    assert_eq!(exact_request.producer_feature_id(), FeatureId(2));
-    assert_eq!(
-        exact_request.expected_bounds_mm(),
-        [[17.5, 27.5, 0.0], [102.5, 92.5, 0.0]]
-    );
+    let graph = ExactBRepGraph::from_snapshot(&committed, DefinitionId(1), FeatureId(2)).unwrap();
     let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
-    let package = worker.evaluate_planar_offset(&exact_request).unwrap();
+    let package = worker.evaluate_exact_brep_graph(&graph).unwrap();
     assert!(package.is_current(&committed));
-    assert_eq!(package.bounds_mm, exact_request.expected_bounds_mm());
-    assert!((package.area_mm2 - exact_request.expected_area_mm2()).abs() <= 1.0e-6);
-    assert_eq!(package.vertices.len(), 4);
-    assert_eq!(package.triangles.len(), 2);
-    assert_eq!(
-        package.reference.role(),
-        Some(ExactFaceRole::PlanarOffsetFace)
-    );
-    assert!(package.reference.has_valid_lineage());
-    assert!(
-        package
-            .reference
-            .matches_planar_offset_request(&exact_request)
-    );
-    assert_eq!(package.reference.producer_feature_id, FeatureId(2));
-    assert_eq!(package.reference.profile_feature_id, FeatureId(1));
+    // The 100 x 80 mm rectangle offset inward by 7.5 mm on every side.
+    assert_eq!(package.bounds_mm, [[17.5, 27.5, 0.0], [102.5, 92.5, 0.0]]);
+    assert!((package.area_mm2 - 85.0 * 65.0).abs() <= 1.0e-6);
     assert_eq!(committed.occurrences().count(), baseline_occurrences);
 
     let committed_digest = committed.canonical_digest();
@@ -2561,9 +2542,9 @@ fn scripted_append_planar_offset_is_exact_persistent_and_one_step() {
     persistence::save_atomic(&saved_path, &committed).unwrap();
     let reopened = persistence::load_file(&saved_path).unwrap().snapshot();
     assert_eq!(reopened.canonical_digest(), committed_digest);
-    let reopened_request =
-        ExactPlanarOffsetRequest::from_snapshot(&reopened, DefinitionId(1)).unwrap();
-    let reopened_package = worker.evaluate_planar_offset(&reopened_request).unwrap();
+    let reopened_graph =
+        ExactBRepGraph::from_snapshot(&reopened, DefinitionId(1), FeatureId(2)).unwrap();
+    let reopened_package = worker.evaluate_exact_brep_graph(&reopened_graph).unwrap();
     assert!(reopened_package.is_current(&reopened));
     assert_eq!(reopened_package.bounds_mm, package.bounds_mm);
 

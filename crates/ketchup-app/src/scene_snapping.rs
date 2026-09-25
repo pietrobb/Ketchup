@@ -443,7 +443,6 @@ impl KetchupApp {
                             ExactBodyPackage::Imported(p) => {
                                 p.triangle_face_ordinals.get(i).copied()
                             }
-                            _ => None,
                         })
                         .collect();
                     let mut reference = reference.clone();

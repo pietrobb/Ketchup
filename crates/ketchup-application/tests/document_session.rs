@@ -1414,11 +1414,7 @@ fn real_worker_face_supported_pocket_keeps_intermediate_and_roundtrips() {
     .unwrap();
     assert!(document.evaluate().unwrap().complete);
     let package = document.exact_results().values().next().unwrap();
-    let ketchup_core::exact_product::ExactBodyPackage::Rectangle(pad_package) = package.as_ref()
-    else {
-        panic!("expected rectangle fast path")
-    };
-    let top = pad_package
+    let top = package
         .reference(ketchup_core::exact_product::ExactFaceRole::Top)
         .unwrap()
         .clone();

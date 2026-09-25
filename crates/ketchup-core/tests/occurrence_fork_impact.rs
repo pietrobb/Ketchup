@@ -11,9 +11,7 @@ use ketchup_core::drawing::{
     project_orthographic_drawing,
 };
 use ketchup_core::exact_product::{
-    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactPlanarFaceAttachmentInput,
-    ExactRenderPackage, ExactResultRegistry, build_box_render_package_with_attachments,
-    canonical_reference_lineage_digest, exact_model_stl_export,
+    ExactBodyPackage, ExactFaceRole, ExactResultRegistry, body_exact_graph, exact_model_stl_export,
 };
 use ketchup_core::feature_history::{
     BodyHistoryMutation, BodyHistoryMutationRequest, BodyParameterEditRequest, ExactParameterEdit,
@@ -25,6 +23,7 @@ use ketchup_core::shared_change::{
     OccurrenceForkImpactError, OccurrenceForkPropagationError, SharedChangeExportEligibility,
     SharedChangeExportFormat, commit_occurrence_fork_change, project_occurrence_fork_impact,
 };
+use ketchup_core::testing::box_package;
 use std::sync::Arc;
 
 const DEFINITION: DefinitionId = DefinitionId(1);
@@ -63,7 +62,7 @@ fn stamp(document: &DocumentStore) -> Stamp {
 fn exact_package(
     snapshot: &ketchup_core::document::Snapshot,
     fingerprint: &str,
-) -> ExactRenderPackage {
+) -> ExactBodyPackage {
     exact_package_for(snapshot, DEFINITION, fingerprint)
 }
 
@@ -71,103 +70,41 @@ fn exact_package_for(
     snapshot: &ketchup_core::document::Snapshot,
     definition_id: DefinitionId,
     fingerprint: &str,
-) -> ExactRenderPackage {
-    let request =
-        ExactFeatureChainRequest::from_snapshot_for_body(snapshot, definition_id, BodyId(1))
-            .unwrap();
-    let evidence = |role: ExactFaceRole| {
-        (
-            role,
-            canonical_reference_lineage_digest(
-                snapshot.document_id(),
-                request.producer_feature_id(),
-                role.semantic_role(),
-                role.source_element_id(),
-                role.expected_type(),
-            ),
-            format!("geometry:{role:?}:{fingerprint}"),
-        )
-    };
-    let attachments = [
-        ExactPlanarFaceAttachmentInput {
-            role: ExactFaceRole::Top,
-            local_origin_mm: [0.0; 3],
-            local_unit_normal: [0.0, 0.0, 1.0],
-        },
-        ExactPlanarFaceAttachmentInput {
-            role: ExactFaceRole::Bottom,
-            local_origin_mm: [0.0; 3],
-            local_unit_normal: [0.0, 0.0, -1.0],
-        },
-        ExactPlanarFaceAttachmentInput {
-            role: ExactFaceRole::East,
-            local_origin_mm: [0.0; 3],
-            local_unit_normal: [1.0, 0.0, 0.0],
-        },
-    ];
-    if request.pocket_depth_bits.is_some() {
-        build_box_render_package_with_attachments(
-            &request,
-            format!("exact-input:{fingerprint}"),
-            fingerprint.to_owned(),
-            "occt".into(),
-            "r0".into(),
-            request.expected_bounds_mm(),
-            [
-                ExactFaceRole::Top,
-                ExactFaceRole::Bottom,
-                ExactFaceRole::East,
-                ExactFaceRole::PocketFloor,
-                ExactFaceRole::PocketWest,
-                ExactFaceRole::PocketEast,
-                ExactFaceRole::PocketSouth,
-                ExactFaceRole::PocketNorth,
-            ]
-            .map(evidence),
-            &attachments,
-        )
-        .unwrap()
-    } else {
-        build_box_render_package_with_attachments(
-            &request,
-            format!("exact-input:{fingerprint}"),
-            fingerprint.to_owned(),
-            "occt".into(),
-            "r0".into(),
-            request.expected_bounds_mm(),
-            [
-                ExactFaceRole::Top,
-                ExactFaceRole::Bottom,
-                ExactFaceRole::East,
-            ]
-            .map(evidence),
-            &attachments,
-        )
-        .unwrap()
-    }
+) -> ExactBodyPackage {
+    let graph = body_exact_graph(snapshot, definition_id, BodyId(1)).unwrap();
+    box_package(
+        snapshot,
+        definition_id,
+        FeatureId(graph.producer_feature_id),
+        fingerprint,
+        &[
+            ExactFaceRole::Top,
+            ExactFaceRole::Bottom,
+            ExactFaceRole::East,
+        ],
+    )
+    .unwrap()
 }
 
 fn planar_endpoint(
-    package: &ExactRenderPackage,
+    package: &ExactBodyPackage,
     occurrence_id: OccurrenceId,
     role: ExactFaceRole,
 ) -> AssemblyMateEndpoint {
+    let ExactBodyPackage::Graph(graph) = package else {
+        panic!("box fixture is a graph package");
+    };
     let reference = package.reference(role).unwrap();
-    AssemblyMateEndpoint::resolved_planar_face(
-        occurrence_id,
-        package.planar_face_attachment(reference).unwrap().clone(),
-    )
+    let attachment = graph
+        .planar_face_attachments
+        .iter()
+        .find(|attachment| attachment.reference() == reference)
+        .unwrap();
+    AssemblyMateEndpoint::resolved_planar_face(occurrence_id, attachment.clone())
 }
 
 fn registry(snapshot: &ketchup_core::document::Snapshot, fingerprint: &str) -> ExactResultRegistry {
-    ExactResultRegistry::accept(
-        snapshot,
-        [Arc::new(ExactBodyPackage::from(exact_package(
-            snapshot,
-            fingerprint,
-        )))],
-    )
-    .unwrap()
+    ExactResultRegistry::accept(snapshot, [Arc::new(exact_package(snapshot, fingerprint))]).unwrap()
 }
 
 fn seed(reverse_occurrences: bool) -> DocumentStore {
@@ -238,11 +175,11 @@ fn seed(reverse_occurrences: bool) -> DocumentStore {
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
                 MATE,
-                planar_endpoint(&evidence, FIRST, ExactFaceRole::Top),
+                planar_endpoint(&evidence, FIRST, ExactFaceRole::Bottom),
                 planar_endpoint(&evidence, SECOND, ExactFaceRole::Bottom),
                 AssemblyMateKind::CoincidentPlanar {
                     offset_mm: 0.0,
-                    reversed: false,
+                    reversed: true,
                 },
             )),
             CanonicalCommand::CreateDrawingSheet(
@@ -591,11 +528,11 @@ fn independent_atomic_fork_verifier_covers_parity_cancel_outputs_and_round_trip(
     assert_eq!(persistence::save(&document.current()), saved_before);
 
     let candidate = document.preview_batch(manual.proposal.batch()).unwrap();
-    let evaluated = Arc::new(ExactBodyPackage::from(exact_package_for(
+    let evaluated = Arc::new(exact_package_for(
         &candidate,
         manual.fork_definition_id,
         "fork-last-valid",
-    )));
+    ));
     let receipt = commit_occurrence_fork_change(
         &mut document,
         &mut exact_results,
@@ -711,11 +648,11 @@ fn independent_fork_verifier_rejects_stale_and_tampered_dependency_reviews() {
     )
     .unwrap();
     let candidate = document.preview_batch(impact.proposal.batch()).unwrap();
-    let evaluated = Arc::new(ExactBodyPackage::from(exact_package_for(
+    let evaluated = Arc::new(exact_package_for(
         &candidate,
         impact.fork_definition_id,
         "fork-verifier",
-    )));
+    ));
     let before = stamp(&document);
     let results_before = exact_results.contents_stamp();
     let saved_before = persistence::save(&source);
@@ -827,11 +764,11 @@ fn reviewed_occurrence_fork_commits_once_and_refreshes_only_the_selected_branch(
     )
     .unwrap();
     let candidate = document.preview_batch(impact.proposal.batch()).unwrap();
-    let evaluated = Arc::new(ExactBodyPackage::from(exact_package_for(
+    let evaluated = Arc::new(exact_package_for(
         &candidate,
         impact.fork_definition_id,
         "fork-exact",
-    )));
+    ));
     let mut evaluations = 0;
 
     let receipt = commit_occurrence_fork_change(
@@ -840,8 +777,8 @@ fn reviewed_occurrence_fork_commits_once_and_refreshes_only_the_selected_branch(
         &impact,
         |request| -> Result<Arc<ExactBodyPackage>, String> {
             evaluations += 1;
-            assert_eq!(request.definition_id, DefinitionId(3));
-            assert_eq!(request.producer_feature_id(), FeatureId(13));
+            assert_eq!(DefinitionId(request.definition_id), DefinitionId(3));
+            assert_eq!(FeatureId(request.producer_feature_id), FeatureId(13));
             Ok(Arc::clone(&evaluated))
         },
     )
@@ -999,11 +936,11 @@ fn occurrence_fork_refreshes_only_selected_planar_dependencies_and_outputs() {
         vec![MATE, AXIAL_MATE]
     );
     let candidate = document.preview_batch(impact.proposal.batch()).unwrap();
-    let evaluated = Arc::new(ExactBodyPackage::from(exact_package_for(
+    let evaluated = Arc::new(exact_package_for(
         &candidate,
         impact.fork_definition_id,
         "fork-current",
-    )));
+    ));
     let before = stamp(&document);
 
     let receipt = commit_occurrence_fork_change(
@@ -1212,11 +1149,11 @@ fn conflicting_local_dependency_preserves_canonical_history_and_transforms() {
     )
     .unwrap();
     let candidate = document.preview_batch(impact.proposal.batch()).unwrap();
-    let evaluated = Arc::new(ExactBodyPackage::from(exact_package_for(
+    let evaluated = Arc::new(exact_package_for(
         &candidate,
         impact.fork_definition_id,
         "fork-conflict",
-    )));
+    ));
     let before = stamp(&document);
     let results_before = exact_results.contents_stamp();
 
@@ -1314,11 +1251,11 @@ fn unsupported_local_export_preserves_last_valid_views_and_products() {
         export.occurrence_paths = vec![ketchup_core::document::InstancePath::root(OTHER)];
     }
     let candidate = document.preview_batch(impact.proposal.batch()).unwrap();
-    let evaluated = Arc::new(ExactBodyPackage::from(exact_package_for(
+    let evaluated = Arc::new(exact_package_for(
         &candidate,
         impact.fork_definition_id,
         "fork-unsupported",
-    )));
+    ));
     let before = stamp(&document);
     let results_before = exact_results.contents_stamp();
 
@@ -1385,11 +1322,11 @@ fn failed_followup_fork_preserves_existing_source_and_fork_outputs() {
     let first_candidate = document
         .preview_batch(first_impact.proposal.batch())
         .unwrap();
-    let first_evaluated = Arc::new(ExactBodyPackage::from(exact_package_for(
+    let first_evaluated = Arc::new(exact_package_for(
         &first_candidate,
         first_impact.fork_definition_id,
         "first-fork-output",
-    )));
+    ));
     commit_occurrence_fork_change(
         &mut document,
         &mut exact_results,
@@ -1502,7 +1439,7 @@ fn occurrence_fork_evaluation_and_publication_fail_without_partial_state() {
     assert_eq!(exact_results.contents_stamp(), results_before);
     assert_eq!(persistence::save(&document.current()), saved_before);
 
-    let stale_package = Arc::new(ExactBodyPackage::from(exact_package(&source, "stale")));
+    let stale_package = Arc::new(exact_package(&source, "stale"));
     assert!(matches!(
         commit_occurrence_fork_change(
             &mut document,
@@ -1642,11 +1579,11 @@ fn dependency_closed_suffix_projection_is_mapped_only_to_the_fork() {
     assert_eq!(stamp(&document), before);
     assert_eq!(results.contents_stamp(), results_before);
 
-    let evaluated = Arc::new(ExactBodyPackage::from(exact_package_for(
+    let evaluated = Arc::new(exact_package_for(
         &candidate,
         impact.fork_definition_id,
         "fork-suppressed",
-    )));
+    ));
     let mut evaluations = 0;
     let receipt = commit_occurrence_fork_change(
         &mut document,
@@ -1956,7 +1893,9 @@ fn hidden_single_use_lost_and_ambiguous_inputs_are_rejected_observationally() {
     let ambiguous_document = seed(false);
     let ambiguous_snapshot = ambiguous_document.current();
     let package = exact_package(&ambiguous_snapshot, "ambiguous-a");
-    let mut alternate = package.clone();
+    let ExactBodyPackage::Graph(mut alternate) = package.clone() else {
+        panic!("box fixture is a graph package");
+    };
     alternate.identity.backend = "alternate".into();
     for reference in &mut alternate.references {
         reference.backend = alternate.identity.backend.clone();
@@ -1982,8 +1921,8 @@ fn hidden_single_use_lost_and_ambiguous_inputs_are_rejected_observationally() {
     let ambiguous_results = ExactResultRegistry::accept(
         &ambiguous_snapshot,
         [
-            Arc::new(ExactBodyPackage::from(package)),
-            Arc::new(ExactBodyPackage::from(alternate)),
+            Arc::new(package),
+            Arc::new(ExactBodyPackage::Graph(alternate)),
         ],
     )
     .unwrap();

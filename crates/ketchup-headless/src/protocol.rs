@@ -1529,9 +1529,9 @@ fn geometry(
             let [a,b,c]=t.vertex_indices.map(|i|vertices[i as usize].position_mm);
             (a[0]*(b[1]*c[2]-b[2]*c[1])+a[1]*(b[2]*c[0]-b[0]*c[2])+a[2]*(b[0]*c[1]-b[1]*c[0]))/6.0
         }).sum();
-        let kind=match p.as_ref() { ExactBodyPackage::Rectangle(_)=>"rectangle",ExactBodyPackage::Graph(_)=>"graph",ExactBodyPackage::Imported(_)=>"imported" };
+        let kind=match p.as_ref() { ExactBodyPackage::Graph(_)=>"graph",ExactBodyPackage::Imported(_)=>"imported" };
         json!({"definition_id":p.definition_id().0,"feature_id":p.producer_feature_id().0,"kind":kind,"bounds_mm":p.bounds_mm(),
-            "mesh_signed_volume_mm3":volume,"native_evidence":match p.as_ref() { ExactBodyPackage::Graph(g)=>json!({"volume_mm3":g.volume_mm3,"area_mm2":g.area_mm2,"topology_counts":g.topology_counts}), ExactBodyPackage::Imported(g)=>json!({"volume_mm3":g.volume_mm3,"topology_counts":g.topology_counts}), _=>Value::Null },"vertex_count":vertices.len(),"triangle_count":p.triangles().len(),
+            "mesh_signed_volume_mm3":volume,"native_evidence":match p.as_ref() { ExactBodyPackage::Graph(g)=>json!({"volume_mm3":g.volume_mm3,"area_mm2":g.area_mm2,"topology_counts":g.topology_counts}), ExactBodyPackage::Imported(g)=>json!({"volume_mm3":g.volume_mm3,"topology_counts":g.topology_counts}) },"vertex_count":vertices.len(),"triangle_count":p.triangles().len(),
             "result_fingerprint":key.result_fingerprint,"canonical_input_digest":key.canonical_input_digest,"exact_input_digest":key.exact_input_digest,"backend":key.backend,"evaluator":key.evaluator,"tolerance":key.tolerance})
     }).collect()
 }

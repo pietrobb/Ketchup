@@ -53,8 +53,6 @@ private:
 std::unique_ptr<NativeOperationResult> make_box_native(
     double origin_x, double origin_y, double origin_z,
     double size_x, double size_y, double size_z) noexcept;
-std::unique_ptr<NativeOperationResult> extrude_rectangle_native(
-    double width, double depth, double height) noexcept;
 std::unique_ptr<NativeOperationResult> offset_rectangle_native(
     double min_x, double min_y, double max_x, double max_y,
     double distance) noexcept;
@@ -82,8 +80,6 @@ std::unique_ptr<NativeOperationResult> offset_planar_region_native(
     double distance) noexcept;
 std::unique_ptr<NativeOperationResult> offset_planar_circle_native(
     double center_x, double center_y, double radius, double distance) noexcept;
-std::unique_ptr<NativeOperationResult> sweep_rectangle_native(
-    rust::Slice<const double> values) noexcept;
 std::unique_ptr<NativeOperationResult> sweep_planar_profile_native(
     rust::Slice<const double> profile_segments,
     rust::Slice<const double> path_segments) noexcept;
@@ -119,11 +115,6 @@ std::unique_ptr<NativeOperationResult> revolve_planar_region_native(
     double axis_start_x, double axis_start_y,
     double axis_end_x, double axis_end_y,
     double angle_degrees) noexcept;
-std::unique_ptr<NativeOperationResult> shell_box_native(
-    double width, double depth, double height, double thickness) noexcept;
-std::unique_ptr<NativeOperationResult> finish_shell_box_native(
-    double width, double depth, double height, double thickness,
-    double amount, bool fillet) noexcept;
 std::unique_ptr<NativeOperationResult> shell_body_native(
     const NativeOperationResult& body, rust::Slice<const std::uint32_t> face_ordinals,
     double thickness, std::uint8_t direction) noexcept;
@@ -135,50 +126,6 @@ std::unique_ptr<NativeOperationResult> finish_body_native(
     rust::Slice<const std::uint32_t> face_ordinals, double amount, bool fillet,
     rust::Slice<const double> fillet_radius_stations, std::uint8_t chamfer_mode,
     double chamfer_secondary) noexcept;
-std::unique_ptr<NativeOperationResult> cut_box_native(
-    const NativeOperationResult& base,
-    double origin_x, double origin_y, double origin_z,
-    double size_x, double size_y, double size_z) noexcept;
-std::unique_ptr<NativeOperationResult> cut_mixed_profile_native(
-    const NativeOperationResult& base, rust::Slice<const double> segments,
-    double origin_z, double height) noexcept;
-std::unique_ptr<NativeOperationResult> fuse_mixed_profile_native(
-    const NativeOperationResult& base, rust::Slice<const double> segments,
-    double origin_z, double height) noexcept;
-std::unique_ptr<NativeOperationResult> common_mixed_profile_native(
-    const NativeOperationResult& base, rust::Slice<const double> segments,
-    double origin_z, double height) noexcept;
-std::unique_ptr<NativeOperationResult> split_mixed_profile_native(
-    const NativeOperationResult& base, rust::Slice<const double> segments,
-    double origin_z, double height) noexcept;
-std::unique_ptr<NativeOperationResult> cut_cylinder_native(
-    const NativeOperationResult& base,
-    double center_x, double center_y, double origin_z,
-    double radius, double height) noexcept;
-std::unique_ptr<NativeOperationResult> fuse_cylinder_native(
-    const NativeOperationResult& base,
-    double center_x, double center_y, double origin_z,
-    double radius, double height) noexcept;
-std::unique_ptr<NativeOperationResult> common_cylinder_native(
-    const NativeOperationResult& base,
-    double center_x, double center_y, double origin_z,
-    double radius, double height) noexcept;
-std::unique_ptr<NativeOperationResult> split_cylinder_native(
-    const NativeOperationResult& base,
-    double center_x, double center_y, double origin_z,
-    double radius, double height) noexcept;
-std::unique_ptr<NativeOperationResult> fuse_box_native(
-    const NativeOperationResult& base,
-    double origin_x, double origin_y, double origin_z,
-    double size_x, double size_y, double size_z) noexcept;
-std::unique_ptr<NativeOperationResult> common_box_native(
-    const NativeOperationResult& base,
-    double origin_x, double origin_y, double origin_z,
-    double size_x, double size_y, double size_z) noexcept;
-std::unique_ptr<NativeOperationResult> split_box_native(
-    const NativeOperationResult& base,
-    double origin_x, double origin_y, double origin_z,
-    double size_x, double size_y, double size_z) noexcept;
 std::unique_ptr<NativeOperationResult> exception_probe_native() noexcept;
 std::unique_ptr<NativeOperationResult> import_step_native(rust::Str path) noexcept;
 std::unique_ptr<NativeOperationResult> import_step_solid_native(

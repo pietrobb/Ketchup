@@ -61,10 +61,10 @@ use ketchup_core::document::{
 use ketchup_core::dxf_export::{DxfProfileExport, export_visible_profiles_dxf};
 use ketchup_core::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation};
 use ketchup_core::exact_product::{
-    AssemblySelectionTarget, ExactBodyPackage, ExactBodyView, ExactFaceRole,
-    ExactFeatureChainRequest, ExactLoftRequest, ExactMeshExport, ExactPlanarOffsetRequest,
-    ExactResultRegistry, ExactStlExport, ExactSweepRequest, MeshExportBody, MeshExportSource,
-    exact_body_terminal_features, is_line_arc_capsule_profile, model_stl_export,
+    AssemblySelectionTarget, ExactBodyPackage, ExactBodyView, ExactFaceRole, ExactLoftRequest,
+    ExactMeshExport, ExactPlanarOffsetRequest, ExactResultRegistry, ExactStlExport,
+    ExactSweepRequest, MeshExportBody, MeshExportSource, exact_body_terminal_features,
+    model_stl_export,
 };
 #[cfg(test)]
 use ketchup_core::exact_product::{ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence};
@@ -926,6 +926,12 @@ struct RenderBox {
     size_mm: Vec3,
 }
 
+/// Any closed profile can cut or pocket a solid; the exact evaluator decides
+/// whether the result is valid.
+fn is_closed_profile(segments: &[ProfileSegment], closed: bool) -> bool {
+    closed && !segments.is_empty()
+}
+
 fn exact_solid_tool_feature_id(
     snapshot: &Snapshot,
     definition_id: DefinitionId,
@@ -965,7 +971,6 @@ struct PushPullSourcePlan {
     topological_selection: Option<SnapshotBoundTopologicalSelection>,
     topological_reference: Option<TopologicalElementRef>,
     target_box: RenderBox,
-    exact_request: Option<ExactFeatureChainRequest>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -977,7 +982,6 @@ struct PushPullPreviewPlan {
     current_extent_mm_bits: u64,
     new_extent_mm_bits: u64,
     commands: Vec<CanonicalCommand>,
-    exact_request: Option<ExactFeatureChainRequest>,
     preview_box: RenderBox,
     shared_count: usize,
 }
@@ -1470,7 +1474,6 @@ struct PocketSourcePlan {
     world_transform: Transform,
     target_feature_id: FeatureId,
     profile_kind: FeatureKind,
-    exact_request: ExactFeatureChainRequest,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1486,7 +1489,6 @@ struct PocketPreviewPlan {
     generated_pocket_id: FeatureId,
     profile_command: CanonicalCommand,
     pocket_command: CanonicalCommand,
-    exact_request: ExactFeatureChainRequest,
     shared_count: usize,
 }
 
@@ -3949,7 +3951,7 @@ fn assistant_fea_face_context(
                     })
                 })
                 .collect::<Vec<_>>(),
-            ExactBodyPackage::Rectangle(_) | ExactBodyPackage::Imported(_) => Vec::new(),
+            ExactBodyPackage::Imported(_) => Vec::new(),
         })
         .collect::<Vec<_>>();
     faces.sort_unstable_by_key(|face| {
@@ -14400,9 +14402,10 @@ impl KetchupApp {
             .active_boxes()
             .into_iter()
             .find(|item| item.instance_path == selection.instance_path)?;
-        item.extrusion_feature_id?;
+        let extrusion_feature_id = item.extrusion_feature_id?;
         let snapshot = self.document.current();
-        ExactFeatureChainRequest::from_snapshot(&snapshot, selection.definition_id).ok()?;
+        ExactBRepGraph::from_snapshot(&snapshot, selection.definition_id, extrusion_feature_id)
+            .ok()?;
         let resolved = snapshot
             .resolve_instance_path(&selection.instance_path)
             .ok()?;
@@ -19470,12 +19473,12 @@ impl KetchupApp {
         self.create_profile_at(Vec3::ZERO, points_mm)
     }
 
-    pub fn create_capsule_profile(
+    pub fn create_closed_segment_profile(
         &mut self,
         origin_mm: Vec3,
         segments: Vec<ProfileSegment>,
     ) -> bool {
-        if !is_line_arc_capsule_profile(&segments, true) {
+        if !is_closed_profile(&segments, true) {
             return false;
         }
         self.create_segment_profile_at(
@@ -23773,16 +23776,7 @@ impl KetchupApp {
         else {
             return Vec::new();
         };
-        let is_line_profile = *closed
-            && segments.len() >= 3
-            && segments
-                .iter()
-                .all(|segment| matches!(segment, ProfileSegment::Line { .. }));
-        if exact_circle_geometry(segments, *closed).is_none()
-            && exact_arc_profile_geometry(segments, *closed).is_none()
-            && !is_line_arc_capsule_profile(segments, *closed)
-            && !is_line_profile
-        {
+        if !is_closed_profile(segments, *closed) {
             return Vec::new();
         }
         let depth_mm = -distance_mm;
@@ -24123,13 +24117,7 @@ impl KetchupApp {
         else {
             return None;
         };
-        if !segments
-            .iter()
-            .all(|segment| matches!(segment, ProfileSegment::Line { .. }))
-            && exact_circle_geometry(segments, true).is_none()
-            && exact_arc_profile_geometry(segments, true).is_none()
-            && !is_line_arc_capsule_profile(segments, true)
-        {
+        if !is_closed_profile(segments, true) {
             return None;
         }
         let target_definition_id = target_occurrence.definition_id();
@@ -24584,8 +24572,6 @@ impl KetchupApp {
         if target_box.definition_id != target.definition_id {
             return None;
         }
-        let exact_request =
-            ExactFeatureChainRequest::from_snapshot(&planning_snapshot, target.definition_id).ok();
         Some(PushPullSourcePlan {
             source_document_id: snapshot.document_id(),
             source_revision: snapshot.revision_id(),
@@ -24598,7 +24584,6 @@ impl KetchupApp {
             topological_selection,
             topological_reference,
             target_box,
-            exact_request,
         })
     }
 
@@ -24655,10 +24640,6 @@ impl KetchupApp {
         if proposal.batch() != &batch {
             return None;
         }
-        let preview_snapshot = proposal.preview(&self.document)?;
-        let exact_request =
-            ExactFeatureChainRequest::from_snapshot(&preview_snapshot, source.target.definition_id)
-                .ok();
         let shared_count = planning_snapshot
             .scene_query()
             .into_iter()
@@ -24673,7 +24654,6 @@ impl KetchupApp {
                 current_extent_mm_bits: current_extent_mm.to_bits(),
                 new_extent_mm_bits: new_extent_mm.to_bits(),
                 commands: batch.commands().to_vec(),
-                exact_request,
                 preview_box,
                 shared_count,
             },
@@ -24802,18 +24782,13 @@ impl KetchupApp {
         } else {
             self.document.preview_batch(batch).ok()?
         };
-        ExactFeatureChainRequest::from_snapshot(&snapshot, definition_id)
-            .ok()
-            .map(|request| request.evaluator())
-            .or_else(|| {
-                ExactBRepGraph::from_snapshot(
-                    &snapshot,
-                    definition_id,
-                    exact_solid_tool_feature_id(&snapshot, definition_id)?,
-                )
-                .ok()
-                .map(|_| ketchup_core::exact_product::EXACT_BREP_GRAPH_EVALUATOR_V1)
-            })
+        ExactBRepGraph::from_snapshot(
+            &snapshot,
+            definition_id,
+            exact_solid_tool_feature_id(&snapshot, definition_id)?,
+        )
+        .ok()
+        .map(|_| ketchup_core::exact_product::EXACT_BREP_GRAPH_EVALUATOR_V1)
     }
 
     #[must_use]
@@ -24895,14 +24870,7 @@ impl KetchupApp {
                     .expect("the exact chooser plan validated the selected target");
                 let supports_pocket = match &source.tool_profile_kind {
                     FeatureKind::SegmentProfile { segments, closed } => {
-                        exact_circle_geometry(segments, *closed).is_some()
-                            || exact_arc_profile_geometry(segments, *closed).is_some()
-                            || is_line_arc_capsule_profile(segments, *closed)
-                            || (*closed
-                                && segments.len() >= 3
-                                && segments
-                                    .iter()
-                                    .all(|segment| matches!(segment, ProfileSegment::Line { .. })))
+                        is_closed_profile(segments, *closed)
                     }
                     _ => false,
                 };
@@ -25953,34 +25921,34 @@ impl KetchupApp {
         let ray = self.view_ray(pointer, rect)?;
         let hit = self.exact_projection(snapshot).exact_surface_pick(ray)?;
         let hit_position = hit.position_mm;
-        let durable = hit.durable_target?;
-        if durable.instance_path != selection.instance_path
-            || durable.body.document_id != snapshot.document_id()
-            || durable.body.definition_id != selection.definition_id
-            || !durable.body.has_valid_lineage()
-            || !matches!(
-                durable.body.role()?,
-                ExactFaceRole::CutCircle
-                    | ExactFaceRole::CutLinear
-                    | ExactFaceRole::CutArc
-                    | ExactFaceRole::CutWest
-                    | ExactFaceRole::CutEast
-                    | ExactFaceRole::CutSouth
-                    | ExactFaceRole::CutNorth
-                    | ExactFaceRole::PocketFloor
-                    | ExactFaceRole::PocketWest
-                    | ExactFaceRole::PocketEast
-                    | ExactFaceRole::PocketSouth
-                    | ExactFaceRole::PocketNorth
-            )
+        if hit.instance_path != selection.instance_path
+            || hit.definition_id != selection.definition_id
         {
             return None;
         }
+        let ExactBodyPackage::Graph(package) = self
+            .exact_results
+            .get_render(snapshot, selection.definition_id)?
+            .as_ref()
+        else {
+            return None;
+        };
+        let hit_occurrence = snapshot
+            .scene_query()
+            .into_iter()
+            .find(|occurrence| occurrence.instance_path == selection.instance_path)?;
+        let local_hit = inverse_transform_point(hit_occurrence.transform, hit_position)?;
+        // Tessellated walls deviate from the exact surface by the mesh deflection.
+        let profile_id = FeatureId(
+            package
+                .graph
+                .profile_cut_at([local_hit.x, local_hit.y, local_hit.z], 0.1)?,
+        );
         let definition = snapshot.definition(selection.definition_id)?;
         let body_id = definition
-            .feature_body_ownership(durable.body.producer_feature_id)?
+            .feature_body_ownership(FeatureId(package.graph.producer_feature_id))?
             .output_body_id()?;
-        let profile = snapshot.feature(durable.body.profile_feature_id)?;
+        let profile = snapshot.feature(profile_id)?;
         let (local_origin, local_x_axis, local_y_axis) = match profile.kind() {
             FeatureKind::Sketch(spec) => {
                 let FeatureKind::Workplane(workplane) = snapshot.feature(spec.workplane)?.kind()
@@ -26039,7 +26007,7 @@ impl KetchupApp {
         Some(MoveProfileTarget {
             definition_id: selection.definition_id,
             body_id,
-            profile_id: durable.body.profile_feature_id,
+            profile_id,
             world_origin,
             world_x_axis,
             world_y_axis,
@@ -27720,8 +27688,6 @@ impl KetchupApp {
             .feature(target_box.profile_feature_id)?
             .kind()
             .clone();
-        let exact_request =
-            ExactFeatureChainRequest::from_snapshot(&snapshot, selection.definition_id).ok()?;
         Some(PocketSourcePlan {
             source_document_id: snapshot.document_id(),
             source_revision: snapshot.revision_id(),
@@ -27734,7 +27700,6 @@ impl KetchupApp {
             world_transform,
             target_feature_id,
             profile_kind,
-            exact_request,
         })
     }
 
@@ -27832,14 +27797,12 @@ impl KetchupApp {
         };
         let batch = CommandBatch::new(vec![profile_command.clone(), pocket_command.clone()]);
         let preview_snapshot = self.document.preview_batch(&batch).ok()?;
-        let exact_request = ExactFeatureChainRequest::from_snapshot(
+        ExactBRepGraph::from_snapshot(
             &preview_snapshot,
             source.selection.definition_id,
+            generated_pocket_id,
         )
         .ok()?;
-        if exact_request.pocket_depth_bits != Some(depth_mm.to_bits()) {
-            return None;
-        }
         let shared_count = snapshot
             .scene_query()
             .into_iter()
@@ -27858,7 +27821,6 @@ impl KetchupApp {
                 generated_pocket_id,
                 profile_command,
                 pocket_command,
-                exact_request,
                 shared_count,
             },
             batch,
@@ -31933,9 +31895,7 @@ impl KetchupApp {
                 self.end_transform_correction();
             }
             self.face_workflow.set_xray_preview(false);
-            let part_authoring_preview_pending = false;
-            if part_authoring_preview_pending {
-            } else if self.feature_history_preview_pending() {
+            if self.feature_history_preview_pending() {
                 self.cancel_feature_history_preview();
             } else if matches!(self.active_tool, ActiveTool::Helix | ActiveTool::Thread) {
                 self.clear_ephemeral_edit_state();
@@ -39546,6 +39506,31 @@ fn write_exact_mesh_export(path: &Path, bundle: ExactMeshExport) -> Result<(), S
         bundle.loss_report.as_bytes(),
         &precondition,
     )
+}
+
+/// Maps a model point back into the transform's local frame.
+fn inverse_transform_point(transform: Transform, point: Vec3) -> Option<Vec3> {
+    let m = transform.matrix();
+    let rows = [[m[0], m[1], m[2]], [m[4], m[5], m[6]], [m[8], m[9], m[10]]];
+    let offset = [point.x - m[3], point.y - m[7], point.z - m[11]];
+    let determinant = rows[0][0] * (rows[1][1] * rows[2][2] - rows[1][2] * rows[2][1])
+        - rows[0][1] * (rows[1][0] * rows[2][2] - rows[1][2] * rows[2][0])
+        + rows[0][2] * (rows[1][0] * rows[2][1] - rows[1][1] * rows[2][0]);
+    if determinant.abs() <= 1.0e-12 {
+        return None;
+    }
+    // Cramer's rule: replace one column of the matrix by the offset.
+    let solve = |column: usize| {
+        let mut replaced = rows;
+        for (row, value) in replaced.iter_mut().zip(offset) {
+            row[column] = value;
+        }
+        (replaced[0][0] * (replaced[1][1] * replaced[2][2] - replaced[1][2] * replaced[2][1])
+            - replaced[0][1] * (replaced[1][0] * replaced[2][2] - replaced[1][2] * replaced[2][0])
+            + replaced[0][2] * (replaced[1][0] * replaced[2][1] - replaced[1][1] * replaced[2][0]))
+            / determinant
+    };
+    Some(Vec3::new(solve(0), solve(1), solve(2)))
 }
 
 fn transform_model_point(transform: Transform, point: Vec3) -> Vec3 {

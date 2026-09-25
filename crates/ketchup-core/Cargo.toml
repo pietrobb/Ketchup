@@ -10,6 +10,8 @@ repository.workspace = true
 [features]
 default = []
 private-oauth = []
+# Test doubles for exact evaluation results; see `src/testing.rs`.
+testing = []
 
 [dependencies]
 ed25519-dalek = "2.2.0"
@@ -19,6 +21,7 @@ sha2 = "0.10.9"
 tempfile = "3.23.0"
 
 [dev-dependencies]
+ketchup-core = { path = ".", features = ["testing"] }
 ketchup-exact = { path = "../ketchup-exact" }
 resvg = { version = "0.48.1", default-features = false, features = ["system-fonts", "text"] }
 

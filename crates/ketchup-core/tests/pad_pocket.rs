@@ -3,12 +3,11 @@ use ketchup_core::document::{
     EdgeFinishKind, FeatureEvaluationState, FeatureId, FeatureKind, OccurrenceId,
     ProposalCommitError, ProposalContext, StableFaceRole, Transform,
 };
-use ketchup_core::exact_brep_graph::ExactBRepGraph;
-use ketchup_core::exact_product::{
-    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactProductError,
-    ExactProfileSegment, ExactResultRegistry, build_box_render_package,
-    canonical_reference_lineage_digest,
+use ketchup_core::exact_brep_graph::{
+    ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop,
+    ExactBRepPlanarSegment,
 };
+use ketchup_core::exact_product::{ExactFaceRole, ExactResultRegistry, producer_exact_graph};
 use ketchup_core::persistence;
 use ketchup_core::sketch::{
     FeatureDirection, FeatureExtent, FeatureExtentEnd, PadPocketOperation, PadSpec, PocketSpec,
@@ -17,6 +16,7 @@ use ketchup_core::sketch::{
     WorkplaneSupport, WorkplaneSupportHealth,
 };
 use ketchup_core::state_view::encode_semantic_state;
+use ketchup_core::testing::box_package;
 use ketchup_core::topology::{
     TopologicalElementKind, TopologicalElementRef, TopologicalReferenceStability,
 };
@@ -27,6 +27,26 @@ const DEFINITION: DefinitionId = DefinitionId(1);
 const WORKPLANE: FeatureId = FeatureId(10);
 const SKETCH: FeatureId = FeatureId(11);
 const PAD: FeatureId = FeatureId(12);
+
+/// Boundary segments of the profile an exact graph was compiled from.
+fn profile_segments(
+    graph: &ExactBRepGraph,
+    profile_feature_id: FeatureId,
+) -> &[ExactBRepPlanarSegment] {
+    let profile = graph
+        .profiles
+        .iter()
+        .find(|profile| profile.source_feature_id == profile_feature_id.0)
+        .expect("profile in graph");
+    match &profile.geometry {
+        ExactBRepPlanarGeometry::Boundary { segments, .. }
+        | ExactBRepPlanarGeometry::Region {
+            outer: ExactBRepPlanarLoop::Boundary { segments },
+            ..
+        } => segments,
+        geometry => panic!("expected a segment boundary, got {geometry:?}"),
+    }
+}
 
 fn point(entity: u64, point: SketchPointKind) -> SketchPointRef {
     SketchPointRef {
@@ -169,7 +189,7 @@ fn pad_operation(document: &DocumentStore) -> PadPocketOperation {
 }
 
 #[test]
-fn canonical_line_arc_region_flows_losslessly_into_exact_pad_request() {
+fn canonical_line_arc_region_flows_losslessly_into_exact_pad_graph() {
     let sketch = line_arc_sketch(WORKPLANE);
     let region = sketch.solved_regions().unwrap()[0].id;
     let mut document = DocumentStore::new();
@@ -206,29 +226,32 @@ fn canonical_line_arc_region_flows_losslessly_into_exact_pad_request() {
         .unwrap();
 
     let snapshot = document.current();
-    let request = ExactFeatureChainRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
-    let mixed = request.mixed_profile.as_ref().expect("line-arc profile");
-    assert_eq!(mixed.segments.len(), 2);
-    assert!(matches!(
-        mixed.segments[0],
-        ExactProfileSegment::Line { .. }
-    ));
-    assert!(matches!(
-        mixed.segments[1],
-        ExactProfileSegment::CircularArc { .. }
-    ));
+    let graph = producer_exact_graph(&snapshot, DEFINITION, PAD).unwrap();
+    let bits = |point: [f64; 2]| point.map(f64::to_bits);
     assert_eq!(
-        mixed.bounds_bits.map(f64::from_bits),
-        [10.0, 10.0, 30.0, 20.0]
+        profile_segments(&graph, SKETCH),
+        [
+            ExactBRepPlanarSegment::Line {
+                start_bits: bits([10.0, 10.0]),
+                end_bits: bits([30.0, 10.0]),
+            },
+            ExactBRepPlanarSegment::CircularArc {
+                start_bits: bits([30.0, 10.0]),
+                end_bits: bits([10.0, 10.0]),
+                center_bits: bits([20.0, 10.0]),
+                clockwise: false,
+            },
+        ]
     );
-    assert!(request.canonical_input_digest.len() >= 64);
+    let digest = |snapshot: &ketchup_core::document::Snapshot| {
+        producer_exact_graph(snapshot, DEFINITION, PAD)
+            .unwrap()
+            .graph_digest
+    };
 
     let bytes = persistence::save(&snapshot);
     let reopened = persistence::load(&bytes).unwrap();
-    assert_eq!(
-        ExactFeatureChainRequest::from_snapshot(&reopened.snapshot(), DEFINITION).unwrap(),
-        request
-    );
+    assert_eq!(digest(&reopened.snapshot()), graph.graph_digest);
 
     let before_revision_count = document.revision_count();
     let before_undo = document.visible_undo_steps();
@@ -243,61 +266,29 @@ fn canonical_line_arc_region_flows_losslessly_into_exact_pad_request() {
     assert_eq!(document.revision_count(), before_revision_count + 1);
     assert_eq!(document.visible_undo_steps(), before_undo + 1);
     let changed = document.current();
-    let changed_request = ExactFeatureChainRequest::from_snapshot(&changed, DEFINITION).unwrap();
-    assert_ne!(
-        changed_request.canonical_input_digest,
-        request.canonical_input_digest
-    );
+    let changed_digest = digest(&changed);
+    assert_ne!(changed_digest, graph.graph_digest);
     let changed_bytes = persistence::save(&changed);
     let changed_reopened = persistence::load(&changed_bytes).unwrap();
-    assert_eq!(
-        ExactFeatureChainRequest::from_snapshot(&changed_reopened.snapshot(), DEFINITION).unwrap(),
-        changed_request
-    );
-    assert_eq!(
-        ExactFeatureChainRequest::from_snapshot(&document.undo().unwrap(), DEFINITION).unwrap(),
-        request
-    );
-    assert_eq!(
-        ExactFeatureChainRequest::from_snapshot(&document.redo().unwrap(), DEFINITION).unwrap(),
-        changed_request
-    );
+    assert_eq!(digest(&changed_reopened.snapshot()), changed_digest);
+    assert_eq!(digest(&document.undo().unwrap()), graph.graph_digest);
+    assert_eq!(digest(&document.redo().unwrap()), changed_digest);
 
     const FACE_PLANE: FeatureId = FeatureId(13);
     const POCKET_SKETCH: FeatureId = FeatureId(14);
     const POCKET: FeatureId = FeatureId(15);
-    let evidence = [
-        ExactFaceRole::Top,
-        ExactFaceRole::Bottom,
-        ExactFaceRole::ArcSide,
-    ]
-    .map(|role| {
-        (
-            role,
-            canonical_reference_lineage_digest(
-                changed_request.document_id,
-                changed_request.producer_feature_id(),
-                role.semantic_role(),
-                role.source_element_id(),
-                role.expected_type(),
-            ),
-            format!("geometry.{role:?}"),
-        )
-    });
-    let package = build_box_render_package(
-        &changed_request,
-        "exact-input".into(),
-        "mixed-result".into(),
-        "test-backend".into(),
-        "test-tolerance".into(),
-        changed_request.expected_bounds_mm(),
-        evidence,
+    let package = box_package(
+        &changed,
+        DEFINITION,
+        PAD,
+        "mixed-result",
+        &[ExactFaceRole::Top, ExactFaceRole::Bottom],
     )
     .unwrap();
     let top = package.reference(ExactFaceRole::Top).unwrap().clone();
-    for reference in package.references {
+    for reference in package.references() {
         document
-            .register_exact_reference_evidence(reference)
+            .register_exact_reference_evidence(reference.clone())
             .unwrap();
     }
     assert_eq!(
@@ -340,7 +331,7 @@ fn canonical_line_arc_region_flows_losslessly_into_exact_pad_request() {
         .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
             id: POCKET,
             definition_id: DEFINITION,
-            name: "Unsupported mixed-base Pocket".into(),
+            name: "Mixed-base Pocket".into(),
             kind: FeatureKind::SketchPocket(PocketSpec {
                 target: PAD,
                 sketch: POCKET_SKETCH,
@@ -352,31 +343,26 @@ fn canonical_line_arc_region_flows_losslessly_into_exact_pad_request() {
         }]))
         .unwrap();
     assert_eq!(document.visible_undo_steps(), before_pocket_undo + 1);
-    assert_eq!(
-        ExactFeatureChainRequest::from_snapshot(&document.current(), DEFINITION),
-        Err(ExactProductError::UnsupportedThroughCut)
-    );
-    let unsupported_bytes = persistence::save(&document.current());
-    let unsupported_reopened = persistence::load(&unsupported_bytes).unwrap();
-    assert_eq!(
-        ExactFeatureChainRequest::from_snapshot(&unsupported_reopened.snapshot(), DEFINITION),
-        Err(ExactProductError::UnsupportedThroughCut)
-    );
-    let undone_request =
-        ExactFeatureChainRequest::from_snapshot(&document.undo().unwrap(), DEFINITION).unwrap();
-    assert_eq!(
-        undone_request.canonical_input_digest,
-        changed_request.canonical_input_digest
-    );
-    assert_eq!(undone_request.mixed_profile, changed_request.mixed_profile);
+    let cuts_pad = |snapshot: &ketchup_core::document::Snapshot| {
+        producer_exact_graph(snapshot, DEFINITION, POCKET)
+            .unwrap()
+            .nodes
+            .iter()
+            .any(|node| {
+                node.source_feature_id == POCKET.0
+                    && matches!(node.operation, ExactBRepOperation::ProfileCut { .. })
+            })
+    };
+    assert!(cuts_pad(&document.current()));
+    let pocket_bytes = persistence::save(&document.current());
+    let pocket_reopened = persistence::load(&pocket_bytes).unwrap();
+    assert!(cuts_pad(&pocket_reopened.snapshot()));
+    assert_eq!(digest(&document.undo().unwrap()), changed_digest);
     assert_eq!(
         document.current().canonical_digest(),
         before_pocket.canonical_digest()
     );
-    assert_eq!(
-        ExactFeatureChainRequest::from_snapshot(&document.redo().unwrap(), DEFINITION),
-        Err(ExactProductError::UnsupportedThroughCut)
-    );
+    assert!(cuts_pad(&document.redo().unwrap()));
 }
 
 #[test]
@@ -536,48 +522,39 @@ fn face_supported_pocket_and_topology_history_make_unique_losslessly() {
         ]))
         .unwrap();
     let base = document.current();
-    let request = ExactFeatureChainRequest::from_snapshot(&base, DEFINITION).unwrap();
-    assert_eq!(request.producer_feature_id(), BASE_PAD);
-    let evidence = [
-        ExactFaceRole::Top,
-        ExactFaceRole::Bottom,
-        ExactFaceRole::East,
-    ]
-    .map(|role| {
-        (
-            role,
-            canonical_reference_lineage_digest(
-                request.document_id,
-                request.producer_feature_id(),
-                role.semantic_role(),
-                role.source_element_id(),
-                role.expected_type(),
-            ),
-            format!("geometry.{role:?}"),
-        )
-    });
-    let package = build_box_render_package(
-        &request,
-        "exact-input".into(),
-        "base-result".into(),
-        "test-backend".into(),
-        "test-tolerance".into(),
-        request.expected_bounds_mm(),
-        evidence,
+    let base_graph = producer_exact_graph(&base, DEFINITION, BASE_PAD).unwrap();
+    let package = box_package(
+        &base,
+        DEFINITION,
+        BASE_PAD,
+        "base-result",
+        &[
+            ExactFaceRole::Top,
+            ExactFaceRole::Bottom,
+            ExactFaceRole::East,
+        ],
     )
     .unwrap();
-    assert_eq!(package.bounds_mm, [[10.0, 20.0, 0.0], [110.0, 80.0, 18.0]]);
+    assert_eq!(
+        package.bounds_mm(),
+        [[10.0, 20.0, 0.0], [110.0, 80.0, 18.0]]
+    );
     let top = package.reference(ExactFaceRole::Top).unwrap().clone();
-    for reference in package.references {
+    for reference in package.references() {
         document
-            .register_exact_reference_evidence(reference)
+            .register_exact_reference_evidence(reference.clone())
             .unwrap();
     }
+    let face = document
+        .current()
+        .resolved_planar_face_workplane_frame(&top)
+        .expect("base Pad top frame");
+    assert_eq!(face.origin_mm[2], 18.0);
+    assert_eq!(face.normal, [0.0, 0.0, 1.0]);
+    // A workplane may put its origin anywhere on the face, here at its corner.
     let frame = WorkplaneFrame {
         origin_mm: [10.0, 20.0, 18.0],
-        x_axis: [1.0, 0.0, 0.0],
-        y_axis: [0.0, 1.0, 0.0],
-        normal: [0.0, 0.0, 1.0],
+        ..face
     };
     let sketch = line_arc_sketch(FACE_PLANE);
     document
@@ -666,23 +643,22 @@ fn face_supported_pocket_and_topology_history_make_unique_losslessly() {
     assert_eq!(spec.target, BASE_PAD);
     assert_eq!(spec.support.as_ref(), &top);
     assert_eq!(spec.extent.blind_distance().unwrap().millimetres(), 6.0);
-    let pocket_request = ExactFeatureChainRequest::from_snapshot(&committed, DEFINITION).unwrap();
-    assert_eq!(pocket_request.producer_feature_id(), POCKET);
-    assert_eq!(pocket_request.pocket_depth_bits, Some(6.0_f64.to_bits()));
-    let pocket_profile = pocket_request
-        .boolean
-        .as_ref()
-        .and_then(|boolean| boolean.profile.as_ref())
-        .expect("canonical line-arc pocket profile");
-    assert_eq!(pocket_profile.segments.len(), 2);
+    let pocket_graph = producer_exact_graph(&committed, DEFINITION, POCKET).unwrap();
+    assert_eq!(pocket_graph.producer_feature_id, POCKET.0);
+    assert!(pocket_graph.nodes.iter().any(|node| matches!(
+        node.operation,
+        ExactBRepOperation::ProfileCut {
+            depth_bits: Some(depth_bits),
+            ..
+        } if depth_bits == 6.0_f64.to_bits()
+    )));
+    let pocket_profile = profile_segments(&pocket_graph, POCKET_SKETCH);
+    assert_eq!(pocket_profile.len(), 2);
     assert!(matches!(
-        pocket_profile.segments[1],
-        ExactProfileSegment::CircularArc { .. }
+        pocket_profile[1],
+        ExactBRepPlanarSegment::CircularArc { .. }
     ));
-    assert_ne!(
-        pocket_request.canonical_input_digest,
-        request.canonical_input_digest
-    );
+    assert_ne!(pocket_graph.graph_digest, base_graph.graph_digest);
     let committed_digest = committed.canonical_digest();
     let bytes = persistence::save(&committed);
     let reopened = persistence::load(&bytes).unwrap();
@@ -989,19 +965,24 @@ fn offset_workplane_dimension_recomputes_pad_frame_in_one_undoable_step() {
         ]))
         .unwrap();
     let before = document.current();
-    let before_request = ExactFeatureChainRequest::from_snapshot(&before, DEFINITION).unwrap();
-    assert_eq!(
-        before_request.expected_bounds_mm(),
-        [[0.0, 0.0, 0.0], [20.0, 10.0, 10.0]]
-    );
-    assert_eq!(
-        before_request.workplane_frame_bits.unwrap()[0..3]
+    let profile_origin = |snapshot: &ketchup_core::document::Snapshot| {
+        producer_exact_graph(snapshot, DEFINITION, OFFSET_PAD)
+            .unwrap()
+            .profiles[0]
+            .frame_bits[0..3]
             .iter()
             .copied()
             .map(f64::from_bits)
-            .collect::<Vec<_>>(),
-        vec![0.0, 0.0, 5.0]
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        producer_exact_graph(&before, DEFINITION, OFFSET_PAD)
+            .unwrap()
+            .producer_bounds_mm()
+            .unwrap(),
+        Some([[0.0, 0.0, 5.0], [20.0, 10.0, 15.0]])
     );
+    assert_eq!(profile_origin(&before), vec![0.0, 0.0, 5.0]);
 
     document
         .apply_batch(&CommandBatch::new(vec![
@@ -1017,15 +998,7 @@ fn offset_workplane_dimension_recomputes_pad_frame_in_one_undoable_step() {
         panic!("expected offset workplane");
     };
     assert_eq!(changed_plane.frame.origin_mm, [0.0, 0.0, 8.0]);
-    let changed_request = ExactFeatureChainRequest::from_snapshot(&changed, DEFINITION).unwrap();
-    assert_eq!(
-        changed_request.workplane_frame_bits.unwrap()[0..3]
-            .iter()
-            .copied()
-            .map(f64::from_bits)
-            .collect::<Vec<_>>(),
-        vec![0.0, 0.0, 8.0]
-    );
+    assert_eq!(profile_origin(&changed), vec![0.0, 0.0, 8.0]);
     let changed_digest = changed.canonical_digest();
     assert_eq!(
         document.undo().unwrap().canonical_digest(),
@@ -1119,39 +1092,19 @@ fn branched_feature_dag_recomputes_only_the_dirty_closure_and_keeps_unrelated_ex
     );
 
     let package_for = |producer| {
-        let request =
-            ExactFeatureChainRequest::from_snapshot_for_producer(&before, DEFINITION, producer)
-                .unwrap();
-        let evidence = [
-            ExactFaceRole::Top,
-            ExactFaceRole::Bottom,
-            ExactFaceRole::East,
-        ]
-        .map(|role| {
-            (
-                role,
-                canonical_reference_lineage_digest(
-                    request.document_id,
-                    producer,
-                    role.semantic_role(),
-                    role.source_element_id(),
-                    role.expected_type(),
-                ),
-                format!("geometry.{producer:?}.{role:?}"),
-            )
-        });
-        Arc::new(ExactBodyPackage::from(
-            build_box_render_package(
-                &request,
-                format!("exact-{producer:?}"),
-                format!("result-{producer:?}"),
-                "test-backend".into(),
-                "test-tolerance".into(),
-                request.expected_bounds_mm(),
-                evidence,
-            )
-            .unwrap(),
-        ))
+        box_package(
+            &before,
+            DEFINITION,
+            producer,
+            &format!("result-{producer:?}"),
+            &[
+                ExactFaceRole::Top,
+                ExactFaceRole::Bottom,
+                ExactFaceRole::East,
+            ],
+        )
+        .map(Arc::new)
+        .unwrap()
     };
     let registry =
         ExactResultRegistry::accept(&before, [package_for(PAD_A), package_for(PAD_B)]).unwrap();
@@ -1259,33 +1212,12 @@ fn universal_extent_contract_round_trips_changes_digest_and_fails_closed_before_
     document.commit_verified_proposal(&proposal).unwrap();
     let blind = document.current();
     let blind_digest = blind.canonical_digest();
-    let request = ExactFeatureChainRequest::from_snapshot(&blind, DEFINITION).unwrap();
-    let evidence = [
-        ExactFaceRole::Top,
-        ExactFaceRole::Bottom,
-        ExactFaceRole::CircleSide,
-    ]
-    .map(|role| {
-        (
-            role,
-            canonical_reference_lineage_digest(
-                request.document_id,
-                request.producer_feature_id(),
-                role.semantic_role(),
-                role.source_element_id(),
-                role.expected_type(),
-            ),
-            format!("extent-contract.{role:?}"),
-        )
-    });
-    let package = build_box_render_package(
-        &request,
-        "extent-contract-input".into(),
-        "extent-contract-result".into(),
-        "test-backend".into(),
-        "test-tolerance".into(),
-        request.expected_bounds_mm(),
-        evidence,
+    let package = box_package(
+        &blind,
+        DEFINITION,
+        PAD,
+        "extent-contract-result",
+        &[ExactFaceRole::Top, ExactFaceRole::Bottom],
     )
     .unwrap();
     let top = package.reference(ExactFaceRole::Top).unwrap().clone();

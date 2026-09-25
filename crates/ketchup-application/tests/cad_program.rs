@@ -19,14 +19,12 @@ use ketchup_core::drawing_export::export_drawing;
 use ketchup_core::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V14, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry,
 };
-use ketchup_core::exact_product::{
-    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactResultRegistry,
-    build_box_render_package, canonical_reference_lineage_digest,
-};
+use ketchup_core::exact_product::{ExactBodyPackage, ExactFaceRole, ExactResultRegistry};
 use ketchup_core::persistence::{ContainerData, LoadOutcome, load, save, save_document_store};
 use ketchup_core::sketch::{
     PrincipalPlane, SketchEntity, SketchEntityId, SketchSpec, WorkplaneSpec,
 };
+use ketchup_core::testing::box_package;
 use std::sync::Arc;
 
 fn part() -> AssistantCadEditOperation {
@@ -147,37 +145,19 @@ fn exact_box_package(
     definition_id: DefinitionId,
     feature_id: FeatureId,
 ) -> Arc<ExactBodyPackage> {
-    let request = ExactFeatureChainRequest::from_snapshot(snapshot, definition_id).unwrap();
-    let evidence = [
-        ExactFaceRole::Top,
-        ExactFaceRole::Bottom,
-        ExactFaceRole::East,
-    ]
-    .map(|role| {
-        (
-            role,
-            canonical_reference_lineage_digest(
-                snapshot.document_id(),
-                feature_id,
-                role.semantic_role(),
-                role.source_element_id(),
-                role.expected_type(),
-            ),
-            format!("geometry:{role:?}:public-nested-assembly"),
-        )
-    });
     Arc::new(
-        build_box_render_package(
-            &request,
-            "public-nested-assembly-input".into(),
-            "public-nested-assembly-result".into(),
-            "occt".into(),
-            "r0".into(),
-            [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]],
-            evidence,
+        box_package(
+            snapshot,
+            definition_id,
+            feature_id,
+            "public-nested-assembly-result",
+            &[
+                ExactFaceRole::Top,
+                ExactFaceRole::Bottom,
+                ExactFaceRole::East,
+            ],
         )
-        .unwrap()
-        .into(),
+        .unwrap(),
     )
 }
 

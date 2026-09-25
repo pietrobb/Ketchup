@@ -5,14 +5,14 @@ use ketchup_core::document::{
     ToolBodyPolicy, Transform,
 };
 use ketchup_core::exact_product::{
-    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactResultRegistry,
-    build_box_render_package, canonical_reference_lineage_digest,
+    ExactFaceRole, ExactResultRegistry, exact_body_terminal_features,
 };
 use ketchup_core::sketch::{
     FeatureDirection, FeatureExtent, PadSpec, PrincipalPlane, SketchConstraint, SketchConstraintId,
     SketchConstraintKind, SketchEntity, SketchEntityId, SketchPointKind, SketchPointRef,
     SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport, WorkplaneSupportHealth,
 };
+use ketchup_core::testing::box_package;
 use ketchup_core::{persistence, state_view::encode_semantic_state};
 use std::sync::Arc;
 
@@ -162,12 +162,10 @@ fn body_contract_is_reviewed_atomic_persistent_and_clone_stable() {
             .output_body_id(),
         Some(BodyId(2))
     );
-    let body_requests =
-        ExactFeatureChainRequest::terminal_body_requests(&document.current(), DEFINITION).unwrap();
     assert_eq!(
-        body_requests
-            .iter()
-            .map(|(body_id, request)| (*body_id, request.producer_feature_id()))
+        exact_body_terminal_features(&document.current(), DEFINITION)
+            .unwrap()
+            .into_iter()
             .collect::<Vec<_>>(),
         vec![(BodyId(1), EXTRUSION), (BodyId(2), FeatureId(13))]
     );
@@ -561,34 +559,16 @@ fn body_order_is_deterministic_across_equivalent_batches() {
 #[test]
 fn ambiguous_and_lost_references_reject_ownership_without_history_changes() {
     let mut document = seed();
-    let document_id = document.current().document_id();
-    let request = ExactFeatureChainRequest::from_snapshot(&document.current(), DEFINITION).unwrap();
-    let evidence = [
-        ExactFaceRole::Top,
-        ExactFaceRole::Bottom,
-        ExactFaceRole::East,
-    ]
-    .map(|role| {
-        (
-            role,
-            canonical_reference_lineage_digest(
-                document_id,
-                EXTRUSION,
-                role.semantic_role(),
-                role.source_element_id(),
-                role.expected_type(),
-            ),
-            format!("geometry:{role:?}:5"),
-        )
-    });
-    let package = build_box_render_package(
-        &request,
-        "exact-input-5".to_owned(),
-        "result-5".to_owned(),
-        "occt".to_owned(),
-        "r0".to_owned(),
-        [[0.0, 0.0, 0.0], [20.0, 10.0, 5.0]],
-        evidence,
+    let package = box_package(
+        &document.current(),
+        DEFINITION,
+        EXTRUSION,
+        "result-5",
+        &[
+            ExactFaceRole::Top,
+            ExactFaceRole::Bottom,
+            ExactFaceRole::East,
+        ],
     )
     .unwrap();
     let top = package.reference(ExactFaceRole::Top).unwrap().clone();
@@ -683,47 +663,26 @@ fn ambiguous_and_lost_references_reject_ownership_without_history_changes() {
         .unwrap();
 
     let changed = document.current();
-    let changed_request =
-        ExactFeatureChainRequest::from_snapshot_for_producer(&changed, DEFINITION, EXTRUSION)
-            .unwrap();
-    let changed_evidence = [
-        ExactFaceRole::Top,
-        ExactFaceRole::Bottom,
-        ExactFaceRole::East,
-    ]
-    .map(|role| {
-        (
-            role,
-            canonical_reference_lineage_digest(
-                document_id,
-                EXTRUSION,
-                role.semantic_role(),
-                role.source_element_id(),
-                role.expected_type(),
-            ),
-            format!("geometry:{role:?}:6"),
+    let changed_package = |result_fingerprint| {
+        box_package(
+            &changed,
+            DEFINITION,
+            EXTRUSION,
+            result_fingerprint,
+            &[
+                ExactFaceRole::Top,
+                ExactFaceRole::Bottom,
+                ExactFaceRole::East,
+            ],
         )
-    });
-    let changed_package = build_box_render_package(
-        &changed_request,
-        "exact-input-6".to_owned(),
-        "result-6".to_owned(),
-        "occt".to_owned(),
-        "r0".to_owned(),
-        [[0.0, 0.0, 0.0], [20.0, 10.0, 6.0]],
-        changed_evidence,
-    )
-    .unwrap();
-    let mut incompatible = changed_package.clone();
-    incompatible.identity.backend.push_str("-alternate");
-    for reference in &mut incompatible.references {
-        reference.backend = incompatible.identity.backend.clone();
-    }
+        .map(Arc::new)
+        .unwrap()
+    };
     let ambiguous = ExactResultRegistry::accept(
         &changed,
         [
-            Arc::new(ExactBodyPackage::from(changed_package)),
-            Arc::new(ExactBodyPackage::from(incompatible)),
+            changed_package("result-6"),
+            changed_package("result-6-alternate"),
         ],
     )
     .unwrap();
@@ -852,10 +811,9 @@ fn reviewed_multibody_authoring_is_one_undo_and_preserves_stable_lineage() {
         Some(BodyId(2))
     );
     assert_eq!(
-        ExactFeatureChainRequest::terminal_body_requests(&document.current(), DEFINITION)
+        exact_body_terminal_features(&document.current(), DEFINITION)
             .unwrap()
-            .keys()
-            .copied()
+            .into_keys()
             .collect::<Vec<_>>(),
         vec![BodyId(1), BodyId(2)]
     );
@@ -950,9 +908,9 @@ fn reviewed_multibody_authoring_is_one_undo_and_preserves_stable_lineage() {
             tool: FeatureId(13),
         }
     ));
-    let requests = ExactFeatureChainRequest::terminal_body_requests(&consumed, DEFINITION).unwrap();
-    assert_eq!(requests[&BodyId(1)].producer_feature_id(), FeatureId(14));
-    assert!(!requests.contains_key(&BodyId(2)));
+    let terminals = exact_body_terminal_features(&consumed, DEFINITION).unwrap();
+    assert_eq!(terminals[&BodyId(1)], FeatureId(14));
+    assert!(!terminals.contains_key(&BodyId(2)));
     assert_eq!(
         document.undo().unwrap().canonical_digest(),
         before_combine.1

@@ -12,12 +12,10 @@ use ketchup_core::document::{
     SpatialPathSegment, TagId, Transform, UnresolvedMappingReason, WorldEntityPath,
 };
 use ketchup_core::exact_brep_graph::{
-    ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarLoop,
-    ExactBRepPlanarSegment,
+    ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry,
+    ExactBRepPlanarLoop, ExactBRepPlanarSegment,
 };
-use ketchup_core::exact_product::{
-    EXACT_CIRCLE_EVALUATOR_V1, ExactFeatureChainRequest, ExactPlanarOffsetRequest,
-};
+use ketchup_core::exact_product::{ExactPlanarOffsetRequest, producer_exact_graph};
 use ketchup_core::persistence;
 use ketchup_core::sketch::{
     PrincipalPlane, SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity,
@@ -3823,17 +3821,19 @@ fn segment_profile_is_canonical_undoable_persistent_and_exact_for_circle() {
         FeatureKind::SegmentProfile { segments, closed: true }
             if segments == &circular_profile_segments(false)
     ));
-    let exact_request =
-        ExactFeatureChainRequest::from_snapshot(&document.current(), DefinitionId(501)).unwrap();
-    assert_eq!(exact_request.evaluator(), EXACT_CIRCLE_EVALUATOR_V1);
+    let exact_graph =
+        producer_exact_graph(&document.current(), DefinitionId(501), FeatureId(503)).unwrap();
     assert_eq!(
-        exact_request.expected_bounds_mm(),
-        [[-10.0, -10.0, 0.0], [10.0, 10.0, 25.0]]
+        exact_graph.producer_bounds_mm().unwrap(),
+        Some([[-10.0, -10.0, 0.0], [10.0, 10.0, 25.0]])
     );
-    let circle = exact_request.circle.expect("analytic circle request");
-    assert_eq!(f64::from_bits(circle.radius_bits), 10.0);
-    assert_eq!(f64::from_bits(circle.center_x_bits), 0.0);
-    assert!(!circle.clockwise);
+    assert_eq!(
+        exact_graph.profiles[0].geometry,
+        ExactBRepPlanarGeometry::Circle {
+            center_bits: [0.0_f64.to_bits(); 2],
+            radius_bits: 10.0_f64.to_bits(),
+        }
+    );
 
     let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
     assert_eq!(reopened.source_schema(), persistence::CURRENT_SCHEMA);

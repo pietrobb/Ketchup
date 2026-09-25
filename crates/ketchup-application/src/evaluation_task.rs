@@ -253,51 +253,23 @@ mod tests {
         CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
         FeatureKind, OccurrenceId, Transform,
     };
-    use ketchup_core::exact_product::{
-        ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactResultRegistry,
-        build_box_render_package, canonical_reference_lineage_digest,
-    };
+    use ketchup_core::exact_product::{ExactBodyPackage, ExactFaceRole, ExactResultRegistry};
     use ketchup_core::sketch::{
         PrincipalPlane, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport, WorkplaneSupportHealth,
     };
+    use ketchup_core::testing::box_package;
 
     const DEFINITION: DefinitionId = DefinitionId(1);
     const PROFILE: FeatureId = FeatureId(10);
     const EXTRUSION: FeatureId = FeatureId(11);
     const FACE_PLANE: FeatureId = FeatureId(12);
 
-    fn package<const N: usize>(
+    fn package(
         snapshot: &Snapshot,
         fingerprint: &str,
-        roles: [ExactFaceRole; N],
+        roles: &[ExactFaceRole],
     ) -> ExactBodyPackage {
-        let request =
-            ExactFeatureChainRequest::from_snapshot_for_producer(snapshot, DEFINITION, EXTRUSION)
-                .unwrap();
-        let evidence = roles.map(|role| {
-            (
-                role,
-                canonical_reference_lineage_digest(
-                    snapshot.document_id(),
-                    EXTRUSION,
-                    role.semantic_role(),
-                    role.source_element_id(),
-                    role.expected_type(),
-                ),
-                format!("geometry:{fingerprint}:{role:?}"),
-            )
-        });
-        build_box_render_package(
-            &request,
-            format!("input:{fingerprint}"),
-            fingerprint.to_owned(),
-            "test-backend".into(),
-            "test-tolerance".into(),
-            request.expected_bounds_mm(),
-            evidence,
-        )
-        .unwrap()
-        .into()
+        box_package(snapshot, DEFINITION, EXTRUSION, fingerprint, roles).unwrap()
     }
 
     fn seed() -> DocumentStore {
@@ -336,16 +308,8 @@ mod tests {
                 },
             ]))
             .unwrap();
-        let anchor_package = package(
-            &document.current(),
-            "anchor",
-            [
-                ExactFaceRole::Top,
-                ExactFaceRole::Bottom,
-                ExactFaceRole::East,
-            ],
-        );
-        let anchor = anchor_package.references()[0].clone();
+        let anchor =
+            package(&document.current(), "anchor", &[ExactFaceRole::Top]).references()[0].clone();
         document
             .register_exact_reference_evidence(anchor.clone())
             .unwrap();
@@ -378,7 +342,7 @@ mod tests {
         let package = package(
             &snapshot,
             "conflicting",
-            [
+            &[
                 ExactFaceRole::Bottom,
                 ExactFaceRole::East,
                 ExactFaceRole::Top,

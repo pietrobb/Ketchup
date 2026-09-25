@@ -121,8 +121,7 @@ impl ExactWorkerSupervisor {
                 Self::spawn_verified_client(&self.executable, &self.executable_sha256, cancelled)?;
         }
         let result = (|| {
-            self.client
-                .verify_p5_capability("EXACT_PAIR_V2", cancelled)?;
+            self.client.verify_capability("EXACT_PAIR_V2", cancelled)?;
             pair_ack(
                 &self
                     .client

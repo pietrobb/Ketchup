@@ -22,6 +22,7 @@ wasmi = "1.1.0"
 process-wrap = { version = "10.0.0", default-features = false, features = ["std", "job-object"] }
 
 [dev-dependencies]
+ketchup-core = { path = "../ketchup-core", features = ["testing"] }
 ed25519-dalek = "2.2.0"
 
 [lints]

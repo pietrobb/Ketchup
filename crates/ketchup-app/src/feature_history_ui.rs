@@ -1,5 +1,6 @@
 use super::*;
 use ketchup_core::document::FeatureParameterTarget;
+use ketchup_core::exact_product::body_exact_graph;
 use ketchup_core::feature_history::{
     BodyHistoryMutation, BodyHistoryMutationRequest, BodyProfileTranslationRequest,
     ExactParameterEdit, ExactParameterEditTarget, FeatureHistoryProjection, FeatureHistoryQuery,
@@ -1318,18 +1319,14 @@ impl KetchupApp {
             };
             let mut packages = Vec::with_capacity(missing_target_bodies.len());
             for body_id in missing_target_bodies {
-                let request = match ExactFeatureChainRequest::from_snapshot_for_body(
-                    &snapshot,
-                    target_definition_id,
-                    body_id,
-                ) {
-                    Ok(request) => request,
+                let graph = match body_exact_graph(&snapshot, target_definition_id, body_id) {
+                    Ok(graph) => graph,
                     Err(error) => {
                         self.feature_history_error(error);
                         return false;
                     }
                 };
-                let package = match worker.evaluate_rectangle(&request) {
+                let package = match worker.evaluate_exact_brep_graph(&graph) {
                     Ok(package) => Arc::new(ExactBodyPackage::from(package)),
                     Err(error) => {
                         self.feature_history_error(error);
@@ -1425,9 +1422,9 @@ impl KetchupApp {
                                     document,
                                     exact_results,
                                     impact,
-                                    |request| {
+                                    |graph| {
                                         worker
-                                            .evaluate_rectangle(request)
+                                            .evaluate_exact_brep_graph(graph)
                                             .map(ExactBodyPackage::from)
                                             .map(Arc::new)
                                             .map_err(|error| error.to_string())
@@ -1444,9 +1441,9 @@ impl KetchupApp {
                                     document,
                                     exact_results,
                                     impact,
-                                    |request| {
+                                    |graph| {
                                         worker
-                                            .evaluate_rectangle(request)
+                                            .evaluate_exact_brep_graph(graph)
                                             .map(ExactBodyPackage::from)
                                             .map(Arc::new)
                                             .map_err(|error| error.to_string())

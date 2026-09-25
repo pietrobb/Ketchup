@@ -185,44 +185,29 @@ impl KetchupApp {
     }
 
     #[doc(hidden)]
-    pub fn seed_headless_face_workflow_last_valid_output(&mut self) -> Result<(), String> {
-        use ketchup_core::exact_product::{
-            build_box_render_package, canonical_reference_lineage_digest,
-        };
-
+    pub fn seed_headless_face_workflow_last_valid_output(
+        &mut self,
+        exact_worker: &Path,
+    ) -> Result<(), String> {
         let snapshot = self.document.current();
-        let request = ExactFeatureChainRequest::from_snapshot(&snapshot, INITIAL_BOX_DEFINITION)
-            .map_err(|error| error.to_string())?;
-        let evidence = [
-            ExactFaceRole::Top,
-            ExactFaceRole::Bottom,
-            ExactFaceRole::East,
-        ]
-        .map(|role| {
-            (
-                role,
-                canonical_reference_lineage_digest(
-                    request.document_id,
-                    request.producer_feature_id(),
-                    role.semantic_role(),
-                    role.source_element_id(),
-                    role.expected_type(),
-                ),
-                format!("headless-geometry-{role:?}"),
-            )
-        });
-        let package = build_box_render_package(
-            &request,
-            "headless-exact-input".to_owned(),
-            "headless-last-valid-result".to_owned(),
-            "headless-backend".to_owned(),
-            "headless-tolerance".to_owned(),
-            [[0.0; 3], request.dimensions_mm()],
-            evidence,
+        let graphs = ketchup_core::exact_product::terminal_body_exact_graphs(
+            &snapshot,
+            INITIAL_BOX_DEFINITION,
         )
-        .map(ExactBodyPackage::from)
-        .map(Arc::new)
         .map_err(|error| error.to_string())?;
+        let mut worker =
+            ExactWorkerSupervisor::spawn(exact_worker).map_err(|error| error.to_string())?;
+        let package = graphs
+            .values()
+            .next()
+            .ok_or_else(|| "the initial box has no exact body".to_owned())
+            .and_then(|graph| {
+                worker
+                    .evaluate_exact_brep_graph(graph)
+                    .map_err(|error| error.to_string())
+            })
+            .map(ExactBodyPackage::from)
+            .map(Arc::new)?;
         if let Some(task) = self.exact_task.take() {
             task.cancelled.store(true, Ordering::Release);
         }

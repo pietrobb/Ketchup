@@ -30,7 +30,7 @@ use ketchup_core::exact_brep_graph::{
     EXACT_BREP_GRAPH_SCHEMA_V12, EXACT_BREP_GRAPH_SCHEMA_V13, ExactBRepGraph, ExactBRepGraphError,
 };
 use ketchup_core::exact_product::{
-    ExactBodyPackage, ExactFeatureChainRequest, ExactResultRegistry,
+    ExactBodyPackage, ExactResultRegistry, terminal_body_exact_graphs,
 };
 use ketchup_core::exact_validation::{
     BuiltinGeneralBodyValidator, BuiltinGravitySupportValidator, GeneralBodyParticipant,
@@ -1527,6 +1527,26 @@ fn exact_worker_path() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_ketchup-performance-exact-worker"))
 }
 
+/// Solves every house member exactly, through the same worker the app uses.
+fn exact_member_packages(shell: &Shell, snapshot: &Snapshot) -> Vec<Arc<ExactBodyPackage>> {
+    let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
+    HOUSE_MEMBERS
+        .iter()
+        .map(|name| {
+            let definition_id = definition_id_of(shell, name);
+            let graphs = terminal_body_exact_graphs(snapshot, definition_id)
+                .unwrap_or_else(|error| panic!("{name} must compile to an exact graph: {error}"));
+            let [graph] = graphs.values().collect::<Vec<_>>()[..] else {
+                panic!("{name} must have one body");
+            };
+            let package = worker
+                .evaluate_exact_brep_graph(graph)
+                .unwrap_or_else(|error| panic!("{name} must solve exactly: {error}"));
+            Arc::new(ExactBodyPackage::Graph(package))
+        })
+        .collect()
+}
+
 fn general_report(
     snapshot: &Snapshot,
     cases: &[GeneralClearanceCase],
@@ -1554,20 +1574,7 @@ fn the_timber_frame_house_projects_a_manufacturable_handoff() {
     let snapshot = shell.app().document_snapshot();
     let tolerance = TolerancePolicy::default();
 
-    // Solve every member exactly, through the same worker the app uses.
-    let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
-    let packages = HOUSE_MEMBERS
-        .iter()
-        .map(|name| {
-            let definition_id = definition_id_of(&shell, name);
-            let request = ExactFeatureChainRequest::from_snapshot(&snapshot, definition_id)
-                .unwrap_or_else(|error| panic!("{name} must yield an exact request: {error}"));
-            let package = worker
-                .evaluate_rectangle(&request)
-                .unwrap_or_else(|error| panic!("{name} must solve exactly: {error}"));
-            Arc::new(ExactBodyPackage::from(package))
-        })
-        .collect::<Vec<_>>();
+    let packages = exact_member_packages(&shell, &snapshot);
     let registry = ExactResultRegistry::accept(&snapshot, packages).unwrap();
 
     // Cover every visible member with a clearance case; members touch, so the
@@ -1766,19 +1773,7 @@ fn measured_house_change_assembly_fabrication_step_and_reopen_workflow() {
     let final_undo_steps = shell.app().undo_step_count();
 
     let exact_started = Instant::now();
-    let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
-    let packages = HOUSE_MEMBERS
-        .iter()
-        .map(|name| {
-            let definition_id = definition_id_of(&shell, name);
-            let request = ExactFeatureChainRequest::from_snapshot(&final_snapshot, definition_id)
-                .unwrap_or_else(|error| panic!("{name} must yield an exact request: {error}"));
-            let package = worker
-                .evaluate_rectangle(&request)
-                .unwrap_or_else(|error| panic!("{name} must rebuild exactly: {error}"));
-            Arc::new(ExactBodyPackage::from(package))
-        })
-        .collect::<Vec<_>>();
+    let packages = exact_member_packages(&shell, &final_snapshot);
     let registry = ExactResultRegistry::accept(&final_snapshot, packages).unwrap();
     let exact_rebuild = exact_started.elapsed();
     let changed_bounds = registry
@@ -1861,6 +1856,7 @@ fn measured_house_change_assembly_fabrication_step_and_reopen_workflow() {
     assert_eq!(model.len(), participants.len());
     let directory = tempfile::tempdir().unwrap();
     let step_path = directory.path().join("changed-house.step");
+    let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
     let step_export_started = Instant::now();
     worker
         .export_current_model_step(&final_snapshot, &model, &step_path)
@@ -1953,19 +1949,7 @@ fn the_timber_frame_house_must_stand_up_under_gravity() {
     let snapshot = shell.app().document_snapshot();
     let tolerance = TolerancePolicy::default();
 
-    let mut worker = ExactWorkerSupervisor::spawn(exact_worker_path()).unwrap();
-    let packages = HOUSE_MEMBERS
-        .iter()
-        .map(|name| {
-            let definition_id = definition_id_of(&shell, name);
-            let request = ExactFeatureChainRequest::from_snapshot(&snapshot, definition_id)
-                .unwrap_or_else(|error| panic!("{name} must yield an exact request: {error}"));
-            let package = worker
-                .evaluate_rectangle(&request)
-                .unwrap_or_else(|error| panic!("{name} must solve exactly: {error}"));
-            Arc::new(ExactBodyPackage::from(package))
-        })
-        .collect::<Vec<_>>();
+    let packages = exact_member_packages(&shell, &snapshot);
     let registry = ExactResultRegistry::accept(&snapshot, packages).unwrap();
 
     // Only the sill plates are founded on the ground. Everything else has to

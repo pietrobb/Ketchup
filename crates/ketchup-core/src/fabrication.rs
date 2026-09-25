@@ -1,19 +1,15 @@
 use crate::document::{
-    BooleanOperation, DefinitionId, DocumentId, FeatureId, FeatureKind, InstancePath,
-    InstancePathStep, OccurrenceId, Snapshot, SpatialPathSegment, Transform, WeldmentJointPolicy,
-    WeldmentJointPrimary,
+    DefinitionId, DocumentId, FeatureId, FeatureKind, InstancePath, InstancePathStep, OccurrenceId,
+    Snapshot, SpatialPathSegment, Transform, WeldmentJointPolicy, WeldmentJointPrimary,
 };
 use crate::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepLinearInterval, ExactBRepOperation,
     ExactBRepPlanarGeometry, ExactBRepPlanarSegment, ExactBRepProfile,
 };
-use crate::exact_product::{
-    BodyResultIdentity, BodySubshapeRef, ExactBodyPackage, ExactResultRegistry,
-};
+use crate::exact_product::{ExactBodyPackage, ExactResultRegistry};
 use crate::exact_validation::{
-    ExactBodyParticipant, ExactValidationError, GENERAL_BODY_VALIDATOR_CONTRACT_V1,
-    GENERAL_BODY_VALIDATOR_INPUT_V1, GeneralBodyParticipant, GeneralBodySource,
-    GeneralBodyValidationError, GeneralClearanceCase, general_body_input_bytes,
+    GENERAL_BODY_VALIDATOR_CONTRACT_V1, GENERAL_BODY_VALIDATOR_INPUT_V1, GeneralBodyParticipant,
+    GeneralBodySource, GeneralBodyValidationError, GeneralClearanceCase, general_body_input_bytes,
 };
 use crate::graph::{DerivedIdentity, sha256_hex};
 use crate::joinery::{DowelHole, project_dowel_joint_contract};
@@ -147,92 +143,6 @@ pub struct PieceDimensionSheet {
     pub chains: Vec<DimensionChain>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ExactFaceDatumRef {
-    pub instance_path: InstancePath,
-    pub body: BodyResultIdentity,
-    pub face: BodySubshapeRef,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct ExactDimensionProjection {
-    pub envelope: FabricationProjectionEnvelope,
-    pub stable_dimension_id: String,
-    pub from: ExactFaceDatumRef,
-    pub to: ExactFaceDatumRef,
-    pub axis: usize,
-    pub value_mm: f64,
-    pub evidence_class: EvidenceClass,
-}
-
-pub fn exact_parallel_face_dimension(
-    snapshot: &Snapshot,
-    stable_dimension_id: impl Into<String>,
-    from_body: &ExactBodyParticipant,
-    from_face: &BodySubshapeRef,
-    to_body: &ExactBodyParticipant,
-    to_face: &BodySubshapeRef,
-    tolerance: TolerancePolicy,
-) -> Result<ExactDimensionProjection, ExactValidationError> {
-    let stable_dimension_id = stable_dimension_id.into();
-    if stable_dimension_id.trim().is_empty() {
-        return Err(ExactValidationError::InvalidFaceReference);
-    }
-    let from_plane = from_body.face_plane(from_face)?;
-    let to_plane = to_body.face_plane(to_face)?;
-    if from_plane.axis != to_plane.axis {
-        return Err(ExactValidationError::InvalidFaceReference);
-    }
-    let value_mm = (to_plane.coordinate_mm - from_plane.coordinate_mm).abs();
-    if !value_mm.is_finite() {
-        return Err(ExactValidationError::InvalidFaceReference);
-    }
-    let evidence_class = EvidenceClass::weakest(
-        [&from_body.evidence_class, &to_body.evidence_class],
-        TolerantEvidence::new(
-            tolerance.epsilon_mm(),
-            EXACT_DIMENSION_EVALUATOR_V1,
-            PermittedErrorDirection::BidirectionalBounded,
-        )
-        .expect("the exact-dimension tolerance and method identity are valid"),
-    );
-    let from = ExactFaceDatumRef {
-        instance_path: from_body.instance_path.clone(),
-        body: from_body.result_identity.clone(),
-        face: from_face.clone(),
-    };
-    let to = ExactFaceDatumRef {
-        instance_path: to_body.instance_path.clone(),
-        body: to_body.result_identity.clone(),
-        face: to_face.clone(),
-    };
-    let mut result_bytes = Vec::new();
-    push_projection_bytes(&mut result_bytes, EXACT_DIMENSION_EVALUATOR_V1.as_bytes());
-    push_projection_bytes(&mut result_bytes, stable_dimension_id.as_bytes());
-    push_projection_path(&mut result_bytes, &from.instance_path);
-    push_projection_body(&mut result_bytes, &from.body);
-    push_projection_bytes(&mut result_bytes, from.face.lineage_digest.as_bytes());
-    push_projection_path(&mut result_bytes, &to.instance_path);
-    push_projection_body(&mut result_bytes, &to.body);
-    push_projection_bytes(&mut result_bytes, to.face.lineage_digest.as_bytes());
-    result_bytes.extend_from_slice(&value_mm.to_bits().to_le_bytes());
-    push_projection_evidence(&mut result_bytes, &evidence_class);
-    Ok(ExactDimensionProjection {
-        envelope: FabricationProjectionEnvelope::new_with_evaluator(
-            snapshot,
-            &result_bytes,
-            ProjectionStatus::Complete,
-            EXACT_DIMENSION_EVALUATOR_V1,
-        ),
-        stable_dimension_id,
-        from,
-        to,
-        axis: from_plane.axis,
-        value_mm,
-        evidence_class,
-    })
-}
-
 fn push_projection_path(output: &mut Vec<u8>, path: &InstancePath) {
     output.extend_from_slice(&path.root_occurrence().0.to_le_bytes());
     output.extend_from_slice(&(path.steps().len() as u64).to_le_bytes());
@@ -244,23 +154,6 @@ fn push_projection_path(output: &mut Vec<u8>, path: &InstancePath) {
         output.push(tag);
         output.extend_from_slice(&id.to_le_bytes());
     }
-}
-
-fn push_projection_body(output: &mut Vec<u8>, body: &BodyResultIdentity) {
-    push_projection_bytes(output, body.schema.as_bytes());
-    output.extend_from_slice(&body.document_id.0.to_le_bytes());
-    output.extend_from_slice(&body.source_revision.to_le_bytes());
-    push_projection_bytes(output, body.source_digest.as_bytes());
-    output.extend_from_slice(&body.definition_id.0.to_le_bytes());
-    output.extend_from_slice(&body.profile_feature_id.0.to_le_bytes());
-    output.extend_from_slice(&body.extrusion_feature_id.0.to_le_bytes());
-    output.extend_from_slice(&body.producer_feature_id.0.to_le_bytes());
-    push_projection_bytes(output, body.canonical_input_digest.as_bytes());
-    push_projection_bytes(output, body.exact_input_digest.as_bytes());
-    push_projection_bytes(output, body.result_fingerprint.as_bytes());
-    push_projection_bytes(output, body.evaluator.as_bytes());
-    push_projection_bytes(output, body.backend.as_bytes());
-    push_projection_bytes(output, body.tolerance.as_bytes());
 }
 
 fn push_projection_evidence(output: &mut Vec<u8>, evidence: &EvidenceClass) {
@@ -2948,9 +2841,6 @@ pub fn project_general_fabrication(
                     continue;
                 }
                 let row_operations = match package.as_ref() {
-                    ExactBodyPackage::Rectangle(_) => {
-                        rectangle_manufacturing_operations(snapshot, row, source)?
-                    }
                     ExactBodyPackage::Graph(package) => {
                         graph_manufacturing_operations(row, source, &package.graph)
                     }
@@ -3013,118 +2903,6 @@ pub fn project_general_fabrication(
         manufacturing,
         weldment,
     })
-}
-
-fn rectangle_manufacturing_operations(
-    snapshot: &Snapshot,
-    row: &GeneralBomRow,
-    source: &crate::exact_product::ExactResultKey,
-) -> Result<Option<Vec<GeneralManufacturingOperation>>, GeneralFabricationError> {
-    let definition = snapshot
-        .definition(row.definition_id)
-        .ok_or(GeneralFabricationError::UnsupportedOrUnavailableGeometry)?;
-    if definition.feature_ids().iter().any(|feature_id| {
-        matches!(
-            snapshot.feature(*feature_id).map(|feature| feature.kind()),
-            Some(FeatureKind::Boolean {
-                operation: BooleanOperation::Union,
-                ..
-            })
-        )
-    }) {
-        return Ok(None);
-    }
-    let mut operations = vec![GeneralManufacturingOperation {
-        stable_operation_id: format!("definition-{}/stock", row.definition_id.0),
-        definition_id: row.definition_id,
-        producer_feature_id: source.producer_feature_id,
-        kind: GeneralManufacturingKind::Stock,
-        semantic_inputs: Vec::new(),
-        frame: "definition-local",
-        bounds: row.dimensions,
-        machining: {
-            let graph = ExactBRepGraph::from_snapshot(
-                snapshot,
-                row.definition_id,
-                source.producer_feature_id,
-            )
-            .map_err(|_| GeneralFabricationError::UnsupportedOrUnavailableGeometry)?;
-            let Some(stock) = graph.nodes.first() else {
-                return Ok(None);
-            };
-            let ExactBRepOperation::Extrude {
-                profile, interval, ..
-            } = stock.operation
-            else {
-                return Ok(None);
-            };
-            let Some(geometry) = graph
-                .profiles
-                .get(profile.0 as usize)
-                .and_then(|profile| timber_stock_geometry(profile, interval))
-            else {
-                return Ok(None);
-            };
-            geometry
-        },
-        source: source.clone(),
-    }];
-    for feature_id in definition.feature_ids() {
-        let feature = snapshot
-            .feature(*feature_id)
-            .ok_or(GeneralFabricationError::UnsupportedOrUnavailableGeometry)?;
-        let (kind, semantic_inputs, machining) = match feature.kind() {
-            FeatureKind::ThroughCut { target, profile } => (
-                GeneralManufacturingKind::ThroughCut,
-                vec![*target, *profile],
-                legacy_profile_cut_geometry(snapshot, *profile, row.dimensions, true)?,
-            ),
-            FeatureKind::Pocket {
-                target,
-                profile,
-                depth,
-            } => (
-                GeneralManufacturingKind::ProfileCut,
-                vec![*target, *profile],
-                legacy_profile_cut_geometry(
-                    snapshot,
-                    *profile,
-                    PieceDimensions {
-                        height_mm: depth.millimetres(),
-                        ..row.dimensions
-                    },
-                    false,
-                )?,
-            ),
-            FeatureKind::Boolean {
-                operation: BooleanOperation::Cut,
-                target,
-                tool,
-            } => (
-                GeneralManufacturingKind::BooleanCut,
-                vec![*target, *tool],
-                legacy_boolean_cut_geometry(snapshot, *tool)?,
-            ),
-            _ => continue,
-        };
-        operations.push(GeneralManufacturingOperation {
-            stable_operation_id: format!(
-                "definition-{}/feature-{}/{}",
-                row.definition_id.0,
-                feature_id.0,
-                kind.token()
-            ),
-            definition_id: row.definition_id,
-            producer_feature_id: *feature_id,
-            kind,
-            semantic_inputs,
-            frame: "definition-local",
-            bounds: row.dimensions,
-            machining,
-            source: source.clone(),
-        });
-    }
-    Ok(Some(operations))
 }
 
 fn graph_manufacturing_operations(
@@ -3257,58 +3035,6 @@ fn graph_manufacturing_operations(
         source: source.clone(),
     });
     Some(operations)
-}
-
-fn legacy_profile_cut_geometry(
-    snapshot: &Snapshot,
-    profile_id: FeatureId,
-    dimensions: PieceDimensions,
-    _through: bool,
-) -> Result<GeneralMachiningGeometry, GeneralFabricationError> {
-    let feature = snapshot
-        .feature(profile_id)
-        .ok_or(GeneralFabricationError::UnsupportedOrUnavailableGeometry)?;
-    let segments = match feature.kind() {
-        FeatureKind::Profile { points_mm } if points_mm.len() >= 3 => points_mm
-            .iter()
-            .zip(points_mm.iter().cycle().skip(1))
-            .take(points_mm.len())
-            .map(|(start_mm, end_mm)| GeneralMachiningSegment::Line {
-                start_mm: *start_mm,
-                end_mm: *end_mm,
-            })
-            .collect(),
-        _ => return Err(GeneralFabricationError::UnsupportedOrUnavailableGeometry),
-    };
-    Ok(GeneralMachiningGeometry::ProfileCut {
-        frame: identity_machining_frame(),
-        segments,
-        start_mm: 0.0,
-        end_mm: dimensions.height_mm,
-    })
-}
-
-fn legacy_boolean_cut_geometry(
-    snapshot: &Snapshot,
-    tool_id: FeatureId,
-) -> Result<GeneralMachiningGeometry, GeneralFabricationError> {
-    let FeatureKind::Extrusion { profile, height } = snapshot
-        .feature(tool_id)
-        .ok_or(GeneralFabricationError::UnsupportedOrUnavailableGeometry)?
-        .kind()
-    else {
-        return Err(GeneralFabricationError::UnsupportedOrUnavailableGeometry);
-    };
-    legacy_profile_cut_geometry(
-        snapshot,
-        *profile,
-        PieceDimensions {
-            length_mm: 1.0,
-            width_mm: 1.0,
-            height_mm: height.millimetres(),
-        },
-        false,
-    )
 }
 
 fn timber_stock_geometry(

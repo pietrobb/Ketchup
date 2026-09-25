@@ -3,9 +3,8 @@ use ketchup_core::document::{
 };
 use ketchup_core::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation};
 use ketchup_core::exact_product::{
-    ExactBodyPackage, ExactFeatureChainRequest, ExactProducerCompilation,
-    ExactProducerEvidenceContext, ExactProducerPlan, ExactResultRegistry, ImportedExactPackage,
-    exact_body_terminal_features,
+    ExactBodyPackage, ExactProducerCompilation, ExactProducerEvidenceContext, ExactProducerPlan,
+    ExactResultRegistry, ImportedExactPackage, exact_body_terminal_features,
 };
 use ketchup_core::graph::sha256_bytes;
 use ketchup_core::import::{
@@ -35,10 +34,6 @@ enum ExactEvaluationRequest {
     Topology {
         graph: Box<ExactBRepGraph>,
         imported_sources: Vec<Vec<u8>>,
-    },
-    Rectangle {
-        request: Box<ExactFeatureChainRequest>,
-        topology: Option<Box<ExactBRepGraph>>,
     },
     Imported(DefinitionId, Vec<u8>),
 }
@@ -403,10 +398,6 @@ fn prepare_requests(
                 return Ok(None);
             };
             match plan {
-                ExactProducerPlan::Rectangle { request, topology } => Ok(Some((
-                    definition_id,
-                    ExactEvaluationRequest::Rectangle { request, topology },
-                ))),
                 ExactProducerPlan::Graph(graph) => {
                     let mut imported_sources = Vec::new();
                     let mut imported_hashes = Vec::new();
@@ -520,19 +511,6 @@ fn prepare_requests(
                     ExactEvaluationRequest::Topology {
                         graph,
                         imported_sources,
-                    },
-                ))),
-                Ok(Some((
-                    id,
-                    ExactEvaluationRequest::Rectangle {
-                        topology: Some(graph),
-                        ..
-                    },
-                ))) => Ok(Some((
-                    id,
-                    ExactEvaluationRequest::Topology {
-                        graph,
-                        imported_sources: Vec::new(),
                     },
                 ))),
                 Ok(Some((id, request @ ExactEvaluationRequest::Imported(..)))) => {
@@ -773,7 +751,6 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                                     .find(|entry| entry.key == key)
                                     .expect("selected producer");
                                 let topology_only = entry.render.is_evaluated();
-                                let mut topology_failure = None;
                                 let evaluated =
     (|| -> Result<(ExactBodyPackage, Option<ExactBodyPackage>), String> {
         Ok(match request {
@@ -794,29 +771,6 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                     .map(ExactBodyPackage::Graph)
                     .map_err(|error| error.to_string())?;
                 (package.clone(), Some(package))
-            }
-            ExactEvaluationRequest::Rectangle { request, topology } => {
-                let package = worker
-                    .evaluate_rectangle_with_cancellation(
-                        &request,
-                        &worker_cancelled,
-                    )
-                    .map(ExactBodyPackage::from)
-                    .map_err(|error| error.to_string())?;
-                let topology_package = topology.and_then(|graph| {
-                    match worker.evaluate_exact_brep_graph_with_imported_sources_and_cancellation(&graph, &[], &worker_cancelled) {
-                        Ok(package) => Some(ExactBodyPackage::Graph(package)),
-                        Err(error) => {
-                            eprintln!(
-                                "exact topology evaluation rejected definition {}: {error}",
-                                definition_id.0
-                            );
-                            topology_failure = Some(error.to_string());
-                            None
-                        }
-                    }
-                });
-                (package, topology_package)
             }
             ExactEvaluationRequest::Imported(definition_id, source) => {
                 let definition =
@@ -1037,8 +991,6 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                                 }
                                 entry.topology = if topology_package.is_some() {
                                     EvidenceStatus::Evaluated
-                                } else if let Some(reason) = topology_failure {
-                                    EvidenceStatus::Failed { reason }
                                 } else {
                                     EvidenceStatus::not_evaluated(
                                         "topology not provided by this request",

@@ -5,10 +5,7 @@ use ketchup_core::document::{
     ProfileSegment, ProposalContext, ProposalPrincipal, SpatialPathSegment,
 };
 use ketchup_core::exact_brep_graph::ExactBRepGraph;
-use ketchup_core::exact_product::{
-    ExactFaceRole, ExactFeatureChainRequest, build_box_render_package,
-    canonical_reference_lineage_digest,
-};
+use ketchup_core::exact_product::{ExactFaceRole, body_exact_graph};
 use ketchup_core::feature_history::{
     BodyParameterEditError, BodyParameterEditRequest, BodyProfileTranslationRequest,
     ExactParameterEdit, ExactParameterEditTarget, prepare_body_parameter_edit,
@@ -21,6 +18,7 @@ use ketchup_core::sketch::{
     SketchPointKind, SketchPointRef, SketchSpec, WorkplaneFrame, WorkplaneSpec, WorkplaneSupport,
     WorkplaneSupportHealth,
 };
+use ketchup_core::testing::box_package;
 use ketchup_core::topology::{
     TopologicalElementKind, TopologicalElementRef, TopologicalReferenceStability,
 };
@@ -345,39 +343,22 @@ fn seed_movable_circular_pocket() -> DocumentStore {
         ]))
         .unwrap();
     let base = document.current();
-    let request = ExactFeatureChainRequest::from_snapshot(&base, DEFINITION).unwrap();
-    let evidence = [
-        ExactFaceRole::Top,
-        ExactFaceRole::Bottom,
-        ExactFaceRole::East,
-    ]
-    .map(|role| {
-        (
-            role,
-            canonical_reference_lineage_digest(
-                request.document_id,
-                request.producer_feature_id(),
-                role.semantic_role(),
-                role.source_element_id(),
-                role.expected_type(),
-            ),
-            format!("geometry.{role:?}"),
-        )
-    });
-    let package = build_box_render_package(
-        &request,
-        "exact-input".to_owned(),
-        "base-result".to_owned(),
-        "test-backend".to_owned(),
-        "test-tolerance".to_owned(),
-        request.expected_bounds_mm(),
-        evidence,
+    let package = box_package(
+        &base,
+        DEFINITION,
+        PAD,
+        "base-result",
+        &[
+            ExactFaceRole::Top,
+            ExactFaceRole::Bottom,
+            ExactFaceRole::East,
+        ],
     )
     .unwrap();
     let top = package.reference(ExactFaceRole::Top).unwrap().clone();
-    for reference in package.references {
+    for reference in package.references() {
         document
-            .register_exact_reference_evidence(reference)
+            .register_exact_reference_evidence(reference.clone())
             .unwrap();
     }
     let cut_sketch = SketchSpec {
@@ -743,7 +724,7 @@ fn rounded_fitting_pocket_moves_without_changing_shape_or_depth() {
                 && *profile == CUT_SKETCH
                 && depth.millimetres() == 6.0
     ));
-    ExactFeatureChainRequest::from_snapshot_for_body(&moved, DEFINITION, BodyId(1)).unwrap();
+    body_exact_graph(&moved, DEFINITION, BodyId(1)).unwrap();
 
     document.undo().unwrap();
     assert_eq!(document.current().canonical_digest(), before.1);
@@ -780,7 +761,7 @@ fn circular_through_cut_profile_moves_and_remains_exact() {
         segment,
         ProfileSegment::CircularArc { center_mm, .. } if *center_mm == [19.0, 11.0]
     )));
-    ExactFeatureChainRequest::from_snapshot_for_body(&moved, DEFINITION, BodyId(1)).unwrap();
+    body_exact_graph(&moved, DEFINITION, BodyId(1)).unwrap();
     document.undo().unwrap();
     assert_eq!(document.current().canonical_digest(), before.1);
 }
@@ -833,15 +814,7 @@ fn brep_only_cut_translation_preserves_valid_overlap_and_rejects_disjoint_tools(
             ]))
             .unwrap();
         let before = stamp(&document);
-        assert!(
-            ExactFeatureChainRequest::from_snapshot_for_body(
-                &document.current(),
-                DEFINITION,
-                BodyId(1)
-            )
-            .is_err(),
-            "unequal extrusion heights require the general BRep path"
-        );
+        body_exact_graph(&document.current(), DEFINITION, BodyId(1)).unwrap();
         let result = prepare_body_profile_translation(
             &document,
             BodyProfileTranslationRequest {
@@ -856,10 +829,6 @@ fn brep_only_cut_translation_preserves_valid_overlap_and_rejects_disjoint_tools(
         if valid {
             let preview = result.unwrap();
             let candidate = document.preview_batch(preview.proposal.batch()).unwrap();
-            assert!(
-                ExactFeatureChainRequest::from_snapshot_for_body(&candidate, DEFINITION, BodyId(1))
-                    .is_err()
-            );
             ExactBRepGraph::from_snapshot(&candidate, DEFINITION, CUT).unwrap();
             document.commit_proposal(&preview.proposal).unwrap();
             let FeatureKind::SegmentProfile { segments, .. } = document
@@ -999,12 +968,7 @@ fn seed_cross_body_history() -> DocumentStore {
 fn cross_body_affected_closure_previews_and_commits_atomically() {
     let mut document = seed_cross_body_history();
     let before = stamp(&document);
-    let before_exact = ExactFeatureChainRequest::from_snapshot_for_body(
-        &document.current(),
-        DEFINITION,
-        BodyId(1),
-    )
-    .unwrap();
+    let before_exact = body_exact_graph(&document.current(), DEFINITION, BodyId(1)).unwrap();
     let preview = prepare_body_parameter_edit(
         &document,
         BodyParameterEditRequest {
@@ -1024,13 +988,8 @@ fn cross_body_affected_closure_previews_and_commits_atomically() {
     assert!(preview.unchanged_body_ids.is_empty());
     assert_eq!(stamp(&document), before);
     let candidate = document.preview_batch(preview.proposal.batch()).unwrap();
-    let candidate_exact =
-        ExactFeatureChainRequest::from_snapshot_for_body(&candidate, DEFINITION, BodyId(1))
-            .unwrap();
-    assert_ne!(
-        candidate_exact.canonical_input_digest,
-        before_exact.canonical_input_digest
-    );
+    let candidate_exact = body_exact_graph(&candidate, DEFINITION, BodyId(1)).unwrap();
+    assert_ne!(candidate_exact.graph_digest, before_exact.graph_digest);
     assert_eq!(stamp(&document), before);
 
     let revision = document.commit_proposal(&preview.proposal).unwrap();
@@ -1044,14 +1003,10 @@ fn cross_body_affected_closure_previews_and_commits_atomically() {
     let reopened = persistence::load(&persistence::save(&document.current())).unwrap();
     assert_eq!(reopened.snapshot().canonical_digest(), edited_digest);
     assert_eq!(
-        ExactFeatureChainRequest::from_snapshot_for_body(
-            &reopened.snapshot(),
-            DEFINITION,
-            BodyId(1)
-        )
-        .unwrap()
-        .canonical_input_digest,
-        candidate_exact.canonical_input_digest
+        body_exact_graph(&reopened.snapshot(), DEFINITION, BodyId(1))
+            .unwrap()
+            .graph_digest,
+        candidate_exact.graph_digest
     );
 }
 

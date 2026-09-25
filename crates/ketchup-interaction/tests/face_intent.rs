@@ -2,11 +2,9 @@ use ketchup_core::document::{
     BodyId, CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
     FeatureKind,
 };
-use ketchup_core::exact_product::{
-    BodySubshapeRef, ExactFaceRole, ExactFeatureChainRequest, build_box_render_package,
-    canonical_reference_lineage_digest,
-};
+use ketchup_core::exact_product::{BodySubshapeRef, ExactFaceRole};
 use ketchup_core::sketch::{PrincipalPlane, WorkplaneFrame, WorkplaneSupportHealth};
+use ketchup_core::testing::box_package;
 use ketchup_core::{persistence, state_view::encode_semantic_state};
 use ketchup_interaction::face_intent::{
     FaceIntentError, FaceIntentSource, FaceIntentTarget, HoverFaceCandidate, TransientFaceIntent,
@@ -73,8 +71,8 @@ fn seed() -> (DocumentStore, BodySubshapeRef, BodySubshapeRef) {
         ]))
         .unwrap();
 
-    let first = top_reference(&store, EXTRUSION_ONE, [[0.0, 0.0, 0.0], [20.0, 10.0, 5.0]]);
-    let second = top_reference(&store, EXTRUSION_TWO, [[0.0, 0.0, 0.0], [8.0, 4.0, 2.0]]);
+    let first = top_reference(&store, EXTRUSION_ONE);
+    let second = top_reference(&store, EXTRUSION_TWO);
     store
         .register_exact_reference_evidence(first.clone())
         .unwrap();
@@ -84,41 +82,17 @@ fn seed() -> (DocumentStore, BodySubshapeRef, BodySubshapeRef) {
     (store, first, second)
 }
 
-fn top_reference(
-    store: &DocumentStore,
-    producer: FeatureId,
-    bounds_mm: [[f64; 3]; 2],
-) -> BodySubshapeRef {
-    let snapshot = store.current();
-    let request =
-        ExactFeatureChainRequest::from_snapshot_for_producer(&snapshot, DEFINITION, producer)
-            .unwrap();
-    let evidence = [
-        ExactFaceRole::Top,
-        ExactFaceRole::Bottom,
-        ExactFaceRole::East,
-    ]
-    .map(|role| {
-        (
-            role,
-            canonical_reference_lineage_digest(
-                snapshot.document_id(),
-                producer,
-                role.semantic_role(),
-                role.source_element_id(),
-                role.expected_type(),
-            ),
-            format!("geometry:{producer:?}:{role:?}"),
-        )
-    });
-    build_box_render_package(
-        &request,
-        format!("exact-input-{}", producer.0),
-        format!("result-{}", producer.0),
-        "occt".to_owned(),
-        "r0".to_owned(),
-        bounds_mm,
-        evidence,
+fn top_reference(store: &DocumentStore, producer: FeatureId) -> BodySubshapeRef {
+    box_package(
+        &store.current(),
+        DEFINITION,
+        producer,
+        &format!("result-{}", producer.0),
+        &[
+            ExactFaceRole::Top,
+            ExactFaceRole::Bottom,
+            ExactFaceRole::East,
+        ],
     )
     .unwrap()
     .reference(ExactFaceRole::Top)

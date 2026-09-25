@@ -10,13 +10,12 @@ use ketchup_core::document::{
     ProposalCommitError, ProposalPrepareError, TagId, Transform,
 };
 use ketchup_core::exact_product::{
-    ExactAxialAttachmentInput, ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest,
-    ExactPlanarFaceAttachmentInput, ExactResultRegistry, build_box_render_package,
-    build_box_render_package_with_attachments, build_box_render_package_with_typed_attachments,
+    ExactBRepGraphPackage, ExactBodyPackage, ExactFaceRole, ExactResultRegistry,
     canonical_reference_lineage_digest,
 };
 use ketchup_core::persistence;
 use ketchup_core::state_view::encode_semantic_state;
+use ketchup_core::testing::box_package;
 use std::sync::Arc;
 
 const DEFINITION: DefinitionId = DefinitionId(1);
@@ -45,30 +44,36 @@ fn store_stamp(document: &DocumentStore) -> StoreStamp {
     }
 }
 
+fn graph_package(
+    snapshot: &ketchup_core::document::Snapshot,
+    fingerprint: &str,
+    faces: &[ExactFaceRole],
+) -> ExactBRepGraphPackage {
+    let ExactBodyPackage::Graph(package) =
+        box_package(snapshot, DEFINITION, EXTRUSION, fingerprint, faces).unwrap()
+    else {
+        panic!("box fixture is a graph package");
+    };
+    package
+}
+
 fn current_exact_package(
     snapshot: &ketchup_core::document::Snapshot,
     fingerprint: &str,
 ) -> Arc<ExactBodyPackage> {
-    current_exact_package_with_attachments(
-        snapshot,
-        fingerprint,
-        &[
-            ExactPlanarFaceAttachmentInput {
-                role: ExactFaceRole::Top,
-                local_origin_mm: [0.0; 3],
-                local_unit_normal: [0.0, 0.0, 1.0],
-            },
-            ExactPlanarFaceAttachmentInput {
-                role: ExactFaceRole::Bottom,
-                local_origin_mm: [0.0; 3],
-                local_unit_normal: [0.0, 0.0, -1.0],
-            },
-            ExactPlanarFaceAttachmentInput {
-                role: ExactFaceRole::East,
-                local_origin_mm: [0.0; 3],
-                local_unit_normal: [1.0, 0.0, 0.0],
-            },
-        ],
+    Arc::new(
+        box_package(
+            snapshot,
+            DEFINITION,
+            EXTRUSION,
+            fingerprint,
+            &[
+                ExactFaceRole::Top,
+                ExactFaceRole::Bottom,
+                ExactFaceRole::East,
+            ],
+        )
+        .unwrap(),
     )
 }
 
@@ -76,91 +81,39 @@ fn current_exact_package_without_attachments(
     snapshot: &ketchup_core::document::Snapshot,
     fingerprint: &str,
 ) -> Arc<ExactBodyPackage> {
-    current_exact_package_with_attachments(snapshot, fingerprint, &[])
+    let mut package = graph_package(
+        snapshot,
+        fingerprint,
+        &[
+            ExactFaceRole::Top,
+            ExactFaceRole::Bottom,
+            ExactFaceRole::East,
+        ],
+    );
+    package.planar_face_attachments.clear();
+    Arc::new(ExactBodyPackage::Graph(package))
 }
 
-fn current_exact_package_with_attachments(
+/// The cylinder result: its planar caps plus the side face, with the side's
+/// axis when the evaluator reported one.
+fn cylinder_package(
     snapshot: &ketchup_core::document::Snapshot,
     fingerprint: &str,
-    attachments: &[ExactPlanarFaceAttachmentInput],
+    axis: Option<([f64; 3], [f64; 3])>,
 ) -> Arc<ExactBodyPackage> {
-    let request = ExactFeatureChainRequest::from_snapshot(snapshot, DEFINITION).unwrap();
-    let FeatureKind::Extrusion { height, .. } = snapshot.feature(EXTRUSION).unwrap().kind() else {
-        panic!("expected extrusion");
-    };
-    let evidence = [
-        ExactFaceRole::Top,
-        ExactFaceRole::Bottom,
-        ExactFaceRole::East,
-    ]
-    .map(|role| {
-        (
-            role,
-            canonical_reference_lineage_digest(
-                snapshot.document_id(),
-                EXTRUSION,
-                role.semantic_role(),
-                role.source_element_id(),
-                role.expected_type(),
-            ),
-            format!("geometry:{role:?}:{fingerprint}"),
-        )
-    });
-    Arc::new(
-        build_box_render_package_with_attachments(
-            &request,
-            format!("exact-input:{fingerprint}"),
-            fingerprint.to_owned(),
-            "occt".into(),
-            "r0".into(),
-            [[0.0, 0.0, 0.0], [10.0, 10.0, height.millimetres()]],
-            evidence,
-            attachments,
-        )
-        .unwrap()
-        .into(),
-    )
-}
-
-fn current_exact_package_with_axial_attachment(
-    snapshot: &ketchup_core::document::Snapshot,
-    fingerprint: &str,
-    attachment: Option<ExactAxialAttachmentInput>,
-) -> Arc<ExactBodyPackage> {
-    let request = ExactFeatureChainRequest::from_snapshot(snapshot, DEFINITION).unwrap();
-    let evidence = [
-        ExactFaceRole::Top,
-        ExactFaceRole::Bottom,
-        ExactFaceRole::CircleSide,
-    ]
-    .map(|role| {
-        (
-            role,
-            canonical_reference_lineage_digest(
-                snapshot.document_id(),
-                EXTRUSION,
-                role.semantic_role(),
-                role.source_element_id(),
-                role.expected_type(),
-            ),
-            format!("geometry:{role:?}:{fingerprint}"),
-        )
-    });
-    Arc::new(
-        build_box_render_package_with_typed_attachments(
-            &request,
-            format!("exact-input:{fingerprint}"),
-            fingerprint.to_owned(),
-            "occt".into(),
-            "r0".into(),
-            request.expected_bounds_mm(),
-            evidence,
-            &[],
-            attachment.as_slice(),
-        )
-        .unwrap()
-        .into(),
-    )
+    let mut package = graph_package(
+        snapshot,
+        fingerprint,
+        &[ExactFaceRole::Top, ExactFaceRole::Bottom],
+    );
+    let side = cylindrical_reference(package.references[0].clone());
+    package
+        .axial_attachments
+        .extend(axis.map(|(origin, direction)| {
+            AxialAttachment::cylindrical_face(side.clone(), origin, direction).unwrap()
+        }));
+    package.references.push(side);
+    Arc::new(ExactBodyPackage::Graph(package))
 }
 
 fn seeded_circle_document() -> (DocumentStore, ketchup_core::exact_product::BodySubshapeRef) {
@@ -225,15 +178,10 @@ fn seeded_circle_document() -> (DocumentStore, ketchup_core::exact_product::Body
         ]))
         .unwrap();
     let snapshot = document.current();
-    let package = current_exact_package_with_axial_attachment(
+    let package = cylinder_package(
         &snapshot,
         "initial-axis",
-        Some(ExactAxialAttachmentInput {
-            role: ExactFaceRole::CircleSide,
-            kind: AxialAttachmentKind::CylindricalFace,
-            local_origin_mm: [center[0], center[1], 0.0],
-            local_unit_direction: [0.0, 0.0, 1.0],
-        }),
+        Some(([center[0], center[1], 0.0], [0.0, 0.0, 1.0])),
     );
     (
         document,
@@ -294,36 +242,7 @@ fn seeded_document() -> (
             },
         ]))
         .unwrap();
-    let snapshot = document.current();
-    let request = ExactFeatureChainRequest::from_snapshot(&snapshot, DEFINITION).unwrap();
-    let evidence = [
-        ExactFaceRole::Top,
-        ExactFaceRole::Bottom,
-        ExactFaceRole::East,
-    ]
-    .map(|role| {
-        (
-            role,
-            canonical_reference_lineage_digest(
-                snapshot.document_id(),
-                EXTRUSION,
-                role.semantic_role(),
-                role.source_element_id(),
-                role.expected_type(),
-            ),
-            format!("geometry:{role:?}"),
-        )
-    });
-    let package = build_box_render_package(
-        &request,
-        "exact-input".into(),
-        "result".into(),
-        "occt".into(),
-        "r0".into(),
-        [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]],
-        evidence,
-    )
-    .unwrap();
+    let package = current_exact_package(&document.current(), "result");
     (
         document,
         package.reference(ExactFaceRole::Top).unwrap().clone(),
@@ -912,27 +831,24 @@ fn recompute_refreshes_identity_bound_typed_attachments_and_fails_closed_without
         .unwrap();
 
     let source = document.current();
-    let refreshed_inputs = [
-        ExactPlanarFaceAttachmentInput {
-            role: ExactFaceRole::Top,
-            local_origin_mm: [6.25, 4.5, 12.0],
-            local_unit_normal: [0.0, 0.0, 1.0],
-        },
-        ExactPlanarFaceAttachmentInput {
-            role: ExactFaceRole::Bottom,
-            local_origin_mm: [6.25, 4.5, 0.0],
-            local_unit_normal: [0.0, 0.0, -1.0],
-        },
-    ];
-    let registry = ExactResultRegistry::accept(
-        &source,
-        [current_exact_package_with_attachments(
-            &source,
-            "attachment-refresh",
-            &refreshed_inputs,
-        )],
-    )
-    .unwrap();
+    let package = current_exact_package(&source, "attachment-refresh");
+    let ExactBodyPackage::Graph(graph) = package.as_ref() else {
+        panic!("box fixture is a graph package");
+    };
+    let refreshed_attachment = |role| {
+        let reference = package.reference(role).unwrap();
+        graph
+            .planar_face_attachments
+            .iter()
+            .find(|attachment| attachment.reference() == reference)
+            .unwrap()
+            .clone()
+    };
+    let refreshed_top = refreshed_attachment(ExactFaceRole::Top);
+    let refreshed_bottom = refreshed_attachment(ExactFaceRole::Bottom);
+    // The top face moved with the new height; the mate follows it.
+    assert_eq!(refreshed_top.local_origin_mm(), [5.0, 5.0, 12.0]);
+    let registry = ExactResultRegistry::accept(&source, [Arc::clone(&package)]).unwrap();
     let recomputed =
         recompute_rigid_assembly(&document, &registry, AssemblySolverPolicy::default()).unwrap();
     assert_eq!(recomputed.status(), AssemblyRecomputeStatus::Solved);
@@ -947,19 +863,19 @@ fn recompute_refreshes_identity_bound_typed_attachments_and_fails_closed_without
         .unwrap();
     assert_eq!(
         refreshed_a.local_origin_mm().map(f64::to_bits),
-        refreshed_inputs[0].local_origin_mm.map(f64::to_bits)
+        refreshed_top.local_origin_mm().map(f64::to_bits)
     );
     assert_eq!(
         refreshed_a.local_unit_normal().map(f64::to_bits),
-        refreshed_inputs[0].local_unit_normal.map(f64::to_bits)
+        refreshed_top.local_unit_normal().map(f64::to_bits)
     );
     assert_eq!(
         refreshed_b.local_origin_mm().map(f64::to_bits),
-        refreshed_inputs[1].local_origin_mm.map(f64::to_bits)
+        refreshed_bottom.local_origin_mm().map(f64::to_bits)
     );
     assert_eq!(
         refreshed_b.local_unit_normal().map(f64::to_bits),
-        refreshed_inputs[1].local_unit_normal.map(f64::to_bits)
+        refreshed_bottom.local_unit_normal().map(f64::to_bits)
     );
     document
         .commit_proposal(&recomputed.prepare_publication(&document).unwrap())
@@ -974,7 +890,7 @@ fn recompute_refreshes_identity_bound_typed_attachments_and_fails_closed_without
             .unwrap()
             .local_origin_mm()
             .map(f64::to_bits),
-        refreshed_inputs[0].local_origin_mm.map(f64::to_bits)
+        refreshed_top.local_origin_mm().map(f64::to_bits)
     );
 
     document
@@ -1057,18 +973,14 @@ fn recompute_refreshes_typed_axial_geometry_and_breaks_without_axis_evidence() {
         .unwrap();
 
     let source = document.current();
-    let refreshed = ExactAxialAttachmentInput {
-        role: ExactFaceRole::CircleSide,
-        kind: AxialAttachmentKind::CylindricalFace,
-        local_origin_mm: [6.25, 4.5, 0.0],
-        local_unit_direction: [1.0, 0.0, 0.0],
-    };
+    let refreshed_origin = [5.0, 5.0, 0.0];
+    let refreshed_direction = [0.0, 0.0, 1.0];
     let registry = ExactResultRegistry::accept(
         &source,
-        [current_exact_package_with_axial_attachment(
+        [cylinder_package(
             &source,
             "axial-attachment-refresh",
-            Some(refreshed),
+            Some((refreshed_origin, refreshed_direction)),
         )],
     )
     .unwrap();
@@ -1082,11 +994,11 @@ fn recompute_refreshes_typed_axial_geometry_and_breaks_without_axis_evidence() {
         let attachment = endpoint.axial_attachment().unwrap();
         assert_eq!(
             attachment.local_origin_mm().map(f64::to_bits),
-            refreshed.local_origin_mm.map(f64::to_bits)
+            refreshed_origin.map(f64::to_bits)
         );
         assert_eq!(
             attachment.local_unit_direction().map(f64::to_bits),
-            refreshed.local_unit_direction.map(f64::to_bits)
+            refreshed_direction.map(f64::to_bits)
         );
     }
 
@@ -1101,11 +1013,7 @@ fn recompute_refreshes_typed_axial_geometry_and_breaks_without_axis_evidence() {
     let current = document.current();
     let registry_without_axis = ExactResultRegistry::accept(
         &current,
-        [current_exact_package_with_axial_attachment(
-            &current,
-            "axial-attachment-missing",
-            None,
-        )],
+        [cylinder_package(&current, "axial-attachment-missing", None)],
     )
     .unwrap();
     let broken = recompute_rigid_assembly(
@@ -2130,7 +2038,7 @@ fn assembly_recompute_round_trips_rebind_and_controlled_topology_loss() {
     reopened_document.commit_proposal(&dimension_edit).unwrap();
     let before_topology_change = reopened_document.current();
     let current_mate = before_topology_change.assembly_mate(MATE).unwrap().clone();
-    let removed_role = ExactFaceRole::PocketFloor;
+    let removed_role = ExactFaceRole::West;
     let mut removed_reference = current_mate.endpoint_a().reference().clone();
     removed_reference.semantic_role = removed_role.semantic_role().into();
     removed_reference.source_element_id = removed_role.source_element_id().into();

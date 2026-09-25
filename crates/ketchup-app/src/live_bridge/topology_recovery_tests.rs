@@ -2,7 +2,7 @@ use super::*;
 use ketchup_application::evaluation::{
     EvidenceStatus, exact_worker_candidates, publish_exact_products, start_exact_evaluation,
 };
-use ketchup_core::exact_product::{ExactBodyPackage, ExactFeatureChainRequest};
+use ketchup_core::exact_product::{ExactBodyPackage, producer_exact_graph};
 use ketchup_scheduler::ExactWorkerSupervisor;
 
 #[test]
@@ -13,19 +13,14 @@ fn topology_retry_preserves_render_and_recovers_live_queries_without_edit() {
         .find(|path| path.is_file())
         .expect("build ketchup-exact-worker before this test");
     let snapshot = app.document.current();
-    let request = ExactFeatureChainRequest::from_snapshot_for_producer(
-        &snapshot,
-        DefinitionId(1),
-        FeatureId(2),
-    )
-    .unwrap();
-    let render = Arc::new(ExactBodyPackage::from(
+    let graph = producer_exact_graph(&snapshot, DefinitionId(1), FeatureId(2)).unwrap();
+    let render = Arc::new(ExactBodyPackage::Graph(
         ExactWorkerSupervisor::spawn(&worker)
             .unwrap()
-            .evaluate_rectangle(&request)
+            .evaluate_exact_brep_graph(&graph)
             .unwrap(),
     ));
-    // Inject the state left by a successful rectangle request followed by a
+    // Inject the state left by a successful render request followed by a
     // failed topology request. The render is real worker evidence, not a mock.
     app.exact_results
         .insert_current(&snapshot, Arc::clone(&render))

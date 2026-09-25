@@ -3,8 +3,7 @@ use ketchup_core::document::{
     FeatureId, FeatureKind,
 };
 use ketchup_core::exact_product::{
-    BODY_SUBSHAPE_REF_SCHEMA_V1, BodySubshapeRef, ExactEdgeRole, ExactFaceRole,
-    ExactFeatureChainRequest, ReferenceStability, build_box_render_package,
+    BODY_SUBSHAPE_REF_SCHEMA_V1, BodySubshapeRef, ExactEdgeRole, ExactFaceRole, ReferenceStability,
     canonical_reference_lineage_digest,
 };
 use ketchup_core::persistence;
@@ -17,6 +16,7 @@ use ketchup_core::sketch::{
     WorkplaneSupport, WorkplaneSupportHealth,
 };
 use ketchup_core::state_view::encode_semantic_state;
+use ketchup_core::testing::box_package;
 
 const DEFINITION: DefinitionId = DefinitionId(1);
 const XY: FeatureId = FeatureId(10);
@@ -3554,33 +3554,16 @@ fn all_principal_planes_and_one_resolved_planar_face_support_are_canonical() {
             },
         ]))
         .unwrap();
-    let request = ExactFeatureChainRequest::from_snapshot(&document.current(), DEFINITION).unwrap();
-    let evidence = [
-        ExactFaceRole::Top,
-        ExactFaceRole::Bottom,
-        ExactFaceRole::East,
-    ]
-    .map(|role| {
-        (
-            role,
-            canonical_reference_lineage_digest(
-                document_id,
-                extrusion,
-                role.semantic_role(),
-                role.source_element_id(),
-                role.expected_type(),
-            ),
-            format!("geometry:{role:?}"),
-        )
-    });
-    let package = build_box_render_package(
-        &request,
-        "exact-input".into(),
-        "result".into(),
-        "occt".into(),
-        "r0".into(),
-        [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]],
-        evidence,
+    let package = box_package(
+        &document.current(),
+        DEFINITION,
+        extrusion,
+        "result",
+        &[
+            ExactFaceRole::Top,
+            ExactFaceRole::Bottom,
+            ExactFaceRole::East,
+        ],
     )
     .unwrap();
     let reference = package.reference(role).unwrap().clone();
@@ -3599,12 +3582,12 @@ fn all_principal_planes_and_one_resolved_planar_face_support_are_canonical() {
         expected_type: edge_role.expected_type().to_owned(),
         expected_cardinality: 1,
         stability: ReferenceStability::Guaranteed,
-        canonical_input_digest: request.canonical_input_digest.clone(),
-        exact_input_digest: package.identity.exact_input_digest.clone(),
-        result_fingerprint: package.identity.result_fingerprint.clone(),
-        evaluator: package.identity.evaluator.clone(),
-        backend: package.identity.backend.clone(),
-        tolerance: package.identity.tolerance.clone(),
+        canonical_input_digest: reference.canonical_input_digest.clone(),
+        exact_input_digest: reference.exact_input_digest.clone(),
+        result_fingerprint: reference.result_fingerprint.clone(),
+        evaluator: reference.evaluator.clone(),
+        backend: reference.backend.clone(),
+        tolerance: reference.tolerance.clone(),
         lineage_digest: canonical_reference_lineage_digest(
             document_id,
             extrusion,

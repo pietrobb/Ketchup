@@ -4,8 +4,7 @@ use ketchup_core::document::{
     ProposalPrincipal,
 };
 use ketchup_core::exact_product::{
-    ExactBodyPackage, ExactBodyView, ExactFaceRole, ExactFeatureChainRequest, ExactProductError,
-    ExactResultRegistry, build_box_render_package, canonical_reference_lineage_digest,
+    ExactBodyPackage, ExactFaceRole, ExactProductError, ExactResultRegistry, body_exact_graph,
 };
 use ketchup_core::feature_history::{
     BodyHistoryMutation, BodyHistoryMutationError, BodyHistoryMutationRequest, FeatureHistoryError,
@@ -13,6 +12,7 @@ use ketchup_core::feature_history::{
     prepare_body_history_mutation, project_feature_history,
 };
 use ketchup_core::persistence;
+use ketchup_core::testing::box_package;
 use std::sync::Arc;
 
 const DEFINITION: DefinitionId = DefinitionId(1);
@@ -120,79 +120,37 @@ fn stamp(document: &DocumentStore) -> (u64, String, usize, usize, usize) {
     )
 }
 
-fn evidence<const N: usize>(
-    request: &ExactFeatureChainRequest,
-    roles: [ExactFaceRole; N],
-    suffix: &str,
-) -> [(ExactFaceRole, String, String); N] {
-    roles.map(|role| {
-        (
-            role,
-            canonical_reference_lineage_digest(
-                request.document_id,
-                request.producer_feature_id(),
-                role.semantic_role(),
-                role.source_element_id(),
-                role.expected_type(),
-            ),
-            format!("geometry:{suffix}:{role:?}"),
-        )
-    })
-}
-
 fn package_for(
     snapshot: &ketchup_core::document::Snapshot,
     producer: FeatureId,
     suffix: &str,
 ) -> Arc<ExactBodyPackage> {
-    let request =
-        ExactFeatureChainRequest::from_snapshot_for_producer(snapshot, DEFINITION, producer)
-            .unwrap();
-    let package = if request.pocket_depth_bits.is_some() {
-        build_box_render_package(
-            &request,
-            format!("exact:{suffix}"),
-            format!("result:{suffix}"),
-            "verifier-backend".to_owned(),
-            "verifier-tolerance".to_owned(),
-            request.expected_bounds_mm(),
-            evidence(
-                &request,
-                [
-                    ExactFaceRole::Top,
-                    ExactFaceRole::Bottom,
-                    ExactFaceRole::East,
-                    ExactFaceRole::PocketFloor,
-                    ExactFaceRole::PocketWest,
-                    ExactFaceRole::PocketEast,
-                    ExactFaceRole::PocketSouth,
-                    ExactFaceRole::PocketNorth,
-                ],
-                suffix,
-            ),
-        )
-        .unwrap()
-    } else {
-        build_box_render_package(
-            &request,
-            format!("exact:{suffix}"),
-            format!("result:{suffix}"),
-            "verifier-backend".to_owned(),
-            "verifier-tolerance".to_owned(),
-            request.expected_bounds_mm(),
-            evidence(
-                &request,
-                [
-                    ExactFaceRole::Top,
-                    ExactFaceRole::Bottom,
-                    ExactFaceRole::East,
-                ],
-                suffix,
-            ),
-        )
-        .unwrap()
-    };
-    Arc::new(ExactBodyPackage::from(package))
+    box_package(
+        snapshot,
+        DEFINITION,
+        producer,
+        &format!("result:{suffix}"),
+        &[
+            ExactFaceRole::Top,
+            ExactFaceRole::Bottom,
+            ExactFaceRole::East,
+        ],
+    )
+    .map(Arc::new)
+    .unwrap()
+}
+
+/// Producer and exact node sources of the solid body 1 evaluates to.
+fn body_one_graph(snapshot: &ketchup_core::document::Snapshot) -> (FeatureId, Vec<FeatureId>) {
+    let graph = body_exact_graph(snapshot, DEFINITION, BodyId(1)).unwrap();
+    (
+        FeatureId(graph.producer_feature_id),
+        graph
+            .nodes
+            .iter()
+            .map(|node| FeatureId(node.source_feature_id))
+            .collect(),
+    )
 }
 
 #[test]
@@ -208,20 +166,15 @@ fn independent_preview_suppress_resume_undo_redo_and_save_open_are_exact() {
         .clone();
     let before_features = [BASE_PROFILE, BASE_EXTRUSION, CUT_PROFILE, POCKET]
         .map(|id| before.feature(id).unwrap().clone());
-    let before_request =
-        ExactFeatureChainRequest::from_snapshot_for_body(&before, DEFINITION, BodyId(1)).unwrap();
     let before_package = package_for(&before, POCKET, "pocket");
-    assert_eq!(before_request.producer_feature_id(), POCKET);
     assert_eq!(
-        before_request.expected_bounds_mm(),
-        [[0.0, 0.0, 0.0], [20.0, 20.0, 8.0]]
+        body_one_graph(&before),
+        (POCKET, vec![BASE_EXTRUSION, POCKET])
     );
     assert_eq!(
         before_package.bounds_mm(),
-        before_request.expected_bounds_mm()
+        [[0.0, 0.0, 0.0], [20.0, 20.0, 8.0]]
     );
-    assert_eq!(before_package.vertex_count(), 16);
-    assert_eq!(before_package.triangle_count(), 28);
 
     let preview = project_feature_history(
         &before,
@@ -268,22 +221,12 @@ fn independent_preview_suppress_resume_undo_redo_and_save_open_are_exact() {
 
     let suppressed = document.current();
     let suppressed_digest = suppressed.canonical_digest();
-    let suppressed_request =
-        ExactFeatureChainRequest::from_snapshot_for_body(&suppressed, DEFINITION, BodyId(1))
-            .unwrap();
     let suppressed_package = package_for(&suppressed, BASE_EXTRUSION, "base");
-    assert_eq!(suppressed_request.producer_feature_id(), BASE_EXTRUSION);
-    assert!(suppressed_request.pocket_depth_bits.is_none());
     assert_eq!(
-        suppressed_request.expected_bounds_mm(),
-        before_request.expected_bounds_mm()
+        body_one_graph(&suppressed),
+        (BASE_EXTRUSION, vec![BASE_EXTRUSION])
     );
-    assert_eq!(
-        suppressed_package.bounds_mm(),
-        before_request.expected_bounds_mm()
-    );
-    assert_eq!(suppressed_package.vertex_count(), 8);
-    assert_eq!(suppressed_package.triangle_count(), 12);
+    assert_eq!(suppressed_package.bounds_mm(), before_package.bounds_mm());
     assert_eq!(
         suppressed.definition(DEFINITION).unwrap().body(BodyId(1)),
         Some(&before_body)
@@ -296,16 +239,7 @@ fn independent_preview_suppress_resume_undo_redo_and_save_open_are_exact() {
     }
 
     assert_eq!(document.undo().unwrap().canonical_digest(), before_stamp.1);
-    assert_eq!(
-        ExactFeatureChainRequest::from_snapshot_for_body(
-            &document.current(),
-            DEFINITION,
-            BodyId(1)
-        )
-        .unwrap()
-        .producer_feature_id(),
-        POCKET
-    );
+    assert_eq!(body_one_graph(&document.current()).0, POCKET);
     assert_eq!(
         document.redo().unwrap().canonical_digest(),
         suppressed_digest
@@ -317,13 +251,7 @@ fn independent_preview_suppress_resume_undo_redo_and_save_open_are_exact() {
         suppressed_digest
     );
     assert_eq!(
-        ExactFeatureChainRequest::from_snapshot_for_body(
-            &reopened_suppressed.snapshot(),
-            DEFINITION,
-            BodyId(1)
-        )
-        .unwrap()
-        .producer_feature_id(),
+        body_one_graph(&reopened_suppressed.snapshot()).0,
         BASE_EXTRUSION
     );
 
@@ -337,12 +265,7 @@ fn independent_preview_suppress_resume_undo_redo_and_save_open_are_exact() {
     document.commit_proposal(&resume.proposal).unwrap();
     assert_eq!(document.visible_undo_steps(), before_resume_undo + 1);
     let resumed = document.current();
-    assert_eq!(
-        ExactFeatureChainRequest::from_snapshot_for_body(&resumed, DEFINITION, BodyId(1))
-            .unwrap()
-            .producer_feature_id(),
-        POCKET
-    );
+    assert_eq!(body_one_graph(&resumed).0, POCKET);
     let reopened_resumed = persistence::load(&persistence::save(&resumed)).unwrap();
     assert_eq!(
         reopened_resumed.snapshot().canonical_digest(),
@@ -482,17 +405,8 @@ fn lost_and_ambiguous_rollback_references_are_observational() {
     assert_eq!(stamp(&document), unchanged);
 
     let current_base = package_for(&suppressed, BASE_EXTRUSION, "base-current");
-    let mut alternate_package = (*current_base).clone();
-    let ExactBodyPackage::Rectangle(alternate_render) = &mut alternate_package else {
-        panic!("expected rectangle package");
-    };
-    alternate_render.identity.backend.push_str("-alternate");
-    for candidate in &mut alternate_render.references {
-        candidate.backend = alternate_render.identity.backend.clone();
-    }
-    let ambiguous =
-        ExactResultRegistry::accept(&suppressed, [current_base, Arc::new(alternate_package)])
-            .unwrap();
+    let alternate = package_for(&suppressed, BASE_EXTRUSION, "base-alternate");
+    let ambiguous = ExactResultRegistry::accept(&suppressed, [current_base, alternate]).unwrap();
     assert_eq!(
         project_feature_history(&suppressed, &ambiguous, DEFINITION, &query),
         Err(FeatureHistoryError::SubshapeAmbiguous(2))

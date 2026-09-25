@@ -9,9 +9,7 @@ use ketchup_core::drawing::{
     DrawingSheet, DrawingSheetId, DrawingSource, OrthographicViewKind, project_orthographic_drawing,
 };
 use ketchup_core::exact_product::{
-    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactPlanarFaceAttachmentInput,
-    ExactRenderPackage, ExactResultRegistry, build_box_render_package_with_attachments,
-    canonical_reference_lineage_digest,
+    ExactBodyPackage, ExactFaceRole, ExactResultRegistry, body_exact_graph,
 };
 use ketchup_core::persistence;
 use ketchup_core::shared_change::{
@@ -20,6 +18,7 @@ use ketchup_core::shared_change::{
     ComponentReplacementImpactRequest, SharedChangeExportEligibility, SharedChangeExportFormat,
     commit_component_replacement, project_component_replacement_impact,
 };
+use ketchup_core::testing::box_package;
 use std::sync::Arc;
 
 const SOURCE: DefinitionId = DefinitionId(1);
@@ -60,52 +59,17 @@ fn exact_package(
     snapshot: &ketchup_core::document::Snapshot,
     definition_id: DefinitionId,
     fingerprint: &str,
-) -> ExactRenderPackage {
-    let request =
-        ExactFeatureChainRequest::from_snapshot_for_body(snapshot, definition_id, BodyId(1))
-            .unwrap();
-    let evidence = |role: ExactFaceRole| {
-        (
-            role,
-            canonical_reference_lineage_digest(
-                snapshot.document_id(),
-                request.producer_feature_id(),
-                role.semantic_role(),
-                role.source_element_id(),
-                role.expected_type(),
-            ),
-            format!("geometry:{definition_id:?}:{role:?}:{fingerprint}"),
-        )
-    };
-    build_box_render_package_with_attachments(
-        &request,
-        format!("exact-input:{definition_id:?}:{fingerprint}"),
-        fingerprint.to_owned(),
-        "occt".into(),
-        "r0".into(),
-        request.expected_bounds_mm(),
-        [
+) -> ExactBodyPackage {
+    let graph = body_exact_graph(snapshot, definition_id, BodyId(1)).unwrap();
+    box_package(
+        snapshot,
+        definition_id,
+        FeatureId(graph.producer_feature_id),
+        fingerprint,
+        &[
             ExactFaceRole::Top,
             ExactFaceRole::Bottom,
-            ExactFaceRole::East,
-        ]
-        .map(evidence),
-        &[
-            ExactPlanarFaceAttachmentInput {
-                role: ExactFaceRole::Top,
-                local_origin_mm: [0.0; 3],
-                local_unit_normal: [0.0, 0.0, 1.0],
-            },
-            ExactPlanarFaceAttachmentInput {
-                role: ExactFaceRole::Bottom,
-                local_origin_mm: [0.0; 3],
-                local_unit_normal: [0.0, 0.0, -1.0],
-            },
-            ExactPlanarFaceAttachmentInput {
-                role: ExactFaceRole::East,
-                local_origin_mm: [0.0; 3],
-                local_unit_normal: [1.0, 0.0, 0.0],
-            },
+            ExactFaceRole::West,
         ],
     )
     .unwrap()
@@ -115,16 +79,8 @@ fn registry(snapshot: &ketchup_core::document::Snapshot) -> ExactResultRegistry 
     ExactResultRegistry::accept(
         snapshot,
         [
-            Arc::new(ExactBodyPackage::from(exact_package(
-                snapshot,
-                SOURCE,
-                "source-current",
-            ))),
-            Arc::new(ExactBodyPackage::from(exact_package(
-                snapshot,
-                TARGET,
-                "target-current",
-            ))),
+            Arc::new(exact_package(snapshot, SOURCE, "source-current")),
+            Arc::new(exact_package(snapshot, TARGET, "target-current")),
         ],
     )
     .unwrap()
@@ -219,9 +175,9 @@ fn seed(reverse_occurrences: bool) -> DocumentStore {
                 AssemblyMateEndpoint::resolved_planar_face(
                     SELECTED,
                     PlanarFaceAttachment::new(
-                        evidence.reference(ExactFaceRole::Top).unwrap().clone(),
+                        evidence.reference(ExactFaceRole::Bottom).unwrap().clone(),
                         [0.0; 3],
-                        [0.0, 0.0, 1.0],
+                        [0.0, 0.0, -1.0],
                     )
                     .unwrap(),
                 ),
@@ -239,7 +195,7 @@ fn seed(reverse_occurrences: bool) -> DocumentStore {
                 ),
                 AssemblyMateKind::CoincidentPlanar {
                     offset_mm: 0.0,
-                    reversed: false,
+                    reversed: true,
                 },
             )),
             CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
@@ -247,9 +203,9 @@ fn seed(reverse_occurrences: bool) -> DocumentStore {
                 AssemblyMateEndpoint::resolved_planar_face(
                     SELECTED,
                     PlanarFaceAttachment::new(
-                        evidence.reference(ExactFaceRole::East).unwrap().clone(),
+                        evidence.reference(ExactFaceRole::West).unwrap().clone(),
                         [0.0; 3],
-                        [1.0, 0.0, 0.0],
+                        [-1.0, 0.0, 0.0],
                     )
                     .unwrap(),
                 ),
@@ -257,16 +213,16 @@ fn seed(reverse_occurrences: bool) -> DocumentStore {
                     TARGET_OCCURRENCE,
                     PlanarFaceAttachment::new(
                         target_evidence
-                            .reference(ExactFaceRole::East)
+                            .reference(ExactFaceRole::West)
                             .unwrap()
                             .clone(),
                         [0.0; 3],
-                        [1.0, 0.0, 0.0],
+                        [-1.0, 0.0, 0.0],
                     )
                     .unwrap(),
                 ),
                 AssemblyMateKind::CoincidentPlanar {
-                    offset_mm: 45.0,
+                    offset_mm: -45.0,
                     reversed: true,
                 },
             )),
@@ -576,11 +532,11 @@ fn replacement_impact_fails_closed_for_hidden_failed_lost_and_incompatible_input
     let failed_snapshot = failed.current();
     let source_only = ExactResultRegistry::accept(
         &failed_snapshot,
-        [Arc::new(ExactBodyPackage::from(exact_package(
+        [Arc::new(exact_package(
             &failed_snapshot,
             SOURCE,
             "source-only",
-        )))],
+        ))],
     )
     .unwrap();
     let failed_before = stamp(&failed);
@@ -604,7 +560,10 @@ fn replacement_impact_fails_closed_for_hidden_failed_lost_and_incompatible_input
             MATE,
             AssemblyMateEndpoint::lost(
                 SELECTED,
-                lost_package.reference(ExactFaceRole::Top).unwrap().clone(),
+                lost_package
+                    .reference(ExactFaceRole::Bottom)
+                    .unwrap()
+                    .clone(),
             ),
             existing_mate.endpoint_b().clone(),
             existing_mate.kind(),

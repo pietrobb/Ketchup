@@ -30,6 +30,7 @@ wgpu = { version = "25.0.2", default-features = false, features = ["dx12"] }
 winreg = "0.56.0"
 
 [dev-dependencies]
+ketchup-core = { path = "../ketchup-core", features = ["testing"] }
 egui_kittest = { version = "0.32.0", features = ["wgpu"] }
 pollster = "0.4.0"
 

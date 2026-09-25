@@ -592,6 +592,199 @@ struct GraphDigestPayload<'a> {
 }
 
 impl ExactBRepGraph {
+    /// The profile feature whose cut made the face at `point_mm` (definition
+    /// coordinates): the point lies on a wall swept by a cut profile's boundary,
+    /// or on the floor of a blind cut within the profile's bounds. The latest
+    /// cut wins when several match.
+    #[must_use]
+    pub fn profile_cut_at(&self, point_mm: [f64; 3], tolerance_mm: f64) -> Option<u64> {
+        self.nodes.iter().rev().find_map(|node| {
+            let ExactBRepOperation::ProfileCut {
+                profile,
+                depth_bits,
+                interval,
+                ..
+            } = &node.operation
+            else {
+                return None;
+            };
+            let profile = self.profiles.get(profile.0 as usize)?;
+            let frame = profile.frame_bits.map(f64::from_bits);
+            let relative = subtract(point_mm, [frame[0], frame[1], frame[2]]);
+            let local = [
+                dot(relative, [frame[3], frame[4], frame[5]]),
+                dot(relative, [frame[6], frame[7], frame[8]]),
+            ];
+            let along = dot(relative, interval.direction());
+            let blind = depth_bits.is_some();
+            if blind
+                && (along < interval.start_mm() - tolerance_mm
+                    || along > interval.end_mm() + tolerance_mm)
+            {
+                return None;
+            }
+            let on_wall = planar_geometry_distance(&profile.geometry, local)
+                .is_some_and(|distance| distance <= tolerance_mm);
+            // The floor is the closed end; the open end has no face to hit.
+            let on_floor = blind
+                && ((along - interval.start_mm()).abs() <= tolerance_mm
+                    || (along - interval.end_mm()).abs() <= tolerance_mm)
+                && planar_geometry_contains(&profile.geometry, local);
+            (on_wall || on_floor).then_some(profile.source_feature_id)
+        })
+    }
+
+    /// Frame of a planar face made by extruding `profile_feature_id`, named by
+    /// the semantic role the evaluator gives it: an end cap (`extrusion.top`,
+    /// `extrusion.bottom`) or the side swept by a straight profile edge
+    /// (`line.0`, or the edge at the profile's east/west extreme). The frame is
+    /// right-handed, its normal points out of the solid and, for sides, its y
+    /// axis follows the extrusion. Side faces are only reported while the
+    /// extrusion is the producer itself, because later operations may split them.
+    #[must_use]
+    pub fn extrusion_face_frame(
+        &self,
+        profile_feature_id: u64,
+        semantic_role: &str,
+    ) -> Option<WorkplaneFrame> {
+        let (index, profile, interval) =
+            self.nodes.iter().enumerate().find_map(|(index, node)| {
+                let ExactBRepOperation::Extrude {
+                    profile, interval, ..
+                } = &node.operation
+                else {
+                    return None;
+                };
+                let profile = self.profiles.get(profile.0 as usize)?;
+                (profile.source_feature_id == profile_feature_id)
+                    .then_some((index, profile, *interval))
+            })?;
+        let frame = profile.frame_bits.map(f64::from_bits);
+        let origin = [frame[0], frame[1], frame[2]];
+        let x_axis = [frame[3], frame[4], frame[5]];
+        let y_axis = [frame[6], frame[7], frame[8]];
+        let direction = interval.direction();
+        let at = |u: f64, v: f64, along: f64| {
+            [0, 1, 2].map(|axis| {
+                origin[axis] + x_axis[axis] * u + y_axis[axis] * v + direction[axis] * along
+            })
+        };
+        match semantic_role {
+            "extrusion.top" => Some(WorkplaneFrame {
+                origin_mm: at(0.0, 0.0, interval.end_mm()),
+                x_axis: cross(y_axis, direction),
+                y_axis,
+                normal: direction,
+            }),
+            "extrusion.bottom" => {
+                let normal = direction.map(|value| -value);
+                Some(WorkplaneFrame {
+                    origin_mm: at(0.0, 0.0, interval.start_mm()),
+                    x_axis,
+                    y_axis: cross(normal, x_axis),
+                    normal,
+                })
+            }
+            _ if index + 1 != self.nodes.len() => None,
+            _ => {
+                let ExactBRepPlanarGeometry::Boundary {
+                    closed: true,
+                    segments,
+                } = &profile.geometry
+                else {
+                    return None;
+                };
+                let lines = segments
+                    .iter()
+                    .map(|segment| match segment {
+                        ExactBRepPlanarSegment::Line {
+                            start_bits,
+                            end_bits,
+                        } => Some((start_bits.map(f64::from_bits), end_bits.map(f64::from_bits))),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                let extreme_x = |east: bool| {
+                    lines
+                        .iter()
+                        .flatten()
+                        .flat_map(|(start, end)| [start[0], end[0]])
+                        .reduce(|left, right| if (right > left) == east { right } else { left })
+                };
+                let vertical_at = |x: f64| {
+                    lines.iter().flatten().copied().find(|(start, end)| {
+                        (start[0] - x).abs() <= 1.0e-9 && (end[0] - x).abs() <= 1.0e-9
+                    })
+                };
+                let (start, end) = match semantic_role {
+                    // The evaluator names the first line only when the profile has no arc.
+                    "extrusion.side(profile_edge=line.0)" => {
+                        if segments.iter().any(|segment| {
+                            matches!(segment, ExactBRepPlanarSegment::CircularArc { .. })
+                        }) {
+                            return None;
+                        }
+                        lines.iter().flatten().copied().next()?
+                    }
+                    "extrusion.side(profile_edge=east)" => vertical_at(extreme_x(true)?)?,
+                    "extrusion.side(profile_edge=west)" => vertical_at(extreme_x(false)?)?,
+                    _ => return None,
+                };
+                // Twice the signed area: positive for a counter-clockwise profile.
+                let doubled_area = segments
+                    .iter()
+                    .map(|segment| {
+                        let (start_bits, end_bits) = match segment {
+                            ExactBRepPlanarSegment::Line {
+                                start_bits,
+                                end_bits,
+                            }
+                            | ExactBRepPlanarSegment::CircularArc {
+                                start_bits,
+                                end_bits,
+                                ..
+                            }
+                            | ExactBRepPlanarSegment::CubicBezier {
+                                start_bits,
+                                end_bits,
+                                ..
+                            } => (start_bits, end_bits),
+                        };
+                        let [start, end] =
+                            [start_bits, end_bits].map(|bits| bits.map(f64::from_bits));
+                        start[0] * end[1] - end[0] * start[1]
+                    })
+                    .sum::<f64>();
+                let edge = [end[0] - start[0], end[1] - start[1]];
+                let length = edge[0].hypot(edge[1]);
+                if length <= MIN_LENGTH_MM || doubled_area.abs() <= MIN_LENGTH_MM {
+                    return None;
+                }
+                let outward = if doubled_area > 0.0 {
+                    [edge[1] / length, -edge[0] / length]
+                } else {
+                    [-edge[1] / length, edge[0] / length]
+                };
+                let normal =
+                    [0, 1, 2].map(|axis| x_axis[axis] * outward[0] + y_axis[axis] * outward[1]);
+                let side_x_axis = cross(direction, normal);
+                let [first, second] =
+                    [start, end].map(|point| at(point[0], point[1], interval.start_mm()));
+                let origin_mm = if dot(subtract(second, first), side_x_axis) >= 0.0 {
+                    first
+                } else {
+                    second
+                };
+                Some(WorkplaneFrame {
+                    origin_mm,
+                    x_axis: side_x_axis,
+                    y_axis: direction,
+                    normal,
+                })
+            }
+        }
+    }
+
     pub fn from_snapshot(
         snapshot: &Snapshot,
         definition_id: DefinitionId,
@@ -1262,14 +1455,14 @@ impl ExactBRepGraph {
         Ok(digest(&bytes))
     }
 
+    /// Identifies the exact inputs of this body only, so results and face
+    /// references stay valid across edits elsewhere in the document.
     fn compute_canonical_input_digest(&self) -> String {
         digest(
             format!(
-                "{}:{}:{}:{}:{}:{}:{}",
+                "{}:{}:{}:{}:{}",
                 self.schema,
                 self.document_id,
-                self.source_revision,
-                self.source_digest,
                 self.definition_id,
                 self.producer_feature_id,
                 self.graph_digest,
@@ -1451,7 +1644,7 @@ impl<'a> GraphCompiler<'a> {
                 depth,
             } => {
                 let target = self.body_id(*target)?;
-                let (profile, direction) = match self
+                let (profile, interval) = match self
                     .snapshot
                     .feature(*profile)
                     .map(|feature| feature.kind())
@@ -1468,18 +1661,27 @@ impl<'a> GraphCompiler<'a> {
                             region.id,
                             FeatureDirection::AlongNormal,
                         )?;
-                        (profile, direction)
+                        (
+                            profile,
+                            linear_interval(direction, 0.0, depth.millimetres())?,
+                        )
                     }
-                    _ => (
-                        self.compile_profile(*profile, None, identity_frame())?,
-                        [0.0, 0.0, 1.0],
-                    ),
+                    // A plain profile lies in the XY plane; its pocket is cut down
+                    // from the top of the target.
+                    _ => {
+                        let top_mm = self.node_bounds[target.0 as usize]
+                            .ok_or(ExactBRepGraphError::UnresolvedExtent)?[1][2];
+                        (
+                            self.compile_profile(*profile, None, identity_frame())?,
+                            linear_interval([0.0, 0.0, 1.0], top_mm - depth.millimetres(), top_mm)?,
+                        )
+                    }
                 };
                 ExactBRepOperation::ProfileCut {
                     target,
                     profile,
                     depth_bits: Some(positive_distance(depth.millimetres())?),
-                    interval: linear_interval(direction, 0.0, depth.millimetres())?,
+                    interval,
                     support_lineage_digest: None,
                 }
             }
@@ -2156,17 +2358,19 @@ impl<'a> GraphCompiler<'a> {
         if !distance.is_finite() || distance <= MIN_LENGTH_MM || distance > MAX_ABS_MM {
             return Err(ExactBRepGraphError::UnresolvedExtent);
         }
-        let request = crate::exact_product::ExactFeatureChainRequest::from_snapshot_for_producer(
+        let face_graph = ExactBRepGraph::from_snapshot(
             self.snapshot,
             reference.definition_id,
             reference.producer_feature_id,
         )
         .map_err(|_| ExactBRepGraphError::UnresolvedExtent)?;
-        if !reference.matches_durable_request_identity(&request) {
+        if !reference.matches_durable_graph_identity(&face_graph) {
             return Err(ExactBRepGraphError::UnresolvedExtent);
         }
         let intersection = [0, 1, 2].map(|axis| origin_mm[axis] + direction[axis] * distance);
-        let bounds = request.expected_bounds_mm();
+        let bounds = face_graph
+            .producer_bounds_mm()?
+            .ok_or(ExactBRepGraphError::UnresolvedExtent)?;
         let tolerance = 1.0e-7;
         if (0..3).any(|axis| {
             intersection[axis] < bounds[0][axis] - tolerance
@@ -3922,6 +4126,201 @@ pub(crate) fn spatial_sweep_bounds_are_valid(
     .is_ok()
 }
 
+/// Whether `point` lies inside `geometry` (even-odd rule over its loops).
+fn planar_geometry_contains(geometry: &ExactBRepPlanarGeometry, point: [f64; 2]) -> bool {
+    let in_circle = |center_bits: &[u64; 2], radius_bits: &u64| {
+        let center = center_bits.map(f64::from_bits);
+        (point[0] - center[0]).hypot(point[1] - center[1]) < f64::from_bits(*radius_bits)
+    };
+    let in_boundary = |segments: &[ExactBRepPlanarSegment]| {
+        let outline = segments
+            .iter()
+            .flat_map(|segment| planar_segment_points(segment, 32))
+            .collect::<Vec<_>>();
+        let mut inside = false;
+        for (index, start) in outline.iter().enumerate() {
+            let end = outline[(index + 1) % outline.len()];
+            if (start[1] > point[1]) != (end[1] > point[1])
+                && point[0]
+                    < start[0] + (point[1] - start[1]) * (end[0] - start[0]) / (end[1] - start[1])
+            {
+                inside = !inside;
+            }
+        }
+        inside
+    };
+    let in_loop = |planar_loop: &ExactBRepPlanarLoop| match planar_loop {
+        ExactBRepPlanarLoop::Boundary { segments } => in_boundary(segments),
+        ExactBRepPlanarLoop::Circle {
+            center_bits,
+            radius_bits,
+        } => in_circle(center_bits, radius_bits),
+    };
+    match geometry {
+        ExactBRepPlanarGeometry::Boundary {
+            closed: true,
+            segments,
+        } => in_boundary(segments),
+        ExactBRepPlanarGeometry::Circle {
+            center_bits,
+            radius_bits,
+        } => in_circle(center_bits, radius_bits),
+        ExactBRepPlanarGeometry::Region { outer, holes } => {
+            in_loop(outer) && !holes.iter().any(in_loop)
+        }
+        ExactBRepPlanarGeometry::Boundary { closed: false, .. }
+        | ExactBRepPlanarGeometry::Spline { .. } => false,
+    }
+}
+
+/// Points along a segment from its start up to (not including) its end.
+fn planar_segment_points(segment: &ExactBRepPlanarSegment, steps: u32) -> Vec<[f64; 2]> {
+    match segment {
+        ExactBRepPlanarSegment::Line { start_bits, .. } => vec![start_bits.map(f64::from_bits)],
+        ExactBRepPlanarSegment::CircularArc {
+            start_bits,
+            end_bits,
+            center_bits,
+            clockwise,
+        } => {
+            let [start, end, center] =
+                [start_bits, end_bits, center_bits].map(|bits| bits.map(f64::from_bits));
+            let radius = (start[0] - center[0]).hypot(start[1] - center[1]);
+            let from = (start[1] - center[1]).atan2(start[0] - center[0]);
+            let to = (end[1] - center[1]).atan2(end[0] - center[0]);
+            let sweep = if *clockwise {
+                -(from - to).rem_euclid(std::f64::consts::TAU)
+            } else {
+                (to - from).rem_euclid(std::f64::consts::TAU)
+            };
+            (0..steps)
+                .map(|step| {
+                    let angle = from + sweep * f64::from(step) / f64::from(steps);
+                    [
+                        center[0] + radius * angle.cos(),
+                        center[1] + radius * angle.sin(),
+                    ]
+                })
+                .collect()
+        }
+        ExactBRepPlanarSegment::CubicBezier {
+            start_bits,
+            control_1_bits,
+            control_2_bits,
+            end_bits,
+        } => {
+            let [p0, p1, p2, p3] = [start_bits, control_1_bits, control_2_bits, end_bits]
+                .map(|bits| bits.map(f64::from_bits));
+            (0..steps)
+                .map(|step| {
+                    let t = f64::from(step) / f64::from(steps);
+                    let u = 1.0 - t;
+                    [0, 1].map(|axis| {
+                        u * u * u * p0[axis]
+                            + 3.0 * u * u * t * p1[axis]
+                            + 3.0 * u * t * t * p2[axis]
+                            + t * t * t * p3[axis]
+                    })
+                })
+                .collect()
+        }
+    }
+}
+
+/// Distance in the profile plane from `point` to the boundary of `geometry`.
+fn planar_geometry_distance(geometry: &ExactBRepPlanarGeometry, point: [f64; 2]) -> Option<f64> {
+    let circle = |center_bits: &[u64; 2], radius_bits: &u64| {
+        let center = center_bits.map(f64::from_bits);
+        ((point[0] - center[0]).hypot(point[1] - center[1]) - f64::from_bits(*radius_bits)).abs()
+    };
+    let segments = |segments: &[ExactBRepPlanarSegment]| {
+        segments
+            .iter()
+            .map(|segment| planar_segment_distance(segment, point))
+            .reduce(f64::min)
+    };
+    match geometry {
+        ExactBRepPlanarGeometry::Boundary { segments: list, .. } => segments(list),
+        ExactBRepPlanarGeometry::Circle {
+            center_bits,
+            radius_bits,
+        } => Some(circle(center_bits, radius_bits)),
+        ExactBRepPlanarGeometry::Region { outer, holes } => std::iter::once(outer)
+            .chain(holes)
+            .filter_map(|planar_loop| match planar_loop {
+                ExactBRepPlanarLoop::Boundary { segments: list } => segments(list),
+                ExactBRepPlanarLoop::Circle {
+                    center_bits,
+                    radius_bits,
+                } => Some(circle(center_bits, radius_bits)),
+            })
+            .reduce(f64::min),
+        ExactBRepPlanarGeometry::Spline { .. } => None,
+    }
+}
+
+fn planar_segment_distance(segment: &ExactBRepPlanarSegment, point: [f64; 2]) -> f64 {
+    let to_line = |start: [f64; 2], end: [f64; 2]| {
+        let edge = [end[0] - start[0], end[1] - start[1]];
+        let length_squared = edge[0] * edge[0] + edge[1] * edge[1];
+        let t = if length_squared > 0.0 {
+            (((point[0] - start[0]) * edge[0] + (point[1] - start[1]) * edge[1]) / length_squared)
+                .clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        (point[0] - start[0] - edge[0] * t).hypot(point[1] - start[1] - edge[1] * t)
+    };
+    match segment {
+        ExactBRepPlanarSegment::Line {
+            start_bits,
+            end_bits,
+        } => to_line(start_bits.map(f64::from_bits), end_bits.map(f64::from_bits)),
+        ExactBRepPlanarSegment::CircularArc {
+            start_bits,
+            end_bits,
+            center_bits,
+            clockwise,
+        } => {
+            let [start, end, center] =
+                [start_bits, end_bits, center_bits].map(|bits| bits.map(f64::from_bits));
+            let angle = |at: [f64; 2]| (at[1] - center[1]).atan2(at[0] - center[0]);
+            let sweep = |from: f64, to: f64| {
+                let turn = if *clockwise { from - to } else { to - from };
+                turn.rem_euclid(std::f64::consts::TAU)
+            };
+            let radius = (start[0] - center[0]).hypot(start[1] - center[1]);
+            let on_arc = sweep(angle(start), angle(point)) <= sweep(angle(start), angle(end));
+            let to_circle = ((point[0] - center[0]).hypot(point[1] - center[1]) - radius).abs();
+            let to_ends = (point[0] - start[0])
+                .hypot(point[1] - start[1])
+                .min((point[0] - end[0]).hypot(point[1] - end[1]));
+            if on_arc { to_circle } else { to_ends }
+        }
+        ExactBRepPlanarSegment::CubicBezier {
+            start_bits,
+            control_1_bits,
+            control_2_bits,
+            end_bits,
+        } => {
+            let [p0, p1, p2, p3] = [start_bits, control_1_bits, control_2_bits, end_bits]
+                .map(|bits| bits.map(f64::from_bits));
+            let at = |t: f64| {
+                let u = 1.0 - t;
+                [0, 1].map(|axis| {
+                    u * u * u * p0[axis]
+                        + 3.0 * u * u * t * p1[axis]
+                        + 3.0 * u * t * t * p2[axis]
+                        + t * t * t * p3[axis]
+                })
+            };
+            (0..64)
+                .map(|step| to_line(at(f64::from(step) / 64.0), at(f64::from(step + 1) / 64.0)))
+                .fold(f64::INFINITY, f64::min)
+        }
+    }
+}
+
 fn planar_geometry_bounds(
     geometry: &ExactBRepPlanarGeometry,
 ) -> Result<[[f64; 2]; 2], ExactBRepGraphError> {
@@ -4046,6 +4445,14 @@ fn canonical_bits(value: f64) -> u64 {
 
 fn dot(left: [f64; 3], right: [f64; 3]) -> f64 {
     left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
+}
+
+fn cross(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
+    [
+        left[1] * right[2] - left[2] * right[1],
+        left[2] * right[0] - left[0] * right[2],
+        left[0] * right[1] - left[1] * right[0],
+    ]
 }
 
 fn subtract(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {

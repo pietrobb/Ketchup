@@ -13,9 +13,7 @@ use ketchup_core::drawing::{
     OrthographicViewKind, project_orthographic_drawing,
 };
 use ketchup_core::exact_product::{
-    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactPlanarFaceAttachmentInput,
-    ExactRenderPackage, ExactResultRegistry, ExactStlExport,
-    build_box_render_package_with_attachments, canonical_reference_lineage_digest,
+    ExactBodyPackage, ExactFaceRole, ExactResultRegistry, ExactStlExport, body_exact_graph,
     exact_model_stl_export,
 };
 use ketchup_core::feature_history::{
@@ -30,6 +28,7 @@ use ketchup_core::shared_change::{
     SharedDefinitionChangeRequest, commit_shared_definition_change, project_occurrence_edit_impact,
     project_shared_change_impact,
 };
+use ketchup_core::testing::box_package;
 use std::sync::Arc;
 
 const DEFINITION: DefinitionId = DefinitionId(1);
@@ -121,67 +120,37 @@ fn derived_output_stamp(
 fn exact_package(
     snapshot: &ketchup_core::document::Snapshot,
     fingerprint: &str,
-) -> ExactRenderPackage {
-    let request =
-        ExactFeatureChainRequest::from_snapshot_for_body(snapshot, DEFINITION, BodyId(1)).unwrap();
-    let evidence = |role: ExactFaceRole| {
-        (
-            role,
-            canonical_reference_lineage_digest(
-                snapshot.document_id(),
-                EXTRUSION,
-                role.semantic_role(),
-                role.source_element_id(),
-                role.expected_type(),
-            ),
-            format!("geometry:{role:?}:{fingerprint}"),
-        )
-    };
-    let attachments = [
-        ExactPlanarFaceAttachmentInput {
-            role: ExactFaceRole::Top,
-            local_origin_mm: [0.0; 3],
-            local_unit_normal: [0.0, 0.0, 1.0],
-        },
-        ExactPlanarFaceAttachmentInput {
-            role: ExactFaceRole::Bottom,
-            local_origin_mm: [0.0; 3],
-            local_unit_normal: [0.0, 0.0, -1.0],
-        },
-        ExactPlanarFaceAttachmentInput {
-            role: ExactFaceRole::East,
-            local_origin_mm: [0.0; 3],
-            local_unit_normal: [1.0, 0.0, 0.0],
-        },
-    ];
-    build_box_render_package_with_attachments(
-        &request,
-        format!("exact-input:{fingerprint}"),
-        fingerprint.to_owned(),
-        "occt".into(),
-        "r0".into(),
-        [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]],
-        [
+) -> ExactBodyPackage {
+    let graph = body_exact_graph(snapshot, DEFINITION, BodyId(1)).unwrap();
+    box_package(
+        snapshot,
+        DEFINITION,
+        FeatureId(graph.producer_feature_id),
+        fingerprint,
+        &[
             ExactFaceRole::Top,
             ExactFaceRole::Bottom,
             ExactFaceRole::East,
-        ]
-        .map(evidence),
-        &attachments,
+        ],
     )
     .unwrap()
 }
 
 fn planar_endpoint(
-    package: &ExactRenderPackage,
+    package: &ExactBodyPackage,
     occurrence_id: OccurrenceId,
     role: ExactFaceRole,
 ) -> AssemblyMateEndpoint {
+    let ExactBodyPackage::Graph(graph) = package else {
+        panic!("box fixture is a graph package");
+    };
     let reference = package.reference(role).unwrap();
-    AssemblyMateEndpoint::resolved_planar_face(
-        occurrence_id,
-        package.planar_face_attachment(reference).unwrap().clone(),
-    )
+    let attachment = graph
+        .planar_face_attachments
+        .iter()
+        .find(|attachment| attachment.reference() == reference)
+        .unwrap();
+    AssemblyMateEndpoint::resolved_planar_face(occurrence_id, attachment.clone())
 }
 
 fn seed(reverse_occurrences: bool) -> DocumentStore {
@@ -253,11 +222,11 @@ fn seed(reverse_occurrences: bool) -> DocumentStore {
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
                 MATE,
-                planar_endpoint(&evidence, FIRST, ExactFaceRole::Top),
+                planar_endpoint(&evidence, FIRST, ExactFaceRole::Bottom),
                 planar_endpoint(&evidence, SECOND, ExactFaceRole::Bottom),
                 AssemblyMateKind::CoincidentPlanar {
                     offset_mm: 0.0,
-                    reversed: false,
+                    reversed: true,
                 },
             )),
             CanonicalCommand::CreateDrawingSheet(
@@ -927,105 +896,15 @@ fn edit_request(snapshot: &ketchup_core::document::Snapshot) -> SharedDefinition
 }
 
 fn registry(snapshot: &ketchup_core::document::Snapshot) -> ExactResultRegistry {
-    ExactResultRegistry::accept(
-        snapshot,
-        [Arc::new(ExactBodyPackage::from(exact_package(
-            snapshot,
-            "last-valid",
-        )))],
-    )
-    .unwrap()
-}
-
-fn history_package(
-    snapshot: &ketchup_core::document::Snapshot,
-    fingerprint: &str,
-) -> ExactRenderPackage {
-    let request =
-        ExactFeatureChainRequest::from_snapshot_for_body(snapshot, DEFINITION, BodyId(1)).unwrap();
-    let evidence = |role: ExactFaceRole| {
-        (
-            role,
-            canonical_reference_lineage_digest(
-                snapshot.document_id(),
-                request.producer_feature_id(),
-                role.semantic_role(),
-                role.source_element_id(),
-                role.expected_type(),
-            ),
-            format!("geometry:{role:?}:{fingerprint}"),
-        )
-    };
-    let attachments = [
-        ExactPlanarFaceAttachmentInput {
-            role: ExactFaceRole::Top,
-            local_origin_mm: [0.0; 3],
-            local_unit_normal: [0.0, 0.0, 1.0],
-        },
-        ExactPlanarFaceAttachmentInput {
-            role: ExactFaceRole::Bottom,
-            local_origin_mm: [0.0; 3],
-            local_unit_normal: [0.0, 0.0, -1.0],
-        },
-        ExactPlanarFaceAttachmentInput {
-            role: ExactFaceRole::East,
-            local_origin_mm: [0.0; 3],
-            local_unit_normal: [1.0, 0.0, 0.0],
-        },
-    ];
-    let package = if request.pocket_depth_bits.is_some() {
-        build_box_render_package_with_attachments(
-            &request,
-            format!("exact-input:{fingerprint}"),
-            fingerprint.to_owned(),
-            "occt".into(),
-            "r0".into(),
-            request.expected_bounds_mm(),
-            [
-                ExactFaceRole::Top,
-                ExactFaceRole::Bottom,
-                ExactFaceRole::East,
-                ExactFaceRole::PocketFloor,
-                ExactFaceRole::PocketWest,
-                ExactFaceRole::PocketEast,
-                ExactFaceRole::PocketSouth,
-                ExactFaceRole::PocketNorth,
-            ]
-            .map(evidence),
-            &attachments,
-        )
-    } else {
-        build_box_render_package_with_attachments(
-            &request,
-            format!("exact-input:{fingerprint}"),
-            fingerprint.to_owned(),
-            "occt".into(),
-            "r0".into(),
-            request.expected_bounds_mm(),
-            [
-                ExactFaceRole::Top,
-                ExactFaceRole::Bottom,
-                ExactFaceRole::East,
-            ]
-            .map(evidence),
-            &attachments,
-        )
-    };
-    package.unwrap()
+    ExactResultRegistry::accept(snapshot, [Arc::new(exact_package(snapshot, "last-valid"))])
+        .unwrap()
 }
 
 fn history_registry(
     snapshot: &ketchup_core::document::Snapshot,
     fingerprint: &str,
 ) -> ExactResultRegistry {
-    ExactResultRegistry::accept(
-        snapshot,
-        [Arc::new(ExactBodyPackage::from(history_package(
-            snapshot,
-            fingerprint,
-        )))],
-    )
-    .unwrap()
+    ExactResultRegistry::accept(snapshot, [Arc::new(exact_package(snapshot, fingerprint))]).unwrap()
 }
 
 #[test]
@@ -1179,10 +1058,7 @@ fn cross_body_boolean_tool_edit_recomputes_terminal_exact_body_and_drawing_atomi
     assert_eq!(exact_results.contents_stamp(), before_results);
 
     let candidate = document.preview_batch(impact.proposal.batch()).unwrap();
-    let evaluated = Arc::new(ExactBodyPackage::from(history_package(
-        &candidate,
-        "cross-body-after",
-    )));
+    let evaluated = Arc::new(exact_package(&candidate, "cross-body-after"));
     let receipt = commit_shared_definition_change(
         &mut document,
         &mut exact_results,
@@ -1396,7 +1272,9 @@ fn stale_failed_ambiguous_and_unsupported_inputs_fail_without_mutation() {
     assert_eq!(stamp(&document), before);
 
     let package = exact_package(&snapshot, "ambiguous-a");
-    let mut alternate = package.clone();
+    let ExactBodyPackage::Graph(mut alternate) = package.clone() else {
+        panic!("box fixture is a graph package");
+    };
     alternate.identity.backend = "alternate".into();
     for reference in &mut alternate.references {
         reference.backend = alternate.identity.backend.clone();
@@ -1422,8 +1300,8 @@ fn stale_failed_ambiguous_and_unsupported_inputs_fail_without_mutation() {
     let ambiguous = ExactResultRegistry::accept(
         &snapshot,
         [
-            Arc::new(ExactBodyPackage::from(package)),
-            Arc::new(ExactBodyPackage::from(alternate)),
+            Arc::new(package),
+            Arc::new(ExactBodyPackage::Graph(alternate)),
         ],
     )
     .unwrap();
@@ -1615,16 +1493,16 @@ fn hidden_lost_and_ambiguous_mate_inputs_are_observational() {
 
     let mut invalid = seed(false);
     let references = exact_package(&invalid.current(), "mate-health");
-    let top = references.reference(ExactFaceRole::Top).unwrap().clone();
+    let bottom = references.reference(ExactFaceRole::Bottom).unwrap().clone();
     invalid
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::RebindAssemblyMate(AssemblyMate::new(
                 MATE,
-                AssemblyMateEndpoint::lost(FIRST, top.clone()),
+                AssemblyMateEndpoint::lost(FIRST, bottom.clone()),
                 planar_endpoint(&references, SECOND, ExactFaceRole::Bottom),
                 AssemblyMateKind::CoincidentPlanar {
                     offset_mm: 0.0,
-                    reversed: false,
+                    reversed: true,
                 },
             )),
         ]))
@@ -1654,11 +1532,11 @@ fn hidden_lost_and_ambiguous_mate_inputs_are_observational() {
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::RebindAssemblyMate(AssemblyMate::new(
                 MATE,
-                AssemblyMateEndpoint::ambiguous(FIRST, top, 2),
+                AssemblyMateEndpoint::ambiguous(FIRST, bottom, 2),
                 planar_endpoint(&references, SECOND, ExactFaceRole::Bottom),
                 AssemblyMateKind::CoincidentPlanar {
                     offset_mm: 0.0,
-                    reversed: false,
+                    reversed: true,
                 },
             )),
         ]))
@@ -1868,10 +1746,7 @@ fn reviewed_shared_definition_change_commits_once_and_refreshes_every_reuse() {
     )
     .unwrap();
     let candidate = document.preview_batch(impact.proposal.batch()).unwrap();
-    let evaluated = Arc::new(ExactBodyPackage::from(history_package(
-        &candidate,
-        "shared-change",
-    )));
+    let evaluated = Arc::new(exact_package(&candidate, "shared-change"));
     let expected_fingerprint = evaluated.result_key().result_fingerprint;
     let mut evaluations = 0;
 
@@ -1881,8 +1756,8 @@ fn reviewed_shared_definition_change_commits_once_and_refreshes_every_reuse() {
         &impact,
         |request| -> Result<Arc<ExactBodyPackage>, String> {
             evaluations += 1;
-            assert_eq!(request.definition_id, DEFINITION);
-            assert_eq!(request.producer_feature_id(), EXTRUSION);
+            assert_eq!(DefinitionId(request.definition_id), DEFINITION);
+            assert_eq!(FeatureId(request.producer_feature_id), EXTRUSION);
             Ok(Arc::clone(&evaluated))
         },
     )
@@ -2018,7 +1893,7 @@ fn shared_definition_evaluation_and_publication_fail_atomically() {
         outputs_before
     );
 
-    let stale_package = Arc::new(ExactBodyPackage::from(exact_package(&source, "stale")));
+    let stale_package = Arc::new(exact_package(&source, "stale"));
     let failed = commit_shared_definition_change(
         &mut document,
         &mut exact_results,
@@ -2074,10 +1949,7 @@ fn over_constrained_dependency_refuses_the_whole_shared_change() {
     let registry_before = exact_results.contents_stamp();
     let outputs_before = derived_output_stamp(&source, &exact_results);
     let candidate = document.preview_batch(impact.proposal.batch()).unwrap();
-    let evaluated = Arc::new(ExactBodyPackage::from(history_package(
-        &candidate,
-        "dependency-failure",
-    )));
+    let evaluated = Arc::new(exact_package(&candidate, "dependency-failure"));
 
     let failed = commit_shared_definition_change(
         &mut document,
@@ -2139,10 +2011,7 @@ fn propagation_verifier_covers_manual_ai_redo_save_open_and_shared_exact_outputs
     assert_eq!(stamp(&document), source_stamp);
 
     let candidate = document.preview_batch(manual.proposal.batch()).unwrap();
-    let evaluated = Arc::new(ExactBodyPackage::from(history_package(
-        &candidate,
-        "verified-shared-change",
-    )));
+    let evaluated = Arc::new(exact_package(&candidate, "verified-shared-change"));
     let mut exact_results = source_results.clone();
     let mut evaluations = 0;
     let receipt = commit_shared_definition_change(
@@ -2151,8 +2020,8 @@ fn propagation_verifier_covers_manual_ai_redo_save_open_and_shared_exact_outputs
         &manual,
         |request| -> Result<Arc<ExactBodyPackage>, String> {
             evaluations += 1;
-            assert_eq!(request.definition_id, DEFINITION);
-            assert_eq!(request.producer_feature_id(), EXTRUSION);
+            assert_eq!(DefinitionId(request.definition_id), DEFINITION);
+            assert_eq!(FeatureId(request.producer_feature_id), EXTRUSION);
             Ok(Arc::clone(&evaluated))
         },
     )
@@ -2370,10 +2239,7 @@ fn dependent_rebind_verifier_covers_planar_mates_drawing_exports_undo_and_save_o
     );
 
     let candidate = document.preview_batch(impact.proposal.batch()).unwrap();
-    let evaluated = Arc::new(ExactBodyPackage::from(history_package(
-        &candidate,
-        "dependent-rebind-verifier",
-    )));
+    let evaluated = Arc::new(exact_package(&candidate, "dependent-rebind-verifier"));
     let mut exact_results = source_results.clone();
     let receipt = commit_shared_definition_change(
         &mut document,
@@ -2558,10 +2424,7 @@ fn dependent_rebind_failures_preserve_last_valid_transforms_views_and_exports() 
     let hidden_candidate = hidden
         .preview_batch(hidden_impact.proposal.batch())
         .unwrap();
-    let hidden_evaluated = Arc::new(ExactBodyPackage::from(history_package(
-        &hidden_candidate,
-        "hidden-export-path",
-    )));
+    let hidden_evaluated = Arc::new(exact_package(&hidden_candidate, "hidden-export-path"));
     let hidden_failed = commit_shared_definition_change(
         &mut hidden,
         &mut hidden_results,
@@ -2608,10 +2471,10 @@ fn dependent_rebind_failures_preserve_last_valid_transforms_views_and_exports() 
     let unsupported_candidate = unsupported
         .preview_batch(unsupported_impact.proposal.batch())
         .unwrap();
-    let unsupported_evaluated = Arc::new(ExactBodyPackage::from(history_package(
+    let unsupported_evaluated = Arc::new(exact_package(
         &unsupported_candidate,
         "unsupported-export-path",
-    )));
+    ));
     let unsupported_failed = commit_shared_definition_change(
         &mut unsupported,
         &mut unsupported_results,

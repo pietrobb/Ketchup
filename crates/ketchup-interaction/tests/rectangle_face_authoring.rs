@@ -2,14 +2,12 @@ use ketchup_core::document::{
     BodyId, CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
     FeatureKind,
 };
-use ketchup_core::exact_product::{
-    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactResultRegistry,
-    build_box_render_package, canonical_reference_lineage_digest,
-};
+use ketchup_core::exact_product::{ExactFaceRole, ExactResultRegistry};
 use ketchup_core::persistence;
 use ketchup_core::sketch::{
     PrincipalPlane, SketchSolveStatus, WorkplaneFrame, WorkplaneSupport, WorkplaneSupportHealth,
 };
+use ketchup_core::testing::box_package;
 use ketchup_interaction::face_intent::{
     FaceIntentError, FaceIntentTarget, HoverFaceCandidate, TransientFaceIntent,
 };
@@ -212,41 +210,20 @@ fn rectangle_on_generated_planar_face_preserves_exact_support_and_target_body() 
         ]))
         .unwrap();
     let snapshot = document.current();
-    let request =
-        ExactFeatureChainRequest::from_snapshot_for_producer(&snapshot, DEFINITION, FeatureId(21))
-            .unwrap();
-    let evidence = [
-        ExactFaceRole::Top,
-        ExactFaceRole::Bottom,
-        ExactFaceRole::East,
-    ]
-    .map(|role| {
-        (
-            role,
-            canonical_reference_lineage_digest(
-                snapshot.document_id(),
-                FeatureId(21),
-                role.semantic_role(),
-                role.source_element_id(),
-                role.expected_type(),
-            ),
-            format!("geometry:{role:?}"),
-        )
-    });
-    let package = build_box_render_package(
-        &request,
-        "input".to_owned(),
-        "result".to_owned(),
-        "occt".to_owned(),
-        "r0".to_owned(),
-        [[0.0, 0.0, 0.0], [8.0, 6.0, 4.0]],
-        evidence,
+    let package = box_package(
+        &snapshot,
+        DEFINITION,
+        FeatureId(21),
+        "result",
+        &[
+            ExactFaceRole::Top,
+            ExactFaceRole::Bottom,
+            ExactFaceRole::East,
+        ],
     )
     .unwrap();
     let reference = package.reference(ExactFaceRole::Top).unwrap().clone();
-    let last_valid =
-        ExactResultRegistry::accept(&snapshot, [Arc::new(ExactBodyPackage::from(package))])
-            .unwrap();
+    let last_valid = ExactResultRegistry::accept(&snapshot, [Arc::new(package)]).unwrap();
     document
         .register_exact_reference_evidence(reference.clone())
         .unwrap();

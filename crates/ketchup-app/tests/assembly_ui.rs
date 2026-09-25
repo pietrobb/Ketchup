@@ -2143,12 +2143,9 @@ fn selection_drawing_rejects_drift_and_non_rigid_sources_then_round_trips_exactl
 }
 
 #[test]
-fn production_surface_excludes_capstone_actions_and_keeps_general_workflows() {
+fn production_surface_keeps_general_workflows() {
     for catalog in [LocaleCatalog::english(), LocaleCatalog::slovak()] {
         let mut shell = Shell::with_catalog(catalog);
-
-        let part_authoring = shell.catalog().text("part-authoring-title");
-        assert!(!shell.has_role_and_label(Role::Button, &part_authoring));
 
         for key in ["feature-history-title", "body-title", "assembly-title"] {
             let label = shell.catalog().text(key);

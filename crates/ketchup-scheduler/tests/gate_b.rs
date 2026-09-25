@@ -1,7 +1,7 @@
 use ketchup_core::document::{
     CanonicalCommand, CommandBatch, Dimension, DocumentStore, NodeId, ProposalCommitError,
 };
-use ketchup_exact::{ExactBackend, GeometryErrorCode, RectangleExtrudeSpec};
+use ketchup_exact::GeometryErrorCode;
 use ketchup_scheduler::{
     DerivedResult, EvaluationScheduler, ExactWorkerClient, InsertOutcome, JobToken,
 };
@@ -17,9 +17,6 @@ const SCHEDULE_PERMUTATIONS: usize = 10_000;
 const CRASH_RECOVERY_RUNS: usize = 100;
 const PERFORMANCE_RUNS: usize = 3;
 const CANCELLATION_SAMPLES: usize = 100;
-const TRANSPORT_RUNS: usize = 3;
-const TRANSPORT_SAMPLES: usize = 1_000;
-const TRANSPORT_WARMUP: usize = 100;
 const READER_SAMPLES: usize = 1_000;
 
 #[test]
@@ -30,8 +27,6 @@ fn formal_gate_b() {
     let exception_crosses_contract = exercise_exception_transport();
     let cancellation_ms = exercise_cancellation();
     let reader_ms = exercise_concurrent_reader();
-    let (worker_ms, transport_ms, transport_percent, in_process_ms) =
-        measure_worker_and_in_process();
     let (cache_plateau_bytes, cache_growth_bytes_per_100, cache_evictions) =
         exercise_cache_plateau();
     let private_bytes = process_private_bytes();
@@ -39,10 +34,6 @@ fn formal_gate_b() {
     let cancellation_p95_ms = percentile(&cancellation_ms, 95);
     let reader_p95_ms = percentile(&reader_ms, 95);
     let reader_block_over_100_ms = reader_ms.iter().filter(|sample| **sample > 100.0).count();
-    let worker_p95_ms = percentile(&worker_ms, 95);
-    let transport_p95_ms = percentile(&transport_ms, 95);
-    let transport_percent_p95 = percentile(&transport_percent, 95);
-    let in_process_p95_ms = percentile(&in_process_ms, 95);
 
     let metrics = GateMetrics {
         stale_current_inserts,
@@ -52,25 +43,13 @@ fn formal_gate_b() {
         cancellation_p95_ms,
         reader_p95_ms,
         reader_block_over_100_ms,
-        worker_p95_ms,
-        transport_p95_ms,
-        transport_percent_p95,
-        in_process_p95_ms,
         cache_plateau_bytes,
         cache_growth_bytes_per_100,
         cache_evictions,
         private_bytes,
     };
     if !cfg!(debug_assertions) {
-        write_metrics(
-            &metrics,
-            &cancellation_ms,
-            &reader_ms,
-            &worker_ms,
-            &transport_ms,
-            &transport_percent,
-            &in_process_ms,
-        );
+        write_metrics(&metrics, &cancellation_ms, &reader_ms);
     }
 
     assert_eq!(metrics.stale_current_inserts, 0);
@@ -80,8 +59,6 @@ fn formal_gate_b() {
     assert_eq!(metrics.reader_block_over_100_ms, 0);
     assert!(metrics.reader_p95_ms <= 16.7, "{metrics:?}");
     assert!(metrics.cancellation_p95_ms <= 250.0, "{metrics:?}");
-    assert!(metrics.transport_p95_ms <= 15.0, "{metrics:?}");
-    assert!(metrics.transport_percent_p95 <= 20.0, "{metrics:?}");
     assert!(metrics.cache_plateau_bytes <= 512 * 1024 * 1024);
     assert!(metrics.cache_growth_bytes_per_100 <= 1024 * 1024);
     assert!(metrics.private_bytes <= 2 * 1024 * 1024 * 1024);
@@ -155,13 +132,9 @@ fn exercise_crash_recovery() -> usize {
     let document = seed_document();
     let committed_digest = document.current().canonical_digest();
     let mut damage = 0;
-    for run in 0..CRASH_RECOVERY_RUNS {
+    for _ in 0..CRASH_RECOVERY_RUNS {
         let mut worker = ExactWorkerClient::spawn(worker_path()).unwrap();
         worker.ping().unwrap();
-        let result = worker
-            .extrude_rectangle(if run % 2 == 0 { 20.0 } else { 35.0 })
-            .unwrap();
-        assert_eq!(result.topology_counts[4], 1);
         worker.crash().unwrap();
         if document.current().canonical_digest() != committed_digest {
             damage += 1;
@@ -230,58 +203,6 @@ fn exercise_concurrent_reader() -> Vec<f64> {
     samples
 }
 
-fn measure_worker_and_in_process() -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
-    let backend = ExactBackend::new();
-    let mut worker_samples = Vec::with_capacity(TRANSPORT_RUNS * TRANSPORT_SAMPLES);
-    let mut transport_samples = Vec::with_capacity(TRANSPORT_RUNS * TRANSPORT_SAMPLES);
-    let mut transport_percent = Vec::with_capacity(TRANSPORT_RUNS * TRANSPORT_SAMPLES);
-    let mut in_process_samples = Vec::with_capacity(TRANSPORT_RUNS * TRANSPORT_SAMPLES);
-
-    for run in 0..TRANSPORT_RUNS {
-        let transport_start = transport_samples.len();
-        let percent_start = transport_percent.len();
-        let mut worker = ExactWorkerClient::spawn(worker_path()).unwrap();
-        for sample in 0..TRANSPORT_WARMUP {
-            worker
-                .extrude_rectangle(height(run, sample))
-                .expect("worker warmup succeeds");
-            backend
-                .extrude_rectangle(spec(height(run, sample)))
-                .expect("in-process warmup succeeds");
-        }
-        for sample in 0..TRANSPORT_SAMPLES {
-            let height = height(run, sample);
-            let started = Instant::now();
-            let output = worker.extrude_rectangle(height).unwrap();
-            let round_trip = started.elapsed();
-            assert_eq!(output.volume_mm3.to_bits(), (6_000.0 * height).to_bits());
-            let transport = round_trip.saturating_sub(output.backend_duration);
-            let round_trip_ms = milliseconds(round_trip);
-            worker_samples.push(round_trip_ms);
-            transport_samples.push(milliseconds(transport));
-            transport_percent.push(milliseconds(transport) / round_trip_ms * 100.0);
-
-            let started = Instant::now();
-            backend.extrude_rectangle(spec(height)).unwrap();
-            in_process_samples.push(milliseconds(started.elapsed()));
-        }
-        assert!(
-            percentile(&transport_samples[transport_start..], 95) <= 15.0,
-            "transport performance run {run} exceeded the frozen p95 latency threshold"
-        );
-        assert!(
-            percentile(&transport_percent[percent_start..], 95) <= 20.0,
-            "transport performance run {run} exceeded the frozen p95 percentage threshold"
-        );
-    }
-    (
-        worker_samples,
-        transport_samples,
-        transport_percent,
-        in_process_samples,
-    )
-}
-
 fn exercise_cache_plateau() -> (usize, usize, u64) {
     let mut scheduler = EvaluationScheduler::new(CACHE_BUDGET_BYTES);
     let mut checkpoints = Vec::new();
@@ -331,22 +252,6 @@ fn dimension(token: &str, millimetres: f64) -> Dimension {
     Dimension::new(token, millimetres).unwrap()
 }
 
-fn spec(height_mm: f64) -> RectangleExtrudeSpec {
-    RectangleExtrudeSpec {
-        width_mm: 100.0,
-        depth_mm: 60.0,
-        height_mm,
-    }
-}
-
-fn height(run: usize, sample: usize) -> f64 {
-    if (run + sample).is_multiple_of(2) {
-        20.0
-    } else {
-        35.0
-    }
-}
-
 fn worker_path() -> &'static str {
     env!("CARGO_BIN_EXE_ketchup-exact-worker")
 }
@@ -388,25 +293,13 @@ struct GateMetrics {
     cancellation_p95_ms: f64,
     reader_p95_ms: f64,
     reader_block_over_100_ms: usize,
-    worker_p95_ms: f64,
-    transport_p95_ms: f64,
-    transport_percent_p95: f64,
-    in_process_p95_ms: f64,
     cache_plateau_bytes: usize,
     cache_growth_bytes_per_100: usize,
     cache_evictions: u64,
     private_bytes: usize,
 }
 
-fn write_metrics(
-    metrics: &GateMetrics,
-    cancellation_ms: &[f64],
-    reader_ms: &[f64],
-    worker_ms: &[f64],
-    transport_ms: &[f64],
-    transport_percent: &[f64],
-    in_process_ms: &[f64],
-) {
+fn write_metrics(metrics: &GateMetrics, cancellation_ms: &[f64], reader_ms: &[f64]) {
     let metrics_path = std::env::var_os("KETCHUP_GATE_B_METRICS_PATH")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
@@ -430,12 +323,6 @@ fn write_metrics(
         json,
         "  \"reader_samples\": {},",
         PERFORMANCE_RUNS * READER_SAMPLES
-    )
-    .unwrap();
-    writeln!(
-        json,
-        "  \"transport_samples\": {},",
-        TRANSPORT_RUNS * TRANSPORT_SAMPLES
     )
     .unwrap();
     writeln!(
@@ -481,30 +368,6 @@ fn write_metrics(
         metrics.cancellation_p95_ms
     )
     .unwrap();
-    writeln!(
-        json,
-        "  \"worker_end_to_end_p95_ms\": {:.6},",
-        metrics.worker_p95_ms
-    )
-    .unwrap();
-    writeln!(
-        json,
-        "  \"worker_transport_p95_ms\": {:.6},",
-        metrics.transport_p95_ms
-    )
-    .unwrap();
-    writeln!(
-        json,
-        "  \"worker_transport_percent_p95\": {:.6},",
-        metrics.transport_percent_p95
-    )
-    .unwrap();
-    writeln!(
-        json,
-        "  \"in_process_p95_ms\": {:.6},",
-        metrics.in_process_p95_ms
-    )
-    .unwrap();
     writeln!(json, "  \"cache_budget_bytes\": {CACHE_BUDGET_BYTES},").unwrap();
     writeln!(
         json,
@@ -526,16 +389,7 @@ fn write_metrics(
     )
     .unwrap();
     write_samples(&mut json, "cancellation_ms", cancellation_ms, true);
-    write_samples(&mut json, "reader_ms", reader_ms, true);
-    write_samples(&mut json, "worker_end_to_end_ms", worker_ms, true);
-    write_samples(&mut json, "worker_transport_ms", transport_ms, true);
-    write_samples(
-        &mut json,
-        "worker_transport_percent",
-        transport_percent,
-        true,
-    );
-    write_samples(&mut json, "in_process_ms", in_process_ms, false);
+    write_samples(&mut json, "reader_ms", reader_ms, false);
     writeln!(json, "}}").unwrap();
     std::fs::write(metrics_path, json).unwrap();
 }

@@ -16,11 +16,11 @@ use ketchup_core::drawing_export::{DrawingExportError, export_drawing};
 use ketchup_core::exact_brep_graph::ExactBRepGraph;
 use ketchup_core::exact_product::{
     ExactBRepGraphEdgeEvidence, ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence,
-    ExactBodyPackage, ExactFaceRole, ExactFeatureChainRequest, ExactProductError,
-    ExactResultRegistry, build_box_render_package, canonical_reference_lineage_digest,
+    ExactBodyPackage, ExactFaceRole, ExactResultRegistry,
 };
 use ketchup_core::import::{StepImportMesh, StepMeshTriangle};
 use ketchup_core::persistence;
+use ketchup_core::testing::box_package;
 use std::sync::Arc;
 
 const DEFINITION: DefinitionId = DefinitionId(1);
@@ -83,42 +83,20 @@ fn exact_package_for(
     fingerprint: &str,
     bounds: [[f64; 3]; 2],
 ) -> Arc<ExactBodyPackage> {
-    let request = ExactFeatureChainRequest::terminal_body_requests(snapshot, DEFINITION)
-        .unwrap()
-        .into_values()
-        .find(|request| request.producer_feature_id() == producer_feature_id)
-        .unwrap();
-    let evidence = [
-        ExactFaceRole::Top,
-        ExactFaceRole::Bottom,
-        ExactFaceRole::East,
-    ]
-    .map(|role| {
-        (
-            role,
-            canonical_reference_lineage_digest(
-                snapshot.document_id(),
-                producer_feature_id,
-                role.semantic_role(),
-                role.source_element_id(),
-                role.expected_type(),
-            ),
-            format!("geometry:{role:?}:{fingerprint}"),
-        )
-    });
-    Arc::new(
-        build_box_render_package(
-            &request,
-            format!("exact-input:{fingerprint}"),
-            fingerprint.into(),
-            "occt".into(),
-            "r0".into(),
-            bounds,
-            evidence,
-        )
-        .unwrap()
-        .into(),
+    let package = box_package(
+        snapshot,
+        DEFINITION,
+        producer_feature_id,
+        fingerprint,
+        &[
+            ExactFaceRole::Top,
+            ExactFaceRole::Bottom,
+            ExactFaceRole::East,
+        ],
     )
+    .unwrap();
+    assert_eq!(package.bounds_mm(), bounds);
+    Arc::new(package)
 }
 
 fn exact_package(
@@ -2510,16 +2488,17 @@ fn malformed_geometry_is_rejected_without_mutation() {
     ))
     .clone();
     match &mut malformed {
-        ExactBodyPackage::Rectangle(package) => {
+        ExactBodyPackage::Graph(package) => {
             package.triangles[0].vertex_indices[0] = u32::MAX;
         }
         _ => unreachable!(),
     }
     let before = stamp(&document);
-    assert!(matches!(
-        ExactResultRegistry::accept(&snapshot, [Arc::new(malformed)]),
-        Err(ExactProductError::StaleResult)
-    ));
+    let registry = ExactResultRegistry::accept(&snapshot, [Arc::new(malformed)]).unwrap();
+    assert_eq!(
+        project_orthographic_drawing(&snapshot, &registry, &sheet("Malformed")),
+        Err(DrawingError::InvalidGeometry)
+    );
     assert_eq!(stamp(&document), before);
 }
 
