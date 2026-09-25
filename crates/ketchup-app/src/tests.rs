@@ -370,13 +370,16 @@ fn cad_edit_append_planar_offset_is_host_id_assigned_exact_and_one_step() {
     let committed = app.document.current();
     assert_eq!(committed.revision_id(), baseline.revision_id() + 1);
     assert_eq!(app.document.visible_undo_steps(), baseline_undo + 1);
-    let request = ExactPlanarOffsetRequest::from_snapshot(&committed, DefinitionId(2)).unwrap();
-    assert_eq!(request.profile_feature_id, FeatureId(3));
-    assert_eq!(request.offset_feature_id, FeatureId(4));
-    assert_eq!(request.distance_mm(), -5.0);
+    let graph = ExactBRepGraph::from_snapshot(&committed, DefinitionId(2), FeatureId(4)).unwrap();
+    assert_eq!(graph.profiles[0].source_feature_id, 3);
+    assert!(matches!(
+        graph.nodes.last().unwrap().operation,
+        ExactBRepOperation::PlanarOffset { distance_bits, .. }
+            if f64::from_bits(distance_bits) == -5.0
+    ));
     assert_eq!(
-        request.expected_bounds_mm(),
-        [[15.0, 25.0, 0.0], [85.0, 55.0, 0.0]]
+        graph.producer_bounds_mm().unwrap(),
+        Some([[15.0, 25.0, 0.0], [85.0, 55.0, 0.0]])
     );
     assert!(app.undo());
     assert_eq!(
@@ -10716,7 +10719,7 @@ fn planar_offset_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
         .as_mut()
         .unwrap()
         .plan
-        .exact_request
+        .exact_graph
         .canonical_input_digest = "tampered".to_owned();
     assert!(!request_tamper.confirm_planar_offset_preview());
     assert_unchanged(&request_tamper, revision, &digest, undo_steps);
@@ -10858,7 +10861,7 @@ fn sweep_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
         .as_mut()
         .unwrap()
         .plan
-        .exact_request
+        .exact_graph
         .canonical_input_digest = "tampered".to_owned();
     assert!(!request_tamper.confirm_sweep_preview());
     assert_unchanged(&request_tamper, revision, &digest, undo_steps);
@@ -11005,7 +11008,7 @@ fn loft_exact_plan_rejects_tamper_drift_stale_and_replay_atomically() {
         .as_mut()
         .unwrap()
         .plan
-        .exact_request
+        .exact_graph
         .canonical_input_digest = "tampered".to_owned();
     assert!(!request_tamper.confirm_loft_preview());
     assert_unchanged(&request_tamper, revision, &digest, undo_steps);

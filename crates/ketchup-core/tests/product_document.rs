@@ -15,7 +15,7 @@ use ketchup_core::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry,
     ExactBRepPlanarLoop, ExactBRepPlanarSegment,
 };
-use ketchup_core::exact_product::{ExactPlanarOffsetRequest, producer_exact_graph};
+use ketchup_core::exact_product::producer_exact_graph;
 use ketchup_core::persistence;
 use ketchup_core::sketch::{
     PrincipalPlane, SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity,
@@ -2725,10 +2725,12 @@ fn bounded_planar_offset_is_dimensioned_validated_undoable_and_persistent() {
             },
         ]))
         .unwrap();
-    let large_rectangle_request =
-        ExactPlanarOffsetRequest::from_snapshot(&document.current(), DEFINITION).unwrap();
-    assert!(large_rectangle_request.is_rectangle());
-    assert!(large_rectangle_request.has_valid_basic_inputs());
+    let large_rectangle = offset_graph(&document.current(), DEFINITION);
+    assert_eq!(offset_distance(&large_rectangle), 100_000.001);
+    assert!(matches!(
+        &large_rectangle.profiles[0].geometry,
+        ExactBRepPlanarGeometry::Boundary { segments, .. } if segments.len() == 4
+    ));
     assert_eq!(document.undo().unwrap().canonical_digest(), outward);
 
     document
@@ -2863,17 +2865,14 @@ fn circular_planar_offset_is_persistent_undoable_and_fail_closed() {
         ]))
         .unwrap();
     let outward = document.current().canonical_digest();
-    let outward_request =
-        ExactPlanarOffsetRequest::from_snapshot(&document.current(), DEFINITION).unwrap();
-    assert_eq!(
-        outward_request.source_bounds_mm(),
-        [-8.0, -28.0, 32.0, 12.0]
-    );
-    assert_eq!(outward_request.distance_mm(), 3.0);
-    assert_eq!(
-        f64::from_bits(outward_request.circle_profile().unwrap().radius_bits),
-        20.0
-    );
+    let outward_request = offset_graph(&document.current(), DEFINITION);
+    assert_eq!(offset_distance(&outward_request), 3.0);
+    assert!(matches!(
+        outward_request.profiles[0].geometry,
+        ExactBRepPlanarGeometry::Circle { center_bits, radius_bits }
+            if center_bits.map(f64::from_bits) == [12.0, -8.0]
+                && f64::from_bits(radius_bits) == 20.0
+    ));
 
     document
         .apply_batch(&CommandBatch::new(vec![
@@ -2884,8 +2883,7 @@ fn circular_planar_offset_is_persistent_undoable_and_fail_closed() {
         ]))
         .unwrap();
     let inward = document.current().canonical_digest();
-    let inward_request =
-        ExactPlanarOffsetRequest::from_snapshot(&document.current(), DEFINITION).unwrap();
+    let inward_request = offset_graph(&document.current(), DEFINITION);
     assert_ne!(inward, outward);
     assert_ne!(
         inward_request.canonical_input_digest,
@@ -2917,9 +2915,10 @@ fn circular_planar_offset_is_persistent_undoable_and_fail_closed() {
     assert!(reopened.migration_losses().is_empty());
     assert_eq!(reopened.snapshot().canonical_digest(), inward);
     assert_eq!(persistence::save(&reopened.snapshot()), bytes);
-    let reopened_request =
-        ExactPlanarOffsetRequest::from_snapshot(&reopened.snapshot(), DEFINITION).unwrap();
-    assert_eq!(reopened_request, inward_request);
+    assert_eq!(
+        offset_graph(&reopened.snapshot(), DEFINITION).canonical_input_digest,
+        inward_request.canonical_input_digest
+    );
 }
 
 #[test]
@@ -2988,15 +2987,13 @@ fn cubic_planar_offset_request_is_persistent_undoable_and_forgery_resistant() {
         .unwrap();
 
     let outward = document.current().canonical_digest();
-    let outward_request =
-        ExactPlanarOffsetRequest::from_snapshot(&document.current(), DEFINITION).unwrap();
-    assert!(outward_request.has_valid_basic_inputs());
-    assert_eq!(
-        outward_request.source_bounds_mm(),
-        [-20.0, -15.0, 20.0, 22.5]
-    );
+    let outward_request = offset_graph(&document.current(), DEFINITION);
+    let ExactBRepPlanarGeometry::Boundary { segments, .. } = &outward_request.profiles[0].geometry
+    else {
+        panic!("expected a boundary profile");
+    };
     assert!(matches!(
-        outward_request.mixed_profile().unwrap().segments.as_slice(),
+        segments.as_slice(),
         [
             ExactBRepPlanarSegment::Line { .. },
             ExactBRepPlanarSegment::Line { .. },
@@ -3018,13 +3015,15 @@ fn cubic_planar_offset_request_is_persistent_undoable_and_forgery_resistant() {
     assert_eq!(document.visible_undo_steps(), undo_steps);
 
     let mut forged = outward_request.clone();
-    let ExactBRepPlanarSegment::CubicBezier { control_1_bits, .. } =
-        &mut forged.profile.as_mut().unwrap().segments[2]
+    let ExactBRepPlanarGeometry::Boundary { segments, .. } = &mut forged.profiles[0].geometry
     else {
+        panic!("fixture must preserve its boundary");
+    };
+    let ExactBRepPlanarSegment::CubicBezier { control_1_bits, .. } = &mut segments[2] else {
         panic!("fixture must preserve its cubic segment");
     };
     control_1_bits[1] = 24.0_f64.to_bits();
-    assert!(!forged.has_valid_basic_inputs());
+    assert!(forged.validate().is_err());
 
     document
         .apply_batch(&CommandBatch::new(vec![
@@ -3035,8 +3034,7 @@ fn cubic_planar_offset_request_is_persistent_undoable_and_forgery_resistant() {
         ]))
         .unwrap();
     let inward = document.current().canonical_digest();
-    let inward_request =
-        ExactPlanarOffsetRequest::from_snapshot(&document.current(), DEFINITION).unwrap();
+    let inward_request = offset_graph(&document.current(), DEFINITION);
     assert_ne!(inward, outward);
     assert_ne!(
         inward_request.canonical_input_digest,
@@ -3052,8 +3050,8 @@ fn cubic_planar_offset_request_is_persistent_undoable_and_forgery_resistant() {
     assert_eq!(reopened.snapshot().canonical_digest(), inward);
     assert_eq!(persistence::save(&reopened.snapshot()), bytes);
     assert_eq!(
-        ExactPlanarOffsetRequest::from_snapshot(&reopened.snapshot(), DEFINITION).unwrap(),
-        inward_request
+        offset_graph(&reopened.snapshot(), DEFINITION).canonical_input_digest,
+        inward_request.canonical_input_digest
     );
 }
 
@@ -3128,16 +3126,13 @@ fn compound_planar_offset_request_is_persistent_undoable_and_forgery_resistant()
         .unwrap();
 
     let outward = document.current().canonical_digest();
-    let outward_request =
-        ExactPlanarOffsetRequest::from_snapshot(&document.current(), DEFINITION).unwrap();
-    assert!(outward_request.has_valid_basic_inputs());
-    assert_eq!(
-        outward_request.source_bounds_mm(),
-        [-20.0, -15.0, 20.0, 22.5]
-    );
-    let region = outward_request.region_profile().unwrap();
+    let outward_request = offset_graph(&document.current(), DEFINITION);
+    let ExactBRepPlanarGeometry::Region { outer, holes } = &outward_request.profiles[0].geometry
+    else {
+        panic!("expected a region profile");
+    };
     assert!(matches!(
-        &region.outer,
+        outer,
         ExactBRepPlanarLoop::Boundary { segments }
             if segments.iter().any(|segment| matches!(
                 segment,
@@ -3145,7 +3140,7 @@ fn compound_planar_offset_request_is_persistent_undoable_and_forgery_resistant()
             ))
     ));
     assert!(matches!(
-        region.holes.as_slice(),
+        holes.as_slice(),
         [ExactBRepPlanarLoop::Circle {
             center_bits,
             radius_bits,
@@ -3154,13 +3149,14 @@ fn compound_planar_offset_request_is_persistent_undoable_and_forgery_resistant()
     ));
 
     let mut forged = outward_request.clone();
-    let ExactBRepPlanarLoop::Circle { radius_bits, .. } =
-        &mut forged.region.as_mut().unwrap().holes[0]
-    else {
+    let ExactBRepPlanarGeometry::Region { holes, .. } = &mut forged.profiles[0].geometry else {
+        panic!("fixture must preserve its region");
+    };
+    let ExactBRepPlanarLoop::Circle { radius_bits, .. } = &mut holes[0] else {
         panic!("fixture must preserve its circular hole");
     };
     *radius_bits = 4.0_f64.to_bits();
-    assert!(!forged.has_valid_basic_inputs());
+    assert!(forged.validate().is_err());
 
     let undo_steps = document.visible_undo_steps();
     assert_eq!(
@@ -3187,8 +3183,7 @@ fn compound_planar_offset_request_is_persistent_undoable_and_forgery_resistant()
         ]))
         .unwrap();
     let inward = document.current().canonical_digest();
-    let inward_request =
-        ExactPlanarOffsetRequest::from_snapshot(&document.current(), DEFINITION).unwrap();
+    let inward_request = offset_graph(&document.current(), DEFINITION);
     assert_ne!(inward, outward);
     assert_ne!(
         inward_request.canonical_input_digest,
@@ -3204,8 +3199,8 @@ fn compound_planar_offset_request_is_persistent_undoable_and_forgery_resistant()
     assert_eq!(reopened.snapshot().canonical_digest(), inward);
     assert_eq!(persistence::save(&reopened.snapshot()), bytes);
     assert_eq!(
-        ExactPlanarOffsetRequest::from_snapshot(&reopened.snapshot(), DEFINITION).unwrap(),
-        inward_request
+        offset_graph(&reopened.snapshot(), DEFINITION).canonical_input_digest,
+        inward_request.canonical_input_digest
     );
 }
 
@@ -4394,4 +4389,31 @@ fn component_conversion_and_unique_preserve_colors_and_resolve_root_override() {
         ]))
         .unwrap();
     assert_eq!(child_color(&document.current()), color);
+}
+
+/// The exact graph of the definition's planar offset feature.
+fn offset_graph(snapshot: &Snapshot, definition_id: DefinitionId) -> ExactBRepGraph {
+    let offset = snapshot
+        .definition(definition_id)
+        .unwrap()
+        .feature_ids()
+        .iter()
+        .copied()
+        .find(|id| {
+            matches!(
+                snapshot.feature(*id).map(|feature| feature.kind()),
+                Some(FeatureKind::PlanarOffset { .. })
+            )
+        })
+        .unwrap();
+    ExactBRepGraph::from_snapshot(snapshot, definition_id, offset).unwrap()
+}
+
+fn offset_distance(graph: &ExactBRepGraph) -> f64 {
+    let ExactBRepOperation::PlanarOffset { distance_bits, .. } =
+        graph.nodes.last().unwrap().operation
+    else {
+        panic!("expected a planar offset graph");
+    };
+    f64::from_bits(distance_bits)
 }

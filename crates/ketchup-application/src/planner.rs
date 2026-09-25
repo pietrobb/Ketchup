@@ -41,7 +41,7 @@ use ketchup_core::drawing::{
 };
 use ketchup_core::exact_brep_graph::ExactBRepGraph;
 use ketchup_core::exact_product::{
-    ExactBodyPackage, ExactPlanarOffsetRequest, ExactResultRegistry, ExactSnapshotPreparation,
+    ExactBodyPackage, ExactResultRegistry, ExactSnapshotPreparation,
 };
 use ketchup_core::joinery::{
     DowelHole, DowelJointContract, DowelJointFace, DowelJointId, DowelPhysicalHolePair,
@@ -3871,25 +3871,17 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
             )?;
         }
         for (definition_id, feature_id) in appended_planar_offsets {
-            let request = ExactPlanarOffsetRequest::from_snapshot(&candidate, definition_id)
-                .map_err(|error| {
+            ExactBRepGraph::from_snapshot(&candidate, definition_id, feature_id).map_err(
+                |error| {
                     assistant_planning_rejection(
                         "planning.cad_feature_result_unsupported",
                         "append_feature",
                         &format!("feature:{}", feature_id.0),
                         error.to_string(),
-                        "Use one rectangular profile and a signed distance that leaves a non-collapsing planar result.",
+                        "Use a closed planar profile and a signed distance that leaves a non-collapsing planar result.",
                     )
-                })?;
-            if request.offset_feature_id != feature_id {
-                return Err(assistant_planning_rejection(
-                    "planning.cad_feature_result_unsupported",
-                    "append_feature",
-                    &format!("feature:{}", feature_id.0),
-                    "The Planar Offset result does not match the host-assigned output feature.",
-                    "Use the sole rectangular profile in the requested definition.",
-                ));
-            }
+                },
+            )?;
         }
     }
     Ok(AssistantCadProgramPlan { batch, outputs })

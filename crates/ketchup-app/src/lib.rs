@@ -61,10 +61,9 @@ use ketchup_core::document::{
 use ketchup_core::dxf_export::{DxfProfileExport, export_visible_profiles_dxf};
 use ketchup_core::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation};
 use ketchup_core::exact_product::{
-    AssemblySelectionTarget, ExactBodyPackage, ExactBodyView, ExactFaceRole, ExactLoftRequest,
-    ExactMeshExport, ExactPlanarOffsetRequest, ExactResultRegistry, ExactStlExport,
-    ExactSweepRequest, MeshExportBody, MeshExportSource, exact_body_terminal_features,
-    model_stl_export,
+    AssemblySelectionTarget, ExactBodyPackage, ExactBodyView, ExactFaceRole, ExactMeshExport,
+    ExactResultRegistry, ExactStlExport, MeshExportBody, MeshExportSource,
+    exact_body_terminal_features, model_stl_export,
 };
 #[cfg(test)]
 use ketchup_core::exact_product::{ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence};
@@ -1362,7 +1361,7 @@ struct PlanarOffsetPreviewPlan {
     distance_expression: String,
     distance_mm_bits: u64,
     command: CanonicalCommand,
-    exact_request: ExactPlanarOffsetRequest,
+    exact_graph: ExactBRepGraph,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1392,7 +1391,7 @@ struct SweepPreviewPlan {
     source: SweepSourcePlan,
     generated_feature_id: FeatureId,
     command: CanonicalCommand,
-    exact_request: ExactSweepRequest,
+    exact_graph: ExactBRepGraph,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1420,7 +1419,7 @@ struct LoftPreviewPlan {
     source: LoftSourcePlan,
     generated_feature_id: FeatureId,
     command: CanonicalCommand,
-    exact_request: ExactLoftRequest,
+    exact_graph: ExactBRepGraph,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1811,7 +1810,7 @@ struct ArcGeometry {
 }
 
 type ExactArcProfileGeometry = ([f64; 2], [f64; 2], [f64; 2], bool);
-pub type LoftPreviewParameters = (Vec<(FeatureId, f64)>, [[f64; 3]; 2], usize);
+pub type LoftPreviewParameters = (Vec<(FeatureId, f64)>, [[f64; 3]; 2]);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ActiveTool {
@@ -14806,9 +14805,12 @@ impl KetchupApp {
         };
         let batch = CommandBatch::new(vec![command.clone()]);
         let preview_snapshot = self.document.preview_batch(&batch).ok()?;
-        let exact_request =
-            ExactPlanarOffsetRequest::from_snapshot(&preview_snapshot, source.definition_id)
-                .ok()?;
+        let exact_graph = ExactBRepGraph::from_snapshot(
+            &preview_snapshot,
+            source.definition_id,
+            generated_feature_id,
+        )
+        .ok()?;
         Some((
             PlanarOffsetPreviewPlan {
                 source: source.clone(),
@@ -14816,7 +14818,7 @@ impl KetchupApp {
                 distance_expression: distance_expression.to_owned(),
                 distance_mm_bits: distance_mm.to_bits(),
                 command,
-                exact_request,
+                exact_graph,
             },
             batch,
         ))
@@ -14851,18 +14853,14 @@ impl KetchupApp {
     #[must_use]
     pub fn planar_offset_preview_parameters(&self) -> Option<(FeatureId, f64, [[f64; 3]; 2])> {
         let preview = self.planar_offset_preview.as_ref()?;
-        self.planar_offset_preview_is_current().then_some((
+        if !self.planar_offset_preview_is_current() {
+            return None;
+        }
+        Some((
             preview.plan.source.profile_feature_id,
             f64::from_bits(preview.plan.distance_mm_bits),
-            preview.plan.exact_request.expected_bounds_mm(),
+            preview.plan.exact_graph.producer_bounds_mm().ok()??,
         ))
-    }
-
-    #[must_use]
-    pub fn planar_offset_preview_exact_evaluator(&self) -> Option<&'static str> {
-        let preview = self.planar_offset_preview.as_ref()?;
-        self.planar_offset_preview_is_current()
-            .then(|| preview.plan.exact_request.evaluator())
     }
 
     #[must_use]
@@ -14987,14 +14985,18 @@ impl KetchupApp {
         };
         let batch = CommandBatch::new(vec![command.clone()]);
         let preview_snapshot = self.document.preview_batch(&batch).ok()?;
-        let exact_request =
-            ExactSweepRequest::from_snapshot(&preview_snapshot, source.definition_id).ok()?;
+        let exact_graph = ExactBRepGraph::from_snapshot(
+            &preview_snapshot,
+            source.definition_id,
+            generated_feature_id,
+        )
+        .ok()?;
         Some((
             SweepPreviewPlan {
                 source: source.clone(),
                 generated_feature_id,
                 command,
-                exact_request,
+                exact_graph,
             },
             batch,
         ))
@@ -15018,21 +15020,16 @@ impl KetchupApp {
     }
 
     #[must_use]
-    pub fn sweep_preview_parameters(&self) -> Option<(FeatureId, FeatureId, [[f64; 3]; 2], f64)> {
+    pub fn sweep_preview_parameters(&self) -> Option<(FeatureId, FeatureId, [[f64; 3]; 2])> {
         let preview = self.sweep_preview.as_ref()?;
-        self.sweep_preview_is_current().then_some((
+        if !self.sweep_preview_is_current() {
+            return None;
+        }
+        Some((
             preview.plan.source.profile_feature_id,
             preview.plan.source.path_feature_id,
-            preview.plan.exact_request.expected_bounds_mm(),
-            preview.plan.exact_request.expected_volume_mm3(),
+            preview.plan.exact_graph.producer_bounds_mm().ok()??,
         ))
-    }
-
-    #[must_use]
-    pub fn sweep_preview_exact_evaluator(&self) -> Option<&'static str> {
-        let preview = self.sweep_preview.as_ref()?;
-        self.sweep_preview_is_current()
-            .then(|| preview.plan.exact_request.evaluator())
     }
 
     #[must_use]
@@ -15156,14 +15153,18 @@ impl KetchupApp {
         };
         let batch = CommandBatch::new(vec![command.clone()]);
         let preview_snapshot = self.document.preview_batch(&batch).ok()?;
-        let exact_request =
-            ExactLoftRequest::from_snapshot(&preview_snapshot, source.definition_id).ok()?;
+        let exact_graph = ExactBRepGraph::from_snapshot(
+            &preview_snapshot,
+            source.definition_id,
+            generated_feature_id,
+        )
+        .ok()?;
         Some((
             LoftPreviewPlan {
                 source: source.clone(),
                 generated_feature_id,
                 command,
-                exact_request,
+                exact_graph,
             },
             batch,
         ))
@@ -15189,40 +15190,19 @@ impl KetchupApp {
     #[must_use]
     pub fn loft_preview_parameters(&self) -> Option<LoftPreviewParameters> {
         let preview = self.loft_preview.as_ref()?;
-        self.loft_preview_is_current().then(|| {
-            let mut minimum = [f64::INFINITY; 3];
-            let mut maximum = [f64::NEG_INFINITY; 3];
-            for section in &preview.plan.exact_request.sections {
-                let elevation = f64::from_bits(section.elevation_bits);
-                minimum[2] = minimum[2].min(elevation);
-                maximum[2] = maximum[2].max(elevation);
-                for point in &section.control_point_bits {
-                    for axis in 0..2 {
-                        let coordinate = f64::from_bits(point[axis]);
-                        minimum[axis] = minimum[axis].min(coordinate);
-                        maximum[axis] = maximum[axis].max(coordinate);
-                    }
-                }
-            }
-            (
-                preview
-                    .plan
-                    .source
-                    .sections
-                    .iter()
-                    .map(|section| (section.profile, section.elevation_mm))
-                    .collect(),
-                [minimum, maximum],
-                preview.plan.exact_request.control_point_count(),
-            )
-        })
-    }
-
-    #[must_use]
-    pub fn loft_preview_exact_evaluator(&self) -> Option<&'static str> {
-        let preview = self.loft_preview.as_ref()?;
-        self.loft_preview_is_current()
-            .then(|| preview.plan.exact_request.evaluator())
+        if !self.loft_preview_is_current() {
+            return None;
+        }
+        Some((
+            preview
+                .plan
+                .source
+                .sections
+                .iter()
+                .map(|section| (section.profile, section.elevation_mm))
+                .collect(),
+            preview.plan.exact_graph.producer_bounds_mm().ok()??,
+        ))
     }
 
     #[must_use]

@@ -28,8 +28,7 @@ use ketchup_core::exact_brep_graph::{
     ExactBRepPlanarSegment,
 };
 use ketchup_core::exact_product::{
-    EXACT_BREP_GRAPH_EVALUATOR_V1, EXACT_CIRCLE_EVALUATOR_V1, EXACT_LOFT_EVALUATOR_V1,
-    EXACT_PLANAR_OFFSET_EVALUATOR_V1, EXACT_SWEEP_EVALUATOR_V1, ExactBRepGraphPackage,
+    EXACT_BREP_GRAPH_EVALUATOR_V1, ExactBRepGraphPackage,
     ExactBRepGraphWorkerEvidence, ExactBodyPackage,
 };
 use ketchup_core::graph::{EvaluationStatus, EvaluatorNodeKind};
@@ -9643,7 +9642,7 @@ fn circle_push_pull_creates_an_exact_cylinder_and_circular_hole_with_one_step_hi
     assert!(shell.app_mut().start_preview());
     assert_eq!(
         shell.app().push_pull_preview_exact_evaluator(),
-        Some(EXACT_CIRCLE_EVALUATOR_V1)
+        Some(EXACT_BREP_GRAPH_EVALUATOR_V1)
     );
     assert_eq!(shell.app().document_revision(), cylinder_profile_revision);
     assert_eq!(shell.app().canonical_digest(), cylinder_profile_digest);
@@ -10035,10 +10034,6 @@ fn planar_offset_previews_signed_exact_bounds_and_commits_from_localized_headles
     let preview = shell.app().planar_offset_preview_parameters().unwrap();
     assert_eq!(preview.1, -7.5);
     assert_eq!(preview.2, [[127.5, 7.5, 0.0], [212.5, 52.5, 0.0]]);
-    assert_eq!(
-        shell.app().planar_offset_preview_exact_evaluator(),
-        Some(EXACT_PLANAR_OFFSET_EVALUATOR_V1)
-    );
     assert_eq!(shell.app().document_revision(), before_revision);
     assert_eq!(shell.app().canonical_digest(), before_digest);
 
@@ -10081,11 +10076,6 @@ fn sweep_previews_exact_profile_path_and_commits_from_localized_headless_shell()
     shell.click_command(AppCommand::Sweep);
     let preview = shell.app().sweep_preview_parameters().unwrap();
     assert_eq!(preview.2, [[-5.0, 0.0, -10.0], [5.0, 125.0, 10.0]]);
-    assert_eq!(preview.3, 25_000.0);
-    assert_eq!(
-        shell.app().sweep_preview_exact_evaluator(),
-        Some(EXACT_SWEEP_EVALUATOR_V1)
-    );
     assert_eq!(shell.app().document_revision(), before_revision);
     assert_eq!(shell.app().canonical_digest(), before_digest);
 
@@ -10145,11 +10135,6 @@ fn spline_profiles_preview_exact_loft_and_commit_from_localized_headless_shell()
         [0.0, 80.0]
     );
     assert_eq!(preview.1, [[-20.0, -10.0, 0.0], [20.0, 10.0, 80.0]]);
-    assert_eq!(preview.2, 8);
-    assert_eq!(
-        shell.app().loft_preview_exact_evaluator(),
-        Some(EXACT_LOFT_EVALUATOR_V1)
-    );
     assert_eq!(shell.app().document_revision(), before_revision);
     assert_eq!(shell.app().canonical_digest(), before_digest);
 
