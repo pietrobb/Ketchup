@@ -4570,6 +4570,9 @@ fn rotating_an_imported_step_body_keeps_it_painted_pickable_and_turnable_again()
     let to = shell
         .app()
         .project_to_screen(centre + Vec3::new(0.0, span * 0.4, 0.0), viewport);
+    // Choose the pivot, then grab an arm and swing it a quarter turn.
+    let pivot = shell.app().project_to_screen(centre, viewport);
+    shell.click_at(pivot);
     let mut blank_frames = 0;
     shell.drag_observing(from, to, |app| {
         if app.instanced_scene_triangle_count() == 0 {
@@ -4610,6 +4613,7 @@ fn rotating_an_imported_step_body_keeps_it_painted_pickable_and_turnable_again()
     );
     let before_steps = shell.app().undo_step_count();
     shell.click_command(AppCommand::Rotate);
+    shell.click_at(pivot);
     shell.drag(from, to);
     shell.settle();
     assert_eq!(

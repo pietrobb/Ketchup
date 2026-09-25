@@ -3669,7 +3669,7 @@ fn scripted_sketch_program_rejects_invalid_constraint_without_mutation() {
 }
 
 #[test]
-fn assistant_profile_translation_reviews_confirms_undoes_and_fails_closed() {
+fn assistant_profile_translation_reviews_confirms_and_undoes() {
     let directory = tempfile::tempdir().unwrap();
     let fixture = directory
         .path()
@@ -3740,8 +3740,10 @@ fn assistant_profile_translation_reviews_confirms_undoes_and_fails_closed() {
     assert_eq!(shell.app().canonical_digest(), before_digest);
     assert_eq!(profile_points(&shell), before_points);
 
+    // Moving the pocket off its host is an edit like any other: it is
+    // reviewed without touching the document, and validation reports it.
     assert!(
-        !shell
+        shell
             .app_mut()
             .prepare_assistant_model_intent(AssistantModelIntent {
                 replace_scene: false,
@@ -3759,7 +3761,7 @@ fn assistant_profile_translation_reviews_confirms_undoes_and_fails_closed() {
             })
     );
     assert_eq!(shell.app().canonical_digest(), before_digest);
-    assert!(shell.app().assistant_proposal().is_none());
+    assert!(shell.app().assistant_proposal().is_some());
 }
 
 #[test]
