@@ -1,5 +1,12 @@
 # Ketchup
 
+> [!WARNING]
+> ## Work in progress — not a finished product
+>
+> **Ketchup is under active development and is still far from a finished, stable release.**
+>
+> You are welcome to download it, build it, and look around — but expect missing features, rough edges, breaking changes, and bugs. Please do not rely on it for real work or keep important models only in Ketchup yet.
+
 <p align="center">
   <img src="pic/splash.png" alt="Ketchup — AI-native 2D/3D parametric modeler" width="100%">
 </p>
@@ -13,8 +20,6 @@
 </p>
 
 Ketchup is an AI-native desktop modeler for creating, editing, assembling, validating, and exporting real geometry. Manual tools and the Assistant share the same canonical command path: every accepted model change is validated, revision-bound, atomic, and undoable.
-
-> **Development status:** Ketchup is a working prototype, not yet a stable general-purpose CAD release. The repository contains substantial end-to-end modeling workflows, but broad format compatibility, installers, production polish, and a stable public API are still in progress.
 
 <p align="center">
   <img src="pic/ketchup-modeler.png" alt="Ketchup desktop prototype showing a 480-occurrence timber scene" width="100%">
