@@ -567,7 +567,7 @@ fn ambiguous_and_lost_references_reject_ownership_without_history_changes() {
         &[
             ExactFaceRole::Top,
             ExactFaceRole::Bottom,
-            ExactFaceRole::East,
+            ExactFaceRole::LinearSide,
         ],
     )
     .unwrap();
@@ -672,7 +672,7 @@ fn ambiguous_and_lost_references_reject_ownership_without_history_changes() {
             &[
                 ExactFaceRole::Top,
                 ExactFaceRole::Bottom,
-                ExactFaceRole::East,
+                ExactFaceRole::LinearSide,
             ],
         )
         .map(Arc::new)

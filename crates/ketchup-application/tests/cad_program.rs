@@ -154,7 +154,7 @@ fn exact_box_package(
             &[
                 ExactFaceRole::Top,
                 ExactFaceRole::Bottom,
-                ExactFaceRole::East,
+                ExactFaceRole::LinearSide,
             ],
         )
         .unwrap(),

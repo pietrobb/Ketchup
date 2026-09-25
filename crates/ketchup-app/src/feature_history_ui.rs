@@ -369,21 +369,17 @@ impl KetchupApp {
         if selection.definition_id != definition_id {
             return None;
         }
-        let role = match selection.element {
-            ElementId::Face {
-                axis: Axis::Z,
-                side: Side::Maximum,
-            } => ExactFaceRole::Top,
-            ElementId::Face {
-                axis: Axis::Z,
-                side: Side::Minimum,
-            } => ExactFaceRole::Bottom,
-            ElementId::Face {
-                axis: Axis::X,
-                side: Side::Maximum,
-            } => ExactFaceRole::East,
-            _ => return None,
+        // The selected box face, found among the result's named planar faces by
+        // its outward normal in definition coordinates.
+        let ElementId::Face { axis, side } = selection.element else {
+            return None;
         };
+        let mut normal = [0.0; 3];
+        normal[match axis {
+            Axis::X => 0,
+            Axis::Y => 1,
+            Axis::Z => 2,
+        }] = if side == Side::Maximum { 1.0 } else { -1.0 };
         let mut references = self
             .exact_results
             .values()
@@ -391,7 +387,19 @@ impl KetchupApp {
                 package.definition_id() == definition_id
                     && package.producer_feature_id() == feature_id
             })
-            .filter_map(|package| package.reference(role).cloned());
+            .filter_map(|package| match package.as_ref() {
+                ExactBodyPackage::Graph(package) => Some(package),
+                ExactBodyPackage::Imported(_) => None,
+            })
+            .flat_map(|package| &package.planar_face_attachments)
+            .filter(|attachment| {
+                attachment
+                    .local_unit_normal()
+                    .iter()
+                    .zip(normal)
+                    .all(|(actual, expected)| (actual - expected).abs() <= 1.0e-9)
+            })
+            .map(|attachment| attachment.reference().clone());
         let reference = references.next()?;
         references.next().is_none().then_some(reference)
     }

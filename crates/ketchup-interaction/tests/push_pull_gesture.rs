@@ -38,7 +38,7 @@ fn exact_package(
         &[
             ExactFaceRole::Top,
             ExactFaceRole::Bottom,
-            ExactFaceRole::East,
+            ExactFaceRole::LinearSide,
         ],
     )
     .unwrap()
@@ -115,7 +115,10 @@ fn source_document() -> (DocumentStore, BodySubshapeRef, BodySubshapeRef) {
     let snapshot = document.current();
     let package = exact_package(&snapshot, EXTRUSION);
     let top = package.reference(ExactFaceRole::Top).unwrap().clone();
-    let east = package.reference(ExactFaceRole::East).unwrap().clone();
+    let east = package
+        .reference(ExactFaceRole::LinearSide)
+        .unwrap()
+        .clone();
     document
         .register_exact_reference_evidence(top.clone())
         .unwrap();

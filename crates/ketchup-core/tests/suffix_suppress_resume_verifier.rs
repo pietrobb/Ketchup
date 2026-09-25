@@ -133,7 +133,7 @@ fn package_for(
         &[
             ExactFaceRole::Top,
             ExactFaceRole::Bottom,
-            ExactFaceRole::East,
+            ExactFaceRole::LinearSide,
         ],
     )
     .map(Arc::new)

@@ -1042,7 +1042,7 @@ fn generalized_extents_compile_to_bounded_signed_intervals_and_fail_closed() {
         &[
             ExactFaceRole::Top,
             ExactFaceRole::Bottom,
-            ExactFaceRole::East,
+            ExactFaceRole::LinearSide,
         ],
     )
     .unwrap();

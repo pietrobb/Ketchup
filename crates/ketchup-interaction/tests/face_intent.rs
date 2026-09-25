@@ -91,7 +91,7 @@ fn top_reference(store: &DocumentStore, producer: FeatureId) -> BodySubshapeRef 
         &[
             ExactFaceRole::Top,
             ExactFaceRole::Bottom,
-            ExactFaceRole::East,
+            ExactFaceRole::LinearSide,
         ],
     )
     .unwrap()

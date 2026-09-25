@@ -70,7 +70,7 @@ fn current_exact_package(
             &[
                 ExactFaceRole::Top,
                 ExactFaceRole::Bottom,
-                ExactFaceRole::East,
+                ExactFaceRole::LinearSide,
             ],
         )
         .unwrap(),
@@ -87,7 +87,7 @@ fn current_exact_package_without_attachments(
         &[
             ExactFaceRole::Top,
             ExactFaceRole::Bottom,
-            ExactFaceRole::East,
+            ExactFaceRole::LinearSide,
         ],
     );
     package.planar_face_attachments.clear();
@@ -247,7 +247,10 @@ fn seeded_document() -> (
         document,
         package.reference(ExactFaceRole::Top).unwrap().clone(),
         package.reference(ExactFaceRole::Bottom).unwrap().clone(),
-        package.reference(ExactFaceRole::East).unwrap().clone(),
+        package
+            .reference(ExactFaceRole::LinearSide)
+            .unwrap()
+            .clone(),
     )
 }
 
@@ -258,7 +261,7 @@ fn canonical_planar_endpoint(
     let geometry = match reference.role() {
         Some(ExactFaceRole::Top) => Some(([0.0; 3], [0.0, 0.0, 1.0])),
         Some(ExactFaceRole::Bottom) => Some(([0.0; 3], [0.0, 0.0, -1.0])),
-        Some(ExactFaceRole::East) => Some(([0.0; 3], [1.0, 0.0, 0.0])),
+        Some(ExactFaceRole::LinearSide) => Some(([0.0; 3], [1.0, 0.0, 0.0])),
         _ => None,
     };
     match geometry
@@ -2038,7 +2041,8 @@ fn assembly_recompute_round_trips_rebind_and_controlled_topology_loss() {
     reopened_document.commit_proposal(&dimension_edit).unwrap();
     let before_topology_change = reopened_document.current();
     let current_mate = before_topology_change.assembly_mate(MATE).unwrap().clone();
-    let removed_role = ExactFaceRole::West;
+    // A rectangle has no arc, so its result never names this face.
+    let removed_role = ExactFaceRole::ArcSide;
     let mut removed_reference = current_mate.endpoint_a().reference().clone();
     removed_reference.semantic_role = removed_role.semantic_role().into();
     removed_reference.source_element_id = removed_role.source_element_id().into();

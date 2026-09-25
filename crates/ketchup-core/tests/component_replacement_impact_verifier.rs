@@ -39,7 +39,7 @@ const COLLECTION: CollectionId = CollectionId(4500);
 const ROLES: [ExactFaceRole; 3] = [
     ExactFaceRole::Top,
     ExactFaceRole::Bottom,
-    ExactFaceRole::West,
+    ExactFaceRole::LinearSide,
 ];
 
 #[derive(Debug, Eq, PartialEq)]
@@ -208,11 +208,11 @@ fn seed() -> DocumentStore {
                     SELECTED,
                     PlanarFaceAttachment::new(
                         source_package
-                            .reference(ExactFaceRole::West)
+                            .reference(ExactFaceRole::LinearSide)
                             .unwrap()
                             .clone(),
                         [0.0; 3],
-                        [-1.0, 0.0, 0.0],
+                        [0.0, -1.0, 0.0],
                     )
                     .unwrap(),
                 ),
@@ -220,16 +220,16 @@ fn seed() -> DocumentStore {
                     TARGET_OCCURRENCE,
                     PlanarFaceAttachment::new(
                         target_package
-                            .reference(ExactFaceRole::West)
+                            .reference(ExactFaceRole::LinearSide)
                             .unwrap()
                             .clone(),
                         [0.0; 3],
-                        [-1.0, 0.0, 0.0],
+                        [0.0, -1.0, 0.0],
                     )
                     .unwrap(),
                 ),
                 AssemblyMateKind::CoincidentPlanar {
-                    offset_mm: -29.0,
+                    offset_mm: 0.0,
                     reversed: true,
                 },
             )),

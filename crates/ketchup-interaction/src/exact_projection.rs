@@ -706,7 +706,7 @@ mod tests {
             &[
                 ExactFaceRole::Top,
                 ExactFaceRole::Bottom,
-                ExactFaceRole::East,
+                ExactFaceRole::LinearSide,
             ],
         )
         .unwrap()
@@ -723,8 +723,7 @@ mod tests {
         [
             ExactFaceRole::Top,
             ExactFaceRole::Bottom,
-            ExactFaceRole::East,
-            ExactFaceRole::West,
+            ExactFaceRole::LinearSide,
         ]
         .into_iter()
         .find(|role| reference.producer_element_id == role.semantic_role())
@@ -817,9 +816,9 @@ mod tests {
                 Vec3::new(0.0, 0.0, 1.0),
             ),
             (
-                ExactFaceRole::East,
-                Vec3::new(20.0, 5.0, 5.0),
-                Vec3::new(-1.0, 0.0, 0.0),
+                ExactFaceRole::LinearSide,
+                Vec3::new(5.0, -20.0, 5.0),
+                Vec3::new(0.0, 1.0, 0.0),
             ),
         ] {
             let ray = Ray::new(origin, direction).unwrap();
@@ -896,13 +895,13 @@ mod tests {
         let top = rotated.exact_surface_pick(top_ray).unwrap();
         assert_eq!(named_face(&top), Some(ExactFaceRole::Top));
         assert!((top.position_mm.z - 12.0).abs() <= 1.0e-9);
-        // The east face (x = 10) turns to face +y.
-        let side_ray = Ray::new(Vec3::new(-5.0, 20.0, 5.0), Vec3::new(0.0, -1.0, 0.0)).unwrap();
+        // The side of the first profile line (y = 0, facing -y) turns to face +x.
+        let side_ray = Ray::new(Vec3::new(20.0, 5.0, 5.0), Vec3::new(-1.0, 0.0, 0.0)).unwrap();
         let side = rotated.exact_surface_pick(side_ray).unwrap();
-        assert_eq!(named_face(&side), Some(ExactFaceRole::East));
-        assert!((side.position_mm.y - 10.0).abs() <= 1.0e-9);
-        assert!((side.position_mm.x + 5.0).abs() <= 1.0e-9);
-        assert!(side.outward_normal.y > 0.999);
+        assert_eq!(named_face(&side), Some(ExactFaceRole::LinearSide));
+        assert!(side.position_mm.x.abs() <= 1.0e-9);
+        assert!((side.position_mm.y - 5.0).abs() <= 1.0e-9);
+        assert!(side.outward_normal.x > 0.999);
     }
 
     #[test]

@@ -69,7 +69,7 @@ fn exact_package(
         &[
             ExactFaceRole::Top,
             ExactFaceRole::Bottom,
-            ExactFaceRole::West,
+            ExactFaceRole::LinearSide,
         ],
     )
     .unwrap()
@@ -203,9 +203,12 @@ fn seed(reverse_occurrences: bool) -> DocumentStore {
                 AssemblyMateEndpoint::resolved_planar_face(
                     SELECTED,
                     PlanarFaceAttachment::new(
-                        evidence.reference(ExactFaceRole::West).unwrap().clone(),
+                        evidence
+                            .reference(ExactFaceRole::LinearSide)
+                            .unwrap()
+                            .clone(),
                         [0.0; 3],
-                        [-1.0, 0.0, 0.0],
+                        [0.0, -1.0, 0.0],
                     )
                     .unwrap(),
                 ),
@@ -213,16 +216,16 @@ fn seed(reverse_occurrences: bool) -> DocumentStore {
                     TARGET_OCCURRENCE,
                     PlanarFaceAttachment::new(
                         target_evidence
-                            .reference(ExactFaceRole::West)
+                            .reference(ExactFaceRole::LinearSide)
                             .unwrap()
                             .clone(),
                         [0.0; 3],
-                        [-1.0, 0.0, 0.0],
+                        [0.0, -1.0, 0.0],
                     )
                     .unwrap(),
                 ),
                 AssemblyMateKind::CoincidentPlanar {
-                    offset_mm: -45.0,
+                    offset_mm: 0.0,
                     reversed: true,
                 },
             )),

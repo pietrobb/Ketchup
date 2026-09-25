@@ -531,7 +531,7 @@ fn face_supported_pocket_and_topology_history_make_unique_losslessly() {
         &[
             ExactFaceRole::Top,
             ExactFaceRole::Bottom,
-            ExactFaceRole::East,
+            ExactFaceRole::LinearSide,
         ],
     )
     .unwrap();
@@ -1100,7 +1100,7 @@ fn branched_feature_dag_recomputes_only_the_dirty_closure_and_keeps_unrelated_ex
             &[
                 ExactFaceRole::Top,
                 ExactFaceRole::Bottom,
-                ExactFaceRole::East,
+                ExactFaceRole::LinearSide,
             ],
         )
         .map(Arc::new)

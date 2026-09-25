@@ -28,8 +28,8 @@ use ketchup_core::exact_brep_graph::{
     ExactBRepPlanarSegment,
 };
 use ketchup_core::exact_product::{
-    EXACT_BREP_GRAPH_EVALUATOR_V1, ExactBRepGraphPackage,
-    ExactBRepGraphWorkerEvidence, ExactBodyPackage,
+    EXACT_BREP_GRAPH_EVALUATOR_V1, ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence,
+    ExactBodyPackage,
 };
 use ketchup_core::graph::{EvaluationStatus, EvaluatorNodeKind};
 use ketchup_core::import::{ImportFormat, StepImportMesh, StepMeshTriangle};

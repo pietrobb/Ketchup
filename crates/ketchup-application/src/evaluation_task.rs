@@ -344,7 +344,7 @@ mod tests {
             "conflicting",
             &[
                 ExactFaceRole::Bottom,
-                ExactFaceRole::East,
+                ExactFaceRole::LinearSide,
                 ExactFaceRole::Top,
             ],
         );

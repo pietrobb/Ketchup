@@ -80,7 +80,7 @@ fn exact_package_for(
         &[
             ExactFaceRole::Top,
             ExactFaceRole::Bottom,
-            ExactFaceRole::East,
+            ExactFaceRole::LinearSide,
         ],
     )
     .unwrap()
@@ -884,11 +884,11 @@ fn occurrence_fork_refreshes_only_selected_planar_dependencies_and_outputs() {
                     FIRST,
                     PlanarFaceAttachment::new(
                         axial_evidence
-                            .reference(ExactFaceRole::East)
+                            .reference(ExactFaceRole::LinearSide)
                             .unwrap()
                             .clone(),
                         [0.0; 3],
-                        [1.0, 0.0, 0.0],
+                        [0.0, -1.0, 0.0],
                     )
                     .unwrap(),
                 ),
@@ -896,16 +896,16 @@ fn occurrence_fork_refreshes_only_selected_planar_dependencies_and_outputs() {
                     SECOND,
                     PlanarFaceAttachment::new(
                         axial_evidence
-                            .reference(ExactFaceRole::East)
+                            .reference(ExactFaceRole::LinearSide)
                             .unwrap()
                             .clone(),
                         [0.0; 3],
-                        [1.0, 0.0, 0.0],
+                        [0.0, -1.0, 0.0],
                     )
                     .unwrap(),
                 ),
                 AssemblyMateKind::CoincidentPlanar {
-                    offset_mm: 20.0,
+                    offset_mm: 0.0,
                     reversed: true,
                 },
             )),

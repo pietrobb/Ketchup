@@ -636,29 +636,26 @@ impl ExactBRepGraph {
 
     /// Frame of a planar face made by extruding `profile_feature_id`, named by
     /// the semantic role the evaluator gives it: an end cap (`extrusion.top`,
-    /// `extrusion.bottom`) or the side swept by a straight profile edge
-    /// (`line.0`, or the edge at the profile's east/west extreme). The frame is
+    /// `extrusion.bottom`) or the side swept by the profile's first line
+    /// (`extrusion.side(profile_edge=line.0)`). The frame is
     /// right-handed, its normal points out of the solid and, for sides, its y
-    /// axis follows the extrusion. Side faces are only reported while the
-    /// extrusion is the producer itself, because later operations may split them.
+    /// axis follows the extrusion. Later cuts may split a face but keep its plane.
     #[must_use]
     pub fn extrusion_face_frame(
         &self,
         profile_feature_id: u64,
         semantic_role: &str,
     ) -> Option<WorkplaneFrame> {
-        let (index, profile, interval) =
-            self.nodes.iter().enumerate().find_map(|(index, node)| {
-                let ExactBRepOperation::Extrude {
-                    profile, interval, ..
-                } = &node.operation
-                else {
-                    return None;
-                };
-                let profile = self.profiles.get(profile.0 as usize)?;
-                (profile.source_feature_id == profile_feature_id)
-                    .then_some((index, profile, *interval))
-            })?;
+        let (profile, interval) = self.nodes.iter().find_map(|node| {
+            let ExactBRepOperation::Extrude {
+                profile, interval, ..
+            } = &node.operation
+            else {
+                return None;
+            };
+            let profile = self.profiles.get(profile.0 as usize)?;
+            (profile.source_feature_id == profile_feature_id).then_some((profile, *interval))
+        })?;
         let frame = profile.frame_bits.map(f64::from_bits);
         let origin = [frame[0], frame[1], frame[2]];
         let x_axis = [frame[3], frame[4], frame[5]];
@@ -685,7 +682,6 @@ impl ExactBRepGraph {
                     normal,
                 })
             }
-            _ if index + 1 != self.nodes.len() => None,
             _ => {
                 let ExactBRepPlanarGeometry::Boundary {
                     closed: true,
@@ -704,18 +700,6 @@ impl ExactBRepGraph {
                         _ => None,
                     })
                     .collect::<Vec<_>>();
-                let extreme_x = |east: bool| {
-                    lines
-                        .iter()
-                        .flatten()
-                        .flat_map(|(start, end)| [start[0], end[0]])
-                        .reduce(|left, right| if (right > left) == east { right } else { left })
-                };
-                let vertical_at = |x: f64| {
-                    lines.iter().flatten().copied().find(|(start, end)| {
-                        (start[0] - x).abs() <= 1.0e-9 && (end[0] - x).abs() <= 1.0e-9
-                    })
-                };
                 let (start, end) = match semantic_role {
                     // The evaluator names the first line only when the profile has no arc.
                     "extrusion.side(profile_edge=line.0)" => {
@@ -726,8 +710,6 @@ impl ExactBRepGraph {
                         }
                         lines.iter().flatten().copied().next()?
                     }
-                    "extrusion.side(profile_edge=east)" => vertical_at(extreme_x(true)?)?,
-                    "extrusion.side(profile_edge=west)" => vertical_at(extreme_x(false)?)?,
                     _ => return None,
                 };
                 // Twice the signed area: positive for a counter-clockwise profile.

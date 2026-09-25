@@ -218,7 +218,7 @@ fn rectangle_on_generated_planar_face_preserves_exact_support_and_target_body() 
         &[
             ExactFaceRole::Top,
             ExactFaceRole::Bottom,
-            ExactFaceRole::East,
+            ExactFaceRole::LinearSide,
         ],
     )
     .unwrap();

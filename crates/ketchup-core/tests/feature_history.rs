@@ -265,7 +265,7 @@ fn resolved_subshape_selection_projects_stable_provenance_without_mutation() {
         &[
             ExactFaceRole::Top,
             ExactFaceRole::Bottom,
-            ExactFaceRole::East,
+            ExactFaceRole::LinearSide,
         ],
     )
     .unwrap();

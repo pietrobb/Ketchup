@@ -130,7 +130,7 @@ fn exact_package(
         &[
             ExactFaceRole::Top,
             ExactFaceRole::Bottom,
-            ExactFaceRole::East,
+            ExactFaceRole::LinearSide,
         ],
     )
     .unwrap()
@@ -241,7 +241,10 @@ fn seed(reverse_occurrences: bool) -> DocumentStore {
 fn seed_rigid_dependencies() -> DocumentStore {
     let mut document = seed(false);
     let evidence = exact_package(&document.current(), "rigid-dependencies");
-    let east = evidence.reference(ExactFaceRole::East).unwrap().clone();
+    let side = evidence
+        .reference(ExactFaceRole::LinearSide)
+        .unwrap()
+        .clone();
     document
         .apply_batch(&CommandBatch::new(vec![
             CanonicalCommand::SetOccurrenceVisibility {
@@ -260,14 +263,14 @@ fn seed_rigid_dependencies() -> DocumentStore {
                 AXIAL_MATE,
                 AssemblyMateEndpoint::resolved_planar_face(
                     FIRST,
-                    PlanarFaceAttachment::new(east.clone(), [0.0; 3], [1.0, 0.0, 0.0]).unwrap(),
+                    PlanarFaceAttachment::new(side.clone(), [0.0; 3], [0.0, -1.0, 0.0]).unwrap(),
                 ),
                 AssemblyMateEndpoint::resolved_planar_face(
                     SECOND,
-                    PlanarFaceAttachment::new(east, [0.0; 3], [1.0, 0.0, 0.0]).unwrap(),
+                    PlanarFaceAttachment::new(side, [0.0; 3], [0.0, -1.0, 0.0]).unwrap(),
                 ),
                 AssemblyMateKind::CoincidentPlanar {
-                    offset_mm: 20.0,
+                    offset_mm: 0.0,
                     reversed: true,
                 },
             )),

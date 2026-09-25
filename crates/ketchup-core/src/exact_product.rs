@@ -35,41 +35,28 @@ pub const EXACT_MIN_LENGTH_MM: f64 = 0.01;
 pub const MAX_EXACT_PLANAR_OFFSET_LENGTH_MM: f64 = 100_000.0;
 pub const BODY_SUBSHAPE_REF_SCHEMA_V1: &str = "ketchup.body-subshape-ref.v1";
 
+/// Well-known faces of an extrusion, as the exact evaluator names them. A
+/// result may name other faces too (caps of revolves, sweeps and lofts,
+/// offsets, surfaces); those references are valid without a role here.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum ExactFaceRole {
     Top,
     Bottom,
-    East,
-    West,
-    CircleSide,
-    ArcSide,
+    /// The side swept by the profile's first line (the profile has no arc).
     LinearSide,
-    CutCircle,
-    CutLinear,
-    CutArc,
-    CutWest,
-    CutEast,
-    CutSouth,
-    CutNorth,
-    PocketFloor,
-    PocketWest,
-    PocketEast,
-    PocketSouth,
-    PocketNorth,
-    BoxShellOuterBottom,
-    BoxShellOuterEast,
-    BoxShellRim,
-    PlanarOffsetFace,
-    SweepStart,
-    SweepEnd,
-    SweepSide0,
-    SweepSide1,
-    SweepSide2,
-    SweepSide3,
-    LoftStart,
-    LoftEnd,
-    LoftSide,
+    /// The side swept by the profile's first arc.
+    ArcSide,
+    /// The side swept by a circular profile.
+    CircleSide,
 }
+
+const EXACT_FACE_ROLES: [ExactFaceRole; 5] = [
+    ExactFaceRole::Top,
+    ExactFaceRole::Bottom,
+    ExactFaceRole::LinearSide,
+    ExactFaceRole::ArcSide,
+    ExactFaceRole::CircleSide,
+];
 
 impl ExactFaceRole {
     #[must_use]
@@ -77,36 +64,9 @@ impl ExactFaceRole {
         match self {
             Self::Top => "extrusion.top",
             Self::Bottom => "extrusion.bottom",
-            Self::East => "extrusion.side(profile_edge=east)",
-            Self::West => "extrusion.side(profile_edge=west)",
-            Self::CircleSide => "extrusion.side(profile_edge=circle)",
-            Self::ArcSide => "extrusion.side(profile_edge=arc.0)",
             Self::LinearSide => "extrusion.side(profile_edge=line.0)",
-            Self::CutCircle => "through_cut.wall.circle",
-            Self::CutLinear => "through_cut.wall.line.0",
-            Self::CutArc => "through_cut.wall.arc.0",
-            Self::CutWest => "through_cut.wall.west",
-            Self::CutEast => "through_cut.wall.east",
-            Self::CutSouth => "through_cut.wall.south",
-            Self::CutNorth => "through_cut.wall.north",
-            Self::PocketFloor => "pocket.floor",
-            Self::PocketWest => "pocket.wall.west",
-            Self::PocketEast => "pocket.wall.east",
-            Self::PocketSouth => "pocket.wall.south",
-            Self::PocketNorth => "pocket.wall.north",
-            Self::BoxShellOuterBottom => "shell.box.outer.bottom",
-            Self::BoxShellOuterEast => "shell.box.outer.east",
-            Self::BoxShellRim => "shell.box.rim",
-            Self::PlanarOffsetFace => "planar_offset.face",
-            Self::SweepStart => "sweep.start",
-            Self::SweepEnd => "sweep.end",
-            Self::SweepSide0 => "sweep.side.0",
-            Self::SweepSide1 => "sweep.side.1",
-            Self::SweepSide2 => "sweep.side.2",
-            Self::SweepSide3 => "sweep.side.3",
-            Self::LoftStart => "loft.start",
-            Self::LoftEnd => "loft.end",
-            Self::LoftSide => "loft.side",
+            Self::ArcSide => "extrusion.side(profile_edge=arc.0)",
+            Self::CircleSide => "extrusion.side(profile_edge=circle)",
         }
     }
 
@@ -114,98 +74,25 @@ impl ExactFaceRole {
     pub const fn source_element_id(self) -> &'static str {
         match self {
             Self::Top | Self::Bottom => "profile.face",
-            Self::East => "profile.edge.east",
-            Self::West => "profile.edge.west",
-            Self::CircleSide => "profile.edge.circle",
-            Self::ArcSide => "profile.edge.arc.0",
             Self::LinearSide => "profile.edge.line.0",
-            Self::CutCircle => "cut_profile.edge.circle",
-            Self::CutLinear => "cut_profile.edge.line.0",
-            Self::CutArc => "cut_profile.edge.arc.0",
-            Self::CutWest => "cut_profile.edge.west",
-            Self::CutEast => "cut_profile.edge.east",
-            Self::CutSouth => "cut_profile.edge.south",
-            Self::CutNorth => "cut_profile.edge.north",
-            Self::PocketFloor => "pocket_profile.face",
-            Self::PocketWest => "pocket_profile.edge.west",
-            Self::PocketEast => "pocket_profile.edge.east",
-            Self::PocketSouth => "pocket_profile.edge.south",
-            Self::PocketNorth => "pocket_profile.edge.north",
-            Self::BoxShellOuterBottom => "extrusion.bottom",
-            Self::BoxShellOuterEast => "extrusion.side(profile_edge=east)",
-            Self::BoxShellRim => "extrusion.top",
-            Self::PlanarOffsetFace | Self::SweepStart | Self::SweepEnd => "profile.face",
-            Self::SweepSide0 => "profile.edge.0",
-            Self::SweepSide1 => "profile.edge.1",
-            Self::SweepSide2 => "profile.edge.2",
-            Self::SweepSide3 => "profile.edge.3",
-            Self::LoftStart | Self::LoftEnd => "profile.face",
-            Self::LoftSide => "profile.edge.spline",
+            Self::ArcSide => "profile.edge.arc.0",
+            Self::CircleSide => "profile.edge.circle",
         }
     }
 
     #[must_use]
     pub const fn expected_type(self) -> &'static str {
         match self {
-            Self::Top
-            | Self::Bottom
-            | Self::East
-            | Self::West
-            | Self::LinearSide
-            | Self::CutLinear
-            | Self::CutWest
-            | Self::CutEast
-            | Self::CutSouth
-            | Self::CutNorth
-            | Self::PocketFloor
-            | Self::PocketWest
-            | Self::PocketEast
-            | Self::PocketSouth
-            | Self::PocketNorth
-            | Self::PlanarOffsetFace
-            | Self::SweepStart
-            | Self::SweepEnd
-            | Self::SweepSide0
-            | Self::SweepSide1
-            | Self::SweepSide2
-            | Self::SweepSide3
-            | Self::LoftStart
-            | Self::LoftEnd => "planar_face",
-            Self::CircleSide | Self::CutCircle => "cylindrical_face",
-            Self::ArcSide | Self::CutArc => "face",
-            Self::BoxShellOuterBottom | Self::BoxShellOuterEast | Self::BoxShellRim => {
-                "planar_face"
-            }
-            Self::LoftSide => "face",
+            Self::Top | Self::Bottom | Self::LinearSide => "planar_face",
+            Self::CircleSide => "cylindrical_face",
+            Self::ArcSide => "face",
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub enum ExactEdgeRole {
-    NorthEastVertical,
-}
-
-impl ExactEdgeRole {
-    #[must_use]
-    pub const fn semantic_role(self) -> &'static str {
-        match self {
-            Self::NorthEastVertical => "extrusion.edge(profile_vertex=north_east)",
-        }
-    }
-
-    #[must_use]
-    pub const fn source_element_id(self) -> &'static str {
-        match self {
-            Self::NorthEastVertical => "profile.vertex.north_east",
-        }
-    }
-
-    #[must_use]
-    pub const fn expected_type(self) -> &'static str {
-        "edge"
-    }
-}
+/// Subshape types a reference may name. Older files also stored edge
+/// references; they still load and resolve like any other lost reference.
+const SUBSHAPE_REFERENCE_TYPES: [&str; 4] = ["planar_face", "cylindrical_face", "face", "edge"];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReferenceStability {
@@ -237,50 +124,7 @@ pub struct BodySubshapeRef {
 impl BodySubshapeRef {
     #[must_use]
     pub fn role(&self) -> Option<ExactFaceRole> {
-        [
-            ExactFaceRole::Top,
-            ExactFaceRole::Bottom,
-            ExactFaceRole::East,
-            ExactFaceRole::West,
-            ExactFaceRole::CircleSide,
-            ExactFaceRole::ArcSide,
-            ExactFaceRole::LinearSide,
-            ExactFaceRole::CutCircle,
-            ExactFaceRole::CutLinear,
-            ExactFaceRole::CutArc,
-            ExactFaceRole::CutWest,
-            ExactFaceRole::CutEast,
-            ExactFaceRole::CutSouth,
-            ExactFaceRole::CutNorth,
-            ExactFaceRole::PocketFloor,
-            ExactFaceRole::PocketWest,
-            ExactFaceRole::PocketEast,
-            ExactFaceRole::PocketSouth,
-            ExactFaceRole::PocketNorth,
-            ExactFaceRole::BoxShellOuterBottom,
-            ExactFaceRole::BoxShellOuterEast,
-            ExactFaceRole::BoxShellRim,
-            ExactFaceRole::PlanarOffsetFace,
-            ExactFaceRole::SweepStart,
-            ExactFaceRole::SweepEnd,
-            ExactFaceRole::SweepSide0,
-            ExactFaceRole::SweepSide1,
-            ExactFaceRole::SweepSide2,
-            ExactFaceRole::SweepSide3,
-            ExactFaceRole::LoftStart,
-            ExactFaceRole::LoftEnd,
-            ExactFaceRole::LoftSide,
-        ]
-        .into_iter()
-        .find(|role| {
-            self.semantic_role == role.semantic_role()
-                && self.source_element_id == role.source_element_id()
-        })
-    }
-
-    #[must_use]
-    pub fn edge_role(&self) -> Option<ExactEdgeRole> {
-        [ExactEdgeRole::NorthEastVertical].into_iter().find(|role| {
+        EXACT_FACE_ROLES.into_iter().find(|role| {
             self.semantic_role == role.semantic_role()
                 && self.source_element_id == role.source_element_id()
         })
@@ -290,12 +134,12 @@ impl BodySubshapeRef {
     pub fn has_valid_lineage(&self) -> bool {
         self.schema == BODY_SUBSHAPE_REF_SCHEMA_V1
             && self.expected_cardinality == 1
-            && (self
+            && !self.semantic_role.is_empty()
+            && !self.source_element_id.is_empty()
+            && SUBSHAPE_REFERENCE_TYPES.contains(&self.expected_type.as_str())
+            && self
                 .role()
-                .is_some_and(|role| self.expected_type == role.expected_type())
-                || self
-                    .edge_role()
-                    .is_some_and(|role| self.expected_type == role.expected_type()))
+                .is_none_or(|role| self.expected_type == role.expected_type())
             && self.lineage_digest == reference_lineage_digest(self)
     }
 

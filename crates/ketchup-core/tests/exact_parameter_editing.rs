@@ -351,7 +351,7 @@ fn seed_movable_circular_pocket() -> DocumentStore {
         &[
             ExactFaceRole::Top,
             ExactFaceRole::Bottom,
-            ExactFaceRole::East,
+            ExactFaceRole::LinearSide,
         ],
     )
     .unwrap();

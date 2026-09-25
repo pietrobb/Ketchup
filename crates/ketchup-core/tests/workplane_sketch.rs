@@ -3,7 +3,7 @@ use ketchup_core::document::{
     FeatureId, FeatureKind,
 };
 use ketchup_core::exact_product::{
-    BODY_SUBSHAPE_REF_SCHEMA_V1, BodySubshapeRef, ExactEdgeRole, ExactFaceRole, ReferenceStability,
+    BODY_SUBSHAPE_REF_SCHEMA_V1, BodySubshapeRef, ExactFaceRole, ReferenceStability,
     canonical_reference_lineage_digest,
 };
 use ketchup_core::persistence;
@@ -3562,7 +3562,7 @@ fn all_principal_planes_and_one_resolved_planar_face_support_are_canonical() {
         &[
             ExactFaceRole::Top,
             ExactFaceRole::Bottom,
-            ExactFaceRole::East,
+            ExactFaceRole::LinearSide,
         ],
     )
     .unwrap();
@@ -3570,16 +3570,15 @@ fn all_principal_planes_and_one_resolved_planar_face_support_are_canonical() {
     document
         .register_exact_reference_evidence(reference.clone())
         .unwrap();
-    let edge_role = ExactEdgeRole::NorthEastVertical;
     let edge_reference = BodySubshapeRef {
         schema: BODY_SUBSHAPE_REF_SCHEMA_V1.to_owned(),
         document_id,
         definition_id: DEFINITION,
         profile_feature_id: profile,
         producer_feature_id: extrusion,
-        semantic_role: edge_role.semantic_role().to_owned(),
-        source_element_id: edge_role.source_element_id().to_owned(),
-        expected_type: edge_role.expected_type().to_owned(),
+        semantic_role: "extrusion.edge(profile_vertex=north_east)".to_owned(),
+        source_element_id: "profile.vertex.north_east".to_owned(),
+        expected_type: "edge".to_owned(),
         expected_cardinality: 1,
         stability: ReferenceStability::Guaranteed,
         canonical_input_digest: reference.canonical_input_digest.clone(),
@@ -3591,22 +3590,42 @@ fn all_principal_planes_and_one_resolved_planar_face_support_are_canonical() {
         lineage_digest: canonical_reference_lineage_digest(
             document_id,
             extrusion,
-            edge_role.semantic_role(),
-            edge_role.source_element_id(),
-            edge_role.expected_type(),
+            "extrusion.edge(profile_vertex=north_east)",
+            "profile.vertex.north_east",
+            "edge",
         ),
         corroborating_geometry_fingerprint: "edge-geometry".to_owned(),
     };
     document
         .register_exact_reference_evidence(edge_reference.clone())
         .unwrap();
-    let edge_reopened = persistence::load(&persistence::save(&document.current())).unwrap();
-    assert_eq!(
-        edge_reopened
-            .snapshot()
-            .exact_reference_by_lineage(&edge_reference.lineage_digest),
-        Some(&edge_reference)
+    // Older files name faces the evaluator no longer produces, such as the
+    // walls of a through cut; they still load and simply resolve as lost.
+    let mut wall_reference = edge_reference.clone();
+    wall_reference.semantic_role = "through_cut.wall.east".to_owned();
+    wall_reference.source_element_id = "cut_profile.edge.east".to_owned();
+    wall_reference.expected_type = "planar_face".to_owned();
+    wall_reference.lineage_digest = canonical_reference_lineage_digest(
+        document_id,
+        extrusion,
+        "through_cut.wall.east",
+        "cut_profile.edge.east",
+        "planar_face",
     );
+    assert!(wall_reference.has_valid_lineage());
+    assert_eq!(wall_reference.role(), None);
+    document
+        .register_exact_reference_evidence(wall_reference.clone())
+        .unwrap();
+    let edge_reopened = persistence::load(&persistence::save(&document.current())).unwrap();
+    for legacy in [&edge_reference, &wall_reference] {
+        assert_eq!(
+            edge_reopened
+                .snapshot()
+                .exact_reference_by_lineage(&legacy.lineage_digest),
+            Some(legacy)
+        );
+    }
     let before_wrong_frame = document.current();
     let wrong_frame =
         document.apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {

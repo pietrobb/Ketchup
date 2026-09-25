@@ -90,7 +90,7 @@ fn current_package(snapshot: &ketchup_core::document::Snapshot) -> ExactBodyPack
         &[
             ExactFaceRole::Top,
             ExactFaceRole::Bottom,
-            ExactFaceRole::East,
+            ExactFaceRole::LinearSide,
         ],
     )
     .unwrap()

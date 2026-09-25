@@ -4244,7 +4244,7 @@ fn current_box_package(app: &KetchupApp) -> ExactBodyPackage {
         &[
             ExactFaceRole::Top,
             ExactFaceRole::Bottom,
-            ExactFaceRole::East,
+            ExactFaceRole::LinearSide,
         ],
     )
     .expect("the default box compiles to an exact graph")

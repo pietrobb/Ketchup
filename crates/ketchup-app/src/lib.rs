@@ -38669,55 +38669,15 @@ fn box_faces() -> [BoxFace; 6] {
 
 fn exact_face_element(role: ExactFaceRole) -> Option<ElementId> {
     match role {
-        ExactFaceRole::Top | ExactFaceRole::BoxShellRim => Some(ElementId::Face {
+        ExactFaceRole::Top => Some(ElementId::Face {
             axis: Axis::Z,
             side: Side::Maximum,
         }),
-        ExactFaceRole::Bottom | ExactFaceRole::BoxShellOuterBottom => Some(ElementId::Face {
+        ExactFaceRole::Bottom => Some(ElementId::Face {
             axis: Axis::Z,
             side: Side::Minimum,
         }),
-        ExactFaceRole::PocketFloor => Some(ElementId::Face {
-            axis: Axis::Z,
-            side: Side::Maximum,
-        }),
-        ExactFaceRole::East
-        | ExactFaceRole::CutEast
-        | ExactFaceRole::PocketEast
-        | ExactFaceRole::BoxShellOuterEast => Some(ElementId::Face {
-            axis: Axis::X,
-            side: Side::Maximum,
-        }),
-        ExactFaceRole::West | ExactFaceRole::CutWest | ExactFaceRole::PocketWest => {
-            Some(ElementId::Face {
-                axis: Axis::X,
-                side: Side::Minimum,
-            })
-        }
-        ExactFaceRole::CutSouth | ExactFaceRole::PocketSouth => Some(ElementId::Face {
-            axis: Axis::Y,
-            side: Side::Minimum,
-        }),
-        ExactFaceRole::CutNorth | ExactFaceRole::PocketNorth => Some(ElementId::Face {
-            axis: Axis::Y,
-            side: Side::Maximum,
-        }),
-        ExactFaceRole::CircleSide
-        | ExactFaceRole::ArcSide
-        | ExactFaceRole::LinearSide
-        | ExactFaceRole::CutCircle
-        | ExactFaceRole::CutLinear
-        | ExactFaceRole::CutArc
-        | ExactFaceRole::PlanarOffsetFace
-        | ExactFaceRole::SweepStart
-        | ExactFaceRole::SweepEnd
-        | ExactFaceRole::SweepSide0
-        | ExactFaceRole::SweepSide1
-        | ExactFaceRole::SweepSide2
-        | ExactFaceRole::SweepSide3
-        | ExactFaceRole::LoftStart
-        | ExactFaceRole::LoftEnd
-        | ExactFaceRole::LoftSide => None,
+        ExactFaceRole::LinearSide | ExactFaceRole::ArcSide | ExactFaceRole::CircleSide => None,
     }
 }
 

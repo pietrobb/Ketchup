@@ -2,29 +2,21 @@
 //! the OCCT worker. Enabled by the `testing` feature; never used by the product.
 
 use crate::document::{DefinitionId, FeatureId, Snapshot};
-use crate::exact_brep_graph::ExactBRepGraph;
+use crate::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation};
 use crate::exact_product::{
     ExactBRepGraphFaceEvidence, ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence,
     ExactBodyPackage, ExactFaceRole, ExactProductError,
 };
 use crate::import::{StepImportMesh, StepMeshTriangle};
 
-/// Faces a box result can name, with the axis and side they lie on.
-const NAMED_BOX_FACES: [(ExactFaceRole, usize, bool); 4] = [
-    (ExactFaceRole::Top, 2, true),
-    (ExactFaceRole::Bottom, 2, false),
-    (ExactFaceRole::East, 0, true),
-    (ExactFaceRole::West, 0, false),
-];
-
 /// Stands in for the exact worker: the result of `producer_feature_id` as the
 /// axis-aligned box that fills its graph's bounds, with the planar `faces`
-/// named the way the evaluator names them. `result_fingerprint` tells results
-/// apart.
+/// named the way the evaluator names them: the caps of the extrusion and the
+/// side of its profile's first line. `result_fingerprint` tells results apart.
 ///
 /// # Errors
-/// Fails when the producer does not compile to an exact graph, or when a face
-/// role is not one of top, bottom, east or west.
+/// Fails when the producer does not compile to an exact graph, or when a named
+/// face is not an axis-aligned planar face of its extrusion.
 pub fn box_package(
     snapshot: &Snapshot,
     definition_id: DefinitionId,
@@ -70,14 +62,26 @@ pub fn box_package(
             })
         })
         .collect();
+    let profile_feature_id = graph
+        .nodes
+        .iter()
+        .find_map(|node| match &node.operation {
+            ExactBRepOperation::Extrude { profile, .. } => graph.profiles.get(profile.0 as usize),
+            _ => None,
+        })
+        .ok_or(ExactProductError::UnsupportedDefinition)?
+        .source_feature_id;
     let faces = faces
         .iter()
         .map(|role| {
-            let (_, axis, positive) = NAMED_BOX_FACES
-                .iter()
-                .copied()
-                .find(|(named, _, _)| named == role)
+            let normal = graph
+                .extrusion_face_frame(profile_feature_id, role.semantic_role())
+                .ok_or(ExactProductError::UnsupportedDefinition)?
+                .normal;
+            let axis = (0..3)
+                .find(|axis| normal[*axis].abs() == 1.0)
                 .ok_or(ExactProductError::UnsupportedDefinition)?;
+            let positive = normal[axis] > 0.0;
             let mut centroid_mm = [0, 1, 2].map(|index| (minimum[index] + maximum[index]) / 2.0);
             centroid_mm[axis] = if positive {
                 maximum[axis]
