@@ -429,6 +429,7 @@ fn bind_assistant_cad_current_selection(
             | AssistantCadEditOperation::CreateProgramDowelJoint { .. }
             | AssistantCadEditOperation::CreatePhysicalDowelJoint { .. }
             | AssistantCadEditOperation::DeletePhysicalDowelJoint { .. }
+            | AssistantCadEditOperation::MovePhysicalDowelPair { .. }
             | AssistantCadEditOperation::CreateTag { .. }
             | AssistantCadEditOperation::SetOccurrenceTag { .. }
             | AssistantCadEditOperation::SetTagVisibility { .. }
@@ -5310,7 +5311,6 @@ pub struct KetchupApp {
     live_bridge: Option<live_bridge::LiveBridge>,
     close_guard: close_guard::CloseGuard,
     live_consent_broker: Option<live_bridge::consent::ConsentBroker>,
-    live_pending_consent: Option<live_bridge::consent::PendingConsent>,
     live_consent_attached: bool,
     container_data: ketchup_core::persistence::ContainerData,
     review_candidate: Option<ketchup_core::persistence::LoadOutcome>,
@@ -5492,6 +5492,9 @@ pub struct KetchupApp {
     pending_glb_import: Option<glb_import_ui::PendingGlbImport>,
     mesh_conversion_state: mesh_conversion_ui::MeshConversionUiState,
     viewport_rect: Option<Rect>,
+    /// Zoom Fit was requested before the viewport was laid out or had anything
+    /// to frame (e.g. right after launch); it is applied on the next frame that can.
+    zoom_fit_pending: bool,
     dialogs: Box<dyn FileDialogs>,
     cam_reviews: CamReviewWorkflow,
     cam_export_dialog: Option<CamExportDialog>,
@@ -5581,7 +5584,6 @@ impl KetchupApp {
             live_bridge: None,
             close_guard: close_guard::CloseGuard::default(),
             live_consent_broker: None,
-            live_pending_consent: None,
             live_consent_attached: false,
             container_data: ketchup_core::persistence::ContainerData::default(),
             review_candidate: None,
@@ -5757,6 +5759,7 @@ impl KetchupApp {
             pending_glb_import: None,
             mesh_conversion_state: mesh_conversion_ui::MeshConversionUiState::default(),
             viewport_rect: None,
+            zoom_fit_pending: false,
             dialogs: Box::new(NativeFileDialogs::default()),
             cam_reviews: CamReviewWorkflow::new(None),
             cam_export_dialog: None,
@@ -5976,7 +5979,6 @@ impl KetchupApp {
             bridge.invalidate_document_context();
         }
         let live_consent_broker = self.live_consent_broker.take();
-        let live_pending_consent = self.live_pending_consent.take();
         let live_consent_attached = self.live_consent_attached;
         let dialogs = std::mem::replace(&mut self.dialogs, Box::new(NativeFileDialogs::default()));
         let assistant_transport = Arc::clone(&self.assistant_transport);
@@ -6000,7 +6002,6 @@ impl KetchupApp {
             .with_assistant_transport(assistant_transport);
         self.live_bridge = live_bridge;
         self.live_consent_broker = live_consent_broker;
-        self.live_pending_consent = live_pending_consent;
         self.live_consent_attached = live_consent_attached;
         self.wgpu_target_format = wgpu_target_format;
         self.wgpu_device = wgpu_device;
@@ -18859,6 +18860,7 @@ impl KetchupApp {
     }
 
     fn look_from(&mut self, yaw: f32, pitch: f32, view_key: &str) {
+        self.zoom_fit_pending = false;
         self.yaw = yaw;
         self.pitch = pitch;
         self.digest = self.catalog.format(
@@ -18871,7 +18873,8 @@ impl KetchupApp {
     pub fn zoom_fit(&mut self) {
         let bounds = self.active_frame_bounds();
         let count = bounds.len();
-        if self.frame_bounds(&bounds) {
+        self.zoom_fit_pending = !self.frame_bounds(&bounds);
+        if !self.zoom_fit_pending {
             self.digest = self.catalog.format(
                 "digest-zoom-fit",
                 &BTreeMap::from([("count", count.to_string())]),
@@ -29246,6 +29249,10 @@ impl KetchupApp {
         let desired = ui.available_size().max(Vec2::new(320.0, 280.0));
         let (response, painter) = ui.allocate_painter(desired, Sense::click_and_drag());
         self.viewport_rect = Some(response.rect);
+        if self.zoom_fit_pending {
+            self.zoom_fit();
+            self.refresh_camera_distance();
+        }
         let palette = self.palette();
         let (viewport_inner, viewport_outer) = if self.white_background_visible {
             (Color32::WHITE, Color32::WHITE)
@@ -29363,11 +29370,18 @@ impl KetchupApp {
                             snap.reference.element,
                             ElementId::Edge(_) | ElementId::EdgeMidpoint(_)
                         ) || (matches!(snap.reference.element, ElementId::TopologicalEdge { .. })
-                            && matches!(snap.kind, SnapKind::Edge | SnapKind::Midpoint)
+                            && matches!(
+                                snap.kind,
+                                SnapKind::Edge | SnapKind::Midpoint | SnapKind::Center
+                            )
                             && self
                                 .project(snap.position_mm, response.rect)
                                 .distance(pointer)
-                                <= 3.0)
+                                <= 3.0
+                            && (snap.kind != SnapKind::Center
+                                || self.hovered.as_ref().is_some_and(|hit| {
+                                    hit.instance_path == snap.reference.instance_path
+                                })))
                             || (matches!(snap.reference.element, ElementId::Snap { .. })
                                 && self.hovered.as_ref().is_none_or(|hit| {
                                     hit.instance_path != snap.reference.instance_path
@@ -30583,6 +30597,7 @@ impl KetchupApp {
 
         self.paint_face_feedback(&painter, faces.iter().chain(&feedback_faces));
         self.paint_projected_selection(&painter, &edges);
+        self.paint_selected_topological_edges(&painter, response.rect);
 
         let profile_move_stroke = Stroke::new(2.4_f32, Color32::from_rgb(255, 199, 68));
         for path in self.move_profile_preview_paths() {
@@ -31351,6 +31366,13 @@ impl KetchupApp {
             .as_ref()
             .and_then(|pick| pick.overlap_choice(self.hover_overlap_index))
             .map(|hit| hit.reference.clone());
+        if self.active_tool == ActiveTool::Select
+            && self.face_workflow.snaps_enabled()
+            && let (Some(pointer), Some(rect)) = (self.hover_pointer, self.viewport_rect)
+            && let Some(center) = self.select_circle_center_at_screen(pointer, rect)
+        {
+            self.hover_snap = Some(center);
+        }
         if self.active_tool == ActiveTool::PushPull {
             self.hover_snap = self.push_pull_target_snap();
             if let Some(drag) = self
@@ -32605,7 +32627,7 @@ impl KetchupApp {
     }
 
     fn paint_projected_selection(&self, painter: &egui::Painter, edges: &[ProjectedEdge]) {
-        if matches!(self.active_tool, ActiveTool::Select | ActiveTool::Rotate) {
+        if self.active_tool == ActiveTool::Rotate {
             return;
         }
         let selection_stroke = Stroke::new(1.8_f32, Color32::from_rgb(240, 78, 35));
@@ -32638,6 +32660,28 @@ impl KetchupApp {
                 painter.line_segment(edge.points, halo_stroke);
             }
             painter.line_segment(edge.points, selection_stroke);
+        }
+    }
+
+    /// Selected topological edges stay visible after the pointer leaves them,
+    /// drawn over the bodies because a hole mouth can sit inside another part.
+    fn paint_selected_topological_edges(&self, painter: &egui::Painter, rect: Rect) {
+        let halo = Stroke::new(
+            5.0_f32,
+            if self.white_background_visible {
+                Color32::BLACK
+            } else {
+                Color32::WHITE
+            },
+        );
+        let stroke = Stroke::new(2.4_f32, Color32::from_rgb(240, 78, 35));
+        for path in self.selected_topological_edge_paths() {
+            let points: Vec<_> = path
+                .into_iter()
+                .map(|point| self.project(point, rect))
+                .collect();
+            painter.add(egui::Shape::line(points.clone(), halo));
+            painter.add(egui::Shape::line(points, stroke));
         }
     }
 
@@ -37724,7 +37768,7 @@ impl KetchupApp {
     /// integration and by the offscreen [`crate::testing::HeadlessShell`].
     pub fn ui(&mut self, context: &egui::Context) {
         self.begin_live_image_frame();
-        self.poll_live_consent();
+        self.poll_live_consent(context);
         self.poll_live_bridge(context);
         self.poll_validator_panel(context);
         self.poll_mesh_conversion(context);

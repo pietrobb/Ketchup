@@ -6,6 +6,7 @@ pub mod assembly_joint;
 pub mod assembly_recipe;
 pub mod assistant_sidecar;
 pub mod blender_export;
+pub mod cad_catalog;
 pub mod cam;
 pub mod document;
 pub mod drawing;

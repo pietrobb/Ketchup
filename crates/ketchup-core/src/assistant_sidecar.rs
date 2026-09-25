@@ -2052,9 +2052,19 @@ pub enum AssistantCadEditOperation {
         count: u32,
         spacing_mm: f64,
         dowel: AssistantStandardDowel,
+        /// Dowel length inserted into the first part; the rest goes into the
+        /// second. Omitted means half each. Lets a dowel go shallow into a thin
+        /// board face and deep into the mating board's end.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        first_insertion_mm: Option<f64>,
     },
     DeletePhysicalDowelJoint {
         joint_id: u64,
+    },
+    MovePhysicalDowelPair {
+        joint_id: u64,
+        pair_index: u32,
+        offset_first_local_mm: [f64; 3],
     },
     SetAssemblyJointPosition {
         joint_id: u64,
@@ -2884,6 +2894,7 @@ impl AssistantCadEditProgram {
                 | AssistantCadEditOperation::CreateProgramDowelJoint { .. }
                 | AssistantCadEditOperation::CreatePhysicalDowelJoint { .. }
                 | AssistantCadEditOperation::DeletePhysicalDowelJoint { .. }
+                | AssistantCadEditOperation::MovePhysicalDowelPair { .. }
                 | AssistantCadEditOperation::SetAssemblyJointPosition { .. }
                 | AssistantCadEditOperation::CreateDrawing { .. }
                 | AssistantCadEditOperation::UpsertCamPlan { .. }
@@ -3380,11 +3391,14 @@ impl AssistantCadEditProgram {
                     row_unit_first_local,
                     count,
                     spacing_mm,
+                    first_insertion_mm,
                     ..
                 } => {
                     first.instance_path.validate()?;
                     second.instance_path.validate()?;
                     if joint_id == &Some(0)
+                        || first_insertion_mm
+                            .is_some_and(|value| !value.is_finite() || value <= 0.0)
                         || name.trim().is_empty()
                         || name.len() > MAX_ASSISTANT_NAME_BYTES
                         || name.chars().any(char::is_control)
@@ -3411,6 +3425,16 @@ impl AssistantCadEditProgram {
                 AssistantCadEditOperation::DeletePhysicalDowelJoint { joint_id } => {
                     if *joint_id == 0 {
                         return Err("assistant physical dowel joint deletion is invalid".to_owned());
+                    }
+                    0
+                }
+                AssistantCadEditOperation::MovePhysicalDowelPair {
+                    joint_id,
+                    offset_first_local_mm,
+                    ..
+                } => {
+                    if *joint_id == 0 || !assistant_cad_vector_is_bounded(*offset_first_local_mm) {
+                        return Err("assistant physical dowel pair move is invalid".to_owned());
                     }
                     0
                 }

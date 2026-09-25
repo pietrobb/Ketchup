@@ -129,6 +129,8 @@ fn main() -> eframe::Result {
                 bootstrap
                     .enable(&mut app, &creation_context.egui_ctx, std::io::stdout())
                     .unwrap_or_else(|_| bootstrap_failed());
+                app.enable_live_consent_broker(&creation_context.egui_ctx)
+                    .unwrap_or_else(|_| bootstrap_failed());
             } else {
                 if let Err(error) = app.enable_live_consent_broker(&creation_context.egui_ctx) {
                     eprintln!(

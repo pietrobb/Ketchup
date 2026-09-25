@@ -1462,7 +1462,7 @@ fn advanced_chamfer_parameters_preview_recompute_undo_and_schema_76_round_trip()
     document.commit_proposal(&preview.proposal).unwrap();
     assert_eq!(document.visible_undo_steps(), before.2 + 1);
     let edited_digest = document.current().canonical_digest();
-    assert_eq!(persistence::CURRENT_SCHEMA, 93);
+    assert_eq!(persistence::CURRENT_SCHEMA, 94);
     let bytes = persistence::save(&document.current());
     let reopened = persistence::load(&bytes).unwrap().snapshot();
     assert_eq!(reopened.canonical_digest(), edited_digest);

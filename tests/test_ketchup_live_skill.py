@@ -606,7 +606,8 @@ def test_private_bootstrap_and_nonowning_pipe_cleanup(monkeypatch, pipe_double, 
     document.write_bytes(b"path validation only")
     session = SessionDouble()
     def factory(address, credential, timeout):
-        assert address == "127.0.0.1:3456" and credential == token and 0 < timeout <= 10
+        # Startup budget bounds only startup; requests get the full session timeout.
+        assert address == "127.0.0.1:3456" and credential == token and timeout == skill.SESSION_TIMEOUT
         return session
     launched = skill._launch(sys.executable, str(document), session_factory=factory)
     launched.close()
@@ -875,6 +876,83 @@ def test_registered_image_artifact_receipt_no_base64_or_overwrite(tmp_path, monk
     asyncio.run(scenario())
 
 
+def test_registered_image_without_stamp_saves_against_the_observed_render(tmp_path, monkeypatch):
+    monkeypatch.setattr(skill, "IMAGE_ROOT", tmp_path)
+    destination = tmp_path / "no_stamp.png"
+    session = SessionDouble()
+    session.image = lambda expected, **_kwargs: image_envelope()
+    registered = tools(SimpleNamespace(active=False), lambda *args: session)
+    async def scenario():
+        handle = (await launch(registered))["result"]["handle"]
+        result = await call(registered, "KetchupLiveView", action="image", handle=handle,
+                            image_path=str(destination))
+        assert result["ok"] is True, result
+        assert result["result"]["artifact"]["artifact_saved"] and destination.is_file()
+        assert not session.closed
+    asyncio.run(scenario())
+
+
+class ReconnectableDouble(SessionDouble):
+    """A launched window whose socket can be reopened with its launch credential."""
+    def __init__(self):
+        super().__init__()
+        self.reconnects = 0
+
+    def reconnect(self):
+        self.reconnects += 1
+        self.fail = None
+        self.closed = False
+
+
+def test_transport_drop_on_launched_window_reopens_same_handle():
+    session = ReconnectableDouble()
+    registered = tools(SimpleNamespace(active=False), lambda *args: session)
+    async def scenario():
+        handle = (await launch(registered))["result"]["handle"]
+        session.fail = skill._live().LiveTransportError("dropped", mutation_outcome_unknown=True)
+        result = await call(registered, "KetchupLiveModel", action="apply_and_verify",
+                            handle=handle, program=PROGRAM)
+        assert result["error"]["code"] == "live_transport_error"
+        assert result["mutation_outcome_unknown"] is True and result["retry_mutation"] is False
+        assert result["details"] == {"reconnected": True}
+        assert session.reconnects == 1
+        status = await call(registered, "KetchupLiveInspect", action="status", handle=handle)
+        assert status["ok"] is True
+    asyncio.run(scenario())
+
+
+def test_launched_session_reconnect_reuses_address_and_credential_then_wipes_it():
+    opened = []
+    def factory(address, credential, timeout):
+        opened.append((address, credential, timeout))
+        return SessionDouble()
+    first = SessionDouble()
+    launched = skill._LaunchedSession(first, SimpleNamespace(close=lambda: None), None,
+                                      "127.0.0.1:3456", "b" * 64, factory)
+    launched.reconnect()
+    assert first.closed and opened == [("127.0.0.1:3456", "b" * 64, skill.SESSION_TIMEOUT)]
+    launched.close()
+    with pytest.raises(skill.Rejection):
+        launched.reconnect()
+
+
+def test_invalid_params_rejection_keeps_session_and_explains_the_fix():
+    session = SessionDouble()
+    reason = "unknown variant `set_colour`, expected one of `set_color`"
+    session.fail = skill._live().LiveBridgeError("invalid_params", {"reason": reason})
+    registered = tools(SimpleNamespace(active=False), lambda *args: session)
+    async def scenario():
+        handle = (await launch(registered))["result"]["handle"]
+        result = await call(registered, "KetchupLiveModel", action="apply_and_verify",
+                            handle=handle, program=PROGRAM)
+        assert result["error"]["code"] == "invalid_params"
+        assert result["details"] == {"reason": reason}
+        assert "details.reason" in result["error"]["message"]
+        session.fail = None
+        assert (await call(registered, "KetchupLiveInspect", action="status", handle=handle))["ok"]
+    asyncio.run(scenario())
+
+
 def test_registered_detail_selection_forwards_host_topology_scope(tmp_path, monkeypatch):
     monkeypatch.setattr(skill, "IMAGE_ROOT", tmp_path / "artifacts" / "live-view")
     destination = skill.IMAGE_ROOT / "edge-detail.png"
@@ -978,7 +1056,10 @@ def test_registered_image_invalid_response_never_saves_or_leaks(tmp_path, monkey
         handle = (await launch(registered))["result"]["handle"]
         result = await call(registered, "KetchupLiveView", action="image", handle=handle,
                             expected=STAMP, image_path=str(destination))
-        assert result["error"]["code"] == "live_transport_error" and not result["mutation_outcome_unknown"]
+        assert result["error"]["code"] == "invalid_image" and not result["mutation_outcome_unknown"]
         assert "DO_NOT_EXPOSE" not in json.dumps(result) and "data" not in json.dumps(result)
-        assert not destination.exists() and session.closed
+        # The image was fully received and rejected locally; the connection stays usable.
+        assert not destination.exists() and not session.closed
+        status = await call(registered, "KetchupLiveInspect", action="status", handle=handle)
+        assert status["ok"] is True
     asyncio.run(scenario())

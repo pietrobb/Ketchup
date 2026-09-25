@@ -642,6 +642,7 @@ fn original_v9_rear_physical_joinery_after_unique_sides() {
             count: 3,
             spacing_mm: spacing,
             dowel: AssistantStandardDowel::D8x30,
+            first_insertion_mm: None,
         }
     };
     let program = AssistantCadEditProgram {
@@ -1438,6 +1439,7 @@ fn physical_joinery_in_278_panel_fixture_drills_both_parts_in_every_cabinet() {
                     count: 3,
                     spacing_mm: 100.0,
                     dowel: AssistantStandardDowel::D8x30,
+                    first_insertion_mm: None,
                 },
             )
             .collect(),

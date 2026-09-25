@@ -52,7 +52,13 @@ struct ImageRequest {
     detail: Option<ResolvedImageDetail>,
     nonce: CaptureNonce,
     capture: Option<(Painted, target::Readback, bool)>,
+    /// A Zoom Fit was still pending when the image was requested, so the
+    /// camera the request was issued with is intentionally superseded by the
+    /// framed one. Any other camera change still makes the image stale.
+    fit_pending_at_request: bool,
 }
+/// Leave the last second of the image deadline for the capture itself.
+const FIT_WAIT_RESERVE: Duration = Duration::from_secs(1);
 #[derive(Clone)]
 struct ResolvedImageDetail {
     request: ImageDetailTarget,
@@ -510,6 +516,7 @@ impl LiveBridge {
                     detail,
                     nonce,
                     capture: None,
+                    fit_pending_at_request: app.zoom_fit_pending,
                 })
             }
             Err(code) => {
@@ -540,6 +547,19 @@ impl LiveBridge {
                     || ctx.input(|i| i.viewport().minimized == Some(true) || !i.focused))
             {
                 return Err("hidden_viewport");
+            }
+            if request.capture.is_none() && request.fit_pending_at_request {
+                // A Zoom Fit asked for before the model was laid out or evaluated
+                // (typically right after launch) may still be waiting to frame it;
+                // photographing the unframed camera would show an empty grid.
+                let state = VisualState::read(app)?;
+                // Exact results landing mid-capture would also make it stale.
+                let settling = app.zoom_fit_pending || state.evaluating;
+                if settling && Instant::now() + FIT_WAIT_RESERVE < request.deadline {
+                    return Ok(None);
+                }
+                request.initial.camera = state.camera;
+                request.initial.distance = state.distance;
             }
             let painted = self.image.painted.take().ok_or(
                 if request.mode == CaptureMode::VisibleViewport {

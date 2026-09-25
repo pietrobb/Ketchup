@@ -2,8 +2,8 @@
 //!
 //! The launcher must privately pipe stdin and supply one JSON line containing a
 //! fresh `secrets.token_hex(32)` token. Never put that token in argv, environment,
-//! logs, files, or readiness output. The explicit flag is the trust boundary;
-//! this is not endpoint discovery. No stdin is acquired/read for ordinary launch.
+//! logs, files, or readiness output. The flag gates the initial pipe;
+//! later reconnects use the window's consent broker. Ordinary launch never reads stdin.
 //! The launcher must drain stdout; readiness is one nonsecret JSON line. A failed
 //! bootstrap is fatal to the launcher startup, not a reason to fall back silently.
 use super::{KetchupApp, egui, transport};

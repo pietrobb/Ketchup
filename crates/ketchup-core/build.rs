@@ -45,6 +45,37 @@ fn attributes(attrs: &[syn::Attribute]) -> Serde {
     result
 }
 
+/// Joined `///` doc text, carried into the schema as `description` so the
+/// operation catalog documents itself from the Rust source.
+fn doc(attrs: &[syn::Attribute]) -> Option<String> {
+    let lines: Vec<String> = attrs
+        .iter()
+        .filter(|a| a.path().is_ident("doc"))
+        .filter_map(|a| match &a.meta {
+            syn::Meta::NameValue(syn::MetaNameValue {
+                value:
+                    syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(text),
+                        ..
+                    }),
+                ..
+            }) => Some(text.value().trim().to_owned()),
+            _ => None,
+        })
+        .collect();
+    (!lines.is_empty()).then(|| lines.join(" "))
+}
+
+fn describe(mut value: Value, attrs: &[syn::Attribute]) -> Value {
+    if let Some(text) = doc(attrs) {
+        value
+            .as_object_mut()
+            .expect("schema node")
+            .insert("description".to_owned(), json!(text));
+    }
+    value
+}
+
 fn snake(name: &str) -> String {
     let mut out = String::new();
     for (i, c) in name.chars().enumerate() {
@@ -127,7 +158,8 @@ impl Generator {
             if !attrs.default && !optional {
                 required.push(name.clone());
             }
-            properties.insert(name, self.ty(&field.ty));
+            let schema = self.ty(&field.ty);
+            properties.insert(name, describe(schema, &field.attrs));
         }
         json!({"type":"object","additionalProperties":false,"properties":properties,"required":required})
     }
@@ -167,11 +199,15 @@ impl Generator {
                     item.variants
                         .iter()
                         .map(|variant| {
-                            assert!(variant.attrs.is_empty(), "unsupported variant attribute");
+                            assert!(
+                                variant.attrs.iter().all(|a| a.path().is_ident("doc")),
+                                "unsupported variant attribute"
+                            );
                             let name = snake(&variant.ident.to_string());
                             if let Some(tag) = &attrs.tag {
                                 assert!(attrs.deny_unknown);
-                                self.fields(&variant.fields, Some((tag, &name)))
+                                let schema = self.fields(&variant.fields, Some((tag, &name)));
+                                describe(schema, &variant.attrs)
                             } else {
                                 assert!(matches!(variant.fields, Fields::Unit));
                                 json!({"const":name})
@@ -188,8 +224,8 @@ impl Generator {
 }
 
 fn main() {
-    let path = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap())
-        .join("../ketchup-core/src/assistant_sidecar.rs");
+    let path =
+        PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("src/assistant_sidecar.rs");
     println!("cargo:rerun-if-changed={}", path.display());
     let source = fs::read_to_string(path).expect("read authoritative CAD wire contract");
     let ast = syn::parse_file(&source).expect("parse CAD wire contract");

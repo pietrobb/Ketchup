@@ -66,6 +66,7 @@ pub const MIN_IMAGE_SIDE_PX: u32 = 512;
 pub const MAX_IMAGE_SIDE_PX: u32 = 1600;
 pub const QUEUE_CAPACITY: usize = 8;
 pub const MAX_SELECTION: usize = 100;
+const MAX_INVALID_PARAMS_REASON_CHARS: usize = 512;
 pub const MAX_APPLY_VERIFY_TIMEOUT_MS: u64 = 120_000;
 pub const DEFAULT_APPLY_VERIFY_TIMEOUT_MS: u64 = 60_000;
 const fn default_apply_verify_timeout_ms() -> u64 {
@@ -110,6 +111,11 @@ pub enum ApplyAndVerifySave {
 pub enum Request {
     Status {},
     Summary {},
+    /// CAD program operation catalog; one operation with its types when named.
+    Operations {
+        #[serde(default)]
+        name: Option<String>,
+    },
     EditContext {
         #[serde(default)]
         expected: Option<Stamp>,
@@ -387,6 +393,23 @@ impl Response {
             stamp: None,
             result: ERROR_DETAILS.with(|slot| slot.borrow_mut().take()),
             error: Some(code.into()),
+        }
+    }
+
+    /// Non-fatal answer to a request body that does not match the protocol;
+    /// `reason` is the parser's schema message so the caller can fix it.
+    fn invalid_params(id: u64, reason: &str) -> Self {
+        let reason: String = reason
+            .chars()
+            .take(MAX_INVALID_PARAMS_REASON_CHARS)
+            .collect();
+        Self {
+            version: 1,
+            id,
+            ok: false,
+            stamp: None,
+            result: Some(json!({ "reason": reason })),
+            error: Some("invalid_params".into()),
         }
     }
 
@@ -716,6 +739,7 @@ impl KetchupApp {
         }
         if revoke_consent {
             self.live_consent_attached = false;
+            self.poll_live_consent(context);
         } else {
             self.live_bridge = Some(bridge);
         }
@@ -896,6 +920,147 @@ impl LiveBridge {
         }
     }
 
+    fn selected_context(app: &KetchupApp) -> Value {
+        let snapshot = app.document.current();
+        let paths = app.selected_instance_paths();
+        if paths.len() > MAX_SELECTION {
+            return json!({"state":"selection_limit"});
+        }
+        let selected_paths = paths
+            .iter()
+            .map(|path| {
+                json!({"root_occurrence_id":path.root_occurrence().0,
+                "steps":path.steps().iter().map(|step| match step {
+                    ketchup_core::document::InstancePathStep::Group(id) =>
+                        json!({"kind":"group","local_id":id.0}),
+                    ketchup_core::document::InstancePathStep::Occurrence(id) =>
+                        json!({"kind":"occurrence","local_id":id.0}),
+                }).collect::<Vec<_>>()})
+            })
+            .collect::<Vec<_>>();
+        if app.selection.topological.is_empty() {
+            return json!({"state":if app.selection.selected_group.is_some() {"group_only"}
+                else if paths.is_empty() {"empty"} else {"part_only"},
+                "instance_paths":selected_paths,"selected_group_id":app.selection.selected_group.map(|id|id.0),
+                "dowel_pair":Value::Null});
+        }
+        if app.selection.topological.len() != 1 || paths.len() != 1 {
+            return json!({"state":"multiple_topological_elements",
+                "instance_paths":selected_paths,"dowel_pair":Value::Null});
+        }
+        let target = app.selection.topological[0]
+            .1
+            .resolve_current(&snapshot, &app.topology_results);
+        let Ok(target) = target else {
+            return json!({"state":"stale_topology","instance_paths":selected_paths,
+                "dowel_pair":Value::Null});
+        };
+        let reference = &target.reference;
+        let edges = snapshot
+            .resolve_instance_path(&target.instance_path)
+            .ok()
+            .and_then(|instance| {
+                app.topology_results
+                    .get_render(&snapshot, instance.definition_id)
+            })
+            .map(|package| {
+                let ordinal = package
+                    .topological_references()
+                    .iter()
+                    .filter(|candidate| candidate.kind == reference.kind)
+                    .position(|candidate| candidate == reference);
+                package
+                    .edge_evidence()
+                    .iter()
+                    .filter(|edge| match (reference.kind, ordinal) {
+                        (ketchup_core::topology::TopologicalElementKind::Edge, Some(index)) => {
+                            edge.edge_ordinal == index as u32
+                        }
+                        (ketchup_core::topology::TopologicalElementKind::Face, Some(index)) => {
+                            edge.adjacent_face_ordinals.contains(&(index as u32))
+                        }
+                        _ => false,
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let matches = snapshot
+            .dowel_joints()
+            .filter_map(|joint| {
+                let bindings = joint.physical_hole_pairs.as_ref()?;
+                let projection =
+                    ketchup_core::joinery::project_dowel_joint_contract(&snapshot, joint).ok()?;
+                Some(
+                    bindings
+                        .iter()
+                        .zip(projection.pairs.iter())
+                        .enumerate()
+                        .filter_map(|(index, (binding, pair))| {
+                            let (hole, side) = if target.instance_path == pair.first.instance_path {
+                                (&pair.first, "first")
+                            } else if target.instance_path == pair.second.instance_path {
+                                (&pair.second, "second")
+                            } else {
+                                return None;
+                            };
+                            let matches_hole = edges.iter().any(|edge| {
+                                let (Some(radius), Some(center), Some(axis)) = (
+                                    edge.circle_radius_mm,
+                                    edge.axis_origin_mm,
+                                    edge.unit_axis_direction,
+                                ) else {
+                                    return false;
+                                };
+                                let delta = std::array::from_fn::<_, 3, _>(|i| {
+                                    center[i] - hole.entry_local_mm[i]
+                                });
+                                let depth = (0..3)
+                                    .map(|i| delta[i] * hole.inward_unit_local[i])
+                                    .sum::<f64>();
+                                (radius - hole.diameter_mm / 2.0).abs() < 1e-4
+                                    && (0..3)
+                                        .map(|i| axis[i] * hole.inward_unit_local[i])
+                                        .sum::<f64>()
+                                        .abs()
+                                        > 1.0 - 1e-5
+                                    && depth >= -1e-4
+                                    && depth <= hole.depth_mm + 1e-4
+                                    && (0..3)
+                                        .map(|i| {
+                                            (delta[i] - depth * hole.inward_unit_local[i]).powi(2)
+                                        })
+                                        .sum::<f64>()
+                                        < 1e-8
+                            });
+                            matches_hole.then(|| {
+                                json!({"joint_id":joint.id.0,
+                    "joint_name":joint.name,"pair_index":index,
+                    "first_pocket_feature_id":binding.first_pocket_feature_id.0,
+                    "second_pocket_feature_id":binding.second_pocket_feature_id.0,
+                    "selected_side":side})
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .flatten()
+            .take(2)
+            .collect::<Vec<_>>();
+        json!({"state":if matches.len() == 1 {"dowel_pair"}
+            else if matches.is_empty() {"topological_element"} else {"ambiguous_dowel_pair"},
+            "instance_paths":selected_paths,
+            "topology":{"definition_id":reference.definition_id.0,
+                "source_feature_id":reference.source_feature_id.0,
+                "producer_feature_id":reference.producer_feature_id.0,
+                "kind":match reference.kind {
+                    ketchup_core::topology::TopologicalElementKind::Face => "face",
+                    ketchup_core::topology::TopologicalElementKind::Edge => "edge",
+                    ketchup_core::topology::TopologicalElementKind::Vertex => "vertex",
+                }},
+            "dowel_pair":if matches.len() == 1 {matches.into_iter().next()} else {None}})
+    }
+
     fn selection(app: &KetchupApp) -> Result<Vec<u64>, &'static str> {
         if !app.selection.edit_context.is_empty()
             || app.selection.selected_group.is_some()
@@ -960,6 +1125,7 @@ impl LiveBridge {
                 | AssistantCadEditOperation::CreateProgramDowelJoint { .. }
                 | AssistantCadEditOperation::CreatePhysicalDowelJoint { .. }
                 | AssistantCadEditOperation::DeletePhysicalDowelJoint { .. }
+                | AssistantCadEditOperation::MovePhysicalDowelPair { .. }
                 | AssistantCadEditOperation::CreateTag { .. }
                 | AssistantCadEditOperation::SetOccurrenceTag { .. }
                 | AssistantCadEditOperation::SetTagVisibility { .. }
@@ -1641,12 +1807,16 @@ impl LiveBridge {
                 "image_protocol":{"version":IMAGE_PROTOCOL_VERSION,"capabilities":["capture_mode","capture_metadata","render_metadata","variable_size","selection_framing","detail_selection_framing"],"capture_modes":["offscreen","visible_viewport"],"default_capture_mode":"offscreen","framing_modes":["viewport","selection","detail_selection"],"default_framing":"viewport","min_side_px":MIN_IMAGE_SIDE_PX,"max_side_px":MAX_IMAGE_SIDE_PX,"default_side_px":512},
                 "busy":ui_busy || Self::busy(app),"read_only":app.review_candidate.is_some(),
                 "selection":Self::selection(app).ok(),"selection_scope":"root_occurrences_only",
+                "selected_context":Self::selected_context(app),
                 "undo_steps":app.undo_step_count(),"redo_steps":app.redo_step_count(),
                 "pending_proposal_id":self.pending.as_ref().map(|p|p.id),
                 "limits":{"frame_bytes":MAX_FRAME_BYTES,"image_frame_bytes":MAX_IMAGE_FRAME_BYTES,"queue":QUEUE_CAPACITY,"selection":MAX_SELECTION,"apply_verify_timeout_ms":MAX_APPLY_VERIFY_TIMEOUT_MS,"batch_jobs":MAX_BATCH_JOBS},
-                "methods":["status","summary","edit_context","query","detail","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","undo","redo","save","save_as","open","selection","view","image","disconnect"]}),
+                "methods":["status","summary","operations","edit_context","query","detail","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","undo","redo","save","save_as","open","selection","view","image","disconnect"]}),
             ),
             Request::Summary {} => Ok(self.query.summary(&app.document.current())),
+            Request::Operations { name } => {
+                ketchup_core::cad_catalog::cad_operation_catalog(name.as_deref())
+            }
             Request::EditContext { targets, .. } => self
                 .query
                 .edit_context(

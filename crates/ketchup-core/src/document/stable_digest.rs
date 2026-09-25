@@ -484,6 +484,14 @@ impl StableDigest {
             self.u64(value.to_bits());
         }
         self.u64(u64::from(joint.count));
+        if !joint.pair_offsets_first_local_mm.is_empty() {
+            self.u64(joint.pair_offsets_first_local_mm.len() as u64);
+            for offset in &joint.pair_offsets_first_local_mm {
+                for value in offset {
+                    self.u64(value.to_bits());
+                }
+            }
+        }
         match &joint.physical_hole_pairs {
             None => self.byte(0),
             Some(pairs) => {

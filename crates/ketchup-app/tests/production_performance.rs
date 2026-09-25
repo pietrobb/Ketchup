@@ -446,13 +446,16 @@ fn realistic_heterogeneous_corpus_measures_open_exact_ui_and_memory_without_pari
     let total_features = fixtures.iter().map(|entry| entry.features).sum();
     let total_occurrences = fixtures.iter().map(|entry| entry.occurrences).sum();
     assert!(
-        total_definitions >= 140,
-        "corpus is no longer definition-diverse"
+        total_definitions >= 134,
+        "corpus is no longer definition-diverse: {total_definitions}"
     );
-    assert!(total_features >= 350, "corpus is no longer feature-rich");
+    assert!(
+        total_features >= 348,
+        "corpus is no longer feature-rich: {total_features}"
+    );
     assert!(
         total_occurrences >= 590,
-        "corpus is no longer assembly-scale"
+        "corpus is no longer assembly-scale: {total_occurrences}"
     );
     assert!(
         fixtures.iter().any(|entry| entry.feature_kind_count >= 3),

@@ -18,6 +18,14 @@ from anthropic.lib.tools import beta_async_tool
 MAX_OUTPUT = 32768
 MAX_STARTUP = 1024
 MAX_SESSIONS = 4
+SESSION_TIMEOUT = 30.0
+# Actionable next step for rejections an agent can fix by itself.
+_REJECTION_HINTS = {
+    "save_path_required": "The window has no bound file (new or crash-recovered document); "
+                          "use KetchupLiveFile save_as with an explicit absolute path.",
+    "invalid_params": "The request does not match the protocol; fix the arguments using details.reason.",
+    "stale_document": "The document changed since that stamp; re-read status and retry with the new stamp.",
+}
 IMAGE_ROOT = Path(__file__).resolve().parents[1] / "artifacts" / "live-view"
 
 # Reuse the offline loader/plan binding only. Do not register its tools, create
@@ -169,16 +177,34 @@ class _Drain:
 
 
 class _LaunchedSession:
-    def __init__(self, session, drain, process):
+    """A window this runtime launched. It keeps the launch credential in memory
+    only, so a dropped socket can be reopened to the same still-running window
+    instead of stranding it (a launched window is not in the discovery list)."""
+
+    def __init__(self, session, drain, process, address=None, token=None, factory=None):
         self._session, self._drain, self._process = session, drain, process
+        self._address, self._factory = address, factory
+        self._token = bytearray(token or "", "ascii")
 
     def __getattr__(self, name):
         return getattr(self._session, name)
+
+    def reconnect(self):
+        if self._address is None or not self._token or self._factory is None:
+            raise Rejection("reconnect_unavailable", "This live session cannot be reopened.")
+        try:
+            self._session.close()
+        except Exception:
+            pass
+        self._session = self._factory(self._address, self._token.decode("ascii"),
+                                      timeout=SESSION_TIMEOUT)
 
     def close(self):
         try:
             self._session.close()
         finally:
+            self._token[:] = b"\0" * len(self._token)
+            self._token.clear()
             self._drain.close()
             # No wait/kill/terminate: the GUI and unsaved work belong to the user.
             self._process = None
@@ -205,12 +231,13 @@ def _launch(executable, document_path=None, *, session_factory=None, timeout=10.
         process.stdin.close()
         address = _startup(process.stdout, deadline)
         drain = _Drain(process.stdout)
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
+        if deadline - time.monotonic() <= 0:
             raise TimeoutError()
         factory = session_factory or _sdk().LiveSession
-        session = factory(address, token, timeout=min(remaining, 30.0))
-        return _LaunchedSession(session, drain, process)
+        # The startup budget bounds only startup; every later request gets the
+        # full session timeout (apply_and_verify extends it per request).
+        session = factory(address, token, timeout=SESSION_TIMEOUT)
+        return _LaunchedSession(session, drain, process, address, token, factory)
     except BaseException:
         if session is not None:
             try:
@@ -260,6 +287,18 @@ class Runtime:
             except Exception:
                 pass
 
+    def reopen(self, handle):
+        """Reopen a launched window's socket in place; False if not possible."""
+        reconnect = getattr(self.sessions.get(handle), "reconnect", None)
+        if not callable(reconnect):
+            return False
+        try:
+            reconnect()
+            self.sessions[handle].status()
+            return True
+        except Exception:
+            return False
+
     def prune_closed(self):
         for handle, session in list(self.sessions.items()):
             if getattr(session, "closed", False) is True:
@@ -294,12 +333,22 @@ class Runtime:
                 elif isinstance(error, self.sdk.LiveConsentError):
                     value = _error(error.code, "The target window did not grant live access.")
                 elif isinstance(error, self.sdk.LiveBridgeError):
-                    message = (error.details or {}).get("message") or "Live bridge rejected the request."
+                    details = error.details or {}
+                    message = details.get("message") or _REJECTION_HINTS.get(
+                        error.code, "Live bridge rejected the request.")
                     value = _error(error.code, message, details=error.details)
                 elif isinstance(error, self.sdk.LiveTransportError):
-                    self.forget(handle)
-                    value = _error("live_transport_error", "Live connection failed. Do not retry mutations.",
-                                   bool(error.mutation_outcome_unknown))
+                    unknown = bool(error.mutation_outcome_unknown)
+                    if self.reopen(handle):
+                        value = _error("live_transport_error",
+                                       "Live connection dropped and was reopened on the same handle. "
+                                       "Re-read status before any mutation" + (
+                                           "; the last mutation may or may not have applied." if unknown else "."),
+                                       unknown, details={"reconnected": True})
+                    else:
+                        self.forget(handle)
+                        value = _error("live_transport_error", "Live connection failed. Do not retry mutations.",
+                                       unknown)
                 elif isinstance(error, (ValueError, TypeError)):
                     value = _error("invalid_arguments", "Invalid live tool arguments; no automatic retry.", mutation)
                 else:
@@ -397,11 +446,12 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
                       classification_dimension_id: int | None = None,
                       classification_category_id: int | None = None, cursor: str | None = None,
                       world_bounds_mm: list[list[float]] | None = None,
-                      workset_handle: str = "") -> str:
-        """Read live status/summary/query/detail. Results retain the complete bridge stamp; no geometry is fabricated.
+                      workset_handle: str = "", operation: str = "") -> str:
+        """Read live status/summary/operations/query/detail. Results retain the complete bridge stamp; no geometry is fabricated.
 
         Args:
-            action: status, summary, query, detail, workset_create, or workset_status. Allowed in plan mode.
+            action: status, summary, operations, query, detail, workset_create, or workset_status. Allowed in plan mode. operations lists every CAD program operation with its fields straight from Kečup; add operation=<name> for one operation plus all types it references. Use it instead of reading source code.
+            operation: Operation name for action=operations (e.g. create_panel); empty lists all.
             handle: Live session UUID.
             expected: Ignored for reads; accepted for symmetry.
             kind: occurrences, instances, definitions, features, relations, faces, or edges. Topology rows include stable reference IDs and exact geometry.
@@ -417,7 +467,9 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
             workset_handle: Opaque handle required only for workset_status.
         """
         def job():
-            _action(action, ("status", "summary", "query", "detail", "workset_create", "workset_status"))
+            _action(action, ("status", "summary", "operations", "query", "detail", "workset_create", "workset_status"))
+            if operation and action != "operations":
+                raise Rejection("invalid_arguments", "operation applies only to action=operations.")
             if action == "workset_create" and cursor:
                 raise Rejection("invalid_arguments", "workset_create requires a complete query scope without cursor.")
             if action == "workset_status":
@@ -428,6 +480,8 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
             live_session = runtime.entry(handle)
             if action in ("status", "summary"):
                 return getattr(live_session, action)()
+            if action == "operations":
+                return live_session.operations(operation)
             stamp = runtime.expected(expected)
             if action == "detail":
                 return live_session.detail(stamp, kind, entity_id)
@@ -481,8 +535,27 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
                     timeout_ms: int = 60_000, save: dict | None = None, strict: bool = False) -> str:
         """Read a narrow semantic edit context or apply one program as a verified single Undo step.
 
+        One user request = one apply_and_verify; its validation IS the verification (no tests, no images).
         apply_and_verify publishes the edit and reports validator issues (validation.issues with
         the parts involved); fix them with a follow-up edit. strict=true rejects instead.
+        Full catalog: KetchupLiveInspect action=operations [operation=<name>]. Verified examples:
+        program = {"operations":[OP, ...]}; lengths mm; ids come from query/status/diff.targets.
+        create_panel: {"operation":"create_panel","name":"Lem predny","dimensions_mm":[500,18,350],
+          "holes":[],"translation_mm":[0,0,450]}  (box 0..dims in local axes; rotation? {pivot_mm,axis,angle_degrees})
+          create_panel [a,b,c] = sketch a x b (feature id+1: bounds.width=a, bounds.height=b) + pad c (id+2: extent.distance=c).
+        set_feature_parameter (resize): {"operation":"set_feature_parameter","feature_id":2,
+          "parameter_path":"bounds.height","value_type":"length","value":15}  (paths/ids: edit_context targets=[{root_occurrence_id,steps:[]}])
+        transform: {"operation":"transform","selector":{"type":"occurrences","occurrence_ids":[54]},"translation_mm":[0,0,10]}
+        delete: {"operation":"delete","selector":{"type":"occurrences","occurrence_ids":[54]},
+          "dependency_policy":"remove_references"}   (or "reject_if_referenced")
+        create_physical_dowel_joint: {"operation":"create_physical_dowel_joint","name":"Roh","first":FACE,"second":FACE,
+          "first_center_local_mm":[x,y,z],"row_unit_first_local":[0,0,1],"count":2,"spacing_mm":250,"dowel":"d8x30"}
+          FACE={"instance_path":{"root_occurrence_id":N,"steps":[]},"face_origin_local_mm":[..],"inward_unit_local":[..],
+          "bounds_min_local_mm":[0,0,0],"bounds_max_local_mm":dims}; both faces in one world plane; center in first
+          part's local frame; dowels d6x30|d8x30|d8x40|d10x40; first_insertion_mm? for boards < 16 mm thick.
+        move_physical_dowel_pair: {"operation":"move_physical_dowel_pair","joint_id":8,"pair_index":1,
+          "offset_first_local_mm":[35,0,0]}  (offset from the evenly spaced row position)
+        delete_physical_dowel_joint: {"operation":"delete_physical_dowel_joint","joint_id":11}
 
         Args:
             action: edit_context or apply_and_verify.
@@ -642,6 +715,9 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
                     )
                 except FileExistsError:
                     raise Rejection("file_exists", "Image destination exists; choose a NEW .png path.") from None
+                except runtime.sdk.LiveProtocolError:
+                    # Local validation of an already-received image; the connection is fine.
+                    raise Rejection("invalid_image", "The rendered image failed local validation; nothing was saved.") from None
             runtime.guard()
             if action == "selection":
                 return live_session.selection(stamp, occurrence_ids)

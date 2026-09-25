@@ -18856,3 +18856,35 @@ fn command_registry_exposes_only_complete_modeling_tools() {
     assert_eq!(app.active_tool, ActiveTool::PushPull);
     assert!(!app.sketch_mode);
 }
+
+/// A live client that opens a window and immediately asks for Zoom Fit must
+/// not get a silently unframed camera just because no frame was laid out yet.
+#[test]
+fn zoom_fit_before_first_layout_is_applied_on_the_first_frame() {
+    let mut app = KetchupApp::new();
+    install_initial_graph_result(&mut app);
+    assert!(app.viewport_rect.is_none());
+    let zoom_before = app.zoom;
+    app.dispatch_command(AppCommand::ZoomFit);
+    assert!(app.zoom_fit_pending);
+    assert_eq!(app.zoom, zoom_before);
+
+    let mut harness = Harness::builder()
+        .with_size(Vec2::new(1600.0, 1000.0))
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+    harness.run();
+    let app = harness.state();
+    assert!(!app.zoom_fit_pending);
+    assert_ne!(
+        app.zoom, zoom_before,
+        "the pending fit must frame the model"
+    );
+
+    let mut app = KetchupApp::new();
+    app.dispatch_command(AppCommand::ZoomFit);
+    app.dispatch_command(AppCommand::ViewTop);
+    assert!(
+        !app.zoom_fit_pending,
+        "an explicit later view choice supersedes a pending fit"
+    );
+}
