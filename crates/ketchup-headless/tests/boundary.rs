@@ -525,27 +525,65 @@ fn editing_hole_dimensions_preserves_part_identity_and_shared_history() {
 }
 
 #[test]
-fn moving_a_hole_does_not_publish_an_incomplete_program_revision() {
-    let source =
-        "p = box(\"part\", [100, 60, 18])\nhole(p, \"z+\", at=(20, 20), diameter=8, depth=10)";
-    let moved =
-        "p = box(\"part\", [100, 60, 18])\nhole(p, \"z+\", at=(25, 20), diameter=8, depth=10)";
+fn moving_a_hole_preserves_part_identity_and_shared_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("moved-hole.ketchup");
+    let source = "p = box(\"part\", [100, 60, 18])\nhole(p, \"z+\", at=(20, 20), diameter=8, depth=10)\nhole(p, \"z+\", at=(60, 20), diameter=8, depth=10)\nhole(p, \"x+\", at=(30, 9), diameter=8, depth=10)";
+    let moved = "p = box(\"part\", [100, 60, 18])\nhole(p, \"z+\", at=(25, 30), diameter=8, depth=10)\nhole(p, \"z+\", at=(60, 20), diameter=8, depth=10)\nhole(p, \"x+\", at=(32, 10), diameter=8, depth=10)";
     let responses = exchange(&[
         request(1, "program_apply", json!({"source":source})),
         request(2, "program_apply", json!({"source":moved})),
-        request(3, "state", json!({})),
-        request(4, "program_source", json!({})),
+        request(
+            3,
+            "edit_context",
+            json!({"targets":[{"root_occurrence_id":1,"steps":[]}]}),
+        ),
+        request(4, "save", json!({"path":path.to_str().unwrap()})),
+        request(5, "open", json!({"path":path.to_str().unwrap()})),
+        request(6, "program_source", json!({})),
+        request(7, "undo", json!({})),
+        request(8, "program_source", json!({})),
+        request(9, "redo", json!({})),
     ]);
-    assert!(responses[0].get("error").is_none(), "{:?}", responses[0]);
+    for response in &responses {
+        assert!(response.get("error").is_none(), "{response:?}");
+    }
     assert_eq!(
-        responses[1]["error"]["code"],
-        "program_incremental_unsupported"
+        responses[0]["result"]["state"]["document_id"],
+        responses[1]["result"]["state"]["document_id"]
     );
     assert_eq!(
-        responses[0]["result"]["state"],
-        responses[2]["result"]["state"]
+        responses[0]["result"]["state"]["occurrences"],
+        responses[1]["result"]["state"]["occurrences"]
     );
-    assert_eq!(responses[3]["result"]["source"]["source"], source);
+    let features = responses[2]["result"]["targets"][0]["features"]
+        .as_array()
+        .unwrap();
+    let origins = features
+        .iter()
+        .map(|feature| {
+            feature["parameters"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|p| {
+                    p["path"]
+                        .as_str()
+                        .is_some_and(|path| path.starts_with("frame.origin."))
+                })
+                .map(|p| p["value"].as_f64().unwrap())
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    assert!(origins.contains(&vec![25.0, 30.0, 18.0]), "{origins:?}");
+    assert!(origins.contains(&vec![60.0, 20.0, 18.0]), "{origins:?}");
+    assert!(origins.contains(&vec![100.0, 32.0, 10.0]), "{origins:?}");
+    assert_eq!(responses[5]["result"]["source"]["source"], moved);
+    assert_eq!(responses[7]["result"]["source"]["source"], source);
+    assert_eq!(
+        responses[8]["result"]["state"]["occurrences"],
+        responses[1]["result"]["state"]["occurrences"]
+    );
 }
 
 #[test]

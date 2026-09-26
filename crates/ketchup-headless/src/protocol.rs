@@ -1321,8 +1321,7 @@ fn program_hole_commands(
     let definition = snapshot.definition(definition_id)?;
     let mut commands = Vec::new();
     for (old, new) in before.holes.iter().zip(&after.holes) {
-        if old.id != new.id || old.face != new.face || old.u_mm != new.u_mm || old.v_mm != new.v_mm
-        {
+        if old.id != new.id || old.face != new.face {
             return None;
         }
         for (name, path, original, value) in [
@@ -1358,6 +1357,38 @@ fn program_hole_commands(
                     target,
                     dimension: Dimension::new(value.to_string(), value).ok()?,
                 });
+            }
+        }
+        if (old.u_mm, old.v_mm) != (new.u_mm, new.v_mm) {
+            let name = format!("{} hole {} workplane", before.name, old.id);
+            let mut matching = definition.feature_ids().iter().filter(|id| {
+                snapshot
+                    .feature(**id)
+                    .is_some_and(|feature| feature.name() == name)
+            });
+            let feature_id = *matching.next()?;
+            if matching.next().is_some() {
+                return None;
+            }
+            let old_position = old.face.local_point(before.size_mm, old.u_mm, old.v_mm);
+            let new_position = new.face.local_point(after.size_mm, new.u_mm, new.v_mm);
+            for (axis, label) in ["x", "y", "z"].into_iter().enumerate() {
+                let target = FeatureParameterTarget::new(
+                    feature_id,
+                    format!("frame.origin.{label}"),
+                    ParameterValueType::Length,
+                )
+                .ok()?;
+                if snapshot.feature_parameter_value(&target)? != old_position[axis] {
+                    return None;
+                }
+                if old_position[axis] != new_position[axis] {
+                    let value = new_position[axis];
+                    commands.push(CanonicalCommand::SetFeatureParameter {
+                        target,
+                        dimension: Dimension::new(value.to_string(), value).ok()?,
+                    });
+                }
             }
         }
     }
