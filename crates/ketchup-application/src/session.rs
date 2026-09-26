@@ -462,12 +462,15 @@ impl DocumentSession {
     pub fn replace_rule_panels_with_source(
         &mut self,
         replacements: &[(OccurrenceId, AssistantCadEditOperation)],
+        added_panels: &[AssistantCadEditOperation],
+        other_commands: CommandBatch,
         source: ketchup_core::document::RuleProgramSource,
     ) -> Result<Snapshot, SessionError> {
         let snapshot = self.snapshot();
         let panels = replacements
             .iter()
             .map(|(_, panel)| panel.clone())
+            .chain(added_panels.iter().cloned())
             .collect::<Vec<_>>();
         let additions = crate::planner::plan_panel_batch(&self.document, &panels)
             .map_err(SessionError::Planning)?;
@@ -514,6 +517,7 @@ impl DocumentSession {
                 id: old.definition_id(),
             });
         }
+        commands.extend(other_commands.commands().iter().cloned());
         self.apply_rule_commands_with_source(CommandBatch::new(commands), &[], source)
     }
 

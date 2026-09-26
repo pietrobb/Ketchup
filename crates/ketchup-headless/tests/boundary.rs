@@ -1024,6 +1024,50 @@ fn changing_pocket_face_rebuilds_only_that_part_in_shared_history() {
 }
 
 #[test]
+fn rebuilding_a_part_and_replacing_another_is_one_program_revision() {
+    let first = "p = box(\"part\", [100, 70, 18])\npocket(p, \"z+\", rect=(20, 20, 40, 40), depth=5)\nbox(\"removed\", [30, 30, 10], at=[140, 0, 0])";
+    let next = "p = box(\"part\", [100, 70, 18])\npocket(p, \"z-\", rect=(20, 20, 40, 40), depth=5)\nbox(\"added\", [40, 20, 10], at=[140, 0, 0])\nbox(\"extra\", [20, 20, 10], at=[200, 0, 0])";
+    let responses = exchange(&[
+        request(1, "program_apply", json!({"source": first})),
+        request(2, "program_apply", json!({"source": next})),
+        request(3, "evaluate", json!({"timeout_ms": 30000})),
+        request(4, "undo", json!({})),
+        request(5, "program_source", json!({})),
+        request(6, "redo", json!({})),
+        request(7, "program_source", json!({})),
+    ]);
+    assert!(
+        responses.iter().all(|r| r.get("error").is_none()),
+        "{responses:?}"
+    );
+    let before = &responses[0]["result"]["state"];
+    let after = &responses[1]["result"]["state"];
+    assert_eq!(before["document_id"], after["document_id"]);
+    assert_eq!(
+        before["occurrences"][0]["id"],
+        after["occurrences"][0]["id"]
+    );
+    assert_eq!(after["occurrences"].as_array().unwrap().len(), 3);
+    assert_eq!(after["occurrences"][1]["name"], "added");
+    assert_eq!(after["occurrences"][2]["name"], "extra");
+    assert_ne!(
+        before["occurrences"][1]["id"],
+        after["occurrences"][1]["id"]
+    );
+    assert_eq!(responses[2]["result"]["topology_complete"], true);
+    assert_eq!(
+        responses[3]["result"]["state"]["occurrences"],
+        before["occurrences"]
+    );
+    assert_eq!(responses[4]["result"]["source"]["source"], first);
+    assert_eq!(
+        responses[5]["result"]["state"]["occurrences"],
+        after["occurrences"]
+    );
+    assert_eq!(responses[6]["result"]["source"]["source"], next);
+}
+
+#[test]
 fn live_protocol_rejects_duplicate_permissions_and_stays_synchronized() {
     let responses = exchange(&[
         request(1, "state", json!({})),

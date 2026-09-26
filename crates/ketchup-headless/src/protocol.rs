@@ -1022,7 +1022,6 @@ impl Server {
                 if let Some((old, _)) = old_program {
                     let snapshot = self.session.snapshot();
                     if old.model.joints == evaluated.model.joints
-                        && old.model.parts.len() == evaluated.model.parts.len()
                         && snapshot.occurrences().count() == old.model.parts.len()
                     {
                         let replacements =
@@ -1030,7 +1029,9 @@ impl Server {
                                 .parts
                                 .iter()
                                 .map(|before| {
-                                    let after = evaluated.model.part(&before.name)?;
+                                    let Some(after) = evaluated.model.part(&before.name) else {
+                                        return Some(None);
+                                    };
                                     let mut comparable = after.clone();
                                     comparable.at_mm = before.at_mm;
                                     comparable.size_mm = before.size_mm;
@@ -1058,8 +1059,42 @@ impl Server {
                         if let Some(replacements) = replacements {
                             let replacements =
                                 replacements.into_iter().flatten().collect::<Vec<_>>();
-                            self.session
-                                .replace_rule_panels_with_source(&replacements, source)?;
+                            let mut commands = Vec::new();
+                            for removed in old
+                                .model
+                                .parts
+                                .iter()
+                                .filter(|part| evaluated.model.part(&part.name).is_none())
+                            {
+                                let occurrence = snapshot
+                                    .occurrences()
+                                    .find(|item| item.name() == removed.name)
+                                    .ok_or_else(|| {
+                                        Error::new(
+                                            "program_incremental_unsupported",
+                                            "program part no longer matches the document",
+                                        )
+                                    })?;
+                                commands.push(CanonicalCommand::DeleteOccurrence {
+                                    id: occurrence.id(),
+                                });
+                                commands.push(CanonicalCommand::DeleteDefinition {
+                                    id: occurrence.definition_id(),
+                                });
+                            }
+                            let panels = ketchup_program::cad::panel_operations(&evaluated.model)
+                                .into_iter()
+                                .filter(|panel| match panel {
+                                    ketchup_core::assistant_sidecar::AssistantCadEditOperation::CreatePanel { name, .. } => old.model.part(name).is_none(),
+                                    _ => false,
+                                })
+                                .collect::<Vec<_>>();
+                            self.session.replace_rule_panels_with_source(
+                                &replacements,
+                                &panels,
+                                CommandBatch::new(commands),
+                                source,
+                            )?;
                             self.initial_placeholder = false;
                             let mut result = self.state_result();
                             result["program"] = json!(report);
