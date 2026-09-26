@@ -419,6 +419,17 @@ impl DocumentSession {
         self.apply_rule_commands_with_source(batch, &[], source)
     }
 
+    pub(crate) fn replace_with_rule_panels(
+        &mut self,
+        panels: &[AssistantCadEditOperation],
+        source: ketchup_core::document::RuleProgramSource,
+    ) -> Result<Snapshot, SessionError> {
+        let mut replacement = Self::new(self.settings.clone());
+        let snapshot = replacement.apply_panels_with_source(panels, source)?;
+        *self = replacement;
+        Ok(snapshot)
+    }
+
     /// Publishes a canonical program edit and its source in one undoable transaction.
     pub fn apply_rule_commands_with_source(
         &mut self,

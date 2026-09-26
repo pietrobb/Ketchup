@@ -8,7 +8,9 @@
 // parameters; the macro-generated wrappers inherit that.
 #![allow(clippy::too_many_arguments)]
 
-use crate::model::{Face, Hole, Joint, Param, Part, Pocket, ProgramModel};
+use crate::model::{
+    Face, Hole, Joint, Param, Part, Pocket, ProgramModel, ProgramPartBody, ProgramProfileSegment,
+};
 use serde::Serialize;
 use starlark::environment::{FrozenModule, Globals, GlobalsBuilder, LibraryExtension, Module};
 use starlark::eval::Evaluator;
@@ -19,7 +21,7 @@ use starlark::values::none::NoneType;
 use starlark::values::structs::AllocStruct;
 use starlark::values::{Heap, UnpackValue, Value};
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Contact and fit tolerance in millimetres.
 pub const TOLERANCE_MM: f64 = 0.01;
@@ -127,6 +129,73 @@ fn numbers<'v, const N: usize>(
     Ok(out)
 }
 
+fn profile_segments<'v>(
+    value: Value<'v>,
+    heap: &'v Heap,
+    what: &str,
+) -> anyhow::Result<Vec<ProgramProfileSegment>> {
+    let items = value
+        .iterate(heap)
+        .map_err(|_| anyhow::anyhow!("{what} must be a list of 2D points or named segments"))?
+        .collect::<Vec<_>>();
+    if items.len() < 3 {
+        anyhow::bail!("{what} must contain at least three points or segments");
+    }
+    let named = items.first().is_some_and(|item| {
+        item.iterate(heap)
+            .ok()
+            .and_then(|mut fields| fields.next())
+            .is_some_and(|field| field.unpack_str().is_some())
+    });
+    if named {
+        let mut names = BTreeSet::new();
+        return items
+            .into_iter()
+            .map(|segment| {
+                let fields = segment
+                    .iterate(heap)
+                    .map_err(|_| {
+                        anyhow::anyhow!("{what} named segment must be [name, start, end]")
+                    })?
+                    .collect::<Vec<_>>();
+                let [name, start, end] = fields.as_slice() else {
+                    anyhow::bail!("{what} named segment must be [name, start, end]");
+                };
+                let name = name
+                    .unpack_str()
+                    .ok_or_else(|| anyhow::anyhow!("{what} segment name must be a string"))?;
+                if name.is_empty()
+                    || name.len() > 128
+                    || name
+                        .chars()
+                        .any(|character| character.is_control() || "#,().:".contains(character))
+                    || !names.insert(name.to_owned())
+                {
+                    anyhow::bail!(
+                        "{what} segment names must be unique printable names without # , ( ) . :"
+                    );
+                }
+                Ok(ProgramProfileSegment {
+                    name: name.to_owned(),
+                    start_mm: numbers::<2>(*start, heap, what)?,
+                    end_mm: numbers::<2>(*end, heap, what)?,
+                })
+            })
+            .collect();
+    }
+    let points = items
+        .into_iter()
+        .map(|point| numbers::<2>(point, heap, what))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    Ok((0..points.len())
+        .map(|index| ProgramProfileSegment {
+            name: format!("segment{}", index + 1),
+            start_mm: points[index],
+            end_mm: points[(index + 1) % points.len()],
+        })
+        .collect())
+}
+
 fn part_name<'v>(value: Value<'v>, heap: &'v Heap) -> anyhow::Result<String> {
     if let Some(name) = value.unpack_str() {
         return Ok(name.to_owned());
@@ -179,6 +248,72 @@ fn with_part<R>(
         .find(|part| part.name == name)
         .ok_or_else(|| anyhow::anyhow!("unknown part {name:?}; create it with box() first"))?;
     f(part)
+}
+
+fn insert_profile_part(
+    state: &State,
+    name: &str,
+    at_mm: [f64; 3],
+    body: ProgramPartBody,
+) -> anyhow::Result<Part> {
+    if name.trim().is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
+        anyhow::bail!("part name must be 1-128 printable bytes, got {name:?}");
+    }
+    let segments = match &body {
+        ProgramPartBody::Panel => unreachable!(),
+        ProgramPartBody::Extrusion { segments, .. } | ProgramPartBody::Revolve { segments, .. } => {
+            segments
+        }
+    };
+    let points = segments
+        .iter()
+        .flat_map(|segment| [segment.start_mm, segment.end_mm]);
+    let (mut min, mut max) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+    for point in points {
+        for axis in 0..2 {
+            min[axis] = min[axis].min(point[axis]);
+            max[axis] = max[axis].max(point[axis]);
+        }
+    }
+    let size_mm = match &body {
+        ProgramPartBody::Extrusion { distance_mm, .. } => {
+            [max[0] - min[0], max[1] - min[1], *distance_mm]
+        }
+        ProgramPartBody::Revolve { segments, .. } => {
+            let radius = segments
+                .iter()
+                .flat_map(|segment| [segment.start_mm[0], segment.end_mm[0]])
+                .map(f64::abs)
+                .fold(0.0, f64::max);
+            [radius * 2.0, max[1] - min[1], radius * 2.0]
+        }
+        ProgramPartBody::Panel => unreachable!(),
+    };
+    if size_mm.iter().any(|value| *value <= TOLERANCE_MM) {
+        anyhow::bail!("part {name:?}: profile and body dimensions must be positive");
+    }
+    let mut part = Part {
+        name: name.to_owned(),
+        size_mm,
+        at_mm,
+        material: None,
+        grain_axis: None,
+        color: None,
+        body,
+        features: Vec::new(),
+        holes: Vec::new(),
+        pockets: Vec::new(),
+    };
+    part.refresh_feature_tree();
+    let mut model = state.model.borrow_mut();
+    if model.parts.iter().any(|existing| existing.name == name) {
+        anyhow::bail!("part {name:?} already exists; part names are identities and must be unique");
+    }
+    if model.parts.len() >= MAX_PARTS {
+        anyhow::bail!("more than {MAX_PARTS} parts; check the program for a runaway loop");
+    }
+    model.parts.push(part.clone());
+    Ok(part)
 }
 
 /// Contact between two axis-aligned parts: a shared face patch of positive area.
@@ -309,16 +444,19 @@ fn builtins(builder: &mut GlobalsBuilder) {
             })
             .transpose()?;
         let state = state(eval)?;
-        let part = Part {
+        let mut part = Part {
             name: name.to_owned(),
             size_mm: size,
             at_mm: at,
             material,
             grain_axis,
             color,
+            body: crate::model::ProgramPartBody::Panel,
+            features: Vec::new(),
             holes: Vec::new(),
             pockets: Vec::new(),
         };
+        part.refresh_feature_tree();
         {
             let mut model = state.model.borrow_mut();
             if model.parts.iter().any(|existing| existing.name == name) {
@@ -331,6 +469,76 @@ fn builtins(builder: &mut GlobalsBuilder) {
             }
             model.parts.push(part.clone());
         }
+        Ok(part_value(&part, heap))
+    }
+
+    /// Extrudes one closed point loop or list of named segments along +Z.
+    fn extrude<'v>(
+        #[starlark(require = pos)] name: &str,
+        #[starlark(require = named)] profile: Value<'v>,
+        #[starlark(require = named)] distance: Value<'v>,
+        #[starlark(require = named)] at: Option<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let heap = eval.heap();
+        let segments = profile_segments(profile, heap, "profile")?;
+        let distance_mm = number(distance, "distance")?;
+        if distance_mm <= TOLERANCE_MM {
+            anyhow::bail!("distance must be positive");
+        }
+        let at_mm = given(at).map_or(Ok([0.0; 3]), |at| numbers::<3>(at, heap, "at"))?;
+        let state = state(eval)?;
+        let part = insert_profile_part(
+            &state,
+            name,
+            at_mm,
+            ProgramPartBody::Extrusion {
+                segments,
+                distance_mm,
+            },
+        )?;
+        Ok(part_value(&part, heap))
+    }
+
+    /// Revolves one closed point loop or list of named segments around an in-plane axis.
+    fn revolve<'v>(
+        #[starlark(require = pos)] name: &str,
+        #[starlark(require = named)] profile: Value<'v>,
+        #[starlark(require = named)] axis: Value<'v>,
+        #[starlark(require = named)] angle: Option<Value<'v>>,
+        #[starlark(require = named)] at: Option<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let heap = eval.heap();
+        let segments = profile_segments(profile, heap, "profile")?;
+        let axis_points = axis
+            .iterate(heap)
+            .map_err(|_| anyhow::anyhow!("axis must contain two 2D points"))?
+            .map(|point| numbers::<2>(point, heap, "axis"))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let [axis_start_mm, axis_end_mm] = axis_points.as_slice() else {
+            anyhow::bail!("axis must contain exactly two 2D points");
+        };
+        let angle = given(angle)
+            .map(|angle| number(angle, "angle"))
+            .transpose()?
+            .unwrap_or(360.0);
+        if !angle.is_finite() || !(0.0..=360.0).contains(&angle) || angle == 0.0 {
+            anyhow::bail!("angle must be within (0, 360] degrees");
+        }
+        let at_mm = given(at).map_or(Ok([0.0; 3]), |at| numbers::<3>(at, heap, "at"))?;
+        let state = state(eval)?;
+        let part = insert_profile_part(
+            &state,
+            name,
+            at_mm,
+            ProgramPartBody::Revolve {
+                segments,
+                axis_start_mm: *axis_start_mm,
+                axis_end_mm: *axis_end_mm,
+                angle_degrees: angle,
+            },
+        )?;
         Ok(part_value(&part, heap))
     }
 
@@ -401,6 +609,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
                 diameter_mm: diameter,
                 depth_mm: depth,
             });
+            part.refresh_feature_tree();
             Ok(NoneType)
         })
     }
@@ -441,6 +650,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
                 v_max_mm: v_max,
                 depth_mm: depth,
             });
+            part.refresh_feature_tree();
             Ok(NoneType)
         })
     }

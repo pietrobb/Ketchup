@@ -4116,23 +4116,7 @@ pub fn plan_panel_batch(
     let mut next_feature = next_id(&mut snapshot.features().map(|item| item.id().0));
     let mut staged = StagedPlanningContext::new(&snapshot);
     for operation in panels {
-        let AssistantCadEditOperation::CreatePanel {
-            name,
-            dimensions_mm,
-            holes,
-            pockets,
-            translation_mm,
-            rotation,
-        } = operation
-        else {
-            return Err(assistant_planning_rejection(
-                "planning.panel_expected",
-                "create_panel",
-                &document_target,
-                "plan_panel_batch accepts only create_panel operations.",
-                "Pass create_panel operations only.",
-            ));
-        };
+        staged.refresh("rule_part", &document_target)?;
         AssistantCadEditProgram {
             operations: vec![operation.clone()],
         }
@@ -4140,27 +4124,58 @@ pub fn plan_panel_batch(
         .map_err(|error| {
             assistant_rejection(
                 AssistantRejectionPhase::IntentValidation,
-                "intent.panel_invalid",
-                "create_panel",
-                format!("panel:{name}"),
+                "intent.rule_part_invalid",
+                "rule_part",
+                document_target.clone(),
                 error,
-                "Fix the panel dimensions, holes or pockets named in the message.",
+                "Fix the named part profile, body parameters, placement or machining.",
                 true,
             )
         })?;
-        plan_panel(
-            name,
-            *dimensions_mm,
-            holes,
-            pockets,
-            *translation_mm,
-            rotation.clone(),
-            &mut staged,
-            &mut next_definition,
-            &mut next_feature,
-            &mut next_occurrence,
-            &document_target,
-        )?;
+        match operation {
+            AssistantCadEditOperation::CreatePanel {
+                name,
+                dimensions_mm,
+                holes,
+                pockets,
+                translation_mm,
+                rotation,
+            } => {
+                plan_panel(
+                    name,
+                    *dimensions_mm,
+                    holes,
+                    pockets,
+                    *translation_mm,
+                    rotation.clone(),
+                    &mut staged,
+                    &mut next_definition,
+                    &mut next_feature,
+                    &mut next_occurrence,
+                    &document_target,
+                )?;
+            }
+            AssistantCadEditOperation::CreatePart { .. } => {
+                let commands = plan_creation(
+                    staged.staged_snapshot(),
+                    operation,
+                    &mut next_definition,
+                    &mut next_feature,
+                    &mut next_occurrence,
+                    &document_target,
+                )?;
+                staged.extend(commands);
+            }
+            _ => {
+                return Err(assistant_planning_rejection(
+                    "planning.rule_part_expected",
+                    "rule_part",
+                    &document_target,
+                    "rule program batches accept only independent part creation operations.",
+                    "Pass create_part or create_panel operations only.",
+                ));
+            }
+        }
     }
     Ok(staged.into_final_batch())
 }

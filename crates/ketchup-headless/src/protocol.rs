@@ -20,15 +20,15 @@ use ketchup_application::batch_task::{
 use ketchup_application::model_query::{ModelQuery, created_receipt};
 use ketchup_application::validation::{ASSISTANT_VALIDATOR_IDS, assistant_validator_catalog};
 use ketchup_application::{
-    AssistantValidationSelection, DocumentSession, SaveOptions, SessionError, SessionSettings,
+    AssistantValidationSelection, DocumentSession, RuleProgramApplyError, SaveOptions,
+    SessionError, SessionSettings,
 };
 use ketchup_core::assistant_sidecar::AssistantCadEditProgram;
 use ketchup_core::cam::{
     CamFixture, CamOperation, CamPath2d, CamPathSegment2d, CamPlanId, CamPostprocessorDialect,
 };
 use ketchup_core::document::{
-    CanonicalCommand, CommandBatch, DefinitionId, Dimension, FeatureId, FeatureKind,
-    FeatureParameterTarget, InstancePath, OccurrenceId, ParameterValueType, Snapshot, Transform,
+    CanonicalCommand, CommandBatch, DefinitionId, FeatureId, InstancePath, OccurrenceId, Snapshot,
 };
 use ketchup_core::exact_product::{ExactBodyPackage, ExactResultRegistry};
 use ketchup_core::fea::{FeaMaterial, FeaSolveSettings};
@@ -208,6 +208,31 @@ impl From<PdmWorkflowError> for Error {
             },
         };
         Self::new(code, error.to_string())
+    }
+}
+
+impl From<RuleProgramApplyError> for Error {
+    fn from(error: RuleProgramApplyError) -> Self {
+        match error {
+            RuleProgramApplyError::Program { code, message } => Self {
+                code: format!("program.{code}"),
+                message,
+                details: None,
+            },
+            RuleProgramApplyError::IncrementalUnsupported => Self::new(
+                "program_incremental_unsupported",
+                "this change cannot yet update the existing program model; the document and undo history were not replaced",
+            ),
+            RuleProgramApplyError::ReplacementConfirmationRequired => Self::new(
+                "program_replacement_confirmation_required",
+                "the existing document is not owned by this program; pass discard_unsaved=true to replace it",
+            ),
+            RuleProgramApplyError::UnsavedChanges => Self::new(
+                "unsaved_changes",
+                "replacing the document would lose unsaved changes; save first or pass discard_unsaved=true",
+            ),
+            RuleProgramApplyError::Session(error) => error.into(),
+        }
     }
 }
 
@@ -902,228 +927,16 @@ impl Server {
                 Ok(result)
             }
             "program_apply" => {
-                let source = parse_program_source(p)?;
-                let (evaluated, report) = evaluate_program_source(&source)?;
-                let old_program = self
-                    .session
-                    .rule_program()
-                    .map(evaluate_program_source)
-                    .transpose()?;
-                if let Some((old, _)) = &old_program
-                    && old.model.joints == evaluated.model.joints
-                    && self.session.snapshot().occurrences().count() == old.model.parts.len()
-                {
-                    let snapshot = self.session.snapshot();
-                    let changes = old
-                        .model
-                        .parts
-                        .iter()
-                        .filter(|before| evaluated.model.part(&before.name).is_some())
-                        .map(|before| {
-                            let after = evaluated.model.part(&before.name)?;
-                            let mut comparable = after.clone();
-                            comparable.at_mm = before.at_mm;
-                            comparable.size_mm = before.size_mm;
-                            comparable.holes = before.holes.clone();
-                            comparable.pockets = before.pockets.clone();
-                            if &comparable != before {
-                                return None;
-                            }
-                            let occurrence =
-                                snapshot.occurrences().find(|o| o.name() == before.name)?;
-                            let old_position = Transform::from_translation(
-                                before.at_mm[0],
-                                before.at_mm[1],
-                                before.at_mm[2],
-                            )
-                            .ok()?;
-                            if occurrence.transform() != old_position {
-                                return None;
-                            }
-                            let mut commands = program_part_dimension_commands(
-                                &snapshot,
-                                occurrence.definition_id(),
-                                before,
-                                after,
-                            )?;
-                            commands.extend(program_hole_commands(
-                                &snapshot,
-                                occurrence.definition_id(),
-                                before,
-                                after,
-                            )?);
-                            commands.extend(program_pocket_commands(
-                                &snapshot,
-                                occurrence.definition_id(),
-                                before,
-                                after,
-                            )?);
-                            if before.at_mm != after.at_mm {
-                                let transform = Transform::from_translation(
-                                    after.at_mm[0],
-                                    after.at_mm[1],
-                                    after.at_mm[2],
-                                )
-                                .ok()?;
-                                commands.push(CanonicalCommand::SetOccurrenceTransform {
-                                    id: occurrence.id(),
-                                    transform,
-                                });
-                            }
-                            Some(commands)
-                        })
-                        .collect::<Option<Vec<Vec<CanonicalCommand>>>>();
-                    if let Some(changes) = changes {
-                        let mut commands = changes.into_iter().flatten().collect::<Vec<_>>();
-                        for removed in old
-                            .model
-                            .parts
-                            .iter()
-                            .filter(|part| evaluated.model.part(&part.name).is_none())
-                        {
-                            let occurrence = snapshot
-                                .occurrences()
-                                .find(|item| item.name() == removed.name)
-                                .ok_or_else(|| {
-                                    Error::new(
-                                        "program_incremental_unsupported",
-                                        "program part no longer matches the document",
-                                    )
-                                })?;
-                            commands.push(CanonicalCommand::DeleteOccurrence {
-                                id: occurrence.id(),
-                            });
-                            commands.push(CanonicalCommand::DeleteDefinition {
-                                id: occurrence.definition_id(),
-                            });
-                        }
-                        let panels = ketchup_program::cad::panel_operations(&evaluated.model)
-                                .into_iter()
-                                .filter(|panel| match panel {
-                                    ketchup_core::assistant_sidecar::AssistantCadEditOperation::CreatePanel { name, .. } => old.model.part(name).is_none(),
-                                    _ => false,
-                                })
-                                .collect::<Vec<_>>();
-                        if commands.is_empty() && panels.is_empty() {
-                            self.session.replace_rule_program_source(source)?;
-                        } else {
-                            self.session.apply_rule_commands_with_source(
-                                CommandBatch::new(commands),
-                                &panels,
-                                source,
-                            )?;
-                        }
-                        self.initial_placeholder = false;
-                        let mut result = self.state_result();
-                        result["program"] = json!(report);
-                        return Ok(result);
-                    }
+                let applied = self.session.apply_rule_program(
+                    parse_program_source(p)?,
+                    boolean(p, "discard_unsaved", false)?,
+                )?;
+                if applied.replaced_document {
+                    self.revoke_jobs();
                 }
-                if let Some((old, _)) = old_program {
-                    let snapshot = self.session.snapshot();
-                    if old.model.joints == evaluated.model.joints
-                        && snapshot.occurrences().count() == old.model.parts.len()
-                    {
-                        let replacements =
-                            old.model
-                                .parts
-                                .iter()
-                                .map(|before| {
-                                    let Some(after) = evaluated.model.part(&before.name) else {
-                                        return Some(None);
-                                    };
-                                    let mut comparable = after.clone();
-                                    comparable.at_mm = before.at_mm;
-                                    comparable.size_mm = before.size_mm;
-                                    comparable.holes = before.holes.clone();
-                                    comparable.pockets = before.pockets.clone();
-                                    if comparable != *before {
-                                        return None;
-                                    }
-                                    let occurrence =
-                                        snapshot.occurrences().find(|o| o.name() == before.name)?;
-                                    let position = Transform::from_translation(
-                                        before.at_mm[0],
-                                        before.at_mm[1],
-                                        before.at_mm[2],
-                                    )
-                                    .ok()?;
-                                    if occurrence.transform() != position {
-                                        return None;
-                                    }
-                                    Some((before != after).then(|| {
-                                        (occurrence.id(), ketchup_program::cad::panel(after))
-                                    }))
-                                })
-                                .collect::<Option<Vec<_>>>();
-                        if let Some(replacements) = replacements {
-                            let replacements =
-                                replacements.into_iter().flatten().collect::<Vec<_>>();
-                            let mut commands = Vec::new();
-                            for removed in old
-                                .model
-                                .parts
-                                .iter()
-                                .filter(|part| evaluated.model.part(&part.name).is_none())
-                            {
-                                let occurrence = snapshot
-                                    .occurrences()
-                                    .find(|item| item.name() == removed.name)
-                                    .ok_or_else(|| {
-                                        Error::new(
-                                            "program_incremental_unsupported",
-                                            "program part no longer matches the document",
-                                        )
-                                    })?;
-                                commands.push(CanonicalCommand::DeleteOccurrence {
-                                    id: occurrence.id(),
-                                });
-                                commands.push(CanonicalCommand::DeleteDefinition {
-                                    id: occurrence.definition_id(),
-                                });
-                            }
-                            let panels = ketchup_program::cad::panel_operations(&evaluated.model)
-                                .into_iter()
-                                .filter(|panel| match panel {
-                                    ketchup_core::assistant_sidecar::AssistantCadEditOperation::CreatePanel { name, .. } => old.model.part(name).is_none(),
-                                    _ => false,
-                                })
-                                .collect::<Vec<_>>();
-                            self.session.replace_rule_panels_with_source(
-                                &replacements,
-                                &panels,
-                                CommandBatch::new(commands),
-                                source,
-                            )?;
-                            self.initial_placeholder = false;
-                            let mut result = self.state_result();
-                            result["program"] = json!(report);
-                            return Ok(result);
-                        }
-                    }
-                    return Err(Error::new(
-                        "program_incremental_unsupported",
-                        "this change cannot yet update the existing program model; the document and undo history were not replaced",
-                    ));
-                }
-                self.discard_guard(p)?;
-                if !self.initial_placeholder
-                    && self.session.snapshot().definitions().next().is_some()
-                    && !boolean(p, "discard_unsaved", false)?
-                {
-                    return Err(Error::new(
-                        "program_replacement_confirmation_required",
-                        "the existing document is not owned by this program; pass discard_unsaved=true to replace it",
-                    ));
-                }
-                let panels = ketchup_program::cad::panel_operations(&evaluated.model);
-                let mut session = DocumentSession::new(self.settings.clone());
-                session.apply_panels_with_source(&panels, source)?;
-                self.session = session;
-                self.revoke_jobs();
                 self.initial_placeholder = false;
                 let mut result = self.state_result();
-                result["program"] = json!(report);
+                result["program"] = json!(applied.report);
                 Ok(result)
             }
             "cam_preview" => {
@@ -1359,242 +1172,6 @@ fn string<'a>(p: &'a Map<String, Value>, key: &str) -> Result<&'a str> {
         .filter(|s| !s.is_empty())
         .ok_or_else(|| Error::invalid(format!("{key} must be nonempty string")))
 }
-fn program_part_dimension_commands(
-    snapshot: &Snapshot,
-    definition_id: DefinitionId,
-    before: &ketchup_program::model::Part,
-    after: &ketchup_program::model::Part,
-) -> Option<Vec<CanonicalCommand>> {
-    if before.size_mm == after.size_mm {
-        return Some(Vec::new());
-    }
-    let definition = snapshot.definition(definition_id)?;
-    let [_, sketch_id, body_id, rest @ ..] = definition.feature_ids() else {
-        return None;
-    };
-    if rest.len() != (before.holes.len() + before.pockets.len()) * 3 {
-        return None;
-    }
-    if !matches!(snapshot.feature(*sketch_id)?.kind(), FeatureKind::Sketch(_)) {
-        return None;
-    }
-    let depth_path = match snapshot.feature(*body_id)?.kind() {
-        FeatureKind::Pad(_) => "extent.distance",
-        FeatureKind::Extrusion { .. } => "height",
-        _ => return None,
-    };
-    let dimensions = [
-        (*sketch_id, "bounds.width"),
-        (*sketch_id, "bounds.height"),
-        (*body_id, depth_path),
-    ];
-    let mut commands = Vec::new();
-    for (axis, (feature_id, path)) in dimensions.into_iter().enumerate() {
-        let target =
-            FeatureParameterTarget::new(feature_id, path, ParameterValueType::Length).ok()?;
-        if snapshot.feature_parameter_value(&target)? != before.size_mm[axis] {
-            return None;
-        }
-        if before.size_mm[axis] != after.size_mm[axis] {
-            let value = after.size_mm[axis];
-            commands.push(CanonicalCommand::SetFeatureParameter {
-                target,
-                dimension: Dimension::new(value.to_string(), value).ok()?,
-            });
-        }
-    }
-    Some(commands)
-}
-
-fn program_hole_commands(
-    snapshot: &Snapshot,
-    definition_id: DefinitionId,
-    before: &ketchup_program::model::Part,
-    after: &ketchup_program::model::Part,
-) -> Option<Vec<CanonicalCommand>> {
-    if before.holes == after.holes && before.size_mm == after.size_mm {
-        return Some(Vec::new());
-    }
-    if before.holes.len() != after.holes.len() {
-        return None;
-    }
-    let definition = snapshot.definition(definition_id)?;
-    let mut commands = Vec::new();
-    for old in &before.holes {
-        let new = after.holes.iter().find(|new| new.id == old.id)?;
-        if old.face != new.face {
-            return None;
-        }
-        for (name, path, original, value) in [
-            (
-                format!("{} hole {}", before.name, old.id),
-                "entities.1.radius",
-                old.diameter_mm / 2.0,
-                new.diameter_mm / 2.0,
-            ),
-            (
-                format!("{} hole {} pocket", before.name, old.id),
-                "depth",
-                old.depth_mm,
-                new.depth_mm,
-            ),
-        ] {
-            let mut matching = definition.feature_ids().iter().filter(|id| {
-                snapshot
-                    .feature(**id)
-                    .is_some_and(|feature| feature.name() == name)
-            });
-            let feature_id = *matching.next()?;
-            if matching.next().is_some() {
-                return None;
-            }
-            let target =
-                FeatureParameterTarget::new(feature_id, path, ParameterValueType::Length).ok()?;
-            if snapshot.feature_parameter_value(&target)? != original {
-                return None;
-            }
-            if original != value {
-                commands.push(CanonicalCommand::SetFeatureParameter {
-                    target,
-                    dimension: Dimension::new(value.to_string(), value).ok()?,
-                });
-            }
-        }
-        if old.face.local_point(before.size_mm, old.u_mm, old.v_mm)
-            != new.face.local_point(after.size_mm, new.u_mm, new.v_mm)
-        {
-            let name = format!("{} hole {} workplane", before.name, old.id);
-            let mut matching = definition.feature_ids().iter().filter(|id| {
-                snapshot
-                    .feature(**id)
-                    .is_some_and(|feature| feature.name() == name)
-            });
-            let feature_id = *matching.next()?;
-            if matching.next().is_some() {
-                return None;
-            }
-            let old_position = old.face.local_point(before.size_mm, old.u_mm, old.v_mm);
-            let new_position = new.face.local_point(after.size_mm, new.u_mm, new.v_mm);
-            for (axis, label) in ["x", "y", "z"].into_iter().enumerate() {
-                let target = FeatureParameterTarget::new(
-                    feature_id,
-                    format!("frame.origin.{label}"),
-                    ParameterValueType::Length,
-                )
-                .ok()?;
-                if snapshot.feature_parameter_value(&target)? != old_position[axis] {
-                    return None;
-                }
-                if old_position[axis] != new_position[axis] {
-                    let value = new_position[axis];
-                    commands.push(CanonicalCommand::SetFeatureParameter {
-                        target,
-                        dimension: Dimension::new(value.to_string(), value).ok()?,
-                    });
-                }
-            }
-        }
-    }
-    Some(commands)
-}
-
-fn program_pocket_commands(
-    snapshot: &Snapshot,
-    definition_id: DefinitionId,
-    before: &ketchup_program::model::Part,
-    after: &ketchup_program::model::Part,
-) -> Option<Vec<CanonicalCommand>> {
-    if before.pockets == after.pockets && before.size_mm == after.size_mm {
-        return Some(Vec::new());
-    }
-    if before.pockets.len() != after.pockets.len() {
-        return None;
-    }
-    let definition = snapshot.definition(definition_id)?;
-    let mut commands = Vec::new();
-    let mut update =
-        |feature_id: FeatureId, path: String, original: f64, value: f64| -> Option<()> {
-            let target =
-                FeatureParameterTarget::new(feature_id, path, ParameterValueType::Length).ok()?;
-            if snapshot.feature_parameter_value(&target)? != original {
-                return None;
-            }
-            if original != value {
-                commands.push(CanonicalCommand::SetFeatureParameter {
-                    target,
-                    dimension: Dimension::new(value.to_string(), value).ok()?,
-                });
-            }
-            Some(())
-        };
-    for old in &before.pockets {
-        let new = after.pockets.iter().find(|new| new.id == old.id)?;
-        if old.face != new.face {
-            return None;
-        }
-        let feature_id = |name: &str| -> Option<FeatureId> {
-            let mut matches = definition.feature_ids().iter().filter(|id| {
-                snapshot
-                    .feature(**id)
-                    .is_some_and(|feature| feature.name() == name)
-            });
-            let id = *matches.next()?;
-            matches.next().is_none().then_some(id)
-        };
-        let name = format!("{} pocket {}", before.name, old.id);
-        let cut_id = feature_id(&format!("{name} cut"))?;
-        update(cut_id, "depth".to_owned(), old.depth_mm, new.depth_mm)?;
-        let workplane_id = feature_id(&format!("{name} workplane"))?;
-        let old_origin = old.face.local_point(
-            before.size_mm,
-            (old.u_min_mm + old.u_max_mm) * 0.5,
-            (old.v_min_mm + old.v_max_mm) * 0.5,
-        );
-        let new_origin = new.face.local_point(
-            after.size_mm,
-            (new.u_min_mm + new.u_max_mm) * 0.5,
-            (new.v_min_mm + new.v_max_mm) * 0.5,
-        );
-        for (axis, label) in ["x", "y", "z"].into_iter().enumerate() {
-            update(
-                workplane_id,
-                format!("frame.origin.{label}"),
-                old_origin[axis],
-                new_origin[axis],
-            )?;
-        }
-        let sketch_id = feature_id(&name)?;
-        let corners = |p: &ketchup_program::model::Pocket| {
-            let u = (p.u_max_mm - p.u_min_mm) * 0.5;
-            let v = (p.v_max_mm - p.v_min_mm) * 0.5;
-            let (x, y) = if p.face.axis() == 1 { (v, u) } else { (u, v) };
-            [[-x, -y], [x, -y], [x, y], [-x, y]]
-        };
-        let old_corners = corners(old);
-        let new_corners = corners(new);
-        for index in 0..4 {
-            for (point, old_corner, new_corner) in [
-                ("start", old_corners[index], new_corners[index]),
-                (
-                    "end",
-                    old_corners[(index + 1) % 4],
-                    new_corners[(index + 1) % 4],
-                ),
-            ] {
-                for (axis, label) in ["x", "y"].into_iter().enumerate() {
-                    update(
-                        sketch_id,
-                        format!("entities.{}.{point}.{label}", index + 1),
-                        old_corner[axis],
-                        new_corner[axis],
-                    )?;
-                }
-            }
-        }
-    }
-    Some(commands)
-}
-
 /// Evaluates the `source` rule program with numeric `params` overrides.
 fn run_program(
     p: &Map<String, Value>,

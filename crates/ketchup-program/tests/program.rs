@@ -1,4 +1,4 @@
-use ketchup_program::model::{Face, ProgramModel};
+use ketchup_program::model::{Face, ProgramModel, ProgramPartBody};
 use ketchup_program::{Severity, run, validate};
 use std::collections::BTreeMap;
 
@@ -233,9 +233,38 @@ fn divide_splits_a_span_into_rounded_fields_that_add_up() {
 }
 
 #[test]
+fn named_profile_segments_are_preserved_and_must_be_unique() {
+    let model = eval(
+        "extrude(\"angle\", profile=[[\"bottom\", [0, 0], [40, 0]], [\"outer\", [40, 0], [40, 10]], [\"top\", [40, 10], [0, 10]], [\"back\", [0, 10], [0, 0]]], distance=18)",
+    );
+    let ProgramPartBody::Extrusion { segments, .. } = &model.part("angle").unwrap().body else {
+        panic!("expected extrusion");
+    };
+    assert_eq!(
+        segments
+            .iter()
+            .map(|segment| segment.name.as_str())
+            .collect::<Vec<_>>(),
+        ["bottom", "outer", "top", "back"]
+    );
+
+    let error = run(
+        "duplicate.star",
+        "extrude(\"angle\", profile=[[\"side\", [0, 0], [40, 0]], [\"side\", [40, 0], [40, 10]], [\"top\", [40, 10], [0, 0]]], distance=18)",
+        &BTreeMap::new(),
+    )
+    .unwrap_err();
+    assert!(
+        error.message.contains("unique printable names"),
+        "{}",
+        error.message
+    );
+}
+
+#[test]
 fn panel_operations_carry_holes_and_pockets_in_panel_coordinates() {
     let model = eval(CABINET);
-    let operations = ketchup_program::cad::panel_operations(&model);
+    let operations = ketchup_program::cad::part_operations(&model);
     assert_eq!(operations.len(), 7);
     let ketchup_core::assistant_sidecar::AssistantCadEditOperation::CreatePanel {
         name,

@@ -129,6 +129,41 @@ pub struct Param {
     pub doc: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgramFeatureKind {
+    Transform,
+    Workplane,
+    Sketch,
+    Pad,
+    Cut,
+    Revolve,
+    Fillet,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgramParameterValueType {
+    Length,
+    Angle,
+    Scalar,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ProgramFeatureParameter {
+    pub path: String,
+    pub value_type: ProgramParameterValueType,
+    pub value: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ProgramFeature {
+    /// Stable identity inside one part. Reordering program statements does not change it.
+    pub name: String,
+    pub kind: ProgramFeatureKind,
+    pub parameters: Vec<ProgramFeatureParameter>,
+}
+
 /// A cylindrical hole drilled perpendicular to a face.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Hole {
@@ -177,6 +212,29 @@ impl Pocket {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ProgramProfileSegment {
+    pub name: String,
+    pub start_mm: [f64; 2],
+    pub end_mm: [f64; 2],
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ProgramPartBody {
+    Panel,
+    Extrusion {
+        segments: Vec<ProgramProfileSegment>,
+        distance_mm: f64,
+    },
+    Revolve {
+        segments: Vec<ProgramProfileSegment>,
+        axis_start_mm: [f64; 2],
+        axis_end_mm: [f64; 2],
+        angle_degrees: f64,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Part {
     /// Stable identity: the path given in the program, e.g. `korpus/bok_lavy`.
     pub name: String,
@@ -189,6 +247,9 @@ pub struct Part {
     pub grain_axis: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<[u8; 3]>,
+    pub body: ProgramPartBody,
+    /// Stable, operation-class-level source tree used by incremental reconciliation.
+    pub features: Vec<ProgramFeature>,
     pub holes: Vec<Hole>,
     pub pockets: Vec<Pocket>,
 }
@@ -209,6 +270,181 @@ impl Part {
     #[must_use]
     pub fn to_local(&self, world: [f64; 3]) -> [f64; 3] {
         std::array::from_fn(|axis| world[axis] - self.at_mm[axis])
+    }
+
+    pub fn refresh_feature_tree(&mut self) {
+        let length = |path: &str, value| ProgramFeatureParameter {
+            path: path.to_owned(),
+            value_type: ProgramParameterValueType::Length,
+            value,
+        };
+        let feature =
+            |name: String, kind: ProgramFeatureKind, parameters: Vec<ProgramFeatureParameter>| {
+                ProgramFeature {
+                    name,
+                    kind,
+                    parameters,
+                }
+            };
+        let mut features = vec![feature(
+            format!("{} transform", self.name),
+            ProgramFeatureKind::Transform,
+            ["translation.x", "translation.y", "translation.z"]
+                .into_iter()
+                .zip(self.at_mm)
+                .map(|(path, value)| length(path, value))
+                .collect(),
+        )];
+        let profile_parameters = |segments: &[ProgramProfileSegment]| {
+            let mut parameters = Vec::new();
+            for (index, segment) in segments.iter().enumerate() {
+                for (point, coordinates) in [("start", segment.start_mm), ("end", segment.end_mm)] {
+                    parameters.push(length(
+                        &format!("entities.{}.{point}.x", index + 1),
+                        coordinates[0],
+                    ));
+                    parameters.push(length(
+                        &format!("entities.{}.{point}.y", index + 1),
+                        coordinates[1],
+                    ));
+                }
+            }
+            parameters
+        };
+        match &self.body {
+            ProgramPartBody::Panel => {
+                features.push(feature(
+                    format!("{} sketch", self.name),
+                    ProgramFeatureKind::Sketch,
+                    vec![
+                        length("bounds.width", self.size_mm[0]),
+                        length("bounds.height", self.size_mm[1]),
+                    ],
+                ));
+                features.push(feature(
+                    format!("{} feature", self.name),
+                    ProgramFeatureKind::Pad,
+                    vec![length("extent.distance", self.size_mm[2])],
+                ));
+            }
+            ProgramPartBody::Extrusion {
+                segments,
+                distance_mm,
+            } => {
+                features.push(feature(
+                    format!("{} sketch", self.name),
+                    ProgramFeatureKind::Sketch,
+                    profile_parameters(segments),
+                ));
+                features.push(feature(
+                    format!("{} feature", self.name),
+                    ProgramFeatureKind::Pad,
+                    vec![length("extent.distance", *distance_mm)],
+                ));
+            }
+            ProgramPartBody::Revolve {
+                segments,
+                axis_start_mm,
+                axis_end_mm,
+                angle_degrees,
+            } => {
+                features.push(feature(
+                    format!("{} sketch", self.name),
+                    ProgramFeatureKind::Sketch,
+                    profile_parameters(segments),
+                ));
+                let mut parameters = vec![
+                    length("axis_start.x", axis_start_mm[0]),
+                    length("axis_start.y", axis_start_mm[1]),
+                    length("axis_end.x", axis_end_mm[0]),
+                    length("axis_end.y", axis_end_mm[1]),
+                ];
+                parameters.push(ProgramFeatureParameter {
+                    path: "angle".to_owned(),
+                    value_type: ProgramParameterValueType::Angle,
+                    value: *angle_degrees,
+                });
+                features.push(feature(
+                    format!("{} feature", self.name),
+                    ProgramFeatureKind::Revolve,
+                    parameters,
+                ));
+            }
+        }
+        for hole in &self.holes {
+            let prefix = format!("{} hole {}", self.name, hole.id);
+            let origin = hole.face.local_point(self.size_mm, hole.u_mm, hole.v_mm);
+            features.push(feature(
+                format!("{prefix} workplane"),
+                ProgramFeatureKind::Workplane,
+                ["frame.origin.x", "frame.origin.y", "frame.origin.z"]
+                    .into_iter()
+                    .zip(origin)
+                    .map(|(path, value)| length(path, value))
+                    .collect(),
+            ));
+            features.push(feature(
+                prefix.clone(),
+                ProgramFeatureKind::Sketch,
+                vec![length("entities.1.radius", hole.diameter_mm * 0.5)],
+            ));
+            features.push(feature(
+                format!("{prefix} pocket"),
+                ProgramFeatureKind::Cut,
+                vec![length("depth", hole.depth_mm)],
+            ));
+        }
+        for pocket in &self.pockets {
+            let prefix = format!("{} pocket {}", self.name, pocket.id);
+            let origin = pocket.face.local_point(
+                self.size_mm,
+                (pocket.u_min_mm + pocket.u_max_mm) * 0.5,
+                (pocket.v_min_mm + pocket.v_max_mm) * 0.5,
+            );
+            features.push(feature(
+                format!("{prefix} workplane"),
+                ProgramFeatureKind::Workplane,
+                ["frame.origin.x", "frame.origin.y", "frame.origin.z"]
+                    .into_iter()
+                    .zip(origin)
+                    .map(|(path, value)| length(path, value))
+                    .collect(),
+            ));
+            let u = (pocket.u_max_mm - pocket.u_min_mm) * 0.5;
+            let v = (pocket.v_max_mm - pocket.v_min_mm) * 0.5;
+            let (x, y) = if pocket.face.axis() == 1 {
+                (v, u)
+            } else {
+                (u, v)
+            };
+            let corners = [[-x, -y], [x, -y], [x, y], [-x, y]];
+            let mut parameters = Vec::new();
+            for index in 0..4 {
+                for (point, corner) in
+                    [("start", corners[index]), ("end", corners[(index + 1) % 4])]
+                {
+                    parameters.push(length(
+                        &format!("entities.{}.{point}.x", index + 1),
+                        corner[0],
+                    ));
+                    parameters.push(length(
+                        &format!("entities.{}.{point}.y", index + 1),
+                        corner[1],
+                    ));
+                }
+            }
+            features.push(feature(
+                prefix.clone(),
+                ProgramFeatureKind::Sketch,
+                parameters,
+            ));
+            features.push(feature(
+                format!("{prefix} cut"),
+                ProgramFeatureKind::Cut,
+                vec![length("depth", pocket.depth_mm)],
+            ));
+        }
+        self.features = features;
     }
 }
 

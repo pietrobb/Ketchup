@@ -2241,6 +2241,7 @@ version = "0.1.0"
 dependencies = [
  "ketchup-core",
  "ketchup-interaction",
+ "ketchup-program",
  "ketchup-scheduler",
  "serde",
  "serde_json",

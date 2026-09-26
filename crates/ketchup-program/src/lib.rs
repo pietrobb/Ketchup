@@ -17,7 +17,10 @@ pub mod validate;
 
 pub use bom::{Bom, bom};
 pub use eval::{Evaluated, ProgramError, evaluate};
-pub use model::{Face, ProgramModel};
+pub use model::{
+    Face, ProgramFeature, ProgramFeatureKind, ProgramFeatureParameter, ProgramModel,
+    ProgramParameterValueType, ProgramPartBody, ProgramProfileSegment,
+};
 pub use validate::{Issue, Severity, validate};
 
 use serde::Serialize;

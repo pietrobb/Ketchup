@@ -12,6 +12,7 @@ pub mod mesh_conversion;
 pub mod model_query;
 pub mod pdm_workflow;
 mod planner;
+mod rule_program;
 mod sketch;
 pub mod topology;
 pub mod transforms;
@@ -23,6 +24,7 @@ pub use planner::{
     AssistantCadProgramPlan, AssistantCadResolvedProgramOutput, plan_assistant_cad_edit_program,
     plan_assistant_cad_edit_program_with_outputs, plan_panel_batch,
 };
+pub use rule_program::{RuleProgramApplyError, RuleProgramApplyResult};
 
 mod session;
 pub use session::{DocumentSession, RecoveryState, SaveOptions, SessionError, SessionSettings};
