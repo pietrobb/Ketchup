@@ -920,6 +920,7 @@ impl Server {
                                 let mut comparable = after.clone();
                                 comparable.at_mm = before.at_mm;
                                 comparable.size_mm = before.size_mm;
+                                comparable.holes = before.holes.clone();
                                 if &comparable != before {
                                     return None;
                                 }
@@ -940,6 +941,12 @@ impl Server {
                                     before,
                                     after,
                                 )?;
+                                commands.extend(program_hole_commands(
+                                    &snapshot,
+                                    occurrence.definition_id(),
+                                    before,
+                                    after,
+                                )?);
                                 if before.at_mm != after.at_mm {
                                     let transform = Transform::from_translation(
                                         after.at_mm[0],
@@ -1294,6 +1301,64 @@ fn program_part_dimension_commands(
                 target,
                 dimension: Dimension::new(value.to_string(), value).ok()?,
             });
+        }
+    }
+    Some(commands)
+}
+
+fn program_hole_commands(
+    snapshot: &Snapshot,
+    definition_id: DefinitionId,
+    before: &ketchup_program::model::Part,
+    after: &ketchup_program::model::Part,
+) -> Option<Vec<CanonicalCommand>> {
+    if before.holes == after.holes {
+        return Some(Vec::new());
+    }
+    if before.size_mm != after.size_mm || before.holes.len() != after.holes.len() {
+        return None;
+    }
+    let definition = snapshot.definition(definition_id)?;
+    let mut commands = Vec::new();
+    for (old, new) in before.holes.iter().zip(&after.holes) {
+        if old.id != new.id || old.face != new.face || old.u_mm != new.u_mm || old.v_mm != new.v_mm
+        {
+            return None;
+        }
+        for (name, path, original, value) in [
+            (
+                format!("{} hole {}", before.name, old.id),
+                "entities.1.radius",
+                old.diameter_mm / 2.0,
+                new.diameter_mm / 2.0,
+            ),
+            (
+                format!("{} hole {} pocket", before.name, old.id),
+                "depth",
+                old.depth_mm,
+                new.depth_mm,
+            ),
+        ] {
+            let mut matching = definition.feature_ids().iter().filter(|id| {
+                snapshot
+                    .feature(**id)
+                    .is_some_and(|feature| feature.name() == name)
+            });
+            let feature_id = *matching.next()?;
+            if matching.next().is_some() {
+                return None;
+            }
+            let target =
+                FeatureParameterTarget::new(feature_id, path, ParameterValueType::Length).ok()?;
+            if snapshot.feature_parameter_value(&target)? != original {
+                return None;
+            }
+            if original != value {
+                commands.push(CanonicalCommand::SetFeatureParameter {
+                    target,
+                    dimension: Dimension::new(value.to_string(), value).ok()?,
+                });
+            }
         }
     }
     Some(commands)

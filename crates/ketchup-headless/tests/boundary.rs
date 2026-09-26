@@ -460,6 +460,95 @@ fn replacing_one_part_and_moving_another_is_one_program_revision() {
 }
 
 #[test]
+fn editing_hole_dimensions_preserves_part_identity_and_shared_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("edited-hole.ketchup");
+    let source = "R = param(\"diameter\", 8)\nD = param(\"depth\", 10)\np = box(\"part\", [100, 60, 18])\nhole(p, \"z+\", at=(20, 20), diameter=R, depth=D)";
+    let responses = exchange(&[
+        request(1, "program_apply", json!({"source":source})),
+        request(
+            2,
+            "program_apply",
+            json!({"source":source,"params":{"diameter":12,"depth":14}}),
+        ),
+        request(
+            3,
+            "edit_context",
+            json!({"targets":[{"root_occurrence_id":1,"steps":[]}]}),
+        ),
+        request(4, "save", json!({"path":path.to_str().unwrap()})),
+        request(5, "open", json!({"path":path.to_str().unwrap()})),
+        request(6, "program_source", json!({})),
+        request(7, "undo", json!({})),
+        request(8, "program_source", json!({})),
+        request(9, "redo", json!({})),
+    ]);
+    for response in &responses {
+        assert!(response.get("error").is_none(), "{response:?}");
+    }
+    assert_eq!(
+        responses[0]["result"]["state"]["document_id"],
+        responses[1]["result"]["state"]["document_id"]
+    );
+    assert_eq!(
+        responses[0]["result"]["state"]["occurrences"],
+        responses[1]["result"]["state"]["occurrences"]
+    );
+    let features = responses[2]["result"]["targets"][0]["features"]
+        .as_array()
+        .unwrap();
+    let params = features
+        .iter()
+        .flat_map(|feature| feature["parameters"].as_array().unwrap())
+        .collect::<Vec<_>>();
+    assert!(
+        params
+            .iter()
+            .any(|p| p["path"] == "entities.1.radius" && p["value"] == 6.0),
+        "{params:?}"
+    );
+    assert!(
+        params
+            .iter()
+            .any(|p| p["path"] == "depth" && p["value"] == 14.0),
+        "{params:?}"
+    );
+    assert_eq!(
+        responses[5]["result"]["source"]["overrides"],
+        json!({"diameter":12.0,"depth":14.0})
+    );
+    assert_eq!(responses[7]["result"]["source"]["overrides"], json!({}));
+    assert_eq!(
+        responses[8]["result"]["state"]["occurrences"],
+        responses[1]["result"]["state"]["occurrences"]
+    );
+}
+
+#[test]
+fn moving_a_hole_does_not_publish_an_incomplete_program_revision() {
+    let source =
+        "p = box(\"part\", [100, 60, 18])\nhole(p, \"z+\", at=(20, 20), diameter=8, depth=10)";
+    let moved =
+        "p = box(\"part\", [100, 60, 18])\nhole(p, \"z+\", at=(25, 20), diameter=8, depth=10)";
+    let responses = exchange(&[
+        request(1, "program_apply", json!({"source":source})),
+        request(2, "program_apply", json!({"source":moved})),
+        request(3, "state", json!({})),
+        request(4, "program_source", json!({})),
+    ]);
+    assert!(responses[0].get("error").is_none(), "{:?}", responses[0]);
+    assert_eq!(
+        responses[1]["error"]["code"],
+        "program_incremental_unsupported"
+    );
+    assert_eq!(
+        responses[0]["result"]["state"],
+        responses[2]["result"]["state"]
+    );
+    assert_eq!(responses[3]["result"]["source"]["source"], source);
+}
+
+#[test]
 fn resizing_a_machined_part_does_not_replace_document_or_history() {
     let source = "W = param(\"width\", 100)\np = box(\"part\", [W, 60, 18])\nhole(p, \"z+\", at=(20, 20), diameter=8, depth=10)";
     let responses = exchange(&[
