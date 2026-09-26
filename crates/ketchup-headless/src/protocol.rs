@@ -1327,8 +1327,9 @@ fn program_hole_commands(
     }
     let definition = snapshot.definition(definition_id)?;
     let mut commands = Vec::new();
-    for (old, new) in before.holes.iter().zip(&after.holes) {
-        if old.id != new.id || old.face != new.face {
+    for old in &before.holes {
+        let new = after.holes.iter().find(|new| new.id == old.id)?;
+        if old.face != new.face {
             return None;
         }
         for (name, path, original, value) in [
@@ -1433,8 +1434,9 @@ fn program_pocket_commands(
             }
             Some(())
         };
-    for (old, new) in before.pockets.iter().zip(&after.pockets) {
-        if old.id != new.id || old.face != new.face {
+    for old in &before.pockets {
+        let new = after.pockets.iter().find(|new| new.id == old.id)?;
+        if old.face != new.face {
             return None;
         }
         let feature_id = |name: &str| -> Option<FeatureId> {

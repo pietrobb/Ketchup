@@ -836,6 +836,59 @@ fn updated_pocket_evaluates_as_exact_geometry() {
 }
 
 #[test]
+fn named_machining_follows_ids_when_program_statements_change_order() {
+    let source = "p = box(\"part\", [100, 70, 18])\nhole(p, \"z+\", at=(15, 15), diameter=6, depth=5, id=\"left\")\nhole(p, \"z+\", at=(85, 15), diameter=6, depth=5, id=\"right\")\npocket(p, \"z+\", rect=(20, 30, 35, 45), depth=3, id=\"near\")\npocket(p, \"z+\", rect=(55, 30, 70, 45), depth=3, id=\"far\")";
+    let reordered = "p = box(\"part\", [100, 70, 18])\nhole(p, \"z+\", at=(85, 15), diameter=6, depth=5, id=\"right\")\nhole(p, \"z+\", at=(18, 15), diameter=6, depth=5, id=\"left\")\npocket(p, \"z+\", rect=(55, 30, 70, 45), depth=3, id=\"far\")\npocket(p, \"z+\", rect=(21, 30, 36, 45), depth=5, id=\"near\")";
+    let responses = exchange(&[
+        request(1, "program_apply", json!({"source":source})),
+        request(2, "program_apply", json!({"source":reordered})),
+        request(3, "evaluate", json!({"timeout_ms":30000})),
+        request(4, "undo", json!({})),
+        request(5, "program_source", json!({})),
+        request(6, "redo", json!({})),
+        request(7, "program_source", json!({})),
+    ]);
+    for response in &responses {
+        assert!(response.get("error").is_none(), "{response:?}");
+    }
+    assert_eq!(
+        responses[0]["result"]["state"]["occurrences"],
+        responses[1]["result"]["state"]["occurrences"]
+    );
+    assert_eq!(responses[2]["result"]["topology_complete"], true);
+    assert_eq!(responses[4]["result"]["source"]["source"], source);
+    assert_eq!(responses[6]["result"]["source"]["source"], reordered);
+    let fresh = exchange(&[
+        request(1, "program_apply", json!({"source":reordered})),
+        request(2, "evaluate", json!({"timeout_ms":30000})),
+    ]);
+    assert!(
+        fresh.iter().all(|response| response.get("error").is_none()),
+        "{fresh:?}"
+    );
+    let final_body = |result: &Value| {
+        result["topology_geometry"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .max_by_key(|body| body["feature_id"].as_u64().unwrap())
+            .unwrap()
+            .clone()
+    };
+    let incremental = final_body(&responses[2]["result"]);
+    let rebuilt = final_body(&fresh[1]["result"]);
+    assert_eq!(incremental["bounds_mm"], rebuilt["bounds_mm"]);
+    let volume = incremental["native_evidence"]["volume_mm3"]
+        .as_f64()
+        .unwrap();
+    let rebuilt_volume = rebuilt["native_evidence"]["volume_mm3"].as_f64().unwrap();
+    assert!(
+        (volume - rebuilt_volume).abs() < 0.01,
+        "{incremental:?} != {rebuilt:?}"
+    );
+}
+
+#[test]
 fn changing_pocket_face_does_not_replace_document_or_history() {
     let source = "W = param(\"width\", 100)\np = box(\"part\", [W, 60, 18])\npocket(p, \"z+\", rect=(20, 20, 40, 40), depth=5)";
     let responses = exchange(&[
