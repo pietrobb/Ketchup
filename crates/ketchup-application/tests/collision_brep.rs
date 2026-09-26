@@ -753,16 +753,13 @@ fn regression_all_validators_keep_known_collision_failed_when_others_unavailable
     assert_eq!(report["collision"]["state"], "failed", "{report}");
     assert_eq!(report["collision"]["complete"], true);
     assert_eq!(report["collision"]["issue_count"], 1);
-    assert_eq!(
-        report["gravity_support"]["state"], "not_evaluated",
-        "{report}"
-    );
+    assert_eq!(report["gravity_support"]["state"], "passed", "{report}");
     assert!(
         report["not_evaluated"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|entry| { entry["validator"] == "gravity_support" }),
+            .any(|entry| { entry["validator"] == "assembly_retention" }),
         "{report}"
     );
     assert_eq!(report["state"], "failed", "{report}");
