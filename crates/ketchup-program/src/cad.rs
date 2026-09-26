@@ -6,7 +6,7 @@ use ketchup_core::assistant_sidecar::{
     AssistantCadEditOperation, AssistantPanelHole, AssistantPanelPocket,
 };
 
-fn panel(part: &Part) -> AssistantCadEditOperation {
+pub fn panel(part: &Part) -> AssistantCadEditOperation {
     let holes = part
         .holes
         .iter()

@@ -904,119 +904,168 @@ impl Server {
             "program_apply" => {
                 let source = parse_program_source(p)?;
                 let (evaluated, report) = evaluate_program_source(&source)?;
-                if let Some(previous) = self.session.rule_program() {
-                    let (old, _) = evaluate_program_source(previous)?;
-                    if old.model.joints == evaluated.model.joints
-                        && self.session.snapshot().occurrences().count() == old.model.parts.len()
-                    {
-                        let snapshot = self.session.snapshot();
-                        let changes = old
+                let old_program = self
+                    .session
+                    .rule_program()
+                    .map(evaluate_program_source)
+                    .transpose()?;
+                if let Some((old, _)) = &old_program
+                    && old.model.joints == evaluated.model.joints
+                    && self.session.snapshot().occurrences().count() == old.model.parts.len()
+                {
+                    let snapshot = self.session.snapshot();
+                    let changes = old
+                        .model
+                        .parts
+                        .iter()
+                        .filter(|before| evaluated.model.part(&before.name).is_some())
+                        .map(|before| {
+                            let after = evaluated.model.part(&before.name)?;
+                            let mut comparable = after.clone();
+                            comparable.at_mm = before.at_mm;
+                            comparable.size_mm = before.size_mm;
+                            comparable.holes = before.holes.clone();
+                            comparable.pockets = before.pockets.clone();
+                            if &comparable != before {
+                                return None;
+                            }
+                            let occurrence =
+                                snapshot.occurrences().find(|o| o.name() == before.name)?;
+                            let old_position = Transform::from_translation(
+                                before.at_mm[0],
+                                before.at_mm[1],
+                                before.at_mm[2],
+                            )
+                            .ok()?;
+                            if occurrence.transform() != old_position {
+                                return None;
+                            }
+                            let mut commands = program_part_dimension_commands(
+                                &snapshot,
+                                occurrence.definition_id(),
+                                before,
+                                after,
+                            )?;
+                            commands.extend(program_hole_commands(
+                                &snapshot,
+                                occurrence.definition_id(),
+                                before,
+                                after,
+                            )?);
+                            commands.extend(program_pocket_commands(
+                                &snapshot,
+                                occurrence.definition_id(),
+                                before,
+                                after,
+                            )?);
+                            if before.at_mm != after.at_mm {
+                                let transform = Transform::from_translation(
+                                    after.at_mm[0],
+                                    after.at_mm[1],
+                                    after.at_mm[2],
+                                )
+                                .ok()?;
+                                commands.push(CanonicalCommand::SetOccurrenceTransform {
+                                    id: occurrence.id(),
+                                    transform,
+                                });
+                            }
+                            Some(commands)
+                        })
+                        .collect::<Option<Vec<Vec<CanonicalCommand>>>>();
+                    if let Some(changes) = changes {
+                        let mut commands = changes.into_iter().flatten().collect::<Vec<_>>();
+                        for removed in old
                             .model
                             .parts
                             .iter()
-                            .filter(|before| evaluated.model.part(&before.name).is_some())
-                            .map(|before| {
-                                let after = evaluated.model.part(&before.name)?;
-                                let mut comparable = after.clone();
-                                comparable.at_mm = before.at_mm;
-                                comparable.size_mm = before.size_mm;
-                                comparable.holes = before.holes.clone();
-                                comparable.pockets = before.pockets.clone();
-                                if &comparable != before {
-                                    return None;
-                                }
-                                let occurrence =
-                                    snapshot.occurrences().find(|o| o.name() == before.name)?;
-                                let old_position = Transform::from_translation(
-                                    before.at_mm[0],
-                                    before.at_mm[1],
-                                    before.at_mm[2],
-                                )
-                                .ok()?;
-                                if occurrence.transform() != old_position {
-                                    return None;
-                                }
-                                let mut commands = program_part_dimension_commands(
-                                    &snapshot,
-                                    occurrence.definition_id(),
-                                    before,
-                                    after,
-                                )?;
-                                commands.extend(program_hole_commands(
-                                    &snapshot,
-                                    occurrence.definition_id(),
-                                    before,
-                                    after,
-                                )?);
-                                commands.extend(program_pocket_commands(
-                                    &snapshot,
-                                    occurrence.definition_id(),
-                                    before,
-                                    after,
-                                )?);
-                                if before.at_mm != after.at_mm {
-                                    let transform = Transform::from_translation(
-                                        after.at_mm[0],
-                                        after.at_mm[1],
-                                        after.at_mm[2],
+                            .filter(|part| evaluated.model.part(&part.name).is_none())
+                        {
+                            let occurrence = snapshot
+                                .occurrences()
+                                .find(|item| item.name() == removed.name)
+                                .ok_or_else(|| {
+                                    Error::new(
+                                        "program_incremental_unsupported",
+                                        "program part no longer matches the document",
                                     )
-                                    .ok()?;
-                                    commands.push(CanonicalCommand::SetOccurrenceTransform {
-                                        id: occurrence.id(),
-                                        transform,
-                                    });
-                                }
-                                Some(commands)
-                            })
-                            .collect::<Option<Vec<Vec<CanonicalCommand>>>>();
-                        if let Some(changes) = changes {
-                            let mut commands = changes.into_iter().flatten().collect::<Vec<_>>();
-                            for removed in old
-                                .model
-                                .parts
-                                .iter()
-                                .filter(|part| evaluated.model.part(&part.name).is_none())
-                            {
-                                let occurrence = snapshot
-                                    .occurrences()
-                                    .find(|item| item.name() == removed.name)
-                                    .ok_or_else(|| {
-                                        Error::new(
-                                            "program_incremental_unsupported",
-                                            "program part no longer matches the document",
-                                        )
-                                    })?;
-                                commands.push(CanonicalCommand::DeleteOccurrence {
-                                    id: occurrence.id(),
-                                });
-                                commands.push(CanonicalCommand::DeleteDefinition {
-                                    id: occurrence.definition_id(),
-                                });
-                            }
-                            let panels = ketchup_program::cad::panel_operations(&evaluated.model)
+                                })?;
+                            commands.push(CanonicalCommand::DeleteOccurrence {
+                                id: occurrence.id(),
+                            });
+                            commands.push(CanonicalCommand::DeleteDefinition {
+                                id: occurrence.definition_id(),
+                            });
+                        }
+                        let panels = ketchup_program::cad::panel_operations(&evaluated.model)
                                 .into_iter()
                                 .filter(|panel| match panel {
                                     ketchup_core::assistant_sidecar::AssistantCadEditOperation::CreatePanel { name, .. } => old.model.part(name).is_none(),
                                     _ => false,
                                 })
                                 .collect::<Vec<_>>();
-                            if commands.is_empty() && panels.is_empty() {
-                                self.session.replace_rule_program_source(source)?;
-                            } else {
-                                self.session.apply_rule_commands_with_source(
-                                    CommandBatch::new(commands),
-                                    &panels,
-                                    source,
-                                )?;
-                            }
+                        if commands.is_empty() && panels.is_empty() {
+                            self.session.replace_rule_program_source(source)?;
+                        } else {
+                            self.session.apply_rule_commands_with_source(
+                                CommandBatch::new(commands),
+                                &panels,
+                                source,
+                            )?;
+                        }
+                        self.initial_placeholder = false;
+                        let mut result = self.state_result();
+                        result["program"] = json!(report);
+                        return Ok(result);
+                    }
+                }
+                if let Some((old, _)) = old_program {
+                    let snapshot = self.session.snapshot();
+                    if old.model.joints == evaluated.model.joints
+                        && old.model.parts.len() == evaluated.model.parts.len()
+                        && snapshot.occurrences().count() == old.model.parts.len()
+                    {
+                        let replacements =
+                            old.model
+                                .parts
+                                .iter()
+                                .map(|before| {
+                                    let after = evaluated.model.part(&before.name)?;
+                                    let mut comparable = after.clone();
+                                    comparable.at_mm = before.at_mm;
+                                    comparable.size_mm = before.size_mm;
+                                    comparable.holes = before.holes.clone();
+                                    comparable.pockets = before.pockets.clone();
+                                    if comparable != *before {
+                                        return None;
+                                    }
+                                    let occurrence =
+                                        snapshot.occurrences().find(|o| o.name() == before.name)?;
+                                    let position = Transform::from_translation(
+                                        before.at_mm[0],
+                                        before.at_mm[1],
+                                        before.at_mm[2],
+                                    )
+                                    .ok()?;
+                                    if occurrence.transform() != position {
+                                        return None;
+                                    }
+                                    Some((before != after).then(|| {
+                                        (occurrence.id(), ketchup_program::cad::panel(after))
+                                    }))
+                                })
+                                .collect::<Option<Vec<_>>>();
+                        if let Some(replacements) = replacements {
+                            let replacements =
+                                replacements.into_iter().flatten().collect::<Vec<_>>();
+                            self.session
+                                .replace_rule_panels_with_source(&replacements, source)?;
                             self.initial_placeholder = false;
                             let mut result = self.state_result();
                             result["program"] = json!(report);
                             return Ok(result);
                         }
                     }
-                }
-                if self.session.rule_program().is_some() {
                     return Err(Error::new(
                         "program_incremental_unsupported",
                         "this change cannot yet update the existing program model; the document and undo history were not replaced",

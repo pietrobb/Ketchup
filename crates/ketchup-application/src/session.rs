@@ -458,6 +458,65 @@ impl DocumentSession {
         Ok(self.snapshot())
     }
 
+    /// Rebuilds only changed program parts while keeping their occurrence identities.
+    pub fn replace_rule_panels_with_source(
+        &mut self,
+        replacements: &[(OccurrenceId, AssistantCadEditOperation)],
+        source: ketchup_core::document::RuleProgramSource,
+    ) -> Result<Snapshot, SessionError> {
+        let snapshot = self.snapshot();
+        let panels = replacements
+            .iter()
+            .map(|(_, panel)| panel.clone())
+            .collect::<Vec<_>>();
+        let additions = crate::planner::plan_panel_batch(&self.document, &panels)
+            .map_err(SessionError::Planning)?;
+        let definitions = additions
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                CanonicalCommand::CreateDefinition { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let temporary_occurrences = additions
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                CanonicalCommand::CreateOccurrence { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let mut commands = additions.commands().to_vec();
+        for ((old_id, _), (definition_id, temporary_id)) in replacements
+            .iter()
+            .zip(definitions.into_iter().zip(temporary_occurrences))
+        {
+            let old = snapshot
+                .occurrence(*old_id)
+                .ok_or_else(|| SessionError::Persistence("program part is missing".into()))?;
+            if snapshot
+                .occurrences()
+                .filter(|item| item.definition_id() == old.definition_id())
+                .count()
+                != 1
+            {
+                return Err(SessionError::Persistence(
+                    "cannot rebuild a shared program definition".into(),
+                ));
+            }
+            commands.push(CanonicalCommand::DeleteOccurrence { id: temporary_id });
+            commands.push(CanonicalCommand::RepointOccurrence {
+                id: *old_id,
+                definition_id,
+            });
+            commands.push(CanonicalCommand::DeleteDefinition {
+                id: old.definition_id(),
+            });
+        }
+        self.apply_rule_commands_with_source(CommandBatch::new(commands), &[], source)
+    }
+
     /// Publishes a source-only edit in the existing document's undo history.
     pub fn replace_rule_program_source(
         &mut self,

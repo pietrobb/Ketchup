@@ -889,7 +889,87 @@ fn named_machining_follows_ids_when_program_statements_change_order() {
 }
 
 #[test]
-fn changing_pocket_face_does_not_replace_document_or_history() {
+fn machining_count_change_rebuilds_only_changed_part_with_exact_result() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("machining.ketchup");
+    let source = "p = box(\"part\", [100, 70, 18])\nhole(p, \"z+\", at=(15, 15), diameter=6, depth=5, id=\"left\")\npocket(p, \"z+\", rect=(20, 30, 35, 45), depth=3, id=\"near\")\nq = box(\"other\", [40, 30, 10], at=(150, 0, 0))";
+    let edited = "p = box(\"part\", [100, 70, 18])\nhole(p, \"z+\", at=(15, 15), diameter=6, depth=5, id=\"left\")\nhole(p, \"x+\", at=(45, 9), diameter=8, depth=7, id=\"side\")\npocket(p, \"z+\", rect=(20, 30, 35, 45), depth=3, id=\"near\")\nq = box(\"other\", [40, 30, 10], at=(150, 0, 0))";
+    let removed = "p = box(\"part\", [100, 70, 18])\nhole(p, \"z+\", at=(15, 15), diameter=6, depth=5, id=\"left\")\nq = box(\"other\", [40, 30, 10], at=(150, 0, 0))";
+    let responses = exchange(&[
+        request(1, "program_apply", json!({"source":source})),
+        request(2, "program_apply", json!({"source":edited})),
+        request(3, "evaluate", json!({"timeout_ms":30000})),
+        request(4, "undo", json!({})),
+        request(5, "program_source", json!({})),
+        request(6, "redo", json!({})),
+        request(7, "program_apply", json!({"source":removed})),
+        request(8, "save", json!({"path":path.to_str().unwrap()})),
+        request(9, "open", json!({"path":path.to_str().unwrap()})),
+        request(10, "program_source", json!({})),
+        request(11, "evaluate", json!({"timeout_ms":30000})),
+    ]);
+    assert!(
+        responses.iter().all(|r| r.get("error").is_none()),
+        "{responses:?}"
+    );
+    let before = responses[0]["result"]["state"]["occurrences"]
+        .as_array()
+        .unwrap();
+    let after = responses[1]["result"]["state"]["occurrences"]
+        .as_array()
+        .unwrap();
+    assert_eq!(before.len(), after.len());
+    for (original, updated) in before.iter().zip(after) {
+        assert_eq!(original["id"], updated["id"]);
+        assert_eq!(original["name"], updated["name"]);
+    }
+    assert_eq!(before[1]["definition_id"], after[1]["definition_id"]);
+    assert_eq!(responses[2]["result"]["topology_complete"], true);
+    assert_eq!(responses[4]["result"]["source"]["source"], source);
+    assert_eq!(
+        responses[5]["result"]["state"]["canonical_digest"],
+        responses[1]["result"]["state"]["canonical_digest"]
+    );
+    let fresh = exchange(&[
+        request(1, "program_apply", json!({"source":edited})),
+        request(2, "evaluate", json!({"timeout_ms":30000})),
+    ]);
+    assert!(fresh.iter().all(|r| r.get("error").is_none()), "{fresh:?}");
+    let volume = |result: &Value| {
+        result["topology_geometry"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|body| body["native_evidence"]["volume_mm3"].as_f64())
+            .collect::<Vec<_>>()
+    };
+    let mut actual = volume(&responses[2]["result"]);
+    let mut expected = volume(&fresh[1]["result"]);
+    actual.sort_by(f64::total_cmp);
+    expected.sort_by(f64::total_cmp);
+    assert_eq!(actual, expected);
+    assert_eq!(responses[9]["result"]["source"]["source"], removed);
+    assert_eq!(
+        responses[7]["result"]["state"]["canonical_digest"],
+        responses[8]["result"]["state"]["canonical_digest"]
+    );
+    let fresh_removed = exchange(&[
+        request(1, "program_apply", json!({"source":removed})),
+        request(2, "evaluate", json!({"timeout_ms":30000})),
+    ]);
+    assert!(
+        fresh_removed.iter().all(|r| r.get("error").is_none()),
+        "{fresh_removed:?}"
+    );
+    let mut removed_actual = volume(&responses[10]["result"]);
+    let mut removed_expected = volume(&fresh_removed[1]["result"]);
+    removed_actual.sort_by(f64::total_cmp);
+    removed_expected.sort_by(f64::total_cmp);
+    assert_eq!(removed_actual, removed_expected);
+}
+
+#[test]
+fn changing_pocket_face_rebuilds_only_that_part_in_shared_history() {
     let source = "W = param(\"width\", 100)\np = box(\"part\", [W, 60, 18])\npocket(p, \"z+\", rect=(20, 20, 40, 40), depth=5)";
     let responses = exchange(&[
         request(
@@ -904,19 +984,42 @@ fn changing_pocket_face_does_not_replace_document_or_history() {
         ),
         request(3, "state", json!({})),
         request(4, "program_source", json!({})),
+        request(5, "undo", json!({})),
+        request(6, "program_source", json!({})),
+        request(7, "redo", json!({})),
     ]);
-    assert!(responses[0].get("error").is_none(), "{:?}", responses[0]);
-    assert_eq!(
-        responses[1]["error"]["code"],
-        "program_incremental_unsupported"
+    assert!(
+        responses
+            .iter()
+            .all(|response| response.get("error").is_none()),
+        "{responses:?}"
     );
+    let before = responses[0]["result"]["state"]["occurrences"]
+        .as_array()
+        .unwrap();
+    let after = responses[1]["result"]["state"]["occurrences"]
+        .as_array()
+        .unwrap();
+    assert_eq!(before.len(), after.len());
+    for (original, updated) in before.iter().zip(after) {
+        assert_eq!(original["id"], updated["id"]);
+        assert_eq!(original["name"], updated["name"]);
+    }
     assert_eq!(
-        responses[0]["result"]["state"],
+        responses[1]["result"]["state"],
         responses[2]["result"]["state"]
     );
     assert_eq!(
         responses[3]["result"]["source"]["overrides"]["width"],
+        140.0
+    );
+    assert_eq!(
+        responses[5]["result"]["source"]["overrides"]["width"],
         100.0
+    );
+    assert_eq!(
+        responses[6]["result"]["state"]["canonical_digest"],
+        responses[2]["result"]["state"]["canonical_digest"]
     );
 }
 
