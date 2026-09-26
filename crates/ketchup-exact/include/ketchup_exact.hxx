@@ -155,6 +155,23 @@ std::unique_ptr<NativeOperationResult> trim_body_by_plane_native(
 std::unique_ptr<NativeOperationResult> boolean_bodies_native(
     const NativeOperationResult& target, const NativeOperationResult& tool,
     std::uint8_t operation) noexcept;
+std::unique_ptr<NativeOperationResult> named_prism_native(
+    rust::Slice<const double> segments, double base_z, double height) noexcept;
+std::unique_ptr<NativeOperationResult> named_revol_native(
+    rust::Slice<const double> segments,
+    double axis_start_x, double axis_start_y,
+    double axis_end_x, double axis_end_y,
+    double angle_degrees) noexcept;
+std::unique_ptr<NativeOperationResult> named_finish_native(
+    const NativeOperationResult& body, rust::Slice<const rust::String> labels,
+    rust::Slice<const std::uint32_t> edge_ordinals, double amount, bool fillet) noexcept;
+std::unique_ptr<NativeOperationResult> named_boolean_native(
+    const NativeOperationResult& target, rust::Slice<const rust::String> target_labels,
+    const NativeOperationResult& tool, rust::Slice<const rust::String> tool_labels,
+    std::uint8_t operation) noexcept;
+std::unique_ptr<NativeOperationResult> named_offset_face_native(
+    const NativeOperationResult& body, rust::Slice<const rust::String> labels,
+    std::uint32_t face_ordinal, double distance) noexcept;
 rust::String export_step_native(
     const NativeOperationResult& body, rust::Str path) noexcept;
 rust::String export_iges_native(

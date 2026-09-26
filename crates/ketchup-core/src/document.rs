@@ -4504,6 +4504,15 @@ fn update_revision_principal_digest(digest: &mut Sha256, principal: ProposalPrin
     }
 }
 
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RuleProgramSource {
+    pub file_name: String,
+    pub source: String,
+    pub overrides: BTreeMap<String, f64>,
+}
+
+pub const MAX_RULE_PROGRAM_BYTES: usize = 1024 * 1024;
+
 #[derive(Clone)]
 pub struct Revision {
     id: u64,
@@ -4511,6 +4520,7 @@ pub struct Revision {
     batch_digest: String,
     origin: RevisionOrigin,
     checkpoint: Option<String>,
+    rule_program: Option<RuleProgramSource>,
     recomputed_nodes: BTreeSet<NodeId>,
     dirty_features: BTreeSet<FeatureId>,
     feature_states: BTreeMap<FeatureId, FeatureEvaluationState>,
@@ -4541,6 +4551,11 @@ impl Revision {
     #[must_use]
     pub fn checkpoint(&self) -> Option<&str> {
         self.checkpoint.as_deref()
+    }
+
+    #[must_use]
+    pub const fn rule_program(&self) -> Option<&RuleProgramSource> {
+        self.rule_program.as_ref()
     }
 
     #[must_use]
@@ -4654,6 +4669,14 @@ struct HumanConfirmationPolicy {
     consumed_signatures: BTreeSet<[u8; 64]>,
 }
 
+pub(crate) type StoredRevision = (
+    Snapshot,
+    String,
+    RevisionOrigin,
+    Option<String>,
+    Option<RuleProgramSource>,
+);
+
 pub struct DocumentStore {
     revisions: Vec<Arc<Revision>>,
     cursor: usize,
@@ -4761,6 +4784,7 @@ impl DocumentStore {
             batch_digest: String::new(),
             origin: RevisionOrigin::Initial,
             checkpoint: None,
+            rule_program: None,
             recomputed_nodes: BTreeSet::new(),
             dirty_features: BTreeSet::new(),
             feature_states,
@@ -4781,13 +4805,78 @@ impl DocumentStore {
         self.revisions[self.cursor].snapshot.clone()
     }
 
+    #[must_use]
+    pub fn current_rule_program(&self) -> Option<&RuleProgramSource> {
+        self.revisions[self.cursor].rule_program()
+    }
+
+    fn valid_rule_program_source(source: &RuleProgramSource) -> bool {
+        !source.source.is_empty()
+            && source.overrides.values().all(|value| value.is_finite())
+            && serde_json::to_vec(source)
+                .is_ok_and(|encoded| encoded.len() <= MAX_RULE_PROGRAM_BYTES)
+    }
+
+    /// Associates the source with the current newly committed revision, within the same transaction.
+    /// A later manual revision does not inherit it.
+    pub fn bind_rule_program(&mut self, source: RuleProgramSource) -> bool {
+        if self.cursor == 0
+            || self.cursor + 1 != self.revisions.len()
+            || self.revisions[self.cursor].rule_program.is_some()
+            || !Self::valid_rule_program_source(&source)
+        {
+            return false;
+        }
+        Arc::make_mut(&mut self.revisions[self.cursor]).rule_program = Some(source);
+        true
+    }
+
+    /// Publishes a source-only edit as a canonical revision without changing any geometry or IDs.
+    /// Only an already source-owned document can be edited this way.
+    pub fn replace_rule_program_source(&mut self, source: RuleProgramSource) -> bool {
+        if self.current_rule_program().is_none() || !Self::valid_rule_program_source(&source) {
+            return false;
+        }
+        if self.current_rule_program() == Some(&source) {
+            return true;
+        }
+        let revision_id = self.next_revision_id;
+        let Some(next_revision_id) = revision_id.checked_add(1) else {
+            return false;
+        };
+        let current = &self.revisions[self.cursor];
+        let encoded = serde_json::to_vec(&source).expect("validated rule program source");
+        let digest = Sha256::digest([b"ketchup.rule-source.v1".as_slice(), &encoded].concat());
+        let revision = Arc::new(Revision {
+            id: revision_id,
+            snapshot: Snapshot {
+                revision_id,
+                product: Arc::clone(&current.snapshot.product),
+            },
+            batch_digest: format!("{digest:x}")[..16].to_owned(),
+            origin: RevisionOrigin::Principal(ProposalPrincipal::ManualClient),
+            checkpoint: None,
+            rule_program: Some(source),
+            recomputed_nodes: BTreeSet::new(),
+            dirty_features: BTreeSet::new(),
+            feature_states: current.feature_states.clone(),
+            evaluation: current.evaluation.clone(),
+        });
+        self.revisions.truncate(self.cursor + 1);
+        self.revisions.push(revision);
+        self.cursor += 1;
+        self.next_revision_id = next_revision_id;
+        self.mutation_epoch = Self::fresh_mutation_epoch();
+        true
+    }
+
     pub(crate) fn from_revision_history(
-        revisions: Vec<(Snapshot, String, RevisionOrigin, Option<String>)>,
+        revisions: Vec<StoredRevision>,
         cursor: usize,
         next_revision_id: u64,
     ) -> Result<Self, CanonicalError> {
         let mut restored = Vec::with_capacity(revisions.len());
-        for (snapshot, batch_digest, origin, checkpoint) in revisions {
+        for (snapshot, batch_digest, origin, checkpoint, rule_program) in revisions {
             let validated =
                 Self::from_product(snapshot.revision_id(), snapshot.product.as_ref().clone())?;
             let feature_states = validated.revisions[0].feature_states.clone();
@@ -4797,6 +4886,7 @@ impl DocumentStore {
                 batch_digest,
                 origin,
                 checkpoint,
+                rule_program,
                 recomputed_nodes: BTreeSet::new(),
                 dirty_features: BTreeSet::new(),
                 feature_states,
@@ -4961,6 +5051,7 @@ impl DocumentStore {
                     batch_digest: current.batch_digest.clone(),
                     origin: current.origin,
                     checkpoint: current.checkpoint.clone(),
+                    rule_program: current.rule_program.clone(),
                     recomputed_nodes: current.recomputed_nodes.clone(),
                     dirty_features: current.dirty_features.clone(),
                     feature_states: current.feature_states.clone(),
@@ -5029,6 +5120,7 @@ impl DocumentStore {
                     batch_digest: current.batch_digest.clone(),
                     origin: current.origin,
                     checkpoint: current.checkpoint.clone(),
+                    rule_program: current.rule_program.clone(),
                     recomputed_nodes: current.recomputed_nodes.clone(),
                     dirty_features: current.dirty_features.clone(),
                     feature_states: current.feature_states.clone(),
@@ -5062,6 +5154,10 @@ impl DocumentStore {
             digest.update(revision.id.to_le_bytes());
             digest.update(revision.snapshot.canonical_digest().as_bytes());
             digest.update(revision.batch_digest.as_bytes());
+            if let Some(source) = revision.rule_program.as_ref() {
+                digest.update([1]);
+                digest.update(serde_json::to_vec(source).expect("finite rule program source"));
+            }
             match revision.origin {
                 RevisionOrigin::Initial => digest.update([0]),
                 RevisionOrigin::Principal(principal) => {
@@ -5278,6 +5374,7 @@ impl DocumentStore {
                 target_revision,
             },
             checkpoint: None,
+            rule_program: target.rule_program.clone(),
             recomputed_nodes: BTreeSet::new(),
             dirty_features: target.snapshot.product.features.keys().copied().collect(),
             feature_states: target.feature_states.clone(),
@@ -7531,6 +7628,7 @@ impl DocumentStore {
             batch_digest: batch.digest(),
             origin,
             checkpoint: None,
+            rule_program: None,
             recomputed_nodes,
             dirty_features,
             feature_states,

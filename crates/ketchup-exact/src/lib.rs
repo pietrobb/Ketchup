@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+pub mod naming;
+
 const BACKEND_FINGERPRINT: &str = env!("KETCHUP_OCCT_BUILD_FINGERPRINT");
 const TOLERANCE_PROFILE: &str = "r0-v1:bbox=1e-6mm:volume_abs=1e-6mm3:volume_rel=1e-10";
 const MIN_LENGTH_MM: f64 = 0.01;
@@ -330,6 +332,39 @@ mod ffi {
             target: &NativeOperationResult,
             tool: &NativeOperationResult,
             operation: u8,
+        ) -> UniquePtr<NativeOperationResult>;
+        fn named_prism_native(
+            segments: &[f64],
+            base_z: f64,
+            height: f64,
+        ) -> UniquePtr<NativeOperationResult>;
+        fn named_revol_native(
+            segments: &[f64],
+            axis_start_x: f64,
+            axis_start_y: f64,
+            axis_end_x: f64,
+            axis_end_y: f64,
+            angle_degrees: f64,
+        ) -> UniquePtr<NativeOperationResult>;
+        fn named_finish_native(
+            body: &NativeOperationResult,
+            labels: &[String],
+            edge_ordinals: &[u32],
+            amount: f64,
+            fillet: bool,
+        ) -> UniquePtr<NativeOperationResult>;
+        fn named_boolean_native(
+            target: &NativeOperationResult,
+            target_labels: &[String],
+            tool: &NativeOperationResult,
+            tool_labels: &[String],
+            operation: u8,
+        ) -> UniquePtr<NativeOperationResult>;
+        fn named_offset_face_native(
+            body: &NativeOperationResult,
+            labels: &[String],
+            face_ordinal: u32,
+            distance: f64,
         ) -> UniquePtr<NativeOperationResult>;
         fn export_step_native(body: &NativeOperationResult, path: &str) -> String;
         fn export_iges_native(body: &NativeOperationResult, path: &str) -> String;

@@ -35,6 +35,276 @@ fn request(id: u64, method: &str, params: Value) -> String {
 }
 
 #[test]
+fn program_source_survives_native_save_open_and_follows_document_undo() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rule.ketchup");
+    let path = path.to_str().unwrap();
+    let source = "W = param(\"width\", 100)\nbox(\"part\", [W, 20, 10])";
+    let responses = exchange(&[
+        request(
+            1,
+            "program_apply",
+            json!({"source":source,"params":{"width":120}}),
+        ),
+        request(2, "program_source", json!({})),
+        request(3, "save", json!({"path":path})),
+        request(4, "open", json!({"path":path})),
+        request(5, "program_source", json!({})),
+        request(6, "undo", json!({})),
+        request(7, "program_source", json!({})),
+        request(8, "redo", json!({})),
+        request(9, "program_source", json!({})),
+    ]);
+    for response in &responses {
+        assert!(response.get("error").is_none(), "{response:?}");
+    }
+    let expected = json!({"file_name":"program.star","source":source,"overrides":{"width":120.0}});
+    assert_eq!(responses[1]["result"]["source"], expected);
+    assert_eq!(responses[4]["result"]["source"], expected);
+    assert!(responses[6]["result"]["source"].is_null());
+    assert_eq!(responses[8]["result"]["source"], expected);
+}
+
+#[test]
+fn reapplying_equivalent_program_preserves_document_geometry_and_undo_history() {
+    let first = "box(\"part\", [100, 20, 10])";
+    let edited = "# harmless source edit\nbox(\"part\", [100, 20, 10])";
+    let responses = exchange(&[
+        request(1, "program_apply", json!({"source": first})),
+        request(2, "program_apply", json!({"source": edited})),
+        request(3, "program_source", json!({})),
+        request(4, "undo", json!({})),
+        request(5, "program_source", json!({})),
+        request(6, "redo", json!({})),
+        request(7, "program_source", json!({})),
+    ]);
+    for response in &responses {
+        assert!(response.get("error").is_none(), "{response:?}");
+    }
+    let before = &responses[0]["result"]["state"];
+    let after = &responses[1]["result"]["state"];
+    assert_eq!(before["document_id"], after["document_id"]);
+    assert_eq!(before["canonical_digest"], after["canonical_digest"]);
+    assert_ne!(before["revision"], after["revision"]);
+    assert_eq!(responses[2]["result"]["source"]["source"], edited);
+    assert_eq!(responses[4]["result"]["source"]["source"], first);
+    assert_eq!(responses[6]["result"]["source"]["source"], edited);
+}
+
+#[test]
+fn moving_a_program_part_keeps_other_parts_and_one_shared_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("moved.ketchup");
+    let source = "X = param(\"x\", 10)\nbox(\"fixed\", [20, 20, 20])\nbox(\"moving\", [10, 10, 10], at=[X, 30, 0])";
+    let responses = exchange(&[
+        request(
+            1,
+            "program_apply",
+            json!({"source":source,"params":{"x":10}}),
+        ),
+        request(
+            2,
+            "program_apply",
+            json!({"source":source,"params":{"x":45}}),
+        ),
+        request(3, "program_source", json!({})),
+        request(4, "undo", json!({})),
+        request(5, "program_source", json!({})),
+        request(6, "redo", json!({})),
+        request(7, "program_source", json!({})),
+        request(8, "save", json!({"path":path.to_str().unwrap()})),
+        request(9, "open", json!({"path":path.to_str().unwrap()})),
+        request(10, "program_source", json!({})),
+    ]);
+    for response in &responses {
+        assert!(response.get("error").is_none(), "{response:?}");
+    }
+    let before = &responses[0]["result"]["state"];
+    let moved = &responses[1]["result"]["state"];
+    assert_eq!(before["document_id"], moved["document_id"]);
+    assert_eq!(before["definitions"], moved["definitions"]);
+    assert_eq!(before["features"], moved["features"]);
+    let old = before["occurrences"].as_array().unwrap();
+    let new = moved["occurrences"].as_array().unwrap();
+    assert_eq!(old.len(), 2);
+    assert_eq!(
+        old.iter().map(|item| &item["id"]).collect::<Vec<_>>(),
+        new.iter().map(|item| &item["id"]).collect::<Vec<_>>()
+    );
+    assert_eq!(old[0], new[0]);
+    assert_ne!(old[1]["transform"], new[1]["transform"]);
+    assert_eq!(responses[2]["result"]["source"]["overrides"]["x"], 45.0);
+    assert_eq!(
+        responses[3]["result"]["state"]["occurrences"],
+        before["occurrences"]
+    );
+    assert_eq!(responses[4]["result"]["source"]["overrides"]["x"], 10.0);
+    assert_eq!(
+        responses[5]["result"]["state"]["occurrences"],
+        moved["occurrences"]
+    );
+    assert_eq!(responses[6]["result"]["source"]["overrides"]["x"], 45.0);
+    assert_eq!(
+        responses[8]["result"]["state"]["occurrences"],
+        moved["occurrences"]
+    );
+    assert_eq!(responses[9]["result"]["source"]["overrides"]["x"], 45.0);
+}
+
+#[test]
+fn resizing_a_program_part_preserves_identity_and_shared_undo() {
+    let source = "W = param(\"width\", 100)\nbox(\"part\", [W, 20, 10])";
+    let responses = exchange(&[
+        request(
+            1,
+            "program_apply",
+            json!({"source":source,"params":{"width":100}}),
+        ),
+        request(
+            2,
+            "program_apply",
+            json!({"source":source,"params":{"width":140},"discard_unsaved":true}),
+        ),
+        request(3, "program_source", json!({})),
+        request(4, "undo", json!({})),
+        request(5, "program_source", json!({})),
+        request(6, "redo", json!({})),
+        request(
+            7,
+            "edit_context",
+            json!({"targets":[{"root_occurrence_id":1,"steps":[]}]}),
+        ),
+    ]);
+    for response in &responses {
+        assert!(response.get("error").is_none(), "{response:?}");
+    }
+    let before = &responses[0]["result"]["state"];
+    let after = &responses[1]["result"]["state"];
+    assert_eq!(before["document_id"], after["document_id"]);
+    assert_eq!(before["occurrences"], after["occurrences"]);
+    assert_eq!(before["definitions"], after["definitions"]);
+    assert_eq!(before["features"][0]["id"], after["features"][0]["id"]);
+    assert_ne!(before["canonical_digest"], after["canonical_digest"]);
+    assert_eq!(
+        responses[2]["result"]["source"]["overrides"]["width"],
+        140.0
+    );
+    assert_eq!(
+        responses[3]["result"]["state"]["canonical_digest"],
+        before["canonical_digest"]
+    );
+    assert_eq!(
+        responses[4]["result"]["source"]["overrides"]["width"],
+        100.0
+    );
+    assert_eq!(
+        responses[5]["result"]["state"]["canonical_digest"],
+        after["canonical_digest"]
+    );
+    let features = responses[6]["result"]["targets"][0]["features"]
+        .as_array()
+        .unwrap();
+    assert!(
+        features
+            .iter()
+            .flat_map(|feature| feature["parameters"].as_array().unwrap())
+            .any(|parameter| {
+                parameter["path"] == "bounds.width" && parameter["value"] == 140.0
+            })
+    );
+}
+
+#[test]
+fn changing_all_dimensions_keeps_the_other_part_and_survives_save_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("resized.ketchup");
+    let source = "W = param(\"w\", 100)\nD = param(\"d\", 40)\nT = param(\"t\", 12)\nbox(\"fixed\", [30, 30, 30])\nbox(\"resized\", [W, D, T], at=[0, 50, 0])";
+    let responses = exchange(&[
+        request(1, "program_apply", json!({"source":source})),
+        request(
+            2,
+            "program_apply",
+            json!({"source":source,"params":{"w":130,"d":55,"t":18}}),
+        ),
+        request(
+            3,
+            "edit_context",
+            json!({"targets":[{"root_occurrence_id":2,"steps":[]}]}),
+        ),
+        request(4, "save", json!({"path":path.to_str().unwrap()})),
+        request(5, "open", json!({"path":path.to_str().unwrap()})),
+        request(6, "program_source", json!({})),
+    ]);
+    for response in &responses {
+        assert!(response.get("error").is_none(), "{response:?}");
+    }
+    let before = &responses[0]["result"]["state"];
+    let after = &responses[1]["result"]["state"];
+    assert_eq!(before["document_id"], after["document_id"]);
+    assert_eq!(before["occurrences"], after["occurrences"]);
+    assert_eq!(before["definitions"], after["definitions"]);
+    let features = responses[2]["result"]["targets"][0]["features"]
+        .as_array()
+        .unwrap();
+    let params = features
+        .iter()
+        .flat_map(|f| f["parameters"].as_array().unwrap())
+        .collect::<Vec<_>>();
+    for (path, value) in [
+        ("bounds.width", 130.0),
+        ("bounds.height", 55.0),
+        ("extent.distance", 18.0),
+    ] {
+        assert!(
+            params
+                .iter()
+                .any(|p| p["path"] == path && p["value"] == value),
+            "{path}: {params:?}"
+        );
+    }
+    assert_eq!(
+        after["canonical_digest"],
+        responses[4]["result"]["state"]["canonical_digest"]
+    );
+    assert_eq!(
+        responses[5]["result"]["source"]["overrides"],
+        json!({"w":130.0,"d":55.0,"t":18.0})
+    );
+}
+
+#[test]
+fn resizing_a_machined_part_does_not_replace_document_or_history() {
+    let source = "W = param(\"width\", 100)\np = box(\"part\", [W, 60, 18])\nhole(p, \"z+\", at=(20, 20), diameter=8, depth=10)";
+    let responses = exchange(&[
+        request(
+            1,
+            "program_apply",
+            json!({"source":source,"params":{"width":100}}),
+        ),
+        request(
+            2,
+            "program_apply",
+            json!({"source":source,"params":{"width":140},"discard_unsaved":true}),
+        ),
+        request(3, "state", json!({})),
+        request(4, "program_source", json!({})),
+    ]);
+    assert!(responses[0].get("error").is_none(), "{:?}", responses[0]);
+    assert_eq!(
+        responses[1]["error"]["code"],
+        "program_incremental_unsupported"
+    );
+    assert_eq!(
+        responses[0]["result"]["state"],
+        responses[2]["result"]["state"]
+    );
+    assert_eq!(
+        responses[3]["result"]["source"]["overrides"]["width"],
+        100.0
+    );
+}
+
+#[test]
 fn live_protocol_rejects_duplicate_permissions_and_stays_synchronized() {
     let responses = exchange(&[
         request(1, "state", json!({})),

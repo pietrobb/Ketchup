@@ -1006,7 +1006,7 @@ fn revision_history_rejects_corruption_and_incompatible_schema_inside_valid_cont
     );
 
     let mut incompatible = encoded;
-    incompatible[history_offset + 10..history_offset + 12].copy_from_slice(&3_u16.to_le_bytes());
+    incompatible[history_offset + 10..history_offset + 12].copy_from_slice(&4_u16.to_le_bytes());
     rehash_container_entry(
         &mut incompatible,
         checksum_offset,
@@ -1015,7 +1015,7 @@ fn revision_history_rejects_corruption_and_incompatible_schema_inside_valid_cont
     );
     assert_eq!(
         load_error(&incompatible),
-        PersistenceError::UnsupportedHistorySchema(3)
+        PersistenceError::UnsupportedHistorySchema(4)
     );
 }
 

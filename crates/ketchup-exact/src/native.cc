@@ -14,6 +14,7 @@
 #include <Geom_RectangularTrimmedSurface.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepBuilderAPI_MakeSolid.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_Sewing.hxx>
@@ -6017,6 +6018,430 @@ std::unique_ptr<NativeVolumeMeshResult> volume_mesh_body_native(
     return volume_mesh_error(STATUS_BACKEND_EXCEPTION,
                              "Unknown native volume-meshing failure");
   }
+}
+
+// Program-named topology (prototype). Every face of a named result carries its
+// program name as source_element_id. Names never come from OCCT ordinals or
+// fingerprints: base solids name faces by the profile segment that swept them,
+// body operations carry the caller's per-face labels through OCCT history, and
+// faces a finish creates are tagged with the selected edge index.
+namespace {
+
+// One closed planar wire at height z; wire_edges gets every segment's edge as
+// stored in the wire, which is what sweep builders report history for.
+TopoDS_Face named_profile_face(
+    rust::Slice<const double> segments, double z, std::vector<TopoDS_Edge>& wire_edges) {
+  BRepBuilderAPI_MakeWire wire_builder;
+  for (std::size_t index = 0; index < segments.size() / 10; ++index) {
+    const std::size_t offset = index * 10;
+    const double kind = segments[offset];
+    const gp_Pnt start(segments[offset + 1], segments[offset + 2], z);
+    const gp_Pnt end(segments[offset + 3], segments[offset + 4], z);
+    TopoDS_Edge edge;
+    if (kind == 0.0) {
+      if (start.Distance(end) <= Precision::Confusion()) return {};
+      BRepBuilderAPI_MakeEdge edge_builder(start, end);
+      if (!edge_builder.IsDone()) return {};
+      edge = edge_builder.Edge();
+    } else if (kind == 1.0) {
+      const double center_x = segments[offset + 5];
+      const double center_y = segments[offset + 6];
+      const bool clockwise = segments[offset + 9] != 0.0;
+      const double start_angle = std::atan2(start.Y() - center_y, start.X() - center_x);
+      const double end_angle = std::atan2(end.Y() - center_y, end.X() - center_x);
+      double sweep = end_angle - start_angle;
+      const double tau = 2.0 * std::acos(-1.0);
+      if (clockwise) {
+        while (sweep >= 0.0) sweep -= tau;
+      } else {
+        while (sweep <= 0.0) sweep += tau;
+      }
+      const double radius = start.Distance(gp_Pnt(center_x, center_y, z));
+      const double middle_angle = start_angle + sweep / 2.0;
+      const gp_Pnt middle(
+          center_x + radius * std::cos(middle_angle),
+          center_y + radius * std::sin(middle_angle),
+          z);
+      GC_MakeArcOfCircle arc_builder(start, middle, end);
+      if (!arc_builder.IsDone()) return {};
+      BRepBuilderAPI_MakeEdge edge_builder(arc_builder.Value());
+      if (!edge_builder.IsDone()) return {};
+      edge = edge_builder.Edge();
+    } else if (kind == 2.0) {
+      edge = cubic_bezier_edge(segments, offset, z);
+    }
+    if (edge.IsNull()) return {};
+    wire_builder.Add(edge);
+    if (!wire_builder.IsDone()) return {};
+    wire_edges.push_back(wire_builder.Edge());
+  }
+  if (!wire_builder.IsDone() || !wire_builder.Wire().Closed()) return {};
+  BRepBuilderAPI_MakeFace face_builder(wire_builder.Wire(), true);
+  if (!face_builder.IsDone() || !BRepCheck_Analyzer(face_builder.Face()).IsValid()) return {};
+  return face_builder.Face();
+}
+
+void record_name(
+    std::vector<HistoryRecord>& history,
+    const std::string& name,
+    const TopoDS_Shape& result,
+    const TopoDS_Shape& face) {
+  HistoryRecord record = history_record(name, "named", name, result, face);
+  if (record.output_present) history.push_back(std::move(record));
+}
+
+template <typename Operation>
+void record_generated_names(
+    std::vector<HistoryRecord>& history,
+    Operation& operation,
+    const TopoDS_Shape& source,
+    const std::string& name,
+    const TopoDS_Shape& result) {
+  const NCollection_List<TopoDS_Shape>& generated = operation.Generated(source);
+  for (NCollection_List<TopoDS_Shape>::Iterator iterator(generated);
+       iterator.More(); iterator.Next()) {
+    if (iterator.Value().ShapeType() == TopAbs_FACE) {
+      record_name(history, name, result, iterator.Value());
+    }
+  }
+}
+
+bool labels_match(const TopoDS_Shape& shape, rust::Slice<const rust::String> labels) {
+  TopTools_IndexedMapOfShape faces;
+  TopExp::MapShapes(shape, TopAbs_FACE, faces);
+  return static_cast<std::size_t>(faces.Extent()) == labels.size();
+}
+
+// Carries every source face's label to the faces it became in the result.
+template <typename Operation>
+void propagate_names(
+    std::vector<HistoryRecord>& history,
+    Operation& operation,
+    const TopoDS_Shape& result,
+    const TopoDS_Shape& source,
+    rust::Slice<const rust::String> labels) {
+  TopTools_IndexedMapOfShape faces;
+  TopExp::MapShapes(source, TopAbs_FACE, faces);
+  for (Standard_Integer index = 1; index <= faces.Extent(); ++index) {
+    const TopoDS_Shape& face = faces(index);
+    const std::string name(labels[static_cast<std::size_t>(index - 1)]);
+    if (operation.IsDeleted(face)) continue;
+    const NCollection_List<TopoDS_Shape>& modified = operation.Modified(face);
+    for (NCollection_List<TopoDS_Shape>::Iterator iterator(modified);
+         iterator.More(); iterator.Next()) {
+      record_name(history, name, result, iterator.Value());
+    }
+    if (modified.IsEmpty()) record_name(history, name, result, face);
+  }
+}
+
+std::string finish_name(const std::string& kind, std::vector<std::string> around) {
+  std::sort(around.begin(), around.end());
+  around.erase(std::unique(around.begin(), around.end()), around.end());
+  std::string name = kind + "(";
+  for (std::size_t position = 0; position < around.size(); ++position) {
+    name += (position == 0 ? "" : ",") + around[position];
+  }
+  return name + ")";
+}
+
+// The original sharp geometry lies outside a finish face, off it by less than
+// `reach`, and its nearest point on the face is strictly inside the face.
+bool lies_over(const gp_Pnt& point, const TopoDS_Face& face, double reach) {
+  BRepExtrema_DistShapeShape distance(BRepBuilderAPI_MakeVertex(point).Vertex(), face);
+  if (!distance.IsDone() || distance.Value() <= Precision::Confusion()
+      || distance.Value() > reach) {
+    return false;
+  }
+  for (Standard_Integer index = 1; index <= distance.NbSolution(); ++index) {
+    if (distance.SupportTypeShape2(index) == BRepExtrema_IsInFace) return true;
+  }
+  return false;
+}
+
+// Names the faces a fillet or chamfer created. OCCT finishes whole tangent
+// chains and its Generated() history attributes chain faces to whichever
+// edge was selected, so history is not used here. A new face is named after
+// the input edge it replaced: it borders both faces of that edge and at least
+// two points along the edge lie over its interior. A face that replaced no
+// edge but covers an input vertex is a corner blend named after every face
+// at that vertex. Faces matching nothing stay unnamed and are reported.
+void name_finish_faces(
+    std::vector<HistoryRecord>& history,
+    const TopoDS_Shape& result,
+    const TopoDS_Shape& source,
+    rust::Slice<const rust::String> labels,
+    const std::string& kind,
+    double amount) {
+  TopTools_IndexedMapOfShape result_faces;
+  TopExp::MapShapes(result, TopAbs_FACE, result_faces);
+  std::vector<std::set<std::string>> result_names(
+      static_cast<std::size_t>(result_faces.Extent()));
+  for (const HistoryRecord& record : history) {
+    if (record.output_present) result_names[record.output_ordinal].insert(record.source_element_id);
+  }
+  TopTools_IndexedDataMapOfShapeListOfShape result_edge_faces;
+  TopExp::MapShapesAndAncestors(result, TopAbs_EDGE, TopAbs_FACE, result_edge_faces);
+
+  TopTools_IndexedMapOfShape source_faces;
+  TopExp::MapShapes(source, TopAbs_FACE, source_faces);
+  const auto names_around = [&](const NCollection_List<TopoDS_Shape>& faces) {
+    std::vector<std::string> names;
+    for (NCollection_List<TopoDS_Shape>::Iterator face(faces); face.More(); face.Next()) {
+      const Standard_Integer ordinal = source_faces.FindIndex(face.Value());
+      if (ordinal > 0) names.emplace_back(labels[static_cast<std::size_t>(ordinal - 1)]);
+    }
+    std::sort(names.begin(), names.end());
+    names.erase(std::unique(names.begin(), names.end()), names.end());
+    return names;
+  };
+  TopTools_IndexedDataMapOfShapeListOfShape source_edge_faces;
+  TopExp::MapShapesAndAncestors(source, TopAbs_EDGE, TopAbs_FACE, source_edge_faces);
+  TopTools_IndexedDataMapOfShapeListOfShape source_vertex_faces;
+  TopExp::MapShapesAndAncestors(source, TopAbs_VERTEX, TopAbs_FACE, source_vertex_faces);
+  const double reach = 10.0 * amount;
+  constexpr int SAMPLES = 9;
+
+  for (std::size_t index = 0; index < result_names.size(); ++index) {
+    if (!result_names[index].empty()) continue;
+    const TopoDS_Face face = TopoDS::Face(result_faces(static_cast<Standard_Integer>(index + 1)));
+    std::set<std::string> neighbours;
+    for (TopExp_Explorer edge(face, TopAbs_EDGE); edge.More(); edge.Next()) {
+      const Standard_Integer found = result_edge_faces.FindIndex(edge.Current());
+      if (found == 0) continue;
+      for (NCollection_List<TopoDS_Shape>::Iterator other(result_edge_faces(found));
+           other.More(); other.Next()) {
+        const Standard_Integer ordinal = result_faces.FindIndex(other.Value());
+        if (ordinal > 0) {
+          const auto& names = result_names[static_cast<std::size_t>(ordinal - 1)];
+          neighbours.insert(names.begin(), names.end());
+        }
+      }
+    }
+    const auto bordered = [&](const std::vector<std::string>& names) {
+      return std::all_of(names.begin(), names.end(), [&](const std::string& name) {
+        return neighbours.count(name) != 0;
+      });
+    };
+    std::vector<std::string> spanned;
+    for (Standard_Integer edge_index = 1; edge_index <= source_edge_faces.Extent(); ++edge_index) {
+      const std::vector<std::string> around = names_around(source_edge_faces(edge_index));
+      if (around.size() != 2 || !bordered(around)) continue;
+      const BRepAdaptor_Curve curve(TopoDS::Edge(source_edge_faces.FindKey(edge_index)));
+      int over = 0;
+      for (int sample = 0; sample < SAMPLES && over < 2; ++sample) {
+        const double parameter = curve.FirstParameter()
+            + (curve.LastParameter() - curve.FirstParameter()) * (sample + 0.5) / SAMPLES;
+        if (lies_over(curve.Value(parameter), face, reach)) ++over;
+      }
+      if (over >= 2) spanned.push_back(finish_name(kind, around));
+    }
+    if (spanned.empty()) {
+      for (Standard_Integer vertex_index = 1; vertex_index <= source_vertex_faces.Extent();
+           ++vertex_index) {
+        const std::vector<std::string> around = names_around(source_vertex_faces(vertex_index));
+        const gp_Pnt point =
+            BRep_Tool::Pnt(TopoDS::Vertex(source_vertex_faces.FindKey(vertex_index)));
+        if (around.size() >= 3 && bordered(around) && lies_over(point, face, reach)) {
+          spanned.push_back(finish_name(kind, around));
+        }
+      }
+    }
+    for (const std::string& name : spanned) record_name(history, name, result, face);
+  }
+}
+
+} // namespace
+
+std::unique_ptr<NativeOperationResult> named_prism_native(
+    rust::Slice<const double> segments, double base_z, double height) noexcept {
+  return guarded([&] {
+    if (segments.empty() || segments.size() % 10 != 0 || segments.size() > 10 * 4096
+        || !std::isfinite(base_z) || !std::isfinite(height) || height <= 0.0) {
+      return error_result(STATUS_INVALID_PARAMETER, "Named prism payload is malformed");
+    }
+    std::vector<TopoDS_Edge> wire_edges;
+    const TopoDS_Face profile = named_profile_face(segments, base_z, wire_edges);
+    if (profile.IsNull()) {
+      return error_result(STATUS_INVALID_PARAMETER, "Named prism profile is not one closed planar loop");
+    }
+    BRepPrimAPI_MakePrism operation(profile, gp_Vec(0.0, 0.0, height), true, false);
+    if (!operation.IsDone() || operation.Shape().IsNull()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT named prism did not complete");
+    }
+    const TopoDS_Shape result = operation.Shape();
+    std::vector<HistoryRecord> history;
+    record_name(history, "start", result, operation.FirstShape());
+    record_name(history, "end", result, operation.LastShape());
+    for (std::size_t index = 0; index < wire_edges.size(); ++index) {
+      record_generated_names(
+          history, operation, wire_edges[index], "seg:" + std::to_string(index), result);
+    }
+    return success_result(result, std::move(history));
+  });
+}
+
+std::unique_ptr<NativeOperationResult> named_revol_native(
+    rust::Slice<const double> segments,
+    double axis_start_x, double axis_start_y,
+    double axis_end_x, double axis_end_y,
+    double angle_degrees) noexcept {
+  return guarded([&] {
+    const gp_Vec axis_vector(axis_end_x - axis_start_x, axis_end_y - axis_start_y, 0.0);
+    if (segments.empty() || segments.size() % 10 != 0 || segments.size() > 10 * 4096
+        || !std::isfinite(angle_degrees) || angle_degrees <= 0.0 || angle_degrees > 360.0
+        || !(axis_vector.Magnitude() > 1.0e-12)) {
+      return error_result(STATUS_INVALID_PARAMETER, "Named revolve payload is malformed");
+    }
+    std::vector<TopoDS_Edge> wire_edges;
+    const TopoDS_Face profile = named_profile_face(segments, 0.0, wire_edges);
+    if (profile.IsNull()) {
+      return error_result(STATUS_INVALID_PARAMETER, "Named revolve profile is not one closed planar loop");
+    }
+    BRepPrimAPI_MakeRevol operation(
+        profile,
+        gp_Ax1(gp_Pnt(axis_start_x, axis_start_y, 0.0), gp_Dir(axis_vector)),
+        angle_degrees * std::acos(-1.0) / 180.0,
+        true);
+    if (!operation.IsDone() || operation.Shape().IsNull()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT named revolve did not complete");
+    }
+    const TopoDS_Shape result = operation.Shape();
+    std::vector<HistoryRecord> history;
+    if (angle_degrees < 360.0) {
+      record_name(history, "start", result, operation.FirstShape());
+      record_name(history, "end", result, operation.LastShape());
+    }
+    for (std::size_t index = 0; index < wire_edges.size(); ++index) {
+      record_generated_names(
+          history, operation, wire_edges[index], "seg:" + std::to_string(index), result);
+    }
+    return success_result(result, std::move(history));
+  });
+}
+
+std::unique_ptr<NativeOperationResult> named_finish_native(
+    const NativeOperationResult& body,
+    rust::Slice<const rust::String> labels,
+    rust::Slice<const std::uint32_t> edge_ordinals,
+    double amount,
+    bool fillet) noexcept {
+  return guarded([&]() -> std::unique_ptr<NativeOperationResult> {
+    if (!body.valid() || !labels_match(body.impl().shape, labels) || edge_ordinals.empty()
+        || edge_ordinals.size() > 64 || !std::isfinite(amount) || amount <= 0.0) {
+      return error_result(STATUS_INVALID_PARAMETER, "Named finish payload is malformed");
+    }
+    std::vector<TopoDS_Edge> selected;
+    for (const std::uint32_t ordinal : edge_ordinals) {
+      const TopoDS_Edge edge = edge_at_ordinal(body.impl().shape, ordinal);
+      if (edge.IsNull()) {
+        return error_result(STATUS_INVALID_PARAMETER, "Named finish edge is absent");
+      }
+      selected.push_back(edge);
+    }
+    const auto collect = [&](auto& operation) -> std::unique_ptr<NativeOperationResult> {
+      operation.Build();
+      if (!operation.IsDone() || operation.Shape().IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT named finish did not complete");
+      }
+      const TopoDS_Shape result = operation.Shape();
+      std::vector<HistoryRecord> history;
+      propagate_names(history, operation, result, body.impl().shape, labels);
+      name_finish_faces(
+          history, result, body.impl().shape, labels, fillet ? "fillet" : "chamfer", amount);
+      return success_result(result, std::move(history));
+    };
+    if (fillet) {
+      BRepFilletAPI_MakeFillet operation(body.impl().shape);
+      for (const TopoDS_Edge& edge : selected) operation.Add(amount, edge);
+      return collect(operation);
+    }
+    BRepFilletAPI_MakeChamfer operation(body.impl().shape);
+    for (const TopoDS_Edge& edge : selected) operation.Add(amount, edge);
+    return collect(operation);
+  });
+}
+
+std::unique_ptr<NativeOperationResult> named_boolean_native(
+    const NativeOperationResult& target,
+    rust::Slice<const rust::String> target_labels,
+    const NativeOperationResult& tool,
+    rust::Slice<const rust::String> tool_labels,
+    std::uint8_t operation_kind) noexcept {
+  return guarded([&]() -> std::unique_ptr<NativeOperationResult> {
+    if (!target.valid() || !tool.valid()
+        || !labels_match(target.impl().shape, target_labels)
+        || !labels_match(tool.impl().shape, tool_labels) || operation_kind > 1) {
+      return error_result(STATUS_INVALID_PARAMETER, "Named Boolean payload is malformed");
+    }
+    const auto collect = [&](auto& operation) -> std::unique_ptr<NativeOperationResult> {
+      operation.Build();
+      if (!operation.IsDone() || operation.HasErrors() || operation.Shape().IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT named Boolean did not complete");
+      }
+      operation.SimplifyResult(true, true);
+      const TopoDS_Shape result = operation.Shape();
+      std::vector<HistoryRecord> history;
+      propagate_names(history, operation, result, target.impl().shape, target_labels);
+      propagate_names(history, operation, result, tool.impl().shape, tool_labels);
+      return success_result(result, std::move(history));
+    };
+    if (operation_kind == 0) {
+      BRepAlgoAPI_Cut operation(target.impl().shape, tool.impl().shape);
+      return collect(operation);
+    }
+    BRepAlgoAPI_Fuse operation(target.impl().shape, tool.impl().shape);
+    return collect(operation);
+  });
+}
+
+std::unique_ptr<NativeOperationResult> named_offset_face_native(
+    const NativeOperationResult& body,
+    rust::Slice<const rust::String> labels,
+    std::uint32_t face_ordinal,
+    double distance) noexcept {
+  return guarded([&]() -> std::unique_ptr<NativeOperationResult> {
+    if (!body.valid() || !labels_match(body.impl().shape, labels)
+        || face_ordinal >= labels.size() || !std::isfinite(distance)
+        || std::abs(distance) < 1.0e-9) {
+      return error_result(STATUS_INVALID_PARAMETER, "Named face offset payload is malformed");
+    }
+    const TopoDS_Face face = face_at_ordinal(body.impl().shape, face_ordinal);
+    gp_Dir normal;
+    if (face.IsNull() || !oriented_planar_face_normal(face, normal)) {
+      return error_result(STATUS_INVALID_PARAMETER, "Named face offset requires a planar face");
+    }
+    BRepPrimAPI_MakePrism prism(face, gp_Vec(normal) * distance, true, false);
+    if (!prism.IsDone() || prism.Shape().IsNull()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT named face offset prism did not complete");
+    }
+    const std::string moved_name(labels[face_ordinal]);
+    const auto collect = [&](auto& operation) -> std::unique_ptr<NativeOperationResult> {
+      operation.Build();
+      if (!operation.IsDone() || operation.HasErrors() || operation.Shape().IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT named face offset did not complete");
+      }
+      operation.SimplifyResult(true, true);
+      const TopoDS_Shape result = operation.Shape();
+      std::vector<HistoryRecord> history;
+      propagate_names(history, operation, result, body.impl().shape, labels);
+      // The far cap of the offset prism is where the pushed or pulled face now lies.
+      const TopoDS_Shape moved = prism.LastShape();
+      const NCollection_List<TopoDS_Shape>& modified = operation.Modified(moved);
+      for (NCollection_List<TopoDS_Shape>::Iterator iterator(modified);
+           iterator.More(); iterator.Next()) {
+        record_name(history, moved_name, result, iterator.Value());
+      }
+      if (modified.IsEmpty()) record_name(history, moved_name, result, moved);
+      return success_result(result, std::move(history));
+    };
+    if (distance > 0.0) {
+      BRepAlgoAPI_Fuse operation(body.impl().shape, prism.Shape());
+      return collect(operation);
+    }
+    BRepAlgoAPI_Cut operation(body.impl().shape, prism.Shape());
+    return collect(operation);
+  });
 }
 
 } // namespace ketchup::exact

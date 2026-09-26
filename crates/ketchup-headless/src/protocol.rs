@@ -27,7 +27,8 @@ use ketchup_core::cam::{
     CamFixture, CamOperation, CamPath2d, CamPathSegment2d, CamPlanId, CamPostprocessorDialect,
 };
 use ketchup_core::document::{
-    CanonicalCommand, CommandBatch, DefinitionId, FeatureId, InstancePath, OccurrenceId, Snapshot,
+    CanonicalCommand, CommandBatch, DefinitionId, Dimension, FeatureId, FeatureKind,
+    FeatureParameterTarget, InstancePath, OccurrenceId, ParameterValueType, Snapshot, Transform,
 };
 use ketchup_core::exact_product::{ExactBodyPackage, ExactResultRegistry};
 use ketchup_core::fea::{FeaMaterial, FeaSolveSettings};
@@ -69,6 +70,7 @@ const METHODS: &[&str] = &[
     "batch_job_cancel",
     "apply",
     "program_check",
+    "program_source",
     "program_apply",
     "set_production_codes",
     "production_job",
@@ -764,7 +766,8 @@ impl Server {
             .as_object()
             .ok_or_else(|| Error::invalid("params must be an object"))?;
         let (fields, mutation): (&[&str], bool) = match method {
-            "capabilities" | "state" | "production_codes" | "list_validators" => (&[], false),
+            "capabilities" | "state" | "production_codes" | "program_source"
+            | "list_validators" => (&[], false),
             "new" => (&["discard_unsaved"], true),
             "open" => (&["path", "discard_unsaved"], true),
             "apply" => (&["program", "selection"], true),
@@ -839,6 +842,7 @@ impl Server {
                 "optional_mutation_preconditions":["expected_revision","expected_digest","expected_mutation_epoch"],"units":"mm","transform":"row-major 4x4 local occurrence transform","transactions":"one apply = one atomic CAD program; newly allocated Definition, Sketch and body references use zero-based earlier operation_index plus a typed output, never guessed IDs","protocol":PROTOCOL}),
             ),
             "state" => Ok(self.state_result()),
+            "program_source" => Ok(json!({"source": self.session.rule_program()})),
             "production_codes" => Ok(self.production_codes()),
             "set_production_codes" => self.set_production_codes(p),
             "production_job" => self.production_job(p),
@@ -898,11 +902,86 @@ impl Server {
                 Ok(result)
             }
             "program_apply" => {
+                let source = parse_program_source(p)?;
+                let (evaluated, report) = evaluate_program_source(&source)?;
+                if let Some(previous) = self.session.rule_program() {
+                    let (old, _) = evaluate_program_source(previous)?;
+                    if old.model.joints == evaluated.model.joints
+                        && old.model.parts.len() == evaluated.model.parts.len()
+                        && self.session.snapshot().occurrences().count() == old.model.parts.len()
+                    {
+                        let snapshot = self.session.snapshot();
+                        let changes = old
+                            .model
+                            .parts
+                            .iter()
+                            .map(|before| {
+                                let after = evaluated.model.part(&before.name)?;
+                                let mut comparable = after.clone();
+                                comparable.at_mm = before.at_mm;
+                                comparable.size_mm = before.size_mm;
+                                if &comparable != before {
+                                    return None;
+                                }
+                                let occurrence =
+                                    snapshot.occurrences().find(|o| o.name() == before.name)?;
+                                let old_position = Transform::from_translation(
+                                    before.at_mm[0],
+                                    before.at_mm[1],
+                                    before.at_mm[2],
+                                )
+                                .ok()?;
+                                if occurrence.transform() != old_position {
+                                    return None;
+                                }
+                                let mut commands = program_part_dimension_commands(
+                                    &snapshot,
+                                    occurrence.definition_id(),
+                                    before,
+                                    after,
+                                )?;
+                                if before.at_mm != after.at_mm {
+                                    let transform = Transform::from_translation(
+                                        after.at_mm[0],
+                                        after.at_mm[1],
+                                        after.at_mm[2],
+                                    )
+                                    .ok()?;
+                                    commands.push(CanonicalCommand::SetOccurrenceTransform {
+                                        id: occurrence.id(),
+                                        transform,
+                                    });
+                                }
+                                Some(commands)
+                            })
+                            .collect::<Option<Vec<Vec<CanonicalCommand>>>>();
+                        if let Some(changes) = changes {
+                            let commands = changes.into_iter().flatten().collect::<Vec<_>>();
+                            if commands.is_empty() {
+                                self.session.replace_rule_program_source(source)?;
+                            } else {
+                                self.session.apply_rule_commands_with_source(
+                                    CommandBatch::new(commands),
+                                    source,
+                                )?;
+                            }
+                            self.initial_placeholder = false;
+                            let mut result = self.state_result();
+                            result["program"] = json!(report);
+                            return Ok(result);
+                        }
+                    }
+                }
+                if self.session.rule_program().is_some() {
+                    return Err(Error::new(
+                        "program_incremental_unsupported",
+                        "this change cannot yet update the existing program model; the document and undo history were not replaced",
+                    ));
+                }
                 self.discard_guard(p)?;
-                let (evaluated, report) = run_program(p)?;
                 let panels = ketchup_program::cad::panel_operations(&evaluated.model);
                 let mut session = DocumentSession::new(self.settings.clone());
-                session.apply_panels(&panels)?;
+                session.apply_panels_with_source(&panels, source)?;
                 self.session = session;
                 self.revoke_jobs();
                 self.initial_placeholder = false;
@@ -1143,10 +1222,63 @@ fn string<'a>(p: &'a Map<String, Value>, key: &str) -> Result<&'a str> {
         .filter(|s| !s.is_empty())
         .ok_or_else(|| Error::invalid(format!("{key} must be nonempty string")))
 }
+fn program_part_dimension_commands(
+    snapshot: &Snapshot,
+    definition_id: DefinitionId,
+    before: &ketchup_program::model::Part,
+    after: &ketchup_program::model::Part,
+) -> Option<Vec<CanonicalCommand>> {
+    if before.size_mm == after.size_mm {
+        return Some(Vec::new());
+    }
+    if !before.holes.is_empty() || !before.pockets.is_empty() {
+        return None;
+    }
+    let definition = snapshot.definition(definition_id)?;
+    let [_, sketch_id, body_id] = definition.feature_ids() else {
+        return None;
+    };
+    if !matches!(snapshot.feature(*sketch_id)?.kind(), FeatureKind::Sketch(_)) {
+        return None;
+    }
+    let depth_path = match snapshot.feature(*body_id)?.kind() {
+        FeatureKind::Pad(_) => "extent.distance",
+        FeatureKind::Extrusion { .. } => "height",
+        _ => return None,
+    };
+    let dimensions = [
+        (*sketch_id, "bounds.width"),
+        (*sketch_id, "bounds.height"),
+        (*body_id, depth_path),
+    ];
+    let mut commands = Vec::new();
+    for (axis, (feature_id, path)) in dimensions.into_iter().enumerate() {
+        let target =
+            FeatureParameterTarget::new(feature_id, path, ParameterValueType::Length).ok()?;
+        if snapshot.feature_parameter_value(&target)? != before.size_mm[axis] {
+            return None;
+        }
+        if before.size_mm[axis] != after.size_mm[axis] {
+            let value = after.size_mm[axis];
+            commands.push(CanonicalCommand::SetFeatureParameter {
+                target,
+                dimension: Dimension::new(value.to_string(), value).ok()?,
+            });
+        }
+    }
+    Some(commands)
+}
+
 /// Evaluates the `source` rule program with numeric `params` overrides.
 fn run_program(
     p: &Map<String, Value>,
 ) -> Result<(ketchup_program::Evaluated, ketchup_program::Report)> {
+    evaluate_program_source(&parse_program_source(p)?)
+}
+
+fn parse_program_source(
+    p: &Map<String, Value>,
+) -> Result<ketchup_core::document::RuleProgramSource> {
     let source = string(p, "source")?;
     let file_name = p.get("file_name").map_or(Ok("program.star"), |value| {
         value
@@ -1166,10 +1298,22 @@ fn run_program(
             overrides.insert(name.clone(), value);
         }
     }
-    ketchup_program::run(file_name, source, &overrides).map_err(|error| Error {
-        code: format!("program.{}", error.code),
-        message: error.message,
-        details: None,
+    Ok(ketchup_core::document::RuleProgramSource {
+        file_name: file_name.to_owned(),
+        source: source.to_owned(),
+        overrides,
+    })
+}
+
+fn evaluate_program_source(
+    source: &ketchup_core::document::RuleProgramSource,
+) -> Result<(ketchup_program::Evaluated, ketchup_program::Report)> {
+    ketchup_program::run(&source.file_name, &source.source, &source.overrides).map_err(|error| {
+        Error {
+            code: format!("program.{}", error.code),
+            message: error.message,
+            details: None,
+        }
     })
 }
 fn boolean(p: &Map<String, Value>, key: &str, default: bool) -> Result<bool> {

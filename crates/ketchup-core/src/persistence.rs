@@ -94,7 +94,7 @@ const MAGIC: &[u8; 10] = b"KETCHUPDOC";
 const CONTAINER_MAGIC: &[u8; 10] = b"KETCHUPCTR";
 const CONTAINER_SCHEMA: u16 = 1;
 const HISTORY_MAGIC: &[u8; 10] = b"KETCHUPHST";
-const HISTORY_SCHEMA: u16 = 2;
+const HISTORY_SCHEMA: u16 = 3;
 const WORK_RECOVERY_MAGIC: &[u8; 10] = b"KETCHUPWRK";
 const WORK_RECOVERY_SCHEMA: u16 = 1;
 const MAX_HISTORY_REVISIONS: u32 = 4_096;
@@ -1396,6 +1396,18 @@ fn append_revision_history_record(
     if let Some(checkpoint) = revision.checkpoint() {
         push_u8(bytes, 1);
         push_string(bytes, checkpoint);
+    } else {
+        push_u8(bytes, 0);
+    }
+    if let Some(source) = revision.rule_program() {
+        push_u8(bytes, 1);
+        let encoded =
+            serde_json::to_vec(source).map_err(|_| PersistenceError::InvalidRevisionHistory)?;
+        if encoded.len() > crate::document::MAX_RULE_PROGRAM_BYTES {
+            return Err(PersistenceError::ResourceLimit);
+        }
+        push_u32(bytes, encoded.len() as u32);
+        bytes.extend_from_slice(&encoded);
     } else {
         push_u8(bytes, 0);
     }
@@ -4140,7 +4152,7 @@ fn decode_revision_history(
         return Err(PersistenceError::InvalidHistoryMagic);
     }
     let schema = reader.u16()?;
-    if schema != 1 && schema != HISTORY_SCHEMA {
+    if schema != 1 && schema != 2 && schema != HISTORY_SCHEMA {
         return Err(PersistenceError::UnsupportedHistorySchema(schema));
     }
     let count = reader.count_with_limit(MAX_HISTORY_REVISIONS)? as usize;
@@ -4185,6 +4197,29 @@ fn decode_revision_history(
                 _ => return Err(PersistenceError::InvalidRevisionHistory),
             };
             (origin, checkpoint)
+        };
+        let rule_program = if schema >= 3 {
+            match reader.u8()? {
+                0 => None,
+                1 => {
+                    let length = reader.u32()? as usize;
+                    if length > crate::document::MAX_RULE_PROGRAM_BYTES {
+                        return Err(PersistenceError::ResourceLimit);
+                    }
+                    let source: crate::document::RuleProgramSource =
+                        serde_json::from_slice(reader.take(length)?)
+                            .map_err(|_| PersistenceError::InvalidRevisionHistory)?;
+                    if source.source.is_empty()
+                        || source.overrides.values().any(|value| !value.is_finite())
+                    {
+                        return Err(PersistenceError::InvalidRevisionHistory);
+                    }
+                    Some(source)
+                }
+                _ => return Err(PersistenceError::InvalidRevisionHistory),
+            }
+        } else {
+            None
         };
         if (index > 0 && matches!(origin, RevisionOrigin::Initial))
             || matches!(origin, RevisionOrigin::Rollback { target_revision, .. } if target_revision >= revision_id)
@@ -4238,7 +4273,7 @@ fn decode_revision_history(
         }
         document_id = Some(snapshot.document_id());
         previous_revision_id = Some(revision_id);
-        revisions.push((snapshot, batch_digest, origin, checkpoint));
+        revisions.push((snapshot, batch_digest, origin, checkpoint, rule_program));
     }
     if !reader.is_finished()
         || previous_revision_id.is_none_or(|revision_id| next_revision_id <= revision_id)

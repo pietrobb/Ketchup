@@ -250,6 +250,9 @@ impl DocumentSession {
     pub fn snapshot(&self) -> Snapshot {
         self.document.current()
     }
+    pub fn rule_program(&self) -> Option<&ketchup_core::document::RuleProgramSource> {
+        self.document.current_rule_program()
+    }
     pub fn container_data(&self) -> &ContainerData {
         &self.container_data
     }
@@ -405,6 +408,61 @@ impl DocumentSession {
         let proposal = self.plan_cad_program(program, selection)?;
         self.apply_proposal(&proposal)
     }
+    /// Publishes a rule program and its canonical geometry in one transaction and Undo step.
+    pub fn apply_panels_with_source(
+        &mut self,
+        panels: &[AssistantCadEditOperation],
+        source: ketchup_core::document::RuleProgramSource,
+    ) -> Result<Snapshot, SessionError> {
+        let batch = crate::planner::plan_panel_batch(&self.document, panels)
+            .map_err(SessionError::Planning)?;
+        self.apply_rule_commands_with_source(batch, source)
+    }
+
+    /// Publishes a canonical program edit and its source in one undoable transaction.
+    pub fn apply_rule_commands_with_source(
+        &mut self,
+        batch: CommandBatch,
+        source: ketchup_core::document::RuleProgramSource,
+    ) -> Result<Snapshot, SessionError> {
+        let proposal = self.plan_commands(batch)?;
+        let before = self.snapshot();
+        self.mutate_with_work_recovery(|document| {
+            document
+                .commit_verified_proposal(&proposal)
+                .map_err(SessionError::Commit)?;
+            if !document.bind_rule_program(source) {
+                return Err(SessionError::Persistence(
+                    "cannot bind rule program to revision".into(),
+                ));
+            }
+            Ok(())
+        })?;
+        self.update_incremental_exact_plan(&before);
+        self.rebind();
+        Ok(self.snapshot())
+    }
+
+    /// Publishes a source-only edit in the existing document's undo history.
+    pub fn replace_rule_program_source(
+        &mut self,
+        source: ketchup_core::document::RuleProgramSource,
+    ) -> Result<Snapshot, SessionError> {
+        if self.rule_program() == Some(&source) {
+            return Ok(self.snapshot());
+        }
+        self.mutate_with_work_recovery(|document| {
+            if document.replace_rule_program_source(source) {
+                Ok(())
+            } else {
+                Err(SessionError::Persistence(
+                    "cannot replace rule program source".into(),
+                ))
+            }
+        })?;
+        Ok(self.snapshot())
+    }
+
     /// Creates one panel per `create_panel` operation as a single undo step.
     /// Rule programs use this; it is not bound by Assistant program limits.
     pub fn apply_panels(
