@@ -785,6 +785,57 @@ fn resizing_and_moving_programmed_pockets_keeps_identity_and_history() {
 }
 
 #[test]
+fn updated_pocket_evaluates_as_exact_geometry() {
+    let source =
+        "p = box(\"part\", [100, 60, 18])\npocket(p, \"z+\", rect=(20, 20, 40, 40), depth=5)";
+    let changed =
+        "p = box(\"part\", [110, 60, 18])\npocket(p, \"z+\", rect=(25, 20, 50, 40), depth=7)";
+    let responses = exchange(&[
+        request(1, "program_apply", json!({"source":source})),
+        request(2, "program_apply", json!({"source":changed})),
+        request(3, "evaluate", json!({"timeout_ms":30000})),
+    ]);
+    for response in &responses {
+        assert!(response.get("error").is_none(), "{response:?}");
+    }
+    assert_eq!(
+        responses[2]["result"]["complete"], true,
+        "{:?}",
+        responses[2]
+    );
+    assert_eq!(
+        responses[2]["result"]["topology_complete"], true,
+        "{:?}",
+        responses[2]
+    );
+    let exact = responses[2]["result"]["topology_geometry"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .max_by_key(|body| body["feature_id"].as_u64().unwrap())
+        .unwrap();
+    let volume = exact["native_evidence"]["volume_mm3"].as_f64().unwrap();
+    assert!((volume - 115_300.0).abs() < 0.01, "{exact:?}");
+    let fresh = exchange(&[
+        request(1, "program_apply", json!({"source":changed})),
+        request(2, "evaluate", json!({"timeout_ms":30000})),
+    ]);
+    assert!(
+        fresh.iter().all(|response| response.get("error").is_none()),
+        "{fresh:?}"
+    );
+    assert_eq!(fresh[1]["result"]["topology_complete"], true);
+    let rebuilt = fresh[1]["result"]["topology_geometry"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .max_by_key(|body| body["feature_id"].as_u64().unwrap())
+        .unwrap();
+    assert_eq!(exact["bounds_mm"], rebuilt["bounds_mm"]);
+    assert_eq!(exact["native_evidence"], rebuilt["native_evidence"]);
+}
+
+#[test]
 fn changing_pocket_face_does_not_replace_document_or_history() {
     let source = "W = param(\"width\", 100)\np = box(\"part\", [W, 60, 18])\npocket(p, \"z+\", rect=(20, 20, 40, 40), depth=5)";
     let responses = exchange(&[
