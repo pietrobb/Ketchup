@@ -921,6 +921,7 @@ impl Server {
                                 comparable.at_mm = before.at_mm;
                                 comparable.size_mm = before.size_mm;
                                 comparable.holes = before.holes.clone();
+                                comparable.pockets = before.pockets.clone();
                                 if &comparable != before {
                                     return None;
                                 }
@@ -942,6 +943,12 @@ impl Server {
                                     after,
                                 )?;
                                 commands.extend(program_hole_commands(
+                                    &snapshot,
+                                    occurrence.definition_id(),
+                                    before,
+                                    after,
+                                )?);
+                                commands.extend(program_pocket_commands(
                                     &snapshot,
                                     occurrence.definition_id(),
                                     before,
@@ -1268,14 +1275,11 @@ fn program_part_dimension_commands(
     if before.size_mm == after.size_mm {
         return Some(Vec::new());
     }
-    if !before.pockets.is_empty() {
-        return None;
-    }
     let definition = snapshot.definition(definition_id)?;
     let [_, sketch_id, body_id, rest @ ..] = definition.feature_ids() else {
         return None;
     };
-    if rest.len() != before.holes.len() * 3 {
+    if rest.len() != (before.holes.len() + before.pockets.len()) * 3 {
         return None;
     }
     if !matches!(snapshot.feature(*sketch_id)?.kind(), FeatureKind::Sketch(_)) {
@@ -1393,6 +1397,102 @@ fn program_hole_commands(
                         target,
                         dimension: Dimension::new(value.to_string(), value).ok()?,
                     });
+                }
+            }
+        }
+    }
+    Some(commands)
+}
+
+fn program_pocket_commands(
+    snapshot: &Snapshot,
+    definition_id: DefinitionId,
+    before: &ketchup_program::model::Part,
+    after: &ketchup_program::model::Part,
+) -> Option<Vec<CanonicalCommand>> {
+    if before.pockets == after.pockets && before.size_mm == after.size_mm {
+        return Some(Vec::new());
+    }
+    if before.pockets.len() != after.pockets.len() {
+        return None;
+    }
+    let definition = snapshot.definition(definition_id)?;
+    let mut commands = Vec::new();
+    let mut update =
+        |feature_id: FeatureId, path: String, original: f64, value: f64| -> Option<()> {
+            let target =
+                FeatureParameterTarget::new(feature_id, path, ParameterValueType::Length).ok()?;
+            if snapshot.feature_parameter_value(&target)? != original {
+                return None;
+            }
+            if original != value {
+                commands.push(CanonicalCommand::SetFeatureParameter {
+                    target,
+                    dimension: Dimension::new(value.to_string(), value).ok()?,
+                });
+            }
+            Some(())
+        };
+    for (old, new) in before.pockets.iter().zip(&after.pockets) {
+        if old.id != new.id || old.face != new.face {
+            return None;
+        }
+        let feature_id = |name: &str| -> Option<FeatureId> {
+            let mut matches = definition.feature_ids().iter().filter(|id| {
+                snapshot
+                    .feature(**id)
+                    .is_some_and(|feature| feature.name() == name)
+            });
+            let id = *matches.next()?;
+            matches.next().is_none().then_some(id)
+        };
+        let name = format!("{} pocket {}", before.name, old.id);
+        let cut_id = feature_id(&format!("{name} cut"))?;
+        update(cut_id, "depth".to_owned(), old.depth_mm, new.depth_mm)?;
+        let workplane_id = feature_id(&format!("{name} workplane"))?;
+        let old_origin = old.face.local_point(
+            before.size_mm,
+            (old.u_min_mm + old.u_max_mm) * 0.5,
+            (old.v_min_mm + old.v_max_mm) * 0.5,
+        );
+        let new_origin = new.face.local_point(
+            after.size_mm,
+            (new.u_min_mm + new.u_max_mm) * 0.5,
+            (new.v_min_mm + new.v_max_mm) * 0.5,
+        );
+        for (axis, label) in ["x", "y", "z"].into_iter().enumerate() {
+            update(
+                workplane_id,
+                format!("frame.origin.{label}"),
+                old_origin[axis],
+                new_origin[axis],
+            )?;
+        }
+        let sketch_id = feature_id(&name)?;
+        let corners = |p: &ketchup_program::model::Pocket| {
+            let u = (p.u_max_mm - p.u_min_mm) * 0.5;
+            let v = (p.v_max_mm - p.v_min_mm) * 0.5;
+            let (x, y) = if p.face.axis() == 1 { (v, u) } else { (u, v) };
+            [[-x, -y], [x, -y], [x, y], [-x, y]]
+        };
+        let old_corners = corners(old);
+        let new_corners = corners(new);
+        for index in 0..4 {
+            for (point, old_corner, new_corner) in [
+                ("start", old_corners[index], new_corners[index]),
+                (
+                    "end",
+                    old_corners[(index + 1) % 4],
+                    new_corners[(index + 1) % 4],
+                ),
+            ] {
+                for (axis, label) in ["x", "y"].into_iter().enumerate() {
+                    update(
+                        sketch_id,
+                        format!("entities.{}.{point}.{label}", index + 1),
+                        old_corner[axis],
+                        new_corner[axis],
+                    )?;
                 }
             }
         }

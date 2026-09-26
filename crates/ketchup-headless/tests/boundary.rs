@@ -655,7 +655,137 @@ fn resizing_a_drilled_part_updates_face_anchors_in_one_shared_revision() {
 }
 
 #[test]
-fn resizing_a_machined_part_does_not_replace_document_or_history() {
+fn editing_pocket_depth_preserves_part_and_shared_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("pocket-depth.ketchup");
+    let source = "D = param(\"depth\", 5)\np = box(\"part\", [100, 60, 18])\npocket(p, \"z+\", rect=(20, 20, 40, 40), depth=D)";
+    let responses = exchange(&[
+        request(1, "program_apply", json!({"source":source})),
+        request(
+            2,
+            "program_apply",
+            json!({"source":source,"params":{"depth":8}}),
+        ),
+        request(
+            3,
+            "edit_context",
+            json!({"targets":[{"root_occurrence_id":1,"steps":[]}]}),
+        ),
+        request(4, "save", json!({"path":path.to_str().unwrap()})),
+        request(5, "open", json!({"path":path.to_str().unwrap()})),
+        request(6, "undo", json!({})),
+        request(7, "program_source", json!({})),
+        request(8, "redo", json!({})),
+        request(9, "program_source", json!({})),
+    ]);
+    for response in &responses {
+        assert!(response.get("error").is_none(), "{response:?}");
+    }
+    assert_eq!(
+        responses[0]["result"]["state"]["occurrences"],
+        responses[1]["result"]["state"]["occurrences"]
+    );
+    let features = responses[2]["result"]["targets"][0]["features"]
+        .as_array()
+        .unwrap();
+    assert!(
+        features.iter().any(|feature| feature["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["path"] == "depth" && p["value"] == 8.0)),
+        "{features:?}"
+    );
+    assert_eq!(responses[6]["result"]["source"]["overrides"], json!({}));
+    assert_eq!(
+        responses[8]["result"]["source"]["overrides"],
+        json!({"depth":8.0})
+    );
+}
+
+#[test]
+fn resizing_and_moving_programmed_pockets_keeps_identity_and_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("moved-pockets.ketchup");
+    let source = "W = param(\"width\", 100)\nL = param(\"length\", 60)\nT = param(\"thickness\", 18)\nU = param(\"start\", 20)\nS = param(\"span\", 20)\nV = param(\"side\", 4)\np = box(\"part\", [W, L, T])\npocket(p, \"z+\", rect=(U, 20, U+S, 40), depth=5)\npocket(p, \"y+\", rect=(25, V, 45, V+6), depth=3)\nhole(p, \"x+\", at=(30, 9), diameter=8, depth=10)";
+    let responses = exchange(&[
+        request(1, "program_apply", json!({"source":source})),
+        request(
+            2,
+            "program_apply",
+            json!({"source":source,"params":{"width":140,"length":80,"thickness":24,"start":25,"span":30,"side":6}}),
+        ),
+        request(
+            3,
+            "edit_context",
+            json!({"targets":[{"root_occurrence_id":1,"steps":[]}]}),
+        ),
+        request(4, "save", json!({"path":path.to_str().unwrap()})),
+        request(5, "open", json!({"path":path.to_str().unwrap()})),
+        request(6, "undo", json!({})),
+        request(7, "program_source", json!({})),
+        request(8, "redo", json!({})),
+        request(9, "program_source", json!({})),
+    ]);
+    for response in &responses {
+        assert!(response.get("error").is_none(), "{response:?}");
+    }
+    assert_eq!(
+        responses[0]["result"]["state"]["occurrences"],
+        responses[1]["result"]["state"]["occurrences"]
+    );
+    let features = responses[2]["result"]["targets"][0]["features"]
+        .as_array()
+        .unwrap();
+    let origins = features
+        .iter()
+        .map(|feature| {
+            feature["parameters"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|p| {
+                    p["path"]
+                        .as_str()
+                        .is_some_and(|path| path.starts_with("frame.origin."))
+                })
+                .map(|p| p["value"].as_f64().unwrap())
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    assert!(origins.contains(&vec![40.0, 30.0, 24.0]), "{origins:?}");
+    assert!(origins.contains(&vec![35.0, 80.0, 9.0]), "{origins:?}");
+    assert!(origins.contains(&vec![140.0, 30.0, 9.0]), "{origins:?}");
+    let sketch = features
+        .iter()
+        .find(|feature| {
+            feature["parameters"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["path"] == "entities.1.start.x" && p["value"] == -15.0)
+        })
+        .unwrap();
+    assert!(
+        sketch["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["path"] == "entities.1.end.x" && p["value"] == 15.0)
+    );
+    assert_eq!(responses[6]["result"]["source"]["overrides"], json!({}));
+    assert_eq!(
+        responses[8]["result"]["source"]["overrides"],
+        json!({"width":140.0,"length":80.0,"thickness":24.0,"start":25.0,"span":30.0,"side":6.0})
+    );
+    assert_eq!(
+        responses[7]["result"]["state"]["occurrences"],
+        responses[1]["result"]["state"]["occurrences"]
+    );
+}
+
+#[test]
+fn changing_pocket_face_does_not_replace_document_or_history() {
     let source = "W = param(\"width\", 100)\np = box(\"part\", [W, 60, 18])\npocket(p, \"z+\", rect=(20, 20, 40, 40), depth=5)";
     let responses = exchange(&[
         request(
@@ -666,7 +796,7 @@ fn resizing_a_machined_part_does_not_replace_document_or_history() {
         request(
             2,
             "program_apply",
-            json!({"source":source,"params":{"width":140},"discard_unsaved":true}),
+            json!({"source":source.replace("\"z+\"", "\"z-\""),"params":{"width":140},"discard_unsaved":true}),
         ),
         request(3, "state", json!({})),
         request(4, "program_source", json!({})),
