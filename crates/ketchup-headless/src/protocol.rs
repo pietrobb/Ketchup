@@ -1268,13 +1268,16 @@ fn program_part_dimension_commands(
     if before.size_mm == after.size_mm {
         return Some(Vec::new());
     }
-    if !before.holes.is_empty() || !before.pockets.is_empty() {
+    if !before.pockets.is_empty() {
         return None;
     }
     let definition = snapshot.definition(definition_id)?;
-    let [_, sketch_id, body_id] = definition.feature_ids() else {
+    let [_, sketch_id, body_id, rest @ ..] = definition.feature_ids() else {
         return None;
     };
+    if rest.len() != before.holes.len() * 3 {
+        return None;
+    }
     if !matches!(snapshot.feature(*sketch_id)?.kind(), FeatureKind::Sketch(_)) {
         return None;
     }
@@ -1312,10 +1315,10 @@ fn program_hole_commands(
     before: &ketchup_program::model::Part,
     after: &ketchup_program::model::Part,
 ) -> Option<Vec<CanonicalCommand>> {
-    if before.holes == after.holes {
+    if before.holes == after.holes && before.size_mm == after.size_mm {
         return Some(Vec::new());
     }
-    if before.size_mm != after.size_mm || before.holes.len() != after.holes.len() {
+    if before.holes.len() != after.holes.len() {
         return None;
     }
     let definition = snapshot.definition(definition_id)?;
@@ -1359,7 +1362,9 @@ fn program_hole_commands(
                 });
             }
         }
-        if (old.u_mm, old.v_mm) != (new.u_mm, new.v_mm) {
+        if old.face.local_point(before.size_mm, old.u_mm, old.v_mm)
+            != new.face.local_point(after.size_mm, new.u_mm, new.v_mm)
+        {
             let name = format!("{} hole {} workplane", before.name, old.id);
             let mut matching = definition.feature_ids().iter().filter(|id| {
                 snapshot
