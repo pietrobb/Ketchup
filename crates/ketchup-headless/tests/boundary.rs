@@ -157,6 +157,91 @@ fn reapplying_equivalent_program_preserves_document_geometry_and_undo_history() 
 }
 
 #[test]
+fn manual_dimension_edit_detaches_program_and_rejects_unconfirmed_replacement() {
+    let source = "box(\"part\", [100, 20, 10])";
+    let edited = format!("# edited source\n{source}");
+    let responses = exchange(&[
+        request(1, "program_apply", json!({"source": source})),
+        request(
+            2,
+            "apply",
+            json!({"program":{"operations":[{
+                "operation":"set_feature_parameter", "feature_id":2,
+                "parameter_path":"bounds.width", "value_type":"length", "value":120
+            }]}}),
+        ),
+        request(3, "program_apply", json!({"source": edited})),
+        request(4, "program_source", json!({})),
+        request(5, "state", json!({})),
+        request(6, "undo", json!({})),
+        request(7, "program_source", json!({})),
+        request(8, "redo", json!({})),
+        request(9, "program_source", json!({})),
+    ]);
+    assert!(responses[0].get("error").is_none(), "{responses:?}");
+    assert!(responses[1].get("error").is_none(), "{responses:?}");
+    assert_eq!(responses[2]["error"]["code"], "unsaved_changes");
+    assert!(responses[3]["result"]["source"].is_null());
+    assert_eq!(
+        responses[4]["result"]["state"],
+        responses[1]["result"]["state"]
+    );
+    assert!(responses[5].get("error").is_none(), "{responses:?}");
+    assert_eq!(responses[6]["result"]["source"]["source"], source);
+    assert!(responses[7].get("error").is_none(), "{responses:?}");
+    assert!(responses[8]["result"]["source"].is_null());
+    assert_eq!(
+        responses[7]["result"]["state"]["canonical_digest"],
+        responses[1]["result"]["state"]["canonical_digest"]
+    );
+}
+
+#[test]
+fn saved_manual_edit_requires_confirmation_before_program_replacement() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("manual.ketchup");
+    let source = "box(\"part\", [100, 20, 10])";
+    let responses = exchange(&[
+        request(1, "program_apply", json!({"source":source})),
+        request(
+            2,
+            "apply",
+            json!({"program":{"operations":[{
+                "operation":"set_feature_parameter", "feature_id":2,
+                "parameter_path":"bounds.width", "value_type":"length", "value":120
+            }]}}),
+        ),
+        request(3, "save", json!({"path":path.to_str().unwrap()})),
+        request(4, "program_apply", json!({"source":source})),
+        request(5, "program_source", json!({})),
+        request(6, "state", json!({})),
+        request(
+            7,
+            "program_apply",
+            json!({"source":source,"discard_unsaved":true}),
+        ),
+    ]);
+    assert!(
+        responses[..3].iter().all(|r| r.get("error").is_none()),
+        "{responses:?}"
+    );
+    assert_eq!(
+        responses[3]["error"]["code"],
+        "program_replacement_confirmation_required"
+    );
+    assert!(responses[4]["result"]["source"].is_null());
+    assert_eq!(
+        responses[5]["result"]["state"],
+        responses[2]["result"]["state"]
+    );
+    assert!(responses[6].get("error").is_none(), "{responses:?}");
+    assert_eq!(
+        responses[6]["result"]["state"]["definitions"][0]["name"],
+        "part"
+    );
+}
+
+#[test]
 fn moving_a_program_part_keeps_other_parts_and_one_shared_undo_step() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("moved.ketchup");

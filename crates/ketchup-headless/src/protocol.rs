@@ -1107,6 +1107,15 @@ impl Server {
                     ));
                 }
                 self.discard_guard(p)?;
+                if !self.initial_placeholder
+                    && self.session.snapshot().definitions().next().is_some()
+                    && !boolean(p, "discard_unsaved", false)?
+                {
+                    return Err(Error::new(
+                        "program_replacement_confirmation_required",
+                        "the existing document is not owned by this program; pass discard_unsaved=true to replace it",
+                    ));
+                }
                 let panels = ketchup_program::cad::panel_operations(&evaluated.model);
                 let mut session = DocumentSession::new(self.settings.clone());
                 session.apply_panels_with_source(&panels, source)?;
