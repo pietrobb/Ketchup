@@ -4512,6 +4512,7 @@ pub struct RuleProgramSource {
 }
 
 pub const MAX_RULE_PROGRAM_BYTES: usize = 1024 * 1024;
+const RULE_PROGRAM_UNDO_LIMIT: usize = 10;
 
 #[derive(Clone)]
 pub struct Revision {
@@ -4817,6 +4818,14 @@ impl DocumentStore {
                 .is_ok_and(|encoded| encoded.len() <= MAX_RULE_PROGRAM_BYTES)
     }
 
+    fn limit_rule_program_history(&mut self) {
+        let excess = self.cursor.saturating_sub(RULE_PROGRAM_UNDO_LIMIT);
+        if excess > 0 {
+            self.revisions.drain(..excess);
+            self.cursor -= excess;
+        }
+    }
+
     /// Associates the source with the current newly committed revision, within the same transaction.
     /// A later manual revision does not inherit it.
     pub fn bind_rule_program(&mut self, source: RuleProgramSource) -> bool {
@@ -4828,6 +4837,7 @@ impl DocumentStore {
             return false;
         }
         Arc::make_mut(&mut self.revisions[self.cursor]).rule_program = Some(source);
+        self.limit_rule_program_history();
         true
     }
 
@@ -4865,6 +4875,7 @@ impl DocumentStore {
         self.revisions.truncate(self.cursor + 1);
         self.revisions.push(revision);
         self.cursor += 1;
+        self.limit_rule_program_history();
         self.next_revision_id = next_revision_id;
         self.mutation_epoch = Self::fresh_mutation_epoch();
         true

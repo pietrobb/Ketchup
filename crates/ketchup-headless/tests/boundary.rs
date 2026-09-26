@@ -66,6 +66,71 @@ fn program_source_survives_native_save_open_and_follows_document_undo() {
 }
 
 #[test]
+fn canonical_program_history_keeps_ten_changes_across_save_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bounded.ketchup");
+    let mut requests = (0..=15)
+        .map(|version| {
+            request(
+                version + 1,
+                "program_apply",
+                json!({"source":format!("# version {version}\nbox(\"part\", [100, 20, 10])")}),
+            )
+        })
+        .collect::<Vec<_>>();
+    requests.push(request(17, "save", json!({"path":path.to_str().unwrap()})));
+    requests.push(request(18, "open", json!({"path":path.to_str().unwrap()})));
+    for id in 19..=28 {
+        requests.push(request(id, "undo", json!({})));
+    }
+    requests.push(request(29, "program_source", json!({})));
+    requests.push(request(30, "redo", json!({})));
+    requests.push(request(31, "program_source", json!({})));
+    let responses = exchange(&requests);
+    for response in &responses {
+        assert!(response.get("error").is_none(), "{response:?}");
+    }
+    assert_eq!(responses[15]["result"]["state"]["undo_steps"], 10);
+    assert_eq!(responses[17]["result"]["state"]["undo_steps"], 10);
+    assert_eq!(responses[27]["result"]["state"]["undo_steps"], 0);
+    assert_eq!(
+        responses[28]["result"]["source"]["source"],
+        "# version 5\nbox(\"part\", [100, 20, 10])"
+    );
+    assert_eq!(
+        responses[30]["result"]["source"]["source"],
+        "# version 6\nbox(\"part\", [100, 20, 10])"
+    );
+}
+
+#[test]
+fn canonical_program_history_bounds_geometry_edits_too() {
+    let source = "W = param(\"width\", 100)\nbox(\"part\", [W, 20, 10])";
+    let requests = (0..=12)
+        .map(|step| {
+            request(
+                step + 1,
+                "program_apply",
+                json!({"source":source,"params":{"width":100 + step}}),
+            )
+        })
+        .collect::<Vec<_>>();
+    let responses = exchange(&requests);
+    for response in &responses {
+        assert!(response.get("error").is_none(), "{response:?}");
+    }
+    assert_eq!(responses[12]["result"]["state"]["undo_steps"], 10);
+    assert_eq!(
+        responses[12]["result"]["state"]["occurrences"],
+        responses[0]["result"]["state"]["occurrences"]
+    );
+    assert_ne!(
+        responses[12]["result"]["state"]["canonical_digest"],
+        responses[0]["result"]["state"]["canonical_digest"]
+    );
+}
+
+#[test]
 fn reapplying_equivalent_program_preserves_document_geometry_and_undo_history() {
     let first = "box(\"part\", [100, 20, 10])";
     let edited = "# harmless source edit\nbox(\"part\", [100, 20, 10])";
