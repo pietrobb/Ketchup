@@ -416,15 +416,30 @@ impl DocumentSession {
     ) -> Result<Snapshot, SessionError> {
         let batch = crate::planner::plan_panel_batch(&self.document, panels)
             .map_err(SessionError::Planning)?;
-        self.apply_rule_commands_with_source(batch, source)
+        self.apply_rule_commands_with_source(batch, &[], source)
     }
 
     /// Publishes a canonical program edit and its source in one undoable transaction.
     pub fn apply_rule_commands_with_source(
         &mut self,
         batch: CommandBatch,
+        panels: &[AssistantCadEditOperation],
         source: ketchup_core::document::RuleProgramSource,
     ) -> Result<Snapshot, SessionError> {
+        let batch = if panels.is_empty() {
+            batch
+        } else {
+            let additions = crate::planner::plan_panel_batch(&self.document, panels)
+                .map_err(SessionError::Planning)?;
+            CommandBatch::new(
+                batch
+                    .commands()
+                    .iter()
+                    .chain(additions.commands())
+                    .cloned()
+                    .collect(),
+            )
+        };
         let proposal = self.plan_commands(batch)?;
         let before = self.snapshot();
         self.mutate_with_work_recovery(|document| {

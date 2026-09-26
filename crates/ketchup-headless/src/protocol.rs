@@ -907,7 +907,6 @@ impl Server {
                 if let Some(previous) = self.session.rule_program() {
                     let (old, _) = evaluate_program_source(previous)?;
                     if old.model.joints == evaluated.model.joints
-                        && old.model.parts.len() == evaluated.model.parts.len()
                         && self.session.snapshot().occurrences().count() == old.model.parts.len()
                     {
                         let snapshot = self.session.snapshot();
@@ -915,6 +914,7 @@ impl Server {
                             .model
                             .parts
                             .iter()
+                            .filter(|before| evaluated.model.part(&before.name).is_some())
                             .map(|before| {
                                 let after = evaluated.model.part(&before.name)?;
                                 let mut comparable = after.clone();
@@ -956,12 +956,42 @@ impl Server {
                             })
                             .collect::<Option<Vec<Vec<CanonicalCommand>>>>();
                         if let Some(changes) = changes {
-                            let commands = changes.into_iter().flatten().collect::<Vec<_>>();
-                            if commands.is_empty() {
+                            let mut commands = changes.into_iter().flatten().collect::<Vec<_>>();
+                            for removed in old
+                                .model
+                                .parts
+                                .iter()
+                                .filter(|part| evaluated.model.part(&part.name).is_none())
+                            {
+                                let occurrence = snapshot
+                                    .occurrences()
+                                    .find(|item| item.name() == removed.name)
+                                    .ok_or_else(|| {
+                                        Error::new(
+                                            "program_incremental_unsupported",
+                                            "program part no longer matches the document",
+                                        )
+                                    })?;
+                                commands.push(CanonicalCommand::DeleteOccurrence {
+                                    id: occurrence.id(),
+                                });
+                                commands.push(CanonicalCommand::DeleteDefinition {
+                                    id: occurrence.definition_id(),
+                                });
+                            }
+                            let panels = ketchup_program::cad::panel_operations(&evaluated.model)
+                                .into_iter()
+                                .filter(|panel| match panel {
+                                    ketchup_core::assistant_sidecar::AssistantCadEditOperation::CreatePanel { name, .. } => old.model.part(name).is_none(),
+                                    _ => false,
+                                })
+                                .collect::<Vec<_>>();
+                            if commands.is_empty() && panels.is_empty() {
                                 self.session.replace_rule_program_source(source)?;
                             } else {
                                 self.session.apply_rule_commands_with_source(
                                     CommandBatch::new(commands),
+                                    &panels,
                                     source,
                                 )?;
                             }

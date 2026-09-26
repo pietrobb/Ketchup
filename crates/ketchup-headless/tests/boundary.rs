@@ -273,6 +273,128 @@ fn changing_all_dimensions_keeps_the_other_part_and_survives_save_open() {
 }
 
 #[test]
+fn adding_a_named_part_preserves_existing_ids_and_shared_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("added.ketchup");
+    let first = "box(\"fixed\", [100, 20, 10])\nbox(\"moving\", [20, 20, 10], at=[0, 50, 0])";
+    let added = format!("{first}\nbox(\"new\", [30, 40, 18], at=[0, 100, 0])");
+    let responses = exchange(&[
+        request(1, "program_apply", json!({"source":first})),
+        request(2, "program_apply", json!({"source":added})),
+        request(3, "undo", json!({})),
+        request(4, "program_source", json!({})),
+        request(5, "redo", json!({})),
+        request(6, "save", json!({"path":path.to_str().unwrap()})),
+        request(7, "open", json!({"path":path.to_str().unwrap()})),
+        request(8, "program_source", json!({})),
+    ]);
+    for response in &responses {
+        assert!(response.get("error").is_none(), "{response:?}");
+    }
+    let before = &responses[0]["result"]["state"];
+    let after = &responses[1]["result"]["state"];
+    assert_eq!(before["document_id"], after["document_id"]);
+    let old = before["occurrences"].as_array().unwrap();
+    let new = after["occurrences"].as_array().unwrap();
+    assert_eq!(new.len(), 3);
+    assert_eq!(&new[..2], old);
+    assert_eq!(new[2]["name"], "new");
+    assert_eq!(
+        responses[2]["result"]["state"]["occurrences"],
+        before["occurrences"]
+    );
+    assert_eq!(responses[3]["result"]["source"]["source"], first);
+    assert_eq!(
+        responses[4]["result"]["state"]["occurrences"],
+        after["occurrences"]
+    );
+    assert_eq!(
+        responses[6]["result"]["state"]["occurrences"],
+        after["occurrences"]
+    );
+    assert_eq!(responses[7]["result"]["source"]["source"], added);
+}
+
+#[test]
+fn removing_a_named_part_preserves_remaining_ids_and_shared_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("removed.ketchup");
+    let first = "box(\"keep\", [100, 20, 10])\nbox(\"remove\", [20, 20, 10], at=[0, 50, 0])";
+    let remaining = "box(\"keep\", [100, 20, 10])";
+    let responses = exchange(&[
+        request(1, "program_apply", json!({"source":first})),
+        request(2, "program_apply", json!({"source":remaining})),
+        request(3, "undo", json!({})),
+        request(4, "program_source", json!({})),
+        request(5, "redo", json!({})),
+        request(6, "save", json!({"path":path.to_str().unwrap()})),
+        request(7, "open", json!({"path":path.to_str().unwrap()})),
+        request(8, "program_source", json!({})),
+    ]);
+    for response in &responses {
+        assert!(response.get("error").is_none(), "{response:?}");
+    }
+    let before = &responses[0]["result"]["state"];
+    let after = &responses[1]["result"]["state"];
+    assert_eq!(before["document_id"], after["document_id"]);
+    assert_eq!(after["occurrences"], json!([before["occurrences"][0]]));
+    assert_eq!(after["definitions"], json!([before["definitions"][0]]));
+    assert_eq!(
+        responses[2]["result"]["state"]["occurrences"],
+        before["occurrences"]
+    );
+    assert_eq!(responses[3]["result"]["source"]["source"], first);
+    assert_eq!(
+        responses[4]["result"]["state"]["occurrences"],
+        after["occurrences"]
+    );
+    assert_eq!(
+        responses[6]["result"]["state"]["occurrences"],
+        after["occurrences"]
+    );
+    assert_eq!(responses[7]["result"]["source"]["source"], remaining);
+}
+
+#[test]
+fn replacing_one_part_and_moving_another_is_one_program_revision() {
+    let first = "box(\"keep\", [100, 20, 10])\nbox(\"old\", [20, 20, 10], at=[0, 50, 0])";
+    let next =
+        "box(\"keep\", [100, 20, 10], at=[10, 0, 0])\nbox(\"new\", [30, 40, 18], at=[0, 100, 0])";
+    let responses = exchange(&[
+        request(1, "program_apply", json!({"source":first})),
+        request(2, "program_apply", json!({"source":next})),
+        request(3, "undo", json!({})),
+        request(4, "program_source", json!({})),
+        request(5, "redo", json!({})),
+    ]);
+    for response in &responses {
+        assert!(response.get("error").is_none(), "{response:?}");
+    }
+    let before = &responses[0]["result"]["state"];
+    let after = &responses[1]["result"]["state"];
+    assert_eq!(before["document_id"], after["document_id"]);
+    assert_eq!(
+        before["occurrences"][0]["id"],
+        after["occurrences"][0]["id"]
+    );
+    assert_ne!(
+        before["occurrences"][0]["transform"],
+        after["occurrences"][0]["transform"]
+    );
+    assert_eq!(after["occurrences"].as_array().unwrap().len(), 2);
+    assert_eq!(after["occurrences"][1]["name"], "new");
+    assert_eq!(
+        responses[2]["result"]["state"]["occurrences"],
+        before["occurrences"]
+    );
+    assert_eq!(responses[3]["result"]["source"]["source"], first);
+    assert_eq!(
+        responses[4]["result"]["state"]["occurrences"],
+        after["occurrences"]
+    );
+}
+
+#[test]
 fn resizing_a_machined_part_does_not_replace_document_or_history() {
     let source = "W = param(\"width\", 100)\np = box(\"part\", [W, 60, 18])\nhole(p, \"z+\", at=(20, 20), diameter=8, depth=10)";
     let responses = exchange(&[
