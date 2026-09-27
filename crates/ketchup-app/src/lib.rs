@@ -5495,6 +5495,9 @@ pub struct KetchupApp {
     /// Zoom Fit was requested before the viewport was laid out or had anything
     /// to frame (e.g. right after launch); it is applied on the next frame that can.
     zoom_fit_pending: bool,
+    /// The pending fit frames a just-opened document and must not replace its
+    /// open/recovery status message.
+    zoom_fit_pending_quiet: bool,
     dialogs: Box<dyn FileDialogs>,
     cam_reviews: CamReviewWorkflow,
     cam_export_dialog: Option<CamExportDialog>,
@@ -5760,6 +5763,7 @@ impl KetchupApp {
             mesh_conversion_state: mesh_conversion_ui::MeshConversionUiState::default(),
             viewport_rect: None,
             zoom_fit_pending: false,
+            zoom_fit_pending_quiet: false,
             dialogs: Box::new(NativeFileDialogs::default()),
             cam_reviews: CamReviewWorkflow::new(None),
             cam_export_dialog: None,
@@ -6136,6 +6140,8 @@ impl KetchupApp {
                 self.work_recovery_digest = None;
                 self.saved_digest = self.document.history_digest();
                 self.reset_document_presentation();
+                self.zoom_fit_pending = true;
+                self.zoom_fit_pending_quiet = true;
                 self.load_assistant_conversation();
                 self.load_assistant_memory();
                 if let Some(recovery) = &self.recovery_open {
@@ -18871,6 +18877,7 @@ impl KetchupApp {
 
     /// Frame every visible occurrence in the viewport laid out by the last frame.
     pub fn zoom_fit(&mut self) {
+        self.zoom_fit_pending_quiet = false;
         let bounds = self.active_frame_bounds();
         let count = bounds.len();
         self.zoom_fit_pending = !self.frame_bounds(&bounds);
@@ -29270,7 +29277,13 @@ impl KetchupApp {
         let (response, painter) = ui.allocate_painter(desired, Sense::click_and_drag());
         self.viewport_rect = Some(response.rect);
         if self.zoom_fit_pending {
-            self.zoom_fit();
+            if self.zoom_fit_pending_quiet {
+                let bounds = self.active_frame_bounds();
+                self.zoom_fit_pending = !self.frame_bounds(&bounds);
+                self.zoom_fit_pending_quiet = self.zoom_fit_pending;
+            } else {
+                self.zoom_fit();
+            }
             self.refresh_camera_distance();
         }
         let palette = self.palette();

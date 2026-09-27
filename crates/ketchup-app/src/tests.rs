@@ -18857,6 +18857,50 @@ fn command_registry_exposes_only_complete_modeling_tools() {
     assert!(!app.sketch_mode);
 }
 
+#[test]
+fn opening_program_document_evaluates_and_frames_actual_scene() {
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/programs/table.ketchup");
+    assert!(path.is_file(), "missing fixture: {}", path.display());
+    let worker = exact_worker_candidates()
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+        .expect("build ketchup-exact-worker before this test");
+
+    let mut app = KetchupApp::new();
+    assert!(
+        app.open_document_from(&path),
+        "table fixture did not open: {}",
+        app.digest
+    );
+    assert_eq!(app.occurrence_count(), 5);
+    assert!(app.zoom_fit_pending);
+    let zoom_before = app.zoom;
+    app.headless_force_exact_worker_path(worker);
+
+    let mut harness = Harness::builder()
+        .with_size(Vec2::new(1600.0, 1000.0))
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline
+        && (harness.state().exact_results.len() != 5
+            || harness.state().instanced_scene_triangle_count() == 0
+            || harness.state().zoom_fit_pending)
+    {
+        harness.step();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let app = harness.state();
+    assert_eq!(app.exact_results.len(), 5, "all table bodies must evaluate");
+    assert!(
+        app.instanced_scene_triangle_count() > 0,
+        "the evaluated table must reach the painted scene"
+    );
+    assert!(!app.zoom_fit_pending);
+    assert_ne!(app.zoom, zoom_before, "the table must be framed");
+}
+
 /// A live client that opens a window and immediately asks for Zoom Fit must
 /// not get a silently unframed camera just because no frame was laid out yet.
 #[test]
