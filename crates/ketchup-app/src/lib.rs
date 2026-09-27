@@ -25428,10 +25428,30 @@ impl KetchupApp {
         ) else {
             return false;
         };
+        let rule_program = match self.rewrite_program_push_pull(
+            &preview.plan.source,
+            f64::from_bits(preview.plan.distance_mm_bits),
+        ) {
+            Ok(source) => source,
+            Err(error) => {
+                self.digest = error;
+                return false;
+            }
+        };
         if plan != preview.plan
             || batch != preview.batch
             || self
-                .complete_mutation_with_work_recovery(|document| proposal.commit(document))
+                .complete_mutation_with_work_recovery(move |document| {
+                    proposal
+                        .commit(document)
+                        .map_err(|error| error.to_string())?;
+                    if let Some(source) = rule_program
+                        && !document.bind_rule_program(source)
+                    {
+                        return Err("cannot bind Push/Pull to rule program revision".to_owned());
+                    }
+                    Ok::<(), String>(())
+                })
                 .is_err()
         {
             self.preview = None;

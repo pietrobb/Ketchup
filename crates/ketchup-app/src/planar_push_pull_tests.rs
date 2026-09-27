@@ -129,6 +129,309 @@ fn select(app: &mut KetchupApp, ordinal: u32) {
 }
 
 #[test]
+fn program_push_pull_updates_source_and_survives_save_open_with_identity() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("program-push-pull.ketchup");
+    let source = ketchup_core::document::RuleProgramSource {
+        file_name: "program-push-pull.star".to_owned(),
+        source: "H = param(\"height\", 18)\npart = extrude(\"board\", profile=[[\"front\", [0, 0], [100, 0]], [\"right\", [100, 0], [100, 50]], [\"back\", [100, 50], [0, 50]], [\"left\", [0, 50], [0, 0]]], distance=H)".to_owned(),
+        overrides: BTreeMap::new(),
+    };
+    let mut session =
+        ketchup_application::DocumentSession::new(ketchup_application::SessionSettings::default());
+    let initial = session.apply_rule_program(source, false).unwrap().snapshot;
+    let occurrence_id = initial.occurrences().next().unwrap().id();
+    session
+        .save(&path, ketchup_application::SaveOptions { overwrite: false })
+        .unwrap();
+
+    let mut app = KetchupApp::new().with_dialogs(Box::new(
+        crate::dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(1),
+    ));
+    assert!(app.open_document_path(&path));
+    let worker = exact_worker_candidates()
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+        .expect("build ketchup-exact-worker alongside the app tests");
+    app.headless_force_exact_worker_path(&worker);
+    let snapshot = app.document.current();
+    let definition_id = snapshot.occurrence(occurrence_id).unwrap().definition_id();
+    let definition = snapshot.definition(definition_id).unwrap();
+    let graph = ketchup_core::exact_brep_graph::ExactBRepGraph::from_snapshot(
+        &snapshot,
+        definition_id,
+        *definition.feature_ids().last().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(graph.profiles[0].segment_entity_ids, [1, 2, 3, 4]);
+    let task = ketchup_application::evaluation::start_exact_evaluation(
+        snapshot.clone(),
+        &app.container_data,
+        &app.exact_results,
+        &app.topology_results,
+        Some(worker),
+        || {},
+    );
+    let products = task.wait(Duration::from_secs(30)).unwrap();
+    let report = publish_exact_products(
+        &mut app.document,
+        &mut app.exact_results,
+        &mut app.topology_results,
+        &task,
+        products,
+    )
+    .unwrap();
+    assert!(report.complete && report.topology_complete, "{report:?}");
+    app.exact_source = Some(ketchup_application::evaluation::exact_source(&snapshot));
+
+    let package = app
+        .topology_results
+        .get_render(&snapshot, definition_id)
+        .unwrap();
+    let producer_feature_id = package.producer_feature_id();
+    let end_ordinal = package
+        .topological_references()
+        .iter()
+        .filter(|reference| reference.kind == TopologicalElementKind::Face)
+        .position(|reference| reference.producer_element_id == ExactFaceRole::Top.semantic_role())
+        .unwrap_or_else(|| panic!("missing end face in {:?}", package.topological_references()))
+        as u32;
+    assert!(app.select_topological_locator(TopologicalPickLocator {
+        instance_path: InstancePath::root(occurrence_id),
+        producer_feature_id,
+        kind: TopologicalElementKind::Face,
+        ordinal: end_ordinal,
+    }));
+    let revision = app.document_revision();
+    let undo_steps = app.undo_step_count();
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(Vec2::new(1600.0, 1000.0))
+        .with_step_dt(1.0 / 60.0)
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+    harness.step();
+    harness.state_mut().dispatch_command(AppCommand::PushPull);
+    harness.state_mut().set_push_pull_distance_input("7");
+    assert!(harness.state_mut().start_preview());
+    wait_preview(harness.state_mut());
+    assert!(harness.state_mut().confirm_preview());
+
+    assert_eq!(harness.state().document_revision(), revision + 1);
+    assert_eq!(harness.state().undo_step_count(), undo_steps + 1);
+    assert_eq!(
+        harness
+            .state()
+            .document
+            .current()
+            .occurrences()
+            .next()
+            .unwrap()
+            .id(),
+        occurrence_id
+    );
+    assert_eq!(
+        harness
+            .state()
+            .document
+            .current_rule_program()
+            .unwrap()
+            .overrides["height"],
+        25.0
+    );
+    assert!(harness.state_mut().undo());
+    assert!(
+        !harness
+            .state()
+            .document
+            .current_rule_program()
+            .unwrap()
+            .overrides
+            .contains_key("height")
+    );
+    assert_eq!(
+        harness
+            .state()
+            .document
+            .current()
+            .occurrences()
+            .next()
+            .unwrap()
+            .id(),
+        occurrence_id
+    );
+    assert!(harness.state_mut().redo());
+    assert_eq!(
+        harness
+            .state()
+            .document
+            .current_rule_program()
+            .unwrap()
+            .overrides["height"],
+        25.0
+    );
+    assert!(harness.state_mut().save_document_to(&path));
+
+    let mut reopened = ketchup_application::DocumentSession::open(
+        &path,
+        ketchup_application::SessionSettings::default(),
+    )
+    .unwrap();
+    let reopened_source = reopened.rule_program().unwrap().clone();
+    let reopened_digest = reopened.snapshot().canonical_digest().to_owned();
+    assert_eq!(
+        reopened.snapshot().occurrences().next().unwrap().id(),
+        occurrence_id
+    );
+    let rerun = reopened.apply_rule_program(reopened_source, false).unwrap();
+    assert_eq!(rerun.snapshot.canonical_digest(), reopened_digest);
+    assert_eq!(
+        rerun.snapshot.occurrences().next().unwrap().id(),
+        occurrence_id
+    );
+}
+
+/// The user trial: open the example table, Push/Pull the top of the drilled
+/// table top, undo/redo, save and reopen.
+#[test]
+fn table_top_push_pull_rewrites_program_through_undo_redo_and_save_open() {
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/programs/table.ketchup");
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("table.ketchup");
+    std::fs::copy(&fixture, &path).unwrap();
+    let worker = exact_worker_candidates()
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+        .expect("build ketchup-exact-worker alongside the app tests");
+
+    let mut app = KetchupApp::new().with_dialogs(Box::new(
+        crate::dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(1),
+    ));
+    assert!(app.open_document_path(&path));
+    app.headless_force_exact_worker_path(&worker);
+    let snapshot = app.document.current();
+    let occurrence_ids = snapshot
+        .occurrences()
+        .map(|occurrence| occurrence.id())
+        .collect::<Vec<_>>();
+    assert_eq!(occurrence_ids.len(), 5);
+    let top = snapshot
+        .occurrences()
+        .find(|occurrence| occurrence.name() == "table/top")
+        .unwrap()
+        .id();
+    let definition_id = snapshot.occurrence(top).unwrap().definition_id();
+    let task = ketchup_application::evaluation::start_exact_evaluation(
+        snapshot.clone(),
+        &app.container_data,
+        &app.exact_results,
+        &app.topology_results,
+        Some(worker),
+        || {},
+    );
+    let products = task.wait(Duration::from_secs(60)).unwrap();
+    let report = publish_exact_products(
+        &mut app.document,
+        &mut app.exact_results,
+        &mut app.topology_results,
+        &task,
+        products,
+    )
+    .unwrap();
+    assert!(report.complete && report.topology_complete, "{report:?}");
+    app.exact_source = Some(ketchup_application::evaluation::exact_source(&snapshot));
+
+    let package = app
+        .topology_results
+        .get_render(&snapshot, definition_id)
+        .unwrap();
+    let producer_feature_id = package.producer_feature_id();
+    let top_face = package
+        .topological_references()
+        .iter()
+        .filter(|reference| reference.kind == TopologicalElementKind::Face)
+        .position(|reference| reference.producer_element_id == ExactFaceRole::Top.semantic_role())
+        .unwrap_or_else(|| {
+            panic!(
+                "table top has no top face: {:?}",
+                package.topological_references()
+            )
+        }) as u32;
+    assert!(app.select_topological_locator(TopologicalPickLocator {
+        instance_path: InstancePath::root(top),
+        producer_feature_id,
+        kind: TopologicalElementKind::Face,
+        ordinal: top_face,
+    }));
+    let undo_steps = app.undo_step_count();
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(Vec2::new(1600.0, 1000.0))
+        .with_step_dt(1.0 / 60.0)
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+    harness.step();
+    harness.state_mut().dispatch_command(AppCommand::PushPull);
+    harness.state_mut().set_push_pull_distance_input("7");
+    assert!(harness.state_mut().start_preview());
+    wait_preview(harness.state_mut());
+    assert!(
+        harness.state_mut().confirm_preview(),
+        "{}",
+        harness.state().digest
+    );
+
+    let top_thickness = |app: &KetchupApp| {
+        app.document
+            .current_rule_program()
+            .unwrap()
+            .overrides
+            .get("top_thickness")
+            .copied()
+    };
+    let ids = |app: &KetchupApp| {
+        app.document
+            .current()
+            .occurrences()
+            .map(|occurrence| occurrence.id())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(harness.state().undo_step_count(), undo_steps + 1);
+    assert_eq!(
+        top_thickness(harness.state()),
+        Some(32.0),
+        "{:?}",
+        harness.state().document.current_rule_program()
+    );
+    assert_eq!(ids(harness.state()), occurrence_ids);
+    assert!(harness.state_mut().undo());
+    assert_eq!(top_thickness(harness.state()), None);
+    assert!(harness.state_mut().redo());
+    assert_eq!(top_thickness(harness.state()), Some(32.0));
+    assert_eq!(ids(harness.state()), occurrence_ids);
+    assert!(harness.state_mut().save_document_to(&path));
+
+    let reopened = ketchup_application::DocumentSession::open(
+        &path,
+        ketchup_application::SessionSettings::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        reopened
+            .rule_program()
+            .unwrap()
+            .overrides
+            .get("top_thickness"),
+        Some(&32.0)
+    );
+    assert_eq!(
+        reopened
+            .snapshot()
+            .occurrences()
+            .map(|occurrence| occurrence.id())
+            .collect::<Vec<_>>(),
+        occurrence_ids
+    );
+}
+
+#[test]
 fn continuous_motion_paints_surface_preview_without_waiting_for_exact_worker() {
     let mut app = prism(
         &[[0.0, 0.0], [40.0, 0.0], [8.0, 30.0]],

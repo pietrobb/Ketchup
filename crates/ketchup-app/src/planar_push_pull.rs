@@ -162,6 +162,42 @@ impl KetchupApp {
         })
     }
 
+    pub(super) fn rewrite_program_push_pull(
+        &self,
+        source: &PushPullSourcePlan,
+        distance_mm: f64,
+    ) -> Result<Option<ketchup_core::document::RuleProgramSource>, String> {
+        let Some(program) = self.document.current_rule_program() else {
+            return Ok(None);
+        };
+        let reference = source
+            .topological_reference
+            .as_ref()
+            .ok_or_else(|| "Push/Pull on a program-owned part requires a named face".to_owned())?;
+        let snapshot = self.document.current();
+        let occurrence = snapshot
+            .occurrence(source.target.instance_path.root_occurrence())
+            .ok_or_else(|| "Push/Pull program part is missing".to_owned())?;
+        let face = self
+            .selected_planar_face(&source.target)
+            .ok_or_else(|| "Push/Pull program face is no longer planar".to_owned())?;
+        // The evaluator exposes a program extrusion's caps under the standard
+        // extrusion roles; in the program they are `end` and `start`.
+        let face_name = match reference.producer_element_id.as_str() {
+            role if role == ExactFaceRole::Top.semantic_role() => "end",
+            role if role == ExactFaceRole::Bottom.semantic_role() => "start",
+            name => name,
+        };
+        ketchup_application::rewrite_rule_program_push_pull(
+            program,
+            occurrence.name(),
+            face_name,
+            distance_mm / face.local_to_world_scale,
+        )
+        .map(Some)
+        .map_err(|error| error.to_string())
+    }
+
     pub(super) fn derive_planar_preview(
         &self,
         source: &PushPullSourcePlan,
@@ -571,6 +607,19 @@ impl KetchupApp {
             self.request_face_offset_confirmation();
             return false;
         }
+        let Some(preview) = self.preview_box.as_ref() else {
+            return false;
+        };
+        let rule_program = match self.rewrite_program_push_pull(
+            &preview.plan.source,
+            f64::from_bits(preview.plan.distance_mm_bits),
+        ) {
+            Ok(source) => source,
+            Err(error) => {
+                self.digest = error;
+                return false;
+            }
+        };
         let Some(proposal) = self.smart_push_pull_proposal.take() else {
             return false;
         };
@@ -599,6 +648,11 @@ impl KetchupApp {
                     proposal
                         .commit(document)
                         .map_err(|error| error.to_string())?;
+                    if let Some(source) = rule_program
+                        && !document.bind_rule_program(source)
+                    {
+                        return Err("cannot bind Push/Pull to rule program revision".to_owned());
+                    }
                     document
                         .register_exact_reference_evidence(&render)
                         .map_err(|error| error.to_string())?;
