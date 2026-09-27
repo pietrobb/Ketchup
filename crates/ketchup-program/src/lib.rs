@@ -16,7 +16,7 @@ pub mod model;
 pub mod validate;
 
 pub use bom::{Bom, bom};
-pub use eval::{Evaluated, ProgramError, evaluate};
+pub use eval::{Evaluated, ProgramError, SourceLines, evaluate};
 pub use model::{
     Face, ProgramFeature, ProgramFeatureKind, ProgramFeatureParameter, ProgramModel,
     ProgramParameterValueType, ProgramPartBody, ProgramProfileSegment,

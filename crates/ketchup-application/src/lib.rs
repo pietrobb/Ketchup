@@ -20,12 +20,14 @@ pub mod validation;
 mod worker_pool;
 pub mod workflow_trace;
 
+pub use ketchup_program::SourceLines;
 pub use planner::{
     AssistantCadProgramPlan, AssistantCadResolvedProgramOutput, plan_assistant_cad_edit_program,
     plan_assistant_cad_edit_program_with_outputs, plan_panel_batch,
 };
 pub use rule_program::{
     RuleProgramApplyError, RuleProgramApplyResult, rewrite_rule_program_push_pull,
+    rule_program_part_sources,
 };
 
 mod session;

@@ -143,6 +143,7 @@ mod mesh_conversion_ui;
 mod native_document_inspection;
 mod occurrence_color_ui;
 mod planar_push_pull;
+mod program_source_ui;
 mod transform_operation;
 mod validator_ui;
 mod viewport_feedback;
@@ -37864,6 +37865,7 @@ impl KetchupApp {
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                     dock_scroll_area().show(ui, |ui| {
                         self.show_face_workflow_ui(ui);
+                        self.show_program_source(ui);
                         self.show_feature_history(ui);
                         self.show_body_editor(ui);
                         self.show_assembly_editor(ui);
@@ -37894,6 +37896,7 @@ impl KetchupApp {
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                     dock_scroll_area().show(ui, |ui| {
                         self.show_face_workflow_ui(ui);
+                        self.show_program_source(ui);
                         self.show_feature_history(ui);
                         self.show_body_editor(ui);
                         self.show_assembly_editor(ui);
@@ -40334,6 +40337,8 @@ mod drawing_plane_tests;
 mod mesh_snapping_tests;
 #[cfg(test)]
 mod nested_transform_tests;
+#[cfg(test)]
+mod program_source_ui_tests;
 #[cfg(test)]
 mod push_pull_snapping_tests;
 #[cfg(test)]

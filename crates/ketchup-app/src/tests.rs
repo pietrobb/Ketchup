@@ -4164,7 +4164,7 @@ fn lossy_legacy_document() -> Vec<u8> {
     bytes
 }
 
-fn through_cut_document() -> DocumentStore {
+pub(super) fn through_cut_document() -> DocumentStore {
     let mut document = DocumentStore::new();
     document
         .apply_batch(&CommandBatch::new(vec![

@@ -49,9 +49,51 @@ impl std::error::Error for ProgramError {}
 
 #[derive(Debug, Default)]
 struct State {
+    /// Name of the user's program file; frames from the prelude are not source lines.
+    file_name: String,
     overrides: BTreeMap<String, f64>,
     model: RefCell<ProgramModel>,
     log: RefCell<Vec<String>>,
+    part_sources: RefCell<BTreeMap<String, BTreeSet<SourceLines>>>,
+}
+
+/// An inclusive, 1-based line range of the user's program.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct SourceLines {
+    pub first: usize,
+    pub last: usize,
+}
+
+/// Records every call site in the user's program that led to this builtin
+/// call, so a part can show the lines that define it, including calls made
+/// through the user's own helper functions and the prelude.
+fn record_source(eval: &Evaluator, state: &State, parts: &[&str]) {
+    let mut spans = eval
+        .call_stack()
+        .frames
+        .into_iter()
+        .filter_map(|frame| frame.location)
+        .chain(eval.call_stack_top_location())
+        .filter(|location| location.filename() == state.file_name)
+        .map(|location| {
+            let span = location.resolve_span();
+            SourceLines {
+                first: span.begin.line + 1,
+                last: span.end.line + 1,
+            }
+        })
+        .peekable();
+    if spans.peek().is_none() {
+        return;
+    }
+    let spans = spans.collect::<Vec<_>>();
+    let mut sources = state.part_sources.borrow_mut();
+    for part in parts {
+        sources
+            .entry((*part).to_owned())
+            .or_default()
+            .extend(spans.iter().copied());
+    }
 }
 
 impl starlark::PrintHandler for State {
@@ -69,6 +111,8 @@ pub struct Evaluated {
     pub log: Vec<String>,
     /// Overrides that did not match any `param()`.
     pub unused_overrides: Vec<String>,
+    /// Program lines that created or changed each part, keyed by part name.
+    pub part_sources: BTreeMap<String, Vec<SourceLines>>,
 }
 
 thread_local! {
@@ -568,6 +612,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
             }
             model.parts.push(part.clone());
         }
+        record_source(eval, &state, &[name]);
         Ok(part_value(&part, heap))
     }
 
@@ -596,6 +641,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
                 distance_mm,
             },
         )?;
+        record_source(eval, &state, &[name]);
         Ok(part_value(&part, heap))
     }
 
@@ -638,6 +684,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
                 angle_degrees: angle,
             },
         )?;
+        record_source(eval, &state, &[name]);
         Ok(part_value(&part, heap))
     }
 
@@ -662,7 +709,9 @@ fn builtins(builder: &mut GlobalsBuilder) {
             radius_mm,
             requested_name,
             ProgramEdgeFinishKind::Fillet,
-        )
+        )?;
+        record_source(eval, &state, &[&part_name]);
+        Ok(NoneType)
     }
 
     /// Bevels edges identified by the two named faces that meet there.
@@ -686,7 +735,9 @@ fn builtins(builder: &mut GlobalsBuilder) {
             distance_mm,
             requested_name,
             ProgramEdgeFinishKind::Chamfer,
-        )
+        )?;
+        record_source(eval, &state, &[&part_name]);
+        Ok(NoneType)
     }
 
     /// Cuts a named closed profile down from the body's current top face.
@@ -708,6 +759,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
             anyhow::bail!("cut name must be 1-128 printable bytes, got {name:?}");
         }
         let state = state(eval)?;
+        record_source(eval, &state, &[&part_name]);
         with_part(&state, &part_name, |part| {
             if part.cuts.iter().any(|cut| cut.name == name)
                 || part.fillets.iter().any(|finish| finish.name == name)
@@ -746,6 +798,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
             anyhow::bail!("push_pull name must be 1-128 printable bytes, got {name:?}");
         }
         let state = state(eval)?;
+        record_source(eval, &state, &[&part_name]);
         with_part(&state, &part_name, |part| {
             if part.cuts.iter().any(|cut| cut.name == name)
                 || part.fillets.iter().any(|finish| finish.name == name)
@@ -806,6 +859,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
             .transpose()?;
         let id = text(id, "id")?;
         let state = state(eval)?;
+        record_source(eval, &state, &[&name]);
         with_part(&state, &name, |part| {
             let (u, v) = match (at, world) {
                 (Some([u, v]), None) => (u, v),
@@ -857,6 +911,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
             );
         }
         let state = state(eval)?;
+        record_source(eval, &state, &[&name]);
         with_part(&state, &name, |part| {
             let id = id.unwrap_or_else(|| format!("p{}", part.pockets.len() + 1));
             if part.pockets.iter().any(|pocket| pocket.id == id) {
@@ -957,6 +1012,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
             })
             .transpose()?;
         let state = state(eval)?;
+        record_source(eval, &state, &[&a, &b]);
         let mut model = state.model.borrow_mut();
         for part in [&a, &b] {
             if model.part(part).is_none() {
@@ -1033,6 +1089,7 @@ pub fn evaluate(
     let ast = AstModule::parse(file_name, source.to_owned(), &dialect())
         .map_err(|error| evaluation_error("syntax_error", error))?;
     let state = std::rc::Rc::new(State {
+        file_name: file_name.to_owned(),
         overrides: overrides.clone(),
         ..State::default()
     });
@@ -1057,9 +1114,16 @@ pub fn evaluate(
         .filter(|name| !model.params.iter().any(|param| &param.name == *name))
         .cloned()
         .collect();
+    let part_sources = state
+        .part_sources
+        .into_inner()
+        .into_iter()
+        .map(|(part, lines)| (part, lines.into_iter().collect()))
+        .collect();
     Ok(Evaluated {
         model,
         log: state.log.into_inner(),
         unused_overrides,
+        part_sources,
     })
 }

@@ -296,3 +296,33 @@ fn the_interpreter_leaves_workspace_json_parsing_intact() {
     let Tagged::Length { mm } = serde_json::from_str(r#"{"kind":"Length","mm":1.5}"#).unwrap();
     assert_eq!(mm, 1.5);
 }
+
+#[test]
+fn every_part_knows_the_program_lines_that_define_it() {
+    let source = r#"top = board("top", (600, 400, 18), at = (0, 0, 382))
+def leg(name, x):
+    return board(name, (50, 50, 382), at = (x, 0, 0))
+left = leg("left leg", 0)
+right = leg("right leg", 550)
+dowels(
+    left,
+    top,
+    count = 2,
+    margin = 10,
+    spacing = 25,
+)
+"#;
+    let (evaluated, _) = run("table.star", source, &BTreeMap::new()).unwrap();
+    let lines = |part: &str| -> Vec<(usize, usize)> {
+        evaluated.part_sources[part]
+            .iter()
+            .map(|lines| (lines.first, lines.last))
+            .collect()
+    };
+    // Prelude frames are not program lines; the call inside the user's helper
+    // and the call of that helper both are.
+    assert_eq!(lines("top"), [(1, 1), (6, 12)]);
+    assert_eq!(lines("left leg"), [(3, 3), (4, 4), (6, 12)]);
+    assert_eq!(lines("right leg"), [(3, 3), (5, 5)]);
+    assert_eq!(evaluated.part_sources.len(), 3);
+}

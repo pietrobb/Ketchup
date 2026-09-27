@@ -1,0 +1,127 @@
+use super::*;
+use ketchup_application::SourceLines;
+use ketchup_core::document::RuleProgramSource;
+
+/// Program evaluated once per source revision, so selecting parts stays cheap.
+#[derive(Clone)]
+struct ProgramSourceView {
+    source: RuleProgramSource,
+    parts: Result<BTreeMap<String, Vec<SourceLines>>, String>,
+    /// Part whose first line has already been scrolled into view.
+    scrolled_to: Option<String>,
+}
+
+/// Marks lines that define the selected part, also for screen readers.
+pub(super) const DEFINING_LINE_MARKER: &str = "›";
+
+pub(super) fn program_source_line_label(number: usize, line: &str, defining: bool) -> String {
+    let marker = if defining { DEFINING_LINE_MARKER } else { " " };
+    format!("{marker}{number:>4}  {line}")
+}
+
+fn line_ranges(lines: &[SourceLines]) -> String {
+    lines
+        .iter()
+        .map(|lines| {
+            if lines.first == lines.last {
+                lines.first.to_string()
+            } else {
+                format!("{}–{}", lines.first, lines.last)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+impl KetchupApp {
+    /// Shows the Starlark program lines that create or change the selected part.
+    /// Models without a program show nothing, so the dock does not grow for them.
+    pub(super) fn show_program_source(&mut self, ui: &mut egui::Ui) {
+        let Some(program) = self.document.current_rule_program() else {
+            return;
+        };
+        let Some(occurrence_id) = self.selected_occurrence_ids().first().copied() else {
+            return;
+        };
+        let snapshot = self.document.current();
+        let Some(occurrence) = snapshot.occurrence(occurrence_id) else {
+            return;
+        };
+        let part = occurrence.name().to_owned();
+        egui::CollapsingHeader::new(self.catalog.text("program-source-title"))
+            .id_salt("program-source")
+            .default_open(true)
+            .show(ui, |ui| {
+                let id = ui.id().with("program-source-view");
+                let mut view = ui
+                    .data_mut(|data| data.get_temp::<ProgramSourceView>(id))
+                    .filter(|view| &view.source == program)
+                    .unwrap_or_else(|| ProgramSourceView {
+                        source: program.clone(),
+                        parts: ketchup_application::rule_program_part_sources(program),
+                        scrolled_to: None,
+                    });
+                match &view.parts {
+                    Err(error) => {
+                        ui.label(self.catalog.format(
+                            "program-source-error",
+                            &BTreeMap::from([("error", error.clone())]),
+                        ));
+                    }
+                    Ok(parts) => match parts.get(&part) {
+                        None => {
+                            ui.label(self.catalog.format(
+                                "program-source-part-missing",
+                                &BTreeMap::from([("part", part.clone())]),
+                            ));
+                        }
+                        Some(lines) => {
+                            ui.label(self.catalog.format(
+                                "program-source-lines",
+                                &BTreeMap::from([
+                                    ("part", part.clone()),
+                                    ("lines", line_ranges(lines)),
+                                ]),
+                            ));
+                            let scroll = view.scrolled_to.as_deref() != Some(part.as_str());
+                            show_source_lines(ui, &view.source.source, lines, scroll);
+                            view.scrolled_to = Some(part.clone());
+                        }
+                    },
+                }
+                ui.data_mut(|data| data.insert_temp(id, view));
+            });
+        ui.separator();
+    }
+}
+
+fn show_source_lines(ui: &mut egui::Ui, source: &str, lines: &[SourceLines], scroll: bool) {
+    let highlight = ui.visuals().selection.bg_fill;
+    let highlight_text = ui.visuals().strong_text_color();
+    egui::ScrollArea::both()
+        .id_salt("program-source-scroll")
+        .max_height(240.0)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            let mut scrolled = !scroll;
+            for (index, line) in source.lines().enumerate() {
+                let number = index + 1;
+                let defining = lines
+                    .iter()
+                    .any(|lines| (lines.first..=lines.last).contains(&number));
+                let mut text =
+                    egui::RichText::new(program_source_line_label(number, line, defining))
+                        .monospace();
+                if defining {
+                    text = text.background_color(highlight).color(highlight_text);
+                } else {
+                    text = text.weak();
+                }
+                let response = ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Extend));
+                if defining && !scrolled {
+                    response.scroll_to_me(Some(egui::Align::Center));
+                    scrolled = true;
+                }
+            }
+        });
+}
