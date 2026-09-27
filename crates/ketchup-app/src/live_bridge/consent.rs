@@ -1,7 +1,8 @@
 //! In-window consent broker for attaching to an already-open Ketchup window.
 //!
-//! The loopback request carries no credential. A fresh bridge credential is returned
-//! over that same socket only after the user approves in this exact app instance.
+//! The loopback request carries no credential. Every local attach is granted at once
+//! and receives a fresh bridge credential over that same socket; a newer attach
+//! replaces the previous client.
 use super::{KetchupApp, egui, transport};
 use crate::dialogs::HighRiskConfirmationRequest;
 use serde::{Deserialize, Serialize};
@@ -178,10 +179,11 @@ impl KetchupApp {
             return;
         };
         if self.live_consent_attached {
-            let _ = request.decision.try_send(ConsentDecision::Reject);
-        } else {
-            self.allow_live_consent(context, request);
+            // The previous client may be gone or forgotten without disconnecting;
+            // a new local attach takes over with a fresh credential.
+            self.revoke_live_consent();
         }
+        self.allow_live_consent(context, request);
     }
 
     fn allow_live_consent(&mut self, context: &egui::Context, pending: PendingConsent) {

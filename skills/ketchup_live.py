@@ -331,7 +331,7 @@ class Runtime:
                 if isinstance(error, Rejection):
                     value = _error(error.code, str(error))
                 elif isinstance(error, self.sdk.LiveConsentError):
-                    value = _error(error.code, "The target window did not grant live access.")
+                    value = _error(error.code, "The Kečup window could not be attached (it may have closed). List windows again.")
                 elif isinstance(error, self.sdk.LiveBridgeError):
                     details = error.details or {}
                     message = details.get("message") or _REJECTION_HINTS.get(
@@ -368,12 +368,12 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
     @beta_async_tool(name="KetchupLiveSession")
     async def session(action: str, handle: str = "", instance_id: str = "",
                       executable: str = "", document_path: str = "") -> str:
-        """List, attach to an approved open window, launch, or disconnect. Never terminates the GUI.
+        """List, attach to an open window, launch, or disconnect. Never terminates the GUI.
 
         Args:
             action: list, attach, launch, or disconnect. Attach/launch are forbidden in plan mode.
             handle: Live UUID, required only for disconnect (also allowed in plan mode).
-            instance_id: Listed 32-hex window ID, required only for attach; confirmation occurs in that window.
+            instance_id: Listed 32-hex window ID, required only for attach; attach is immediate and replaces any earlier client (status busy only means connected).
             executable: Explicit absolute existing GUI executable, required for launch. No discovery or extra arguments.
             document_path: Optional absolute existing document file for the new window; never replaces an existing window.
         """

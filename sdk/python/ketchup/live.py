@@ -1,7 +1,7 @@
 """Non-owning live bridge client with bounded same-user window discovery.
 
 Discovery returns only nonce-verified instance metadata. Attachment credentials
-still arrive privately from an explicitly approved target-window consent request.
+arrive privately from the target window's local attach endpoint.
 No environment discovery, subprocesses, document ownership, or geometry evaluation.
 Methods return the complete validated response envelope (including its stamp).
 Pass that stamp explicitly on guarded calls; nothing refreshes it or retries.
@@ -960,7 +960,7 @@ def _attach_live_instance(instance_id: str, discovery_root: Path | None = None,
                           discovery_timeout: float = 0.25,
                           consent_timeout: float = MAX_CONSENT_TIMEOUT,
                           session_factory=None):
-    """Attach only after the selected window returns an explicit correlated Allow."""
+    """Attach to the selected window; a newer attach replaces any previous client."""
     instance_id = _instance_id(instance_id)
     if (type(discovery_timeout) not in (int, float)
             or not 0 < discovery_timeout <= 2 or not math.isfinite(discovery_timeout)):
@@ -978,11 +978,9 @@ def _attach_live_instance(instance_id: str, discovery_root: Path | None = None,
             json.JSONDecodeError):
         raise LiveConsentError("instance_unavailable") from None
     try:
-        listed = _broker_exchange(
+        _broker_exchange(
             endpoint, "list", instance_id, secrets.token_hex(32), float(discovery_timeout)
         )
-        if listed["status"] != "available":
-            raise LiveConsentError("instance_unavailable")
         if _registry_endpoint(root, instance_id) != endpoint:
             raise LiveConsentError("instance_unavailable")
         response = _broker_exchange(

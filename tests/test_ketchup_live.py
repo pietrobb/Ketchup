@@ -267,7 +267,8 @@ def test_discovery_stale_broker_does_not_hide_next_live_window(tmp_path):
                        "status": "available"}]
 
 
-def test_attach_revalidates_instance_and_uses_credential_only_internally(tmp_path):
+@pytest.mark.parametrize("listed_status", ["available", "busy"])
+def test_attach_revalidates_instance_and_uses_credential_only_internally(tmp_path, listed_status):
     instance_id = "3" * 32
     broker_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     broker_listener.bind(("127.0.0.1", 0))
@@ -290,7 +291,7 @@ def test_attach_revalidates_instance_and_uses_credential_only_internally(tmp_pat
                     assert len(value["nonce"]) == 64
                     if action == "list":
                         response_value = {"version": 1, "nonce": value["nonce"],
-                                          "status": "available", "instance_id": instance_id,
+                                          "status": listed_status, "instance_id": instance_id,
                                           "document": "selected.ketchup"}
                     else:
                         response_value = {"version": 1, "nonce": value["nonce"],

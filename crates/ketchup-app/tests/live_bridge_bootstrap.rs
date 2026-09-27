@@ -689,16 +689,27 @@ fn local_attach_is_granted_without_prompt_and_disconnect_revokes_the_credential(
     assert!(shell.app().live_consent_attached());
     assert!(shell.has_visible_label(&shell.catalog().text("live-consent-connected-title")));
 
-    // A second requester cannot steal an attached window.
+    // A new attach takes the window over even though the first client never
+    // disconnected (it may be gone or forgotten); the old credential dies.
     let second = std::thread::spawn(move || request_consent(consent_address, &"3".repeat(64)));
     let second = finish_attach(&mut shell, second);
-    assert_eq!(second["status"], "rejected");
-    assert!(second.get("token").is_none());
+    assert_eq!(second["status"], "allowed");
+    let second_token = second["token"].as_str().unwrap();
+    assert_ne!(second_token, token);
+    let address = second["live_bridge_address"].as_str().unwrap();
     assert!(shell.app().live_consent_attached());
 
     let mut live = TcpStream::connect(address).unwrap();
-    assert!(call(&mut shell, &mut live, token, Request::Status {}).ok);
-    assert!(call(&mut shell, &mut live, token, Request::Disconnect {}).ok);
+    assert_eq!(
+        call(&mut shell, &mut live, token, Request::Status {})
+            .error
+            .as_deref(),
+        Some("unauthorized")
+    );
+    drop(live);
+    let mut live = TcpStream::connect(address).unwrap();
+    assert!(call(&mut shell, &mut live, second_token, Request::Status {}).ok);
+    assert!(call(&mut shell, &mut live, second_token, Request::Disconnect {}).ok);
     drop(live);
     shell.step();
     assert!(!shell.app().live_consent_attached());
