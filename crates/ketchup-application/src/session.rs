@@ -419,13 +419,15 @@ impl DocumentSession {
         self.apply_rule_commands_with_source(batch, &[], source)
     }
 
-    pub(crate) fn replace_with_rule_panels(
+    pub(crate) fn replace_with_rule_parts(
         &mut self,
-        panels: &[AssistantCadEditOperation],
+        parts: &[ketchup_program::model::Part],
         source: ketchup_core::document::RuleProgramSource,
     ) -> Result<Snapshot, SessionError> {
         let mut replacement = Self::new(self.settings.clone());
-        let snapshot = replacement.apply_panels_with_source(panels, source)?;
+        let batch = crate::planner::plan_rule_part_batch(&replacement.document, parts)
+            .map_err(SessionError::Planning)?;
+        let snapshot = replacement.apply_rule_commands_with_source(batch, &[], source)?;
         *self = replacement;
         Ok(snapshot)
     }
@@ -469,6 +471,23 @@ impl DocumentSession {
         Ok(self.snapshot())
     }
 
+    pub(crate) fn apply_rule_commands_with_parts_source(
+        &mut self,
+        batch: CommandBatch,
+        parts: &[ketchup_program::model::Part],
+        source: ketchup_core::document::RuleProgramSource,
+    ) -> Result<Snapshot, SessionError> {
+        let additions = crate::planner::plan_rule_part_batch(&self.document, parts)
+            .map_err(SessionError::Planning)?;
+        let commands = batch
+            .commands()
+            .iter()
+            .chain(additions.commands())
+            .cloned()
+            .collect();
+        self.apply_rule_commands_with_source(CommandBatch::new(commands), &[], source)
+    }
+
     /// Rebuilds only changed program parts while keeping their occurrence identities.
     pub fn replace_rule_panels_with_source(
         &mut self,
@@ -484,6 +503,68 @@ impl DocumentSession {
             .chain(added_panels.iter().cloned())
             .collect::<Vec<_>>();
         let additions = crate::planner::plan_panel_batch(&self.document, &panels)
+            .map_err(SessionError::Planning)?;
+        let definitions = additions
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                CanonicalCommand::CreateDefinition { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let temporary_occurrences = additions
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                CanonicalCommand::CreateOccurrence { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let mut commands = additions.commands().to_vec();
+        for ((old_id, _), (definition_id, temporary_id)) in replacements
+            .iter()
+            .zip(definitions.into_iter().zip(temporary_occurrences))
+        {
+            let old = snapshot
+                .occurrence(*old_id)
+                .ok_or_else(|| SessionError::Persistence("program part is missing".into()))?;
+            if snapshot
+                .occurrences()
+                .filter(|item| item.definition_id() == old.definition_id())
+                .count()
+                != 1
+            {
+                return Err(SessionError::Persistence(
+                    "cannot rebuild a shared program definition".into(),
+                ));
+            }
+            commands.push(CanonicalCommand::DeleteOccurrence { id: temporary_id });
+            commands.push(CanonicalCommand::RepointOccurrence {
+                id: *old_id,
+                definition_id,
+            });
+            commands.push(CanonicalCommand::DeleteDefinition {
+                id: old.definition_id(),
+            });
+        }
+        commands.extend(other_commands.commands().iter().cloned());
+        self.apply_rule_commands_with_source(CommandBatch::new(commands), &[], source)
+    }
+
+    pub(crate) fn replace_rule_parts_with_source(
+        &mut self,
+        replacements: &[(OccurrenceId, ketchup_program::model::Part)],
+        added_parts: &[ketchup_program::model::Part],
+        other_commands: CommandBatch,
+        source: ketchup_core::document::RuleProgramSource,
+    ) -> Result<Snapshot, SessionError> {
+        let snapshot = self.snapshot();
+        let parts = replacements
+            .iter()
+            .map(|(_, part)| part.clone())
+            .chain(added_parts.iter().cloned())
+            .collect::<Vec<_>>();
+        let additions = crate::planner::plan_rule_part_batch(&self.document, &parts)
             .map_err(SessionError::Planning)?;
         let definitions = additions
             .commands()

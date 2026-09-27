@@ -1,8 +1,7 @@
 use crate::{DocumentSession, SessionError};
-use ketchup_core::assistant_sidecar::AssistantCadEditOperation;
 use ketchup_core::document::{
-    CanonicalCommand, CommandBatch, DefinitionId, Dimension, FeatureKind, FeatureParameterTarget,
-    ParameterValueType, RuleProgramSource, Snapshot, Transform,
+    CanonicalCommand, CommandBatch, DefinitionId, Dimension, EdgeFinishKind, FeatureKind,
+    FeatureParameterTarget, ParameterValueType, RuleProgramSource, Snapshot, Transform,
 };
 use ketchup_program::{ProgramFeatureKind, ProgramModel, ProgramParameterValueType, Report};
 
@@ -47,6 +46,107 @@ pub struct RuleProgramApplyResult {
     pub replaced_document: bool,
 }
 
+/// Rewrites a manual Push/Pull into the program source that owns the part.
+/// A uniquely driving parameter is overridden; otherwise a named operation is appended.
+pub fn rewrite_rule_program_push_pull(
+    source: &RuleProgramSource,
+    part_name: &str,
+    face_name: &str,
+    distance_mm: f64,
+) -> Result<RuleProgramSource, RuleProgramApplyError> {
+    if !distance_mm.is_finite() || distance_mm.abs() <= f64::EPSILON {
+        return Err(RuleProgramApplyError::Program {
+            code: "invalid_push_pull".to_owned(),
+            message: "Push/Pull distance must be finite and non-zero".to_owned(),
+        });
+    }
+    let (evaluated, _) = evaluate(source)?;
+    let part = evaluated
+        .model
+        .part(part_name)
+        .ok_or_else(|| RuleProgramApplyError::Program {
+            code: "unknown_part".to_owned(),
+            message: format!("program part {part_name:?} does not exist"),
+        })?;
+    let controlled_value = |model: &ProgramModel| {
+        let part = model.part(part_name)?;
+        if let Some(offset) = part
+            .face_offsets
+            .iter()
+            .rev()
+            .find(|offset| offset.face == face_name)
+        {
+            return Some(offset.distance_mm);
+        }
+        match (&part.body, face_name) {
+            (ketchup_program::model::ProgramPartBody::Extrusion { distance_mm, .. }, "end") => {
+                Some(*distance_mm)
+            }
+            // A board is padded along its third size component.
+            (ketchup_program::model::ProgramPartBody::Panel, "end") => Some(part.size_mm[2]),
+            _ => None,
+        }
+    };
+    let baseline = controlled_value(&evaluated.model);
+    let mut drivers = Vec::new();
+    if let Some(baseline) = baseline {
+        for parameter in &evaluated.model.params {
+            let current = source
+                .overrides
+                .get(&parameter.name)
+                .copied()
+                .unwrap_or(parameter.value);
+            let step = current.abs().mul_add(1.0e-4, 1.0e-3);
+            let probed = if parameter
+                .max
+                .is_none_or(|maximum| current + step <= maximum)
+            {
+                current + step
+            } else if parameter
+                .min
+                .is_none_or(|minimum| current - step >= minimum)
+            {
+                current - step
+            } else {
+                continue;
+            };
+            let mut probe_source = source.clone();
+            probe_source
+                .overrides
+                .insert(parameter.name.clone(), probed);
+            let (probe, _) = evaluate(&probe_source)?;
+            let Some(probe_value) = controlled_value(&probe.model) else {
+                continue;
+            };
+            let slope = (probe_value - baseline) / (probed - current);
+            if slope.abs() > 1.0e-8 {
+                let replacement = current + distance_mm / slope;
+                if parameter.min.is_none_or(|minimum| replacement >= minimum)
+                    && parameter.max.is_none_or(|maximum| replacement <= maximum)
+                {
+                    drivers.push((parameter.name.clone(), replacement));
+                }
+            }
+        }
+    }
+    let mut rewritten = source.clone();
+    if let [(parameter, value)] = drivers.as_slice() {
+        rewritten.overrides.insert(parameter.clone(), *value);
+    } else {
+        let quote = |value: &str| serde_json::to_string(value).expect("strings serialize");
+        let feature_name = format!("GUI Push/Pull {}", part.face_offsets.len() + 1);
+        rewritten.source.push_str(&format!(
+            "\npush_pull({}, face={}, distance={}, name={})\n",
+            quote(part_name),
+            quote(face_name),
+            distance_mm,
+            quote(&feature_name)
+        ));
+    }
+    evaluate(&rewritten)?;
+    Ok(rewritten)
+}
+
 impl DocumentSession {
     /// Evaluates and publishes a rule program through the canonical document session.
     /// Incremental updates preserve identities; replacing an unrelated document requires
@@ -57,10 +157,23 @@ impl DocumentSession {
         allow_replacement: bool,
     ) -> Result<RuleProgramApplyResult, RuleProgramApplyError> {
         let (evaluated, report) = evaluate(&source)?;
+        if self.rule_program() == Some(&source) {
+            return Ok(RuleProgramApplyResult {
+                snapshot: self.snapshot(),
+                report,
+                replaced_document: false,
+            });
+        }
         let old_program = self.rule_program().map(evaluate).transpose()?;
 
         if let Some((old, _)) = &old_program
             && old.model.joints == evaluated.model.joints
+            && old.model.parts.iter().all(|before| {
+                evaluated
+                    .model
+                    .part(&before.name)
+                    .is_some_and(|after| program_feature_references_match(before, after))
+            })
             && self.snapshot().occurrences().count() == old.model.parts.len()
         {
             let snapshot = self.snapshot();
@@ -74,6 +187,10 @@ impl DocumentSession {
                     let mut comparable = after.clone();
                     comparable.at_mm = before.at_mm;
                     comparable.size_mm = before.size_mm;
+                    comparable.body = before.body.clone();
+                    comparable.fillets = before.fillets.clone();
+                    comparable.cuts = before.cuts.clone();
+                    comparable.face_offsets = before.face_offsets.clone();
                     comparable.holes = before.holes.clone();
                     comparable.pockets = before.pockets.clone();
                     comparable.features = before.features.clone();
@@ -118,7 +235,7 @@ impl DocumentSession {
                 let snapshot = if commands.is_empty() && panels.is_empty() {
                     self.replace_rule_program_source(source)?
                 } else {
-                    self.apply_rule_commands_with_source(
+                    self.apply_rule_commands_with_parts_source(
                         CommandBatch::new(commands),
                         &panels,
                         source,
@@ -166,10 +283,7 @@ impl DocumentSession {
                         if occurrence.transform() != position {
                             return None;
                         }
-                        Some(
-                            (before != after)
-                                .then(|| (occurrence.id(), ketchup_program::cad::part(after))),
-                        )
+                        Some((before != after).then(|| (occurrence.id(), after.clone())))
                     })
                     .collect::<Option<Vec<_>>>();
                 if let Some(replacements) = replacements {
@@ -177,7 +291,7 @@ impl DocumentSession {
                     let mut commands = Vec::new();
                     append_removed_parts(&snapshot, &old.model, &evaluated.model, &mut commands)?;
                     let panels = added_parts(&old.model, &evaluated.model);
-                    let snapshot = self.replace_rule_panels_with_source(
+                    let snapshot = self.replace_rule_parts_with_source(
                         &replacements,
                         &panels,
                         CommandBatch::new(commands),
@@ -201,8 +315,7 @@ impl DocumentSession {
                 RuleProgramApplyError::ReplacementConfirmationRequired
             });
         }
-        let panels = ketchup_program::cad::part_operations(&evaluated.model);
-        let snapshot = self.replace_with_rule_panels(&panels, source)?;
+        let snapshot = self.replace_with_rule_parts(&evaluated.model.parts, source)?;
         Ok(RuleProgramApplyResult {
             snapshot,
             report,
@@ -247,13 +360,64 @@ fn append_removed_parts(
     Ok(())
 }
 
-fn added_parts(before: &ProgramModel, after: &ProgramModel) -> Vec<AssistantCadEditOperation> {
+fn added_parts(before: &ProgramModel, after: &ProgramModel) -> Vec<ketchup_program::model::Part> {
     after
         .parts
         .iter()
         .filter(|part| before.part(&part.name).is_none())
-        .map(ketchup_program::cad::part)
+        .cloned()
         .collect()
+}
+
+fn program_feature_references_match(
+    before: &ketchup_program::model::Part,
+    after: &ketchup_program::model::Part,
+) -> bool {
+    fn segment_names(segments: &[ketchup_program::model::ProgramProfileSegment]) -> Vec<&str> {
+        segments
+            .iter()
+            .map(|segment| segment.name.as_str())
+            .collect()
+    }
+    let body_matches = match (&before.body, &after.body) {
+        (
+            ketchup_program::model::ProgramPartBody::Panel,
+            ketchup_program::model::ProgramPartBody::Panel,
+        ) => true,
+        (
+            ketchup_program::model::ProgramPartBody::Extrusion { segments: left, .. },
+            ketchup_program::model::ProgramPartBody::Extrusion {
+                segments: right, ..
+            },
+        )
+        | (
+            ketchup_program::model::ProgramPartBody::Revolve { segments: left, .. },
+            ketchup_program::model::ProgramPartBody::Revolve {
+                segments: right, ..
+            },
+        ) => segment_names(left) == segment_names(right),
+        _ => false,
+    };
+    body_matches
+        && before.cuts.len() == after.cuts.len()
+        && before.cuts.iter().zip(&after.cuts).all(|(left, right)| {
+            left.name == right.name
+                && segment_names(&left.segments) == segment_names(&right.segments)
+        })
+        && before.fillets.len() == after.fillets.len()
+        && before
+            .fillets
+            .iter()
+            .zip(&after.fillets)
+            .all(|(left, right)| {
+                left.name == right.name && left.kind == right.kind && left.edges == right.edges
+            })
+        && before.face_offsets.len() == after.face_offsets.len()
+        && before
+            .face_offsets
+            .iter()
+            .zip(&after.face_offsets)
+            .all(|(left, right)| left.name == right.name && left.face == right.face)
 }
 
 fn program_feature_commands(
@@ -331,7 +495,10 @@ fn program_feature_kind_matches(expected: ProgramFeatureKind, actual: &FeatureKi
     matches!(
         (expected, actual),
         (ProgramFeatureKind::Workplane, FeatureKind::Workplane(_))
-            | (ProgramFeatureKind::Sketch, FeatureKind::Sketch(_))
+            | (
+                ProgramFeatureKind::Sketch,
+                FeatureKind::Sketch(_) | FeatureKind::SegmentProfile { .. }
+            )
             | (
                 ProgramFeatureKind::Pad,
                 FeatureKind::Pad(_) | FeatureKind::Extrusion { .. }
@@ -343,7 +510,21 @@ fn program_feature_kind_matches(expected: ProgramFeatureKind, actual: &FeatureKi
             | (ProgramFeatureKind::Revolve, FeatureKind::Revolve { .. })
             | (
                 ProgramFeatureKind::Fillet,
-                FeatureKind::TopologyEdgeFinish { .. }
+                FeatureKind::TopologyEdgeFinish {
+                    kind: EdgeFinishKind::Fillet,
+                    ..
+                }
+            )
+            | (
+                ProgramFeatureKind::Chamfer,
+                FeatureKind::TopologyEdgeFinish {
+                    kind: EdgeFinishKind::Chamfer,
+                    ..
+                }
+            )
+            | (
+                ProgramFeatureKind::FaceOffset,
+                FeatureKind::TopologyFaceOffset { .. }
             )
     )
 }
@@ -370,19 +551,23 @@ mod tests {
         }
     }
 
-    fn exact_signature(
-        session: &DocumentSession,
-    ) -> ketchup_core::exact_brep_graph::ExactBRepGraph {
+    fn exact_graph(session: &DocumentSession) -> ketchup_core::exact_brep_graph::ExactBRepGraph {
         let snapshot = session.snapshot();
         let occurrence = snapshot.occurrences().next().unwrap();
         let definition = snapshot.definition(occurrence.definition_id()).unwrap();
         let producer = *definition.feature_ids().last().unwrap();
-        let mut graph = ketchup_core::exact_brep_graph::ExactBRepGraph::from_snapshot(
+        ketchup_core::exact_brep_graph::ExactBRepGraph::from_snapshot(
             &snapshot,
             occurrence.definition_id(),
             producer,
         )
-        .unwrap();
+        .unwrap()
+    }
+
+    fn exact_signature(
+        session: &DocumentSession,
+    ) -> ketchup_core::exact_brep_graph::ExactBRepGraph {
+        let mut graph = exact_graph(session);
         graph.document_id = 0;
         graph.source_revision = 0;
         graph.source_digest.clear();
@@ -421,7 +606,7 @@ mod tests {
 
     #[test]
     fn extruded_profile_update_preserves_identity_and_matches_fresh_build() {
-        let program = "W = param(\"width\", 40)\nextrude(\"angle\", profile=[[\"bottom\", [0, 0], [W, 0]], [\"outer\", [W, 0], [W, 10]], [\"ledge\", [W, 10], [10, 10]], [\"inner\", [10, 10], [10, 40]], [\"top\", [10, 40], [0, 40]], [\"back\", [0, 40], [0, 0]]], distance=100)";
+        let program = "W = param(\"width\", 40)\npart = extrude(\"angle\", profile=[[\"bottom\", [0, 0], [W, 0]], [\"outer\", [W, 0], [W, 10]], [\"ledge\", [W, 10], [10, 10]], [\"inner\", [10, 10], [10, 40]], [\"top\", [10, 40], [0, 40]], [\"back\", [0, 40], [0, 0]]], distance=100)\nfillet(part, edges=[[\"bottom\", \"outer\"]], radius=2, name=\"outer round\")";
         let mut incremental = DocumentSession::new(SessionSettings::default());
         let first = incremental
             .apply_rule_program(profile_source(program, "width", 40.0), false)
@@ -443,20 +628,97 @@ mod tests {
     }
 
     #[test]
-    fn revolved_profile_update_preserves_identity_and_matches_fresh_build() {
-        let program = "R = param(\"radius\", 20)\nrevolve(\"knob\", profile=[[0, 0], [R, 0], [R, 30], [0, 30]], axis=[[0, 0], [0, 30]], angle=270)";
+    fn named_cut_and_split_face_push_pull_graph_survives_parameter_changes() {
+        let program = "L = param(\"length\", 500)\nG = param(\"groove\", 150)\nP = param(\"pull\", 10)\npart = extrude(\"board\", profile=[[\"front\", [0, 0], [L, 0]], [\"right\", [L, 0], [L, 300]], [\"back\", [L, 300], [0, 300]], [\"left\", [0, 300], [0, 0]]], distance=18)\ncut(part, profile=[[\"entry\", [G, -1], [G + 8, -1]], [\"wall_right\", [G + 8, -1], [G + 8, 301]], [\"exit\", [G + 8, 301], [G, 301]], [\"wall_left\", [G, 301], [G, -1]]], depth=6, name=\"groove\")\npush_pull(part, face=\"end#2\", distance=P, name=\"raise right half\")";
+        let source = |length, groove, pull| RuleProgramSource {
+            file_name: "split.star".to_owned(),
+            source: program.to_owned(),
+            overrides: BTreeMap::from([
+                ("length".to_owned(), length),
+                ("groove".to_owned(), groove),
+                ("pull".to_owned(), pull),
+            ]),
+        };
         let mut incremental = DocumentSession::new(SessionSettings::default());
         let first = incremental
-            .apply_rule_program(profile_source(program, "radius", 20.0), false)
+            .apply_rule_program(source(500.0, 150.0, 10.0), false)
+            .unwrap();
+        let occurrence_id = first.snapshot.occurrences().next().unwrap().id();
+        for (length, groove, pull) in [(500.0, 320.0, 10.0), (700.0, 40.0, -4.0)] {
+            let updated = incremental
+                .apply_rule_program(source(length, groove, pull), false)
+                .unwrap();
+            assert_eq!(
+                updated.snapshot.occurrences().next().unwrap().id(),
+                occurrence_id
+            );
+            let mut fresh = DocumentSession::new(SessionSettings::default());
+            fresh
+                .apply_rule_program(source(length, groove, pull), false)
+                .unwrap();
+            assert_eq!(exact_signature(&incremental), exact_signature(&fresh));
+        }
+    }
+
+    #[test]
+    fn push_pull_rewrites_driver_or_appends_named_operation() {
+        let driven = RuleProgramSource {
+            file_name: "driven.star".to_owned(),
+            source: "H = param(\"height\", 18)\npart = extrude(\"board\", profile=[[\"a\", [0, 0], [100, 0]], [\"b\", [100, 0], [100, 50]], [\"c\", [100, 50], [0, 50]], [\"d\", [0, 50], [0, 0]]], distance=H)".to_owned(),
+            overrides: BTreeMap::new(),
+        };
+        let rewritten = rewrite_rule_program_push_pull(&driven, "board", "end", 7.0).unwrap();
+        assert_eq!(rewritten.source, driven.source);
+        assert_eq!(rewritten.overrides["height"], 25.0);
+        let mut session = DocumentSession::new(SessionSettings::default());
+        let first = session.apply_rule_program(driven.clone(), false).unwrap();
+        let updated = session
+            .apply_rule_program(rewritten.clone(), false)
+            .unwrap();
+        assert_eq!(
+            updated.snapshot.revision_id(),
+            first.snapshot.revision_id() + 1
+        );
+        assert_eq!(session.rule_program(), Some(&rewritten));
+        session.undo().unwrap();
+        assert_eq!(session.rule_program(), Some(&driven));
+
+        let fixed = RuleProgramSource {
+            file_name: "fixed.star".to_owned(),
+            source: driven
+                .source
+                .replace("H = param(\"height\", 18)\n", "")
+                .replace("distance=H", "distance=18"),
+            overrides: BTreeMap::new(),
+        };
+        let appended = rewrite_rule_program_push_pull(&fixed, "board", "end", -3.0).unwrap();
+        assert!(
+            appended.source.contains(
+                "push_pull(\"board\", face=\"end\", distance=-3, name=\"GUI Push/Pull 1\")"
+            )
+        );
+        let (evaluated, _) = evaluate(&appended).unwrap();
+        assert_eq!(
+            evaluated.model.part("board").unwrap().face_offsets[0].distance_mm,
+            -3.0
+        );
+    }
+
+    #[test]
+    fn revolved_profile_update_preserves_identity_and_matches_fresh_build() {
+        let program = "A = param(\"angle\", 90)\npart = revolve(\"ring\", profile=[[\"spodok\", [40, 0], [60, 0]], [\"vonkajsi\", [60, 0], [60, 30]], [\"vrch\", [60, 30], [40, 30]], [\"vnutorny\", [40, 30], [40, 0]]], axis=[[0, 0], [0, 1]], angle=A)\nchamfer(part, edges=[[\"vrch\", \"vonkajsi\"]], distance=2, name=\"outer bevel\")";
+        let mut incremental = DocumentSession::new(SessionSettings::default());
+        let first = incremental
+            .apply_rule_program(profile_source(program, "angle", 90.0), false)
             .unwrap();
         let occurrence_id = first.snapshot.occurrences().next().unwrap().id();
         let updated = incremental
-            .apply_rule_program(profile_source(program, "radius", 25.0), false)
+            .apply_rule_program(profile_source(program, "angle", 270.0), false)
             .unwrap();
 
         let mut fresh = DocumentSession::new(SessionSettings::default());
         fresh
-            .apply_rule_program(profile_source(program, "radius", 25.0), false)
+            .apply_rule_program(profile_source(program, "angle", 270.0), false)
             .unwrap();
         assert_eq!(
             updated.snapshot.occurrences().next().unwrap().id(),

@@ -139,6 +139,8 @@ pub enum ProgramFeatureKind {
     Cut,
     Revolve,
     Fillet,
+    Chamfer,
+    FaceOffset,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -218,6 +220,35 @@ pub struct ProgramProfileSegment {
     pub end_mm: [f64; 2],
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgramEdgeFinishKind {
+    Fillet,
+    Chamfer,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ProgramEdgeFillet {
+    pub name: String,
+    pub kind: ProgramEdgeFinishKind,
+    pub edges: Vec<[String; 2]>,
+    pub radius_mm: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ProgramCut {
+    pub name: String,
+    pub segments: Vec<ProgramProfileSegment>,
+    pub depth_mm: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ProgramFaceOffset {
+    pub name: String,
+    pub face: String,
+    pub distance_mm: f64,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ProgramPartBody {
@@ -248,6 +279,9 @@ pub struct Part {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<[u8; 3]>,
     pub body: ProgramPartBody,
+    pub fillets: Vec<ProgramEdgeFillet>,
+    pub cuts: Vec<ProgramCut>,
+    pub face_offsets: Vec<ProgramFaceOffset>,
     /// Stable, operation-class-level source tree used by incremental reconciliation.
     pub features: Vec<ProgramFeature>,
     pub holes: Vec<Hole>,
@@ -370,6 +404,51 @@ impl Part {
                     parameters,
                 ));
             }
+        }
+        for cut in &self.cuts {
+            features.push(feature(
+                format!("{} sketch", cut.name),
+                ProgramFeatureKind::Sketch,
+                profile_parameters(&cut.segments)
+                    .into_iter()
+                    .map(|mut parameter| {
+                        parameter.path = parameter.path.replacen("entities.", "segments.", 1);
+                        let index = parameter.path["segments.".len()..]
+                            .split('.')
+                            .next()
+                            .and_then(|index| index.parse::<usize>().ok())
+                            .expect("generated segment path");
+                        parameter.path = parameter.path.replacen(
+                            &format!("segments.{index}."),
+                            &format!("segments.{}.", index - 1),
+                            1,
+                        );
+                        parameter
+                    })
+                    .collect(),
+            ));
+            features.push(feature(
+                cut.name.clone(),
+                ProgramFeatureKind::Cut,
+                vec![length("depth", cut.depth_mm)],
+            ));
+        }
+        for fillet in &self.fillets {
+            features.push(feature(
+                fillet.name.clone(),
+                match fillet.kind {
+                    ProgramEdgeFinishKind::Fillet => ProgramFeatureKind::Fillet,
+                    ProgramEdgeFinishKind::Chamfer => ProgramFeatureKind::Chamfer,
+                },
+                vec![length("radius", fillet.radius_mm)],
+            ));
+        }
+        for offset in &self.face_offsets {
+            features.push(feature(
+                offset.name.clone(),
+                ProgramFeatureKind::FaceOffset,
+                vec![length("distance", offset.distance_mm)],
+            ));
         }
         for hole in &self.holes {
             let prefix = format!("{} hole {}", self.name, hole.id);

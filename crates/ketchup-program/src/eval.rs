@@ -9,7 +9,8 @@
 #![allow(clippy::too_many_arguments)]
 
 use crate::model::{
-    Face, Hole, Joint, Param, Part, Pocket, ProgramModel, ProgramPartBody, ProgramProfileSegment,
+    Face, Hole, Joint, Param, Part, Pocket, ProgramCut, ProgramEdgeFillet, ProgramEdgeFinishKind,
+    ProgramFaceOffset, ProgramModel, ProgramPartBody, ProgramProfileSegment,
 };
 use serde::Serialize;
 use starlark::environment::{FrozenModule, Globals, GlobalsBuilder, LibraryExtension, Module};
@@ -196,6 +197,29 @@ fn profile_segments<'v>(
         .collect())
 }
 
+fn named_edges<'v>(value: Value<'v>, heap: &'v Heap) -> anyhow::Result<Vec<[String; 2]>> {
+    value
+        .iterate(heap)
+        .map_err(|_| anyhow::anyhow!("edges must be a list of [face_a, face_b] pairs"))?
+        .map(|edge| {
+            let faces = edge
+                .iterate(heap)
+                .map_err(|_| anyhow::anyhow!("each edge must be [face_a, face_b]"))?
+                .collect::<Vec<_>>();
+            let [first, second] = faces.as_slice() else {
+                anyhow::bail!("each edge must contain exactly two face names");
+            };
+            let face = |value: Value<'v>| {
+                value
+                    .unpack_str()
+                    .map(ToOwned::to_owned)
+                    .ok_or_else(|| anyhow::anyhow!("edge face names must be strings"))
+            };
+            Ok([face(*first)?, face(*second)?])
+        })
+        .collect()
+}
+
 fn part_name<'v>(value: Value<'v>, heap: &'v Heap) -> anyhow::Result<String> {
     if let Some(name) = value.unpack_str() {
         return Ok(name.to_owned());
@@ -300,6 +324,9 @@ fn insert_profile_part(
         grain_axis: None,
         color: None,
         body,
+        fillets: Vec::new(),
+        cuts: Vec::new(),
+        face_offsets: Vec::new(),
         features: Vec::new(),
         holes: Vec::new(),
         pockets: Vec::new(),
@@ -358,6 +385,75 @@ pub fn contact(a: &Part, b: &Part) -> Option<Contact> {
         }
     }
     None
+}
+
+fn apply_named_edge_finish(
+    state: &State,
+    part_name: &str,
+    edges: Vec<[String; 2]>,
+    amount_mm: f64,
+    requested_name: Option<String>,
+    kind: ProgramEdgeFinishKind,
+) -> anyhow::Result<NoneType> {
+    let operation = match kind {
+        ProgramEdgeFinishKind::Fillet => "fillet",
+        ProgramEdgeFinishKind::Chamfer => "chamfer",
+    };
+    if edges.is_empty() {
+        anyhow::bail!("{operation} on {part_name:?}: edges must not be empty");
+    }
+    if amount_mm <= TOLERANCE_MM {
+        anyhow::bail!("{operation} on {part_name:?}: amount must be positive");
+    }
+    with_part(state, part_name, |part| {
+        let segments = match &part.body {
+            ProgramPartBody::Extrusion { segments, .. }
+            | ProgramPartBody::Revolve { segments, .. } => segments,
+            ProgramPartBody::Panel => {
+                anyhow::bail!(
+                    "{operation} on {part_name:?}: use a named extrude or revolve profile"
+                )
+            }
+        };
+        let available = segments
+            .iter()
+            .map(|segment| segment.name.as_str())
+            .chain(["start", "end"])
+            .collect::<BTreeSet<_>>();
+        let mut unique = BTreeSet::new();
+        for [first, second] in &edges {
+            if first == second {
+                anyhow::bail!("{operation} edge faces must be different, got {first:?} twice");
+            }
+            for face in [first, second] {
+                if !available.contains(face.as_str()) {
+                    anyhow::bail!(
+                        "{operation} face {face:?} does not exist on {part_name:?}; faces are: {}",
+                        available.iter().copied().collect::<Vec<_>>().join(", ")
+                    );
+                }
+            }
+            let mut pair = [first.as_str(), second.as_str()];
+            pair.sort_unstable();
+            if !unique.insert(pair) {
+                anyhow::bail!("{operation} edge ({first:?}, {second:?}) is listed more than once");
+            }
+        }
+        let name = requested_name
+            .clone()
+            .unwrap_or_else(|| format!("{part_name} {operation} {}", part.fillets.len() + 1));
+        if name.trim().is_empty() || part.fillets.iter().any(|finish| finish.name == name) {
+            anyhow::bail!("{operation} name {name:?} must be non-empty and unique on the part");
+        }
+        part.fillets.push(ProgramEdgeFillet {
+            name,
+            kind,
+            edges,
+            radius_mm: amount_mm,
+        });
+        part.refresh_feature_tree();
+        Ok(NoneType)
+    })
 }
 
 #[starlark_module]
@@ -452,6 +548,9 @@ fn builtins(builder: &mut GlobalsBuilder) {
             grain_axis,
             color,
             body: crate::model::ProgramPartBody::Panel,
+            fillets: Vec::new(),
+            cuts: Vec::new(),
+            face_offsets: Vec::new(),
             features: Vec::new(),
             holes: Vec::new(),
             pockets: Vec::new(),
@@ -540,6 +639,128 @@ fn builtins(builder: &mut GlobalsBuilder) {
             },
         )?;
         Ok(part_value(&part, heap))
+    }
+
+    /// Rounds edges identified by the two named faces that meet there.
+    fn fillet<'v>(
+        #[starlark(require = pos)] part: Value<'v>,
+        #[starlark(require = named)] edges: Value<'v>,
+        #[starlark(require = named)] radius: Value<'v>,
+        #[starlark(require = named)] name: Option<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        let heap = eval.heap();
+        let part_name = part_name(part, heap)?;
+        let edges = named_edges(edges, heap)?;
+        let radius_mm = number(radius, "radius")?;
+        let requested_name = text(name, "name")?;
+        let state = state(eval)?;
+        apply_named_edge_finish(
+            &state,
+            &part_name,
+            edges,
+            radius_mm,
+            requested_name,
+            ProgramEdgeFinishKind::Fillet,
+        )
+    }
+
+    /// Bevels edges identified by the two named faces that meet there.
+    fn chamfer<'v>(
+        #[starlark(require = pos)] part: Value<'v>,
+        #[starlark(require = named)] edges: Value<'v>,
+        #[starlark(require = named)] distance: Value<'v>,
+        #[starlark(require = named)] name: Option<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        let heap = eval.heap();
+        let part_name = part_name(part, heap)?;
+        let edges = named_edges(edges, heap)?;
+        let distance_mm = number(distance, "distance")?;
+        let requested_name = text(name, "name")?;
+        let state = state(eval)?;
+        apply_named_edge_finish(
+            &state,
+            &part_name,
+            edges,
+            distance_mm,
+            requested_name,
+            ProgramEdgeFinishKind::Chamfer,
+        )
+    }
+
+    /// Cuts a named closed profile down from the body's current top face.
+    fn cut<'v>(
+        #[starlark(require = pos)] part: Value<'v>,
+        #[starlark(require = named)] profile: Value<'v>,
+        #[starlark(require = named)] depth: Value<'v>,
+        #[starlark(require = named)] name: &str,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        let heap = eval.heap();
+        let part_name = part_name(part, heap)?;
+        let segments = profile_segments(profile, heap, "profile")?;
+        let depth_mm = number(depth, "depth")?;
+        if depth_mm <= TOLERANCE_MM {
+            anyhow::bail!("cut on {part_name:?}: depth must be positive");
+        }
+        if name.trim().is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
+            anyhow::bail!("cut name must be 1-128 printable bytes, got {name:?}");
+        }
+        let state = state(eval)?;
+        with_part(&state, &part_name, |part| {
+            if part.cuts.iter().any(|cut| cut.name == name)
+                || part.fillets.iter().any(|finish| finish.name == name)
+                || part.face_offsets.iter().any(|offset| offset.name == name)
+            {
+                anyhow::bail!("feature name {name:?} is already used on {part_name:?}");
+            }
+            part.cuts.push(ProgramCut {
+                name: name.to_owned(),
+                segments,
+                depth_mm,
+            });
+            part.refresh_feature_tree();
+            Ok(NoneType)
+        })
+    }
+
+    /// Moves one program-named planar face along its outward normal.
+    fn push_pull<'v>(
+        #[starlark(require = pos)] part: Value<'v>,
+        #[starlark(require = named)] face: &str,
+        #[starlark(require = named)] distance: Value<'v>,
+        #[starlark(require = named)] name: &str,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        let heap = eval.heap();
+        let part_name = part_name(part, heap)?;
+        let distance_mm = number(distance, "distance")?;
+        if distance_mm.abs() <= TOLERANCE_MM {
+            anyhow::bail!("push_pull on {part_name:?}: distance must be non-zero");
+        }
+        if face.trim().is_empty() || face.len() > 128 || face.chars().any(char::is_control) {
+            anyhow::bail!("push_pull face must be 1-128 printable bytes, got {face:?}");
+        }
+        if name.trim().is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
+            anyhow::bail!("push_pull name must be 1-128 printable bytes, got {name:?}");
+        }
+        let state = state(eval)?;
+        with_part(&state, &part_name, |part| {
+            if part.cuts.iter().any(|cut| cut.name == name)
+                || part.fillets.iter().any(|finish| finish.name == name)
+                || part.face_offsets.iter().any(|offset| offset.name == name)
+            {
+                anyhow::bail!("feature name {name:?} is already used on {part_name:?}");
+            }
+            part.face_offsets.push(ProgramFaceOffset {
+                name: name.to_owned(),
+                face: face.to_owned(),
+                distance_mm,
+            });
+            part.refresh_feature_tree();
+            Ok(NoneType)
+        })
     }
 
     /// Current name, size, at and max of a part.

@@ -24,7 +24,9 @@ pub use planner::{
     AssistantCadProgramPlan, AssistantCadResolvedProgramOutput, plan_assistant_cad_edit_program,
     plan_assistant_cad_edit_program_with_outputs, plan_panel_batch,
 };
-pub use rule_program::{RuleProgramApplyError, RuleProgramApplyResult};
+pub use rule_program::{
+    RuleProgramApplyError, RuleProgramApplyResult, rewrite_rule_program_push_pull,
+};
 
 mod session;
 pub use session::{DocumentSession, RecoveryState, SaveOptions, SessionError, SessionSettings};
