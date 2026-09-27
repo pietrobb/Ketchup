@@ -587,6 +587,44 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
             )
         return await runtime.run(handle, job, mutation=action == "apply_and_verify")
 
+    @beta_async_tool(name="KetchupLiveProgram")
+    async def live_program(action: str, handle: str, source: str = "",
+                           overrides: dict | None = None, file_name: str = "",
+                           replace_document: bool = False, expected: dict | None = None) -> str:
+        """Model in the open window by editing its Starlark program: fastest path for furniture.
+
+        read returns {source, overrides, parts:[{name, occurrence_id, lines}]} (source null when no
+        program owns the document). apply sends the WHOLE edited program: the window re-evaluates
+        it, rebuilds only the changed parts (unchanged parts keep their IDs), and publishes one
+        Undo step; the result lists change, added/removed parts and the program report (issues =
+        collisions, missing contacts, ...). A rejected program changes nothing and names its line.
+        Typical request = read + apply. Helpers (board, dowels, groove, rabbet, hole_row, divide,
+        param, extrude, fillet, ...): KetchupDiscover section=program.
+
+        Args:
+            action: read or apply. apply is forbidden in plan mode.
+            handle: Live session UUID.
+            source: For apply, the complete program text.
+            overrides: For apply, optional parameter values by name, e.g. {"width": 900}.
+            file_name: Optional program file name for a new program.
+            replace_document: For apply, replace a saved document that no program owns.
+            expected: Optional stamp from an earlier response; rejects with stale_document if the document changed since.
+        """
+        def job():
+            _action(action, ("read", "apply"))
+            live_session = runtime.entry(handle)
+            stamp = runtime.expected(expected)
+            if action == "read":
+                if source or overrides or file_name or replace_document:
+                    raise Rejection("invalid_arguments", "read accepts only handle and expected.")
+                return live_session.program(stamp)
+            runtime.guard()
+            return live_session.apply_program(
+                source, overrides=overrides, file_name=file_name or None,
+                replace_document=replace_document, expected=stamp,
+            )
+        return await runtime.run(handle, job, mutation=action == "apply")
+
     @beta_async_tool(name="KetchupLiveFile")
     async def file(action: str, handle: str, expected: dict | None = None, path: str = "") -> str:
         """Save or open the attached GUI document through its native file workflow.
@@ -724,4 +762,4 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
             return live_session.view(stamp, view)
         return await runtime.run(handle, job, mutation=action in ("selection", "view"))
 
-    return [session, inspect, edit, model, file, batch, view]
+    return [session, inspect, edit, model, live_program, file, batch, view]

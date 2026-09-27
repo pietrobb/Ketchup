@@ -1087,6 +1087,15 @@ pub fn evaluate(
     let globals = globals();
     let prelude = prelude(&globals)?;
     let ast = AstModule::parse(file_name, source.to_owned(), &dialect())
+        .map_err(|error| {
+            // Before a trailing newline the parser reports an unclosed bracket at 1:1;
+            // without it the same error points at the program's real end.
+            let trimmed = source.trim_end();
+            match AstModule::parse(file_name, trimmed.to_owned(), &dialect()) {
+                Err(located) if trimmed.len() < source.len() => located,
+                _ => error,
+            }
+        })
         .map_err(|error| evaluation_error("syntax_error", error))?;
     let state = std::rc::Rc::new(State {
         file_name: file_name.to_owned(),

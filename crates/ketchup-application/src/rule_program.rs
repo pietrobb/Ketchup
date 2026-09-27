@@ -1,7 +1,8 @@
 use crate::{DocumentSession, SessionError};
 use ketchup_core::document::{
-    CanonicalCommand, CommandBatch, DefinitionId, Dimension, EdgeFinishKind, FeatureKind,
-    FeatureParameterTarget, ParameterValueType, RuleProgramSource, Snapshot, Transform,
+    CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, EdgeFinishKind,
+    FeatureKind, FeatureParameterTarget, OccurrenceId, ParameterValueType, RuleProgramSource,
+    Snapshot, Transform,
 };
 use ketchup_program::{ProgramFeatureKind, ProgramModel, ProgramParameterValueType, Report};
 
@@ -156,6 +157,57 @@ pub fn rewrite_rule_program_push_pull(
     Ok(rewritten)
 }
 
+/// What publishing a rule program changes in a document.
+#[derive(Debug)]
+pub enum RuleProgramChange {
+    /// The document already holds exactly this source.
+    Unchanged,
+    /// Only the source changes; geometry and identities stay as they are.
+    SourceOnly,
+    /// Canonical edits of the affected parts only, published with the source as one Undo step.
+    Incremental(CommandBatch),
+    /// The document is not owned by a program; its content would be replaced.
+    Replacement,
+}
+
+pub struct RuleProgramPlan {
+    pub evaluated: ketchup_program::Evaluated,
+    pub report: Report,
+    pub change: RuleProgramChange,
+}
+
+/// Plans how `source` updates `document`. This is the one reconciliation path shared by the
+/// headless session and the GUI window.
+///
+/// # Errors
+/// Returns the program error, or `IncrementalUnsupported` when the existing program model
+/// cannot be updated in place.
+pub fn plan_rule_program(
+    document: &DocumentStore,
+    source: &RuleProgramSource,
+) -> Result<RuleProgramPlan, RuleProgramApplyError> {
+    let (evaluated, report) = evaluate(source)?;
+    let change = match document.current_rule_program() {
+        Some(current) if current == source => RuleProgramChange::Unchanged,
+        Some(current) => {
+            let (old, _) = evaluate(current)?;
+            let batch = incremental_batch(document, &old.model, &evaluated.model)?
+                .ok_or(RuleProgramApplyError::IncrementalUnsupported)?;
+            if batch.commands().is_empty() {
+                RuleProgramChange::SourceOnly
+            } else {
+                RuleProgramChange::Incremental(batch)
+            }
+        }
+        None => RuleProgramChange::Replacement,
+    };
+    Ok(RuleProgramPlan {
+        evaluated,
+        report,
+        change,
+    })
+}
+
 impl DocumentSession {
     /// Evaluates and publishes a rule program through the canonical document session.
     /// Incremental updates preserve identities; replacing an unrelated document requires
@@ -165,172 +217,221 @@ impl DocumentSession {
         source: RuleProgramSource,
         allow_replacement: bool,
     ) -> Result<RuleProgramApplyResult, RuleProgramApplyError> {
-        let (evaluated, report) = evaluate(&source)?;
-        if self.rule_program() == Some(&source) {
-            return Ok(RuleProgramApplyResult {
-                snapshot: self.snapshot(),
-                report,
-                replaced_document: false,
-            });
-        }
-        let old_program = self.rule_program().map(evaluate).transpose()?;
-
-        if let Some((old, _)) = &old_program
-            && old.model.joints == evaluated.model.joints
-            && old.model.parts.iter().all(|before| {
-                evaluated
-                    .model
-                    .part(&before.name)
-                    .is_some_and(|after| program_feature_references_match(before, after))
-            })
-            && self.snapshot().occurrences().count() == old.model.parts.len()
-        {
-            let snapshot = self.snapshot();
-            let changes = old
-                .model
-                .parts
-                .iter()
-                .filter(|before| evaluated.model.part(&before.name).is_some())
-                .map(|before| {
-                    let after = evaluated.model.part(&before.name)?;
-                    let mut comparable = after.clone();
-                    comparable.at_mm = before.at_mm;
-                    comparable.size_mm = before.size_mm;
-                    comparable.body = before.body.clone();
-                    comparable.fillets = before.fillets.clone();
-                    comparable.cuts = before.cuts.clone();
-                    comparable.face_offsets = before.face_offsets.clone();
-                    comparable.holes = before.holes.clone();
-                    comparable.pockets = before.pockets.clone();
-                    comparable.features = before.features.clone();
-                    if &comparable != before {
-                        return None;
-                    }
-                    let occurrence = snapshot.occurrences().find(|o| o.name() == before.name)?;
-                    let old_position = Transform::from_translation(
-                        before.at_mm[0],
-                        before.at_mm[1],
-                        before.at_mm[2],
-                    )
-                    .ok()?;
-                    if occurrence.transform() != old_position {
-                        return None;
-                    }
-                    let mut commands = program_feature_commands(
-                        &snapshot,
-                        occurrence.definition_id(),
-                        before,
-                        after,
-                    )?;
-                    if before.at_mm != after.at_mm {
-                        let transform = Transform::from_translation(
-                            after.at_mm[0],
-                            after.at_mm[1],
-                            after.at_mm[2],
-                        )
-                        .ok()?;
-                        commands.push(CanonicalCommand::SetOccurrenceTransform {
-                            id: occurrence.id(),
-                            transform,
-                        });
-                    }
-                    Some(commands)
-                })
-                .collect::<Option<Vec<Vec<CanonicalCommand>>>>();
-            if let Some(changes) = changes {
-                let mut commands = changes.into_iter().flatten().collect::<Vec<_>>();
-                append_removed_parts(&snapshot, &old.model, &evaluated.model, &mut commands)?;
-                let panels = added_parts(&old.model, &evaluated.model);
-                let snapshot = if commands.is_empty() && panels.is_empty() {
-                    self.replace_rule_program_source(source)?
-                } else {
-                    self.apply_rule_commands_with_parts_source(
-                        CommandBatch::new(commands),
-                        &panels,
-                        source,
-                    )?
-                };
+        let RuleProgramPlan {
+            evaluated,
+            report,
+            change,
+        } = plan_rule_program(self.document_store(), &source)?;
+        let snapshot = match change {
+            RuleProgramChange::Unchanged => self.snapshot(),
+            RuleProgramChange::SourceOnly => self.replace_rule_program_source(source)?,
+            RuleProgramChange::Incremental(batch) => {
+                self.apply_rule_commands_with_source(batch, &[], source)?
+            }
+            RuleProgramChange::Replacement => {
+                if self.snapshot().definitions().next().is_some() && !allow_replacement {
+                    return Err(if self.is_modified() {
+                        RuleProgramApplyError::UnsavedChanges
+                    } else {
+                        RuleProgramApplyError::ReplacementConfirmationRequired
+                    });
+                }
+                let snapshot = self.replace_with_rule_parts(&evaluated.model.parts, source)?;
                 return Ok(RuleProgramApplyResult {
                     snapshot,
                     report,
-                    replaced_document: false,
+                    replaced_document: true,
                 });
             }
-        }
-
-        if let Some((old, _)) = old_program {
-            let snapshot = self.snapshot();
-            if old.model.joints == evaluated.model.joints
-                && snapshot.occurrences().count() == old.model.parts.len()
-            {
-                let replacements = old
-                    .model
-                    .parts
-                    .iter()
-                    .map(|before| {
-                        let Some(after) = evaluated.model.part(&before.name) else {
-                            return Some(None);
-                        };
-                        let mut comparable = after.clone();
-                        comparable.at_mm = before.at_mm;
-                        comparable.size_mm = before.size_mm;
-                        comparable.holes = before.holes.clone();
-                        comparable.pockets = before.pockets.clone();
-                        comparable.body = before.body.clone();
-                        comparable.features = before.features.clone();
-                        if comparable != *before {
-                            return None;
-                        }
-                        let occurrence =
-                            snapshot.occurrences().find(|o| o.name() == before.name)?;
-                        let position = Transform::from_translation(
-                            before.at_mm[0],
-                            before.at_mm[1],
-                            before.at_mm[2],
-                        )
-                        .ok()?;
-                        if occurrence.transform() != position {
-                            return None;
-                        }
-                        Some((before != after).then(|| (occurrence.id(), after.clone())))
-                    })
-                    .collect::<Option<Vec<_>>>();
-                if let Some(replacements) = replacements {
-                    let replacements = replacements.into_iter().flatten().collect::<Vec<_>>();
-                    let mut commands = Vec::new();
-                    append_removed_parts(&snapshot, &old.model, &evaluated.model, &mut commands)?;
-                    let panels = added_parts(&old.model, &evaluated.model);
-                    let snapshot = self.replace_rule_parts_with_source(
-                        &replacements,
-                        &panels,
-                        CommandBatch::new(commands),
-                        source,
-                    )?;
-                    return Ok(RuleProgramApplyResult {
-                        snapshot,
-                        report,
-                        replaced_document: false,
-                    });
-                }
-            }
-            return Err(RuleProgramApplyError::IncrementalUnsupported);
-        }
-
-        let nonempty = self.snapshot().definitions().next().is_some();
-        if nonempty && !allow_replacement {
-            return Err(if self.is_modified() {
-                RuleProgramApplyError::UnsavedChanges
-            } else {
-                RuleProgramApplyError::ReplacementConfirmationRequired
-            });
-        }
-        let snapshot = self.replace_with_rule_parts(&evaluated.model.parts, source)?;
+        };
         Ok(RuleProgramApplyResult {
             snapshot,
             report,
-            replaced_document: true,
+            replaced_document: false,
         })
     }
+}
+
+/// Commands that turn the document of `old` into the document of `new`, or `None` when the
+/// document cannot be updated in place. Program joints are not stored in the document (their
+/// holes belong to the parts), so they never block an update.
+fn incremental_batch(
+    document: &DocumentStore,
+    old: &ProgramModel,
+    new: &ProgramModel,
+) -> Result<Option<CommandBatch>, RuleProgramApplyError> {
+    let snapshot = document.current();
+    // A manually added part is not described by the program; do not guess its fate.
+    if snapshot.occurrences().count() != old.parts.len() {
+        return Ok(None);
+    }
+    let mut removals = Vec::new();
+    append_removed_parts(&snapshot, old, new, &mut removals)?;
+    let added = added_parts(old, new);
+    if old.parts.iter().all(|before| {
+        new.part(&before.name)
+            .is_none_or(|after| program_feature_references_match(before, after))
+    }) && let Some(mut commands) = feature_level_changes(&snapshot, old, new)
+    {
+        commands.extend(removals);
+        let additions = crate::planner::plan_rule_part_batch(document, &added)
+            .map_err(SessionError::Planning)?;
+        commands.extend(additions.commands().iter().cloned());
+        return Ok(Some(CommandBatch::new(commands)));
+    }
+    let Some(replacements) = part_replacements(&snapshot, old, new) else {
+        return Ok(None);
+    };
+    replacement_batch(document, &snapshot, &replacements, &added, removals).map(Some)
+}
+
+/// Parameter edits of parts whose feature trees keep their shape.
+fn feature_level_changes(
+    snapshot: &Snapshot,
+    old: &ProgramModel,
+    new: &ProgramModel,
+) -> Option<Vec<CanonicalCommand>> {
+    let mut commands = Vec::new();
+    for before in &old.parts {
+        let Some(after) = new.part(&before.name) else {
+            continue;
+        };
+        let mut comparable = after.clone();
+        comparable.at_mm = before.at_mm;
+        comparable.size_mm = before.size_mm;
+        comparable.body = before.body.clone();
+        comparable.fillets = before.fillets.clone();
+        comparable.cuts = before.cuts.clone();
+        comparable.face_offsets = before.face_offsets.clone();
+        comparable.holes = before.holes.clone();
+        comparable.pockets = before.pockets.clone();
+        comparable.features = before.features.clone();
+        if &comparable != before {
+            return None;
+        }
+        let occurrence = snapshot.occurrences().find(|o| o.name() == before.name)?;
+        let old_position =
+            Transform::from_translation(before.at_mm[0], before.at_mm[1], before.at_mm[2]).ok()?;
+        if occurrence.transform() != old_position {
+            return None;
+        }
+        commands.extend(program_feature_commands(
+            snapshot,
+            occurrence.definition_id(),
+            before,
+            after,
+        )?);
+        if before.at_mm != after.at_mm {
+            let transform =
+                Transform::from_translation(after.at_mm[0], after.at_mm[1], after.at_mm[2]).ok()?;
+            commands.push(CanonicalCommand::SetOccurrenceTransform {
+                id: occurrence.id(),
+                transform,
+            });
+        }
+    }
+    Some(commands)
+}
+
+/// Parts that must be rebuilt, each keeping its occurrence identity.
+fn part_replacements(
+    snapshot: &Snapshot,
+    old: &ProgramModel,
+    new: &ProgramModel,
+) -> Option<Vec<(OccurrenceId, ketchup_program::model::Part)>> {
+    let mut replacements = Vec::new();
+    for before in &old.parts {
+        let Some(after) = new.part(&before.name) else {
+            continue;
+        };
+        let mut comparable = after.clone();
+        comparable.at_mm = before.at_mm;
+        comparable.size_mm = before.size_mm;
+        comparable.holes = before.holes.clone();
+        comparable.pockets = before.pockets.clone();
+        comparable.body = before.body.clone();
+        comparable.features = before.features.clone();
+        if comparable != *before {
+            return None;
+        }
+        let occurrence = snapshot.occurrences().find(|o| o.name() == before.name)?;
+        let position =
+            Transform::from_translation(before.at_mm[0], before.at_mm[1], before.at_mm[2]).ok()?;
+        if occurrence.transform() != position {
+            return None;
+        }
+        if before != after {
+            replacements.push((occurrence.id(), after.clone()));
+        }
+    }
+    Some(replacements)
+}
+
+/// Rebuilds `replacements` under their existing occurrence IDs and adds `added` parts.
+fn replacement_batch(
+    document: &DocumentStore,
+    snapshot: &Snapshot,
+    replacements: &[(OccurrenceId, ketchup_program::model::Part)],
+    added: &[ketchup_program::model::Part],
+    other_commands: Vec<CanonicalCommand>,
+) -> Result<CommandBatch, RuleProgramApplyError> {
+    let parts = replacements
+        .iter()
+        .map(|(_, part)| part.clone())
+        .chain(added.iter().cloned())
+        .collect::<Vec<_>>();
+    let additions =
+        crate::planner::plan_rule_part_batch(document, &parts).map_err(SessionError::Planning)?;
+    let definitions = additions
+        .commands()
+        .iter()
+        .filter_map(|command| match command {
+            CanonicalCommand::CreateDefinition { id, .. } => Some(*id),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let temporary_occurrences = additions
+        .commands()
+        .iter()
+        .filter_map(|command| match command {
+            CanonicalCommand::CreateOccurrence { id, transform, .. } => Some((*id, *transform)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let mut commands = additions.commands().to_vec();
+    for ((old_id, _), (definition_id, (temporary_id, transform))) in replacements
+        .iter()
+        .zip(definitions.into_iter().zip(temporary_occurrences))
+    {
+        commands.push(CanonicalCommand::SetOccurrenceTransform {
+            id: *old_id,
+            transform,
+        });
+        let old = snapshot
+            .occurrence(*old_id)
+            .ok_or_else(|| SessionError::Persistence("program part is missing".into()))?;
+        if snapshot
+            .occurrences()
+            .filter(|item| item.definition_id() == old.definition_id())
+            .count()
+            != 1
+        {
+            return Err(SessionError::Persistence(
+                "cannot rebuild a shared program definition".into(),
+            )
+            .into());
+        }
+        commands.push(CanonicalCommand::DeleteOccurrence { id: temporary_id });
+        commands.push(CanonicalCommand::RepointOccurrence {
+            id: *old_id,
+            definition_id,
+        });
+        commands.push(CanonicalCommand::DeleteDefinition {
+            id: old.definition_id(),
+        });
+    }
+    commands.extend(other_commands);
+    Ok(CommandBatch::new(commands))
 }
 
 fn evaluate(
@@ -591,6 +692,64 @@ mod tests {
             node.source_feature_id = 0;
         }
         graph
+    }
+
+    #[test]
+    fn adding_changing_and_removing_a_doweled_board_keeps_every_other_part() {
+        const TABLE: &str = include_str!("../../../examples/programs/table.star");
+        const APRON: &str = "\nAPRON = param(\"apron_height\", 80, min = 40, max = 150)\napron = board(\"table/apron-front\", (WIDTH - 2 * (INSET + LEG), 20, APRON), at = (INSET + LEG, INSET + 25, HEIGHT - APRON - 20))\ndowels(legs[0], apron, dowel = \"8x30\", margin = 15)\n";
+        let program = |text: String, overrides: &[(&str, f64)]| RuleProgramSource {
+            file_name: "table.star".to_owned(),
+            source: text,
+            overrides: overrides
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), *value))
+                .collect(),
+        };
+        let ids = |snapshot: &Snapshot| {
+            snapshot
+                .occurrences()
+                .map(|occurrence| (occurrence.name().to_owned(), occurrence.id()))
+                .collect::<BTreeMap<_, _>>()
+        };
+        let mut session = DocumentSession::new(SessionSettings::default());
+        let table = session
+            .apply_rule_program(program(TABLE.to_owned(), &[]), false)
+            .unwrap();
+        let original = ids(&table.snapshot);
+        assert_eq!(original.len(), 5);
+
+        let with_apron = program(format!("{TABLE}{APRON}"), &[]);
+        let plan = plan_rule_program(session.document_store(), &with_apron).unwrap();
+        assert!(matches!(plan.change, RuleProgramChange::Incremental(_)));
+        assert!(plan.report.ok, "{:?}", plan.report.issues);
+        let added = session.apply_rule_program(with_apron, false).unwrap();
+        assert!(!added.replaced_document);
+        let after_add = ids(&added.snapshot);
+        assert_eq!(after_add.len(), 6);
+        assert!(original.iter().all(|(name, id)| after_add[name] == *id));
+        let apron_id = after_add["table/apron-front"];
+
+        let taller = session
+            .apply_rule_program(
+                program(format!("{TABLE}{APRON}"), &[("apron_height", 120.0)]),
+                false,
+            )
+            .unwrap();
+        assert_eq!(ids(&taller.snapshot)["table/apron-front"], apron_id);
+        assert_eq!(ids(&taller.snapshot).len(), 6);
+
+        let removed = session
+            .apply_rule_program(program(TABLE.to_owned(), &[]), false)
+            .unwrap();
+        assert_eq!(ids(&removed.snapshot), original);
+
+        session.undo().unwrap();
+        assert_eq!(ids(&session.snapshot())["table/apron-front"], apron_id);
+        assert_eq!(
+            session.rule_program().unwrap().overrides["apron_height"],
+            120.0
+        );
     }
 
     #[test]

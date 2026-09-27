@@ -130,7 +130,7 @@ def test_registration_shared_helpers_no_offline_runtime_or_shadow(monkeypatch):
     engine = namespace["ClaudeEngine"]()
     engine._plan_state = SimpleNamespace(active=True)
     registered = {tool.name: tool for tool in engine.load()}
-    assert set(registered) == {"KetchupLiveSession", "KetchupLiveInspect", "KetchupLiveEdit", "KetchupLiveModel", "KetchupLiveFile", "KetchupLiveBatch", "KetchupLiveView"}
+    assert set(registered) == {"KetchupLiveSession", "KetchupLiveInspect", "KetchupLiveEdit", "KetchupLiveModel", "KetchupLiveProgram", "KetchupLiveFile", "KetchupLiveBatch", "KetchupLiveView"}
     for tool in registered.values():
         schema = tool.to_dict()
         props = schema["input_schema"]["properties"]

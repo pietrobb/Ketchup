@@ -31,6 +31,8 @@ use std::{
 };
 #[path = "product_integration_tests.rs"]
 mod product_integration;
+#[path = "program_tests.rs"]
+mod program_edit;
 fn program() -> AssistantCadEditProgram {
     AssistantCadEditProgram {
         operations: vec![AssistantCadEditOperation::SetColor {

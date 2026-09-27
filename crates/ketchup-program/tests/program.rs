@@ -285,6 +285,16 @@ fn panel_operations_carry_holes_and_pockets_in_panel_coordinates() {
 }
 
 #[test]
+fn an_unclosed_bracket_at_the_end_names_its_line() {
+    for source in ["a = 1\nb = (1, 2\n", "a = 1\nb = [1,\n\n# end\n"] {
+        let error = run("t.star", source, &BTreeMap::new()).unwrap_err();
+        assert_eq!(error.code, "syntax_error");
+        assert!(!error.message.contains("t.star:1:1"), "{}", error.message);
+        assert!(error.message.contains("t.star:2:") || error.message.contains("t.star:4:"));
+    }
+}
+
+#[test]
 fn the_interpreter_leaves_workspace_json_parsing_intact() {
     // serde_json's `arbitrary_precision` is unified into every crate of a
     // build and makes tagged enums reject plain numbers.

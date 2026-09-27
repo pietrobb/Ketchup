@@ -2224,6 +2224,7 @@ dependencies = [
  "ketchup-application",
  "ketchup-core",
  "ketchup-interaction",
+ "ketchup-program",
  "ketchup-scheduler",
  "pollster",
  "raw-window-handle",

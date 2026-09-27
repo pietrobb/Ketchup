@@ -195,6 +195,24 @@ pub enum Request {
         #[serde(default)]
         strict: bool,
     },
+    /// The Starlark program that owns the document, with each part's occurrence and lines.
+    Program {
+        #[serde(default)]
+        expected: Option<Stamp>,
+    },
+    /// Evaluates a whole Starlark program and publishes only what changed as one Undo step.
+    ApplyProgram {
+        #[serde(default)]
+        expected: Option<Stamp>,
+        source: String,
+        #[serde(default)]
+        overrides: std::collections::BTreeMap<String, f64>,
+        #[serde(default)]
+        file_name: Option<String>,
+        /// Replace a saved document that no program owns.
+        #[serde(default)]
+        replace_document: bool,
+    },
     Undo {
         #[serde(default)]
         expected: Option<Stamp>,
@@ -334,6 +352,94 @@ fn planning_failure(code: &'static str, diagnostic: &AssistantRejectionDiagnosti
             "retryable": diagnostic.retryable,
         }),
     )
+}
+
+const MAX_PROGRAM_MESSAGE_CHARS: usize = 4000;
+const MAX_PROGRAM_LOG_LINES: usize = 20;
+
+/// A rejected program with its reason and what to do next; nothing was published.
+fn program_failure(error: ketchup_application::RuleProgramApplyError) -> &'static str {
+    use ketchup_application::RuleProgramApplyError as Error;
+    let (reason, hint) = match &error {
+        Error::Program { code, .. } => (
+            code.clone(),
+            "Fix the line named in the message and send the whole program again.",
+        ),
+        Error::IncrementalUnsupported => (
+            "incremental_unsupported".to_owned(),
+            "A part changed in a way that cannot keep its identity (e.g. a manually added or moved part, or a renamed profile segment). Keep part names and profile segment names stable.",
+        ),
+        Error::ReplacementConfirmationRequired => (
+            "not_program_document".to_owned(),
+            "No program owns this document. Pass replace_document=true to replace it, or open a new empty document first.",
+        ),
+        Error::UnsavedChanges => (
+            "unsaved_changes".to_owned(),
+            "Replacing would lose unsaved changes; save or undo them first.",
+        ),
+        Error::Session(_) => (
+            "not_published".to_owned(),
+            "The program is valid but its geometry could not be published; simplify the changed part.",
+        ),
+    };
+    let message = error
+        .to_string()
+        .chars()
+        .take(MAX_PROGRAM_MESSAGE_CHARS)
+        .collect::<String>();
+    failure(
+        "program_rejected",
+        message,
+        json!({"reason": reason, "hint": hint, "published": false}),
+    )
+}
+
+/// What an applied program changed, bounded to fit one response frame.
+fn program_edit_result(
+    edit: crate::program_edit::ProgramEdit,
+    report: &ketchup_program::Report,
+    before: &ketchup_core::document::Snapshot,
+    after: &ketchup_core::document::Snapshot,
+    stamp: &Stamp,
+    undo_steps: usize,
+) -> Value {
+    let added = after
+        .occurrences()
+        .filter(|occurrence| before.occurrence(occurrence.id()).is_none())
+        .map(|occurrence| json!({"name": occurrence.name(), "occurrence_id": occurrence.id().0}))
+        .take(MAX_REPORTED_ISSUES)
+        .collect::<Vec<_>>();
+    let removed = before
+        .occurrences()
+        .filter(|occurrence| after.occurrence(occurrence.id()).is_none())
+        .map(|occurrence| occurrence.name().to_owned())
+        .take(MAX_REPORTED_ISSUES)
+        .collect::<Vec<_>>();
+    let issues = report
+        .issues
+        .iter()
+        .take(MAX_REPORTED_ISSUES)
+        .map(|issue| compact_issue(&serde_json::to_value(issue).unwrap_or(Value::Null)))
+        .collect::<Vec<_>>();
+    let log = &report.log[report.log.len().saturating_sub(MAX_PROGRAM_LOG_LINES)..];
+    json!({
+        "change": edit.as_str(),
+        "after": stamp,
+        "undo_steps": undo_steps,
+        "parts": after.occurrences().count(),
+        "added": added,
+        "removed": removed,
+        "report": {
+            "ok": report.ok,
+            "errors": report.errors,
+            "warnings": report.warnings,
+            "issues": issues,
+            "params": report.params,
+            "unused_overrides": report.unused_overrides,
+            "log": log,
+        },
+        "geometry_evaluated": false,
+    })
 }
 
 /// Takes the cause recorded by the last `failure`, if any. Callers that turn
@@ -1811,7 +1917,7 @@ impl LiveBridge {
                 "undo_steps":app.undo_step_count(),"redo_steps":app.redo_step_count(),
                 "pending_proposal_id":self.pending.as_ref().map(|p|p.id),
                 "limits":{"frame_bytes":MAX_FRAME_BYTES,"image_frame_bytes":MAX_IMAGE_FRAME_BYTES,"queue":QUEUE_CAPACITY,"selection":MAX_SELECTION,"apply_verify_timeout_ms":MAX_APPLY_VERIFY_TIMEOUT_MS,"batch_jobs":MAX_BATCH_JOBS},
-                "methods":["status","summary","operations","edit_context","query","detail","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","undo","redo","save","save_as","open","selection","view","image","disconnect"]}),
+                "methods":["status","summary","operations","edit_context","query","detail","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","program","apply_program","undo","redo","save","save_as","open","selection","view","image","disconnect"]}),
             ),
             Request::Summary {} => Ok(self.query.summary(&app.document.current())),
             Request::Operations { name } => {
@@ -2014,6 +2120,58 @@ impl LiveBridge {
                 self.apply_and_verify_fault,
             )
             .map_err(PlanRejection::into_code),
+            Request::Program { expected } => {
+                Self::guard(app, &expected)?;
+                Ok(app.program_source_view().unwrap_or_else(|| {
+                    json!({"source": null, "hint": "No Starlark program owns this document. apply_program creates one in an empty document; replace_document=true replaces a saved one."})
+                }))
+            }
+            Request::ApplyProgram {
+                expected,
+                source,
+                overrides,
+                file_name,
+                replace_document,
+            } => {
+                Self::guard(app, &expected)?;
+                Self::available(app, ui_busy)?;
+                let file_name = file_name
+                    .or_else(|| {
+                        app.document
+                            .current_rule_program()
+                            .map(|program| program.file_name.clone())
+                    })
+                    .unwrap_or_else(|| "model.star".to_owned());
+                Self::require_request_authority(cancelled)?;
+                let before = app.document.current();
+                let before_stamp = app.live_bridge_stamp();
+                let (edit, report) = app
+                    .apply_program_source(
+                        ketchup_core::document::RuleProgramSource {
+                            file_name,
+                            source,
+                            overrides,
+                        },
+                        replace_document,
+                    )
+                    .map_err(program_failure)?;
+                self.pending = None;
+                let after_stamp = app.live_bridge_stamp();
+                if after_stamp.document_id != before_stamp.document_id {
+                    self.invalidate_document_context();
+                } else {
+                    self.query.invalidate();
+                }
+                self.observed = Some(after_stamp.clone());
+                Ok(program_edit_result(
+                    edit,
+                    &report,
+                    &before,
+                    &app.document.current(),
+                    &after_stamp,
+                    app.undo_step_count(),
+                ))
+            }
             Request::Undo { expected } => {
                 Self::guard(app, &expected)?;
                 Self::available(app, ui_busy)?;

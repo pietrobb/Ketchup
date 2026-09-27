@@ -143,6 +143,7 @@ mod mesh_conversion_ui;
 mod native_document_inspection;
 mod occurrence_color_ui;
 mod planar_push_pull;
+mod program_edit;
 mod program_source_ui;
 mod transform_operation;
 mod validator_ui;

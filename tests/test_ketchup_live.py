@@ -1266,3 +1266,28 @@ def test_observed_rust_image_errors_are_safe_and_nonfatal(code):
             live.image(STAMP)
         assert caught.value.code == code and not live.closed
         assert [request["request"]["method"] for request in peer.requests] == ["status", "image"]
+
+
+def test_program_methods_match_wire_and_rejection_keeps_the_session():
+    def answer(req, stream):
+        if req["request"]["method"] == "apply_program" and req["request"]["source"].startswith("bad"):
+            return response(req, error="program_rejected")
+        return response(req, result={}, stamp=Stamp(7, 99, "b" * 64, 101))
+    source = "board('a', (1, 2, 3))\n"
+    with Peer(answer) as peer, LiveSession(peer.address, TOKEN) as live:
+        live.program()
+        live.apply_program(source, overrides={"w": 2}, replace_document=True, expected=asdict(STAMP))
+        with pytest.raises(LiveBridgeError) as caught:
+            live.apply_program("bad(")
+        assert caught.value.code == "program_rejected" and not live.closed
+        with pytest.raises(ValueError):
+            live.apply_program("  ")
+        with pytest.raises(ValueError):
+            live.apply_program(source, overrides={"w": "2"})
+    requests = [req["request"] for req in peer.requests]
+    assert requests[:2] == [
+        {"method": "program", "expected": None},
+        {"method": "apply_program", "expected": asdict(STAMP), "source": source,
+         "overrides": {"w": 2.0}, "file_name": None, "replace_document": True},
+    ]
+    assert len(requests) == 3

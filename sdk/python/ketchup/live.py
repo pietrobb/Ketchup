@@ -50,7 +50,7 @@ _VIEWS = ("iso", "top", "front", "zoom_fit")
 _CAPTURE_MODES = ("offscreen", "visible_viewport")
 _IMAGE_FRAMINGS = ("viewport", "selection", "detail_selection")
 _IMAGE_DETAIL_KINDS = ("edges", "faces")
-_MUTATIONS = frozenset({"apply_and_verify", "batch_job_start", "batch_job_step", "batch_job_cancel", "propose", "commit", "undo", "redo", "save", "save_as", "open", "selection", "view"})
+_MUTATIONS = frozenset({"apply_and_verify", "apply_program", "batch_job_start", "batch_job_step", "batch_job_cancel", "propose", "commit", "undo", "redo", "save", "save_as", "open", "selection", "view"})
 # Never surface arbitrary remote text, even if it looks like an error code.
 _ERROR_CODES = frozenset({
     "invalid_request", "unauthorized", "unsupported_version", "queue_unavailable",
@@ -75,7 +75,7 @@ _ERROR_CODES = frozenset({
     "validation_incomplete",
     "apply_and_verify_worker_disconnected", "exact_reference_rejected",
     "save_path_required", "save_rejected", "open_rejected", "invalid_path",
-    "unknown_operation",
+    "unknown_operation", "program_rejected",
 })
 _FATAL_CODES = frozenset({"invalid_request", "unauthorized", "unsupported_version", "queue_unavailable"})
 Kind = Literal["occurrences", "instances", "definitions", "features", "relations", "faces", "edges"]
@@ -1258,6 +1258,32 @@ class LiveSession:
             "apply_and_verify", _deadline=time.monotonic() + wait, expected=_stamp(expected),
             selection=None if selection is None else _ids(selection), program=program,
             validators=validators, timeout_ms=timeout_ms, save=save, strict=bool(strict),
+        )
+
+    def program(self, expected: Stamp | dict | None = None) -> dict:
+        """The Starlark program that owns the document, with each part's occurrence and lines."""
+        return self._request("program", expected=_stamp(expected))
+
+    def apply_program(self, source: str, *, overrides: dict | None = None,
+                      file_name: str | None = None, replace_document: bool = False,
+                      expected: Stamp | dict | None = None) -> dict:
+        """Evaluate a whole Starlark program and publish only what changed as one Undo step.
+
+        Unchanged parts keep their identity. A rejected program publishes nothing and
+        names the failing line. Never resend after a transport error without re-observing.
+        """
+        if type(source) is not str or not source.strip():
+            raise ValueError("source must be non-empty program text")
+        overrides = {} if overrides is None else overrides
+        if type(overrides) is not dict or any(
+                type(name) is not str or type(value) not in (int, float)
+                for name, value in overrides.items()):
+            raise ValueError("overrides must map parameter names to numbers")
+        return self._request(
+            "apply_program", expected=_stamp(expected), source=source,
+            overrides={name: float(value) for name, value in overrides.items()},
+            file_name=None if file_name is None else _text(file_name, 256),
+            replace_document=bool(replace_document),
         )
 
     def query(self, expected: Stamp | dict, *, kind: Kind, limit: int = 50,
