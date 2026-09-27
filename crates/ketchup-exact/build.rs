@@ -11,8 +11,14 @@ fn copy_runtime_dlls(source: &Path, destination: &Path) {
             .extension()
             .is_some_and(|extension| extension.eq_ignore_ascii_case("dll"))
         {
-            fs::copy(&path, destination.join(entry.file_name()))
-                .expect("failed to stage frozen OCCT runtime DLL");
+            let destination_path = destination.join(entry.file_name());
+            if let (Ok(source_bytes), Ok(destination_bytes)) =
+                (fs::read(&path), fs::read(&destination_path))
+                && source_bytes == destination_bytes
+            {
+                continue;
+            }
+            fs::copy(&path, destination_path).expect("failed to stage frozen OCCT runtime DLL");
         }
     }
 }
