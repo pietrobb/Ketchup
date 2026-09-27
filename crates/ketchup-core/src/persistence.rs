@@ -36,10 +36,11 @@ use crate::document::{
     LocalGroup, LocalGroupId, LocalGroupKey, LocalOccurrence, LocalOccurrenceId,
     LocalOccurrenceKey, LoftContinuity, LoftSection, MeshAuthority, MeshBodySpec, NodeId,
     Occurrence, OccurrenceId, ParameterPath, ParameterValueType, PersistentDimension,
-    PersistentDimensionId, PersistentDimensionTarget, ProductModel, ProfileSegment,
-    ProposalPrincipal, Revision, RevisionOrigin, ShellDirection, Snapshot, SpatialPathSegment,
-    StableFaceRole, SurfaceBodySpec, Tag, TagId, Transform, UnitSystem, WeldmentJointPolicy,
-    WeldmentJointPrimary, WeldmentJointSpec, WeldmentMemberSpec,
+    PersistentDimensionId, PersistentDimensionTarget, ProductModel, ProfileEdgeReference,
+    ProfileFaceReference, ProfileSegment, ProposalPrincipal, Revision, RevisionOrigin,
+    ShellDirection, Snapshot, SpatialPathSegment, StableFaceRole, SurfaceBodySpec, Tag, TagId,
+    Transform, UnitSystem, WeldmentJointPolicy, WeldmentJointPrimary, WeldmentJointSpec,
+    WeldmentMemberSpec,
 };
 use crate::drawing::{
     DrawingAngularDimension, DrawingAnnotations, DrawingBomBalloon, DrawingBomBalloonId,
@@ -176,7 +177,9 @@ const PRODUCTION_CODE_SCHEMA: u16 = 91;
 const DOWEL_PHYSICAL_HOLE_BINDING_SCHEMA: u16 = 92;
 const ASSEMBLY_RECIPE_SCHEMA: u16 = 93;
 const DOWEL_PAIR_OFFSET_SCHEMA: u16 = 94;
-pub const CURRENT_SCHEMA: u16 = DOWEL_PAIR_OFFSET_SCHEMA;
+const PROFILE_EDGE_REFERENCE_SCHEMA: u16 = 95;
+const PROFILE_FACE_REFERENCE_SCHEMA: u16 = 96;
+pub const CURRENT_SCHEMA: u16 = PROFILE_FACE_REFERENCE_SCHEMA;
 const COLLECTION_SCHEMA: u16 = 15;
 const TAG_SCHEMA: u16 = 14;
 const PERSISTENT_DIMENSION_SCHEMA: u16 = 13;
@@ -284,6 +287,8 @@ struct ProductSchemaCapabilities {
     production_codes: bool,
     dowel_physical_hole_bindings: bool,
     dowel_pair_offsets: bool,
+    profile_edge_references: bool,
+    profile_face_references: bool,
     assembly_recipe: bool,
 }
 
@@ -377,6 +382,8 @@ impl ProductSchemaCapabilities {
         production_codes: false,
         dowel_physical_hole_bindings: false,
         dowel_pair_offsets: false,
+        profile_edge_references: false,
+        profile_face_references: false,
         assembly_recipe: false,
     };
 
@@ -470,6 +477,8 @@ impl ProductSchemaCapabilities {
             production_codes: schema >= PRODUCTION_CODE_SCHEMA,
             dowel_physical_hole_bindings: schema >= DOWEL_PHYSICAL_HOLE_BINDING_SCHEMA,
             dowel_pair_offsets: schema >= DOWEL_PAIR_OFFSET_SCHEMA,
+            profile_edge_references: schema >= PROFILE_EDGE_REFERENCE_SCHEMA,
+            profile_face_references: schema >= PROFILE_FACE_REFERENCE_SCHEMA,
             assembly_recipe: schema >= ASSEMBLY_RECIPE_SCHEMA,
         }
     }
@@ -2537,6 +2546,7 @@ fn write_features(
             FeatureKind::TopologyEdgeFinish {
                 target,
                 edges,
+                profile_edges,
                 kind,
                 amount,
                 fillet_radius_stations,
@@ -2585,15 +2595,40 @@ fn write_features(
                         push_topological_reference(bytes, &selection.side_face);
                     }
                 }
+                if capabilities.profile_edge_references {
+                    push_u32(bytes, profile_edges.len() as u32);
+                    for edge in profile_edges {
+                        write_profile_face_reference(bytes, &edge.first);
+                        write_profile_face_reference(bytes, &edge.second);
+                    }
+                }
             }
             FeatureKind::TopologyFaceOffset {
                 target,
                 face,
+                profile_face,
                 distance,
             } => {
                 push_u8(bytes, 23);
                 push_u64(bytes, target.0);
-                push_topological_reference(bytes, face);
+                if capabilities.profile_face_references {
+                    match (face, profile_face) {
+                        (Some(face), None) => {
+                            push_u8(bytes, 1);
+                            push_topological_reference(bytes, face);
+                        }
+                        (None, Some(face)) => {
+                            push_u8(bytes, 2);
+                            write_profile_face_reference(bytes, face);
+                        }
+                        _ => unreachable!("validated face offset selector"),
+                    }
+                } else {
+                    push_topological_reference(
+                        bytes,
+                        face.as_ref().expect("legacy face offset selector"),
+                    );
+                }
                 push_string(bytes, distance.source_token());
                 push_u64(bytes, distance.millimetres().to_bits());
             }
@@ -4996,6 +5031,21 @@ fn read_topological_reference(
     })
 }
 
+fn read_profile_face_reference(
+    reader: &mut Reader<'_>,
+) -> Result<ProfileFaceReference, PersistenceError> {
+    match reader.u8()? {
+        1 => Ok(ProfileFaceReference::Start),
+        2 => Ok(ProfileFaceReference::End),
+        3 => Ok(ProfileFaceReference::Segment {
+            entity_id: reader.u64()?,
+            source_name: reader.string()?,
+        }),
+        4 => Ok(ProfileFaceReference::NamedResult(reader.string()?)),
+        value => Err(PersistenceError::InvalidFeatureKind(value)),
+    }
+}
+
 fn read_exact_reference(reader: &mut Reader<'_>) -> Result<BodySubshapeRef, PersistenceError> {
     let reference = BodySubshapeRef {
         schema: reader.string()?,
@@ -6956,9 +7006,19 @@ fn read_product(
                 } else {
                     (ChamferMode::Symmetric, Vec::new())
                 };
+                let mut profile_edges = Vec::new();
+                if capabilities.profile_edge_references {
+                    for _ in 0..reader.count_with_limit(64)? {
+                        profile_edges.push(ProfileEdgeReference {
+                            first: read_profile_face_reference(reader)?,
+                            second: read_profile_face_reference(reader)?,
+                        });
+                    }
+                }
                 FeatureKind::TopologyEdgeFinish {
                     target,
                     edges,
+                    profile_edges,
                     kind,
                     amount,
                     fillet_radius_stations,
@@ -6966,11 +7026,24 @@ fn read_product(
                     chamfer_edge_sides,
                 }
             }
-            23 if capabilities.topological_feature_references => FeatureKind::TopologyFaceOffset {
-                target: FeatureId(reader.u64()?),
-                face: read_topological_reference(reader)?,
-                distance: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
-            },
+            23 if capabilities.topological_feature_references => {
+                let target = FeatureId(reader.u64()?);
+                let (face, profile_face) = if capabilities.profile_face_references {
+                    match reader.u8()? {
+                        1 => (Some(read_topological_reference(reader)?), None),
+                        2 => (None, Some(read_profile_face_reference(reader)?)),
+                        value => return Err(PersistenceError::InvalidFeatureKind(value)),
+                    }
+                } else {
+                    (Some(read_topological_reference(reader)?), None)
+                };
+                FeatureKind::TopologyFaceOffset {
+                    target,
+                    face,
+                    profile_face,
+                    distance: Dimension::new(reader.string()?, f64::from_bits(reader.u64()?))?,
+                }
+            }
             8 if capabilities.boolean => FeatureKind::Boolean {
                 operation: match reader.u8()? {
                     1 => BooleanOperation::Cut,
@@ -8358,6 +8431,25 @@ fn push_topological_reference(bytes: &mut Vec<u8>, reference: &TopologicalElemen
         .expect("canonical topological feature reference is serializable");
     push_u32(bytes, encoded.len() as u32);
     bytes.extend_from_slice(&encoded);
+}
+
+fn write_profile_face_reference(bytes: &mut Vec<u8>, face: &ProfileFaceReference) {
+    match face {
+        ProfileFaceReference::Start => push_u8(bytes, 1),
+        ProfileFaceReference::End => push_u8(bytes, 2),
+        ProfileFaceReference::Segment {
+            entity_id,
+            source_name,
+        } => {
+            push_u8(bytes, 3);
+            push_u64(bytes, *entity_id);
+            push_string(bytes, source_name);
+        }
+        ProfileFaceReference::NamedResult(name) => {
+            push_u8(bytes, 4);
+            push_string(bytes, name);
+        }
+    }
 }
 fn push_transform(bytes: &mut Vec<u8>, transform: Transform) {
     for value in transform.matrix() {

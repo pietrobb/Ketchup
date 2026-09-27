@@ -716,6 +716,7 @@ fn face_supported_pocket_and_topology_history_make_unique_losslessly() {
                 kind: FeatureKind::TopologyEdgeFinish {
                     target: SHELL,
                     edges: vec![finish_edge.clone()],
+                    profile_edges: Vec::new(),
                     kind: EdgeFinishKind::Fillet,
                     amount: Dimension::from_decimal("1").unwrap(),
                     fillet_radius_stations: Vec::new(),
@@ -729,7 +730,8 @@ fn face_supported_pocket_and_topology_history_make_unique_losslessly() {
                 name: "Topology face offset".into(),
                 kind: FeatureKind::TopologyFaceOffset {
                     target: FINISH,
-                    face: offset_face.clone(),
+                    face: Some(offset_face.clone()),
+                    profile_face: None,
                     distance: Dimension::from_decimal("0.5").unwrap(),
                 },
             },
@@ -853,8 +855,11 @@ fn face_supported_pocket_and_topology_history_make_unique_losslessly() {
     assert_eq!(edges[0].producer_feature_id, unique_shell);
     assert!(edges[0].has_valid_lineage());
 
-    let FeatureKind::TopologyFaceOffset { target, face, .. } =
-        unique.feature(unique_offset).unwrap().kind()
+    let FeatureKind::TopologyFaceOffset {
+        target,
+        face: Some(face),
+        ..
+    } = unique.feature(unique_offset).unwrap().kind()
     else {
         panic!("expected remapped topology face offset");
     };

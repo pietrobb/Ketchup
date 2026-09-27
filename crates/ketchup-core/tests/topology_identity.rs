@@ -678,6 +678,7 @@ fn topology_driven_finish_features_are_canonical_fail_closed_and_losslessly_pers
             kind: FeatureKind::TopologyEdgeFinish {
                 target: FeatureId(11),
                 edges: vec![edge.clone()],
+                profile_edges: Vec::new(),
                 kind: EdgeFinishKind::Fillet,
                 amount: Dimension::from_decimal("1.25").unwrap(),
                 fillet_radius_stations: Vec::new(),

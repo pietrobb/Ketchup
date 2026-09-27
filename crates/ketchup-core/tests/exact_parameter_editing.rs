@@ -1219,7 +1219,8 @@ fn general_feature_parameters_preview_recompute_undo_and_round_trip() {
             name: "Face offset".into(),
             kind: FeatureKind::TopologyFaceOffset {
                 target: FINISH_BASE,
-                face,
+                face: Some(face),
+                profile_face: None,
                 distance: Dimension::from_decimal("0.5").unwrap(),
             },
         }]))
@@ -1252,6 +1253,7 @@ fn general_feature_parameters_preview_recompute_undo_and_round_trip() {
             kind: FeatureKind::TopologyEdgeFinish {
                 target: SHELL,
                 edges: vec![edge],
+                profile_edges: Vec::new(),
                 kind: EdgeFinishKind::Fillet,
                 amount: Dimension::from_decimal("0.5").unwrap(),
                 fillet_radius_stations: vec![
@@ -1380,6 +1382,7 @@ fn advanced_chamfer_parameters_preview_recompute_undo_and_schema_76_round_trip()
                 kind: FeatureKind::TopologyEdgeFinish {
                     target: BASE,
                     edges: vec![two_edge.clone()],
+                    profile_edges: Vec::new(),
                     kind: EdgeFinishKind::Chamfer,
                     amount: Dimension::from_decimal("1").unwrap(),
                     fillet_radius_stations: Vec::new(),
@@ -1399,6 +1402,7 @@ fn advanced_chamfer_parameters_preview_recompute_undo_and_schema_76_round_trip()
                 kind: FeatureKind::TopologyEdgeFinish {
                     target: BASE,
                     edges: vec![angle_edge.clone()],
+                    profile_edges: Vec::new(),
                     kind: EdgeFinishKind::Chamfer,
                     amount: Dimension::from_decimal("1").unwrap(),
                     fillet_radius_stations: Vec::new(),
@@ -1462,7 +1466,7 @@ fn advanced_chamfer_parameters_preview_recompute_undo_and_schema_76_round_trip()
     document.commit_proposal(&preview.proposal).unwrap();
     assert_eq!(document.visible_undo_steps(), before.2 + 1);
     let edited_digest = document.current().canonical_digest();
-    assert_eq!(persistence::CURRENT_SCHEMA, 94);
+    assert_eq!(persistence::CURRENT_SCHEMA, 96);
     let bytes = persistence::save(&document.current());
     let reopened = persistence::load(&bytes).unwrap().snapshot();
     assert_eq!(reopened.canonical_digest(), edited_digest);

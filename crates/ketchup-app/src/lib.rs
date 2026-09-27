@@ -38528,7 +38528,8 @@ fn push_pull_batch(
                 name: "Face Offset".to_owned(),
                 kind: FeatureKind::TopologyFaceOffset {
                     target: reference.producer_feature_id,
-                    face: reference.clone(),
+                    face: Some(reference.clone()),
+                    profile_face: None,
                     distance: Dimension::new(distance_mm.to_string(), distance_mm).ok()?,
                 },
             }]));

@@ -3250,6 +3250,7 @@ fn integrated_finishing_chain_rebuilds_exactly_through_headless_assistant() {
                     kind: FeatureKind::TopologyEdgeFinish {
                         target: FeatureId(4),
                         edges: vec![edge.clone()],
+                        profile_edges: Vec::new(),
                         kind: EdgeFinishKind::Chamfer,
                         amount: Dimension::from_decimal("0.2").unwrap(),
                         fillet_radius_stations: Vec::new(),

@@ -20,12 +20,13 @@ use ketchup_core::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepChamferMode, ExactBRepEdgeFinishKind, ExactBRepGraph,
     ExactBRepLinearInterval, ExactBRepLoftContinuity, ExactBRepLoftSection, ExactBRepOperation,
     ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment, ExactBRepProfile,
-    ExactBRepSheetMetalEdge, ExactBRepSheetMetalFlange, ExactBRepShellDirection,
-    ExactBRepSpatialPath, ExactBRepSpatialPathSegment, ExactBRepTopologyKind,
-    ExactBRepTopologySelector, ExactBRepWeldmentJointPolicy, ExactBRepWeldmentJointPrimary,
-    MAX_EXACT_BREP_COORDINATE_MM, MAX_EXACT_BREP_GRAPH_BYTES, exact_brep_planar_rectangle_bounds,
+    ExactBRepProfileFaceReference, ExactBRepSheetMetalEdge, ExactBRepSheetMetalFlange,
+    ExactBRepShellDirection, ExactBRepSpatialPath, ExactBRepSpatialPathSegment,
+    ExactBRepTopologyKind, ExactBRepTopologySelector, ExactBRepWeldmentJointPolicy,
+    ExactBRepWeldmentJointPrimary, MAX_EXACT_BREP_COORDINATE_MM, MAX_EXACT_BREP_GRAPH_BYTES,
+    exact_brep_planar_rectangle_bounds,
 };
-use ketchup_core::exact_product::EXACT_BREP_GRAPH_EVALUATOR_V1;
+use ketchup_core::exact_product::{EXACT_BREP_GRAPH_EVALUATOR_V1, ExactFaceRole};
 use ketchup_core::graph::sha256_hex;
 use ketchup_core::import::{
     MAX_STEP_MESH_TRIANGLES, MAX_STEP_SOURCE_BYTES, StepImportMesh, StepMeshTriangle,
@@ -33,6 +34,7 @@ use ketchup_core::import::{
 use ketchup_core::topology::{
     TopologicalElementRef, TopologicalReferenceStability, topological_edge_provenance_tokens,
 };
+use ketchup_exact::naming::{NamedSegment, valid_name};
 use ketchup_exact::{
     AdvancedChamferMode, AxialToolMotion, AxialToolSweepSpec, BoxSpec, CircleExtrudeSpec,
     EdgeFinish, ExactBackend, ExactBodyBooleanOperation, ExactKernel, ExactOpOutput,
@@ -1474,31 +1476,76 @@ fn evaluate_exact_brep_graph(
     graph
         .validate()
         .map_err(|error| exact_brep_graph_error(graph, &error.to_string()))?;
+    let needs_names = exact_brep_nodes_needing_names(graph);
     let mut outputs = Vec::<ExactOpOutput>::with_capacity(graph.nodes.len());
-    for node in &graph.nodes {
+    let mut face_names = Vec::<Option<Vec<String>>>::with_capacity(graph.nodes.len());
+    let mut extrusion_lineage = Vec::<bool>::with_capacity(graph.nodes.len());
+    for (node_index, node) in graph.nodes.iter().enumerate() {
+        let mut produced_face_names = None;
         let output = match &node.operation {
             ExactBRepOperation::Extrude {
                 profile, interval, ..
-            } => exact_brep_profile_body(backend, &graph.profiles[profile.0 as usize], *interval)?,
+            } => {
+                let profile = &graph.profiles[profile.0 as usize];
+                if !needs_names[node_index] || !exact_brep_profile_is_nameable(profile, true) {
+                    exact_brep_profile_body(backend, profile, *interval)?
+                } else {
+                    let (output, names) =
+                        exact_brep_named_profile_body(backend, profile, *interval)?;
+                    produced_face_names = Some(names);
+                    output
+                }
+            }
             ExactBRepOperation::ProfileCut {
                 target,
                 profile,
                 depth_bits,
                 interval,
+                tool_name,
                 ..
             } => {
-                let target = &outputs[target.0 as usize].body;
+                let target_output = &outputs[target.0 as usize];
                 let interval = if depth_bits.is_none() {
-                    exact_brep_through_all_interval(graph, target, *interval)?
+                    exact_brep_through_all_interval(graph, &target_output.body, *interval)?
                 } else {
                     *interval
                 };
-                let tool = exact_brep_profile_body(
-                    backend,
-                    &graph.profiles[profile.0 as usize],
-                    interval,
-                )?;
-                backend.boolean_bodies(target, &tool.body, ExactBodyBooleanOperation::Cut)?
+                let profile = &graph.profiles[profile.0 as usize];
+                if let (Some(tool_name), Some(target_names)) =
+                    (tool_name, face_names[target.0 as usize].as_ref())
+                    && needs_names[node_index]
+                    && exact_brep_profile_is_nameable(profile, true)
+                {
+                    let (tool, tool_names) =
+                        exact_brep_named_profile_body(backend, profile, interval)?;
+                    // Generated cuts (e.g. dowel holes) carry display names no
+                    // program can reference; a node-derived token keeps the
+                    // target's other face names alive instead of failing.
+                    let tool_name = if valid_name(tool_name) {
+                        tool_name.clone()
+                    } else {
+                        format!("cut_{node_index}")
+                    };
+                    let named = backend
+                        .named_cut_output(
+                            target_output,
+                            target_names,
+                            &tool,
+                            &tool_names,
+                            &tool_name,
+                        )
+                        .map_err(|error| exact_brep_graph_error(graph, &error.to_string()))?;
+                    let (output, names) = named.into_output_and_names();
+                    produced_face_names = Some(names);
+                    output
+                } else {
+                    let tool = exact_brep_profile_body(backend, profile, interval)?;
+                    backend.boolean_bodies(
+                        &target_output.body,
+                        &tool.body,
+                        ExactBodyBooleanOperation::Cut,
+                    )?
+                }
             }
             ExactBRepOperation::RigidTransform {
                 target,
@@ -1532,13 +1579,25 @@ fn evaluate_exact_brep_graph(
                 axis_start_bits,
                 axis_end_bits,
                 angle_degrees_bits,
-            } => exact_brep_revolve(
-                backend,
-                &graph.profiles[profile.0 as usize],
-                axis_start_bits.map(f64::from_bits),
-                axis_end_bits.map(f64::from_bits),
-                f64::from_bits(*angle_degrees_bits),
-            )?,
+            } => {
+                let profile = &graph.profiles[profile.0 as usize];
+                let axis_start_mm = axis_start_bits.map(f64::from_bits);
+                let axis_end_mm = axis_end_bits.map(f64::from_bits);
+                let angle_degrees = f64::from_bits(*angle_degrees_bits);
+                if !needs_names[node_index] || !exact_brep_profile_is_nameable(profile, false) {
+                    exact_brep_revolve(backend, profile, axis_start_mm, axis_end_mm, angle_degrees)?
+                } else {
+                    let (output, names) = exact_brep_named_revolve(
+                        backend,
+                        profile,
+                        axis_start_mm,
+                        axis_end_mm,
+                        angle_degrees,
+                    )?;
+                    produced_face_names = Some(names);
+                    output
+                }
+            }
             ExactBRepOperation::PlanarOffset {
                 profile,
                 distance_bits,
@@ -1652,27 +1711,55 @@ fn evaluate_exact_brep_graph(
             ExactBRepOperation::FaceOffset {
                 target,
                 face,
+                profile_face,
                 distance_bits,
             } => {
                 let target_output = &outputs[target.0 as usize];
-                let [ordinal] = exact_brep_topology_ordinals(
-                    graph,
-                    *target,
-                    target_output,
-                    std::slice::from_ref(face),
-                    ExactBRepTopologyKind::Face,
-                )?
-                .try_into()
-                .map_err(|_| exact_brep_graph_error(graph, "face offset selector is invalid"))?;
-                backend.offset_body_face(
-                    &target_output.body,
-                    ordinal,
-                    f64::from_bits(*distance_bits),
-                )?
+                if let Some(profile_face) = profile_face {
+                    let names = face_names[target.0 as usize].as_ref().ok_or_else(|| {
+                        exact_brep_graph_error(
+                            graph,
+                            "named face offset target has no program face names",
+                        )
+                    })?;
+                    let face_name = exact_brep_profile_face_name(profile_face);
+                    let named = backend
+                        .named_offset_face_output(
+                            target_output,
+                            names,
+                            &face_name,
+                            f64::from_bits(*distance_bits),
+                        )
+                        .map_err(|error| exact_brep_graph_error(graph, &error.to_string()))?;
+                    let (output, names) = named.into_output_and_names();
+                    produced_face_names = Some(names);
+                    output
+                } else {
+                    let face = face.as_ref().ok_or_else(|| {
+                        exact_brep_graph_error(graph, "face offset selector is missing")
+                    })?;
+                    let [ordinal] = exact_brep_topology_ordinals(
+                        graph,
+                        *target,
+                        target_output,
+                        std::slice::from_ref(face),
+                        ExactBRepTopologyKind::Face,
+                    )?
+                    .try_into()
+                    .map_err(|_| {
+                        exact_brep_graph_error(graph, "face offset selector is invalid")
+                    })?;
+                    backend.offset_body_face(
+                        &target_output.body,
+                        ordinal,
+                        f64::from_bits(*distance_bits),
+                    )?
+                }
             }
             ExactBRepOperation::EdgeFinish {
                 target,
                 edges,
+                profile_edges,
                 kind,
                 amount_bits,
                 fillet_radius_stations,
@@ -1680,78 +1767,116 @@ fn evaluate_exact_brep_graph(
                 chamfer_edge_sides,
             } => {
                 let target_output = &outputs[target.0 as usize];
-                let ordinals = exact_brep_topology_ordinals(
-                    graph,
-                    *target,
-                    target_output,
-                    edges,
-                    ExactBRepTopologyKind::Edge,
-                )?;
-                let radius_stations = fillet_radius_stations
-                    .iter()
-                    .map(|station| {
-                        [
-                            f64::from_bits(station.position_bits),
-                            f64::from_bits(station.radius_bits),
-                        ]
-                    })
-                    .collect::<Vec<_>>();
-                match chamfer_mode {
-                    ExactBRepChamferMode::Symmetric => backend.finish_body_with_radius_stations(
-                        &target_output.body,
-                        &ordinals,
-                        match kind {
-                            ExactBRepEdgeFinishKind::Fillet => EdgeFinish::Fillet,
-                            ExactBRepEdgeFinishKind::Chamfer => EdgeFinish::Chamfer,
-                        },
-                        f64::from_bits(*amount_bits),
-                        &radius_stations,
-                    )?,
-                    ExactBRepChamferMode::TwoDistance {
-                        second_distance_bits,
-                    } => {
-                        let face_selectors = chamfer_edge_sides
-                            .iter()
-                            .map(|selection| selection.side_face.clone())
-                            .collect::<Vec<_>>();
-                        let (edge_ordinals, face_ordinals) = exact_brep_chamfer_ordinal_pairs(
+                if !profile_edges.is_empty() {
+                    let names = face_names[target.0 as usize].as_ref().ok_or_else(|| {
+                        exact_brep_graph_error(
                             graph,
-                            *target,
+                            "named edge finish target has no profile face names",
+                        )
+                    })?;
+                    let edge_names = profile_edges
+                        .iter()
+                        .map(|edge| {
+                            (
+                                exact_brep_profile_face_name(&edge.first),
+                                exact_brep_profile_face_name(&edge.second),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    let edge_name_refs = edge_names
+                        .iter()
+                        .map(|(first, second)| (first.as_str(), second.as_str()))
+                        .collect::<Vec<_>>();
+                    let named = backend
+                        .named_finish_output(
                             target_output,
-                            edges,
-                            &face_selectors,
-                        )?;
-                        backend.finish_body_advanced_chamfer(
-                            &target_output.body,
-                            &edge_ordinals,
-                            &face_ordinals,
-                            f64::from_bits(*amount_bits),
-                            AdvancedChamferMode::TwoDistance {
-                                second_distance_mm: f64::from_bits(*second_distance_bits),
+                            names,
+                            &edge_name_refs,
+                            match kind {
+                                ExactBRepEdgeFinishKind::Fillet => EdgeFinish::Fillet,
+                                ExactBRepEdgeFinishKind::Chamfer => EdgeFinish::Chamfer,
                             },
-                        )?
-                    }
-                    ExactBRepChamferMode::DistanceAngle { angle_degrees_bits } => {
-                        let face_selectors = chamfer_edge_sides
-                            .iter()
-                            .map(|selection| selection.side_face.clone())
-                            .collect::<Vec<_>>();
-                        let (edge_ordinals, face_ordinals) = exact_brep_chamfer_ordinal_pairs(
-                            graph,
-                            *target,
-                            target_output,
-                            edges,
-                            &face_selectors,
-                        )?;
-                        backend.finish_body_advanced_chamfer(
-                            &target_output.body,
-                            &edge_ordinals,
-                            &face_ordinals,
                             f64::from_bits(*amount_bits),
-                            AdvancedChamferMode::DistanceAngle {
-                                angle_degrees: f64::from_bits(*angle_degrees_bits),
-                            },
-                        )?
+                        )
+                        .map_err(|error| exact_brep_graph_error(graph, &error.to_string()))?;
+                    let (output, names) = named.into_output_and_names();
+                    produced_face_names = Some(names);
+                    output
+                } else {
+                    let ordinals = exact_brep_topology_ordinals(
+                        graph,
+                        *target,
+                        target_output,
+                        edges,
+                        ExactBRepTopologyKind::Edge,
+                    )?;
+                    let radius_stations = fillet_radius_stations
+                        .iter()
+                        .map(|station| {
+                            [
+                                f64::from_bits(station.position_bits),
+                                f64::from_bits(station.radius_bits),
+                            ]
+                        })
+                        .collect::<Vec<_>>();
+                    match chamfer_mode {
+                        ExactBRepChamferMode::Symmetric => backend
+                            .finish_body_with_radius_stations(
+                                &target_output.body,
+                                &ordinals,
+                                match kind {
+                                    ExactBRepEdgeFinishKind::Fillet => EdgeFinish::Fillet,
+                                    ExactBRepEdgeFinishKind::Chamfer => EdgeFinish::Chamfer,
+                                },
+                                f64::from_bits(*amount_bits),
+                                &radius_stations,
+                            )?,
+                        ExactBRepChamferMode::TwoDistance {
+                            second_distance_bits,
+                        } => {
+                            let face_selectors = chamfer_edge_sides
+                                .iter()
+                                .map(|selection| selection.side_face.clone())
+                                .collect::<Vec<_>>();
+                            let (edge_ordinals, face_ordinals) = exact_brep_chamfer_ordinal_pairs(
+                                graph,
+                                *target,
+                                target_output,
+                                edges,
+                                &face_selectors,
+                            )?;
+                            backend.finish_body_advanced_chamfer(
+                                &target_output.body,
+                                &edge_ordinals,
+                                &face_ordinals,
+                                f64::from_bits(*amount_bits),
+                                AdvancedChamferMode::TwoDistance {
+                                    second_distance_mm: f64::from_bits(*second_distance_bits),
+                                },
+                            )?
+                        }
+                        ExactBRepChamferMode::DistanceAngle { angle_degrees_bits } => {
+                            let face_selectors = chamfer_edge_sides
+                                .iter()
+                                .map(|selection| selection.side_face.clone())
+                                .collect::<Vec<_>>();
+                            let (edge_ordinals, face_ordinals) = exact_brep_chamfer_ordinal_pairs(
+                                graph,
+                                *target,
+                                target_output,
+                                edges,
+                                &face_selectors,
+                            )?;
+                            backend.finish_body_advanced_chamfer(
+                                &target_output.body,
+                                &edge_ordinals,
+                                &face_ordinals,
+                                f64::from_bits(*amount_bits),
+                                AdvancedChamferMode::DistanceAngle {
+                                    angle_degrees: f64::from_bits(*angle_degrees_bits),
+                                },
+                            )?
+                        }
                     }
                 }
             }
@@ -1797,7 +1922,20 @@ fn evaluate_exact_brep_graph(
                 output
             }
         };
+        let extrusion = match &node.operation {
+            ExactBRepOperation::Extrude { .. } => true,
+            ExactBRepOperation::ProfileCut { target, .. }
+            | ExactBRepOperation::FaceOffset { target, .. }
+            | ExactBRepOperation::EdgeFinish { target, .. } => extrusion_lineage[target.0 as usize],
+            _ => false,
+        };
+        let mut output = output;
+        if let Some(names) = &produced_face_names {
+            exact_brep_expose_face_names(&mut output, names, extrusion);
+        }
         outputs.push(output);
+        face_names.push(produced_face_names);
+        extrusion_lineage.push(extrusion);
     }
     outputs
         .pop()
@@ -2241,6 +2379,56 @@ fn transform_local_to_profile_frame(
     )
 }
 
+fn transform_named_output(
+    backend: &ExactBackend,
+    local: &ExactOpOutput,
+    matrix: &[f64; 16],
+) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
+    let mut output = backend.transform_body(&local.body, matrix)?;
+    let transform_point = |point: Point3| Point3 {
+        x: matrix[0] * point.x + matrix[1] * point.y + matrix[2] * point.z + matrix[3],
+        y: matrix[4] * point.x + matrix[5] * point.y + matrix[6] * point.z + matrix[7],
+        z: matrix[8] * point.x + matrix[9] * point.y + matrix[10] * point.z + matrix[11],
+    };
+    let close = |left: f64, right: f64| {
+        (left - right).abs() <= 1.0e-7 * left.abs().max(right.abs()).max(1.0)
+    };
+    let same_point = |left: Point3, right: Point3| {
+        close(left.x, right.x) && close(left.y, right.y) && close(left.z, right.z)
+    };
+    let faces_match = local.body.topology.faces.len() == output.body.topology.faces.len()
+        && local
+            .body
+            .topology
+            .faces
+            .iter()
+            .zip(&output.body.topology.faces)
+            .all(|(before, after)| {
+                before.ordinal == after.ordinal
+                    && before.surface_kind == after.surface_kind
+                    && before.edge_count == after.edge_count
+                    && close(before.area_mm2, after.area_mm2)
+                    && same_point(transform_point(before.centroid_mm), after.centroid_mm)
+            });
+    let edges_match = local.body.topology.edges.len() == output.body.topology.edges.len()
+        && local
+            .body
+            .topology
+            .edges
+            .iter()
+            .zip(&output.body.topology.edges)
+            .all(|(before, after)| {
+                before.ordinal == after.ordinal
+                    && before.curve_kind == after.curve_kind
+                    && close(before.length_mm, after.length_mm)
+                    && same_point(transform_point(before.centroid_mm), after.centroid_mm)
+            });
+    if faces_match && edges_match {
+        output.topology_history.clone_from(&local.topology_history);
+    }
+    Ok(output)
+}
+
 fn exact_brep_sweep(
     backend: &ExactBackend,
     profile: &ExactBRepProfile,
@@ -2648,6 +2836,294 @@ fn exact_brep_boundary_segments(
             },
         })
         .collect())
+}
+
+fn exact_brep_named_segments(
+    profile: &ExactBRepProfile,
+) -> Result<Vec<NamedSegment>, ketchup_exact::GeometryError> {
+    let segments = match &profile.geometry {
+        ExactBRepPlanarGeometry::Boundary { .. } => exact_brep_boundary_segments(profile, true)?,
+        ExactBRepPlanarGeometry::Region { outer, holes } if holes.is_empty() => {
+            match exact_brep_planar_loop(outer) {
+                PlanarProfileLoop::Segments(segments) => segments,
+                PlanarProfileLoop::Circle { .. } => {
+                    return Err(exact_brep_profile_error(
+                        profile,
+                        "named profile segments require a line/arc boundary",
+                    ));
+                }
+            }
+        }
+        ExactBRepPlanarGeometry::Region { .. } => {
+            return Err(exact_brep_profile_error(
+                profile,
+                "named profile segments do not yet support holes",
+            ));
+        }
+        _ => {
+            return Err(exact_brep_profile_error(
+                profile,
+                "named profile segments require a line/arc boundary",
+            ));
+        }
+    };
+    if segments.len() != profile.segment_entity_ids.len() {
+        return Err(exact_brep_profile_error(
+            profile,
+            "named profile segment identities do not match its geometry",
+        ));
+    }
+    Ok(profile
+        .segment_entity_ids
+        .iter()
+        .zip(segments)
+        .map(|(entity_id, segment)| NamedSegment::new(format!("segment_{entity_id}"), segment))
+        .collect())
+}
+
+fn exact_brep_profile_face_name(reference: &ExactBRepProfileFaceReference) -> String {
+    match reference {
+        ExactBRepProfileFaceReference::Start => "start".to_owned(),
+        ExactBRepProfileFaceReference::End => "end".to_owned(),
+        ExactBRepProfileFaceReference::Segment { entity_id, .. } => {
+            format!("segment_{entity_id}")
+        }
+        ExactBRepProfileFaceReference::NamedResult { name } => name.clone(),
+    }
+}
+
+fn exact_brep_named_profile_body(
+    backend: &ExactBackend,
+    profile: &ExactBRepProfile,
+    interval: ExactBRepLinearInterval,
+) -> Result<(ExactOpOutput, Vec<String>), ketchup_exact::GeometryError> {
+    if exact_brep_profile_is_circle(profile) {
+        return exact_brep_named_circle_body(backend, profile, interval);
+    }
+    let named = backend
+        .named_extrude(
+            &exact_brep_named_segments(profile)?,
+            0.0,
+            interval.length_mm(),
+        )
+        .map_err(|error| exact_brep_profile_error(profile, &error.to_string()))?;
+    let (local, names) = named.into_output_and_names();
+    let frame = profile.frame_bits.map(f64::from_bits);
+    let direction = interval.direction();
+    let start_mm = interval.start_mm();
+    let origin = [
+        frame[0] + direction[0] * start_mm,
+        frame[1] + direction[1] * start_mm,
+        frame[2] + direction[2] * start_mm,
+    ];
+    let matrix = [
+        frame[3],
+        frame[6],
+        direction[0],
+        origin[0],
+        frame[4],
+        frame[7],
+        direction[1],
+        origin[1],
+        frame[5],
+        frame[8],
+        direction[2],
+        origin[2],
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ];
+    let output = transform_named_output(backend, &local, &matrix)?;
+    Ok((output, names))
+}
+
+/// Publishes program face names as the body's face history, one record per
+/// face. Extrusion caps keep the standard `extrusion.top`/`extrusion.bottom`
+/// roles the interactive tools resolve against (`end`/`start` in a program);
+/// every other face is exposed under its program name.
+fn exact_brep_expose_face_names(output: &mut ExactOpOutput, names: &[String], extrusion: bool) {
+    let mut exposed = BTreeSet::new();
+    output.topology_history.retain_mut(|record| {
+        let Some(face) = record.output_face_ordinal else {
+            return true;
+        };
+        let Some(name) = names.get(face as usize) else {
+            return false;
+        };
+        if !exposed.insert(face) {
+            return false;
+        }
+        let has_standard_role = [
+            ExactFaceRole::Top,
+            ExactFaceRole::Bottom,
+            ExactFaceRole::LinearSide,
+            ExactFaceRole::ArcSide,
+            ExactFaceRole::CircleSide,
+        ]
+        .into_iter()
+        .any(|role| {
+            record.semantic_role.as_deref() == Some(role.semantic_role())
+                && record.source_element_id == role.source_element_id()
+        });
+        if has_standard_role {
+            return true;
+        }
+        let (role, source) = match name.as_str() {
+            "end" if extrusion => (
+                ExactFaceRole::Top.semantic_role(),
+                ExactFaceRole::Top.source_element_id(),
+            ),
+            "start" if extrusion => (
+                ExactFaceRole::Bottom.semantic_role(),
+                ExactFaceRole::Bottom.source_element_id(),
+            ),
+            name => (name, name),
+        };
+        record.semantic_role = Some(role.to_owned());
+        record.source_element_id = source.to_owned();
+        true
+    });
+}
+
+/// Nodes whose faces a later node references by program name. Only these are
+/// evaluated through the naming path; every other body keeps the standard
+/// evaluation and its host-issued topology references.
+fn exact_brep_nodes_needing_names(graph: &ExactBRepGraph) -> Vec<bool> {
+    let mut needs_names = vec![false; graph.nodes.len()];
+    for (index, node) in graph.nodes.iter().enumerate().rev() {
+        let (target, consumes_names) = match &node.operation {
+            ExactBRepOperation::FaceOffset {
+                target,
+                profile_face,
+                ..
+            } => (target, profile_face.is_some()),
+            ExactBRepOperation::EdgeFinish {
+                target,
+                profile_edges,
+                ..
+            } => (target, !profile_edges.is_empty()),
+            ExactBRepOperation::ProfileCut { target, .. } => (target, false),
+            _ => continue,
+        };
+        if (consumes_names || needs_names[index])
+            && let Some(slot) = needs_names.get_mut(target.0 as usize)
+        {
+            *slot = true;
+        }
+    }
+    needs_names
+}
+
+/// Whether every face this profile sweeps can carry a program name: exactly
+/// one entity identity per swept boundary segment. Profiles outside this set
+/// (holes, open or spline geometry, a revolved circle, a circle assembled from
+/// two arcs) keep the unnamed evaluation; a later named reference to them
+/// fails explicitly.
+fn exact_brep_profile_is_nameable(profile: &ExactBRepProfile, circle_allowed: bool) -> bool {
+    let ids = profile.segment_entity_ids.len();
+    match &profile.geometry {
+        ExactBRepPlanarGeometry::Boundary { closed, segments } => {
+            *closed && ids > 0 && ids == segments.len()
+        }
+        ExactBRepPlanarGeometry::Circle { .. } => circle_allowed && ids == 1,
+        ExactBRepPlanarGeometry::Region { outer, holes } if holes.is_empty() => match outer {
+            ExactBRepPlanarLoop::Circle { .. } => circle_allowed && ids == 1,
+            ExactBRepPlanarLoop::Boundary { segments } => ids > 0 && ids == segments.len(),
+        },
+        _ => false,
+    }
+}
+
+fn exact_brep_profile_is_circle(profile: &ExactBRepProfile) -> bool {
+    match &profile.geometry {
+        ExactBRepPlanarGeometry::Circle { .. } => true,
+        ExactBRepPlanarGeometry::Region { outer, holes } => {
+            holes.is_empty() && matches!(outer, ExactBRepPlanarLoop::Circle { .. })
+        }
+        _ => false,
+    }
+}
+
+/// A full circle is one profile entity and sweeps one cylindrical wall, so the
+/// wall carries that entity's name and the caps are `start` and `end` by their
+/// position along the extrusion. Any other topology is rejected, never guessed.
+fn exact_brep_named_circle_body(
+    backend: &ExactBackend,
+    profile: &ExactBRepProfile,
+    interval: ExactBRepLinearInterval,
+) -> Result<(ExactOpOutput, Vec<String>), ketchup_exact::GeometryError> {
+    let [entity_id] = profile.segment_entity_ids.as_slice() else {
+        return Err(exact_brep_profile_error(
+            profile,
+            "named circle profile must have exactly one segment identity",
+        ));
+    };
+    let output = exact_brep_profile_body(backend, profile, interval)?;
+    let frame = profile.frame_bits.map(f64::from_bits);
+    let direction = interval.direction();
+    let along = |point: Point3| {
+        (point.x - frame[0]) * direction[0]
+            + (point.y - frame[1]) * direction[1]
+            + (point.z - frame[2]) * direction[2]
+    };
+    let tolerance = 1.0e-6 * interval.length_mm().max(1.0);
+    let faces = &output.body.topology.faces;
+    let mut names = vec![String::new(); faces.len()];
+    let mut counts = [0_usize; 3];
+    for face in faces {
+        let slot = names.get_mut(face.ordinal as usize).ok_or_else(|| {
+            exact_brep_profile_error(profile, "circle extrusion face ordinal is out of range")
+        })?;
+        let position = along(face.centroid_mm);
+        let (name, index) = match face.surface_kind.as_str() {
+            "cylinder" => (format!("segment_{entity_id}"), 0),
+            "plane" if (position - interval.start_mm()).abs() <= tolerance => {
+                ("start".to_owned(), 1)
+            }
+            "plane" if (position - interval.end_mm()).abs() <= tolerance => ("end".to_owned(), 2),
+            _ => {
+                return Err(exact_brep_profile_error(
+                    profile,
+                    "circle extrusion produced a face that is neither its wall nor a cap",
+                ));
+            }
+        };
+        *slot = name;
+        counts[index] += 1;
+    }
+    if faces.len() != 3 || counts != [1, 1, 1] {
+        return Err(exact_brep_profile_error(
+            profile,
+            "circle extrusion must have exactly one wall and two caps",
+        ));
+    }
+    Ok((output, names))
+}
+
+fn exact_brep_named_revolve(
+    backend: &ExactBackend,
+    profile: &ExactBRepProfile,
+    axis_start_mm: [f64; 2],
+    axis_end_mm: [f64; 2],
+    angle_degrees: f64,
+) -> Result<(ExactOpOutput, Vec<String>), ketchup_exact::GeometryError> {
+    let named = backend
+        .named_revolve(
+            &exact_brep_named_segments(profile)?,
+            axis_start_mm,
+            axis_end_mm,
+            angle_degrees,
+        )
+        .map_err(|error| exact_brep_profile_error(profile, &error.to_string()))?;
+    let (local, names) = named.into_output_and_names();
+    let frame = profile.frame_bits.map(f64::from_bits);
+    let matrix = [
+        frame[3], frame[6], frame[9], frame[0], frame[4], frame[7], frame[10], frame[1], frame[5],
+        frame[8], frame[11], frame[2], 0.0, 0.0, 0.0, 1.0,
+    ];
+    let output = transform_named_output(backend, &local, &matrix)?;
+    Ok((output, names))
 }
 
 fn exact_brep_planar_loop(planar_loop: &ExactBRepPlanarLoop) -> PlanarProfileLoop {

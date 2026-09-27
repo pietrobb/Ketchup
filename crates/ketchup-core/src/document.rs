@@ -242,6 +242,20 @@ pub struct ChamferEdgeSide {
     pub side_face: TopologicalElementRef,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProfileFaceReference {
+    Start,
+    End,
+    Segment { entity_id: u64, source_name: String },
+    NamedResult(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProfileEdgeReference {
+    pub first: ProfileFaceReference,
+    pub second: ProfileFaceReference,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ShellDirection {
     #[default]
@@ -777,6 +791,7 @@ pub enum FeatureKind {
     TopologyEdgeFinish {
         target: FeatureId,
         edges: Vec<TopologicalElementRef>,
+        profile_edges: Vec<ProfileEdgeReference>,
         kind: EdgeFinishKind,
         amount: Dimension,
         fillet_radius_stations: Vec<FilletRadiusStation>,
@@ -785,7 +800,8 @@ pub enum FeatureKind {
     },
     TopologyFaceOffset {
         target: FeatureId,
-        face: TopologicalElementRef,
+        face: Option<TopologicalElementRef>,
+        profile_face: Option<ProfileFaceReference>,
         distance: Dimension,
     },
     ThroughCut {
@@ -6430,6 +6446,7 @@ impl DocumentStore {
                         FeatureKind::TopologyEdgeFinish {
                             target,
                             ref edges,
+                            ref profile_edges,
                             kind,
                             ref fillet_radius_stations,
                             ref chamfer_mode,
@@ -6438,6 +6455,7 @@ impl DocumentStore {
                         } => FeatureKind::TopologyEdgeFinish {
                             target,
                             edges: edges.clone(),
+                            profile_edges: profile_edges.clone(),
                             kind,
                             amount: dimension.clone(),
                             fillet_radius_stations: fillet_radius_stations.clone(),
@@ -10640,7 +10658,6 @@ fn set_feature_parameter(
             target.clone(),
         ));
     }
-    validate_feature_kind(&kind)?;
     product.features.insert(
         target.feature_id,
         Arc::new(Feature {
@@ -11917,6 +11934,7 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
         }
         FeatureKind::TopologyEdgeFinish {
             edges,
+            profile_edges,
             kind,
             amount,
             fillet_radius_stations,
@@ -12009,17 +12027,63 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
                     previous = station.position;
                 }
             }
+            if edges.is_empty() == profile_edges.is_empty() {
+                return Err(CanonicalError::InvalidTopologicalFeatureReference);
+            }
+            if !profile_edges.is_empty() {
+                if !fillet_radius_stations.is_empty()
+                    || !matches!(chamfer_mode, ChamferMode::Symmetric)
+                    || !chamfer_edge_sides.is_empty()
+                    || profile_edges.iter().any(|edge| {
+                        edge.first == edge.second
+                            || [edge.first.clone(), edge.second.clone()]
+                                .iter()
+                                .any(|face| {
+                                    matches!(
+                                        face,
+                                        ProfileFaceReference::Segment { entity_id: 0, .. }
+                                    ) || matches!(
+                                        face,
+                                        ProfileFaceReference::Segment { source_name, .. }
+                                            if source_name.is_empty()
+                                    ) || matches!(
+                                        face,
+                                        ProfileFaceReference::NamedResult(name) if name.is_empty()
+                                    )
+                                })
+                    })
+                {
+                    return Err(CanonicalError::InvalidTopologicalFeatureReference);
+                }
+                return Ok(());
+            }
             validate_topological_feature_references(edges, TopologicalElementKind::Edge)
         }
-        FeatureKind::TopologyFaceOffset { face, distance, .. } => {
+        FeatureKind::TopologyFaceOffset {
+            face,
+            profile_face,
+            distance,
+            ..
+        } => {
             Dimension::new(distance.source_token.clone(), distance.millimetres).map(|_| ())?;
             if distance.millimetres.abs() <= PROFILE_EPSILON_MM {
                 return Err(CanonicalError::DimensionOutsideEnvelope);
             }
-            validate_topological_feature_references(
-                std::slice::from_ref(face),
-                TopologicalElementKind::Face,
-            )
+            if face.is_some() == profile_face.is_some()
+                || profile_face.as_ref().is_some_and(|face| {
+                    matches!(face, ProfileFaceReference::Segment { entity_id: 0, .. })
+                        || matches!(face, ProfileFaceReference::Segment { source_name, .. } if source_name.is_empty())
+                        || matches!(face, ProfileFaceReference::NamedResult(name) if name.is_empty())
+                })
+            {
+                return Err(CanonicalError::InvalidTopologicalFeatureReference);
+            }
+            face.as_ref().map_or(Ok(()), |face| {
+                validate_topological_feature_references(
+                    std::slice::from_ref(face),
+                    TopologicalElementKind::Face,
+                )
+            })
         }
         FeatureKind::ImportedExactBody(spec) => validate_imported_exact_body(spec),
         FeatureKind::RigidTransform { transform, .. } => {
@@ -13682,6 +13746,7 @@ fn clone_definition_and_repoint(
             FeatureKind::TopologyEdgeFinish {
                 target,
                 edges,
+                profile_edges,
                 kind,
                 amount,
                 fillet_radius_stations,
@@ -13697,6 +13762,7 @@ fn clone_definition_and_repoint(
                         remap_topological_reference(reference, new_definition_id, &mapping)
                     })
                     .collect::<Result<Vec<_>, _>>()?,
+                profile_edges: profile_edges.clone(),
                 kind: *kind,
                 amount: amount.clone(),
                 fillet_radius_stations: fillet_radius_stations.clone(),
@@ -13722,12 +13788,17 @@ fn clone_definition_and_repoint(
             FeatureKind::TopologyFaceOffset {
                 target,
                 face,
+                profile_face,
                 distance,
             } => FeatureKind::TopologyFaceOffset {
                 target: *mapping
                     .get(target)
                     .ok_or(CanonicalError::InvalidFeatureMap)?,
-                face: remap_topological_reference(face, new_definition_id, &mapping)?,
+                face: face
+                    .as_ref()
+                    .map(|face| remap_topological_reference(face, new_definition_id, &mapping))
+                    .transpose()?,
+                profile_face: profile_face.clone(),
                 distance: distance.clone(),
             },
             FeatureKind::ThroughCut { target, profile } => FeatureKind::ThroughCut {
@@ -16547,18 +16618,20 @@ fn validate_product_with_drawing_sources(
                 validate_topological_target(product, definition, feature.id, target, &edges)?;
             }
             FeatureKind::TopologyFaceOffset { target, face, .. } => {
-                validate_topological_feature_context(
-                    product.document_id,
-                    feature.definition_id,
-                    &feature.kind,
-                )?;
-                validate_topological_target(
-                    product,
-                    definition,
-                    feature.id,
-                    target,
-                    std::slice::from_ref(&face),
-                )?;
+                if let Some(face) = face {
+                    validate_topological_feature_context(
+                        product.document_id,
+                        feature.definition_id,
+                        &feature.kind,
+                    )?;
+                    validate_topological_target(
+                        product,
+                        definition,
+                        feature.id,
+                        target,
+                        std::slice::from_ref(&face),
+                    )?;
+                }
             }
             FeatureKind::ThroughCut { target, profile } => {
                 let target = product
@@ -16608,9 +16681,17 @@ fn validate_product_with_drawing_sources(
                                 .solved_regions()
                                 .is_ok_and(|regions| regions.len() == 1)
                     }
-                    _ => {
-                        matches!(&target.kind, FeatureKind::Extrusion { height, .. } if depth.millimetres() < height.millimetres())
-                    }
+                    // A plain-profile pocket must stay blind. Against an
+                    // extrusion that is checked here; a chained target's
+                    // extent is only known to the exact graph compiler.
+                    FeatureKind::Profile { .. }
+                    | FeatureKind::SegmentProfile { closed: true, .. } => match &target.kind {
+                        FeatureKind::Extrusion { height, .. } => {
+                            depth.millimetres() < height.millimetres()
+                        }
+                        kind => feature_kind_is_solid(kind),
+                    },
+                    _ => false,
                 };
                 if target.definition_id != feature.definition_id
                     || profile.definition_id != feature.definition_id

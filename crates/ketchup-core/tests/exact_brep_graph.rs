@@ -268,6 +268,7 @@ fn topology_shell_and_edge_finish_compile_to_typed_target_bound_nodes() {
             kind: FeatureKind::TopologyEdgeFinish {
                 target: shell,
                 edges: vec![edge.clone()],
+                profile_edges: Vec::new(),
                 kind: EdgeFinishKind::Chamfer,
                 amount: dimension(1.25),
                 fillet_radius_stations: Vec::new(),
@@ -298,6 +299,7 @@ fn topology_shell_and_edge_finish_compile_to_typed_target_bound_nodes() {
     let ExactBRepOperation::EdgeFinish {
         target,
         edges,
+        profile_edges,
         kind,
         amount_bits,
         fillet_radius_stations,
@@ -312,6 +314,7 @@ fn topology_shell_and_edge_finish_compile_to_typed_target_bound_nodes() {
     assert_eq!(edges.len(), 1);
     assert_eq!(edges[0].kind, ExactBRepTopologyKind::Edge);
     assert_eq!(edges[0].reference().unwrap(), edge);
+    assert!(profile_edges.is_empty());
     assert_eq!(f64::from_bits(*amount_bits), 1.25);
     assert!(fillet_radius_stations.is_empty());
     assert_eq!(
@@ -353,7 +356,8 @@ fn topology_face_offset_compiles_and_round_trips_with_signed_distance() {
             name: "Topology face offset".into(),
             kind: FeatureKind::TopologyFaceOffset {
                 target: BOOLEAN,
-                face: face.clone(),
+                face: Some(face.clone()),
+                profile_face: None,
                 distance: dimension(-3.5),
             },
         }]))
@@ -364,7 +368,8 @@ fn topology_face_offset_compiles_and_round_trips_with_signed_distance() {
     assert_eq!(graph.nodes.len(), 4);
     let ExactBRepOperation::FaceOffset {
         target,
-        face: selector,
+        face: Some(selector),
+        profile_face: None,
         distance_bits,
     } = &graph.nodes[3].operation
     else {

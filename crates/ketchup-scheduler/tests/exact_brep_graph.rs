@@ -4950,7 +4950,8 @@ fn positive_face_offset_bounds_drive_a_complete_through_cut_and_round_trip() {
                 name: "Positive top face offset".into(),
                 kind: FeatureKind::TopologyFaceOffset {
                     target: base,
-                    face: top_face,
+                    face: Some(top_face),
+                    profile_face: None,
                     distance: dimension(5.0),
                 },
             },
@@ -5650,6 +5651,7 @@ fn worker_evaluates_variable_radius_fillet_v17_and_rejects_invalid_profiles_atom
                 kind: FeatureKind::TopologyEdgeFinish {
                     target: base,
                     edges: vec![edge.clone()],
+                    profile_edges: Vec::new(),
                     kind: EdgeFinishKind::Fillet,
                     amount: dimension(0.5),
                     fillet_radius_stations: Vec::new(),
@@ -5664,6 +5666,7 @@ fn worker_evaluates_variable_radius_fillet_v17_and_rejects_invalid_profiles_atom
                 kind: FeatureKind::TopologyEdgeFinish {
                     target: base,
                     edges: vec![edge.clone()],
+                    profile_edges: Vec::new(),
                     kind: EdgeFinishKind::Fillet,
                     amount: dimension(0.5),
                     fillet_radius_stations: vec![
@@ -5756,6 +5759,7 @@ fn worker_evaluates_variable_radius_fillet_v17_and_rejects_invalid_profiles_atom
             kind: FeatureKind::TopologyEdgeFinish {
                 target: base,
                 edges: vec![edge],
+                profile_edges: Vec::new(),
                 kind: EdgeFinishKind::Fillet,
                 amount: dimension(0.5),
                 fillet_radius_stations: vec![FilletRadiusStation {
@@ -5873,6 +5877,7 @@ fn worker_evaluates_oriented_advanced_chamfers_and_rejects_non_adjacent_faces() 
                     mode: ChamferMode| FeatureKind::TopologyEdgeFinish {
         target: base,
         edges: vec![edge.clone()],
+        profile_edges: Vec::new(),
         kind: EdgeFinishKind::Chamfer,
         amount: dimension(0.75),
         fillet_radius_stations: Vec::new(),
@@ -5930,6 +5935,7 @@ fn worker_evaluates_oriented_advanced_chamfers_and_rejects_non_adjacent_faces() 
                         .iter()
                         .map(|selection| selection.edge.clone())
                         .collect(),
+                    profile_edges: Vec::new(),
                     kind: EdgeFinishKind::Chamfer,
                     amount: dimension(0.25),
                     fillet_radius_stations: Vec::new(),
@@ -6107,6 +6113,7 @@ fn worker_rebinds_topology_selected_finishes_and_rejects_lost_provenance() {
                 kind: FeatureKind::TopologyEdgeFinish {
                     target: base,
                     edges: vec![edges[0].clone()],
+                    profile_edges: Vec::new(),
                     kind: EdgeFinishKind::Fillet,
                     amount: dimension(0.75),
                     fillet_radius_stations: Vec::new(),
@@ -6121,6 +6128,7 @@ fn worker_rebinds_topology_selected_finishes_and_rejects_lost_provenance() {
                 kind: FeatureKind::TopologyEdgeFinish {
                     target: base,
                     edges: edges.clone(),
+                    profile_edges: Vec::new(),
                     kind: EdgeFinishKind::Chamfer,
                     amount: dimension(0.75),
                     fillet_radius_stations: Vec::new(),
@@ -6217,6 +6225,7 @@ fn worker_rebinds_topology_selected_finishes_and_rejects_lost_provenance() {
             kind: FeatureKind::TopologyEdgeFinish {
                 target: base,
                 edges: vec![edges[0].clone(), edges[0].clone()],
+                profile_edges: Vec::new(),
                 kind: EdgeFinishKind::Chamfer,
                 amount: dimension(0.75),
                 fillet_radius_stations: Vec::new(),
@@ -6234,6 +6243,7 @@ fn worker_rebinds_topology_selected_finishes_and_rejects_lost_provenance() {
             kind: FeatureKind::TopologyEdgeFinish {
                 target: base,
                 edges: vec![faces[0].clone(), edges[0].clone()],
+                profile_edges: Vec::new(),
                 kind: EdgeFinishKind::Chamfer,
                 amount: dimension(0.75),
                 fillet_radius_stations: Vec::new(),
@@ -6365,6 +6375,7 @@ fn worker_rebinds_topology_selected_finishes_and_rejects_lost_provenance() {
             kind: FeatureKind::TopologyEdgeFinish {
                 target: base,
                 edges: vec![stale_edge],
+                profile_edges: Vec::new(),
                 kind: EdgeFinishKind::Fillet,
                 amount: dimension(0.75),
                 fillet_radius_stations: Vec::new(),

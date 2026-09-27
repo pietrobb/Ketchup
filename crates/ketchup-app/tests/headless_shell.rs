@@ -10526,7 +10526,8 @@ fn imported_exact_finishes_and_face_push_pull_recompute_through_headless_ui() {
         .find_map(|feature| match feature.kind() {
             FeatureKind::TopologyFaceOffset {
                 target,
-                face,
+                face: Some(face),
+                profile_face: None,
                 distance,
             } => Some((feature.id(), *target, face, distance.millimetres())),
             _ => None,

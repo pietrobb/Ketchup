@@ -139,6 +139,11 @@ impl NamedBody {
         &self.names
     }
 
+    #[must_use]
+    pub fn into_output_and_names(self) -> (ExactOpOutput, Vec<String>) {
+        (self.output, self.names)
+    }
+
     /// The ordinal of the face with this exact name.
     ///
     /// # Errors
@@ -160,59 +165,13 @@ impl NamedBody {
     /// Returns an error when a face is unknown, when the faces do not touch,
     /// or when they share more than one edge.
     pub fn edge(&self, first: &str, second: &str) -> Result<u32, NamingError> {
-        let first_face = self.face(first)?;
-        let second_face = self.face(second)?;
-        let mut matches = Vec::new();
-        let mut neighbours = BTreeSet::new();
-        for edge in &self.output.body.topology.edges {
-            let faces = edge
-                .adjacent_face_ordinals
-                .iter()
-                .copied()
-                .collect::<BTreeSet<_>>();
-            if faces.contains(&first_face) {
-                neighbours.extend(
-                    faces
-                        .iter()
-                        .filter(|face| **face != first_face)
-                        .map(|face| self.names[*face as usize].clone()),
-                );
-            }
-            if faces.len() == 2 && faces.contains(&first_face) && faces.contains(&second_face) {
-                matches.push(edge.ordinal);
-            }
-        }
-        match matches.as_slice() {
-            [edge] => Ok(*edge),
-            [] => Err(NamingError::UnknownEdge {
-                first: first.to_owned(),
-                second: second.to_owned(),
-                neighbours_of_first: neighbours.into_iter().collect(),
-            }),
-            _ => Err(NamingError::AmbiguousEdge {
-                first: first.to_owned(),
-                second: second.to_owned(),
-                count: matches.len(),
-            }),
-        }
+        edge_ordinal(&self.output, &self.names, first, second)
     }
 
     fn sorted_names(&self) -> Vec<String> {
         let mut names = self.names.clone();
         names.sort();
         names
-    }
-
-    fn native(&self, operation: &'static str) -> Result<&ffi::NativeOperationResult, NamingError> {
-        self.output.body.native.as_ref().ok_or_else(|| {
-            NamingError::Geometry(GeometryError {
-                code: GeometryErrorCode::NullResult,
-                diagnostic: "Named body lost its owned native shape".to_owned(),
-                operation,
-                input_digest: String::new(),
-                backend_fingerprint: crate::BACKEND_FINGERPRINT,
-            })
-        })
     }
 }
 
@@ -289,20 +248,41 @@ impl ExactBackend {
         finish: EdgeFinish,
         amount_mm: f64,
     ) -> Result<NamedBody, NamingError> {
+        self.named_finish_output(&body.output, &body.names, edges, finish, amount_mm)
+    }
+
+    /// Fillets or chamfers named edges on an output retained by an exact graph evaluator.
+    ///
+    /// # Errors
+    /// Returns an error when the names do not cover the body or an edge cannot be resolved.
+    pub fn named_finish_output(
+        &self,
+        output: &ExactOpOutput,
+        names: &[String],
+        edges: &[(&str, &str)],
+        finish: EdgeFinish,
+        amount_mm: f64,
+    ) -> Result<NamedBody, NamingError> {
         const OPERATION: &str = "named_finish";
-        let input = format!(
-            "{OPERATION}:{:?}:{edges:?}:{finish:?}:{amount_mm}",
-            body.names
-        );
+        let input = format!("{OPERATION}:{names:?}:{edges:?}:{finish:?}:{amount_mm}");
         validate_length(amount_mm, "amount_mm", OPERATION, &input)?;
         let ordinals = edges
             .iter()
-            .map(|(first, second)| body.edge(first, second))
+            .map(|(first, second)| edge_ordinal(output, names, first, second))
             .collect::<Result<Vec<_>, _>>()?;
+        let native = output.body.native.as_ref().ok_or_else(|| {
+            NamingError::Geometry(GeometryError {
+                code: GeometryErrorCode::NullResult,
+                diagnostic: "Named body lost its owned native shape".to_owned(),
+                operation: OPERATION,
+                input_digest: String::new(),
+                backend_fingerprint: crate::BACKEND_FINGERPRINT,
+            })
+        })?;
         let output = collect_output(
             ffi::named_finish_native(
-                body.native(OPERATION)?,
-                &body.names,
+                native,
+                names,
                 &ordinals,
                 amount_mm,
                 finish == EdgeFinish::Fillet,
@@ -324,27 +304,40 @@ impl ExactBackend {
         tool: &NamedBody,
         tool_name: &str,
     ) -> Result<NamedBody, NamingError> {
+        self.named_cut_output(
+            &target.output,
+            &target.names,
+            &tool.output,
+            &tool.names,
+            tool_name,
+        )
+    }
+
+    /// Removes a named tool from a named target retained by an exact graph evaluator.
+    ///
+    /// # Errors
+    /// Returns an error for incomplete names, an invalid tool name, or a failed cut.
+    pub fn named_cut_output(
+        &self,
+        target: &ExactOpOutput,
+        target_names: &[String],
+        tool: &ExactOpOutput,
+        tool_names: &[String],
+        tool_name: &str,
+    ) -> Result<NamedBody, NamingError> {
         const OPERATION: &str = "named_cut";
         if !valid_name(tool_name) {
             return Err(NamingError::InvalidName(tool_name.to_owned()));
         }
-        let input = format!(
-            "{OPERATION}:{:?}:{:?}:{tool_name}",
-            target.names, tool.names
-        );
-        let tool_labels = tool
-            .names
+        let input = format!("{OPERATION}:{target_names:?}:{tool_names:?}:{tool_name}");
+        let tool_labels = tool_names
             .iter()
             .map(|name| format!("{tool_name}.{name}"))
             .collect::<Vec<_>>();
+        let target_native = output_native(target, OPERATION)?;
+        let tool_native = output_native(tool, OPERATION)?;
         let output = collect_output(
-            ffi::named_boolean_native(
-                target.native(OPERATION)?,
-                &target.names,
-                tool.native(OPERATION)?,
-                &tool_labels,
-                0,
-            ),
+            ffi::named_boolean_native(target_native, target_names, tool_native, &tool_labels, 0),
             OPERATION,
             &input,
             HistoryConfidence::Complete,
@@ -362,14 +355,39 @@ impl ExactBackend {
         face: &str,
         distance_mm: f64,
     ) -> Result<NamedBody, NamingError> {
+        self.named_offset_face_output(&body.output, &body.names, face, distance_mm)
+    }
+
+    /// Moves one named face on an output retained by an exact graph evaluator.
+    ///
+    /// # Errors
+    /// Returns an error for an unknown or non-planar face or a failed offset.
+    pub fn named_offset_face_output(
+        &self,
+        output: &ExactOpOutput,
+        names: &[String],
+        face: &str,
+        distance_mm: f64,
+    ) -> Result<NamedBody, NamingError> {
         const OPERATION: &str = "named_offset_face";
-        let input = format!("{OPERATION}:{:?}:{face}:{distance_mm}", body.names);
+        let input = format!("{OPERATION}:{names:?}:{face}:{distance_mm}");
         validate_length(distance_mm.abs(), "distance_mm", OPERATION, &input)?;
-        let face_ordinal = body.face(face)?;
+        let face_ordinal = names
+            .iter()
+            .position(|candidate| candidate == face)
+            .map(ordinal)
+            .ok_or_else(|| NamingError::UnknownFace {
+                name: face.to_owned(),
+                available: {
+                    let mut available = names.to_vec();
+                    available.sort();
+                    available
+                },
+            })?;
         let output = collect_output(
             ffi::named_offset_face_native(
-                body.native(OPERATION)?,
-                &body.names,
+                output_native(output, OPERATION)?,
+                names,
                 face_ordinal,
                 distance_mm,
             ),
@@ -381,11 +399,85 @@ impl ExactBackend {
     }
 }
 
+fn output_native<'a>(
+    output: &'a ExactOpOutput,
+    operation: &'static str,
+) -> Result<&'a ffi::NativeOperationResult, NamingError> {
+    output.body.native.as_ref().ok_or_else(|| {
+        NamingError::Geometry(GeometryError {
+            code: GeometryErrorCode::NullResult,
+            diagnostic: "Named body lost its owned native shape".to_owned(),
+            operation,
+            input_digest: String::new(),
+            backend_fingerprint: crate::BACKEND_FINGERPRINT,
+        })
+    })
+}
+
+fn edge_ordinal(
+    output: &ExactOpOutput,
+    names: &[String],
+    first: &str,
+    second: &str,
+) -> Result<u32, NamingError> {
+    let face = |name: &str| {
+        names
+            .iter()
+            .position(|candidate| candidate == name)
+            .map(ordinal)
+            .ok_or_else(|| NamingError::UnknownFace {
+                name: name.to_owned(),
+                available: {
+                    let mut available = names.to_vec();
+                    available.sort();
+                    available
+                },
+            })
+    };
+    let first_face = face(first)?;
+    let second_face = face(second)?;
+    let mut matches = Vec::new();
+    let mut neighbours = BTreeSet::new();
+    for edge in &output.body.topology.edges {
+        let faces = edge
+            .adjacent_face_ordinals
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        if faces.contains(&first_face) {
+            neighbours.extend(
+                faces
+                    .iter()
+                    .filter(|face| **face != first_face)
+                    .map(|face| names[*face as usize].clone()),
+            );
+        }
+        if faces.len() == 2 && faces.contains(&first_face) && faces.contains(&second_face) {
+            matches.push(edge.ordinal);
+        }
+    }
+    match matches.as_slice() {
+        [edge] => Ok(*edge),
+        [] => Err(NamingError::UnknownEdge {
+            first: first.to_owned(),
+            second: second.to_owned(),
+            neighbours_of_first: neighbours.into_iter().collect(),
+        }),
+        _ => Err(NamingError::AmbiguousEdge {
+            first: first.to_owned(),
+            second: second.to_owned(),
+            count: matches.len(),
+        }),
+    }
+}
+
 fn ordinal(index: usize) -> u32 {
     u32::try_from(index).expect("face count fits in u32")
 }
 
-fn valid_name(name: &str) -> bool {
+/// Whether a program may use `name` for a profile segment or a cutting tool.
+#[must_use]
+pub fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name != "start"
         && name != "end"

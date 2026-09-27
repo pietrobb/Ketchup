@@ -1565,6 +1565,7 @@ pub fn encode_semantic_state_with_results(
             crate::document::FeatureKind::TopologyFaceOffset {
                 target,
                 face,
+                profile_face,
                 distance,
             } => {
                 writeln!(
@@ -1574,13 +1575,23 @@ pub fn encode_semantic_state_with_results(
                 )
                 .unwrap();
                 writeln!(complete, "feature.{}.target={}", feature.id().0, target.0).unwrap();
-                writeln!(
-                    complete,
-                    "feature.{}.face.lineage={:?}",
-                    feature.id().0,
-                    face.lineage_digest
-                )
-                .unwrap();
+                if let Some(face) = face {
+                    writeln!(
+                        complete,
+                        "feature.{}.face.lineage={:?}",
+                        feature.id().0,
+                        face.lineage_digest
+                    )
+                    .unwrap();
+                }
+                if let Some(profile_face) = profile_face {
+                    writeln!(
+                        complete,
+                        "feature.{}.face.program_name={profile_face:?}",
+                        feature.id().0,
+                    )
+                    .unwrap();
+                }
                 writeln!(
                     complete,
                     "feature.{}.distance.f64_bits={:016x}",

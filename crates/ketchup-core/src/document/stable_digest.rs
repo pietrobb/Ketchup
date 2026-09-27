@@ -1518,6 +1518,7 @@ impl StableDigest {
             FeatureKind::TopologyEdgeFinish {
                 target,
                 edges,
+                profile_edges,
                 kind,
                 amount,
                 fillet_radius_stations,
@@ -1529,6 +1530,27 @@ impl StableDigest {
                 self.u64(edges.len() as u64);
                 for reference in edges {
                     self.topological_reference(reference);
+                }
+                self.u64(profile_edges.len() as u64);
+                for edge in profile_edges {
+                    for face in [&edge.first, &edge.second] {
+                        match face {
+                            ProfileFaceReference::Start => self.byte(1),
+                            ProfileFaceReference::End => self.byte(2),
+                            ProfileFaceReference::Segment {
+                                entity_id,
+                                source_name,
+                            } => {
+                                self.byte(3);
+                                self.u64(*entity_id);
+                                self.bytes(source_name.as_bytes());
+                            }
+                            ProfileFaceReference::NamedResult(name) => {
+                                self.byte(4);
+                                self.bytes(name.as_bytes());
+                            }
+                        }
+                    }
                 }
                 self.byte(match kind {
                     EdgeFinishKind::Fillet => 1,
@@ -1563,11 +1585,33 @@ impl StableDigest {
             FeatureKind::TopologyFaceOffset {
                 target,
                 face,
+                profile_face,
                 distance,
             } => {
                 self.byte(23);
                 self.u64(target.0);
-                self.topological_reference(face);
+                if let Some(face) = face {
+                    self.byte(1);
+                    self.topological_reference(face);
+                } else if let Some(face) = profile_face {
+                    self.byte(2);
+                    match face {
+                        ProfileFaceReference::Start => self.byte(1),
+                        ProfileFaceReference::End => self.byte(2),
+                        ProfileFaceReference::Segment {
+                            entity_id,
+                            source_name,
+                        } => {
+                            self.byte(3);
+                            self.u64(*entity_id);
+                            self.bytes(source_name.as_bytes());
+                        }
+                        ProfileFaceReference::NamedResult(name) => {
+                            self.byte(4);
+                            self.bytes(name.as_bytes());
+                        }
+                    }
+                }
                 self.bytes(distance.source_token.as_bytes());
                 self.u64(distance.millimetres.to_bits());
             }

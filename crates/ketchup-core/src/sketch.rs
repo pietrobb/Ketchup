@@ -625,12 +625,15 @@ pub enum SolvedSketchRegionProfile {
 pub struct SolvedSketchRegion {
     pub id: SketchRegionId,
     pub entity_ids: Vec<SketchEntityId>,
+    /// The outer loop's entities in boundary order, one per outer edge.
+    pub outer_entity_ids: Vec<SketchEntityId>,
     pub outer: SolvedSketchRegionProfile,
     pub holes: Vec<SolvedSketchRegionProfile>,
 }
 
 struct SolvedSketchLoop {
     entity_ids: Vec<SketchEntityId>,
+    ordered_entity_ids: Vec<SketchEntityId>,
     profile: SolvedSketchRegionProfile,
     area: f64,
 }
@@ -2512,6 +2515,7 @@ impl SketchSpec {
                     radius_mm,
                 } => loops.push(SolvedSketchLoop {
                     entity_ids: vec![id],
+                    ordered_entity_ids: vec![id],
                     profile: SolvedSketchRegionProfile::Circle {
                         center_mm,
                         radius_mm,
@@ -2604,6 +2608,7 @@ impl SketchSpec {
             if edges.len() < 2 || area <= EPSILON_MM * EPSILON_MM {
                 return Err(SketchError::OpenRegion);
             }
+            let ordered_entity_ids = entity_ids.clone();
             entity_ids.sort_unstable();
             let profile = if edges
                 .iter()
@@ -2618,6 +2623,7 @@ impl SketchSpec {
             validate_profile_topology(&profile)?;
             loops.push(SolvedSketchLoop {
                 entity_ids,
+                ordered_entity_ids,
                 profile,
                 area,
             });
@@ -2669,6 +2675,7 @@ impl SketchSpec {
             regions.push(SolvedSketchRegion {
                 id: stable_region_id(&outer.entity_ids),
                 entity_ids,
+                outer_entity_ids: outer.ordered_entity_ids.clone(),
                 outer: outer.profile.clone(),
                 holes: hole_indices
                     .into_iter()

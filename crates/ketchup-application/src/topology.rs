@@ -75,6 +75,7 @@ pub fn plan_topology_finish_kind(
         GeneralFinishKind::Fillet | GeneralFinishKind::Chamfer => FeatureKind::TopologyEdgeFinish {
             target,
             edges: references,
+            profile_edges: Vec::new(),
             kind: if kind == GeneralFinishKind::Fillet {
                 EdgeFinishKind::Fillet
             } else {
@@ -155,6 +156,7 @@ pub fn plan_topology_advanced_chamfer_kind(
     Some(FeatureKind::TopologyEdgeFinish {
         target,
         edges,
+        profile_edges: Vec::new(),
         kind: EdgeFinishKind::Chamfer,
         amount: distance,
         fillet_radius_stations: Vec::new(),
