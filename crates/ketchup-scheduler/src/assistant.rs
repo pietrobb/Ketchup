@@ -526,8 +526,8 @@ impl AssistantProcessClient {
 
     fn terminate(&mut self) {
         self.write_sender.take();
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        // Keep the whole-job kill off the Windows kernel-teardown wait path.
+        let _ = crate::child_process::terminate(&mut *self.child);
         self.closed = true;
     }
 }
@@ -671,6 +671,9 @@ impl fmt::Display for AssistantProcessError {
 
 impl std::error::Error for AssistantProcessError {}
 
+#[cfg(test)]
+#[path = "assistant_deadline_tests.rs"]
+mod deadline_tests;
 #[cfg(all(test, windows))]
 mod tests {
     use super::open_guarded_executable;

@@ -176,26 +176,34 @@ fn m7b_host_max_query_state_fits_the_declared_response_line() {
 #[test]
 fn m7b_host_max_response_honors_timeout_when_plugin_stops_reading() {
     let store = host_max_store();
-    let script = "import sys,time\nprint('HELLO\\tketchup.plugin.v1\\torg.ketchup.backpressure\\t1.0.0\\t7001\\tquery.agent-state.v1\\t1\\t65536\\t1\\t1\\t1', flush=True)\nsys.stdin.readline()\nprint('QUERY\\tAGENT_STATE', flush=True)\ntime.sleep(5)";
+    let directory = tempfile::tempdir().unwrap();
+    let stopped_reading = directory.path().join("stopped-reading");
+    let script = "import pathlib,sys,time\nprint('HELLO\\tketchup.plugin.v1\\torg.ketchup.backpressure\\t1.0.0\\t7001\\tquery.agent-state.v1\\t1\\t65536\\t1\\t1\\t1', flush=True)\nsys.stdin.readline()\nprint('QUERY\\tAGENT_STATE', flush=True)\npathlib.Path(sys.argv[1]).touch()\ntime.sleep(30)";
     let (sender, receiver) = mpsc::channel();
-    let started = Instant::now();
+    let marker = stopped_reading.clone().into_os_string();
     std::thread::spawn(move || {
         let result = run_plugin_process(
             python(),
-            &[OsString::from("-c"), OsString::from(script)],
+            &[OsString::from("-c"), OsString::from(script), marker],
             &store,
             pilot_grant(PluginLimits::HOST_MAX),
-            Duration::from_millis(100),
+            // Long enough to reach the blocked response even with slow startup.
+            Duration::from_secs(3),
             &AtomicBool::new(false),
         );
         let _ = sender.send(result);
     });
 
+    // A host still blocked on the write would only return when the plugin
+    // exits after 30 s; a responsive host returns shortly after its deadline.
     let result = receiver
-        .recv_timeout(Duration::from_secs(2))
+        .recv_timeout(Duration::from_secs(10))
         .expect("plugin host remained blocked writing a bounded response after its deadline");
     assert!(matches!(result, Err(PluginHostError::TimedOut)));
-    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(
+        stopped_reading.exists(),
+        "the deadline expired before the plugin blocked the host response"
+    );
 }
 
 #[test]
@@ -255,26 +263,40 @@ fn m7b_unrepresentable_timeout_is_rejected_without_panicking() {
 #[test]
 fn m7b_host_max_response_honors_cancellation_when_plugin_stops_reading() {
     let store = host_max_store();
-    let script = "import sys,time\nprint('HELLO\\tketchup.plugin.v1\\torg.ketchup.backpressure-cancel\\t1.0.0\\t7001\\tquery.agent-state.v1\\t1\\t65536\\t1\\t1\\t1', flush=True)\nsys.stdin.readline()\nprint('QUERY\\tAGENT_STATE', flush=True)\ntime.sleep(5)";
+    let directory = tempfile::tempdir().unwrap();
+    let stopped_reading = directory.path().join("stopped-reading");
+    let script = "import pathlib,sys,time\nprint('HELLO\\tketchup.plugin.v1\\torg.ketchup.backpressure-cancel\\t1.0.0\\t7001\\tquery.agent-state.v1\\t1\\t65536\\t1\\t1\\t1', flush=True)\nsys.stdin.readline()\nprint('QUERY\\tAGENT_STATE', flush=True)\npathlib.Path(sys.argv[1]).touch()\ntime.sleep(30)";
     let cancelled = Arc::new(AtomicBool::new(false));
     let run_cancelled = Arc::clone(&cancelled);
     let (sender, receiver) = mpsc::channel();
+    let marker = stopped_reading.clone().into_os_string();
     std::thread::spawn(move || {
         let result = run_plugin_process(
             python(),
-            &[OsString::from("-c"), OsString::from(script)],
+            &[OsString::from("-c"), OsString::from(script), marker],
             &store,
             pilot_grant(PluginLimits::HOST_MAX),
-            Duration::from_secs(5),
+            Duration::from_secs(60),
             &run_cancelled,
         );
         let _ = sender.send(result);
     });
-    std::thread::sleep(Duration::from_millis(100));
+    // Cancel only once the plugin has stopped reading, so the host is blocked
+    // on its bounded response write rather than on process startup.
+    let wait_started = Instant::now();
+    while !stopped_reading.exists() {
+        assert!(
+            wait_started.elapsed() < Duration::from_secs(20),
+            "plugin never reached the blocked response"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
     cancelled.store(true, Ordering::Release);
 
+    // A host still blocked on the write would only return when the plugin
+    // exits after 30 s; a responsive host returns well within this bound.
     let result = receiver
-        .recv_timeout(Duration::from_secs(2))
+        .recv_timeout(Duration::from_secs(5))
         .expect("plugin host remained blocked writing a bounded response after cancellation");
     assert!(matches!(result, Err(PluginHostError::Cancelled)));
 }
@@ -409,13 +431,32 @@ fn m7b_process_timeout_and_cancellation_kill_the_untrusted_client() {
     assert!(matches!(result, Err(PluginHostError::Cancelled)));
 }
 
+/// A plugin descendant whose side effect waits for the test's explicit
+/// release, so the check does not race host latency under machine load.
+#[cfg(windows)]
+const DESCENDANT: &str = "import pathlib,sys,time\ns = sys.argv[1]\npathlib.Path(s + '.started').write_text('1')\nd = time.monotonic() + 30\nwhile not pathlib.Path(s + '.release').exists():\n    if time.monotonic() > d:\n        raise SystemExit(0)\n    time.sleep(0.01)\npathlib.Path(s).write_text('escaped')\n";
+
+/// Spawns `DESCENDANT` (argv[2]) for sentinel argv[1] and waits until it runs.
+#[cfg(windows)]
+const SPAWN_DESCENDANT: &str = "import os,subprocess,sys,time\nsubprocess.Popen([sys.executable, '-c', sys.argv[2], sys.argv[1]])\nwhile not os.path.exists(sys.argv[1] + '.started'):\n    time.sleep(0.01)\n";
+
+#[cfg(windows)]
+fn release_descendant(sentinel: &std::path::Path) {
+    let mut release = sentinel.as_os_str().to_owned();
+    release.push(".release");
+    std::fs::write(release, "1").unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+}
+
 #[cfg(windows)]
 #[test]
 fn m7b_timeout_terminates_plugin_descendants() {
     let store = seed();
     let directory = tempfile::tempdir().unwrap();
     let sentinel = directory.path().join("escaped-descendant.txt");
-    let script = "import subprocess,sys,time\nchild = 'import pathlib,sys,time; time.sleep(0.4); pathlib.Path(sys.argv[1]).write_text(\"escaped\")'\nsubprocess.Popen([sys.executable, '-c', child, sys.argv[1]])\nprint('HELLO\\tketchup.plugin.v1\\torg.ketchup.process-tree\\t1.0.0\\t7001\\t\\t1\\t1\\t1\\t1\\t1', flush=True)\ntime.sleep(30)";
+    let script = format!(
+        "{SPAWN_DESCENDANT}print('HELLO\\tketchup.plugin.v1\\torg.ketchup.process-tree\\t1.0.0\\t7001\\t\\t1\\t1\\t1\\t1\\t1', flush=True)\ntime.sleep(30)"
+    );
 
     let result = run_plugin_process(
         python(),
@@ -423,15 +464,17 @@ fn m7b_timeout_terminates_plugin_descendants() {
             OsString::from("-c"),
             OsString::from(script),
             sentinel.as_os_str().to_owned(),
+            OsString::from(DESCENDANT),
         ],
         &store,
         pilot_grant(PluginLimits::M7B_PILOT),
-        Duration::from_millis(100),
+        // Long enough for the plugin to start its descendant before the timeout.
+        Duration::from_secs(3),
         &AtomicBool::new(false),
     );
 
     assert!(matches!(result, Err(PluginHostError::TimedOut)));
-    std::thread::sleep(Duration::from_secs(1));
+    release_descendant(&sentinel);
     assert!(
         !sentinel.exists(),
         "plugin descendant survived host timeout and performed a delayed side effect"
@@ -440,32 +483,42 @@ fn m7b_timeout_terminates_plugin_descendants() {
 
 #[cfg(windows)]
 #[test]
-fn m7b_successful_run_terminates_plugin_descendants() {
-    let store = seed();
-    let directory = tempfile::tempdir().unwrap();
-    let sentinel = directory.path().join("escaped-after-done.txt");
-    let script = "import subprocess,sys,time\nchild = 'import pathlib,sys,time; time.sleep(0.4); pathlib.Path(sys.argv[1]).write_text(\"escaped\")'\nsubprocess.Popen([sys.executable, '-c', child, sys.argv[1]])\nprint('HELLO\tketchup.plugin.v1\torg.ketchup.process-tree\t1.0.0\t7001\t\t1\t1\t1\t1\t1', flush=True)\nsys.stdin.readline()\nprint('DONE', flush=True)\nsys.stdin.readline()";
+fn m7b_completed_runs_terminate_plugin_descendants_on_success_and_failure() {
+    for exit_code in [0, 7] {
+        let store = seed();
+        let directory = tempfile::tempdir().unwrap();
+        let sentinel = directory.path().join("escaped-after-done.txt");
+        let script = format!(
+            "{SPAWN_DESCENDANT}print('HELLO\\tketchup.plugin.v1\\torg.ketchup.process-tree\\t1.0.0\\t7001\\t\\t1\\t1\\t1\\t1\\t1', flush=True)\nsys.stdin.readline()\nprint('DONE', flush=True)\nsys.stdin.readline()\nsys.exit(int(sys.argv[3]))"
+        );
 
-    let run = run_plugin_process(
-        python(),
-        &[
-            OsString::from("-c"),
-            OsString::from(script),
-            sentinel.as_os_str().to_owned(),
-        ],
-        &store,
-        pilot_grant(PluginLimits::M7B_PILOT),
-        Duration::from_secs(5),
-        &AtomicBool::new(false),
-    )
-    .unwrap();
+        let run = run_plugin_process(
+            python(),
+            &[
+                OsString::from("-c"),
+                OsString::from(script),
+                sentinel.as_os_str().to_owned(),
+                OsString::from(DESCENDANT),
+                OsString::from(exit_code.to_string()),
+            ],
+            &store,
+            pilot_grant(PluginLimits::M7B_PILOT),
+            Duration::from_secs(5),
+            &AtomicBool::new(false),
+        )
+        .map(|run| run.manifest.package().to_owned());
 
-    assert_eq!(run.manifest.package(), "org.ketchup.process-tree");
-    std::thread::sleep(Duration::from_secs(1));
-    assert!(
-        !sentinel.exists(),
-        "plugin descendant survived a successful parent exit"
-    );
+        if exit_code == 0 {
+            assert_eq!(run.unwrap(), "org.ketchup.process-tree");
+        } else {
+            assert!(matches!(run, Err(PluginHostError::ExitedUnsuccessfully)));
+        }
+        release_descendant(&sentinel);
+        assert!(
+            !sentinel.exists(),
+            "plugin descendant survived parent exit code {exit_code}"
+        );
+    }
 }
 
 #[test]

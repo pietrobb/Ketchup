@@ -193,7 +193,8 @@ fn exact_worker_path() -> PathBuf {
 }
 
 fn wait_for_exact_bodies(shell: &mut Shell, expected: usize) {
-    for _ in 0..100 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while std::time::Instant::now() < deadline {
         shell.settle();
         if shell.app().exact_render_body_count() == expected {
             return;
@@ -7626,7 +7627,9 @@ fn distribute_occurrences_is_localized_previewed_even_and_one_undo_step() {
         shell.click_menu_command("menu-edit", AppCommand::Redo);
         assert_eq!(shell.app().canonical_digest(), distributed_digest);
 
+        shell.click_menu_command("menu-view", AppCommand::ZoomFit);
         shell.click_at(shell.top_face_centre(2));
+        assert_eq!(shell.app().selected_occurrence_count(), 1);
         assert!(shell.app_mut().move_selected(Vec3::new(100.0, 0.0, 0.0)));
         shell.click_menu_command("menu-edit", AppCommand::SelectAll);
         assert!(
@@ -7655,7 +7658,15 @@ fn distribute_occurrences_is_localized_previewed_even_and_one_undo_step() {
 
         shell.click_menu_command("menu-edit", AppCommand::SelectAll);
         shell.click_menu_command("menu-model", AppCommand::DistributeOccurrences);
-        assert!(shell.app_mut().preview_pending_occurrence_distribution());
+        assert!(
+            shell.app_mut().preview_pending_occurrence_distribution(),
+            "status={}, selected={}, boxes={:?}",
+            shell.app().action_digest(),
+            shell.app().selected_occurrence_count(),
+            (1..=4)
+                .map(|id| shell.app().occurrence_box_geometry(id))
+                .collect::<Vec<_>>()
+        );
         assert!(shell.app().occurrence_distribution_preview_is_current());
         assert!(
             shell
@@ -9350,6 +9361,9 @@ fn push_pull_without_a_selected_face_never_targets_the_initial_box() {
 #[test]
 fn localized_smart_push_pull_chooser_cancels_without_mutation_through_accesskit() {
     let mut shell = Shell::with_catalog(LocaleCatalog::slovak());
+    shell.click_at(shell.top_face_centre(1));
+    assert!(shell.app_mut().copy_selected(Vec3::new(1.0, 0.0, 0.0)));
+    shell.settle();
     let hole_center = Vec3::new(35.0, 25.0, 20.0);
     shell.click_command(AppCommand::Circle);
     shell.click_at(shell.app().viewport_position(hole_center).unwrap());
@@ -9384,7 +9398,14 @@ fn localized_smart_push_pull_chooser_cancels_without_mutation_through_accesskit(
         ]),
     );
     let cancel_label = shell.catalog().text("choice-smart-push-pull-cancel");
-    assert!(shell.app().has_smart_push_pull_chooser());
+    assert!(
+        shell.app().has_smart_push_pull_chooser(),
+        "status={}, input={}, selection={:?}, profiles={}",
+        shell.app().action_digest(),
+        shell.app().value_input(),
+        shell.app().selected_reference(),
+        shell.app().circle_profile_count()
+    );
     assert!(shell.has_role_and_label(
         Role::RadioButton,
         &shell.catalog().text("choice-smart-push-pull-new-feature")
@@ -9689,7 +9710,14 @@ fn circle_push_pull_creates_an_exact_cylinder_and_circular_hole_with_one_step_hi
     shell.app_mut().set_push_pull_distance_input("-20");
     assert!(shell.app_mut().start_preview());
     shell.settle();
-    assert!(shell.app().has_smart_push_pull_chooser());
+    assert!(
+        shell.app().has_smart_push_pull_chooser(),
+        "status={}, input={}, selection={:?}, profiles={}",
+        shell.app().action_digest(),
+        shell.app().value_input(),
+        shell.app().selected_reference(),
+        shell.app().circle_profile_count()
+    );
     assert!(shell.has_role_and_label(
         Role::RadioButton,
         &shell.catalog().text("choice-smart-push-pull-new-feature")
@@ -9792,53 +9820,11 @@ fn circular_profile_cuts_a_cylindrical_host_as_pocket_and_through_cut() {
     let profile_digest = shell.app().canonical_digest();
     let profile_undo_steps = shell.app().undo_step_count();
 
-    let snapshot = shell.app().document_snapshot();
-    let host_definition_id = shell
-        .app()
-        .occurrence_definition_id(OccurrenceId(2))
-        .unwrap();
-    let host_feature_id = *snapshot
-        .definition(host_definition_id)
-        .unwrap()
-        .feature_ids()
-        .last()
-        .unwrap();
-    let host_feature_name = snapshot.feature(host_feature_id).unwrap().name().to_owned();
-    let host_occurrence_label = shell.app().occurrence_name(OccurrenceId(2)).unwrap();
-    let target_label = shell.catalog().format(
-        "choice-smart-push-pull-cut-target",
-        &BTreeMap::from([
-            ("feature", host_feature_name),
-            ("feature_id", host_feature_id.0.to_string()),
-            ("occurrence", host_occurrence_label),
-            ("occurrence_id", "2".to_owned()),
-        ]),
-    );
-    let continue_label = shell.catalog().text("choice-smart-push-pull-continue");
-
     shell.click_command(AppCommand::PushPull);
     shell.type_text("-20");
     shell.press_key(Key::Enter);
-    assert!(shell.app().has_smart_push_pull_chooser());
-    assert!(
-        shell.has_role_and_label(Role::RadioButton, &target_label),
-        "missing target {target_label:?}; visible controls: {:?}",
-        shell.visible_accesskit_rects()
-    );
-    shell.click_role_and_label(Role::RadioButton, &target_label);
-    shell.click_role_and_label(Role::Button, &continue_label);
-    assert!(
-        shell.app().has_occurrence_operation_preview(),
-        "cylinder cut preview failed: {}",
-        shell.app().action_digest()
-    );
-    assert_eq!(
-        shell.app().push_pull_preview_exact_evaluator(),
-        Some(EXACT_BREP_GRAPH_EVALUATOR_V1)
-    );
-    assert_eq!(shell.app().document_revision(), profile_revision);
-    assert_eq!(shell.app().canonical_digest(), profile_digest);
-    shell.press_key(Key::Enter);
+    assert!(!shell.app().has_smart_push_pull_chooser());
+    assert!(!shell.app().has_occurrence_operation_preview());
     wait_for_exact_bodies(&mut shell, 2);
     assert_eq!(shell.app().document_revision(), profile_revision + 1);
     assert_eq!(shell.app().undo_step_count(), profile_undo_steps + 1);
@@ -9887,27 +9873,10 @@ fn circular_profile_cuts_a_cylindrical_host_as_pocket_and_through_cut() {
     shell.click_command(AppCommand::PushPull);
     shell.type_text("-30");
     shell.press_key(Key::Enter);
-    assert!(shell.app().has_smart_push_pull_chooser());
-    shell.click_role_and_label(Role::RadioButton, &target_label);
-    shell.click_role_and_label(Role::Button, &continue_label);
-    assert!(
-        shell.app().has_occurrence_operation_preview(),
-        "cylinder cut preview failed: {}",
-        shell.app().action_digest()
-    );
-    assert_eq!(
-        shell.app().push_pull_preview_exact_evaluator(),
-        Some(EXACT_BREP_GRAPH_EVALUATOR_V1)
-    );
-    let through_cut_preview_revision = shell.app().document_revision();
-    let through_cut_preview_undo_steps = shell.app().undo_step_count();
-    assert_eq!(through_cut_preview_revision, profile_revision);
-    assert_eq!(through_cut_preview_undo_steps, profile_undo_steps);
-    shell.press_key(Key::Enter);
-    assert_eq!(
-        shell.app().undo_step_count(),
-        through_cut_preview_undo_steps + 1
-    );
+    assert!(!shell.app().has_smart_push_pull_chooser());
+    assert!(!shell.app().has_occurrence_operation_preview());
+    assert_eq!(shell.app().document_revision(), profile_revision + 2);
+    assert_eq!(shell.app().undo_step_count(), profile_undo_steps + 1);
     wait_for_exact_bodies(&mut shell, 2);
     assert_eq!(shell.app().occurrence_box_geometry(2).unwrap(), host_bounds);
     assert!(shell.app().exact_render_triangle_count() > host_triangle_count);
@@ -10177,7 +10146,8 @@ fn exact_worker_preserves_assembly_references_while_publishing_general_finish_to
         ordinal: 3,
     };
     let mut prepared = false;
-    for _ in 0..150 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while std::time::Instant::now() < deadline {
         shell.settle();
         if shell.app().exact_stable_reference_count() >= 2
             && shell.app_mut().prepare_assistant_general_finish(
@@ -10290,7 +10260,8 @@ fn topology_bound_push_pull_edits_a_non_top_planar_face_through_headless_ui() {
         .connect_exact_worker(exact_worker_path())
         .unwrap();
     let mut selected = false;
-    for _ in 0..150 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while std::time::Instant::now() < deadline {
         shell.settle();
         if shell
             .app_mut()
@@ -10317,7 +10288,8 @@ fn topology_bound_push_pull_edits_a_non_top_planar_face_through_headless_ui() {
     shell.click_command(AppCommand::PushPull);
     shell.type_text("5");
     shell.press_key(Key::Enter);
-    for _ in 0..300 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while std::time::Instant::now() < deadline {
         shell.step();
         if shell.app().document_revision() > before_revision {
             break;
@@ -10432,7 +10404,8 @@ fn imported_exact_finishes_and_face_push_pull_recompute_through_headless_ui() {
                     .0
             }
         };
-        for _ in 0..300 {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
             shell.settle();
             if shell
                 .app()
@@ -10455,7 +10428,8 @@ fn imported_exact_finishes_and_face_push_pull_recompute_through_headless_ui() {
         assert_eq!(shell.app().canonical_digest(), imported_digest);
         shell.key(Key::Y, ctrl());
         assert_eq!(shell.app().canonical_digest(), committed_digest);
-        for _ in 0..300 {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
             shell.settle();
             if shell
                 .app()
@@ -10505,7 +10479,8 @@ fn imported_exact_finishes_and_face_push_pull_recompute_through_headless_ui() {
     assert_eq!(shell.app().document_revision(), before_revision);
     assert_eq!(shell.app().canonical_digest(), before_digest);
     let _ = shell.app_mut().confirm_preview();
-    for _ in 0..300 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while std::time::Instant::now() < deadline {
         shell.step();
         if shell.app().document_revision() > before_revision {
             break;
@@ -10551,7 +10526,8 @@ fn imported_exact_finishes_and_face_push_pull_recompute_through_headless_ui() {
     direct_worker
         .evaluate_exact_brep_graph_with_imported_source(&graph, &source)
         .unwrap();
-    for _ in 0..300 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while std::time::Instant::now() < deadline {
         shell.settle();
         if shell
             .app()
@@ -10577,7 +10553,8 @@ fn imported_exact_finishes_and_face_push_pull_recompute_through_headless_ui() {
     shell.click_menu_command("menu-file", AppCommand::New);
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), committed_digest);
-    for _ in 0..300 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while std::time::Instant::now() < deadline {
         shell.settle();
         if shell
             .app()
@@ -11311,9 +11288,8 @@ fn switching_tools_cancels_uncommitted_transform_and_copy_toggle() {
         }
         assert!(shell.app().transform_gesture_active(), "tool={tool:?}");
         shell.set_modifiers(ctrl());
-        if tool == AppCommand::Move {
-            shell.set_modifiers(Modifiers::NONE);
-        }
+        // A bare Ctrl tap toggles copy on release for both transform tools.
+        shell.set_modifiers(Modifiers::NONE);
         assert!(
             match tool {
                 AppCommand::Move => shell.app().move_copy_mode_active(),
@@ -13832,7 +13808,8 @@ fn d_profile_solid_intersect_preserves_review_lifecycle_exact_mesh_and_arc_linea
         .unwrap();
 
     let wait_for_intersect = |shell: &mut Shell| {
-        for _ in 0..300 {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
             shell.settle();
             if shell.app().exact_render_body_count() == 1 {
                 return;
@@ -14028,7 +14005,8 @@ fn d_profile_solid_union_preserves_review_lifecycle_exact_mesh_and_arc_lineage()
         .unwrap();
 
     let wait_for_union = |shell: &mut Shell| {
-        for _ in 0..300 {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
             shell.settle();
             if shell.app().exact_render_body_count() == 1 {
                 return;
@@ -14191,7 +14169,8 @@ fn d_profile_solid_split_preserves_review_lifecycle_partition_mesh_and_arc_linea
         .connect_exact_worker(exact_worker_path())
         .unwrap();
     let wait_for_result = |shell: &mut Shell, expected_producer: FeatureId| {
-        for _ in 0..300 {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
             shell.settle();
             if shell
                 .app()
@@ -14493,7 +14472,14 @@ fn make_unique_is_localized_exact_selection_bound_and_one_undo_step() {
         assert!(shell.app().command_is_enabled(AppCommand::MakeUnique));
 
         shell.click_at_with(shell.top_face_centre(1), shift());
-        assert_eq!(shell.app().selected_occurrence_count(), 2);
+        assert_eq!(
+            shell.app().selected_occurrence_count(),
+            2,
+            "selection={:?}, hover={:?}, status={}",
+            shell.app().selected_reference(),
+            shell.app().hovered_selection(),
+            shell.app().action_digest()
+        );
         assert!(!shell.app().command_is_enabled(AppCommand::MakeUnique));
         let multiple_revision = shell.app().document_revision();
         let multiple_digest = shell.app().canonical_digest();

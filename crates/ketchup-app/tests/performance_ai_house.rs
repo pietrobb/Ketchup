@@ -13,8 +13,9 @@ fn exact_worker_path() -> std::path::PathBuf {
 
 #[test]
 fn ai_house_schema_36_fixture_opens_from_file_menu() {
-    let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/ai_house_orbit.ketchup");
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = directory.path().join("ai_house_orbit.ketchup");
+    std::fs::write(&fixture, include_bytes!("fixtures/ai_house_orbit.ketchup")).unwrap();
     let loaded = ketchup_core::persistence::load_file(&fixture).unwrap();
     assert_eq!(loaded.source_schema(), 36);
     assert_eq!(
@@ -36,8 +37,9 @@ fn ai_house_schema_36_fixture_opens_from_file_menu() {
 
 #[test]
 fn ai_house_fixture_orbits_interactively_with_exact_geometry() {
-    let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/ai_house_orbit.ketchup");
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = directory.path().join("ai_house_orbit.ketchup");
+    std::fs::write(&fixture, include_bytes!("fixtures/ai_house_orbit.ketchup")).unwrap();
     assert_eq!(std::fs::metadata(&fixture).unwrap().len(), 123_122);
 
     let dialogs = ScriptedFileDialogs::new()
@@ -84,8 +86,9 @@ fn ai_house_follow_up_fits_the_sidecar_request_envelope() {
             model_intent: None,
         },
     )]));
-    let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/ai_house_orbit.ketchup");
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = directory.path().join("ai_house_orbit.ketchup");
+    std::fs::write(&fixture, include_bytes!("fixtures/ai_house_orbit.ketchup")).unwrap();
     let dialogs = ScriptedFileDialogs::new()
         .queue_open(&fixture)
         .always_discard();
@@ -115,7 +118,14 @@ fn ai_house_follow_up_fits_the_sidecar_request_envelope() {
         std::thread::sleep(Duration::from_millis(5));
     }
 
-    let context = transport.contexts().into_iter().next().unwrap();
+    let mut context = transport.contexts().into_iter().next().unwrap();
+    // The sidecar keeps inspection data locally, outside the provider message.
+    let catalog = context
+        .as_object_mut()
+        .unwrap()
+        .remove("_local_inspection_catalog")
+        .unwrap();
+    assert_eq!(catalog["occurrences"].as_array().unwrap().len(), 64);
     let encoded = serde_json::to_vec(&context).unwrap();
     assert!(
         encoded.len() <= 24 * 1024,

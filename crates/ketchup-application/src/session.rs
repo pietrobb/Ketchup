@@ -525,6 +525,22 @@ impl DocumentSession {
             .iter()
             .zip(definitions.into_iter().zip(temporary_occurrences))
         {
+            let transform = additions
+                .commands()
+                .iter()
+                .find_map(|command| match command {
+                    CanonicalCommand::CreateOccurrence { id, transform, .. }
+                        if *id == temporary_id =>
+                    {
+                        Some(*transform)
+                    }
+                    _ => None,
+                })
+                .expect("the planned replacement occurrence exists");
+            commands.push(CanonicalCommand::SetOccurrenceTransform {
+                id: *old_id,
+                transform,
+            });
             let old = snapshot
                 .occurrence(*old_id)
                 .ok_or_else(|| SessionError::Persistence("program part is missing".into()))?;
@@ -587,6 +603,22 @@ impl DocumentSession {
             .iter()
             .zip(definitions.into_iter().zip(temporary_occurrences))
         {
+            let transform = additions
+                .commands()
+                .iter()
+                .find_map(|command| match command {
+                    CanonicalCommand::CreateOccurrence { id, transform, .. }
+                        if *id == temporary_id =>
+                    {
+                        Some(*transform)
+                    }
+                    _ => None,
+                })
+                .expect("the planned replacement occurrence exists");
+            commands.push(CanonicalCommand::SetOccurrenceTransform {
+                id: *old_id,
+                transform,
+            });
             let old = snapshot
                 .occurrence(*old_id)
                 .ok_or_else(|| SessionError::Persistence("program part is missing".into()))?;

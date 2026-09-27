@@ -267,7 +267,8 @@ fn nested_rotate_typed_angle_and_correction_keep_world_pivot_and_single_undo() {
 #[test]
 fn nested_align_dialog_preview_cancel_confirm_matches_world_geometry() {
     let (_directory, mut shell) = fixture();
-    shell.click_at_with(shell.top_face_centre(2), shift());
+    shell.click_at(shell.top_face_centre(2));
+    shell.click_at_with(shell.top_face_centre(1), shift());
     let before = shell.app().canonical_digest();
     let steps = shell.app().undo_step_count();
     let reference = world(&shell, 1);

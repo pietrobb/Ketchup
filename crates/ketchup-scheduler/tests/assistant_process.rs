@@ -11,7 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tempfile::TempDir;
 
 fn public_handshake() -> AssistantHandshake {
@@ -40,6 +40,18 @@ import sys
 import time
 
 mode = sys.argv[1]
+# A descendant whose side effect waits for the test's explicit release, so the
+# check does not race host shutdown or timeout latency under machine load.
+descendant = '''import pathlib,sys,time
+sentinel = sys.argv[1]
+pathlib.Path(sentinel + ".started").write_text("1")
+deadline = time.monotonic() + 30
+while not pathlib.Path(sentinel + ".release").exists():
+    if time.monotonic() > deadline:
+        raise SystemExit(0)
+    time.sleep(0.01)
+pathlib.Path(sentinel).write_text("escaped")
+'''
 hello = json.loads(sys.stdin.readline())
 if mode == "exit":
     raise SystemExit(0)
@@ -47,8 +59,7 @@ if mode == "timeout":
     time.sleep(30)
     raise SystemExit(0)
 if mode == "descendant-timeout":
-    child = 'import pathlib,sys,time; time.sleep(0.4); pathlib.Path(sys.argv[1]).write_text("escaped")'
-    subprocess.Popen([sys.executable, '-c', child, sys.argv[2]])
+    subprocess.Popen([sys.executable, '-c', descendant, sys.argv[2]])
     time.sleep(30)
     raise SystemExit(0)
 if mode == "bad-ready":
@@ -59,8 +70,6 @@ print(json.dumps({"type":"ready","protocol_version":hello["protocol_version"],"d
 if mode == "no-read":
     time.sleep(30)
     raise SystemExit(0)
-if mode == "slow-read-and-response":
-    time.sleep(0.12)
 request = json.loads(sys.stdin.readline())
 if mode == "remote-error":
     print(json.dumps({"type":"error","error":"provider unavailable"}), flush=True)
@@ -71,11 +80,14 @@ elif mode == "chat":
     shutdown = json.loads(sys.stdin.readline())
     print(json.dumps({"type":"bye"}), flush=True)
 elif mode == "descendant-chat":
-    child = 'import pathlib,sys,time; time.sleep(0.4); pathlib.Path(sys.argv[1]).write_text("escaped")'
-    subprocess.Popen([sys.executable, '-c', child, sys.argv[2]])
+    subprocess.Popen([sys.executable, '-c', descendant, sys.argv[2]])
+    while not os.path.exists(sys.argv[2] + ".started"):
+        time.sleep(0.01)
     print(json.dumps({"type":"chat-result","request_id":request["request_id"],"message":"bounded answer","model_intent":None}), flush=True)
     shutdown = json.loads(sys.stdin.readline())
     print(json.dumps({"type":"bye"}), flush=True)
+elif mode == "chat-timeout":
+    time.sleep(30)
 elif mode == "shutdown-error":
     print(json.dumps({"type":"chat-result","request_id":request["request_id"],"message":"bounded answer","model_intent":None}), flush=True)
     shutdown = json.loads(sys.stdin.readline())
@@ -95,11 +107,6 @@ elif mode == "diagnostics":
     print(json.dumps({"type":"chat-result","request_id":request["request_id"],"message":"observed answer","model_intent":None,"diagnostics":{"provider":"anthropic-api","model":"claude-sonnet-4-6","duration_ms":1250,"input_tokens":1234,"output_tokens":56,"cache_read_tokens":700,"cache_write_tokens":0,"stop_reason":"end_turn","system_prompt":"exact system","request_payload":{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}]},"response_text":"observed answer"}}), flush=True)
     shutdown = json.loads(sys.stdin.readline())
     print(json.dumps({"type":"bye"}), flush=True)
-elif mode == "chat-timeout":
-    time.sleep(30)
-elif mode == "slow-read-and-response":
-    time.sleep(0.12)
-    print(json.dumps({"type":"chat-result","request_id":request["request_id"],"message":"late answer","model_intent":None}), flush=True)
 "#,
     )
     .unwrap();
@@ -112,6 +119,19 @@ fn python() -> &'static str {
     } else {
         "python3"
     }
+}
+
+fn path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut path = path.as_os_str().to_owned();
+    path.push(suffix);
+    PathBuf::from(path)
+}
+
+/// Lets a surviving mock descendant perform its side effect, then gives it
+/// ample time to do so. A terminated descendant never observes the release.
+fn release_descendant(sentinel: &Path) {
+    fs::write(path_with_suffix(sentinel, ".release"), "1").unwrap();
+    std::thread::sleep(Duration::from_secs(1));
 }
 
 fn absolute_python() -> PathBuf {
@@ -390,33 +410,17 @@ fn assistant_process_rejects_unrepresentable_timeout_before_spawn() {
 }
 
 #[test]
-fn assistant_process_times_out_and_terminates_during_handshake_or_chat() {
-    for mode in ["timeout", "chat-timeout"] {
-        let temp = TempDir::new().unwrap();
-        let script = write_mock(&temp, mode);
-        if mode == "timeout" {
-            let error = AssistantProcessClient::spawn(
-                python(),
-                &arguments(&script, mode),
-                public_handshake(),
-                Duration::from_millis(100),
-            )
-            .unwrap_err();
-            assert_eq!(error, AssistantProcessError::TimedOut);
-        } else {
-            let mut client = AssistantProcessClient::spawn(
-                python(),
-                &arguments(&script, mode),
-                public_handshake(),
-                Duration::from_millis(100),
-            )
-            .unwrap();
-            assert_eq!(
-                client.chat("request", "hello", &json!({})),
-                Err(AssistantProcessError::TimedOut)
-            );
-        }
-    }
+fn assistant_process_times_out_and_terminates_during_handshake() {
+    let temp = TempDir::new().unwrap();
+    let script = write_mock(&temp, "timeout");
+    let error = AssistantProcessClient::spawn(
+        python(),
+        &arguments(&script, "timeout"),
+        public_handshake(),
+        Duration::from_millis(100),
+    )
+    .unwrap_err();
+    assert_eq!(error, AssistantProcessError::TimedOut);
 }
 
 #[cfg(windows)]
@@ -433,12 +437,13 @@ fn assistant_process_timeout_terminates_sidecar_descendants() {
             sentinel.as_os_str().to_owned(),
         ],
         public_handshake(),
-        Duration::from_millis(100),
+        // Long enough for the mock to start its descendant before the timeout.
+        Duration::from_secs(3),
     )
     .unwrap_err();
 
     assert_eq!(error, AssistantProcessError::TimedOut);
-    std::thread::sleep(Duration::from_secs(1));
+    release_descendant(&sentinel);
     assert!(
         !sentinel.exists(),
         "assistant descendant survived host timeout and performed a delayed side effect"
@@ -464,8 +469,12 @@ fn assistant_process_shutdown_terminates_sidecar_descendants() {
     .unwrap();
 
     client.chat("request", "hello", &json!({})).unwrap();
+    assert!(
+        path_with_suffix(&sentinel, ".started").exists(),
+        "descendant was not running before shutdown"
+    );
     assert_eq!(client.shutdown(), Ok(()));
-    std::thread::sleep(Duration::from_secs(1));
+    release_descendant(&sentinel);
     assert!(
         !sentinel.exists(),
         "assistant descendant survived successful shutdown"
@@ -488,27 +497,6 @@ fn assistant_process_times_out_when_the_sidecar_stops_reading_requests() {
         client.chat("request", &message, &json!({})),
         Err(AssistantProcessError::TimedOut)
     );
-}
-
-#[test]
-fn assistant_process_chat_uses_one_cumulative_io_deadline() {
-    let temp = TempDir::new().unwrap();
-    let script = write_mock(&temp, "slow-read-and-response");
-    let mut client = AssistantProcessClient::spawn(
-        python(),
-        &arguments(&script, "slow-read-and-response"),
-        public_handshake(),
-        Duration::from_millis(180),
-    )
-    .unwrap();
-    let message = "x".repeat(120 * 1024);
-
-    let started = Instant::now();
-    assert_eq!(
-        client.chat("request", &message, &json!({})),
-        Err(AssistantProcessError::TimedOut)
-    );
-    assert!(started.elapsed() < Duration::from_millis(300));
 }
 
 #[test]

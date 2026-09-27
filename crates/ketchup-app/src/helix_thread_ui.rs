@@ -7,10 +7,7 @@ pub use ketchup_core::assistant_sidecar::{
 };
 use ketchup_core::assistant_sidecar::{AssistantCadEditOperation, AssistantCadEditProgram};
 use ketchup_core::document::SpatialPathSegment;
-use ketchup_interaction::{
-    ElementId, Vec3,
-    projection::{CanonicalInteractionProjection, definition_requires_evaluated_geometry},
-};
+use ketchup_interaction::{ElementId, Vec3};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy)]
@@ -103,51 +100,35 @@ pub fn helix_segments(parameters: &HelixToolParameters) -> Result<Vec<SpatialPat
 
 impl KetchupApp {
     fn selected_edge_axis(&self) -> Option<([f64; 3], [f64; 3])> {
-        const EDGE_ENDPOINTS: [(usize, usize); 12] = [
-            (0, 1),
-            (2, 3),
-            (4, 5),
-            (6, 7),
-            (0, 2),
-            (1, 3),
-            (4, 6),
-            (5, 7),
-            (0, 4),
-            (1, 5),
-            (2, 6),
-            (3, 7),
-        ];
         let selection = self.selection.primary.as_ref()?;
-        let ordinal = match selection.element {
-            ElementId::Edge(ordinal) | ElementId::EdgeMidpoint(ordinal) => usize::from(ordinal),
-            _ => return None,
+        let ElementId::TopologicalEdge {
+            feature_id,
+            ordinal,
+        } = selection.element
+        else {
+            return None;
         };
         let snapshot = self.document.current();
-        let projection = CanonicalInteractionProjection::from_snapshot(&snapshot);
-        let occurrence = projection
-            .occurrences()
+        let results = self.topology_results_for_snapshot(&snapshot)?;
+        let package = results.render_values(&snapshot).find(|package| {
+            package.definition_id() == selection.definition_id
+                && package.producer_feature_id() == feature_id
+        })?;
+        let edge = package
+            .edge_evidence()
             .iter()
-            .find(|occurrence| occurrence.instance_path == selection.instance_path)?;
-        if definition_requires_evaluated_geometry(&snapshot, occurrence.body.definition_id) {
-            return None;
-        }
-        let local_box = occurrence.local_box?;
-        let minimum = local_box.origin_mm;
-        let maximum = minimum + local_box.size_mm;
-        let corners = [
-            Vec3::new(minimum.x, minimum.y, minimum.z),
-            Vec3::new(maximum.x, minimum.y, minimum.z),
-            Vec3::new(minimum.x, maximum.y, minimum.z),
-            Vec3::new(maximum.x, maximum.y, minimum.z),
-            Vec3::new(minimum.x, minimum.y, maximum.z),
-            Vec3::new(maximum.x, minimum.y, maximum.z),
-            Vec3::new(minimum.x, maximum.y, maximum.z),
-            maximum,
-        ];
-        let (start, end) = *EDGE_ENDPOINTS.get(ordinal)?;
-        let transform = occurrence.canonical_world_transform;
-        let start = super::transform_model_point(transform, corners[start]);
-        let end = super::transform_model_point(transform, corners[end]);
+            .find(|edge| edge.edge_ordinal == ordinal && edge.curve_kind == "line")?;
+        let origin = edge.axis_origin_mm?;
+        let axis = edge.unit_axis_direction?;
+        let start = Vec3::new(origin[0], origin[1], origin[2]);
+        let end = start + Vec3::new(axis[0], axis[1], axis[2]) * edge.length_mm;
+        let transform = snapshot
+            .scene_query()
+            .into_iter()
+            .find(|occurrence| occurrence.instance_path == selection.instance_path)?
+            .transform;
+        let start = super::transform_model_point(transform, start);
+        let end = super::transform_model_point(transform, end);
         let direction = end - start;
         (direction.distance(Vec3::ZERO) > 1.0e-9).then_some((
             [start.x, start.y, start.z],

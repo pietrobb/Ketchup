@@ -63,7 +63,10 @@ fn roundtrip_digest_undo_redo_and_copy_isolation() {
         None
     );
     let bytes = persistence::save(&doc.current());
-    assert_eq!(u16::from_le_bytes(bytes[10..12].try_into().unwrap()), 91);
+    assert_eq!(
+        u16::from_le_bytes(bytes[10..12].try_into().unwrap()),
+        persistence::CURRENT_SCHEMA
+    );
     let reopened = persistence::load(&bytes).unwrap();
     assert_eq!(reopened.snapshot().canonical_digest(), assigned);
     assert_eq!(

@@ -542,6 +542,7 @@ impl Shell {
         self.gap();
         let label = self.app().command_label(command);
         let open_menu = self.open_menu;
+        let enabled = self.app().command_is_enabled(command);
         let mut candidates: Vec<_> = self
             .harness
             .query_all_by_role_and_label(Role::Button, &label)
@@ -561,13 +562,26 @@ impl Shell {
             candidates.retain(|(rect, _)| rect.top() >= menu.bottom() - 1.0);
             candidates.sort_by(|(a, _), (b, _)| a.top().total_cmp(&b.top()));
         }
-        candidates
+        let node = &candidates
             .first()
             .expect("the open menu must contain the command")
-            .1
-            .click_accesskit();
+            .1;
+        if enabled {
+            node.click_accesskit();
+        } else {
+            // Disabled controls expose no accessibility Click action.
+            node.click();
+        }
         self.open_menu = None;
         self.harness.run();
+        if let Some(menu) = open_menu
+            && !enabled
+            && egui::Popup::is_any_open(&self.harness.ctx)
+        {
+            // Disabled items do not dismiss menus. Close the menu explicitly
+            // before the next gesture, without sending Escape to the CAD tool.
+            self.click_at(menu.center());
+        }
     }
 
     /// Activate a node through AccessKit rather than a synthetic pointer.

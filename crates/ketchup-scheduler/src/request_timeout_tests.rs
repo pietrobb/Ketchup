@@ -4,6 +4,7 @@ use super::*;
 #[test]
 #[ignore = "subprocess used by request timeout tests"]
 fn sleeping_worker() {
+    println!("WORKER_READY");
     std::thread::sleep(Duration::from_secs(120));
 }
 
@@ -18,15 +19,22 @@ fn controlled_worker() -> (
             "--exact",
             "request_timeout_tests::sleeping_worker",
             "--ignored",
+            "--nocapture",
         ])
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    let child = spawn_exact_worker_command(command).unwrap();
+    let mut child = spawn_exact_worker_command(command).unwrap();
+    assert!(
+        BufReader::new(child.stdout().take().unwrap())
+            .lines()
+            .any(|line| line.unwrap() == "WORKER_READY")
+    );
     let (write_sender, write_receiver) = mpsc::channel();
     let (response_sender, response_receiver) = mpsc::channel();
     (
         ExactWorkerClient {
             child,
+            terminated: false,
             write_sender,
             response_receiver,
             _temp_directory: tempfile::tempdir().unwrap(),
@@ -58,6 +66,7 @@ fn request_timeout_terminates_exact_worker_descendants() {
     let (_responses, response_receiver) = mpsc::channel();
     let mut worker = ExactWorkerClient {
         child,
+        terminated: false,
         write_sender,
         response_receiver,
         _temp_directory: tempfile::tempdir().unwrap(),
@@ -101,6 +110,7 @@ fn dropping_exact_worker_terminates_descendants() {
     let (_responses, response_receiver) = mpsc::channel();
     let worker = ExactWorkerClient {
         child,
+        terminated: false,
         write_sender,
         response_receiver,
         _temp_directory: tempfile::tempdir().unwrap(),
@@ -146,7 +156,7 @@ fn oversized_step_xde_worker_output_is_rejected_before_hashing() {
         Err(WorkerError::Transport(message))
             if message == "exact worker STEP output exceeds the bounded 32 MiB envelope"
     ));
-    assert!(worker.child.try_wait().unwrap().is_some());
+    assert!(worker.child.inner_mut().wait().is_ok());
     responder.join().unwrap();
 }
 
@@ -204,7 +214,7 @@ fn oversized_converted_iges_is_rejected_before_returning_bytes() {
         Err(WorkerError::Transport(message))
             if message == "exact worker IGES output exceeds the bounded 32 MiB envelope"
     ));
-    assert!(worker.child.try_wait().unwrap().is_some());
+    assert!(worker.child.inner_mut().wait().is_ok());
     responder.join().unwrap();
 }
 
@@ -251,7 +261,7 @@ fn default_requests_do_not_infer_timeout_from_command_prefix() {
         assert_eq!(error.to_string(), "worker request timed out after 5000 ms");
         assert!(started.elapsed() >= DEFAULT_WORKER_REQUEST_TIMEOUT);
         assert!(started.elapsed() < Duration::from_secs(10));
-        assert!(worker.child.try_wait().unwrap().is_some());
+        assert!(worker.child.inner_mut().wait().is_ok());
         responder.join().unwrap();
     }
 }
@@ -277,7 +287,7 @@ fn explicit_timeout_bounds_both_write_and_response_waits() {
             assert!(matches!(error, WorkerError::RequestTimedOut(actual) if actual == timeout));
             assert_eq!(error.to_string(), "worker request timed out after 80 ms");
             assert!(started.elapsed() >= timeout);
-            assert!(worker.child.try_wait().unwrap().is_some());
+            assert!(worker.child.inner_mut().wait().is_ok());
         });
     }
 }
@@ -297,7 +307,7 @@ fn write_and_response_share_one_timeout_budget() {
         worker.request_with_timeout("work", &NEVER_CANCELLED, timeout),
         Err(WorkerError::RequestTimedOut(actual)) if actual == timeout
     ));
-    assert!(worker.child.try_wait().unwrap().is_some());
+    assert!(worker.child.inner_mut().wait().is_ok());
     responder.join().unwrap();
 }
 
@@ -325,7 +335,7 @@ fn graph_budget_cancellation_interrupts_write_and_response_waits() {
                 Err(WorkerError::Cancelled)
             ));
             let finished = Instant::now();
-            assert!(worker.child.try_wait().unwrap().is_some());
+            assert!(worker.child.inner_mut().wait().is_ok());
             assert!(
                 finished.duration_since(canceller.join().unwrap()) < Duration::from_millis(250)
             );
@@ -333,6 +343,25 @@ fn graph_budget_cancellation_interrupts_write_and_response_waits() {
     }
 }
 
+#[cfg(windows)]
+#[test]
+fn cleanup_after_exit_polling_does_not_wait_for_consumed_job_notifications() {
+    let (mut worker, _writes, _responses) = controlled_worker();
+    worker.child.start_kill().unwrap();
+    worker.child.inner_mut().wait().unwrap();
+    for _ in 0..16 {
+        assert!(worker.child.try_wait().unwrap().is_some());
+    }
+    let (done, finished) = mpsc::channel();
+    std::thread::spawn(move || {
+        worker.terminate_worker();
+        drop(worker);
+        done.send(()).unwrap();
+    });
+    finished
+        .recv_timeout(Duration::from_millis(250))
+        .expect("cleanup blocked on an already consumed Windows job notification");
+}
 #[test]
 fn precancelled_graph_request_is_not_written_even_with_zero_budget() {
     let (mut worker, writes, _responses) = controlled_worker();
@@ -341,5 +370,5 @@ fn precancelled_graph_request_is_not_written_even_with_zero_budget() {
         Err(WorkerError::Cancelled)
     ));
     assert!(matches!(writes.try_recv(), Err(mpsc::TryRecvError::Empty)));
-    assert!(worker.child.try_wait().unwrap().is_some());
+    assert!(worker.child.inner_mut().wait().is_ok());
 }

@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod assistant;
+mod child_process;
 pub mod exact_worker;
 pub mod general;
 pub mod pair_query;
@@ -1069,6 +1070,7 @@ fn spawn_exact_worker_command(command: Command) -> io::Result<Box<dyn ChildWrapp
 
 pub struct ExactWorkerClient {
     child: Box<dyn ChildWrapper>,
+    terminated: bool,
     write_sender: Sender<WorkerWriteRequest>,
     response_receiver: Receiver<WorkerResponse>,
     _temp_directory: tempfile::TempDir,
@@ -1125,6 +1127,7 @@ impl ExactWorkerClient {
         spawn_worker_reader(stdout, response_sender);
         Ok(Self {
             child,
+            terminated: false,
             write_sender,
             response_receiver,
             _temp_directory: temp_directory,
@@ -2321,12 +2324,11 @@ impl ExactWorkerClient {
 
     pub fn cancel(mut self) -> Result<Duration, WorkerError> {
         let started = Instant::now();
-        self.child
-            .kill()
+        // Terminate the job without waiting for asynchronous Windows teardown.
+
+        child_process::terminate(&mut *self.child)
             .map_err(|error| WorkerError::Transport(error.to_string()))?;
-        self.child
-            .wait()
-            .map_err(|error| WorkerError::Transport(error.to_string()))?;
+
         Ok(started.elapsed())
     }
 
@@ -2478,8 +2480,8 @@ impl ExactWorkerClient {
     }
 
     fn terminate_worker(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.terminated = true; // Never reuse a job whose termination has started.
+        let _ = child_process::terminate(&mut *self.child);
     }
 }
 
@@ -2549,8 +2551,8 @@ fn read_worker_response_line(reader: &mut impl BufRead) -> WorkerResponse {
 
 impl Drop for ExactWorkerClient {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        // Do not block cancellation on Windows kernel teardown.
+        let _ = child_process::terminate(&mut *self.child);
     }
 }
 
@@ -2588,7 +2590,8 @@ impl ExactWorkerSupervisor {
 
     /// Whether the worker process is alive and its executable is unchanged.
     pub fn is_reusable(&mut self) -> bool {
-        matches!(self.client.child.try_wait(), Ok(None))
+        !self.client.terminated
+            && matches!(self.client.child.try_wait(), Ok(None))
             && verify_exact_worker_identity(&self.executable, &self.executable_sha256).is_ok()
     }
 
@@ -2601,6 +2604,9 @@ impl ExactWorkerSupervisor {
             return Err(WorkerError::Cancelled);
         }
         let executable = verify_exact_worker_identity(executable, executable_sha256)?;
+        if cancelled.load(Ordering::Acquire) {
+            return Err(WorkerError::Cancelled);
+        }
         let mut client = ExactWorkerClient::spawn_guarded(executable)?;
         client.ensure_not_cancelled(cancelled)?;
         client.ping_with_cancellation(cancelled)?;

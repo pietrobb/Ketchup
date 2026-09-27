@@ -110,12 +110,13 @@ impl ExactWorkerSupervisor {
         }
         check_pair_cancelled(cancelled)?;
         // Recover only at the batch boundary. A failed batch is never replayed.
-        if self
-            .client
-            .child
-            .try_wait()
-            .map_err(|error| WorkerError::Transport(error.to_string()))?
-            .is_some()
+        if self.client.terminated
+            || self
+                .client
+                .child
+                .try_wait()
+                .map_err(|error| WorkerError::Transport(error.to_string()))?
+                .is_some()
         {
             self.client =
                 Self::spawn_verified_client(&self.executable, &self.executable_sha256, cancelled)?;

@@ -137,8 +137,10 @@ pub fn run_plugin_process(
 
     match outcome {
         Ok(result) => {
-            wait_for_exit(child.as_mut(), deadline, cancelled)?;
+            // Descendants must be terminated even when the plugin exits unsuccessfully.
+            let exit = wait_for_exit(child.as_mut(), deadline, cancelled);
             terminate(child.as_mut())?;
+            exit?;
             Ok(result)
         }
         Err(error) => match terminate(child.as_mut()) {
@@ -393,8 +395,8 @@ fn wait_for_exit(
 }
 
 fn terminate(child: &mut dyn ChildWrapper) -> Result<(), PluginHostError> {
-    child
-        .kill()
+    // Terminate the entire job without waiting for Windows kernel teardown.
+    crate::child_process::terminate(child)
         .map_err(|error| PluginHostError::Transport(error.to_string()))
 }
 

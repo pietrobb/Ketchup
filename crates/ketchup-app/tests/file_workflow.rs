@@ -8,7 +8,7 @@ mod harness;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, atomic::AtomicBool};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use eframe::egui::{Key, Pos2, accesskit::Role};
 use harness::{ScriptedAssistantTransport, Shell};
@@ -4642,7 +4642,8 @@ fn file_import_transformed_multi_solid_step_round_trips_through_save_open_and_oc
         .connect_exact_worker(exact_worker_path())
         .unwrap();
     compose_two_shared_occurrences(&mut source_shell);
-    for _ in 0..100 {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < deadline {
         source_shell.settle();
         if source_shell.app().exact_render_body_count() == 1 {
             break;

@@ -27935,7 +27935,7 @@ impl KetchupApp {
         let length = preview.plan.maximum_mm[1] - preview.plan.minimum_mm[1];
         self.sketch_start = None;
         self.sketch_cursor = None;
-        self.value_input = preview.plan.depth_expression.clone();
+        self.focus_value_box = false;
         self.status_key = "status-pocket-created";
         self.digest = self.catalog.format(
             "digest-pocket-committed",

@@ -495,9 +495,18 @@ fn empty_document_manual_ux_capstone_has_rendered_and_native_exact_evidence() {
     assert_eq!(shell.app().active_box_count(), 3);
     shell.click_menu_command("menu-view", AppCommand::ZoomFit);
     shell.click_command(AppCommand::Move);
-    let copied = shell.top_face_centre(3);
+    let (copy_origin, copy_size) = shell.app().occurrence_box_geometry(3).unwrap();
+    let (source_origin, source_size) = shell.app().occurrence_box_geometry(1).unwrap();
+    let copied = shell
+        .app()
+        .viewport_position(copy_origin + Vec3::new(0.0, 0.0, copy_size.z))
+        .unwrap();
+    let source_corner = shell
+        .app()
+        .viewport_position(source_origin + Vec3::new(0.0, 0.0, source_size.z))
+        .unwrap();
+    shell.drag(copied, source_corner);
     let source = shell.top_face_centre(1);
-    shell.drag(copied, source);
     let source_geometry = shell.app().occurrence_box_geometry(1).unwrap();
     let copied_geometry = shell.app().occurrence_box_geometry(3).unwrap();
     for (actual, expected) in [
@@ -526,23 +535,18 @@ fn empty_document_manual_ux_capstone_has_rendered_and_native_exact_evidence() {
 
     shell.click_command(AppCommand::Select);
     shell.move_pointer(source);
-    let first = shell
-        .app()
-        .hovered_selection()
-        .expect("overlapping solids must publish a visible selection")
-        .instance_path
-        .root_occurrence();
-    assert_eq!(shell.app().hovered_overlap_choice(), Some((0, 4)));
-    shell.press_key(Key::Tab);
-    let second = shell
-        .app()
-        .hovered_selection()
-        .expect("Tab must keep a visible overlap choice")
-        .instance_path
-        .root_occurrence();
-    assert_ne!(first, second);
-    if second != OccurrenceId(3) {
+    let (index, choices) = shell.app().hovered_overlap_choice().unwrap();
+    assert_eq!(index, 0);
+    assert!(choices >= 2);
+    for _ in 0..choices {
         shell.press_key(Key::Tab);
+        if shell
+            .app()
+            .hovered_selection()
+            .is_some_and(|selection| selection.instance_path.root_occurrence() == OccurrenceId(3))
+        {
+            break;
+        }
     }
     assert_eq!(
         shell

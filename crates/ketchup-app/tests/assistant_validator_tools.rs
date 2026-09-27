@@ -378,17 +378,15 @@ fn the_assistant_reads_findings_that_name_the_offending_parts() {
         "the finding must name the concrete parts, got {names:?}"
     );
 
-    // Honesty over optimism: a validator that needs explicit roles this model
-    // does not carry must say it was not evaluated, never that the model passed.
+    // Both columns stand on z = 0, so derived gravity support is complete
+    // even without manually assigned roles (independent of their collision).
     let gravity = results
         .iter()
         .find(|result| result["validator"] == "gravity_support")
         .expect("gravity support must be reachable as a tool");
-    assert_eq!(gravity["state"], "not_evaluated");
-    assert!(
-        gravity["not_evaluated_reason"].is_string(),
-        "an unevaluated validator must say why, got {gravity}"
-    );
+    assert_eq!(gravity["state"], "passed");
+    assert_eq!(gravity["evidence_complete"], true);
+    assert!(gravity["issues"].as_array().unwrap().is_empty());
 
     // Every result is honest about its own evidence: either it is complete or it
     // says why it is not. Nothing here silently claims the model is fine.
