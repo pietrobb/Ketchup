@@ -1453,3 +1453,40 @@ pub fn evaluate(
         part_sources,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The library header is what `KetchupDiscover section=program` hands an
+    /// AI, so a builtin missing there is a tool the AI cannot know about.
+    #[test]
+    fn every_builtin_is_documented_in_the_library_header() {
+        let header = PRELUDE
+            .lines()
+            .take_while(|line| line.starts_with('#'))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let math_line = header
+            .lines()
+            .find(|line| line.trim_start_matches(['#', ' ']).starts_with("math."))
+            .expect("library header documents math.*");
+        let mut missing = Vec::new();
+        for name in GlobalsBuilder::new().with(builtins).build().names() {
+            let name = name.as_str();
+            if !header.contains(&format!("{name}(")) {
+                missing.push(name.to_owned());
+            }
+        }
+        for name in GlobalsBuilder::new().with(math_functions).build().names() {
+            let name = name.as_str();
+            let listed = math_line
+                .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+                .any(|word| word == name);
+            if !listed {
+                missing.push(format!("math.{name}"));
+            }
+        }
+        assert!(missing.is_empty(), "undocumented builtins: {missing:?}");
+    }
+}

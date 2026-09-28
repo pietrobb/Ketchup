@@ -20,6 +20,34 @@
 #                    origin, size, points) or None; works for rotated parts
 #   joint(a, b, kind=, fasteners=, fastener=, volume=, name=)
 #
+# Profile parts. `profile` is a closed loop in the part's local XY plane:
+# either points [[x, y], ...] (faces become "segment1", "segment2", ...) or
+# named segments [["name", [x0, y0], [x1, y1]], ...]. extrude() pads it along
+# local +z; revolve() turns it around `axis` = [[x0, y0], [x1, y1]] in that
+# plane. Faces of a profile part: each segment's name, the caps "start"
+# and "end" (extrude: z = 0 and z = distance; revolve: only when angle < 360),
+# a face left by a cut "cut_name.segment",
+# and a face split in two by a cut "name#1", "name#2" (ordered by x, y, z).
+# The four operations below work only on extrude()/revolve() parts, not box().
+# Whatever the call order, a part applies all cuts, then fillets/chamfers,
+# then push_pulls, then subtract/intersect. So fillet/chamfer name faces of
+# the uncut profile, and a fillet on a face that a cut splits fails. A
+# push_pull of a face that touches a fillet also fails for now.
+#   fillet(part, edges=[[face_a, face_b], ...], radius=, name=)
+#     rounds each edge where the two named faces meet, e.g.
+#     fillet(top, edges=[["front", "end"], ["right", "end"]], radius=3)
+#   chamfer(part, edges=[[face_a, face_b], ...], distance=, name=)
+#     bevels the same way, e.g. chamfer(ring, edges=[["top", "outer"]], distance=2)
+#   cut(part, profile=, depth=, name=)
+#     removes a closed profile (same form as above, local XY) from the "end"
+#     cap down by `depth`; let the profile overshoot the part to cut through
+#     an edge, e.g. cut(board, profile=[["in", [150, -1], [158, -1]],
+#     ["right", [158, -1], [158, 301]], ["out", [158, 301], [150, 301]],
+#     ["left", [150, 301], [150, -1]]], depth=6, name="groove")
+#   push_pull(part, face=, distance=, name=)
+#     moves one named planar face along its outward normal (negative = in),
+#     e.g. push_pull(board, face="end#2", distance=10, name="raise right half")
+#
 # Every part has its own frame: `at` is its local origin in world, and
 # rotate()/place() turn that frame. Sizes, faces, holes and pockets are always
 # in the part's own frame, so they follow the part when it is rotated.
