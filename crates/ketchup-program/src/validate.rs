@@ -118,8 +118,55 @@ pub(crate) fn booleans_leave_overlap(a: &Part, b: &Part) -> bool {
             ProgramBooleanKind::Intersect => {
                 frame::common_region(&[shared[0], shared[1], tool.obb()], TOLERANCE_MM).is_some()
             }
+            // Joining adds volume; it removes none.
+            ProgramBooleanKind::Union => true,
         }
     })
+}
+
+/// Half-spaces `normal · x <= offset` that `part` keeps after a plain box
+/// subtracted from it crosses its box through one face only (a trim): the
+/// box then removes exactly everything beyond that face.
+fn kept_half_spaces(part: &Part) -> Vec<([f64; 3], f64)> {
+    let corners = frame::intersection_vertices(&[part.obb()], TOLERANCE_MM);
+    part.booleans()
+        .filter(|boolean| {
+            boolean.kind == ProgramBooleanKind::Subtract
+                && matches!(boolean.tool.body, ProgramPartBody::Panel)
+                && !boolean.tool.has_shaping()
+                && boolean.tool.booleans().next().is_none()
+        })
+        .filter_map(|boolean| {
+            let mut crossing = boolean.tool.obb().planes().into_iter().filter(|(normal, offset)| {
+                corners
+                    .iter()
+                    .any(|corner| frame::dot(*normal, *corner) > offset + TOLERANCE_MM)
+            });
+            match (crossing.next(), crossing.next()) {
+                (Some((normal, offset)), None) => Some((normal.map(|value| -value), -offset)),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// Whether trims leave `a` and `b` no common volume, as the two halves of a
+/// split: their boxes and kept half-spaces share at most a face.
+fn trims_separate(a: &Part, b: &Part) -> bool {
+    let trims: Vec<_> = kept_half_spaces(a).into_iter().chain(kept_half_spaces(b)).collect();
+    if trims.is_empty() {
+        return false;
+    }
+    let planes: Vec<_> = a.obb().planes().into_iter().chain(b.obb().planes()).chain(trims).collect();
+    let vertices = frame::polytope_vertices(&planes, TOLERANCE_MM);
+    vertices.is_empty()
+        || planes.iter().any(|(normal, _)| {
+            let along = vertices.iter().map(|vertex| frame::dot(*normal, *vertex));
+            let (low, high) = along.fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), value| {
+                (low.min(value), high.max(value))
+            });
+            high - low <= TOLERANCE_MM
+        })
 }
 
 /// Whether the solid of `part`, before booleans, is exactly its box: a panel,
@@ -187,7 +234,10 @@ fn collisions(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>
             let Some(region) = overlap(a, b) else {
                 continue;
             };
-            if !booleans_leave_overlap(a, b) || !booleans_leave_overlap(b, a) {
+            if !booleans_leave_overlap(a, b)
+                || !booleans_leave_overlap(b, a)
+                || trims_separate(a, b)
+            {
                 continue;
             }
             let seated = world_pockets(a)

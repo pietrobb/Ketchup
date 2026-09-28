@@ -473,12 +473,15 @@ fn measure_parts(measure: &Measure) -> Vec<&str> {
 fn part_value<'v>(part: &Part, heap: &'v Heap) -> Value<'v> {
     let triple = |value: [f64; 3]| heap.alloc((value[0], value[1], value[2]));
     let (min, max) = part.world_bounds();
+    let (local_min, local_max) = part.local_bounds();
     heap.alloc(AllocStruct([
         ("name", heap.alloc(part.name.as_str())),
         ("size", triple(part.size_mm)),
         ("at", triple(part.at_mm)),
         ("min", triple(min)),
         ("max", triple(max)),
+        ("local_min", triple(local_min)),
+        ("local_max", triple(local_max)),
         ("x", triple(frame::axis(&part.rotation, 0))),
         ("y", triple(frame::axis(&part.rotation, 1))),
         ("z", triple(frame::axis(&part.rotation, 2))),
@@ -824,6 +827,7 @@ fn apply_boolean<'v>(
     let operation = match kind {
         ProgramBooleanKind::Subtract => "subtract",
         ProgramBooleanKind::Intersect => "intersect",
+        ProgramBooleanKind::Union => "union",
     };
     let state = state(eval)?;
     let tool_part = {
@@ -1444,8 +1448,9 @@ fn builtins(builder: &mut GlobalsBuilder) {
         })
     }
 
-    /// Current name, size, origin `at`, world bounds `min`/`max` and local
-    /// axes `x`, `y`, `z` (world directions) of a part.
+    /// Current name, size, origin `at`, world bounds `min`/`max`, bounds in
+    /// its own frame `local_min`/`local_max` and local axes `x`, `y`, `z`
+    /// (world directions) of a part.
     fn part_info<'v>(
         #[starlark(require = pos)] part: Value<'v>,
         eval: &mut Evaluator<'v, '_, '_>,
@@ -1575,6 +1580,74 @@ fn builtins(builder: &mut GlobalsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
         apply_boolean(part, tool, name, ProgramBooleanKind::Intersect, eval)
+    }
+
+    /// A new part `name` identical to `part` as it is now: same body, frame,
+    /// holes and operations. Joints and contacts are not copied.
+    fn copy<'v>(
+        #[starlark(require = pos)] part: Value<'v>,
+        #[starlark(require = pos)] name: &str,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let heap = eval.heap();
+        let source = part_name(part, heap)?;
+        check_part_name(name)?;
+        let state = state(eval)?;
+        let (copy, tool) = {
+            let model = state.model.borrow();
+            match (model.part(&source), model.tool(&source)) {
+                (Some(part), _) => (part.clone(), false),
+                (None, Some(part)) => (part.clone(), true),
+                (None, None) => anyhow::bail!("copy(): unknown part {source:?}"),
+            }
+        };
+        let copy = insert_part(&state, Part { name: name.to_owned(), ..copy }, tool)?;
+        {
+            let mut sources = state.part_sources.borrow_mut();
+            let lines = sources.get(&source).cloned().unwrap_or_default();
+            sources.entry(name.to_owned()).or_default().extend(lines);
+        }
+        record_source(eval, &state, &[name]);
+        Ok(part_value(&copy, heap))
+    }
+
+    /// Joins `other` (touching or overlapping `part`) into `part` as one
+    /// solid; `other` stops being a separate part.
+    fn union<'v>(
+        #[starlark(require = pos)] part: Value<'v>,
+        #[starlark(require = pos)] other: Value<'v>,
+        #[starlark(require = named)] name: Option<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let heap = eval.heap();
+        let (target, joined) = (part_name(part, heap)?, part_name(other, heap)?);
+        {
+            let state = state(eval)?;
+            let model = state.model.borrow();
+            if let Some(other) = model.part(&joined).or_else(|| model.tool(&joined))
+                && !(other.holes.is_empty() && other.pockets.is_empty())
+            {
+                anyhow::bail!(
+                    "union({target:?}, {joined:?}): {joined:?} has holes or pockets; drill and mill after the union, on {target:?}"
+                );
+            }
+            if let (Some(a), Some(b)) = (model.part(&target), model.part(&joined)) {
+                let apart = Relation::between(a, b).distance;
+                if apart > TOLERANCE_MM {
+                    anyhow::bail!(
+                        "union({target:?}, {joined:?}): the parts are {apart:.3} mm apart; they must touch or overlap to become one solid"
+                    );
+                }
+            }
+        }
+        let result = apply_boolean(part, other, name, ProgramBooleanKind::Union, eval)?;
+        let state = state(eval)?;
+        state.model.borrow_mut().parts.retain(|part| part.name != joined);
+        let mut sources = state.part_sources.borrow_mut();
+        if let Some(lines) = sources.remove(&joined) {
+            sources.entry(target).or_default().extend(lines);
+        }
+        Ok(result)
     }
 
     /// Drills a hole perpendicular to `face`. Give either face coordinates

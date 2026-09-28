@@ -389,6 +389,8 @@ pub enum ProgramBooleanKind {
     Subtract,
     /// Keeps only the volume the part shares with the tool.
     Intersect,
+    /// Adds the tool's volume to the part, making one solid.
+    Union,
 }
 
 /// A boolean between a part and another body (a tool or a real part). The
@@ -682,9 +684,34 @@ impl Part {
     }
 
     /// Bounds of the body in its own frame, before cuts and finishes, grown
-    /// by every face a push_pull moves outward.
+    /// by every face a push_pull moves outward and every body joined in.
     #[must_use]
     pub fn local_bounds(&self) -> ([f64; 3], [f64; 3]) {
+        let (mut min, mut max) = self.body_bounds();
+        for tool in self.joined() {
+            let (tool_min, tool_max) = tool.local_bounds();
+            for corner in 0..8 {
+                let local: [f64; 3] = std::array::from_fn(|axis| {
+                    if corner >> axis & 1 == 0 { tool_min[axis] } else { tool_max[axis] }
+                });
+                let point = self.to_local(tool.to_world(local));
+                for axis in 0..3 {
+                    min[axis] = min[axis].min(point[axis]);
+                    max[axis] = max[axis].max(point[axis]);
+                }
+            }
+        }
+        (min, max)
+    }
+
+    /// Bodies union() joined into this part.
+    fn joined(&self) -> impl Iterator<Item = &Part> {
+        self.booleans()
+            .filter(|boolean| boolean.kind == ProgramBooleanKind::Union)
+            .map(|boolean| &boolean.tool)
+    }
+
+    fn body_bounds(&self) -> ([f64; 3], [f64; 3]) {
         match &self.body {
             ProgramPartBody::Panel => self.grown_by_pushed_faces([0.0; 3], self.size_mm, &[]),
             ProgramPartBody::Extrusion {
@@ -815,7 +842,7 @@ impl Part {
     pub fn reach(&self, direction: [f64; 3]) -> f64 {
         let local = frame::apply_transposed(&self.rotation, direction);
         let bounds_reach = || {
-            let (min, max) = self.local_bounds();
+            let (min, max) = self.body_bounds();
             (0..3)
                 .map(|i| (local[i] * min[i]).max(local[i] * max[i]))
                 .sum::<f64>()
@@ -858,7 +885,9 @@ impl Part {
             ProgramPartBody::Revolve { .. } => bounds_reach(),
             ProgramPartBody::Sweep { .. } | ProgramPartBody::Loft { .. } => self.local_reach(local),
         };
-        frame::dot(self.at_mm, direction) + body
+        self.joined()
+            .map(|tool| tool.reach(direction))
+            .fold(frame::dot(self.at_mm, direction) + body, f64::max)
     }
 
     #[must_use]

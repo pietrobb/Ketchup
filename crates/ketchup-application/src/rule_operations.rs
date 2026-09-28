@@ -197,32 +197,40 @@ impl<'a> OperationPlanner<'a> {
 
     /// Applies `part`'s operations in program order to its body solid
     /// `target`; returns the final solid.
-    pub fn apply(
+    pub fn apply(&mut self, part: &Part, target: FeatureId) -> Result<FeatureId, AssistantRejection> {
+        self.apply_in(part, target, PART_BODY)
+    }
+
+    fn apply_in(
         &mut self,
         part: &Part,
         mut target: FeatureId,
+        body: BodyId,
     ) -> Result<FeatureId, AssistantRejection> {
         for operation in &part.operations {
             target = match operation {
                 ProgramOperation::Cut(cut) => self.cut(cut, target)?,
                 ProgramOperation::Finish(finish) => self.finish(part, finish, target)?,
                 ProgramOperation::FaceOffset(offset) => self.face_offset(part, offset, target)?,
-                ProgramOperation::Boolean(boolean) => {
-                    self.boolean(part, boolean, target, PART_BODY)?
-                }
+                ProgramOperation::Boolean(boolean) => self.boolean(part, boolean, target, body)?,
             };
         }
         Ok(target)
     }
 
-    /// A tool's volume is its body and its own booleans; its cuts, finishes
-    /// and moved faces are not part of what it removes or keeps.
-    fn apply_tool_booleans(
+    /// A subtracted or intersected tool's volume is its body and its own
+    /// booleans (its cuts, finishes and moved faces are not part of what it
+    /// removes or keeps); a joined part brings everything it is.
+    fn apply_tool_operations(
         &mut self,
         tool: &Part,
         mut target: FeatureId,
         body: BodyId,
+        whole: bool,
     ) -> Result<FeatureId, AssistantRejection> {
+        if whole {
+            return self.apply_in(tool, target, body);
+        }
         for boolean in tool.booleans() {
             target = self.boolean(tool, boolean, target, body)?;
         }
@@ -345,7 +353,8 @@ impl<'a> OperationPlanner<'a> {
         body: BodyId,
     ) -> Result<FeatureId, AssistantRejection> {
         let prefix = format!("{} {}", owner.name, boolean.name);
-        let (tool_solid, tool_body) = self.tool_solid(&boolean.tool, &prefix)?;
+        let whole = boolean.kind == ProgramBooleanKind::Union;
+        let (tool_solid, tool_body) = self.tool_solid(&boolean.tool, &prefix, whole)?;
         let transform = Transform::from_matrix(owner.frame_of(&boolean.tool))
             .map_err(|error| self.rejection(error))?;
         let placed = self.feature(
@@ -365,6 +374,7 @@ impl<'a> OperationPlanner<'a> {
                 operation: match boolean.kind {
                     ProgramBooleanKind::Subtract => BooleanOperation::Cut,
                     ProgramBooleanKind::Intersect => BooleanOperation::Intersect,
+                    ProgramBooleanKind::Union => BooleanOperation::Union,
                 },
                 target,
                 tool: placed,
@@ -384,6 +394,7 @@ impl<'a> OperationPlanner<'a> {
         &mut self,
         tool: &Part,
         prefix: &str,
+        whole: bool,
     ) -> Result<(FeatureId, BodyId), AssistantRejection> {
         self.next_body += 1;
         let body = BodyId(self.next_body);
@@ -426,7 +437,7 @@ impl<'a> OperationPlanner<'a> {
                     )?);
                 }
                 let solid = self.feature(format!("{prefix} tool"), loft(sections, &profiles))?;
-                let solid = self.apply_tool_booleans(tool, solid, body)?;
+                let solid = self.apply_tool_operations(tool, solid, body, whole)?;
                 return Ok((solid, body));
             }
         };
@@ -460,7 +471,7 @@ impl<'a> OperationPlanner<'a> {
             },
         };
         let solid = self.feature(format!("{prefix} tool"), solid_kind)?;
-        let solid = self.apply_tool_booleans(tool, solid, body)?;
+        let solid = self.apply_tool_operations(tool, solid, body, whole)?;
         Ok((solid, body))
     }
 

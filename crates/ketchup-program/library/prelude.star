@@ -13,7 +13,8 @@
 #   member(name, start, end, section, across=)  -> a bar from point to point
 #   rotate(part, axis=(x, y, z), angle=degrees, pivot=(x, y, z))  -> part
 #   place(part, origin=(x, y, z), z=(x, y, z), x=(x, y, z))  -> part
-#   part_info(part)  -> struct(name, size, at, min, max, x, y, z)
+#   part_info(part)  -> struct(name, size, at, min, max, local_min, local_max,
+#     x, y, z): min/max in world, local_min/local_max in the part's own frame
 #   math.sqrt/sin/cos/tan/asin/acos/atan/atan2/hypot/radians/degrees, math.pi
 #   sum(values), round_to(value, step), spread(start, end, count),
 #   divide(span, count, round_to=), vec_add/vec_sub/vec_scale/vec_length
@@ -361,15 +362,26 @@ def round_corners(points, radius, names = None):
 # Positions (u, v) are in the face's own coordinates (see basics).
 #   hole(part, face, at=(u, v) | world=(x, y, z), diameter=, depth=, id=)
 #   pocket(part, face, rect=(u_min, v_min, u_max, v_max), depth=, id=)
+#   pocket_shape(part, face, profile, depth, name=)  -> part: any closed
+#     profile (points or named segments in (u, v)) milled into any face of any
+#     part, e.g. pocket_shape(top, "y-", [(20, 5), (80, 5), (50, 35)], 6);
+#     its walls are "<name>.<segment>", its floor "<name>.start" or ".end"
+#   boss(part, face, profile, height, name=)  -> part: the same profile
+#     standing out of the face, joined in as one solid
 #   groove(part, face, along, width, depth, offset, margin=)
 #   rabbet(part, face, edge, width, depth)
 #   hole_row(part, face, start, step, count, diameter, depth, direction=)
 #   trim(part, point, normal, name=)  cut off at a plane
+#   split(part, point, normal, name=)  -> the new part: cut in two at a plane,
+#     both halves stay (part against normal, the new part along it)
+#   copy(part, name)  -> a new identical part
 #   subtract(part, tool, name=)  -> part: part minus tool
 #   intersect(part, tool, name=)  -> part: only what part and tool share
+#   union(part, other, name=)  -> part: other joined in as one solid (they
+#     must touch or overlap); other is no longer a separate part
 #     `tool` is a helper body made with box/extrude/revolve/sweep/loft(..., tool=True)
-#     or another real part, taken as it is at the call. Booleans come after
-#     the part's other features. A part never collides with a part it
+#     or another real part, taken as it is at the call. Every operation
+#     applies in the order written. A part never collides with a part it
 #     subtracted, with a part lying inside one box tool it subtracted (a notch,
 #     a trim), nor with parts outside the tools it was intersected with.
 
@@ -440,6 +452,68 @@ def trim(part, point, normal, name = None):
     corner = vec_add(foot, vec_add(vec_scale(placed.x, -size / 2.0), vec_scale(placed.y, -size / 2.0)))
     place(tool, origin = corner, z = n, x = across)
     return subtract(part, tool, name = name)
+
+def split(part, point, normal, name = None):
+    """Cuts `part` in two at the plane through world `point`: `part` keeps
+    the side against `normal`, a new part `name` (default "<part> 2") the
+    side `normal` points to. Both new faces are "split.z-". Returns the new
+    part; a plane that misses the part is refused."""
+    info = part_info(part)
+    n = vec_scale(normal, 1.0 / vec_length(normal))
+    at = point[0] * n[0] + point[1] * n[1] + point[2] * n[2]
+    high = reach(part, n)
+    low = -reach(part, vec_scale(n, -1.0))
+    if at <= low + 0.001 or at >= high - 0.001:
+        fail("split(%s): the plane at %s along %s misses the part, which spans %s to %s" % (
+            info.name, round_to(at, 0.001), tuple(n), round_to(low, 0.001), round_to(high, 0.001)))
+    if name == None:
+        name = info.name + " 2"
+    other = copy(part, name)
+    trim(part, point, n, name = "split")
+    trim(other, point, vec_scale(n, -1.0), name = "split")
+    return other
+
+def _shape_tool(part, face, profile, start, length, name):
+    """A tool prism of `profile` (face coordinates of `face`) covering `start`
+    to `start + length` mm along the face's outward normal."""
+    if type(face) != "string" or len(face) != 2 or face[0] not in AXES or face[1] not in "+-":
+        fail("%s: face must be one of x-, x+, y-, y+, z-, z+; got %r" % (name, face))
+    info = part_info(part)
+    n_axis, u_axis, v_axis = face_axes(face)
+    axes = (info.x, info.y, info.z)
+    local = [info.local_min[0], info.local_min[1], info.local_min[2]]
+    sign = 1.0
+    if face[1] == "+":
+        local[n_axis] = info.local_max[n_axis]
+    else:
+        sign = -1.0
+    origin = info.at
+    for axis in range(3):
+        origin = vec_add(origin, vec_scale(axes[axis], local[axis]))
+    normal = vec_scale(axes[n_axis], sign)
+    # The prism runs along u x v, which is the outward normal on x+, y- and
+    # z+ faces and the inward one on the others.
+    along = 1.0 if (n_axis == 1) != (sign > 0) else -1.0
+    base = start if along > 0 else start + length
+    tool = extrude("%s/%s" % (info.name, name), profile = profile, distance = length, tool = True)
+    place(tool, origin = vec_add(origin, vec_scale(normal, base)), z = vec_scale(normal, along), x = axes[u_axis])
+    return tool
+
+def pocket_shape(part, face, profile, depth, name = "pocket"):
+    """Removes a closed `profile` (points or named segments in face
+    coordinates (u, v) of `face`) `depth` mm deep into `part`; it may run off
+    the face edges. Works on any part, rotated or not, and after any other
+    operation. Returns `part`."""
+    if depth <= 0:
+        fail("pocket_shape(%s): depth must be positive, got %s" % (part_info(part).name, depth))
+    return subtract(part, _shape_tool(part, face, profile, -depth, depth + 1, name), name = name)
+
+def boss(part, face, profile, height, name = "boss"):
+    """Adds a closed `profile` (face coordinates of `face`) standing `height` mm
+    out of `face`, joined into `part` as one solid. Returns `part`."""
+    if height <= 0:
+        fail("boss(%s): height must be positive, got %s" % (part_info(part).name, height))
+    return union(part, _shape_tool(part, face, profile, 0, height, name), name = name)
 
 #@topic joinery: Joints, dowels and hardware
 #

@@ -2,86 +2,11 @@
 //! window shows: volumes against closed-form values, faces named after cuts
 //! and booleans, and operations applied in the order they are written.
 
-use std::collections::BTreeMap;
+mod operations_support;
+
 use std::f64::consts::PI;
 
-use ketchup_application::evaluation::exact_worker_candidates;
-use ketchup_application::{DocumentSession, SessionSettings};
-use ketchup_core::document::RuleProgramSource;
-use ketchup_core::exact_brep_graph::ExactBRepGraph;
-use ketchup_core::exact_product::ExactBRepGraphPackage;
-use ketchup_scheduler::ExactWorkerSupervisor;
-
-fn worker() -> ExactWorkerSupervisor {
-    let executable = exact_worker_candidates()
-        .into_iter()
-        .find(|path| path.is_file())
-        .expect("build ketchup-exact-worker before this test");
-    ExactWorkerSupervisor::spawn(executable).unwrap()
-}
-
-/// Builds `program` in a new document and evaluates the exact solid of `part`.
-fn solid(
-    worker: &mut ExactWorkerSupervisor,
-    program: &str,
-    part: &str,
-) -> Result<ExactBRepGraphPackage, String> {
-    let mut session = DocumentSession::new(SessionSettings::default());
-    session
-        .apply_rule_program(
-            RuleProgramSource {
-                file_name: "operations.star".to_owned(),
-                source: program.to_owned(),
-                overrides: BTreeMap::new(),
-            },
-            false,
-        )
-        .map_err(|error| format!("apply: {error}"))?;
-    let snapshot = session.snapshot();
-    let occurrence = snapshot
-        .occurrences()
-        .find(|occurrence| occurrence.name() == part)
-        .unwrap_or_else(|| panic!("no part {part:?}"));
-    let definition = snapshot.definition(occurrence.definition_id()).unwrap();
-    let graph = ExactBRepGraph::from_snapshot(
-        &snapshot,
-        occurrence.definition_id(),
-        *definition.feature_ids().last().unwrap(),
-    )
-    .map_err(|error| format!("graph: {error:?}"))?;
-    worker
-        .evaluate_exact_brep_graph(&graph)
-        .map_err(|error| error.to_string())
-}
-
-/// Volume of one closed solid with a single shell.
-fn volume(worker: &mut ExactWorkerSupervisor, program: &str, part: &str) -> f64 {
-    let package = solid(worker, program, part).unwrap_or_else(|error| panic!("{error}\n{program}"));
-    let [_, _, _, shells, solids] = package.topology_counts;
-    assert_eq!((shells, solids), (1, 1), "{program}");
-    package.volume_mm3
-}
-
-fn face_count(worker: &mut ExactWorkerSupervisor, program: &str, part: &str) -> u32 {
-    solid(worker, program, part).unwrap().topology_counts[2]
-}
-
-fn assert_volume(actual: f64, expected: f64) {
-    assert!(
-        (actual - expected).abs() <= 1.0e-6 * expected.max(1.0),
-        "volume {actual} != {expected}"
-    );
-}
-
-/// Material a fillet of radius `r` removes along a straight edge of length `l`.
-fn fillet_loss(r: f64, l: f64) -> f64 {
-    (1.0 - PI / 4.0) * r * r * l
-}
-
-const A: f64 = 100.0;
-const B: f64 = 60.0;
-const C: f64 = 40.0;
-const BLOCK: &str = "block = box(\"block\", [100, 60, 40])\n";
+use operations_support::*;
 
 #[test]
 fn box_edges_round_and_bevel_by_named_faces() {
@@ -271,21 +196,9 @@ fn commuting_operations_agree_and_later_ones_see_earlier_results() {
     let rim_before_hole = format!(
         "{BLOCK}{pin}fillet(block, edges=[[\"z+\", \"drill.x-\"]], radius=2)\nsubtract(block, pin, name=\"drill\")"
     );
-    let mut session = DocumentSession::new(SessionSettings::default());
-    let error = session
-        .apply_rule_program(
-            RuleProgramSource {
-                file_name: "order.star".to_owned(),
-                source: rim_before_hole.clone(),
-                overrides: BTreeMap::new(),
-            },
-            false,
-        )
-        .map(|_| ())
-        .map_err(|error| error.to_string());
-    let error = match error {
+    let error = match session(&rim_before_hole) {
         Err(error) => error,
-        Ok(()) => solid(&mut worker, &rim_before_hole, "block").unwrap_err(),
+        Ok(_) => solid(&mut worker, &rim_before_hole, "block").unwrap_err(),
     };
     assert!(error.contains("drill"), "{error}");
 }
@@ -310,18 +223,7 @@ fn box_push_pull_and_cut_now_shape_the_part() {
 #[test]
 fn a_wrong_face_or_too_large_radius_is_explained() {
     let mut worker = worker();
-    let mut session = DocumentSession::new(SessionSettings::default());
-    let Err(error) = session.apply_rule_program(
-        RuleProgramSource {
-            file_name: "bad.star".to_owned(),
-            source: format!("{BLOCK}fillet(block, edges=[[\"x+\", \"top\"]], radius=5)"),
-            overrides: BTreeMap::new(),
-        },
-        false,
-    ) else {
-        panic!("an unknown face must be rejected");
-    };
-    let error = error.to_string();
+    let error = apply_error(&format!("{BLOCK}fillet(block, edges=[[\"x+\", \"top\"]], radius=5)"));
     assert!(error.contains("face \"top\" does not exist"), "{error}");
     assert!(error.contains("x-, x+, y-, y+, z-, z+"), "{error}");
 
