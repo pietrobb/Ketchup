@@ -82,6 +82,16 @@ added here, never in Rust (see `AGENTS.md`).
 | `param_out_of_range` | error | a parameter is outside its `min`/`max` |
 | `floating_part` | warning | a part touches nothing that rests on z = 0 |
 | `expectation_failed` | error | a stated condition (`expect*`) does not hold; the message gives the measured and the required value |
+| `collision_unverified` | warning | the boxes of two parts overlap, a part is not its box, and the exact solids were not measured |
+| `expectation_unverified` | warning | a condition needs the distance of two solids that are apart, but that distance was not measured |
+
+The checks measure boxes. Where a part is not exactly its box (profile body,
+push_pull, subtract/intersect) and its box touches or overlaps another,
+KetchupProgram `check` (in a scratch document), `build` and the window measure
+that pair on the exact solids with the same native pair query, and collisions,
+floating parts, joints, `expect*` distances/contact areas and the relation map
+use those answers. The standalone `ketchup-program` binary has no OCCT and
+keeps the box answers.
 
 Checks report; they never stop the program from being evaluated or built.
 

@@ -4,6 +4,7 @@
 //! model against its intent without a picture.
 
 use crate::eval::{TOLERANCE_MM, contact};
+use crate::exact::{ExactPair, ExactShapes};
 use crate::frame::{self, Obb};
 use crate::model::{Face, Part, ProgramBooleanKind, ProgramModel};
 use crate::validate::{self, COLLISION_UNVERIFIED, Issue};
@@ -64,6 +65,8 @@ pub struct Relation {
     /// Subtracted: the part that holds the socket.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cut_in: Option<String>,
+    /// Gap: the clearance; absent when the exact solids are apart by an
+    /// unmeasured amount although their boxes touch.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gap_mm: Option<f64>,
     /// World unit vector from the first part towards the second.
@@ -209,7 +212,13 @@ fn overlap_status(model: &ProgramModel, a: &Part, b: &Part) -> (OverlapStatus, O
     (OverlapStatus::Collision, None)
 }
 
-fn relate(model: &ProgramModel, a: &Part, b: &Part, joint: Option<&str>) -> Option<Relation> {
+fn relate(
+    model: &ProgramModel,
+    exact: &ExactShapes,
+    a: &Part,
+    b: &Part,
+    joint: Option<&str>,
+) -> Option<Relation> {
     let (oa, ob) = (a.obb(), b.obb());
     let (direction, separation) = oa.separating_axis(&ob);
     let mut relation = Relation {
@@ -265,13 +274,68 @@ fn relate(model: &ProgramModel, a: &Part, b: &Part, joint: Option<&str>) -> Opti
         }
         relation.cut_in = cut_in;
     }
-    Some(relation)
+    match exact.decides(a, b) {
+        Some(pair) if !pair.penetrating() && !intended_overlap(&relation) => {
+            Some(exact_relation(a, b, relation, pair))
+        }
+        _ => Some(relation),
+    }
+}
+
+/// An overlap the program meant: a socket, a removed volume, a pocket or a
+/// joint volume.
+fn intended_overlap(relation: &Relation) -> bool {
+    matches!(
+        relation.status,
+        Some(
+            OverlapStatus::Subtracted
+                | OverlapStatus::Removed
+                | OverlapStatus::Pocket
+                | OverlapStatus::Joint
+        )
+    )
+}
+
+/// The relation of two solids that do not overlap, from the exact answer.
+fn exact_relation(a: &Part, b: &Part, mut relation: Relation, pair: ExactPair) -> Relation {
+    relation.approx = false;
+    relation.faces = None;
+    relation.area_mm2 = None;
+    relation.depth_mm = None;
+    relation.status = None;
+    relation.cut_in = None;
+    relation.gap_mm = None;
+    if pair.contact_area_mm2 > TOLERANCE_MM * TOLERANCE_MM {
+        relation.kind = RelationKind::Contact;
+        relation.area_mm2 = Some(pair.contact_area_mm2.round());
+        if let Some(patch) = contact(a, b) {
+            relation.faces = Some([patch.face_a, patch.face_b]);
+            relation.direction = round_direction(patch.normal);
+        }
+    } else if pair.touching() {
+        relation.kind = RelationKind::Touch;
+    } else {
+        relation.kind = RelationKind::Gap;
+        relation.gap_mm = pair.distance_mm.map(round1);
+    }
+    relation
 }
 
 /// Every pair of parts that touch, overlap or lie within [`GAP_LIMIT_MM`],
 /// plus every jointed pair; in model order, the first part first.
 #[must_use]
 pub fn relations(model: &ProgramModel, issues: &[Issue]) -> Vec<Relation> {
+    relations_with(model, issues, &ExactShapes::default())
+}
+
+/// [`relations`], taking the exact answer wherever the boxes of a pair
+/// misstate its solids.
+#[must_use]
+pub fn relations_with(
+    model: &ProgramModel,
+    issues: &[Issue],
+    exact: &ExactShapes,
+) -> Vec<Relation> {
     let parts = &model.parts;
     let bounds: Vec<_> = parts.iter().map(Part::world_bounds).collect();
     let mut order: Vec<usize> = (0..parts.len()).collect();
@@ -305,7 +369,7 @@ pub fn relations(model: &ProgramModel, issues: &[Issue]) -> Vec<Relation> {
         .filter(|(a, b)| a != b)
         .filter_map(|(a, b)| {
             let (a, b) = (&parts[a], &parts[b]);
-            relate(model, a, b, joint_of(a, b))
+            relate(model, exact, a, b, joint_of(a, b))
         })
         .collect();
     sync_with_issues(&mut relations, issues);

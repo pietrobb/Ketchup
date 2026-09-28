@@ -43,6 +43,7 @@ impl From<SessionError> for RuleProgramApplyError {
 
 pub struct RuleProgramApplyResult {
     pub snapshot: Snapshot,
+    pub model: ProgramModel,
     pub report: Report,
     pub replaced_document: bool,
 }
@@ -239,6 +240,7 @@ impl DocumentSession {
                 let snapshot = self.replace_with_rule_parts(&evaluated.model.parts, source)?;
                 return Ok(RuleProgramApplyResult {
                     snapshot,
+                    model: evaluated.model,
                     report,
                     replaced_document: true,
                 });
@@ -246,6 +248,7 @@ impl DocumentSession {
         };
         Ok(RuleProgramApplyResult {
             snapshot,
+            model: evaluated.model,
             report,
             replaced_document: false,
         })

@@ -24,6 +24,7 @@ use ketchup_core::validation::{
 use ketchup_interaction::spatial::{
     SpatialQueryError, overlapping_bounds_for_sources_with_cancellation, overlapping_bounds_pairs,
 };
+use ketchup_program::ExactPair;
 use ketchup_scheduler::pair_query::{MAX_EXACT_PAIR_CANDIDATES, MAX_EXACT_PAIR_GRAPHS};
 use ketchup_scheduler::{ExactPairCandidate, ExactPairRelation};
 use serde_json::{Value, json};
@@ -84,7 +85,7 @@ pub fn assistant_validation_context(
     exact_results: &ExactResultRegistry,
     selection: &AssistantValidationSelection,
 ) -> Value {
-    let collision = collision_report(snapshot, selection, None, None, None, None);
+    let collision = collision_report(snapshot, selection, None, None, None, None, None);
     assistant_validation_context_base(snapshot, exact_results, selection, collision, &[])
 }
 
@@ -127,6 +128,7 @@ pub fn assistant_validation_context_with_worker_cancellation(
         None,
         Some(cancellation),
         Some(&mut gravity_contacts),
+        None,
     );
     assistant_validation_context_base(
         snapshot,
@@ -154,6 +156,7 @@ pub fn scoped_collision_report_with_worker(
         Some((container, worker_path, timeout)),
         Some(scope),
         Some(cancelled),
+        None,
         None,
     )
 }
@@ -202,6 +205,7 @@ pub fn fabrication_collision_validation_with_worker(
         snapshot,
         &AssistantValidationSelection::only(&["collision"]),
         Some((container, worker_path, timeout)),
+        None,
         None,
         None,
         None,
@@ -329,6 +333,66 @@ fn add_contact_area(
     }
 }
 
+/// Exact answers by the root occurrences of two bodies, smaller id first.
+pub type ExactPairFacts = BTreeMap<(OccurrenceId, OccurrenceId), ExactPair>;
+
+/// Merges one body pair's answer into its root occurrences' answer.
+fn add_pair_fact(
+    facts: Option<&mut ExactPairFacts>,
+    bodies: &[Body],
+    (left, right): (usize, usize),
+    fact: ExactPair,
+) {
+    let Some(facts) = facts else {
+        return;
+    };
+    let (left, right) = (
+        bodies[left].occurrence.instance_path.root_occurrence(),
+        bodies[right].occurrence.instance_path.root_occurrence(),
+    );
+    if left == right {
+        return;
+    }
+    let tolerance = TolerancePolicy::default().epsilon_mm();
+    facts
+        .entry((left.min(right), left.max(right)))
+        .and_modify(|known| {
+            known.common_volume_mm3 += fact.common_volume_mm3;
+            known.contact_area_mm2 += fact.contact_area_mm2;
+            known.distance_mm = match (known.distance_mm, fact.distance_mm) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (Some(a), None) | (None, Some(a)) if a <= tolerance => Some(a),
+                _ => None,
+            };
+        })
+        .or_insert(fact);
+}
+
+/// Exact answers for every pair of a snapshot-bound occurrence scope with
+/// any visible body, from the same native pass as
+/// [`scoped_collision_report_with_worker`]. Pairs the bounds reject are
+/// apart and have no entry.
+pub fn scoped_exact_pairs_with_worker(
+    snapshot: &Snapshot,
+    container: &ContainerData,
+    worker_path: Option<PathBuf>,
+    timeout: Duration,
+    scope: &CollisionScope,
+    cancelled: Arc<AtomicBool>,
+) -> (Value, ExactPairFacts) {
+    let mut facts = ExactPairFacts::new();
+    let report = collision_report(
+        snapshot,
+        &AssistantValidationSelection::only(&["collision"]),
+        Some((container, worker_path, timeout)),
+        Some(scope),
+        Some(cancelled),
+        None,
+        Some(&mut facts),
+    );
+    (report, facts)
+}
+
 fn collision_report(
     snapshot: &Snapshot,
     selection: &AssistantValidationSelection,
@@ -336,6 +400,7 @@ fn collision_report(
     scope: Option<&CollisionScope>,
     cancellation: Option<Arc<AtomicBool>>,
     mut gravity_contacts: Option<&mut Vec<GravitySupportContact>>,
+    mut pair_facts: Option<&mut ExactPairFacts>,
 ) -> Value {
     let started = Instant::now();
     let mut report = json!({"document_id": snapshot.document_id().0,
@@ -929,17 +994,27 @@ fn collision_report(
                 continue;
             };
             if let (Some(a), Some(b)) = (&world_hulls[left], &world_hulls[right]) {
-                let area_mm2 = match hull::relate(a, b, TolerancePolicy::default().epsilon_mm()) {
+                let decided = match hull::relate(a, b, TolerancePolicy::default().epsilon_mm()) {
                     hull::HullRelation::Overlapping => None,
-                    hull::HullRelation::Separated => Some(0.0),
-                    hull::HullRelation::Touching { area_mm2 } => Some(area_mm2),
+                    hull::HullRelation::Separated => Some((0.0, None)),
+                    hull::HullRelation::Touching { area_mm2 } => Some((area_mm2, Some(0.0))),
                 };
-                if let Some(area_mm2) = area_mm2 {
+                if let Some((area_mm2, distance_mm)) = decided {
                     checked += 1;
                     hull_decided += 1;
                     if collect_gravity_contacts {
                         add_contact_area(&mut exact_contact_areas, &bodies, left, right, area_mm2);
                     }
+                    add_pair_fact(
+                        pair_facts.as_deref_mut(),
+                        &bodies,
+                        (left, right),
+                        ExactPair {
+                            common_volume_mm3: 0.0,
+                            contact_area_mm2: area_mm2,
+                            distance_mm,
+                        },
+                    );
                     continue;
                 }
             }
@@ -1042,6 +1117,16 @@ fn collision_report(
                                             result.common_contact_area_mm2,
                                         );
                                     }
+                                    add_pair_fact(
+                                        pair_facts.as_deref_mut(),
+                                        &bodies,
+                                        (left, right),
+                                        ExactPair {
+                                            common_volume_mm3: result.common_volume_mm3,
+                                            contact_area_mm2: result.common_contact_area_mm2,
+                                            distance_mm: Some(result.distance_mm),
+                                        },
+                                    );
                                     if result.relation == ExactPairRelation::Penetrating {
                                         issues.push(issue(&bodies[left], &bodies[right], json!({"method": "occt_brep_common_volume", "common_volume_mm3": result.common_volume_mm3, "distance_mm": result.distance_mm})));
                                     }

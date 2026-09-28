@@ -5,6 +5,7 @@
 //! does not hold is an error with the measured and required numbers.
 
 use crate::eval::{TOLERANCE_MM, contact};
+use crate::exact::ExactShapes;
 use crate::frame;
 use crate::model::{Face, Part, ProgramModel};
 use crate::relations::polygon_area;
@@ -112,24 +113,38 @@ fn direction(model: &ProgramModel, direction: &Direction) -> Option<[f64; 3]> {
     }
 }
 
-fn measure(model: &ProgramModel, measure: &Measure) -> Option<f64> {
+fn measure(model: &ProgramModel, exact: &ExactShapes, measure: &Measure) -> Option<f64> {
     Some(match measure {
         Measure::Reach { part, direction: d } => find(model, part)?.reach(direction(model, d)?),
         Measure::Distance { a, b } => {
-            let (a, b) = (find(model, a)?.obb(), find(model, b)?.obb());
-            let separation = a.separation(&b);
+            let (a, b) = (find(model, a)?, find(model, b)?);
+            let (box_a, box_b) = (a.obb(), b.obb());
+            let separation = box_a.separation(&box_b);
+            match exact.decides(a, b) {
+                // Apart by more than the tolerance, but by how much was not
+                // measured: `check` reports the condition as unverified.
+                Some(pair) if !pair.penetrating() => {
+                    return Some(pair.gap_mm().unwrap_or(f64::NAN));
+                }
+                _ => {}
+            }
             if separation > TOLERANCE_MM {
-                a.distance(&b)
+                box_a.distance(&box_b)
             } else {
                 separation.min(0.0)
             }
         }
-        Measure::ContactArea { a, b, face } => match contact(find(model, a)?, find(model, b)?) {
-            Some(patch) if face.is_none_or(|face| patch.face_a == face) => {
-                polygon_area(&patch.points_mm)
+        Measure::ContactArea { a, b, face } => {
+            let (a, b) = (find(model, a)?, find(model, b)?);
+            let patch = contact(a, b);
+            let on_face = face.is_none_or(|face| patch.as_ref().is_some_and(|p| p.face_a == face));
+            match (exact.decides(a, b), patch) {
+                (Some(pair), _) if on_face => pair.contact_area_mm2,
+                (Some(_), _) => 0.0,
+                (None, Some(patch)) if on_face => polygon_area(&patch.points_mm),
+                (None, _) => 0.0,
             }
-            _ => 0.0,
-        },
+        }
     })
 }
 
@@ -138,16 +153,30 @@ fn round(value: f64) -> f64 {
 }
 
 /// One error per condition that does not hold.
-pub fn check(model: &ProgramModel, issues: &mut Vec<Issue>) {
+pub fn check(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>) {
     for expectation in &model.expectations {
         let measured: Option<f64> = expectation
             .terms
             .iter()
-            .map(|(coefficient, term)| measure(model, term).map(|value| coefficient * value))
+            .map(|(coefficient, term)| measure(model, exact, term).map(|value| coefficient * value))
             .sum();
         let Some(measured) = measured else {
             continue;
         };
+        if measured.is_nan() {
+            issues.push(Issue {
+                severity: Severity::Warning,
+                kind: "expectation_unverified",
+                parts: expectation.parts.clone(),
+                message: format!(
+                    "{}: the exact solids are apart, but their distance was not measured",
+                    expectation.name
+                ),
+                where_mm: None,
+                hint: expectation.hint.clone(),
+            });
+            continue;
+        }
         if expectation
             .comparison
             .holds(measured, expectation.value, expectation.tolerance)

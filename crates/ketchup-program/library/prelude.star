@@ -109,7 +109,11 @@
 # final model (after every move), so write them anywhere; one that does not
 # hold is an `expectation_failed` error naming the measured and required mm.
 # Faces follow the same rule as on(): the target's own frame, or a world
-# direction. Measures use the body before cuts and booleans.
+# direction. Measures use the body before cuts and booleans, except that
+# KetchupProgram check/build and the window take distance and contact_area
+# of a pair from the exact solids when a part of it is not its box (profile
+# body, push_pull, subtract/intersect); the same holds for collisions,
+# floating parts, joints and the relation map (relations lose "approx").
 #   expect_contact(part, target, face=None, tolerance=0.1)  touching, not
 #     apart or overlapping; with face, face to face against that target face
 #   expect_gap(part, target, mm, tolerance=0.1)  clearance of mm between them

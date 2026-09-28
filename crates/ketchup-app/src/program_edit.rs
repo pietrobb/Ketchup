@@ -39,10 +39,19 @@ impl KetchupApp {
         &mut self,
         source: RuleProgramSource,
         replace: bool,
-    ) -> Result<(ProgramEdit, ketchup_program::Report), RuleProgramApplyError> {
+    ) -> Result<
+        (
+            ProgramEdit,
+            ketchup_program::Report,
+            ketchup_program::ProgramModel,
+        ),
+        RuleProgramApplyError,
+    > {
         let plan = ketchup_application::plan_rule_program(&self.document, &source)?;
         let (edit, batch) = match plan.change {
-            RuleProgramChange::Unchanged => return Ok((ProgramEdit::Unchanged, plan.report)),
+            RuleProgramChange::Unchanged => {
+                return Ok((ProgramEdit::Unchanged, plan.report, plan.evaluated.model));
+            }
             RuleProgramChange::SourceOnly => {
                 self.complete_mutation_with_work_recovery(|document| {
                     if document.replace_rule_program_source(source) {
@@ -55,7 +64,7 @@ impl KetchupApp {
                 })
                 .map_err(session_error)?;
                 self.finish_program_edit();
-                return Ok((ProgramEdit::SourceOnly, plan.report));
+                return Ok((ProgramEdit::SourceOnly, plan.report, plan.evaluated.model));
             }
             RuleProgramChange::Incremental(batch) => (ProgramEdit::Incremental, batch),
             RuleProgramChange::Replacement => {
@@ -99,7 +108,7 @@ impl KetchupApp {
         if edit == ProgramEdit::Created {
             self.zoom_fit_pending = true;
         }
-        Ok((edit, plan.report))
+        Ok((edit, plan.report, plan.evaluated.model))
     }
 
     fn finish_program_edit(&mut self) {

@@ -2,6 +2,7 @@
 //! reject the model. Production export decides whether issues block.
 
 use crate::eval::{TOLERANCE_MM, contact};
+use crate::exact::ExactShapes;
 use crate::frame::{self, Obb};
 use crate::model::{Part, ProgramBooleanKind, ProgramModel, ProgramPartBody};
 use serde::Serialize;
@@ -170,7 +171,7 @@ fn round(value: f64) -> f64 {
     (value * 1000.0).round() / 1000.0
 }
 
-fn collisions(model: &ProgramModel, issues: &mut Vec<Issue>) {
+fn collisions(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>) {
     let bounds: Vec<_> = model.parts.iter().map(Part::world_bounds).collect();
     let mut order: Vec<usize> = (0..model.parts.len()).collect();
     order.sort_by(|left, right| bounds[*left].0[0].total_cmp(&bounds[*right].0[0]));
@@ -202,6 +203,28 @@ fn collisions(model: &ProgramModel, issues: &mut Vec<Issue>) {
             }
             let (min, max) = region;
             if needs_exact_shapes(a, b) {
+                match exact.pair(&a.name, &b.name) {
+                    Some(pair) if pair.penetrating() => {
+                        issues.push(Issue {
+                            severity: Severity::Error,
+                            kind: "collision",
+                            parts: vec![a.name.clone(), b.name.clone()],
+                            message: format!(
+                                "the solids of {} and {} overlap ({} mm³)",
+                                a.name,
+                                b.name,
+                                (pair.common_volume_mm3 * 10.0).round() / 10.0
+                            ),
+                            where_mm: Some((min.map(round), max.map(round))),
+                            hint: "Move or resize one part so they only touch, or subtract one \
+                                   from the other, or declare a joint with a volume."
+                                .to_owned(),
+                        });
+                        continue;
+                    }
+                    Some(_) => continue,
+                    None => {}
+                }
                 issues.push(Issue {
                     severity: Severity::Warning,
                     kind: COLLISION_UNVERIFIED,
@@ -216,8 +239,8 @@ fn collisions(model: &ProgramModel, issues: &mut Vec<Issue>) {
                         round(max[2] - min[2]),
                     ),
                     where_mm: Some((min.map(round), max.map(round))),
-                    hint: "Applying the program in the Kečup window checks the exact solids; \
-                           this offline check only compares boxes."
+                    hint: "KetchupProgram check/build and the Kečup window settle this on the \
+                           exact solids; a box-only check cannot."
                         .to_owned(),
                 });
                 continue;
@@ -296,25 +319,38 @@ fn holes(model: &ProgramModel, issues: &mut Vec<Issue>) {
     }
 }
 
-fn joints(model: &ProgramModel, issues: &mut Vec<Issue>) {
+fn joints(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>) {
     for joint in &model.joints {
         let (Some(a), Some(b)) = (model.part(&joint.parts[0]), model.part(&joint.parts[1])) else {
             continue;
         };
-        if contact(a, b).is_none()
-            && overlap(a, b).is_none()
-            && gap(a, b) > joint.max_gap_mm + TOLERANCE_MM
-        {
+        // `None`: apart by an unknown clearance above the contact tolerance.
+        let apart = match exact.decides(a, b) {
+            Some(pair) => pair.gap_mm().map_or(Some(None), |gap| {
+                (gap > joint.max_gap_mm + TOLERANCE_MM).then_some(Some(gap))
+            }),
+            None => (contact(a, b).is_none()
+                && overlap(a, b).is_none()
+                && gap(a, b) > joint.max_gap_mm + TOLERANCE_MM)
+                .then(|| Some(gap(a, b))),
+        };
+        if let Some(apart) = apart {
+            if apart.is_none() && joint.max_gap_mm > TOLERANCE_MM {
+                continue;
+            }
             issues.push(Issue {
                 severity: Severity::Error,
                 kind: "joint_without_contact",
                 parts: joint.parts.to_vec(),
                 message: format!(
-                    "joint {} connects {} and {}, but they are {} mm apart (allowed {} mm)",
+                    "joint {} connects {} and {}, but {} (allowed gap {} mm)",
                     joint.name,
                     a.name,
                     b.name,
-                    round(gap(a, b)),
+                    apart.map_or("their solids do not touch".to_owned(), |gap| format!(
+                        "they are {} mm apart",
+                        round(gap)
+                    )),
                     joint.max_gap_mm
                 ),
                 where_mm: None,
@@ -353,7 +389,7 @@ fn params(model: &ProgramModel, issues: &mut Vec<Issue>) {
 
 /// Parts that neither rest on z = 0 nor touch, through other parts, something
 /// that does. Contact is face contact or a declared joint.
-fn support(model: &ProgramModel, issues: &mut Vec<Issue>) {
+fn support(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>) {
     let count = model.parts.len();
     let mut supported: Vec<bool> = model
         .parts
@@ -381,10 +417,16 @@ fn support(model: &ProgramModel, issues: &mut Vec<Issue>) {
             }
             let part = &model.parts[left];
             let joined = |other: &Part| {
-                contact(part, other).is_some()
-                    || overlap(part, other).is_some()
-                    || ((part.is_rotated() || other.is_rotated())
-                        && gap(part, other) <= TOLERANCE_MM)
+                let touching = match exact.decides(part, other) {
+                    Some(pair) => pair.penetrating() || pair.touching(),
+                    None => {
+                        contact(part, other).is_some()
+                            || overlap(part, other).is_some()
+                            || ((part.is_rotated() || other.is_rotated())
+                                && gap(part, other) <= TOLERANCE_MM)
+                    }
+                };
+                touching
                     || model.joints.iter().any(|joint| {
                         joint.parts.contains(&part.name) && joint.parts.contains(&other.name)
                     })
@@ -415,16 +457,23 @@ fn support(model: &ProgramModel, issues: &mut Vec<Issue>) {
     }
 }
 
-/// All generic checks. Errors first, then warnings; stable order.
+/// All generic checks on boxes. Errors first, then warnings; stable order.
 #[must_use]
 pub fn validate(model: &ProgramModel) -> Vec<Issue> {
+    validate_with(model, &ExactShapes::default())
+}
+
+/// All generic checks, taking the exact answer wherever the boxes of a pair
+/// misstate its solids.
+#[must_use]
+pub fn validate_with(model: &ProgramModel, exact: &ExactShapes) -> Vec<Issue> {
     let mut issues = Vec::new();
     params(model, &mut issues);
-    collisions(model, &mut issues);
+    collisions(model, exact, &mut issues);
     holes(model, &mut issues);
-    joints(model, &mut issues);
-    support(model, &mut issues);
-    crate::expect::check(model, &mut issues);
+    joints(model, exact, &mut issues);
+    support(model, exact, &mut issues);
+    crate::expect::check(model, exact, &mut issues);
     issues.sort_by_key(|issue| issue.severity);
     issues
 }

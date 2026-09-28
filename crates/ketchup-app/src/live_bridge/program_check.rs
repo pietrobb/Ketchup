@@ -1,10 +1,10 @@
-//! `apply_program` publishes on the UI thread at once. When the program's own
-//! box check left overlaps it could not decide (profile bodies, booleans), the
-//! reply waits for the native exact collision check of the applied solids,
-//! which runs on a worker thread so the window stays responsive.
+//! `apply_program` publishes on the UI thread at once. When parts whose solid
+//! is not their box (profile bodies, moved faces, booleans) touch or overlap
+//! others, the reply waits for the native exact pair check of the applied
+//! solids, which runs on a worker thread so the window stays responsive.
 use super::*;
 use crate::program_edit::ProgramEdit;
-use ketchup_program::{COLLISION_UNVERIFIED, Report};
+use ketchup_program::{ProgramModel, Report, exact_candidates};
 
 /// Host budget for the exact check of one applied program; the SDK waits longer.
 pub(super) const PROGRAM_EXACT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -15,6 +15,7 @@ const PROGRAM_EXACT_GRACE: Duration = Duration::from_secs(5);
 pub(super) struct AppliedProgram {
     edit: ProgramEdit,
     report: Report,
+    model: ProgramModel,
     before: Snapshot,
     after: Snapshot,
     stamp: Stamp,
@@ -35,10 +36,7 @@ impl AppliedProgram {
     }
 
     fn needs_exact_check(&self) -> bool {
-        self.report
-            .issues
-            .iter()
-            .any(|issue| issue.kind == COLLISION_UNVERIFIED)
+        !exact_candidates(&self.model).is_empty()
     }
 }
 
@@ -87,7 +85,7 @@ impl LiveBridge {
         Self::require_request_authority(cancelled)?;
         let before = app.document.current();
         let before_stamp = app.live_bridge_stamp();
-        let (edit, report) = app
+        let (edit, report, model) = app
             .apply_program_source(
                 ketchup_core::document::RuleProgramSource {
                     file_name,
@@ -108,6 +106,7 @@ impl LiveBridge {
         Ok(AppliedProgram {
             edit,
             report,
+            model,
             before,
             after: app.document.current(),
             stamp,
@@ -144,6 +143,7 @@ impl LiveBridge {
             return;
         }
         let mut report = applied.report.clone();
+        let model = applied.model.clone();
         let snapshot = applied.after.clone();
         let container = app.container_data.clone();
         let worker_path = Self::worker_path(app);
@@ -154,8 +154,9 @@ impl LiveBridge {
         let spawn = std::thread::Builder::new()
             .name("ketchup-live-program-check".into())
             .spawn(move || {
-                let exact = ketchup_application::verify_rule_program_collisions(
+                let exact = ketchup_application::verify_rule_program_exact(
                     &snapshot,
+                    &model,
                     &mut report,
                     &container,
                     worker_path,

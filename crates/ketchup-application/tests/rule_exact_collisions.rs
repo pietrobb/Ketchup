@@ -1,5 +1,5 @@
 //! Box overlaps a rule program cannot decide are settled by the exact solids.
-use ketchup_application::{DocumentSession, SessionSettings, verify_rule_program_collisions};
+use ketchup_application::{DocumentSession, SessionSettings, verify_rule_program_exact};
 use ketchup_core::document::RuleProgramSource;
 use ketchup_core::persistence::ContainerData;
 use ketchup_program::COLLISION_UNVERIFIED;
@@ -21,8 +21,9 @@ fn verified(source: String) -> (ketchup_program::Report, serde_json::Value) {
         )
         .unwrap();
     let mut report = applied.report;
-    let summary = verify_rule_program_collisions(
+    let summary = verify_rule_program_exact(
         &applied.snapshot,
+        &applied.model,
         &mut report,
         &ContainerData::default(),
         None,
@@ -149,6 +150,67 @@ fn a_lofted_tool_hollows_a_tapered_pocket_through_a_block() {
     );
     assert!(clear.is_empty(), "{clear:?} {summary}");
     assert_eq!(summary["cleared"], 1, "{summary}");
+}
+
+/// A disc seat (radius 150, 20 thick) on one 30 x 30 leg whose corner is at
+/// (`x`, `x`): the boxes always touch, the disc only when the leg is under it.
+fn seat_on_leg(x: f64) -> String {
+    format!(
+        "seat = revolve(\"seat\", profile = [(0, 0), (150, 0), (150, 20), (0, 20)], \
+         axis = [(0, 0), (0, 1)], at = (0, 0, 400))\n\
+         rotate(seat, axis = (1, 0, 0), angle = 90)\n\
+         leg = box(\"leg\", (30, 30, 400), at = ({x}, {x}, 0))\n"
+    )
+}
+
+fn kinds(report: &ketchup_program::Report) -> Vec<&str> {
+    report.issues.iter().map(|issue| issue.kind).collect()
+}
+
+#[test]
+fn a_leg_under_the_corner_of_a_round_seat_does_not_hold_it() {
+    let (report, summary) = verified(seat_on_leg(120.0));
+    assert_eq!(summary["state"], "verified", "{summary}");
+    assert_eq!(kinds(&report), ["floating_part"], "{:#?}", report.issues);
+    assert_eq!(report.issues[0].parts, ["seat"]);
+    let relation = &report.relations[0];
+    assert_eq!(
+        relation.kind,
+        ketchup_program::RelationKind::Gap,
+        "{relation:?}"
+    );
+    // The leg's inner corner (120, 120) is 169.71 mm from the axis.
+    assert_eq!(relation.gap_mm, Some(19.7), "{relation:?}");
+}
+
+#[test]
+fn a_leg_under_a_round_seat_touches_it_over_its_whole_top() {
+    let (report, summary) = verified(seat_on_leg(60.0));
+    assert_eq!(summary["state"], "verified", "{summary}");
+    assert!(kinds(&report).is_empty(), "{:#?}", report.issues);
+    let relation = &report.relations[0];
+    assert_eq!(
+        relation.kind,
+        ketchup_program::RelationKind::Contact,
+        "{relation:?}"
+    );
+    assert_eq!(relation.area_mm2, Some(900.0), "{relation:?}");
+    assert!(!relation.approx);
+}
+
+#[test]
+fn a_top_raised_by_push_pull_collides_with_the_part_above() {
+    let board = "board = extrude(\"board\", distance = 18, \
+                 profile = [(0, 0), (300, 0), (300, 100), (0, 100)])\n\
+                 push_pull(board, face = \"end\", distance = 12, name = \"raise\")\n";
+    let (hit, summary) = exact_kinds(&format!(
+        "{board}c = box(\"c\", (10, 10, 20), at = (10, 10, 20))\n"
+    ));
+    assert_eq!(hit, ["collision"], "{summary}");
+    let (clear, summary) = exact_kinds(&format!(
+        "{board}c = box(\"c\", (10, 10, 20), at = (10, 10, 30))\n"
+    ));
+    assert!(clear.is_empty(), "{clear:?} {summary}");
 }
 
 #[test]

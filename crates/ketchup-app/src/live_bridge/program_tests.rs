@@ -130,11 +130,11 @@ fn applied_program_answers_box_overlaps_with_the_exact_solids() {
     assert_eq!(cleared["exact_collisions"]["cleared"], 1, "{cleared}");
     assert_eq!(cleared["report"]["ok"], true);
     assert_eq!(cleared["report"]["warnings"], 0, "{cleared}");
-    // The relation map follows the exact verdict: only the boxes overlap.
-    assert_eq!(
-        cleared["report"]["relations"][0]["status"], "boxes_only",
-        "{cleared}"
-    );
+    // The relation map follows the exact solids: the cube's corner (70, 70)
+    // is (140 - 100) / sqrt(2) mm from the hypotenuse.
+    let relation = &cleared["report"]["relations"][0];
+    assert_eq!(relation["kind"], "gap", "{cleared}");
+    assert_eq!(relation["gap_mm"], 28.3, "{cleared}");
 
     // Moved onto the triangle's solid part, the same cube collides.
     let solid = format!("{TRIANGLE}c = box(\"c\", (20, 20, 20), at = (10, 10, 0))\n");

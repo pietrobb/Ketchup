@@ -12,6 +12,7 @@ pub mod bom;
 pub mod cad;
 pub mod document;
 pub mod eval;
+pub mod exact;
 pub mod expect;
 pub mod frame;
 pub mod model;
@@ -21,12 +22,13 @@ pub mod validate;
 
 pub use bom::{Bom, bom};
 pub use eval::{Evaluated, ProgramError, SourceLines, evaluate};
+pub use exact::{ExactPair, ExactShapes, exact_candidates};
 pub use model::{
     Face, ProgramFeature, ProgramFeatureKind, ProgramFeatureParameter, ProgramModel,
     ProgramParameterValueType, ProgramPartBody, ProgramProfileSegment,
 };
-pub use relations::{OverlapStatus, Relation, RelationKind, relations};
-pub use validate::{COLLISION_UNVERIFIED, Issue, Severity, validate};
+pub use relations::{OverlapStatus, Relation, RelationKind, relations, relations_with};
+pub use validate::{COLLISION_UNVERIFIED, Issue, Severity, validate, validate_with};
 
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -58,6 +60,13 @@ impl Report {
         self.ok = self.errors == 0;
         relations::sync_with_issues(&mut self.relations, &issues);
         self.issues = issues;
+    }
+
+    /// Re-derives the issues and relations of `model` with the exact answers
+    /// for the pairs whose boxes misstate their solids.
+    pub fn refine(&mut self, model: &ProgramModel, exact: &ExactShapes) {
+        self.relations = relations_with(model, &[], exact);
+        self.set_issues(validate_with(model, exact));
     }
 }
 

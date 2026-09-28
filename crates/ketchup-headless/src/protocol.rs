@@ -21,7 +21,7 @@ use ketchup_application::model_query::{ModelQuery, created_receipt};
 use ketchup_application::validation::{ASSISTANT_VALIDATOR_IDS, assistant_validator_catalog};
 use ketchup_application::{
     AssistantValidationSelection, DocumentSession, RuleProgramApplyError, SaveOptions,
-    SessionError, SessionSettings,
+    SessionError, SessionSettings, verify_rule_program_exact,
 };
 use ketchup_core::assistant_sidecar::AssistantCadEditProgram;
 use ketchup_core::cam::{
@@ -44,7 +44,7 @@ use std::{
     hash::BuildHasher,
     io::{self, BufRead, Write},
     path::{Path, PathBuf},
-    sync::atomic::AtomicBool,
+    sync::{Arc, atomic::AtomicBool},
     time::Instant,
 };
 
@@ -537,6 +537,38 @@ impl Server {
         format!("batch-{id:016x}-{:016x}", self.batch_job_key.hash_one(id))
     }
 
+    /// Builds the program in a scratch document, leaving the session's
+    /// document untouched, and settles on its exact solids what the boxes
+    /// cannot, exactly as `program_apply` and the window do.
+    fn exact_program_check(
+        &self,
+        source: &ketchup_core::document::RuleProgramSource,
+        model: &ketchup_program::ProgramModel,
+        report: &mut ketchup_program::Report,
+    ) -> Option<Value> {
+        if ketchup_program::exact_candidates(model).is_empty() {
+            return None;
+        }
+        let mut scratch = DocumentSession::new(self.settings.clone());
+        let built = match scratch.apply_rule_program(source.clone(), false) {
+            Ok(built) => built,
+            Err(error) => {
+                let reason = Error::from(error).code;
+                return Some(json!({"state": "incomplete",
+                    "not_evaluated": [{"reason": "program_build_failed", "detail": reason}]}));
+            }
+        };
+        verify_rule_program_exact(
+            &built.snapshot,
+            model,
+            report,
+            scratch.container_data(),
+            self.settings.exact_worker_path.clone(),
+            PROGRAM_EXACT_TIMEOUT,
+            Arc::new(AtomicBool::new(false)),
+        )
+    }
+
     fn verify_job_handle(&self, id: u64) -> String {
         format!("verify-{id:016x}-{:016x}", self.verify_job_key.hash_one(id))
     }
@@ -919,15 +951,20 @@ impl Server {
                 Ok(result)
             }
             "program_check" => {
-                let (evaluated, report) = run_program(p)?;
+                let source = parse_program_source(p)?;
+                let (evaluated, mut report) = evaluate_program_source(&source)?;
+                let exact = self.exact_program_check(&source, &evaluated.model, &mut report);
                 let mut result = json!(report);
+                if let Some(exact) = exact {
+                    result["exact"] = exact;
+                }
                 if boolean(p, "include_model", false)? {
                     result["model"] = json!(evaluated.model);
                 }
                 Ok(result)
             }
             "program_apply" => {
-                let applied = self.session.apply_rule_program(
+                let mut applied = self.session.apply_rule_program(
                     parse_program_source(p)?,
                     boolean(p, "discard_unsaved", false)?,
                 )?;
@@ -935,8 +972,20 @@ impl Server {
                     self.revoke_jobs();
                 }
                 self.initial_placeholder = false;
+                let exact = verify_rule_program_exact(
+                    &applied.snapshot,
+                    &applied.model,
+                    &mut applied.report,
+                    self.session.container_data(),
+                    self.settings.exact_worker_path.clone(),
+                    PROGRAM_EXACT_TIMEOUT,
+                    Arc::new(AtomicBool::new(false)),
+                );
                 let mut result = self.state_result();
                 result["program"] = json!(applied.report);
+                if let Some(exact) = exact {
+                    result["program"]["exact"] = exact;
+                }
                 Ok(result)
             }
             "cam_preview" => {
@@ -1172,12 +1221,8 @@ fn string<'a>(p: &'a Map<String, Value>, key: &str) -> Result<&'a str> {
         .filter(|s| !s.is_empty())
         .ok_or_else(|| Error::invalid(format!("{key} must be nonempty string")))
 }
-/// Evaluates the `source` rule program with numeric `params` overrides.
-fn run_program(
-    p: &Map<String, Value>,
-) -> Result<(ketchup_program::Evaluated, ketchup_program::Report)> {
-    evaluate_program_source(&parse_program_source(p)?)
-}
+/// Budget of the exact solid check of one program check or build.
+const PROGRAM_EXACT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 fn parse_program_source(
     p: &Map<String, Value>,
@@ -1678,6 +1723,35 @@ mod tests {
             .unwrap()
             .as_bytes(),
         )
+    }
+
+    #[test]
+    fn program_check_settles_round_contact_on_exact_solids_like_a_build() {
+        // A disc seat on a leg under the corner of its box: the boxes touch,
+        // the solids are 19.7 mm apart, so the seat floats.
+        let source = "seat = revolve(\"seat\", profile = [(0, 0), (150, 0), (150, 20), (0, 20)], \
+                      axis = [(0, 0), (0, 1)], at = (0, 0, 400))\n\
+                      rotate(seat, axis = (1, 0, 0), angle = 90)\n\
+                      leg = box(\"leg\", (30, 30, 400), at = (120, 120, 0))\n";
+        let mut server = Server::new(SessionSettings::default());
+        let checked = request(&mut server, "program_check", json!({"source": source}));
+        let checked = &checked["result"];
+        assert_eq!(checked["exact"]["state"], "verified", "{checked}");
+        let kinds: Vec<_> = checked["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|issue| issue["kind"].clone())
+            .collect();
+        assert_eq!(kinds, [json!("floating_part")], "{checked}");
+        assert_eq!(checked["relations"][0]["gap_mm"], 19.7, "{checked}");
+        // The check left the session's document alone.
+        assert!(server.session.snapshot().definitions().next().is_none());
+        let built = request(&mut server, "program_apply", json!({"source": source}));
+        let built = &built["result"]["program"];
+        assert_eq!(built["exact"]["state"], "verified", "{built}");
+        assert_eq!(built["issues"], checked["issues"]);
+        assert_eq!(built["relations"], checked["relations"]);
     }
 
     #[test]

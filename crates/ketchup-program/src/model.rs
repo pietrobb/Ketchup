@@ -299,6 +299,47 @@ pub fn profile_bounds(segments: &[ProgramProfileSegment]) -> ([f64; 2], [f64; 2]
     )
 }
 
+/// Ends of the straight side `index` of a closed profile after it moves by
+/// `shift` along its right normal (outward for a counter-clockwise loop),
+/// where its straight neighbours, extended, meet the moved line. `None` next
+/// to an arc or a parallel neighbour.
+fn moved_side(
+    segments: &[ProgramProfileSegment],
+    index: usize,
+    shift: f64,
+) -> Option<[[f64; 2]; 2]> {
+    let cross = |a: [f64; 2], b: [f64; 2]| a[0] * b[1] - a[1] * b[0];
+    let minus = |a: [f64; 2], b: [f64; 2]| [a[0] - b[0], a[1] - b[1]];
+    let count = segments.len();
+    let side = &segments[index];
+    let direction = minus(side.end_mm, side.start_mm);
+    let length = direction[0].hypot(direction[1]);
+    if side.arc.is_some() || length <= f64::EPSILON {
+        return None;
+    }
+    let normal = [direction[1] / length, -direction[0] / length];
+    let moved_start = [
+        side.start_mm[0] + normal[0] * shift,
+        side.start_mm[1] + normal[1] * shift,
+    ];
+    // The neighbour's line through `vertex` meets the moved line where
+    // `vertex + along * t` lies on it.
+    let meet = |neighbour: &ProgramProfileSegment, vertex: [f64; 2]| {
+        let along = minus(neighbour.end_mm, neighbour.start_mm);
+        let denominator = cross(along, direction);
+        if neighbour.arc.is_some() || denominator.abs() <= 1e-9 * length * along[0].hypot(along[1])
+        {
+            return None;
+        }
+        let t = cross(minus(moved_start, vertex), direction) / denominator;
+        Some([vertex[0] + along[0] * t, vertex[1] + along[1] * t])
+    };
+    Some([
+        meet(&segments[(index + count - 1) % count], side.start_mm)?,
+        meet(&segments[(index + 1) % count], side.end_mm)?,
+    ])
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProgramEdgeFinishKind {
@@ -428,7 +469,8 @@ pub struct Part {
 }
 
 impl Part {
-    /// Bounds of the body in its own frame, before cuts and finishes.
+    /// Bounds of the body in its own frame, before cuts and finishes, grown
+    /// by every face a push_pull moves outward.
     #[must_use]
     pub fn local_bounds(&self) -> ([f64; 3], [f64; 3]) {
         match &self.body {
@@ -438,12 +480,20 @@ impl Part {
                 distance_mm,
             } => {
                 let (min, max) = profile_bounds(segments);
-                ([min[0], min[1], 0.0], [max[0], max[1], *distance_mm])
+                self.grown_by_pushed_faces(
+                    [min[0], min[1], 0.0],
+                    [max[0], max[1], *distance_mm],
+                    segments,
+                )
             }
             ProgramPartBody::Revolve { segments, .. } => {
                 let (min, max) = profile_bounds(segments);
                 let radius = self.size_mm[0] * 0.5;
-                ([-radius, min[1], -radius], [radius, max[1], radius])
+                self.grown_by_pushed_faces(
+                    [-radius, min[1], -radius],
+                    [radius, max[1], radius],
+                    &[],
+                )
             }
             ProgramPartBody::Sweep { .. } | ProgramPartBody::Loft { .. } => {
                 let axis = |index: usize, sign: f64| {
@@ -457,6 +507,61 @@ impl Part {
                 )
             }
         }
+    }
+
+    fn pushes_faces_out(&self) -> bool {
+        self.face_offsets
+            .iter()
+            .any(|offset| offset.distance_mm > 0.0)
+    }
+
+    /// `min`/`max` grown by each face moved outward. Extrusion caps move
+    /// along z; a straight profile side moves to its offset line, which its
+    /// straight neighbours extend to meet. Any other face (a revolved or cut
+    /// face, a side next to an arc) grows the bounds by its distance on every
+    /// side.
+    fn grown_by_pushed_faces(
+        &self,
+        mut min: [f64; 3],
+        mut max: [f64; 3],
+        segments: &[ProgramProfileSegment],
+    ) -> ([f64; 3], [f64; 3]) {
+        let doubled_area: f64 = segments
+            .iter()
+            .map(|s| s.start_mm[0] * s.end_mm[1] - s.end_mm[0] * s.start_mm[1])
+            .sum();
+        let turn = if doubled_area < 0.0 { -1.0 } else { 1.0 };
+        for offset in self.face_offsets.iter().filter(|o| o.distance_mm > 0.0) {
+            let d = offset.distance_mm;
+            let face = offset.face.split('#').next().unwrap_or_default();
+            let side = segments.iter().position(|s| s.name == face);
+            let moved = match (face, side) {
+                ("end", _) if !segments.is_empty() => {
+                    max[2] += d;
+                    continue;
+                }
+                ("start", _) if !segments.is_empty() => {
+                    min[2] -= d;
+                    continue;
+                }
+                (_, Some(index)) => moved_side(segments, index, d * turn),
+                _ => None,
+            };
+            let Some(points) = moved else {
+                for axis in 0..3 {
+                    min[axis] -= d;
+                    max[axis] += d;
+                }
+                continue;
+            };
+            for point in points {
+                for axis in 0..2 {
+                    min[axis] = min[axis].min(point[axis]);
+                    max[axis] = max[axis].max(point[axis]);
+                }
+            }
+        }
+        (min, max)
     }
 
     /// `reach` of a swept or lofted body along a direction in its own frame.
@@ -499,6 +604,11 @@ impl Part {
             |values: &mut dyn Iterator<Item = f64>| values.fold(f64::NEG_INFINITY, f64::max);
         let body = match &self.body {
             ProgramPartBody::Panel => bounds_reach(),
+            ProgramPartBody::Extrusion { .. } | ProgramPartBody::Revolve { .. }
+                if self.pushes_faces_out() =>
+            {
+                bounds_reach()
+            }
             ProgramPartBody::Extrusion {
                 segments,
                 distance_mm,
