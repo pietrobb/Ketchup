@@ -79,6 +79,14 @@ coordinates `(u, v)` are measured from the part's minimum corner: z faces use
 `round_to`, and the `DOWELS` table. New joinery, hardware or product types are
 added here, never in Rust (see `AGENTS.md`).
 
+`dowels(a, b, dowel="8x35", clearance=1.5, rest=6)` sizes each hole by the
+part it enters: a hole never comes nearer the far side than `rest` or a third
+of the thickness, so the face of an 18 mm board takes 12 mm. When one part
+cannot take half the dowel, it gets what it can and the other part (drilled
+into its edge) the rest, every hole `clearance` deeper than its dowel end
+(8x35 side to shelf: 12 mm + 26 mm). Parts that cannot hold the dowel fail
+with both parts' limits.
+
 The file is split into topics by `#@topic id: title` lines (`basics`,
 `placement`, `profiles`, `machining`, `joinery`, `intent`, `report`). Each
 topic holds the comments that document its builtins and the helpers that
@@ -93,6 +101,7 @@ topic it belongs to.
 | `collision` | error | two parts overlap, and the overlap is neither inside a pocket of one of them nor inside a declared joint volume |
 | `hole_outside_face` | error | a hole does not fit on its face |
 | `hole_breaks_through` | error | a hole is as deep as the part is thick |
+| `hole_wall_too_thin` | warning | a blind hole leaves less than a quarter of the part's thickness (at least 3 mm) behind it |
 | `joint_without_contact` | error | a joint connects parts that are further apart than its `max_gap` |
 | `param_out_of_range` | error | a parameter is outside its `min`/`max` |
 | `floating_part` | warning | a part touches nothing that rests on z = 0 |

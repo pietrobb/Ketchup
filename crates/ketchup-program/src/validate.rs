@@ -314,9 +314,33 @@ fn holes(model: &ProgramModel, issues: &mut Vec<Issue>) {
                         "Use a shorter dowel/screw or a thicker part, or drill from the other side."
                             .to_owned(),
                 });
+            } else if thickness - hole.depth_mm < thin_wall_mm(thickness) {
+                issues.push(Issue {
+                    severity: Severity::Warning,
+                    kind: "hole_wall_too_thin",
+                    parts: vec![part.name.clone()],
+                    message: format!(
+                        "hole {} is {} mm deep in {} mm of {}, leaving {} mm; keep at least {} mm",
+                        hole.id,
+                        round(hole.depth_mm),
+                        round(thickness),
+                        part.name,
+                        round(thickness - hole.depth_mm),
+                        round(thin_wall_mm(thickness)),
+                    ),
+                    where_mm: Some((entry.map(round), entry.map(round))),
+                    hint: "Drill shallower (dowels() splits a dowel so a board's face keeps a third of its thickness) or use a thicker part."
+                        .to_owned(),
+                });
             }
         }
     }
+}
+
+/// The least material a blind hole must leave behind it before the far
+/// side shows or breaks out: a quarter of the thickness, at least 3 mm.
+fn thin_wall_mm(thickness: f64) -> f64 {
+    (thickness / 4.0).max(3.0)
 }
 
 fn joints(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>) {

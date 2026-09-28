@@ -117,8 +117,91 @@ fn dowel_holes_enter_the_shared_face_of_each_board() {
         .unwrap();
     assert_eq!(side_hole.face, Face::XMax);
     assert_eq!(bottom_hole.face, Face::XMin);
-    assert!((side_hole.depth_mm - 16.0).abs() < 1e-9);
+    // 8x30 into the face of an 18 mm side: 12 mm leaves a third; the bottom's
+    // edge takes the rest of the dowel, both with 1.5 mm clearance.
+    assert!((side_hole.depth_mm - 12.0).abs() < 1e-9);
+    assert!((bottom_hole.depth_mm - 21.0).abs() < 1e-9);
     assert!((side_hole.diameter_mm - 8.0).abs() < 1e-9);
+}
+
+fn side_and_shelf(thickness: f64, dowel: &str) -> String {
+    format!(
+        "side = board(\"side\", ({thickness}, 450, 600))\n\
+         shelf = board(\"shelf\", (564, 450, {thickness}))\n\
+         on(shelf, side, face = \"x+\", align = [\"y-\"])\n\
+         move(shelf, by = (0, 0, 200))\n\
+         dowels(side, shelf, dowel = \"{dowel}\")\n"
+    )
+}
+
+fn dowel_depths(model: &ProgramModel) -> (f64, f64) {
+    let depth = |part: &str| {
+        let part = model.part(part).unwrap();
+        let depths: Vec<f64> = part.holes.iter().map(|hole| hole.depth_mm).collect();
+        assert!(
+            depths.windows(2).all(|pair| pair[0] == pair[1]),
+            "{depths:?}"
+        );
+        depths[0]
+    };
+    (depth("side"), depth("shelf"))
+}
+
+#[test]
+fn a_dowel_goes_shallow_into_a_board_face_and_deep_into_the_other_edge() {
+    for thickness in [18.0, 19.0] {
+        let model = eval(&side_and_shelf(thickness, "8x35"));
+        let (face, edge) = dowel_depths(&model);
+        assert!(face <= 13.0, "{thickness} mm face hole {face}");
+        assert!(thickness - face >= thickness / 3.0 - 1e-9, "{face}");
+        assert!(edge > face, "{face} {edge}");
+        // Room for the whole dowel plus clearance at both ends.
+        assert!(face + edge >= 35.0 + 2.0 * 1.5 - 1e-9, "{face} + {edge}");
+        let issues = validate(&model);
+        assert!(issues.is_empty(), "{issues:#?}");
+    }
+    let (face, edge) = dowel_depths(&eval(&side_and_shelf(18.0, "8x35")));
+    assert_eq!((face, edge), (12.0, 26.0));
+}
+
+#[test]
+fn a_dowel_too_long_for_two_board_faces_fails_with_the_numbers() {
+    let source = "\
+a = board(\"a\", (400, 300, 18))
+b = board(\"b\", (400, 300, 18))
+on(b, a)
+dowels(a, b, dowel = \"8x35\")
+";
+    let Err(error) = run("test.star", source, &BTreeMap::new()) else {
+        panic!("two 18 mm faces cannot hold a 35 mm dowel");
+    };
+    let error = error.to_string();
+    for needed in [
+        "8x35",
+        "35 mm",
+        "18 mm thick",
+        "at most 12 mm",
+        "shorter dowel",
+    ] {
+        assert!(error.contains(needed), "{needed:?} missing in {error}");
+    }
+}
+
+#[test]
+fn a_blind_hole_leaving_too_little_material_is_a_warning() {
+    let source = "\
+p = box(\"p\", (200, 100, 18))
+hole(p, \"z+\", at = (100, 50), diameter = 8, depth = 16)
+hole(p, \"z+\", at = (150, 50), diameter = 8, depth = 12)
+";
+    let issues = validate(&eval(source));
+    assert_eq!(issues.len(), 1, "{issues:#?}");
+    assert_eq!(issues[0].kind, "hole_wall_too_thin");
+    assert!(
+        issues[0].message.contains("leaving 2 mm"),
+        "{}",
+        issues[0].message
+    );
 }
 
 #[test]

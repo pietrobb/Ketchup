@@ -419,8 +419,12 @@ def trim(part, point, normal, name = None):
 #     fastener names are counted in the report's hardware list. The parts
 #     must touch, or stay within max_gap mm (a door on hinges across its
 #     reveal: joint(door, side, kind="hinge", max_gap=3)).
-#   dowels(a, b, dowel="8x30", count=, margin=50, spacing=250, clearance=1)
-#     drills matching holes into two touching parts and records the joint
+#   dowels(a, b, dowel="8x35", count=, margin=50, spacing=250, clearance=1.5, rest=6)
+#     drills matching holes into two touching parts and records the joint.
+#     Depths follow the parts: into the face of an 18 mm board at most 12 mm
+#     (never nearer the far side than rest or a third of the thickness), the
+#     rest of the dowel into the other part's edge, every hole clearance mm
+#     longer than its dowel end; e.g. 8x35 side-to-shelf: 12 mm + 26 mm.
 #   contact(a, b) (see placement) finds the face they share.
 
 # name: (diameter, length) in mm
@@ -433,12 +437,54 @@ DOWELS = {
     "10x50": (10, 50),
 }
 
-def dowels(a, b, dowel = "8x30", count = None, margin = 50, spacing = 250, clearance = 1):
+def _mm(value):
+    """`value` to 0.1 mm, without ".0" when whole."""
+    value = round_to(value, 0.1)
+    return int(value) if value == int(value) else value
+
+def _drill_room(part, face, rest):
+    """(thickness behind `face`, deepest hole leaving `rest` of it) of a part."""
+    if len(face) != 2 or face[0] not in AXES:
+        return None
+    thickness = part_info(part).size[AXES[face[0]]]
+    return (thickness, thickness - max(rest, thickness / 3.0))
+
+def _dowel_depths(a, b, face_a, face_b, dowel, length, clearance, rest):
+    """Hole depths (in a, in b): an even split when both parts have room,
+    else the thinner side as deep as its rest allows and the rest of the
+    dowel in the other; each hole `clearance` longer than its dowel end."""
+    room_a, room_b = _drill_room(a, face_a, rest), _drill_room(b, face_b, rest)
+    if room_a == None or room_b == None:
+        return (length / 2.0 + clearance, length / 2.0 + clearance)
+    grip = [int((room[1] - clearance) * 2) / 2.0 for room in (room_a, room_b)]
+    if min(grip) >= length / 2.0:
+        return (length / 2.0 + clearance, length / 2.0 + clearance)
+    thin = 0 if grip[0] <= grip[1] else 1
+    ends = [0, 0]
+    ends[thin] = grip[thin]
+    ends[1 - thin] = length - grip[thin]
+    names = (part_info(a).name, part_info(b).name)
+    rooms = (room_a, room_b)
+    if grip[thin] < length / 4.0 or ends[1 - thin] > grip[1 - thin]:
+        fail(("dowels(%s, %s): a %s dowel needs %s mm of holes plus %s mm clearance at each end, " +
+              "but %s (%s mm thick there) takes a hole of at most %s mm and %s (%s mm) at most %s mm " +
+              "(each leaves max(rest=%s, a third of the thickness) undrilled); use a shorter dowel " +
+              "or thicker parts") %
+             (names[0], names[1], dowel, length, clearance, names[0], _mm(rooms[0][0]), _mm(rooms[0][1]),
+              names[1], _mm(rooms[1][0]), _mm(rooms[1][1]), rest))
+    return (ends[0] + clearance, ends[1] + clearance)
+
+def dowels(a, b, dowel = "8x35", count = None, margin = 50, spacing = 250, clearance = 1.5, rest = 6):
     """Dowels a and b along the face where they touch.
 
     Holes are drilled into both parts from the shared face, so moving a part
-    or changing `margin`/`count` moves the holes in both. Hole depth in each
-    part is half the dowel length plus `clearance`.
+    or changing `margin`/`count` moves the holes in both. A hole never comes
+    closer to the far side of its part than `rest` mm or a third of the part's
+    thickness there, so an 18 mm board takes 12 mm. When one part cannot take
+    half the dowel (drilled into its face), it gets what it can take and the
+    other part (drilled into its edge) the rest; each hole is `clearance` mm
+    deeper than the dowel end in it. Fails with the numbers when the parts
+    cannot hold the dowel.
     """
     if dowel not in DOWELS:
         fail("dowels(): unknown dowel %r; use one of %s" % (dowel, sorted(DOWELS.keys())))
@@ -446,6 +492,7 @@ def dowels(a, b, dowel = "8x30", count = None, margin = 50, spacing = 250, clear
     c = contact(a, b)
     if c == None:
         fail("dowels(%s, %s): the parts do not touch; place them face to face first" % (part_info(a).name, part_info(b).name))
+    depth_a, depth_b = _dowel_depths(a, b, c.face_a, c.face_b, dowel, length, clearance, rest)
     if c.size[0] >= c.size[1]:
         row, across, row_length, width = c.u, c.v, c.size[0], c.size[1]
     else:
@@ -456,10 +503,9 @@ def dowels(a, b, dowel = "8x30", count = None, margin = 50, spacing = 250, clear
         count = max(2, 1 + int((row_length - 2 * margin) / spacing))
     start = vec_add(c.origin, vec_scale(across, width / 2.0))
     points = [vec_add(start, vec_scale(row, s)) for s in spread(margin, row_length - margin, count)]
-    depth = length / 2.0 + clearance
     for i, point in enumerate(points):
-        hole(a, c.face_a, world = point, diameter = diameter, depth = depth, id = "dowel:%s:%d" % (part_info(b).name, i + 1))
-        hole(b, c.face_b, world = point, diameter = diameter, depth = depth, id = "dowel:%s:%d" % (part_info(a).name, i + 1))
+        hole(a, c.face_a, world = point, diameter = diameter, depth = depth_a, id = "dowel:%s:%d" % (part_info(b).name, i + 1))
+        hole(b, c.face_b, world = point, diameter = diameter, depth = depth_b, id = "dowel:%s:%d" % (part_info(a).name, i + 1))
     joint(a, b, kind = "dowel", fasteners = points, fastener = "dowel " + dowel)
     return points
 
