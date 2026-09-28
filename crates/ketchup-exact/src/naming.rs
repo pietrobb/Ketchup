@@ -44,6 +44,13 @@ impl NamedSegment {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NamedBoolean {
+    Cut,
+    Union,
+    Intersect,
+}
+
 /// An exact solid whose every face has a program name.
 pub struct NamedBody {
     pub output: ExactOpOutput,
@@ -294,42 +301,46 @@ impl ExactBackend {
         name_faces(output, OPERATION, |label| Some(label.to_owned()))
     }
 
-    /// Removes `tool` from `target`; faces the tool leaves are `tool_name.face`.
+    /// Combines `tool` with `target`; faces the tool contributes are `tool_name.face`.
     ///
     /// # Errors
-    /// Returns an error for an invalid tool name or a failed cut.
-    pub fn named_cut(
+    /// Returns an error for an invalid tool name or a failed Boolean.
+    pub fn named_boolean(
         &self,
         target: &NamedBody,
         tool: &NamedBody,
         tool_name: &str,
+        operation: NamedBoolean,
     ) -> Result<NamedBody, NamingError> {
-        self.named_cut_output(
+        self.named_boolean_output(
             &target.output,
             &target.names,
             &tool.output,
             &tool.names,
             tool_name,
+            operation,
         )
     }
 
-    /// Removes a named tool from a named target retained by an exact graph evaluator.
+    /// Combines a named tool with a named target retained by an exact graph evaluator.
     ///
     /// # Errors
-    /// Returns an error for incomplete names, an invalid tool name, or a failed cut.
-    pub fn named_cut_output(
+    /// Returns an error for incomplete names, an invalid tool name, or a failed Boolean.
+    pub fn named_boolean_output(
         &self,
         target: &ExactOpOutput,
         target_names: &[String],
         tool: &ExactOpOutput,
         tool_names: &[String],
         tool_name: &str,
+        operation: NamedBoolean,
     ) -> Result<NamedBody, NamingError> {
-        const OPERATION: &str = "named_cut";
+        const OPERATION: &str = "named_boolean";
         if !valid_name(tool_name) {
             return Err(NamingError::InvalidName(tool_name.to_owned()));
         }
-        let input = format!("{OPERATION}:{target_names:?}:{tool_names:?}:{tool_name}");
+        let input =
+            format!("{OPERATION}:{operation:?}:{target_names:?}:{tool_names:?}:{tool_name}");
         let tool_labels = tool_names
             .iter()
             .map(|name| format!("{tool_name}.{name}"))
@@ -337,7 +348,17 @@ impl ExactBackend {
         let target_native = output_native(target, OPERATION)?;
         let tool_native = output_native(tool, OPERATION)?;
         let output = collect_output(
-            ffi::named_boolean_native(target_native, target_names, tool_native, &tool_labels, 0),
+            ffi::named_boolean_native(
+                target_native,
+                target_names,
+                tool_native,
+                &tool_labels,
+                match operation {
+                    NamedBoolean::Cut => 0,
+                    NamedBoolean::Union => 1,
+                    NamedBoolean::Intersect => 2,
+                },
+            ),
             OPERATION,
             &input,
             HistoryConfidence::Complete,

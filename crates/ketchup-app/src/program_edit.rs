@@ -24,6 +24,10 @@ impl ProgramEdit {
     }
 }
 
+fn quote(text: &str) -> String {
+    serde_json::to_string(text).expect("strings serialize")
+}
+
 fn session_error(error: WorkRecoveryMutationError<SessionError>) -> RuleProgramApplyError {
     RuleProgramApplyError::Session(match error {
         WorkRecoveryMutationError::Mutation(error) => error,
@@ -109,6 +113,64 @@ impl KetchupApp {
             self.zoom_fit_pending = true;
         }
         Ok((edit, plan.report, plan.evaluated.model))
+    }
+
+    /// A fillet or chamfer on edges picked on a program-owned part is written
+    /// into the program as `fillet(part, edges=[[a, b], ...], radius=r)` (or
+    /// `chamfer(..., distance=d)`) and published like any program edit, so the
+    /// program keeps owning the part. `None` when no program owns the part.
+    pub(crate) fn program_general_finish(
+        &mut self,
+        source: &GeneralFinishSourcePlan,
+        amount_mm: f64,
+    ) -> Option<Result<(), String>> {
+        let (call, amount) = match source.kind {
+            GeneralFinishKind::Fillet => ("fillet", "radius"),
+            GeneralFinishKind::Chamfer => ("chamfer", "distance"),
+            GeneralFinishKind::Shell => return None,
+        };
+        let program = self.document.current_rule_program()?.clone();
+        let primary = source.source_primary.as_ref()?;
+        let snapshot = self.document.current();
+        let occurrence = snapshot.occurrence(primary.instance_path.root_occurrence())?;
+        let owned = primary.instance_path.is_root()
+            && ketchup_application::rule_program_part_sources(&program)
+                .is_ok_and(|parts| parts.contains_key(occurrence.name()));
+        if !owned {
+            return None;
+        }
+        let mut edges = Vec::new();
+        for selection in &source.topological_selections {
+            let names = selection
+                .resolve_current(&snapshot, &self.topology_results)
+                .ok()
+                .and_then(|resolved| {
+                    live_bridge::program_pick::edge_names(
+                        self,
+                        &snapshot,
+                        &primary.instance_path,
+                        &resolved.reference,
+                    )
+                });
+            let Some((_, [first, second])) = names else {
+                return Some(Err(format!(
+                    "the picked edge of {:?} has no program name; round it with {call}() in the program",
+                    occurrence.name()
+                )));
+            };
+            edges.push(format!("[{}, {}]", quote(&first), quote(&second)));
+        }
+        let mut rewritten = program;
+        rewritten.source.push_str(&format!(
+            "\n{call}({}, edges=[{}], {amount}={amount_mm})\n",
+            quote(occurrence.name()),
+            edges.join(", ")
+        ));
+        Some(
+            self.apply_program_source(rewritten, false)
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
+        )
     }
 
     fn finish_program_edit(&mut self) {

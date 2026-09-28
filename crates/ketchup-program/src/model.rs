@@ -234,6 +234,26 @@ pub struct ProgramArc {
     pub clockwise: bool,
 }
 
+/// The exact kernel's label of profile segment `index`. A full circle drawn
+/// as two half arcs becomes one cylindrical face, `face`, so both halves
+/// name it.
+fn segment_label(segments: &[ProgramProfileSegment], index: usize) -> String {
+    if let [first, second] = segments
+        && let (Some(a), Some(b)) = (first.arc, second.arc)
+        && a == b
+        && first.start_mm == second.end_mm
+        && first.end_mm == second.start_mm
+    {
+        let start = [first.start_mm[0] - a.center_mm[0], first.start_mm[1] - a.center_mm[1]];
+        let end = [first.end_mm[0] - a.center_mm[0], first.end_mm[1] - a.center_mm[1]];
+        let radius = start[0].hypot(start[1]);
+        if (start[0] + end[0]).hypot(start[1] + end[1]) <= 1.0e-9 * radius.max(1.0) {
+            return "face".to_owned();
+        }
+    }
+    format!("segment_{}", index + 1)
+}
+
 impl ProgramProfileSegment {
     #[must_use]
     pub fn line(name: impl Into<String>, start_mm: [f64; 2], end_mm: [f64; 2]) -> Self {
@@ -389,6 +409,29 @@ pub struct ProgramFaceOffset {
     pub distance_mm: f64,
 }
 
+/// One shaping step on a part's solid. A part applies its operations in the
+/// order the program wrote them, each to the result of the one before.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "operation", rename_all = "snake_case")]
+pub enum ProgramOperation {
+    Cut(ProgramCut),
+    Finish(ProgramEdgeFillet),
+    FaceOffset(ProgramFaceOffset),
+    Boolean(ProgramBoolean),
+}
+
+impl ProgramOperation {
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Cut(cut) => &cut.name,
+            Self::Finish(finish) => &finish.name,
+            Self::FaceOffset(offset) => &offset.name,
+            Self::Boolean(boolean) => &boolean.name,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ProgramPartBody {
@@ -456,12 +499,9 @@ pub struct Part {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<[u8; 3]>,
     pub body: ProgramPartBody,
-    pub fillets: Vec<ProgramEdgeFillet>,
-    pub cuts: Vec<ProgramCut>,
-    pub face_offsets: Vec<ProgramFaceOffset>,
-    /// Applied after every other feature, in program order.
+    /// Cuts, finishes, moved faces and booleans in program order.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub booleans: Vec<ProgramBoolean>,
+    pub operations: Vec<ProgramOperation>,
     /// Stable, operation-class-level source tree used by incremental reconciliation.
     pub features: Vec<ProgramFeature>,
     pub holes: Vec<Hole>,
@@ -469,12 +509,184 @@ pub struct Part {
 }
 
 impl Part {
+    pub fn cuts(&self) -> impl Iterator<Item = &ProgramCut> {
+        self.operations.iter().filter_map(|operation| match operation {
+            ProgramOperation::Cut(cut) => Some(cut),
+            _ => None,
+        })
+    }
+
+    pub fn finishes(&self) -> impl Iterator<Item = &ProgramEdgeFillet> {
+        self.operations.iter().filter_map(|operation| match operation {
+            ProgramOperation::Finish(finish) => Some(finish),
+            _ => None,
+        })
+    }
+
+    pub fn face_offsets(&self) -> impl Iterator<Item = &ProgramFaceOffset> {
+        self.operations.iter().filter_map(|operation| match operation {
+            ProgramOperation::FaceOffset(offset) => Some(offset),
+            _ => None,
+        })
+    }
+
+    pub fn booleans(&self) -> impl Iterator<Item = &ProgramBoolean> {
+        self.operations.iter().filter_map(|operation| match operation {
+            ProgramOperation::Boolean(boolean) => Some(boolean),
+            _ => None,
+        })
+    }
+
+    pub fn booleans_mut(&mut self) -> impl Iterator<Item = &mut ProgramBoolean> {
+        self.operations
+            .iter_mut()
+            .filter_map(|operation| match operation {
+                ProgramOperation::Boolean(boolean) => Some(boolean),
+                _ => None,
+            })
+    }
+
+    /// Names of the faces of the body before any operation: "x-" ... "z+" on
+    /// a box; "start", "end" and the segment names on an extruded or revolved
+    /// profile. Swept and lofted bodies have none.
+    #[must_use]
+    pub fn body_face_names(&self) -> Vec<String> {
+        match &self.body {
+            ProgramPartBody::Panel => Face::ALL.iter().map(|face| face.name().to_owned()).collect(),
+            ProgramPartBody::Extrusion { segments, .. } | ProgramPartBody::Revolve { segments, .. } => {
+                ["start", "end"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .chain(segments.iter().map(|segment| segment.name.clone()))
+                    .collect()
+            }
+            ProgramPartBody::Sweep { .. } | ProgramPartBody::Loft { .. } => Vec::new(),
+        }
+    }
+
+    /// The exact kernel's label of a program face name. Body faces are
+    /// `start`, `end` and `segment_<n>` (a box is the rectangle y-, x+, y+, x-
+    /// padded from z- to z+); a face an operation left is `<operation>.<face>`
+    /// with the tool's own label; a finish face is `fillet(a,b)` or
+    /// `chamfer(a,b)`; a face an operation split keeps its `#<n>` suffix.
+    ///
+    /// # Errors
+    /// Names the unknown face and lists the names that exist.
+    pub fn exact_face_label(&self, name: &str) -> Result<String, String> {
+        if let Some((base, suffix)) = name.rsplit_once('#') {
+            if suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err(format!(
+                    "face {name:?}: a split face is <face>#<number>, e.g. \"z+#2\""
+                ));
+            }
+            return Ok(format!("{}#{suffix}", self.exact_face_label(base)?));
+        }
+        if let Some(inner) = ["fillet(", "chamfer("]
+            .into_iter()
+            .find_map(|kind| name.strip_prefix(kind).map(|rest| (kind, rest)))
+        {
+            let (kind, rest) = inner;
+            let faces = rest
+                .strip_suffix(')')
+                .ok_or_else(|| format!("face {name:?}: a finish face is {kind}a,b)"))?;
+            let mut labels = faces
+                .split(',')
+                .map(|face| self.exact_face_label(face.trim()))
+                .collect::<Result<Vec<_>, _>>()?;
+            labels.sort();
+            return Ok(format!("{kind}{})", labels.join(",")));
+        }
+        if let Some((operation, face)) = name.split_once('.') {
+            return match self.operations.iter().find(|op| op.name() == operation) {
+                Some(ProgramOperation::Cut(cut)) => match face {
+                    "start" | "end" => Ok(name.to_owned()),
+                    _ => cut
+                        .segments
+                        .iter()
+                        .position(|segment| segment.name == face)
+                        .map(|index| format!("{operation}.{}", segment_label(&cut.segments, index)))
+                        .ok_or_else(|| {
+                            format!(
+                                "face {name:?}: cut {operation:?} has faces start, end, {}",
+                                cut.segments
+                                    .iter()
+                                    .map(|segment| segment.name.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )
+                        }),
+                },
+                Some(ProgramOperation::Boolean(boolean)) => Ok(format!(
+                    "{operation}.{}",
+                    boolean.tool.body_face_label(face).map_err(|error| format!(
+                        "face {name:?}: tool of {operation:?}: {error}"
+                    ))?
+                )),
+                _ => Err(format!(
+                    "face {name:?}: {operation:?} is not a cut or boolean on {:?}; faces an operation leaves are <operation name>.<tool face>",
+                    self.name
+                )),
+            };
+        }
+        self.body_face_label(name)
+    }
+
+    fn body_face_label(&self, name: &str) -> Result<String, String> {
+        let unknown = || {
+            let names = self.body_face_names();
+            if names.is_empty() {
+                format!(
+                    "{:?} is swept or lofted and its faces have no names; faces left by subtract()/intersect() are <operation name>.<tool face>",
+                    self.name
+                )
+            } else {
+                format!(
+                    "face {name:?} does not exist on {:?}; faces are: {}",
+                    self.name,
+                    names.join(", ")
+                )
+            }
+        };
+        match &self.body {
+            ProgramPartBody::Panel => {
+                let face = Face::parse(name).ok_or_else(unknown)?;
+                Ok(match face {
+                    Face::ZMin => "start".to_owned(),
+                    Face::ZMax => "end".to_owned(),
+                    Face::YMin => "segment_1".to_owned(),
+                    Face::XMax => "segment_2".to_owned(),
+                    Face::YMax => "segment_3".to_owned(),
+                    Face::XMin => "segment_4".to_owned(),
+                })
+            }
+            ProgramPartBody::Extrusion { segments, .. } | ProgramPartBody::Revolve { segments, .. } => {
+                if name == "start" || name == "end" {
+                    return Ok(name.to_owned());
+                }
+                segments
+                    .iter()
+                    .position(|segment| segment.name == name)
+                    .map(|index| segment_label(segments, index))
+                    .ok_or_else(unknown)
+            }
+            ProgramPartBody::Sweep { .. } | ProgramPartBody::Loft { .. } => Err(unknown()),
+        }
+    }
+
+    /// Whether any operation other than a boolean shapes the body.
+    #[must_use]
+    pub fn has_shaping(&self) -> bool {
+        self.operations
+            .iter()
+            .any(|operation| !matches!(operation, ProgramOperation::Boolean(_)))
+    }
+
     /// Bounds of the body in its own frame, before cuts and finishes, grown
     /// by every face a push_pull moves outward.
     #[must_use]
     pub fn local_bounds(&self) -> ([f64; 3], [f64; 3]) {
         match &self.body {
-            ProgramPartBody::Panel => ([0.0; 3], self.size_mm),
+            ProgramPartBody::Panel => self.grown_by_pushed_faces([0.0; 3], self.size_mm, &[]),
             ProgramPartBody::Extrusion {
                 segments,
                 distance_mm,
@@ -510,9 +722,7 @@ impl Part {
     }
 
     fn pushes_faces_out(&self) -> bool {
-        self.face_offsets
-            .iter()
-            .any(|offset| offset.distance_mm > 0.0)
+        self.face_offsets().any(|offset| offset.distance_mm > 0.0)
     }
 
     /// `min`/`max` grown by each face moved outward. Extrusion caps move
@@ -531,9 +741,19 @@ impl Part {
             .map(|s| s.start_mm[0] * s.end_mm[1] - s.end_mm[0] * s.start_mm[1])
             .sum();
         let turn = if doubled_area < 0.0 { -1.0 } else { 1.0 };
-        for offset in self.face_offsets.iter().filter(|o| o.distance_mm > 0.0) {
+        for offset in self.face_offsets().filter(|o| o.distance_mm > 0.0) {
             let d = offset.distance_mm;
             let face = offset.face.split('#').next().unwrap_or_default();
+            if matches!(self.body, ProgramPartBody::Panel)
+                && let Some(face) = Face::parse(face)
+            {
+                if face.is_max() {
+                    max[face.axis()] += d;
+                } else {
+                    min[face.axis()] -= d;
+                }
+                continue;
+            }
             let side = segments.iter().position(|s| s.name == face);
             let moved = match (face, side) {
                 ("end", _) if !segments.is_empty() => {
@@ -687,7 +907,7 @@ impl Part {
     /// Whether the volume `other` occupies now was already subtracted from this part.
     #[must_use]
     pub fn subtracts(&self, other: &Self) -> bool {
-        self.booleans.iter().any(|boolean| {
+        self.booleans().any(|boolean| {
             boolean.kind == ProgramBooleanKind::Subtract
                 && boolean.tool.name == other.name
                 && boolean.tool.body == other.body
@@ -827,7 +1047,31 @@ impl Part {
                 Vec::new(),
             )),
         }
-        for cut in &self.cuts {
+        for operation in &self.operations {
+            let cut = match operation {
+                ProgramOperation::Cut(cut) => cut,
+                ProgramOperation::Finish(fillet) => {
+                    features.push(feature(
+                        fillet.name.clone(),
+                        match fillet.kind {
+                            ProgramEdgeFinishKind::Fillet => ProgramFeatureKind::Fillet,
+                            ProgramEdgeFinishKind::Chamfer => ProgramFeatureKind::Chamfer,
+                        },
+                        vec![length("radius", fillet.radius_mm)],
+                    ));
+                    continue;
+                }
+                ProgramOperation::FaceOffset(offset) => {
+                    features.push(feature(
+                        offset.name.clone(),
+                        ProgramFeatureKind::FaceOffset,
+                        vec![length("distance", offset.distance_mm)],
+                    ));
+                    continue;
+                }
+                // A changed boolean rebuilds the part; it has no parameters here.
+                ProgramOperation::Boolean(_) => continue,
+            };
             features.push(feature(
                 format!("{} sketch", cut.name),
                 ProgramFeatureKind::Sketch,
@@ -853,23 +1097,6 @@ impl Part {
                 cut.name.clone(),
                 ProgramFeatureKind::Cut,
                 vec![length("depth", cut.depth_mm)],
-            ));
-        }
-        for fillet in &self.fillets {
-            features.push(feature(
-                fillet.name.clone(),
-                match fillet.kind {
-                    ProgramEdgeFinishKind::Fillet => ProgramFeatureKind::Fillet,
-                    ProgramEdgeFinishKind::Chamfer => ProgramFeatureKind::Chamfer,
-                },
-                vec![length("radius", fillet.radius_mm)],
-            ));
-        }
-        for offset in &self.face_offsets {
-            features.push(feature(
-                offset.name.clone(),
-                ProgramFeatureKind::FaceOffset,
-                vec![length("distance", offset.distance_mm)],
             ));
         }
         for hole in &self.holes {

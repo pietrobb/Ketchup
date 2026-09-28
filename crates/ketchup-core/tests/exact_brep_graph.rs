@@ -193,6 +193,7 @@ fn compiler_preserves_arbitrary_unequal_extrusions_as_a_topological_graph() {
             operation: ExactBRepBooleanOperation::Intersect,
             target,
             tool,
+            ..
         } if target.0 == 0 && tool.0 == 1
     ));
     assert!(graph.profiles.iter().all(|profile| matches!(

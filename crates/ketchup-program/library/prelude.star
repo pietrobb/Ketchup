@@ -245,7 +245,8 @@ def distribute(parts, a, b, face = None):
 # point on the arc), {"radius": r, "clockwise": False, "large": False} or
 # {"center": (x, y), "clockwise": False}; e.g. an arched apron bottom
 # ["arch", [600, 0], [0, 0], {"through": (300, 60)}]. A full circle is two
-# arcs. round_corners(points, radius, names=None) turns a point loop into
+# arcs; it becomes one round face, so either arc's name refers to all of it.
+# round_corners(points, radius, names=None) turns a point loop into
 # named segments with every corner rounded by a tangent arc "corner<i+1>"
 # (radius: one number or one per corner, 0 = sharp), e.g.
 # extrude("top", profile=round_corners([[0,0],[800,0],[800,500],[0,500]], 40),
@@ -255,11 +256,13 @@ def distribute(parts, a, b, face = None):
 # and "end" (extrude: z = 0 and z = distance; revolve: only when angle < 360),
 # a face left by a cut "cut_name.segment",
 # and a face split in two by a cut "name#1", "name#2" (ordered by x, y, z).
-# The four operations below work only on extrude()/revolve() parts, not box().
-# Whatever the call order, a part applies all cuts, then fillets/chamfers,
-# then push_pulls, then subtract/intersect. So fillet/chamfer name faces of
-# the uncut profile, and a fillet on a face that a cut splits fails. A
-# push_pull of a face that touches a fillet also fails for now.
+# The four operations below work on box() (faces x-, x+, y-, y+, z-, z+) and
+# extrude()/revolve() parts. Every operation of a part (these four, trim,
+# subtract, intersect) applies in the order it is written, so a fillet after
+# a cut or subtract rounds the faces they left: "<operation name>.<tool face>"
+# (trim: "<trim name>.z-" is the new flat face), a split face "name#1", and a
+# rounded edge "fillet(a,b)" / "chamfer(a,b)". A radius the faces next to an
+# edge cannot hold is refused with the amount named.
 #   fillet(part, edges=[[face_a, face_b], ...], radius=, name=)
 #     rounds each edge where the two named faces meet, e.g.
 #     fillet(top, edges=[["front", "end"], ["right", "end"]], radius=3)

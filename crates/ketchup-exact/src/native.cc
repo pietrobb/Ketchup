@@ -6164,8 +6164,8 @@ bool lies_over(const gp_Pnt& point, const TopoDS_Face& face, double reach) {
 // edge was selected, so history is not used here. A new face is named after
 // the input edge it replaced: it borders both faces of that edge and at least
 // two points along the edge lie over its interior. A face that replaced no
-// edge but covers an input vertex is a corner blend named after every face
-// at that vertex. Faces matching nothing stay unnamed and are reported.
+// edge but lies over an input vertex is a corner blend named after every
+// face at that vertex. Faces matching nothing stay unnamed and are reported.
 void name_finish_faces(
     std::vector<HistoryRecord>& history,
     const TopoDS_Shape& result,
@@ -6242,7 +6242,9 @@ void name_finish_faces(
         const std::vector<std::string> around = names_around(source_vertex_faces(vertex_index));
         const gp_Pnt point =
             BRep_Tool::Pnt(TopoDS::Vertex(source_vertex_faces.FindKey(vertex_index)));
-        if (around.size() >= 3 && bordered(around) && lies_over(point, face, reach)) {
+        // A corner where every edge is finished borders only other blends,
+        // so the vertex is matched by the face lying over it alone.
+        if (around.size() >= 3 && lies_over(point, face, reach)) {
           spanned.push_back(finish_name(kind, around));
         }
       }
@@ -6265,7 +6267,9 @@ std::unique_ptr<NativeOperationResult> named_prism_native(
     if (profile.IsNull()) {
       return error_result(STATUS_INVALID_PARAMETER, "Named prism profile is not one closed planar loop");
     }
-    BRepPrimAPI_MakePrism operation(profile, gp_Vec(0.0, 0.0, height), true, false);
+    // Canonical walls (planes, cylinders) keep later fillets exact and let
+    // coplanar or coaxial walls merge.
+    BRepPrimAPI_MakePrism operation(profile, gp_Vec(0.0, 0.0, height), true, true);
     if (!operation.IsDone() || operation.Shape().IsNull()) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT named prism did not complete");
     }
@@ -6342,7 +6346,11 @@ std::unique_ptr<NativeOperationResult> named_finish_native(
     const auto collect = [&](auto& operation) -> std::unique_ptr<NativeOperationResult> {
       operation.Build();
       if (!operation.IsDone() || operation.Shape().IsNull()) {
-        return error_result(STATUS_INVALID_SHAPE, "OCCT named finish did not complete");
+        std::ostringstream message;
+        message << "the " << (fillet ? "fillet" : "chamfer") << " of " << amount
+                << " mm does not fit on the selected edges (finish did not complete); "
+                   "the faces next to an edge must be wider than the amount";
+        return error_result(STATUS_INVALID_SHAPE, message.str());
       }
       const TopoDS_Shape result = operation.Shape();
       std::vector<HistoryRecord> history;
@@ -6371,7 +6379,7 @@ std::unique_ptr<NativeOperationResult> named_boolean_native(
   return guarded([&]() -> std::unique_ptr<NativeOperationResult> {
     if (!target.valid() || !tool.valid()
         || !labels_match(target.impl().shape, target_labels)
-        || !labels_match(tool.impl().shape, tool_labels) || operation_kind > 1) {
+        || !labels_match(tool.impl().shape, tool_labels) || operation_kind > 2) {
       return error_result(STATUS_INVALID_PARAMETER, "Named Boolean payload is malformed");
     }
     const auto collect = [&](auto& operation) -> std::unique_ptr<NativeOperationResult> {
@@ -6388,6 +6396,10 @@ std::unique_ptr<NativeOperationResult> named_boolean_native(
     };
     if (operation_kind == 0) {
       BRepAlgoAPI_Cut operation(target.impl().shape, tool.impl().shape);
+      return collect(operation);
+    }
+    if (operation_kind == 2) {
+      BRepAlgoAPI_Common operation(target.impl().shape, tool.impl().shape);
       return collect(operation);
     }
     BRepAlgoAPI_Fuse operation(target.impl().shape, tool.impl().shape);
@@ -6411,7 +6423,10 @@ std::unique_ptr<NativeOperationResult> named_offset_face_native(
     if (face.IsNull() || !oriented_planar_face_normal(face, normal)) {
       return error_result(STATUS_INVALID_PARAMETER, "Named face offset requires a planar face");
     }
-    BRepPrimAPI_MakePrism prism(face, gp_Vec(normal) * distance, true, false);
+    // Canonical side surfaces (a round edge sweeps a cylinder, not a surface
+    // of extrusion) let the fuse merge them with the walls they continue. No
+    // copy, so the sides trace back to the body's own edges.
+    BRepPrimAPI_MakePrism prism(face, gp_Vec(normal) * distance, false, true);
     if (!prism.IsDone() || prism.Shape().IsNull()) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT named face offset prism did not complete");
     }
@@ -6433,6 +6448,32 @@ std::unique_ptr<NativeOperationResult> named_offset_face_native(
         record_name(history, moved_name, result, iterator.Value());
       }
       if (modified.IsEmpty()) record_name(history, moved_name, result, moved);
+      // Each side of the prism continues the wall across its generating edge;
+      // where the fuse could not merge the two, the side keeps that wall's name.
+      TopTools_IndexedMapOfShape body_faces;
+      TopExp::MapShapes(body.impl().shape, TopAbs_FACE, body_faces);
+      TopTools_IndexedDataMapOfShapeListOfShape edge_faces;
+      TopExp::MapShapesAndAncestors(body.impl().shape, TopAbs_EDGE, TopAbs_FACE, edge_faces);
+      for (TopExp_Explorer edges(face, TopAbs_EDGE); edges.More(); edges.Next()) {
+        const TopoDS_Shape& edge = edges.Current();
+        if (!edge_faces.Contains(edge)) continue;
+        for (NCollection_List<TopoDS_Shape>::Iterator wall(edge_faces.FindFromKey(edge));
+             wall.More(); wall.Next()) {
+          if (wall.Value().IsSame(face)) continue;
+          const Standard_Integer wall_index = body_faces.FindIndex(wall.Value());
+          if (wall_index == 0) continue;
+          const std::string wall_name(labels[static_cast<std::size_t>(wall_index - 1)]);
+          const NCollection_List<TopoDS_Shape>& sides = prism.Generated(edge);
+          for (NCollection_List<TopoDS_Shape>::Iterator side(sides); side.More(); side.Next()) {
+            if (side.Value().ShapeType() != TopAbs_FACE) continue;
+            const NCollection_List<TopoDS_Shape>& fused = operation.Modified(side.Value());
+            for (NCollection_List<TopoDS_Shape>::Iterator piece(fused); piece.More(); piece.Next()) {
+              record_name(history, wall_name, result, piece.Value());
+            }
+            if (fused.IsEmpty()) record_name(history, wall_name, result, side.Value());
+          }
+        }
+      }
       return success_result(result, std::move(history));
     };
     if (distance > 0.0) {

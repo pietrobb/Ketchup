@@ -4,7 +4,7 @@
 //! a rule program is re-run after an edit, and checks that every named
 //! reference still lands on the geometrically right face.
 
-use ketchup_exact::naming::{NamedBody, NamedSegment, NamingError};
+use ketchup_exact::naming::{NamedBody, NamedBoolean, NamedSegment, NamingError};
 use ketchup_exact::{EdgeFinish, ExactBackend, FaceEvidence, PlanarProfileSegment};
 
 fn line(name: &str, start: [f64; 2], end: [f64; 2]) -> NamedSegment {
@@ -169,7 +169,9 @@ fn grooved_board(length: f64, groove_x: f64, groove_width: f64, pull: f64) -> Na
             groove_depth + 1.0,
         )
         .unwrap();
-    let grooved = backend.named_cut(&board, &tool, "drazka").unwrap();
+    let grooved = backend
+        .named_boolean(&board, &tool, "drazka", NamedBoolean::Cut)
+        .unwrap();
     backend.named_offset_face(&grooved, "end#2", pull).unwrap()
 }
 
@@ -260,4 +262,68 @@ fn chamfer_on_a_revolved_edge_survives_a_changed_angle() {
             assert!(radial > 0.0 && off_plane.abs() < 1.0e-6, "{end:?}");
         }
     }
+}
+
+// (d) Booleans keep the names of both bodies, so a fillet can follow them.
+#[test]
+fn fillet_after_a_cut_and_an_intersect_rounds_the_named_edges() {
+    let backend = ExactBackend::new();
+    let block = backend
+        .named_extrude(
+            &rectangle(0.0, 0.0, 100.0, 60.0, ["front", "right", "back", "left"]),
+            0.0,
+            40.0,
+        )
+        .unwrap();
+    // A through slot across the block, 20 wide and 10 deep from the top.
+    let slot = backend
+        .named_extrude(
+            &rectangle(40.0, -1.0, 60.0, 61.0, ["a", "b", "c", "d"]),
+            30.0,
+            11.0,
+        )
+        .unwrap();
+    let slotted = backend
+        .named_boolean(&block, &slot, "slot", NamedBoolean::Cut)
+        .unwrap();
+    let removed = 20.0 * 60.0 * 10.0;
+    assert!(close(
+        slotted.output.body.topology.volume_mm3,
+        100.0 * 60.0 * 40.0 - removed
+    ));
+    // The slot splits the top face in two; the side under it keeps its name.
+    assert!(near(face(&slotted, "end#1").bounds_mm.max.x, 40.0));
+    assert!(near(face(&slotted, "slot.start").centroid_mm.z, 30.0));
+
+    let radius = 5.0;
+    let rounded = backend
+        .named_finish(&slotted, &[("right", "front")], EdgeFinish::Fillet, radius)
+        .unwrap();
+    let corner = radius * radius * (1.0 - std::f64::consts::FRAC_PI_4);
+    assert!(
+        (rounded.output.body.topology.volume_mm3
+            - (100.0 * 60.0 * 40.0 - removed - corner * 40.0))
+            .abs()
+            < 1.0e-3,
+        "{}",
+        rounded.output.body.topology.volume_mm3
+    );
+    assert!(face(&rounded, "fillet(front,right)").centroid_mm.x > 95.0);
+
+    // Intersect with a box that keeps the left half: the kept faces keep
+    // their names and the new wall is named after the tool face.
+    let half = backend
+        .named_extrude(
+            &rectangle(-1.0, -1.0, 50.0, 61.0, ["p", "cut_wall", "q", "r"]),
+            -1.0,
+            42.0,
+        )
+        .unwrap();
+    let kept = backend
+        .named_boolean(&block, &half, "half", NamedBoolean::Intersect)
+        .unwrap();
+    assert!(close(kept.output.body.topology.volume_mm3, 50.0 * 60.0 * 40.0));
+    assert!(near(face(&kept, "half.cut_wall").centroid_mm.x, 50.0));
+    assert!(close(face(&kept, "left").centroid_mm.x, 0.0));
+    kept.edge("half.cut_wall", "front").unwrap();
 }

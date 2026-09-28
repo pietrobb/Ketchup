@@ -246,7 +246,7 @@ fn a_picked_face_or_edge_of_a_rotated_part_reads_in_program_terms() {
     let (evaluated, report) = ketchup_program::run("table.star", &used, &BTreeMap::new())
         .unwrap_or_else(|error| panic!("{error}\n{used}"));
     assert!(report.ok, "{:#?}", report.issues);
-    assert_eq!(evaluated.model.part("top").unwrap().fillets.len(), 1);
+    assert_eq!(evaluated.model.part("top").unwrap().finishes().count(), 1);
     let (c, rail) = (
         evaluated.model.part("c").unwrap(),
         evaluated.model.part("rail").unwrap(),
@@ -256,6 +256,75 @@ fn a_picked_face_or_edge_of_a_rotated_part_reads_in_program_terms() {
         rail.world_bounds().1[2],
         "c rests on the rail"
     );
+}
+
+fn face_count(app: &KetchupApp, name: &str) -> usize {
+    let snapshot = app.document.current();
+    let occurrence = snapshot
+        .occurrences()
+        .find(|occurrence| occurrence.name() == name)
+        .unwrap();
+    app.topology_results
+        .get_render(&snapshot, occurrence.definition_id())
+        .unwrap()
+        .topological_references()
+        .iter()
+        .filter(|reference| reference.kind == TopologicalElementKind::Face)
+        .count()
+}
+
+#[test]
+fn a_fillet_on_a_picked_box_edge_is_written_into_the_program() {
+    const BLOCK: &str = "block = box(\"block\", (100, 60, 40))\nrotate(block, axis = (0, 0, 1), angle = 30)\n";
+    let (mut app, mut bridge) = setup();
+    bridge.execute(&mut app, apply(BLOCK, true), false).unwrap();
+    evaluate_exact(&mut app);
+    assert_eq!(face_count(&app, "block"), 6);
+
+    let edges = picks(&mut app, &mut bridge, "block", TopologicalElementKind::Edge);
+    let ordinal = edges
+        .iter()
+        .position(|edge| {
+            let mut pair = serde_json::from_value::<Vec<String>>(edge["edge"].clone()).unwrap();
+            pair.sort();
+            pair == ["x+", "y+"]
+        })
+        .expect("the block has an x+/y+ edge") as u32;
+    let snapshot = app.document.current();
+    let occurrence = snapshot.occurrences().next().unwrap();
+    let locator = ketchup_interaction::exact_projection::TopologicalPickLocator {
+        instance_path: InstancePath::root(occurrence.id()),
+        producer_feature_id: app
+            .topology_results
+            .get_render(&snapshot, occurrence.definition_id())
+            .unwrap()
+            .producer_feature_id(),
+        kind: TopologicalElementKind::Edge,
+        ordinal,
+    };
+    let undo_steps = app.undo_step_count();
+    assert!(app.prepare_assistant_general_finish(locator, ketchup_application::topology::GeneralFinishKind::Fillet, 5.0));
+    assert!(app.confirm_assistant_general_finish(), "{}", app.digest);
+
+    // The program still owns the part and now says what was done by hand.
+    let program = app.document.current_rule_program().unwrap().source.clone();
+    assert!(program.starts_with(BLOCK), "{program}");
+    let written = program[BLOCK.len()..].trim();
+    assert!(
+        written == "fillet(\"block\", edges=[[\"x+\", \"y+\"]], radius=5)"
+            || written == "fillet(\"block\", edges=[[\"y+\", \"x+\"]], radius=5)",
+        "{written}"
+    );
+    assert_eq!(app.undo_step_count(), undo_steps + 1);
+    assert_eq!(names(&app)["block"], occurrence.id().0);
+    evaluate_exact(&mut app);
+    assert_eq!(face_count(&app, "block"), 7);
+
+    // One Undo returns the sharp box and the source without the fillet.
+    bridge
+        .execute(&mut app, Request::Undo { expected: None }, false)
+        .unwrap();
+    assert_eq!(app.document.current_rule_program().unwrap().source, BLOCK);
 }
 
 #[test]

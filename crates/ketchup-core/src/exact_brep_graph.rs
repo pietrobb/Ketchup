@@ -409,6 +409,9 @@ pub enum ExactBRepOperation {
         operation: ExactBRepBooleanOperation,
         target: ExactBRepNodeId,
         tool: ExactBRepNodeId,
+        /// Prefix naming the faces the tool contributes (`tool_name.face`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_name: Option<String>,
     },
     Shell {
         target: ExactBRepNodeId,
@@ -1683,6 +1686,7 @@ impl<'a> GraphCompiler<'a> {
                 operation: (*operation).into(),
                 target: self.body_id(*target)?,
                 tool: self.body_id(*tool)?,
+                tool_name: Some(feature.name().to_owned()),
             },
             FeatureKind::TopologyShell {
                 target,
@@ -3274,6 +3278,7 @@ fn operation_bounds(
             operation,
             target,
             tool,
+            ..
         } => {
             let target = node_bounds[target.0 as usize];
             let tool = node_bounds[tool.0 as usize];

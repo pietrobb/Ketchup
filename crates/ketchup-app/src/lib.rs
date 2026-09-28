@@ -15662,9 +15662,19 @@ impl KetchupApp {
         let Some(preview) = self.general_finish_preview.take() else {
             return false;
         };
-        if self.apply_batch_with_work_recovery(&preview.batch).is_err() {
-            self.status_key = "error-preview-stale";
-            return false;
+        let amount_mm = f64::from_bits(preview.plan.amount_mm_bits);
+        match self.program_general_finish(&preview.plan.source, amount_mm) {
+            Some(Err(error)) => {
+                self.digest = error;
+                return false;
+            }
+            Some(Ok(())) => {}
+            None => {
+                if self.apply_batch_with_work_recovery(&preview.batch).is_err() {
+                    self.status_key = "error-preview-stale";
+                    return false;
+                }
+            }
         }
         self.clear_ephemeral_edit_state();
         self.active_tool = ActiveTool::Select;

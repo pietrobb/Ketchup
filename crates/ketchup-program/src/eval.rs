@@ -13,7 +13,8 @@ use crate::frame::{self, Mat3};
 use crate::model::{
     Face, Hole, Joint, Param, Part, Pocket, ProgramArc, ProgramBoolean, ProgramBooleanKind,
     ProgramCut, ProgramEdgeFillet, ProgramEdgeFinishKind, ProgramFaceOffset, ProgramLoftSection,
-    ProgramModel, ProgramPartBody, ProgramPathSegment, ProgramProfileSegment, profile_bounds,
+    ProgramModel, ProgramOperation, ProgramPartBody, ProgramPathSegment, ProgramProfileSegment,
+    profile_bounds,
 };
 use serde::Serialize;
 use starlark::environment::{FrozenModule, Globals, GlobalsBuilder, LibraryExtension, Module};
@@ -560,7 +561,7 @@ fn move_part(part: &mut Part, rotation: &Mat3, pivot: [f64; 3]) {
     );
     part.at_mm = std::array::from_fn(|axis| pivot[axis] + offset[axis]);
     part.rotation = frame::multiply(rotation, &part.rotation);
-    for boolean in &mut part.booleans {
+    for boolean in part.booleans_mut() {
         move_part(&mut boolean.tool, rotation, pivot);
     }
 }
@@ -581,7 +582,7 @@ fn set_frame(part: &mut Part, origin: [f64; 3], rotation: Mat3) {
 
 fn translate_part(part: &mut Part, shift: [f64; 3]) {
     part.at_mm = std::array::from_fn(|axis| part.at_mm[axis] + shift[axis]);
-    for boolean in &mut part.booleans {
+    for boolean in part.booleans_mut() {
         translate_part(&mut boolean.tool, shift);
     }
 }
@@ -639,10 +640,7 @@ fn new_part(name: &str, size_mm: [f64; 3], at_mm: [f64; 3], body: ProgramPartBod
         grain_axis: None,
         color: None,
         body,
-        fillets: Vec::new(),
-        cuts: Vec::new(),
-        face_offsets: Vec::new(),
-        booleans: Vec::new(),
+        operations: Vec::new(),
         features: Vec::new(),
         holes: Vec::new(),
         pockets: Vec::new(),
@@ -844,20 +842,14 @@ fn apply_boolean<'v>(
     with_part(&state, &target, |part| {
         let name = requested.unwrap_or_else(|| format!("{operation} {tool}"));
         check_part_name(&name)?;
-        if part.cuts.iter().any(|cut| cut.name == name)
-            || part.fillets.iter().any(|finish| finish.name == name)
-            || part.face_offsets.iter().any(|offset| offset.name == name)
-            || part.booleans.iter().any(|boolean| boolean.name == name)
-        {
-            anyhow::bail!(
-                "feature name {name:?} is already used on {target:?}; pass a unique name="
-            );
-        }
-        part.booleans.push(ProgramBoolean {
-            name,
-            kind,
-            tool: tool_part,
-        });
+        add_operation(
+            part,
+            ProgramOperation::Boolean(ProgramBoolean {
+                name,
+                kind,
+                tool: tool_part,
+            }),
+        )?;
         Ok(part_value(part, heap))
     })
 }
@@ -973,6 +965,20 @@ fn rotated_contact(a: &Part, b: &Part) -> Option<Contact> {
     })
 }
 
+/// Appends one operation to a part, keeping operation names unique.
+fn add_operation(part: &mut Part, operation: ProgramOperation) -> anyhow::Result<()> {
+    let name = operation.name();
+    if part.operations.iter().any(|existing| existing.name() == name) {
+        anyhow::bail!(
+            "feature name {name:?} is already used on {:?}; pass a unique name=",
+            part.name
+        );
+    }
+    part.operations.push(operation);
+    part.refresh_feature_tree();
+    Ok(())
+}
+
 fn apply_named_edge_finish(
     state: &State,
     part_name: &str,
@@ -992,54 +998,38 @@ fn apply_named_edge_finish(
         anyhow::bail!("{operation} on {part_name:?}: amount must be positive");
     }
     with_part(state, part_name, |part| {
-        let segments = match &part.body {
-            ProgramPartBody::Extrusion { segments, .. }
-            | ProgramPartBody::Revolve { segments, .. } => segments,
-            ProgramPartBody::Panel
-            | ProgramPartBody::Sweep { .. }
-            | ProgramPartBody::Loft { .. } => {
-                anyhow::bail!(
-                    "{operation} on {part_name:?}: use a named extrude or revolve profile"
-                )
-            }
-        };
-        let available = segments
-            .iter()
-            .map(|segment| segment.name.as_str())
-            .chain(["start", "end"])
-            .collect::<BTreeSet<_>>();
         let mut unique = BTreeSet::new();
         for [first, second] in &edges {
             if first == second {
                 anyhow::bail!("{operation} edge faces must be different, got {first:?} twice");
             }
-            for face in [first, second] {
-                if !available.contains(face.as_str()) {
-                    anyhow::bail!(
-                        "{operation} face {face:?} does not exist on {part_name:?}; faces are: {}",
-                        available.iter().copied().collect::<Vec<_>>().join(", ")
-                    );
-                }
-            }
-            let mut pair = [first.as_str(), second.as_str()];
+            let mut pair = [
+                part.exact_face_label(first)
+                    .map_err(|error| anyhow::anyhow!("{operation} on {part_name:?}: {error}"))?,
+                part.exact_face_label(second)
+                    .map_err(|error| anyhow::anyhow!("{operation} on {part_name:?}: {error}"))?,
+            ];
             pair.sort_unstable();
             if !unique.insert(pair) {
                 anyhow::bail!("{operation} edge ({first:?}, {second:?}) is listed more than once");
             }
         }
+        let count = part.finishes().count();
         let name = requested_name
             .clone()
-            .unwrap_or_else(|| format!("{part_name} {operation} {}", part.fillets.len() + 1));
-        if name.trim().is_empty() || part.fillets.iter().any(|finish| finish.name == name) {
-            anyhow::bail!("{operation} name {name:?} must be non-empty and unique on the part");
+            .unwrap_or_else(|| format!("{part_name} {operation} {}", count + 1));
+        if name.trim().is_empty() {
+            anyhow::bail!("{operation} name must be non-empty");
         }
-        part.fillets.push(ProgramEdgeFillet {
-            name,
-            kind,
-            edges,
-            radius_mm: amount_mm,
-        });
-        part.refresh_feature_tree();
+        add_operation(
+            part,
+            ProgramOperation::Finish(ProgramEdgeFillet {
+                name,
+                kind,
+                edges,
+                radius_mm: amount_mm,
+            }),
+        )?;
         Ok(NoneType)
     })
 }
@@ -1349,19 +1339,14 @@ fn builtins(builder: &mut GlobalsBuilder) {
         record_source(eval, &state, &[&part_name]);
         with_part(&state, &part_name, |part| {
             reject_swept(part, "cut")?;
-            if part.cuts.iter().any(|cut| cut.name == name)
-                || part.fillets.iter().any(|finish| finish.name == name)
-                || part.face_offsets.iter().any(|offset| offset.name == name)
-                || part.booleans.iter().any(|boolean| boolean.name == name)
-            {
-                anyhow::bail!("feature name {name:?} is already used on {part_name:?}");
-            }
-            part.cuts.push(ProgramCut {
-                name: name.to_owned(),
-                segments,
-                depth_mm,
-            });
-            part.refresh_feature_tree();
+            add_operation(
+                part,
+                ProgramOperation::Cut(ProgramCut {
+                    name: name.to_owned(),
+                    segments,
+                    depth_mm,
+                }),
+            )?;
             Ok(NoneType)
         })
     }
@@ -1390,19 +1375,16 @@ fn builtins(builder: &mut GlobalsBuilder) {
         record_source(eval, &state, &[&part_name]);
         with_part(&state, &part_name, |part| {
             reject_swept(part, "push_pull")?;
-            if part.cuts.iter().any(|cut| cut.name == name)
-                || part.fillets.iter().any(|finish| finish.name == name)
-                || part.face_offsets.iter().any(|offset| offset.name == name)
-                || part.booleans.iter().any(|boolean| boolean.name == name)
-            {
-                anyhow::bail!("feature name {name:?} is already used on {part_name:?}");
-            }
-            part.face_offsets.push(ProgramFaceOffset {
-                name: name.to_owned(),
-                face: face.to_owned(),
-                distance_mm,
-            });
-            part.refresh_feature_tree();
+            part.exact_face_label(face)
+                .map_err(|error| anyhow::anyhow!("push_pull on {part_name:?}: {error}"))?;
+            add_operation(
+                part,
+                ProgramOperation::FaceOffset(ProgramFaceOffset {
+                    name: name.to_owned(),
+                    face: face.to_owned(),
+                    distance_mm,
+                }),
+            )?;
             Ok(NoneType)
         })
     }

@@ -105,8 +105,7 @@ pub(crate) fn polygon_area(points: &[[f64; 3]]) -> f64 {
 fn approximate(part: &Part) -> bool {
     !validate::is_box(part)
         || part
-            .booleans
-            .iter()
+            .booleans()
             .any(|boolean| boolean.kind == ProgramBooleanKind::Intersect)
 }
 
@@ -115,7 +114,7 @@ fn approximate(part: &Part) -> bool {
 /// that acts on that volume like a half-space (a trim): it covers the volume
 /// except beyond one of its faces. Other subtract tools are ignored.
 fn shared_volume(a: &Part, b: &Part) -> Vec<[f64; 3]> {
-    let booleans = || a.booleans.iter().chain(&b.booleans);
+    let booleans = || a.booleans().chain(b.booleans());
     let mut planes: Vec<([f64; 3], f64)> = [a.obb(), b.obb()]
         .iter()
         .flat_map(Obb::planes)
@@ -132,7 +131,7 @@ fn shared_volume(a: &Part, b: &Part) -> Vec<[f64; 3]> {
             || tool.name == a.name
             || tool.name == b.name
             || !validate::is_box(tool)
-            || !tool.booleans.is_empty()
+            || tool.booleans().next().is_some()
             || vertices.is_empty()
         {
             continue;

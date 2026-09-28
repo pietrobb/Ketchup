@@ -12,7 +12,7 @@ pub mod mesh_conversion;
 pub mod model_query;
 pub mod pdm_workflow;
 mod planner;
-mod rule_booleans;
+mod rule_operations;
 mod rule_exact_collisions;
 mod rule_program;
 mod sketch;

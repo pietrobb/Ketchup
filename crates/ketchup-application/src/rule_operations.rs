@@ -1,17 +1,22 @@
-//! Canonical commands for rule-program booleans. Each tool is rebuilt as a
-//! hidden body inside the target part's definition, moved into the target's
-//! frame and consumed by one Boolean feature.
+//! Canonical commands for the operations of a rule-program part, applied in
+//! program order, each to the solid the one before produced. A boolean's
+//! tool is rebuilt as a hidden body inside the part's definition, moved into
+//! the part's frame and consumed by one Boolean feature.
 
-use crate::diagnostics::{AssistantRejection, assistant_canonical_rejection};
+use crate::diagnostics::{
+    AssistantRejection, assistant_canonical_rejection, assistant_planning_rejection,
+};
 use crate::sketch::assistant_sketch_entities;
 use ketchup_core::document::{
-    BodyId, BooleanOperation, CanonicalCommand, CanonicalError, DefinitionId, Dimension, FeatureId,
-    FeatureKind, LoftContinuity, LoftSection, ProfileSegment, SpatialPathSegment, Transform,
+    BodyId, BooleanOperation, CanonicalCommand, CanonicalError, ChamferMode, DefinitionId,
+    Dimension, EdgeFinishKind, FeatureId, FeatureKind, LoftContinuity, LoftSection,
+    ProfileEdgeReference, ProfileFaceReference, ProfileSegment, SpatialPathSegment, Transform,
 };
 use ketchup_core::sketch::{PrincipalPlane, SketchSpec, WorkplaneSpec};
 use ketchup_program::model::{
-    Part, ProgramBoolean, ProgramBooleanKind, ProgramLoftSection, ProgramPartBody,
-    ProgramPathSegment, ProgramProfileSegment,
+    Part, ProgramBoolean, ProgramBooleanKind, ProgramCut, ProgramEdgeFillet, ProgramEdgeFinishKind,
+    ProgramFaceOffset, ProgramLoftSection, ProgramOperation, ProgramPartBody, ProgramPathSegment,
+    ProgramProfileSegment,
 };
 
 /// The canonical segment of one program profile segment.
@@ -166,7 +171,7 @@ pub(crate) fn replace_base_body(
 /// A new definition starts with this body active; the part's own features live in it.
 const PART_BODY: BodyId = BodyId(1);
 
-pub(crate) struct BooleanPlanner<'a> {
+pub(crate) struct OperationPlanner<'a> {
     pub commands: &'a mut Vec<CanonicalCommand>,
     pub definition_id: DefinitionId,
     pub next_feature: &'a mut u64,
@@ -174,7 +179,7 @@ pub(crate) struct BooleanPlanner<'a> {
     part_name: String,
 }
 
-impl<'a> BooleanPlanner<'a> {
+impl<'a> OperationPlanner<'a> {
     pub fn new(
         commands: &'a mut Vec<CanonicalCommand>,
         definition_id: DefinitionId,
@@ -190,25 +195,146 @@ impl<'a> BooleanPlanner<'a> {
         }
     }
 
-    /// Applies `part`'s booleans to its final solid `target`; returns the new final solid.
+    /// Applies `part`'s operations in program order to its body solid
+    /// `target`; returns the final solid.
     pub fn apply(
         &mut self,
         part: &Part,
-        target: FeatureId,
+        mut target: FeatureId,
     ) -> Result<FeatureId, AssistantRejection> {
-        self.apply_in_body(part, target, PART_BODY)
+        for operation in &part.operations {
+            target = match operation {
+                ProgramOperation::Cut(cut) => self.cut(cut, target)?,
+                ProgramOperation::Finish(finish) => self.finish(part, finish, target)?,
+                ProgramOperation::FaceOffset(offset) => self.face_offset(part, offset, target)?,
+                ProgramOperation::Boolean(boolean) => {
+                    self.boolean(part, boolean, target, PART_BODY)?
+                }
+            };
+        }
+        Ok(target)
     }
 
-    fn apply_in_body(
+    /// A tool's volume is its body and its own booleans; its cuts, finishes
+    /// and moved faces are not part of what it removes or keeps.
+    fn apply_tool_booleans(
         &mut self,
-        part: &Part,
+        tool: &Part,
         mut target: FeatureId,
         body: BodyId,
     ) -> Result<FeatureId, AssistantRejection> {
-        for boolean in &part.booleans {
-            target = self.boolean(part, boolean, target, body)?;
+        for boolean in tool.booleans() {
+            target = self.boolean(tool, boolean, target, body)?;
         }
         Ok(target)
+    }
+
+    fn cut(&mut self, cut: &ProgramCut, target: FeatureId) -> Result<FeatureId, AssistantRejection> {
+        let profile = self.feature(
+            format!("{} sketch", cut.name),
+            FeatureKind::SegmentProfile {
+                segments: cut.segments.iter().map(profile_segment).collect(),
+                closed: true,
+            },
+        )?;
+        let depth = self.dimension(cut.depth_mm)?;
+        self.feature(
+            cut.name.clone(),
+            FeatureKind::Pocket {
+                target,
+                profile,
+                depth,
+            },
+        )
+    }
+
+    fn finish(
+        &mut self,
+        part: &Part,
+        finish: &ProgramEdgeFillet,
+        target: FeatureId,
+    ) -> Result<FeatureId, AssistantRejection> {
+        let profile_edges = finish
+            .edges
+            .iter()
+            .map(|[first, second]| {
+                Ok(ProfileEdgeReference {
+                    first: self.face_reference(part, first)?,
+                    second: self.face_reference(part, second)?,
+                })
+            })
+            .collect::<Result<Vec<_>, AssistantRejection>>()?;
+        let amount = self.dimension(finish.radius_mm)?;
+        self.feature(
+            finish.name.clone(),
+            FeatureKind::TopologyEdgeFinish {
+                target,
+                edges: Vec::new(),
+                profile_edges,
+                kind: match finish.kind {
+                    ProgramEdgeFinishKind::Fillet => EdgeFinishKind::Fillet,
+                    ProgramEdgeFinishKind::Chamfer => EdgeFinishKind::Chamfer,
+                },
+                amount,
+                fillet_radius_stations: Vec::new(),
+                chamfer_mode: ChamferMode::Symmetric,
+                chamfer_edge_sides: Vec::new(),
+            },
+        )
+    }
+
+    fn face_offset(
+        &mut self,
+        part: &Part,
+        offset: &ProgramFaceOffset,
+        target: FeatureId,
+    ) -> Result<FeatureId, AssistantRejection> {
+        let profile_face = self.face_reference(part, &offset.face)?;
+        let distance = self.dimension(offset.distance_mm)?;
+        self.feature(
+            offset.name.clone(),
+            FeatureKind::TopologyFaceOffset {
+                target,
+                face: None,
+                profile_face: Some(profile_face),
+                distance,
+            },
+        )
+    }
+
+    /// The exact kernel's reference to a program face name.
+    fn face_reference(
+        &self,
+        part: &Part,
+        name: &str,
+    ) -> Result<ProfileFaceReference, AssistantRejection> {
+        let label = part.exact_face_label(name).map_err(|error| {
+            assistant_planning_rejection(
+                "planning.rule_part_face_missing",
+                "rule_part",
+                &part.name,
+                error,
+                "Use a face the part has: the listed names, <operation>.<tool face> or <face>#<n>.",
+            )
+        })?;
+        Ok(match label.as_str() {
+            "start" => ProfileFaceReference::Start,
+            "end" => ProfileFaceReference::End,
+            _ => match label
+                .strip_prefix("segment_")
+                .and_then(|id| id.parse::<u64>().ok())
+            {
+                Some(entity_id) => ProfileFaceReference::Segment {
+                    entity_id,
+                    source_name: name.to_owned(),
+                },
+                None => ProfileFaceReference::NamedResult(label),
+            },
+        })
+    }
+
+    fn dimension(&self, millimetres: f64) -> Result<Dimension, AssistantRejection> {
+        Dimension::new(millimetres.to_string(), millimetres).map_err(|error| self.rejection(error))
     }
 
     fn boolean(
@@ -300,7 +426,7 @@ impl<'a> BooleanPlanner<'a> {
                     )?);
                 }
                 let solid = self.feature(format!("{prefix} tool"), loft(sections, &profiles))?;
-                let solid = self.apply_in_body(tool, solid, body)?;
+                let solid = self.apply_tool_booleans(tool, solid, body)?;
                 return Ok((solid, body));
             }
         };
@@ -334,7 +460,7 @@ impl<'a> BooleanPlanner<'a> {
             },
         };
         let solid = self.feature(format!("{prefix} tool"), solid_kind)?;
-        let solid = self.apply_in_body(tool, solid, body)?;
+        let solid = self.apply_tool_booleans(tool, solid, body)?;
         Ok((solid, body))
     }
 
@@ -345,8 +471,7 @@ impl<'a> BooleanPlanner<'a> {
     ) -> Result<FeatureKind, AssistantRejection> {
         Ok(FeatureKind::Extrusion {
             profile,
-            height: Dimension::new(height_mm.to_string(), height_mm)
-                .map_err(|error| self.rejection(error))?,
+            height: self.dimension(height_mm)?,
         })
     }
 

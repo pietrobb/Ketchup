@@ -155,6 +155,6 @@ fn shared_dependencies_preserve_depth_first_order_and_fingerprint() {
     );
     assert_eq!(
         graph.graph_digest,
-        "700dbdc32ed11607f78b1938f829a2d6a7a37170156d60c66adb2992338bbd91"
+        "ed55e926bb6d176ee030faecea5d409b078845ae5a497c6b649998ae5df65555"
     );
 }

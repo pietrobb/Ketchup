@@ -4,7 +4,7 @@ use crate::diagnostics::{
     AssistantPlanningResult, assistant_canonical_rejection, assistant_planning_rejection,
     assistant_rejection,
 };
-use crate::rule_booleans::BooleanPlanner;
+use crate::rule_operations::OperationPlanner;
 use crate::transforms::{
     rotation_in_parent_space, translated_transform, world_axis_rotation_transform,
     world_plane_mirror_transform,
@@ -29,12 +29,11 @@ use ketchup_core::cam::{
     CamCutParameters, CamPlan, CamPlanId, CamSetup, CamStock, CamTool, CamToolKind, CamWorkOffset,
 };
 use ketchup_core::document::{
-    CanonicalCommand, CanonicalError, ChamferMode, ClassificationCategoryId,
-    ClassificationDimensionId, CloneDefinitionPlan, CommandBatch, DefinitionId, Dimension,
-    DocumentStore, EdgeFinishKind, FeatureId, FeatureKind, FeatureParameterTarget, InstancePath,
-    InstancePathStep, LocalGroupId, LocalOccurrenceId, NodeId, OccurrenceId, ParameterPath,
-    ParameterValueType, ProfileEdgeReference, ProfileFaceReference, ProfileSegment, Snapshot,
-    SpatialPathSegment, TagId, Transform,
+    CanonicalCommand, CanonicalError, ClassificationCategoryId, ClassificationDimensionId,
+    CloneDefinitionPlan, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
+    FeatureKind, FeatureParameterTarget, InstancePath, InstancePathStep, LocalGroupId,
+    LocalOccurrenceId, NodeId, OccurrenceId, ParameterPath, ParameterValueType, ProfileSegment,
+    Snapshot, SpatialPathSegment, TagId, Transform,
 };
 use ketchup_core::drawing::{
     DrawingBomBalloon, DrawingBomBalloonId, DrawingError, DrawingMargins, DrawingPageOrientation,
@@ -52,7 +51,7 @@ use ketchup_core::joinery::{
 use ketchup_core::sketch::{SketchConstraintId, SketchEntity, WorkplaneSupport};
 use ketchup_core::topology::TopologicalElementKind;
 use ketchup_interaction::Vec3;
-use ketchup_program::model::{Part as ProgramPart, ProgramEdgeFinishKind, ProgramPartBody};
+use ketchup_program::model::{Part as ProgramPart, ProgramPartBody};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -4233,7 +4232,7 @@ pub fn plan_rule_part_batch(
         }
     }
     for (part, definition_id) in parts.iter().zip(definitions) {
-        let mut target = *body_features.get(&definition_id).ok_or_else(|| {
+        let target = *body_features.get(&definition_id).ok_or_else(|| {
             assistant_planning_rejection(
                 "planning.rule_part_body_missing",
                 "rule_part",
@@ -4242,225 +4241,19 @@ pub fn plan_rule_part_batch(
                 "Return one supported solid body for the part.",
             )
         })?;
-        let segments = match &part.body {
-            ProgramPartBody::Extrusion { segments, .. }
-            | ProgramPartBody::Revolve { segments, .. } => segments,
-            ProgramPartBody::Panel => {
-                BooleanPlanner::new(&mut commands, definition_id, &mut next_feature, &part.name)
-                    .apply(part, target)?;
-                continue;
-            }
-            ProgramPartBody::Sweep { .. } | ProgramPartBody::Loft { .. } => {
-                crate::rule_booleans::replace_base_body(
-                    &mut commands,
-                    part,
-                    definition_id,
-                    target,
-                    &mut next_feature,
-                )?;
-                BooleanPlanner::new(&mut commands, definition_id, &mut next_feature, &part.name)
-                    .apply(part, target)?;
-                continue;
-            }
-        };
-        for cut in &part.cuts {
-            next_feature = next_feature.checked_add(1).ok_or_else(|| {
-                assistant_canonical_rejection(
-                    CanonicalError::IdExhausted,
-                    "rule_part",
-                    &document_target,
-                )
-            })?;
-            let profile = FeatureId(next_feature);
-            commands.push(CanonicalCommand::CreateFeature {
-                id: profile,
+        if matches!(
+            part.body,
+            ProgramPartBody::Sweep { .. } | ProgramPartBody::Loft { .. }
+        ) {
+            crate::rule_operations::replace_base_body(
+                &mut commands,
+                part,
                 definition_id,
-                name: format!("{} sketch", cut.name),
-                kind: FeatureKind::SegmentProfile {
-                    segments: cut
-                        .segments
-                        .iter()
-                        .map(crate::rule_booleans::profile_segment)
-                        .collect(),
-                    closed: true,
-                },
-            });
-            next_feature = next_feature.checked_add(1).ok_or_else(|| {
-                assistant_canonical_rejection(
-                    CanonicalError::IdExhausted,
-                    "rule_part",
-                    &document_target,
-                )
-            })?;
-            let id = FeatureId(next_feature);
-            let depth = Dimension::new(cut.depth_mm.to_string(), cut.depth_mm)
-                .map_err(|error| assistant_canonical_rejection(error, "rule_part", &part.name))?;
-            commands.push(CanonicalCommand::CreateFeature {
-                id,
-                definition_id,
-                name: cut.name.clone(),
-                kind: FeatureKind::Pocket {
-                    target,
-                    profile,
-                    depth,
-                },
-            });
-            target = id;
+                target,
+                &mut next_feature,
+            )?;
         }
-        for fillet in &part.fillets {
-            next_feature = next_feature.checked_add(1).ok_or_else(|| {
-                assistant_canonical_rejection(
-                    CanonicalError::IdExhausted,
-                    "rule_part",
-                    &document_target,
-                )
-            })?;
-            let face = |name: &str| {
-                if name == "start" {
-                    Some(ProfileFaceReference::Start)
-                } else if name == "end" {
-                    Some(ProfileFaceReference::End)
-                } else {
-                    segments
-                        .iter()
-                        .position(|segment| segment.name == name)
-                        .and_then(|index| u64::try_from(index + 1).ok())
-                        .map(|entity_id| ProfileFaceReference::Segment {
-                            entity_id,
-                            source_name: name.to_owned(),
-                        })
-                }
-            };
-            let profile_edges = fillet
-                .edges
-                .iter()
-                .map(|[first, second]| {
-                    Some(ProfileEdgeReference {
-                        first: face(first)?,
-                        second: face(second)?,
-                    })
-                })
-                .collect::<Option<Vec<_>>>()
-                .ok_or_else(|| {
-                    assistant_planning_rejection(
-                        "planning.rule_part_face_missing",
-                        "rule_part",
-                        &part.name,
-                        "A named fillet face is not present in the part profile.",
-                        "Use start, end, or one of the profile segment names.",
-                    )
-                })?;
-            let amount = Dimension::new(fillet.radius_mm.to_string(), fillet.radius_mm)
-                .map_err(|error| assistant_canonical_rejection(error, "rule_part", &part.name))?;
-            let id = FeatureId(next_feature);
-            commands.push(CanonicalCommand::CreateFeature {
-                id,
-                definition_id,
-                name: fillet.name.clone(),
-                kind: FeatureKind::TopologyEdgeFinish {
-                    target,
-                    edges: Vec::new(),
-                    profile_edges,
-                    kind: match fillet.kind {
-                        ProgramEdgeFinishKind::Fillet => EdgeFinishKind::Fillet,
-                        ProgramEdgeFinishKind::Chamfer => EdgeFinishKind::Chamfer,
-                    },
-                    amount,
-                    fillet_radius_stations: Vec::new(),
-                    chamfer_mode: ChamferMode::Symmetric,
-                    chamfer_edge_sides: Vec::new(),
-                },
-            });
-            target = id;
-        }
-        for offset in &part.face_offsets {
-            next_feature = next_feature.checked_add(1).ok_or_else(|| {
-                assistant_canonical_rejection(
-                    CanonicalError::IdExhausted,
-                    "rule_part",
-                    &document_target,
-                )
-            })?;
-            let profile_face = if offset.face == "start" {
-                ProfileFaceReference::Start
-            } else if offset.face == "end" {
-                ProfileFaceReference::End
-            } else if let Some((base, suffix)) = offset.face.rsplit_once('#') {
-                if suffix
-                    .parse::<usize>()
-                    .ok()
-                    .filter(|index| *index > 0)
-                    .is_some()
-                    && (base == "start"
-                        || base == "end"
-                        || segments.iter().any(|segment| segment.name == base))
-                {
-                    ProfileFaceReference::NamedResult(offset.face.clone())
-                } else {
-                    return Err(assistant_planning_rejection(
-                        "planning.rule_part_face_missing",
-                        "rule_part",
-                        &part.name,
-                        "A named Push/Pull face is not present in the part history.",
-                        "Use start, end, a profile segment name, or a deterministic split name such as end#2.",
-                    ));
-                }
-            } else if let Some((tool, face)) = offset.face.split_once('.') {
-                let cut = part.cuts.iter().find(|cut| cut.name == tool);
-                if matches!(face, "start" | "end") && cut.is_some() {
-                    ProfileFaceReference::NamedResult(offset.face.clone())
-                } else if let Some(segment_index) =
-                    cut.and_then(|cut| cut.segments.iter().position(|segment| segment.name == face))
-                {
-                    ProfileFaceReference::NamedResult(format!(
-                        "{tool}.segment_{}",
-                        segment_index + 1
-                    ))
-                } else {
-                    return Err(assistant_planning_rejection(
-                        "planning.rule_part_face_missing",
-                        "rule_part",
-                        &part.name,
-                        "A named Push/Pull face is not present in the part history.",
-                        "Use start, end, a profile segment name, or a named cut face.",
-                    ));
-                }
-            } else {
-                segments
-                    .iter()
-                    .position(|segment| segment.name == offset.face)
-                    .and_then(|index| u64::try_from(index + 1).ok())
-                    .map(|entity_id| ProfileFaceReference::Segment {
-                        entity_id,
-                        source_name: offset.face.clone(),
-                    })
-                    .ok_or_else(|| {
-                        assistant_planning_rejection(
-                            "planning.rule_part_face_missing",
-                            "rule_part",
-                            &part.name,
-                            "A named Push/Pull face is not present in the part profile.",
-                            "Use start, end, a profile segment name, or a deterministic split name.",
-                        )
-                    })?
-            };
-            let distance = Dimension::new(offset.distance_mm.to_string(), offset.distance_mm)
-                .map_err(|error| assistant_canonical_rejection(error, "rule_part", &part.name))?;
-            let id = FeatureId(next_feature);
-            commands.push(CanonicalCommand::CreateFeature {
-                id,
-                definition_id,
-                name: offset.name.clone(),
-                kind: FeatureKind::TopologyFaceOffset {
-                    target,
-                    face: None,
-                    profile_face: Some(profile_face),
-                    distance,
-                },
-            });
-            target = id;
-        }
-        BooleanPlanner::new(&mut commands, definition_id, &mut next_feature, &part.name)
+        OperationPlanner::new(&mut commands, definition_id, &mut next_feature, &part.name)
             .apply(part, target)?;
     }
     Ok(CommandBatch::new(commands))

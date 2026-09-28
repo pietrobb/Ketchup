@@ -80,6 +80,24 @@ fn describe_face(part: &Part, package: &ExactBodyPackage, ordinal: u32) -> Optio
     }))
 }
 
+/// The program part and the two program face names of a picked edge, or
+/// `None` when the edge cannot be told in program words.
+pub(crate) fn edge_names(
+    app: &KetchupApp,
+    snapshot: &Snapshot,
+    instance_path: &InstancePath,
+    reference: &TopologicalElementRef,
+) -> Option<(String, [String; 2])> {
+    let described = describe(app, snapshot, instance_path, reference)?;
+    let [first, second] = described["edge"].as_array()?.as_slice() else {
+        return None;
+    };
+    Some((
+        described["part"].as_str()?.to_owned(),
+        [first.as_str()?.to_owned(), second.as_str()?.to_owned()],
+    ))
+}
+
 /// The program's view of the one picked face or edge, or `None` when no
 /// program owns the picked part or its solid is not evaluated yet.
 pub(super) fn describe(

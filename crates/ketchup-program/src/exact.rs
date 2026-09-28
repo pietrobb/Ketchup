@@ -95,7 +95,7 @@ impl ExactShapes {
 /// Whether the part's solid is exactly its box.
 #[must_use]
 pub fn box_is_solid(part: &Part) -> bool {
-    validate::is_box(part) && part.booleans.is_empty()
+    validate::is_box(part) && part.booleans().next().is_none()
 }
 
 /// Parts whose solid is not its box and whose box touches or overlaps

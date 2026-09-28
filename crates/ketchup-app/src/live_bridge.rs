@@ -58,7 +58,7 @@ pub mod bootstrap;
 pub mod consent;
 mod image;
 mod program_check;
-mod program_pick;
+pub(crate) mod program_pick;
 #[cfg(test)]
 mod tests;
 mod transport;

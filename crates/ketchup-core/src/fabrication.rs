@@ -3008,6 +3008,7 @@ fn graph_manufacturing_operations(
         operation: ExactBRepBooleanOperation::Cut,
         target: boolean_target,
         tool: boolean_tool,
+        ..
     } = terminal.operation
     else {
         return None;

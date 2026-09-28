@@ -642,9 +642,9 @@ fn booleans_cut_parts_with_tools_that_are_never_built_or_listed() {
     assert!(report.ok, "{:#?}", report.issues);
     assert_eq!(report.warnings, 0, "{:#?}", report.issues);
     let seat = model.part("seat").unwrap();
-    assert_eq!(seat.booleans.len(), 3);
+    assert_eq!(seat.booleans().count(), 3);
     // The seat subtracts each leg as it was then: trimmed twice and notched by two rails.
-    assert_eq!(seat.booleans[0].tool.booleans.len(), 4);
+    assert_eq!(seat.booleans().next().unwrap().tool.booleans().count(), 4);
     let (min, max) = seat.world_bounds();
     assert!((min[2] - 420.0).abs() < 1.0e-9 && (max[2] - 450.0).abs() < 1.0e-9);
     assert!((max[0] - 180.0).abs() < 1.0e-9);
@@ -740,7 +740,7 @@ fn a_notch_cut_by_a_tool_makes_room_for_the_part_that_sits_in_it() {
     let cut_in_leg = |source: &str| {
         let model = eval(source);
         let leg = model.part("leg").unwrap();
-        leg.frame_of(&leg.booleans[0].tool)
+        leg.frame_of(&leg.booleans().next().unwrap().tool)
     };
     let before = cut_in_leg(&notched_leg("(20, 20, 30)", false));
     let after = cut_in_leg(&format!(

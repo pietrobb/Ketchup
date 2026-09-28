@@ -34,7 +34,7 @@ use ketchup_core::import::{
 use ketchup_core::topology::{
     TopologicalElementRef, TopologicalReferenceStability, topological_edge_provenance_tokens,
 };
-use ketchup_exact::naming::{NamedSegment, valid_name};
+use ketchup_exact::naming::{NamedBoolean, NamedSegment, valid_name};
 use ketchup_exact::{
     AdvancedChamferMode, AxialToolMotion, AxialToolSweepSpec, BoxSpec, CircleExtrudeSpec,
     EdgeFinish, ExactBackend, ExactBodyBooleanOperation, ExactKernel, ExactOpOutput,
@@ -1527,12 +1527,13 @@ fn evaluate_exact_brep_graph(
                         format!("cut_{node_index}")
                     };
                     let named = backend
-                        .named_cut_output(
+                        .named_boolean_output(
                             target_output,
                             target_names,
                             &tool,
                             &tool_names,
                             &tool_name,
+                            NamedBoolean::Cut,
                         )
                         .map_err(|error| exact_brep_graph_error(graph, &error.to_string()))?;
                     let (output, names) = named.into_output_and_names();
@@ -1550,29 +1551,74 @@ fn evaluate_exact_brep_graph(
             ExactBRepOperation::RigidTransform {
                 target,
                 matrix_bits,
-            } => backend.transform_body(
-                &outputs[target.0 as usize].body,
-                &matrix_bits.map(f64::from_bits),
-            )?,
+            } => match face_names[target.0 as usize].as_ref() {
+                // A rigid motion keeps every face, so it keeps their names.
+                Some(names) if needs_names[node_index] => {
+                    let output = transform_named_output(
+                        backend,
+                        &outputs[target.0 as usize],
+                        &matrix_bits.map(f64::from_bits),
+                    )?;
+                    produced_face_names = Some(names.clone());
+                    output
+                }
+                _ => backend.transform_body(
+                    &outputs[target.0 as usize].body,
+                    &matrix_bits.map(f64::from_bits),
+                )?,
+            },
             ExactBRepOperation::Boolean {
                 operation,
                 target,
                 tool,
+                tool_name,
             } => {
-                let target = &outputs[target.0 as usize].body;
-                let tool = &outputs[tool.0 as usize].body;
-                backend.boolean_bodies(
-                    target,
-                    tool,
-                    match operation {
-                        ExactBRepBooleanOperation::Cut => ExactBodyBooleanOperation::Cut,
-                        ExactBRepBooleanOperation::Union => ExactBodyBooleanOperation::Union,
-                        ExactBRepBooleanOperation::Intersect => {
-                            ExactBodyBooleanOperation::Intersect
-                        }
-                        ExactBRepBooleanOperation::Split => ExactBodyBooleanOperation::Split,
-                    },
-                )?
+                let named = match operation {
+                    ExactBRepBooleanOperation::Cut => Some(NamedBoolean::Cut),
+                    ExactBRepBooleanOperation::Union => Some(NamedBoolean::Union),
+                    ExactBRepBooleanOperation::Intersect => Some(NamedBoolean::Intersect),
+                    ExactBRepBooleanOperation::Split => None,
+                };
+                match (named, face_names[target.0 as usize].as_ref()) {
+                    (Some(named), Some(target_names)) if needs_names[node_index] => {
+                        let tool_output = &outputs[tool.0 as usize];
+                        // A tool without program names still gets one name per
+                        // face, split into `face#1`, `face#2`, ... by position.
+                        let tool_names = face_names[tool.0 as usize].clone().unwrap_or_else(|| {
+                            vec!["face".to_owned(); tool_output.body.topology.faces.len()]
+                        });
+                        let tool_name = tool_name
+                            .as_ref()
+                            .filter(|name| valid_name(name))
+                            .cloned()
+                            .unwrap_or_else(|| format!("boolean_{node_index}"));
+                        let (output, names) = backend
+                            .named_boolean_output(
+                                &outputs[target.0 as usize],
+                                target_names,
+                                tool_output,
+                                &tool_names,
+                                &tool_name,
+                                named,
+                            )
+                            .map_err(|error| exact_brep_graph_error(graph, &error.to_string()))?
+                            .into_output_and_names();
+                        produced_face_names = Some(names);
+                        output
+                    }
+                    _ => backend.boolean_bodies(
+                        &outputs[target.0 as usize].body,
+                        &outputs[tool.0 as usize].body,
+                        match operation {
+                            ExactBRepBooleanOperation::Cut => ExactBodyBooleanOperation::Cut,
+                            ExactBRepBooleanOperation::Union => ExactBodyBooleanOperation::Union,
+                            ExactBRepBooleanOperation::Intersect => {
+                                ExactBodyBooleanOperation::Intersect
+                            }
+                            ExactBRepBooleanOperation::Split => ExactBodyBooleanOperation::Split,
+                        },
+                    )?,
+                }
             }
             ExactBRepOperation::Revolve {
                 profile,
@@ -1926,7 +1972,11 @@ fn evaluate_exact_brep_graph(
             ExactBRepOperation::Extrude { .. } => true,
             ExactBRepOperation::ProfileCut { target, .. }
             | ExactBRepOperation::FaceOffset { target, .. }
-            | ExactBRepOperation::EdgeFinish { target, .. } => extrusion_lineage[target.0 as usize],
+            | ExactBRepOperation::EdgeFinish { target, .. }
+            | ExactBRepOperation::Boolean { target, .. }
+            | ExactBRepOperation::RigidTransform { target, .. } => {
+                extrusion_lineage[target.0 as usize]
+            }
             _ => false,
         };
         let mut output = output;
@@ -3003,7 +3053,17 @@ fn exact_brep_nodes_needing_names(graph: &ExactBRepGraph) -> Vec<bool> {
                 profile_edges,
                 ..
             } => (target, !profile_edges.is_empty()),
-            ExactBRepOperation::ProfileCut { target, .. } => (target, false),
+            ExactBRepOperation::ProfileCut { target, .. }
+            | ExactBRepOperation::RigidTransform { target, .. } => (target, false),
+            ExactBRepOperation::Boolean { target, tool, .. } => {
+                // The tool's own names become `tool_name.face` in the result.
+                if needs_names[index]
+                    && let Some(slot) = needs_names.get_mut(tool.0 as usize)
+                {
+                    *slot = true;
+                }
+                (target, false)
+            }
             _ => continue,
         };
         if (consumes_names || needs_names[index])

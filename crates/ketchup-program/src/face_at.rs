@@ -44,8 +44,7 @@ impl Part {
         if let Some(role) = role {
             let base = role.split('#').next().unwrap_or_default();
             let cut_face = base.split_once('.').is_some_and(|(cut, face)| {
-                self.cuts
-                    .iter()
+                self.cuts()
                     .any(|c| c.name == cut && c.segments.iter().any(|s| s.name == face))
             });
             if base == "start"

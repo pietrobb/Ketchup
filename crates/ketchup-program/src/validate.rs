@@ -100,14 +100,14 @@ pub(crate) fn booleans_leave_overlap(a: &Part, b: &Part) -> bool {
     }
     let shared = [a.obb(), b.obb()];
     let corners = frame::intersection_vertices(&shared, TOLERANCE_MM);
-    a.booleans.iter().all(|boolean| {
+    a.booleans().all(|boolean| {
         let tool = &boolean.tool;
         match boolean.kind {
             // Only a plain box is exactly its bounding box; anything else
             // removes less, so it cannot prove the overlap gone.
             ProgramBooleanKind::Subtract => {
                 !(matches!(tool.body, ProgramPartBody::Panel)
-                    && tool.booleans.is_empty()
+                    && tool.booleans().next().is_none()
                     && !corners.is_empty()
                     && corners
                         .iter()
@@ -125,7 +125,7 @@ pub(crate) fn booleans_leave_overlap(a: &Part, b: &Part) -> bool {
 /// Whether the solid of `part`, before booleans, is exactly its box: a panel,
 /// or an extrusion of a rectangle, with no cut, finish or moved face.
 pub(crate) fn is_box(part: &Part) -> bool {
-    let plain = part.cuts.is_empty() && part.fillets.is_empty() && part.face_offsets.is_empty();
+    let plain = !part.has_shaping();
     plain
         && match &part.body {
             ProgramPartBody::Panel => true,
@@ -157,12 +157,14 @@ fn needs_exact_shapes(a: &Part, b: &Part) -> bool {
         return true;
     }
     let shared = [a.obb(), b.obb()];
-    let mut reaching = a.booleans.iter().chain(&b.booleans).filter(|boolean| {
+    let mut reaching = a.booleans().chain(b.booleans()).filter(|boolean| {
         frame::common_region(&[shared[0], shared[1], boolean.tool.obb()], TOLERANCE_MM).is_some()
     });
     match (reaching.next(), reaching.next()) {
         (None, _) => false,
-        (Some(boolean), None) => !is_box(&boolean.tool) || !boolean.tool.booleans.is_empty(),
+        (Some(boolean), None) => {
+            !is_box(&boolean.tool) || boolean.tool.booleans().next().is_some()
+        }
         (Some(_), Some(_)) => true,
     }
 }
@@ -420,7 +422,7 @@ fn support(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>) {
             // Booleans (a trim at the floor) can end a part exactly at z = 0
             // although its uncut box reaches below.
             let (min, max) = part.world_bounds();
-            if part.booleans.is_empty() {
+            if part.booleans().next().is_none() {
                 min[2].abs() <= TOLERANCE_MM
             } else {
                 min[2] <= TOLERANCE_MM && max[2] > TOLERANCE_MM

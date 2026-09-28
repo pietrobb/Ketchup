@@ -4,6 +4,7 @@ use ketchup_core::document::{
     FeatureKind, FeatureParameterTarget, OccurrenceId, ParameterValueType, RuleProgramSource,
     Snapshot, Transform,
 };
+use ketchup_program::model::ProgramOperation;
 use ketchup_program::{ProgramFeatureKind, ProgramModel, ProgramParameterValueType, Report};
 
 #[derive(Debug)]
@@ -82,10 +83,9 @@ pub fn rewrite_rule_program_push_pull(
     let controlled_value = |model: &ProgramModel| {
         let part = model.part(part_name)?;
         if let Some(offset) = part
-            .face_offsets
-            .iter()
-            .rev()
-            .find(|offset| offset.face == face_name)
+            .face_offsets()
+            .filter(|offset| offset.face == face_name)
+            .last()
         {
             return Some(offset.distance_mm);
         }
@@ -94,7 +94,9 @@ pub fn rewrite_rule_program_push_pull(
                 Some(*distance_mm)
             }
             // A board is padded along its third size component.
-            (ketchup_program::model::ProgramPartBody::Panel, "end") => Some(part.size_mm[2]),
+            (ketchup_program::model::ProgramPartBody::Panel, "end" | "z+") => {
+                Some(part.size_mm[2])
+            }
             _ => None,
         }
     };
@@ -145,7 +147,7 @@ pub fn rewrite_rule_program_push_pull(
         rewritten.overrides.insert(parameter.clone(), *value);
     } else {
         let quote = |value: &str| serde_json::to_string(value).expect("strings serialize");
-        let feature_name = format!("GUI Push/Pull {}", part.face_offsets.len() + 1);
+        let feature_name = format!("GUI Push/Pull {}", part.face_offsets().count() + 1);
         rewritten.source.push_str(&format!(
             "\npush_pull({}, face={}, distance={}, name={})\n",
             quote(part_name),
@@ -304,15 +306,15 @@ fn feature_level_changes(
         comparable.rotation = before.rotation;
         comparable.size_mm = before.size_mm;
         comparable.body = before.body.clone();
-        comparable.fillets = before.fillets.clone();
-        comparable.cuts = before.cuts.clone();
-        comparable.face_offsets = before.face_offsets.clone();
+        comparable.operations = before.operations.clone();
         comparable.holes = before.holes.clone();
         comparable.pockets = before.pockets.clone();
         comparable.features = before.features.clone();
         // Tools are placed in the part's frame, so moving a part with booleans rebuilds it.
         if &comparable != before
-            || (!after.booleans.is_empty() && before.transform_matrix() != after.transform_matrix())
+            || !after.booleans().eq(before.booleans())
+            || (after.booleans().next().is_some()
+                && before.transform_matrix() != after.transform_matrix())
         {
             return None;
         }
@@ -351,8 +353,8 @@ fn part_replacements(
         let mut comparable = after.clone();
         comparable.at_mm = before.at_mm;
         comparable.rotation = before.rotation;
-        comparable.booleans = before.booleans.clone();
         comparable.size_mm = before.size_mm;
+        comparable.operations = before.operations.clone();
         comparable.holes = before.holes.clone();
         comparable.pockets = before.pockets.clone();
         comparable.body = before.body.clone();
@@ -522,26 +524,28 @@ fn program_feature_references_match(
         ) => before.body == after.body,
         _ => false,
     };
-    body_matches
-        && before.cuts.len() == after.cuts.len()
-        && before.cuts.iter().zip(&after.cuts).all(|(left, right)| {
+    // Same operations in the same order, naming the same faces; only numbers may differ.
+    let same_operation = |left: &ProgramOperation, right: &ProgramOperation| match (left, right) {
+        (ProgramOperation::Cut(left), ProgramOperation::Cut(right)) => {
             left.name == right.name
                 && segment_names(&left.segments) == segment_names(&right.segments)
-        })
-        && before.fillets.len() == after.fillets.len()
+        }
+        (ProgramOperation::Finish(left), ProgramOperation::Finish(right)) => {
+            left.name == right.name && left.kind == right.kind && left.edges == right.edges
+        }
+        (ProgramOperation::FaceOffset(left), ProgramOperation::FaceOffset(right)) => {
+            left.name == right.name && left.face == right.face
+        }
+        (ProgramOperation::Boolean(left), ProgramOperation::Boolean(right)) => left == right,
+        _ => false,
+    };
+    body_matches
+        && before.operations.len() == after.operations.len()
         && before
-            .fillets
+            .operations
             .iter()
-            .zip(&after.fillets)
-            .all(|(left, right)| {
-                left.name == right.name && left.kind == right.kind && left.edges == right.edges
-            })
-        && before.face_offsets.len() == after.face_offsets.len()
-        && before
-            .face_offsets
-            .iter()
-            .zip(&after.face_offsets)
-            .all(|(left, right)| left.name == right.name && left.face == right.face)
+            .zip(&after.operations)
+            .all(|(left, right)| same_operation(left, right))
 }
 
 fn program_feature_commands(
@@ -1064,7 +1068,14 @@ mod tests {
         );
         let (evaluated, _) = evaluate(&appended).unwrap();
         assert_eq!(
-            evaluated.model.part("board").unwrap().face_offsets[0].distance_mm,
+            evaluated
+                .model
+                .part("board")
+                .unwrap()
+                .face_offsets()
+                .next()
+                .unwrap()
+                .distance_mm,
             -3.0
         );
     }
