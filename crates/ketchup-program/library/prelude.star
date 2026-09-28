@@ -425,6 +425,16 @@ def trim(part, point, normal, name = None):
 #     (never nearer the far side than rest or a third of the thickness), the
 #     rest of the dowel into the other part's edge, every hole clearance mm
 #     longer than its dowel end; e.g. 8x35 side-to-shelf: 12 mm + 26 mm.
+#   hinge(door, side, count=None, margin=None, cup=35, cup_depth=13,
+#         cup_edge=4, setback=37, pitch=32, plate_hole=5, plate_depth=12,
+#         max_gap=4, name=None)  -> world centres of the cups
+#     concealed cup hinges on the door edge next to `side`, inset or overlay:
+#     cup holes in the door's inner face (cup_edge mm from its edge), two
+#     mounting-plate holes per hinge in the side's inner face, setback mm
+#     behind the door and pitch mm apart, and a hinge joint that carries the
+#     door across its reveal (up to max_gap mm), so it is not floating.
+#     count defaults by door height (<= 900 mm: 2, 1600: 3, 2000: 4, else 5),
+#     margin (door end to cup centre) to min(100, a quarter of the height).
 #   contact(a, b) (see placement) finds the face they share.
 
 # name: (diameter, length) in mm
@@ -508,6 +518,90 @@ def dowels(a, b, dowel = "8x35", count = None, margin = 50, spacing = 250, clear
         hole(b, c.face_b, world = point, diameter = diameter, depth = depth_b, id = "dowel:%s:%d" % (part_info(a).name, i + 1))
     joint(a, b, kind = "dowel", fasteners = points, fastener = "dowel " + dowel)
     return points
+
+def _dot(a, b):
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+def _world(info, local):
+    """World point of a point given in the part's own frame."""
+    return vec_add(info.at, vec_add(vec_scale(info.x, local[0]),
+                                    vec_add(vec_scale(info.y, local[1]), vec_scale(info.z, local[2]))))
+
+def _thinnest(info):
+    return 0 if info.size[0] <= min(info.size[1], info.size[2]) else (1 if info.size[1] <= info.size[2] else 2)
+
+def _own_axis(info, direction):
+    """(index, +1/-1) of the part's own axis most parallel to a world direction."""
+    best = (0, 0)
+    for i in range(3):
+        d = _dot(getattr(info, "xyz"[i]), direction)
+        if abs(d) > abs(best[1]):
+            best = (i, d)
+    return (best[0], 1 if best[1] >= 0 else -1)
+
+HINGES_BY_HEIGHT = [(900, 2), (1600, 3), (2000, 4)]
+
+def hinge(door, side, count = None, margin = None, cup = 35, cup_depth = 13, cup_edge = 4,
+          setback = 37, pitch = 32, plate_hole = 5, plate_depth = 12, max_gap = 4, name = None):
+    """Concealed cup hinges hanging `door` on `side` (inset or overlay).
+
+    The hinge edge is the door edge towards the side; the door's inner face is
+    the one towards the side's middle. Cups (cup mm, cup_depth deep) sit
+    cup_edge mm from that edge; each hinge's mounting plate takes two holes in
+    the side's face towards the door, setback mm behind the door's inner face
+    and pitch mm apart. The hinge joint carries the door across a reveal of up
+    to max_gap mm. Returns the cup centres (world)."""
+    di, si = part_info(door), part_info(side)
+    to_side = vec_sub(vec_add(si.min, si.max), vec_add(di.min, di.max))
+    across = getattr(si, "xyz"[_thinnest(si)])
+    if _dot(across, to_side) < 0:
+        across = vec_scale(across, -1)
+    t = _thinnest(di)
+    inward = getattr(di, "xyz"[t])
+    t_sign = 1 if _dot(inward, to_side) >= 0 else -1
+    inward = vec_scale(inward, t_sign)
+    a, a_sign = _own_axis(di, across)
+    if a == t:
+        fail("hinge(%s, %s): the door must stand across the side's front edge, not parallel to it" % (di.name, si.name))
+    l = 3 - t - a
+    height = di.size[l]
+    if count == None:
+        count = 5
+        for limit, n in reversed(HINGES_BY_HEIGHT):
+            if height <= limit:
+                count = n
+    if margin == None:
+        margin = min(100, height / 4.0)
+    if count > 1 and (height - 2 * margin) / (count - 1) < cup + 10:
+        fail("hinge(%s, %s): %d hinges with cups of %s mm do not fit on a %s mm door (margin %s mm)" %
+             (di.name, si.name, count, cup, _mm(height), _mm(margin)))
+    gap = distance(door, side).distance
+    if gap > max_gap:
+        fail("hinge(%s, %s): the door is %s mm from the side, more than max_gap = %s mm a hinge bridges" %
+             (di.name, si.name, _mm(gap), max_gap))
+    door_face = "xyz"[t] + ("+" if t_sign > 0 else "-")
+    side_axis, side_sign = _own_axis(si, across)
+    side_face = "xyz"[side_axis] + ("-" if side_sign > 0 else "+")
+    plane = -reach(side, vec_scale(across, -1))
+    along = getattr(di, "xyz"[l])
+    label = name or "hinge:%s" % di.name
+    cups = []
+    for i, height_at in enumerate(spread(margin, height - margin, count)):
+        local = [0, 0, 0]
+        local[t] = di.size[t] if t_sign > 0 else 0
+        local[a] = di.size[a] - cup_edge - cup / 2.0 if a_sign > 0 else cup_edge + cup / 2.0
+        local[l] = height_at
+        centre = _world(di, local)
+        cups.append(centre)
+        hole(door, door_face, world = centre, diameter = cup, depth = cup_depth, id = "%s:cup:%d" % (label, i + 1))
+        plate = vec_add(centre, vec_scale(inward, setback))
+        plate = vec_add(plate, vec_scale(across, plane - _dot(plate, across)))
+        for j, offset in enumerate([-pitch / 2.0, pitch / 2.0]):
+            hole(side, side_face, world = vec_add(plate, vec_scale(along, offset)), diameter = plate_hole,
+                 depth = plate_depth, id = "%s:plate:%d.%d" % (label, i + 1, j + 1))
+    joint(door, side, kind = "hinge", fasteners = cups, fastener = "hinge %s mm with plate" % cup,
+          max_gap = max(gap, 0) + 0.5, name = label)
+    return cups
 
 #@topic intent: Stating intent that the check measures (expect_*)
 #

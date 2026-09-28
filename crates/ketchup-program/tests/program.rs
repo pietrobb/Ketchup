@@ -187,6 +187,101 @@ dowels(a, b, dowel = \"8x35\")
     }
 }
 
+/// A 600 x 450 x 600 carcass of 18 mm boards and one door over its front.
+fn cabinet_with_door(door: &str) -> String {
+    format!(
+        "left = board(\"left\", (18, 450, 600))
+right = board(\"right\", (18, 450, 600), at = (582, 0, 0))
+bottom = board(\"bottom\", (564, 450, 18), at = (18, 0, 0))
+top = board(\"top\", (564, 450, 18), at = (18, 0, 582))
+dowels(left, bottom)
+dowels(right, bottom)
+dowels(left, top)
+dowels(right, top)
+{door}
+cups = hinge(door, left)
+"
+    )
+}
+
+fn holes_of<'a>(model: &'a ProgramModel, part: &str) -> Vec<&'a ketchup_program::model::Hole> {
+    model
+        .part(part)
+        .unwrap()
+        .holes
+        .iter()
+        .filter(|hole| hole.id.starts_with("hinge:"))
+        .collect()
+}
+
+#[test]
+fn hinges_hang_an_inset_door_across_its_reveal() {
+    // Inset: 2 mm reveal all round, front flush with the carcass front.
+    let source = cabinet_with_door("door = board(\"door\", (560, 18, 560), at = (20, 0, 20))");
+    let (evaluated, report) = run("test.star", &source, &BTreeMap::new()).unwrap();
+    assert!(report.issues.is_empty(), "{:#?}", report.issues);
+    let model = evaluated.model;
+    let cups = holes_of(&model, "door");
+    assert_eq!(cups.len(), 2);
+    for cup in &cups {
+        assert_eq!(cup.face, Face::YMax, "the cups face into the carcass");
+        assert!((cup.diameter_mm - 35.0).abs() < 1e-9 && (cup.depth_mm - 13.0).abs() < 1e-9);
+        // 4 mm from the hinge edge to the rim: centre 21.5 mm in.
+        assert!((cup.u_mm - 21.5).abs() < 1e-9, "{}", cup.u_mm);
+    }
+    let heights: Vec<f64> = cups.iter().map(|cup| cup.v_mm).collect();
+    assert_eq!(heights, vec![100.0, 460.0]);
+    let plates = holes_of(&model, "left");
+    assert_eq!(plates.len(), 4);
+    for plate in &plates {
+        assert_eq!(
+            plate.face,
+            Face::XMax,
+            "plates sit on the side's inner face"
+        );
+        // 37 mm behind the door's inner face (y = 18).
+        assert!((plate.u_mm - 55.0).abs() < 1e-9, "{}", plate.u_mm);
+    }
+    let mut plate_heights: Vec<f64> = plates.iter().map(|plate| plate.v_mm).collect();
+    plate_heights.sort_by(f64::total_cmp);
+    assert_eq!(plate_heights, vec![104.0, 136.0, 464.0, 496.0]);
+    let hinges = report
+        .bom
+        .hardware
+        .iter()
+        .find(|row| row.item.starts_with("hinge"))
+        .unwrap();
+    assert_eq!(
+        (hinges.item.as_str(), hinges.count),
+        ("hinge 35 mm with plate", 2)
+    );
+}
+
+#[test]
+fn hinges_hang_an_overlay_door_on_the_carcass_front() {
+    let source = cabinet_with_door("door = board(\"door\", (598, 18, 598), at = (1, -18, 1))");
+    let (evaluated, report) = run("test.star", &source, &BTreeMap::new()).unwrap();
+    assert!(report.issues.is_empty(), "{:#?}", report.issues);
+    let model = evaluated.model;
+    for cup in holes_of(&model, "door") {
+        assert_eq!(cup.face, Face::YMax);
+        assert!((cup.u_mm - 21.5).abs() < 1e-9, "{}", cup.u_mm);
+    }
+    for plate in holes_of(&model, "left") {
+        assert_eq!(plate.face, Face::XMax);
+        assert!((plate.u_mm - 37.0).abs() < 1e-9, "{}", plate.u_mm);
+    }
+}
+
+#[test]
+fn a_door_too_far_from_its_side_is_refused_with_the_distance() {
+    let source = cabinet_with_door("door = board(\"door\", (550, 18, 560), at = (30, 0, 20))");
+    let Err(error) = run("test.star", &source, &BTreeMap::new()) else {
+        panic!("a 12 mm reveal is not a hinge");
+    };
+    assert!(error.to_string().contains("12 mm from the side"), "{error}");
+}
+
 #[test]
 fn a_blind_hole_leaving_too_little_material_is_a_warning() {
     let source = "\

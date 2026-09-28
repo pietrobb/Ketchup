@@ -87,6 +87,14 @@ into its edge) the rest, every hole `clearance` deeper than its dowel end
 (8x35 side to shelf: 12 mm + 26 mm). Parts that cannot hold the dowel fail
 with both parts' limits.
 
+`hinge(door, side, count=None, ...)` hangs a door (inset or overlay) on
+concealed 35 mm cup hinges: cups in the door's inner face 4 mm from the hinge
+edge, two mounting-plate holes per hinge in the side's inner face 37 mm behind
+the door and 32 mm apart, and a `hinge` joint whose `max_gap` covers the
+reveal, so the door is carried and not floating. The count follows the door
+height (2 up to 900 mm, 3 to 1600, 4 to 2000, then 5); a door further than
+`max_gap` (4 mm) from the side is refused with the distance.
+
 The file is split into topics by `#@topic id: title` lines (`basics`,
 `placement`, `profiles`, `machining`, `joinery`, `intent`, `report`). Each
 topic holds the comments that document its builtins and the helpers that
@@ -101,7 +109,7 @@ topic it belongs to.
 | `collision` | error | two parts overlap, and the overlap is neither inside a pocket of one of them nor inside a declared joint volume |
 | `hole_outside_face` | error | a hole does not fit on its face |
 | `hole_breaks_through` | error | a hole is as deep as the part is thick |
-| `hole_wall_too_thin` | warning | a blind hole leaves less than a quarter of the part's thickness (at least 3 mm) behind it |
+| `hole_wall_too_thin` | warning | a blind hole leaves less than 3 mm of the part behind it |
 | `joint_without_contact` | error | a joint connects parts that are further apart than its `max_gap` |
 | `param_out_of_range` | error | a parameter is outside its `min`/`max` |
 | `floating_part` | warning | a part touches nothing that rests on z = 0 |
