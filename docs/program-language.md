@@ -87,8 +87,9 @@ Checks report; they never stop the program from being evaluated or built.
 
 ## Current limits
 
-- Parts are axis-aligned cuboids. Rotated parts, profiles and curved shapes
-  are the next generic builtins to add.
+- Parts are cuboids, extruded or revolved profiles (lines and exact circular
+  arcs; `round_corners` rounds a point loop), and their booleans; any part can
+  be rotated. Sweep along a path and loft between profiles are not there yet.
 - A built program replaces the whole document. Keeping the program inside the
   document, and applying manual edits as overrides keyed by part name, are the
   next steps.

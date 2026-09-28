@@ -80,10 +80,22 @@ pub fn part(part: &Part) -> AssistantCadEditOperation {
         entities: segments
             .iter()
             .enumerate()
-            .map(|(index, segment)| AssistantSketchEntity::Line {
-                id: u64::try_from(index + 1).expect("bounded program profile"),
-                start_mm: segment.start_mm,
-                end_mm: segment.end_mm,
+            .map(|(index, segment)| {
+                let id = u64::try_from(index + 1).expect("bounded program profile");
+                match segment.arc {
+                    None => AssistantSketchEntity::Line {
+                        id,
+                        start_mm: segment.start_mm,
+                        end_mm: segment.end_mm,
+                    },
+                    Some(arc) => AssistantSketchEntity::Arc {
+                        id,
+                        start_mm: segment.start_mm,
+                        end_mm: segment.end_mm,
+                        center_mm: arc.center_mm,
+                        clockwise: arc.clockwise,
+                    },
+                }
             })
             .collect(),
         constraints: Vec::new(),

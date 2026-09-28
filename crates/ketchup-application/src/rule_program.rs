@@ -484,10 +484,14 @@ fn program_feature_references_match(
     before: &ketchup_program::model::Part,
     after: &ketchup_program::model::Part,
 ) -> bool {
-    fn segment_names(segments: &[ketchup_program::model::ProgramProfileSegment]) -> Vec<&str> {
+    // Names plus line/arc and arc direction: points and centres can change
+    // through parameters, the segment kind cannot.
+    fn segment_names(
+        segments: &[ketchup_program::model::ProgramProfileSegment],
+    ) -> Vec<(&str, Option<bool>)> {
         segments
             .iter()
-            .map(|segment| segment.name.as_str())
+            .map(|segment| (segment.name.as_str(), segment.arc.map(|arc| arc.clockwise)))
             .collect()
     }
     let body_matches = match (&before.body, &after.body) {

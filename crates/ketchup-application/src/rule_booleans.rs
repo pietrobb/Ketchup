@@ -7,7 +7,25 @@ use ketchup_core::document::{
     BodyId, BooleanOperation, CanonicalCommand, CanonicalError, DefinitionId, Dimension, FeatureId,
     FeatureKind, ProfileSegment, Transform,
 };
-use ketchup_program::model::{Part, ProgramBoolean, ProgramBooleanKind, ProgramPartBody};
+use ketchup_program::model::{
+    Part, ProgramBoolean, ProgramBooleanKind, ProgramPartBody, ProgramProfileSegment,
+};
+
+/// The canonical segment of one program profile segment.
+pub(crate) fn profile_segment(segment: &ProgramProfileSegment) -> ProfileSegment {
+    match segment.arc {
+        None => ProfileSegment::Line {
+            start_mm: segment.start_mm,
+            end_mm: segment.end_mm,
+        },
+        Some(arc) => ProfileSegment::CircularArc {
+            start_mm: segment.start_mm,
+            end_mm: segment.end_mm,
+            center_mm: arc.center_mm,
+            clockwise: arc.clockwise,
+        },
+    }
+}
 
 /// A new definition starts with this body active; the part's own features live in it.
 const PART_BODY: BodyId = BodyId(1);
@@ -129,10 +147,9 @@ impl<'a> BooleanPlanner<'a> {
                 ]
             }
             ProgramPartBody::Extrusion { segments, .. }
-            | ProgramPartBody::Revolve { segments, .. } => segments
-                .iter()
-                .map(|segment| line(segment.start_mm, segment.end_mm))
-                .collect(),
+            | ProgramPartBody::Revolve { segments, .. } => {
+                segments.iter().map(profile_segment).collect()
+            }
         };
         let profile = self.feature(
             format!("{prefix} tool profile"),

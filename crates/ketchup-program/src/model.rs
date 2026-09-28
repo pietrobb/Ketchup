@@ -215,11 +215,86 @@ impl Pocket {
     }
 }
 
+/// One named edge of a closed profile: a straight line, or a circular arc
+/// around `arc.center_mm` from `start_mm` to `end_mm`.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ProgramProfileSegment {
     pub name: String,
     pub start_mm: [f64; 2],
     pub end_mm: [f64; 2],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arc: Option<ProgramArc>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct ProgramArc {
+    pub center_mm: [f64; 2],
+    pub clockwise: bool,
+}
+
+impl ProgramProfileSegment {
+    #[must_use]
+    pub fn line(name: impl Into<String>, start_mm: [f64; 2], end_mm: [f64; 2]) -> Self {
+        Self {
+            name: name.into(),
+            start_mm,
+            end_mm,
+            arc: None,
+        }
+    }
+
+    /// The largest `direction · p` over the segment's points.
+    #[must_use]
+    pub fn support(&self, direction: [f64; 2]) -> f64 {
+        let dot = |p: [f64; 2]| p[0] * direction[0] + p[1] * direction[1];
+        let ends = dot(self.start_mm).max(dot(self.end_mm));
+        let Some(arc) = self.arc else {
+            return ends;
+        };
+        let length = direction[0].hypot(direction[1]);
+        if length <= f64::EPSILON {
+            return ends;
+        }
+        let c = arc.center_mm;
+        let radius = (self.start_mm[0] - c[0]).hypot(self.start_mm[1] - c[1]);
+        let angle = |p: [f64; 2]| (p[1] - c[1]).atan2(p[0] - c[0]);
+        let turn = |from: f64, to: f64| (to - from).rem_euclid(std::f64::consts::TAU);
+        let (start, end, target) = (
+            angle(self.start_mm),
+            angle(self.end_mm),
+            direction[1].atan2(direction[0]),
+        );
+        // Counter-clockwise sweep from `from` to `to` covering the arc.
+        let (from, to) = if arc.clockwise {
+            (end, start)
+        } else {
+            (start, end)
+        };
+        let sweep = match turn(from, to) {
+            0.0 => std::f64::consts::TAU,
+            sweep => sweep,
+        };
+        if turn(from, target) <= sweep {
+            ends.max(dot(c) + radius * length)
+        } else {
+            ends
+        }
+    }
+}
+
+/// `(min, max)` of a closed profile in its plane.
+#[must_use]
+pub fn profile_bounds(segments: &[ProgramProfileSegment]) -> ([f64; 2], [f64; 2]) {
+    let reach = |direction: [f64; 2]| {
+        segments
+            .iter()
+            .map(|segment| segment.support(direction))
+            .fold(f64::NEG_INFINITY, f64::max)
+    };
+    (
+        [-reach([-1.0, 0.0]), -reach([0.0, -1.0])],
+        [reach([1.0, 0.0]), reach([0.0, 1.0])],
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -321,16 +396,6 @@ impl Part {
     /// Bounds of the body in its own frame, before cuts and finishes.
     #[must_use]
     pub fn local_bounds(&self) -> ([f64; 3], [f64; 3]) {
-        let profile_bounds = |segments: &[ProgramProfileSegment]| {
-            let (mut min, mut max) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
-            for point in segments.iter().flat_map(|s| [s.start_mm, s.end_mm]) {
-                for axis in 0..2 {
-                    min[axis] = min[axis].min(point[axis]);
-                    max[axis] = max[axis].max(point[axis]);
-                }
-            }
-            (min, max)
-        };
         match &self.body {
             ProgramPartBody::Panel => ([0.0; 3], self.size_mm),
             ProgramPartBody::Extrusion {
@@ -369,11 +434,8 @@ impl Part {
                 segments,
                 distance_mm,
             } => {
-                largest(
-                    &mut segments
-                        .iter()
-                        .map(|s| s.start_mm[0] * local[0] + s.start_mm[1] * local[1]),
-                ) + (local[2] * distance_mm).max(0.0)
+                largest(&mut segments.iter().map(|s| s.support([local[0], local[1]])))
+                    + (local[2] * distance_mm).max(0.0)
             }
             ProgramPartBody::Revolve {
                 segments,
@@ -385,12 +447,14 @@ impl Part {
                 && axis_end_mm[0].abs() <= f64::EPSILON
                 && (axis_start_mm[1] - axis_end_mm[1]).abs() > f64::EPSILON =>
             {
+                // A profile point (x, y) sweeps a circle of radius |x|; the
+                // farthest point along `local` has local y = y and lies |x|
+                // across, and |x| = max(x, -x).
                 let across = local[0].hypot(local[2]);
-                largest(
-                    &mut segments
-                        .iter()
-                        .map(|s| s.start_mm[1] * local[1] + s.start_mm[0].abs() * across),
-                )
+                largest(&mut segments.iter().map(|s| {
+                    s.support([across, local[1]])
+                        .max(s.support([-across, local[1]]))
+                }))
             }
             ProgramPartBody::Revolve { .. } => bounds_reach(),
         };
@@ -494,7 +558,11 @@ impl Part {
         let profile_parameters = |segments: &[ProgramProfileSegment]| {
             let mut parameters = Vec::new();
             for (index, segment) in segments.iter().enumerate() {
-                for (point, coordinates) in [("start", segment.start_mm), ("end", segment.end_mm)] {
+                let center = segment.arc.map(|arc| ("center", arc.center_mm));
+                for (point, coordinates) in [("start", segment.start_mm), ("end", segment.end_mm)]
+                    .into_iter()
+                    .chain(center)
+                {
                     parameters.push(length(
                         &format!("entities.{}.{point}.x", index + 1),
                         coordinates[0],

@@ -45,7 +45,16 @@
 #
 # Profile parts. `profile` is a closed loop in the part's local XY plane:
 # either points [[x, y], ...] (faces become "segment1", "segment2", ...) or
-# named segments [["name", [x0, y0], [x1, y1]], ...]. extrude() pads it along
+# named segments [["name", [x0, y0], [x1, y1]], ...]. A named segment with a
+# fourth item is a circular arc from start to end: {"through": (x, y)} (a
+# point on the arc), {"radius": r, "clockwise": False, "large": False} or
+# {"center": (x, y), "clockwise": False}; e.g. an arched apron bottom
+# ["arch", [600, 0], [0, 0], {"through": (300, 60)}]. A full circle is two
+# arcs. round_corners(points, radius, names=None) turns a point loop into
+# named segments with every corner rounded by a tangent arc "corner<i+1>"
+# (radius: one number or one per corner, 0 = sharp), e.g.
+# extrude("top", profile=round_corners([[0,0],[800,0],[800,500],[0,500]], 40),
+# distance=18). Arcs are exact in the solid; extrude() pads it along
 # local +z; revolve() turns it around `axis` = [[x0, y0], [x1, y1]] in that
 # plane. Faces of a profile part: each segment's name, the caps "start"
 # and "end" (extrude: z = 0 and z = distance; revolve: only when angle < 360),
@@ -151,6 +160,63 @@ def vec_scale(a, factor):
 
 def vec_length(a):
     return math.sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2])
+
+def plane_length(dx, dy):
+    return math.sqrt(dx * dx + dy * dy)
+
+def round_corners(points, radius, names = None):
+    """Named segments of the closed point loop `points` with each corner
+    rounded by a tangent arc. `radius` is one number or one per corner (0
+    keeps it sharp). Sides are named names[i] or "segment<i+1>" (from
+    points[i] to points[i+1]); the arc at points[i] is "corner<i+1>"."""
+    count = len(points)
+    radii = radius if type(radius) in ("list", "tuple") else [radius] * count
+    if len(radii) != count or (names != None and len(names) != count):
+        fail("round_corners: give one radius and one name per corner (%d)" % count)
+    side = [names[i] if names != None else "segment%d" % (i + 1) for i in range(count)]
+    cuts = []
+    for i in range(count):
+        p = points[i]
+        a, b = points[(i - 1) % count], points[(i + 1) % count]
+        la = plane_length(a[0] - p[0], a[1] - p[1])
+        lb = plane_length(b[0] - p[0], b[1] - p[1])
+        u1 = ((a[0] - p[0]) / la, (a[1] - p[1]) / la)
+        u2 = ((b[0] - p[0]) / lb, (b[1] - p[1]) / lb)
+        c = u1[0] * u2[0] + u1[1] * u2[1]
+        r = radii[i]
+        if r <= 0 or c <= -1 + 1e-9:
+            cuts.append(None)
+            continue
+        if c >= 1 - 1e-9:
+            fail("round_corners: corner %d folds back on itself" % (i + 1))
+        t = r * math.sqrt((1 + c) / (1 - c))  # r / tan(half angle)
+        d = r / math.sqrt((1 - c) / 2)  # r / sin(half angle)
+        bis = (u1[0] + u2[0], u1[1] + u2[1])
+        lbis = plane_length(bis[0], bis[1])
+        turn = (p[0] - a[0]) * (b[1] - p[1]) - (p[1] - a[1]) * (b[0] - p[0])
+        cuts.append(dict(
+            t = t,
+            first = [p[0] + u1[0] * t, p[1] + u1[1] * t],
+            second = [p[0] + u2[0] * t, p[1] + u2[1] * t],
+            center = (p[0] + bis[0] / lbis * d, p[1] + bis[1] / lbis * d),
+            clockwise = turn < 0,
+        ))
+    segments = []
+    for i in range(count):
+        j = (i + 1) % count
+        start = cuts[i]["second"] if cuts[i] != None else list(points[i])
+        end = cuts[j]["first"] if cuts[j] != None else list(points[j])
+        used = (cuts[i]["t"] if cuts[i] != None else 0) + (cuts[j]["t"] if cuts[j] != None else 0)
+        length = plane_length(points[j][0] - points[i][0], points[j][1] - points[i][1])
+        if used > length + 1e-6:
+            fail("round_corners: radii at corners %d and %d need %s mm but side %r is %s mm" %
+                 (i + 1, j + 1, used, side[i], length))
+        if used < length - 1e-6:
+            segments.append([side[i], start, end])
+        if cuts[j] != None:
+            segments.append(["corner%d" % (j + 1), cuts[j]["first"], cuts[j]["second"],
+                             {"center": cuts[j]["center"], "clockwise": cuts[j]["clockwise"]}])
+    return segments
 
 def face_normal(part, face):
     """World outward normal of `face` ("x-" ... "z+") in the part's own frame,

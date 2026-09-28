@@ -128,7 +128,9 @@ pub(crate) fn is_box(part: &Part) -> bool {
     plain
         && match &part.body {
             ProgramPartBody::Panel => true,
-            ProgramPartBody::Extrusion { segments, .. } => {
+            ProgramPartBody::Extrusion { segments, .. }
+                if segments.iter().all(|segment| segment.arc.is_none()) =>
+            {
                 let (min, max) = part.local_bounds();
                 let (width, depth) = (max[0] - min[0], max[1] - min[1]);
                 let doubled_area: f64 = segments
@@ -137,7 +139,7 @@ pub(crate) fn is_box(part: &Part) -> bool {
                     .sum();
                 (doubled_area.abs() / 2.0 - width * depth).abs() <= TOLERANCE_MM * (width + depth)
             }
-            ProgramPartBody::Revolve { .. } => false,
+            ProgramPartBody::Extrusion { .. } | ProgramPartBody::Revolve { .. } => false,
         }
 }
 

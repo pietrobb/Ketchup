@@ -54,6 +54,54 @@ fn legs_in_a_round_seat_without_holes_collide_in_the_exact_solids() {
     );
 }
 
+fn exact_kinds(source: &str) -> (Vec<String>, serde_json::Value) {
+    let (report, summary) = verified(source.to_owned());
+    assert_eq!(summary["state"], "verified", "{summary}");
+    let kinds = report
+        .issues
+        .iter()
+        .map(|issue| issue.kind.to_owned())
+        .filter(|kind| kind == "collision" || kind == COLLISION_UNVERIFIED)
+        .collect();
+    (kinds, summary)
+}
+
+#[test]
+fn rounded_profile_corners_are_exact_arcs_in_the_solid() {
+    // Corner arc centre (40, 40), radius 40: a 10 mm cube in the corner stays
+    // outside the arc (its far corner is 42.4 mm from the centre), a cube
+    // moved to (8, 8) reaches 31 mm from it and cuts into the top.
+    let top = "top = extrude(\"top\", distance = 18, \
+               profile = round_corners([[0, 0], [800, 0], [800, 500], [0, 500]], 40))\n";
+    let (clear, summary) = exact_kinds(&format!(
+        "{top}c = box(\"c\", (10, 10, 10), at = (0, 0, 4))\n"
+    ));
+    assert!(clear.is_empty(), "{clear:?} {summary}");
+    assert_eq!(summary["cleared"], 1, "{summary}");
+    let (hit, summary) = exact_kinds(&format!(
+        "{top}c = box(\"c\", (10, 10, 10), at = (8, 8, 4))\n"
+    ));
+    assert_eq!(hit, ["collision"], "{summary}");
+}
+
+#[test]
+fn an_arched_apron_leaves_its_arch_open() {
+    // The arch rises from (0, 0) through (300, 60) to (600, 0); below it the
+    // apron is empty.
+    let apron = "apron = extrude(\"apron\", distance = 20, profile = [\
+                 [\"top\", [600, 120], [0, 120]], [\"left\", [0, 120], [0, 0]], \
+                 [\"arch\", [0, 0], [600, 0], {\"through\": (300, 60)}], \
+                 [\"right\", [600, 0], [600, 120]]])\n";
+    let (clear, summary) = exact_kinds(&format!(
+        "{apron}c = box(\"c\", (40, 40, 10), at = (280, 0, 5))\n"
+    ));
+    assert!(clear.is_empty(), "{clear:?} {summary}");
+    let (hit, summary) = exact_kinds(&format!(
+        "{apron}c = box(\"c\", (40, 40, 10), at = (280, 30, 5))\n"
+    ));
+    assert_eq!(hit, ["collision"], "{summary}");
+}
+
 #[test]
 fn a_part_inside_the_empty_corner_of_a_triangle_is_cleared() {
     // The cube sits in the corner the triangle leaves empty; the boxes overlap.

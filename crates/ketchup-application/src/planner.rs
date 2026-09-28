@@ -4268,10 +4268,7 @@ pub fn plan_rule_part_batch(
                     segments: cut
                         .segments
                         .iter()
-                        .map(|segment| ProfileSegment::Line {
-                            start_mm: segment.start_mm,
-                            end_mm: segment.end_mm,
-                        })
+                        .map(crate::rule_booleans::profile_segment)
                         .collect(),
                     closed: true,
                 },

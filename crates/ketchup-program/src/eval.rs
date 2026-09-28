@@ -11,15 +11,16 @@
 use crate::expect::{Comparison, Direction, Expectation, Measure};
 use crate::frame::{self, Mat3};
 use crate::model::{
-    Face, Hole, Joint, Param, Part, Pocket, ProgramBoolean, ProgramBooleanKind, ProgramCut,
-    ProgramEdgeFillet, ProgramEdgeFinishKind, ProgramFaceOffset, ProgramModel, ProgramPartBody,
-    ProgramProfileSegment,
+    Face, Hole, Joint, Param, Part, Pocket, ProgramArc, ProgramBoolean, ProgramBooleanKind,
+    ProgramCut, ProgramEdgeFillet, ProgramEdgeFinishKind, ProgramFaceOffset, ProgramModel,
+    ProgramPartBody, ProgramProfileSegment, profile_bounds,
 };
 use serde::Serialize;
 use starlark::environment::{FrozenModule, Globals, GlobalsBuilder, LibraryExtension, Module};
 use starlark::eval::Evaluator;
 use starlark::starlark_module;
 use starlark::syntax::{AstModule, Dialect};
+use starlark::values::dict::DictRef;
 use starlark::values::float::UnpackFloat;
 use starlark::values::none::NoneType;
 use starlark::values::structs::AllocStruct;
@@ -186,15 +187,15 @@ fn profile_segments<'v>(
         .iterate(heap)
         .map_err(|_| anyhow::anyhow!("{what} must be a list of 2D points or named segments"))?
         .collect::<Vec<_>>();
-    if items.len() < 3 {
-        anyhow::bail!("{what} must contain at least three points or segments");
-    }
     let named = items.first().is_some_and(|item| {
         item.iterate(heap)
             .ok()
             .and_then(|mut fields| fields.next())
             .is_some_and(|field| field.unpack_str().is_some())
     });
+    if items.len() < if named { 2 } else { 3 } {
+        anyhow::bail!("{what} must contain at least three points or two named segments");
+    }
     if named {
         let mut names = BTreeSet::new();
         return items
@@ -206,8 +207,12 @@ fn profile_segments<'v>(
                         anyhow::anyhow!("{what} named segment must be [name, start, end]")
                     })?
                     .collect::<Vec<_>>();
-                let [name, start, end] = fields.as_slice() else {
-                    anyhow::bail!("{what} named segment must be [name, start, end]");
+                let (name, start, end, arc) = match fields.as_slice() {
+                    [name, start, end] => (name, start, end, None),
+                    [name, start, end, arc] => (name, start, end, Some(*arc)),
+                    _ => anyhow::bail!(
+                        "{what} named segment must be [name, start, end] or [name, start, end, arc]"
+                    ),
                 };
                 let name = name
                     .unpack_str()
@@ -223,10 +228,17 @@ fn profile_segments<'v>(
                         "{what} segment names must be unique printable names without # , ( ) . :"
                     );
                 }
+                let start_mm = numbers::<2>(*start, heap, what)?;
+                let end_mm = numbers::<2>(*end, heap, what)?;
+                let arc = arc
+                    .map(|arc| profile_arc(arc, start_mm, end_mm, heap))
+                    .transpose()
+                    .map_err(|error| anyhow::anyhow!("{what} segment {name:?}: {error}"))?;
                 Ok(ProgramProfileSegment {
                     name: name.to_owned(),
-                    start_mm: numbers::<2>(*start, heap, what)?,
-                    end_mm: numbers::<2>(*end, heap, what)?,
+                    start_mm,
+                    end_mm,
+                    arc,
                 })
             })
             .collect();
@@ -236,12 +248,108 @@ fn profile_segments<'v>(
         .map(|point| numbers::<2>(point, heap, what))
         .collect::<anyhow::Result<Vec<_>>>()?;
     Ok((0..points.len())
-        .map(|index| ProgramProfileSegment {
-            name: format!("segment{}", index + 1),
-            start_mm: points[index],
-            end_mm: points[(index + 1) % points.len()],
+        .map(|index| {
+            ProgramProfileSegment::line(
+                format!("segment{}", index + 1),
+                points[index],
+                points[(index + 1) % points.len()],
+            )
         })
         .collect())
+}
+
+/// The arc of a named segment from a dict: `{"center": (x, y),
+/// "clockwise": False}`, `{"through": (x, y)}` or `{"radius": r,
+/// "clockwise": False, "large": False}`.
+fn profile_arc<'v>(
+    value: Value<'v>,
+    start: [f64; 2],
+    end: [f64; 2],
+    heap: &'v Heap,
+) -> anyhow::Result<ProgramArc> {
+    const FORMS: &str = "the arc must be {\"center\": (x, y), \"clockwise\": False}, \
+                         {\"through\": (x, y)} or {\"radius\": r, \"clockwise\": False, \"large\": False}";
+    let dict = DictRef::from_value(value).ok_or_else(|| anyhow::anyhow!("{FORMS}"))?;
+    for key in dict.keys() {
+        if !matches!(
+            key.unpack_str(),
+            Some("center" | "through" | "radius" | "clockwise" | "large")
+        ) {
+            anyhow::bail!("unknown arc key {key}; {FORMS}");
+        }
+    }
+    let flag = |key: &str| {
+        dict.get_str(key).map_or(Ok(false), |value| {
+            value
+                .unpack_bool()
+                .ok_or_else(|| anyhow::anyhow!("arc {key} must be True or False"))
+        })
+    };
+    let (clockwise, large) = (flag("clockwise")?, flag("large")?);
+    let chord = [end[0] - start[0], end[1] - start[1]];
+    let half = chord[0].hypot(chord[1]) / 2.0;
+    if half <= TOLERANCE_MM {
+        anyhow::bail!("an arc needs distinct start and end points (make a circle from two arcs)");
+    }
+    let middle = [(start[0] + end[0]) / 2.0, (start[1] + end[1]) / 2.0];
+    let left = [-chord[1] / (2.0 * half), chord[0] / (2.0 * half)];
+    let arc = match (
+        dict.get_str("center"),
+        dict.get_str("through"),
+        dict.get_str("radius"),
+    ) {
+        (Some(center), None, None) => ProgramArc {
+            center_mm: numbers::<2>(center, heap, "arc center")?,
+            clockwise,
+        },
+        (None, Some(through), None) => {
+            if dict.get_str("clockwise").is_some() || dict.get_str("large").is_some() {
+                anyhow::bail!("an arc through a point takes no clockwise or large");
+            }
+            let p = numbers::<2>(through, heap, "arc through")?;
+            let turn = (p[0] - start[0]) * (end[1] - p[1]) - (p[1] - start[1]) * (end[0] - p[0]);
+            if turn.abs() <= TOLERANCE_MM * half {
+                anyhow::bail!("the through point lies on the line from start to end; use a line");
+            }
+            // Centre on the chord's bisector, equally far from start and p.
+            let along = ((p[0] - middle[0]).powi(2) + (p[1] - middle[1]).powi(2) - half * half)
+                / (2.0 * ((p[0] - middle[0]) * left[0] + (p[1] - middle[1]) * left[1]));
+            ProgramArc {
+                center_mm: [middle[0] + left[0] * along, middle[1] + left[1] * along],
+                clockwise: turn < 0.0,
+            }
+        }
+        (None, None, Some(radius)) => {
+            let radius = number(radius, "arc radius")?;
+            if radius < half - TOLERANCE_MM {
+                anyhow::bail!(
+                    "arc radius {radius} is smaller than half the {} mm chord",
+                    2.0 * half
+                );
+            }
+            let offset = (radius * radius - half * half).max(0.0).sqrt();
+            let side = if clockwise == large { 1.0 } else { -1.0 };
+            ProgramArc {
+                center_mm: [
+                    middle[0] + left[0] * offset * side,
+                    middle[1] + left[1] * offset * side,
+                ],
+                clockwise,
+            }
+        }
+        _ => anyhow::bail!("{FORMS}"),
+    };
+    let c = arc.center_mm;
+    let (r_start, r_end) = (
+        (start[0] - c[0]).hypot(start[1] - c[1]),
+        (end[0] - c[0]).hypot(end[1] - c[1]),
+    );
+    if (r_start - r_end).abs() > TOLERANCE_MM.max(1.0e-6 * r_start) {
+        anyhow::bail!(
+            "start and end must lie equally far from the arc center ({r_start} mm vs {r_end} mm)"
+        );
+    }
+    Ok(arc)
 }
 
 fn named_edges<'v>(value: Value<'v>, heap: &'v Heap) -> anyhow::Result<Vec<[String; 2]>> {
@@ -555,26 +663,13 @@ fn insert_profile_part(
             segments
         }
     };
-    let points = segments
-        .iter()
-        .flat_map(|segment| [segment.start_mm, segment.end_mm]);
-    let (mut min, mut max) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
-    for point in points {
-        for axis in 0..2 {
-            min[axis] = min[axis].min(point[axis]);
-            max[axis] = max[axis].max(point[axis]);
-        }
-    }
+    let (min, max) = profile_bounds(segments);
     let size_mm = match &body {
         ProgramPartBody::Extrusion { distance_mm, .. } => {
             [max[0] - min[0], max[1] - min[1], *distance_mm]
         }
-        ProgramPartBody::Revolve { segments, .. } => {
-            let radius = segments
-                .iter()
-                .flat_map(|segment| [segment.start_mm[0], segment.end_mm[0]])
-                .map(f64::abs)
-                .fold(0.0, f64::max);
+        ProgramPartBody::Revolve { .. } => {
+            let radius = max[0].abs().max(min[0].abs());
             [radius * 2.0, max[1] - min[1], radius * 2.0]
         }
         ProgramPartBody::Panel => unreachable!(),
