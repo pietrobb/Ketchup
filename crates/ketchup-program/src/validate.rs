@@ -139,7 +139,10 @@ pub(crate) fn is_box(part: &Part) -> bool {
                     .sum();
                 (doubled_area.abs() / 2.0 - width * depth).abs() <= TOLERANCE_MM * (width + depth)
             }
-            ProgramPartBody::Extrusion { .. } | ProgramPartBody::Revolve { .. } => false,
+            ProgramPartBody::Extrusion { .. }
+            | ProgramPartBody::Revolve { .. }
+            | ProgramPartBody::Sweep { .. }
+            | ProgramPartBody::Loft { .. } => false,
         }
 }
 

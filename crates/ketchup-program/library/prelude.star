@@ -4,11 +4,12 @@
 #   param(name, default, min=, max=, doc=)
 #   box(name, size, at=, material=, grain=, color=, tool=)  -> part
 #   extrude(name, profile=, distance=, at=, tool=), revolve(name, profile=, axis=, angle=, at=, tool=)
+#   sweep(name, profile=, path=, bend=, at=, tool=), loft(name, sections=, at=, tool=)
 #   rotate(part, axis=(x, y, z), angle=degrees, pivot=(x, y, z))  -> part
 #   place(part, origin=(x, y, z), z=(x, y, z), x=(x, y, z))  -> part
 #   part_info(part)  -> struct(name, size, at, min, max, x, y, z)
 #   subtract(part, tool, name=), intersect(part, tool, name=)  -> part
-#     `tool` is a helper body made with box/extrude/revolve(..., tool=True)
+#     `tool` is a helper body made with box/extrude/revolve/sweep/loft(..., tool=True)
 #     or another real part, taken as it is at the call. Booleans come after
 #     the part's other features. A part never collides with a part it
 #     subtracted, with a part lying inside one box tool it subtracted (a notch,
@@ -79,6 +80,30 @@
 #   push_pull(part, face=, distance=, name=)
 #     moves one named planar face along its outward normal (negative = in),
 #     e.g. push_pull(board, face="end#2", distance=10, name="raise right half")
+#
+# Swept and lofted parts (curved rails, bent tubes, tapered legs). Both take
+# at= and tool=True like extrude(), and subtract()/intersect() in either role;
+# fillet/chamfer/cut/push_pull do not apply to them.
+#   sweep(name, profile=, path=, bend=None, at=, tool=)
+#     carries a closed profile along a smooth path in the part's frame. path
+#     is 3D points [(x, y, z), ...] whose corners bend=r rounds with tangent
+#     arcs (a corner without bend is refused), or segments [start, end] and
+#     [start, end, {"through": (x, y, z)}] / [start, end, {"center": c,
+#     "normal": n}] (counter-clockwise about n) that must join tangentially.
+#     The profile (u, v) stands square to the path at its start: going
+#     horizontally, u points right of the direction of travel and v up (+z);
+#     starting up along +z, u is -x and v is +y. The profile is carried
+#     without twist, e.g. a 30 x 20 rail turning a 100 mm bend:
+#     sweep("rail", profile=[(-15, 0), (15, 0), (15, 20), (-15, 20)],
+#           path=[(0, 0, 0), (600, 0, 0), (600, 400, 0)], bend=100)
+#   loft(name, sections=[(profile, z), ...], at=, tool=)
+#     a solid through 2 to 16 closed profiles, each in the local XY plane at
+#     height z (strictly increasing), e.g. a leg tapering 40 -> 24 mm:
+#     loft("leg", sections=[([(0,0),(40,0),(40,40),(0,40)], 0),
+#                           ([(8,8),(32,8),(32,32),(8,32)], 700)])
+#   Reach, bounds and on()/distance() measure a sweep exactly; a loft through
+#   more than two sections may bulge slightly past them. Collisions of
+#   either are decided on the exact solids.
 #
 # Stating intent. Each helper records a condition that is measured on the
 # final model (after every move), so write them anywhere; one that does not

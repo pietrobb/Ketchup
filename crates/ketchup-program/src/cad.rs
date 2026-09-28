@@ -3,7 +3,7 @@
 //! The operations carry only the part's origin; the planner places each
 //! occurrence with the part's exact frame (`Part::transform_matrix`).
 
-use crate::model::{Part, ProgramModel, ProgramPartBody};
+use crate::model::{Part, ProgramModel, ProgramPartBody, ProgramProfileSegment};
 use ketchup_core::assistant_sidecar::{
     AssistantAxisSpec, AssistantCadEditOperation, AssistantCadPartFeature, AssistantPanelHole,
     AssistantPanelPocket, AssistantPrincipalPlane, AssistantSketchEntity, AssistantWorkplaneSpec,
@@ -44,6 +44,32 @@ fn panel(part: &Part) -> AssistantCadEditOperation {
     }
 }
 
+/// Sketch entities of a closed program profile, numbered from 1.
+#[must_use]
+pub fn profile_entities(segments: &[ProgramProfileSegment]) -> Vec<AssistantSketchEntity> {
+    segments
+        .iter()
+        .enumerate()
+        .map(|(index, segment)| {
+            let id = u64::try_from(index + 1).expect("bounded program profile");
+            match segment.arc {
+                None => AssistantSketchEntity::Line {
+                    id,
+                    start_mm: segment.start_mm,
+                    end_mm: segment.end_mm,
+                },
+                Some(arc) => AssistantSketchEntity::Arc {
+                    id,
+                    start_mm: segment.start_mm,
+                    end_mm: segment.end_mm,
+                    center_mm: arc.center_mm,
+                    clockwise: arc.clockwise,
+                },
+            }
+        })
+        .collect()
+}
+
 pub fn part(part: &Part) -> AssistantCadEditOperation {
     let (segments, feature) = match &part.body {
         ProgramPartBody::Panel => return panel(part),
@@ -71,33 +97,24 @@ pub fn part(part: &Part) -> AssistantCadEditOperation {
                 angle_degrees: *angle_degrees,
             },
         ),
+        // The assistant schema has no swept or lofted part: the planner
+        // replaces this profile and one-millimetre base with the real body
+        // (`plan_rule_part_batch`).
+        ProgramPartBody::Sweep { segments, .. } => (
+            segments,
+            AssistantCadPartFeature::Extrusion { distance_mm: 1.0 },
+        ),
+        ProgramPartBody::Loft { sections } => (
+            &sections[0].segments,
+            AssistantCadPartFeature::Extrusion { distance_mm: 1.0 },
+        ),
     };
     AssistantCadEditOperation::CreatePart {
         name: part.name.clone(),
         workplane: AssistantWorkplaneSpec::Principal {
             plane: AssistantPrincipalPlane::Xy,
         },
-        entities: segments
-            .iter()
-            .enumerate()
-            .map(|(index, segment)| {
-                let id = u64::try_from(index + 1).expect("bounded program profile");
-                match segment.arc {
-                    None => AssistantSketchEntity::Line {
-                        id,
-                        start_mm: segment.start_mm,
-                        end_mm: segment.end_mm,
-                    },
-                    Some(arc) => AssistantSketchEntity::Arc {
-                        id,
-                        start_mm: segment.start_mm,
-                        end_mm: segment.end_mm,
-                        center_mm: arc.center_mm,
-                        clockwise: arc.clockwise,
-                    },
-                }
-            })
-            .collect(),
+        entities: profile_entities(segments),
         constraints: Vec::new(),
         feature,
         translation_mm: part.at_mm,

@@ -15,6 +15,7 @@ pub mod eval;
 pub mod expect;
 pub mod frame;
 pub mod model;
+pub mod path;
 pub mod relations;
 pub mod validate;
 

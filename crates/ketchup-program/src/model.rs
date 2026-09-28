@@ -140,6 +140,8 @@ pub enum ProgramFeatureKind {
     Pad,
     Cut,
     Revolve,
+    Sweep,
+    Loft,
     Fillet,
     Chamfer,
     FaceOffset,
@@ -360,6 +362,39 @@ pub enum ProgramPartBody {
         axis_end_mm: [f64; 2],
         angle_degrees: f64,
     },
+    /// The closed profile carried along a tangent-continuous path; see
+    /// `crate::path` for the section frame.
+    Sweep {
+        segments: Vec<ProgramProfileSegment>,
+        path: Vec<ProgramPathSegment>,
+    },
+    /// A solid through closed profiles lying in local XY planes at strictly
+    /// increasing heights.
+    Loft {
+        sections: Vec<ProgramLoftSection>,
+    },
+}
+
+/// A circular path arc, counter-clockwise about `normal` seen from its tip.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct ProgramPathArc {
+    pub center_mm: [f64; 3],
+    pub normal: [f64; 3],
+}
+
+/// One piece of a sweep path in the part's frame: a line, or an arc.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ProgramPathSegment {
+    pub start_mm: [f64; 3],
+    pub end_mm: [f64; 3],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arc: Option<ProgramPathArc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ProgramLoftSection {
+    pub segments: Vec<ProgramProfileSegment>,
+    pub elevation_mm: f64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -410,13 +445,47 @@ impl Part {
                 let radius = self.size_mm[0] * 0.5;
                 ([-radius, min[1], -radius], [radius, max[1], radius])
             }
+            ProgramPartBody::Sweep { .. } | ProgramPartBody::Loft { .. } => {
+                let axis = |index: usize, sign: f64| {
+                    let mut direction = [0.0; 3];
+                    direction[index] = sign;
+                    sign * self.local_reach(direction)
+                };
+                (
+                    std::array::from_fn(|index| axis(index, -1.0)),
+                    std::array::from_fn(|index| axis(index, 1.0)),
+                )
+            }
+        }
+    }
+
+    /// `reach` of a swept or lofted body along a direction in its own frame.
+    fn local_reach(&self, local: [f64; 3]) -> f64 {
+        match &self.body {
+            ProgramPartBody::Sweep { segments, path } => {
+                crate::path::sweep_support(segments, path, local)
+            }
+            ProgramPartBody::Loft { sections } => sections
+                .iter()
+                .map(|section| {
+                    section
+                        .segments
+                        .iter()
+                        .map(|segment| segment.support([local[0], local[1]]))
+                        .fold(f64::NEG_INFINITY, f64::max)
+                        + local[2] * section.elevation_mm
+                })
+                .fold(f64::NEG_INFINITY, f64::max),
+            _ => unreachable!("only swept and lofted bodies have a local reach"),
         }
     }
 
     /// How far the body (before cuts, finishes and booleans) reaches along a
     /// world `direction`: the largest `direction · p` over its points. Exact
-    /// for boxes, extruded profiles and full revolutions about the local y
-    /// axis; other revolutions use their bounds in the part's own frame.
+    /// for boxes, extruded profiles, sweeps and full revolutions about the
+    /// local y axis; other revolutions use their bounds in the part's own
+    /// frame, lofts their sections (exact for two, a smooth loft through more
+    /// may bulge slightly past them).
     #[must_use]
     pub fn reach(&self, direction: [f64; 3]) -> f64 {
         let local = frame::apply_transposed(&self.rotation, direction);
@@ -457,6 +526,7 @@ impl Part {
                 }))
             }
             ProgramPartBody::Revolve { .. } => bounds_reach(),
+            ProgramPartBody::Sweep { .. } | ProgramPartBody::Loft { .. } => self.local_reach(local),
         };
         frame::dot(self.at_mm, direction) + body
     }
@@ -634,6 +704,18 @@ impl Part {
                     parameters,
                 ));
             }
+            // Any change rebuilds a swept or lofted part, so its tree names
+            // the body only.
+            ProgramPartBody::Sweep { .. } => features.push(feature(
+                format!("{} feature", self.name),
+                ProgramFeatureKind::Sweep,
+                Vec::new(),
+            )),
+            ProgramPartBody::Loft { .. } => features.push(feature(
+                format!("{} feature", self.name),
+                ProgramFeatureKind::Loft,
+                Vec::new(),
+            )),
         }
         for cut in &self.cuts {
             features.push(feature(

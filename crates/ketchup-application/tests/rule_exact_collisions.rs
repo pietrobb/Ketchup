@@ -103,6 +103,55 @@ fn an_arched_apron_leaves_its_arch_open() {
 }
 
 #[test]
+fn a_curved_rail_swept_around_a_bend_leaves_the_outer_corner_empty() {
+    // The rail's 30 x 20 section follows x to (600, 0) and turns to +y about
+    // (500, 100) with radius 100, so it fills 85..115 mm from that centre.
+    let rail = "rail = sweep(\"rail\", profile = [(-15, 0), (15, 0), (15, 20), (-15, 20)], \
+                path = [(0, 0, 0), (600, 0, 0), (600, 400, 0)], bend = 100)\n";
+    let (clear, summary) = exact_kinds(&format!(
+        "{rail}c = box(\"c\", (20, 20, 10), at = (575, -10, 5))\n"
+    ));
+    assert!(clear.is_empty(), "{clear:?} {summary}");
+    assert_eq!(summary["cleared"], 1, "{summary}");
+    let (hit, summary) = exact_kinds(&format!(
+        "{rail}c = box(\"c\", (20, 20, 10), at = (540, -10, 5))\n"
+    ));
+    assert_eq!(hit, ["collision"], "{summary}");
+}
+
+#[test]
+fn a_tapered_loft_leg_narrows_towards_its_top() {
+    // 40 mm square at the floor, 24 mm square (inset 8) at 700 mm: 600 mm up
+    // the side is inset 6.86 mm, 50 mm up only 0.57 mm.
+    let leg = "leg = loft(\"leg\", sections = [\
+               ([(0, 0), (40, 0), (40, 40), (0, 40)], 0), \
+               ([(8, 8), (32, 8), (32, 32), (8, 32)], 700)])\n";
+    let (clear, summary) = exact_kinds(&format!(
+        "{leg}c = box(\"c\", (6, 6, 50), at = (0, 0, 600))\n"
+    ));
+    assert!(clear.is_empty(), "{clear:?} {summary}");
+    assert_eq!(summary["cleared"], 1, "{summary}");
+    let (hit, summary) = exact_kinds(&format!(
+        "{leg}c = box(\"c\", (6, 6, 50), at = (0, 0, 20))\n"
+    ));
+    assert_eq!(hit, ["collision"], "{summary}");
+}
+
+#[test]
+fn a_lofted_tool_hollows_a_tapered_pocket_through_a_block() {
+    let (clear, summary) = exact_kinds(
+        "block = box(\"block\", (60, 60, 60))\n\
+         cavity = loft(\"cavity\", tool = True, sections = [\
+         ([(10, 10), (50, 10), (50, 50), (10, 50)], -1), \
+         ([(20, 20), (40, 20), (40, 40), (20, 40)], 61)])\n\
+         subtract(block, cavity)\n\
+         c = box(\"c\", (10, 10, 10), at = (25, 25, 25))\n",
+    );
+    assert!(clear.is_empty(), "{clear:?} {summary}");
+    assert_eq!(summary["cleared"], 1, "{summary}");
+}
+
+#[test]
 fn a_part_inside_the_empty_corner_of_a_triangle_is_cleared() {
     // The cube sits in the corner the triangle leaves empty; the boxes overlap.
     let source = "t = extrude(\"t\", profile = [(0, 0), (100, 0), (0, 100)], distance = 20)\n\

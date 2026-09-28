@@ -88,8 +88,11 @@ Checks report; they never stop the program from being evaluated or built.
 ## Current limits
 
 - Parts are cuboids, extruded or revolved profiles (lines and exact circular
-  arcs; `round_corners` rounds a point loop), and their booleans; any part can
-  be rotated. Sweep along a path and loft between profiles are not there yet.
+  arcs; `round_corners` rounds a point loop), profiles swept along a smooth
+  path of lines and arcs (`sweep`, corners rounded with `bend=`) or lofted
+  through stacked sections (`loft`), and their booleans; any part can be
+  rotated. Fillet, chamfer, cut and push_pull apply to extruded and revolved
+  parts only; paths are planar or spatial lines and arcs, not splines.
 - A built program replaces the whole document. Keeping the program inside the
   document, and applying manual edits as overrides keyed by part name, are the
   next steps.

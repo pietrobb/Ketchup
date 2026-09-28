@@ -12,8 +12,8 @@ use crate::expect::{Comparison, Direction, Expectation, Measure};
 use crate::frame::{self, Mat3};
 use crate::model::{
     Face, Hole, Joint, Param, Part, Pocket, ProgramArc, ProgramBoolean, ProgramBooleanKind,
-    ProgramCut, ProgramEdgeFillet, ProgramEdgeFinishKind, ProgramFaceOffset, ProgramModel,
-    ProgramPartBody, ProgramProfileSegment, profile_bounds,
+    ProgramCut, ProgramEdgeFillet, ProgramEdgeFinishKind, ProgramFaceOffset, ProgramLoftSection,
+    ProgramModel, ProgramPartBody, ProgramPathSegment, ProgramProfileSegment, profile_bounds,
 };
 use serde::Serialize;
 use starlark::environment::{FrozenModule, Globals, GlobalsBuilder, LibraryExtension, Module};
@@ -657,20 +657,22 @@ fn insert_profile_part(
     tool: bool,
 ) -> anyhow::Result<Part> {
     check_part_name(name)?;
-    let segments = match &body {
-        ProgramPartBody::Panel => unreachable!(),
-        ProgramPartBody::Extrusion { segments, .. } | ProgramPartBody::Revolve { segments, .. } => {
-            segments
-        }
-    };
-    let (min, max) = profile_bounds(segments);
     let size_mm = match &body {
-        ProgramPartBody::Extrusion { distance_mm, .. } => {
+        ProgramPartBody::Extrusion {
+            segments,
+            distance_mm,
+        } => {
+            let (min, max) = profile_bounds(segments);
             [max[0] - min[0], max[1] - min[1], *distance_mm]
         }
-        ProgramPartBody::Revolve { .. } => {
+        ProgramPartBody::Revolve { segments, .. } => {
+            let (min, max) = profile_bounds(segments);
             let radius = max[0].abs().max(min[0].abs());
             [radius * 2.0, max[1] - min[1], radius * 2.0]
+        }
+        ProgramPartBody::Sweep { .. } | ProgramPartBody::Loft { .. } => {
+            let (min, max) = new_part(name, [0.0; 3], at_mm, body.clone()).local_bounds();
+            std::array::from_fn(|axis| max[axis] - min[axis])
         }
         ProgramPartBody::Panel => unreachable!(),
     };
@@ -678,6 +680,136 @@ fn insert_profile_part(
         anyhow::bail!("part {name:?}: profile and body dimensions must be positive");
     }
     insert_part(state, new_part(name, size_mm, at_mm, body), tool)
+}
+
+fn reject_swept(part: &Part, operation: &str) -> anyhow::Result<()> {
+    if matches!(
+        part.body,
+        ProgramPartBody::Sweep { .. } | ProgramPartBody::Loft { .. }
+    ) {
+        anyhow::bail!(
+            "{operation} on {:?}: a swept or lofted part has no named faces; shape it with subtract() or intersect() and a tool body",
+            part.name
+        );
+    }
+    Ok(())
+}
+
+/// A sweep path: 3D points (a polyline whose corners `bend` rounds), or
+/// segments `[start, end]` and `[start, end, arc]` with the arc
+/// `{"through": p}` or `{"center": c, "normal": n}` (counter-clockwise
+/// about `n`).
+fn sweep_path<'v>(
+    value: Value<'v>,
+    bend: Option<f64>,
+    heap: &'v Heap,
+) -> anyhow::Result<Vec<ProgramPathSegment>> {
+    const FORMS: &str = "path must be a list of 3D points, or of segments [start, end] / [start, end, {\"through\": p}] / [start, end, {\"center\": c, \"normal\": n}]";
+    let entries = items(value, heap, "path")?;
+    let is_point = |entry: &Value<'v>| {
+        entry
+            .iterate(heap)
+            .ok()
+            .and_then(|mut fields| fields.next())
+            .is_some_and(|first| UnpackFloat::unpack_value(first).ok().flatten().is_some())
+    };
+    let path = if entries.iter().all(is_point) {
+        let points = entries
+            .into_iter()
+            .map(|point| numbers::<3>(point, heap, "path point"))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        crate::path::polyline(&points, bend.unwrap_or(0.0)).map_err(anyhow::Error::msg)?
+    } else {
+        if bend.is_some() {
+            anyhow::bail!("bend rounds the corners of a point path; segments give their arcs");
+        }
+        let mut previous_end: Option<[f64; 3]> = None;
+        entries
+            .into_iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                let what = format!("path segment {}", index + 1);
+                let fields = items(entry, heap, &what)?;
+                let (start, end, arc) = match fields.as_slice() {
+                    [start, end] => (*start, *end, None),
+                    [start, end, arc] => (*start, *end, Some(*arc)),
+                    _ => anyhow::bail!("{FORMS}"),
+                };
+                let mut start_mm = numbers::<3>(start, heap, &what)?;
+                // Endpoints typed twice may differ in the last digits.
+                if let Some(previous) = previous_end
+                    && (0..3).all(|axis| (previous[axis] - start_mm[axis]).abs() <= TOLERANCE_MM)
+                {
+                    start_mm = previous;
+                }
+                let end_mm = numbers::<3>(end, heap, &what)?;
+                previous_end = Some(end_mm);
+                let arc = arc
+                    .map(|arc| {
+                        let dict =
+                            DictRef::from_value(arc).ok_or_else(|| anyhow::anyhow!("{FORMS}"))?;
+                        let point = |key: &str| {
+                            dict.get_str(key)
+                                .map(|value| numbers::<3>(value, heap, &format!("arc {key}")))
+                                .transpose()
+                        };
+                        if dict.keys().any(|key| {
+                            !matches!(key.unpack_str(), Some("through" | "center" | "normal"))
+                        }) {
+                            anyhow::bail!("{FORMS}");
+                        }
+                        match (point("through")?, point("center")?, point("normal")?) {
+                            (Some(through), None, None) => {
+                                crate::path::arc_through(start_mm, end_mm, through)
+                            }
+                            (None, Some(center), Some(normal)) => {
+                                crate::path::arc_about(start_mm, end_mm, center, normal)
+                            }
+                            _ => return Err(anyhow::anyhow!("{FORMS}")),
+                        }
+                        .map_err(anyhow::Error::msg)
+                    })
+                    .transpose()
+                    .map_err(|error| anyhow::anyhow!("{what}: {error}"))?;
+                Ok(ProgramPathSegment {
+                    start_mm,
+                    end_mm,
+                    arc,
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?
+    };
+    crate::path::validate(&path).map_err(anyhow::Error::msg)?;
+    Ok(path)
+}
+
+/// Loft sections `[(profile, z), ...]` at strictly increasing heights.
+fn loft_sections<'v>(value: Value<'v>, heap: &'v Heap) -> anyhow::Result<Vec<ProgramLoftSection>> {
+    let entries = items(value, heap, "sections")?;
+    if !(2..=16).contains(&entries.len()) {
+        anyhow::bail!("a loft needs 2 to 16 sections, got {}", entries.len());
+    }
+    let mut sections: Vec<ProgramLoftSection> = Vec::new();
+    for (index, entry) in entries.into_iter().enumerate() {
+        let what = format!("section {}", index + 1);
+        let [profile, z] = items(entry, heap, &what)?[..] else {
+            anyhow::bail!("{what} must be (profile, z)");
+        };
+        let elevation_mm = number(z, &format!("{what} z"))?;
+        if let Some(previous) = sections.last()
+            && elevation_mm <= previous.elevation_mm + TOLERANCE_MM
+        {
+            anyhow::bail!(
+                "{what} z = {elevation_mm} must be above the previous section's {}",
+                previous.elevation_mm
+            );
+        }
+        sections.push(ProgramLoftSection {
+            segments: profile_segments(profile, heap, &format!("{what} profile"))?,
+            elevation_mm,
+        });
+    }
+    Ok(sections)
 }
 
 /// Records `target <kind> tool` on the target part.
@@ -863,7 +995,9 @@ fn apply_named_edge_finish(
         let segments = match &part.body {
             ProgramPartBody::Extrusion { segments, .. }
             | ProgramPartBody::Revolve { segments, .. } => segments,
-            ProgramPartBody::Panel => {
+            ProgramPartBody::Panel
+            | ProgramPartBody::Sweep { .. }
+            | ProgramPartBody::Loft { .. } => {
                 anyhow::bail!(
                     "{operation} on {part_name:?}: use a named extrude or revolve profile"
                 )
@@ -1085,6 +1219,62 @@ fn builtins(builder: &mut GlobalsBuilder) {
         Ok(part_value(&part, heap))
     }
 
+    /// Carries a closed profile along a smooth path of lines and arcs. The
+    /// profile's (u, v) plane stands square to the path at its start; going
+    /// horizontally, u points right of the direction of travel and v up.
+    fn sweep<'v>(
+        #[starlark(require = pos)] name: &str,
+        #[starlark(require = named)] profile: Value<'v>,
+        #[starlark(require = named)] path: Value<'v>,
+        #[starlark(require = named)] bend: Option<Value<'v>>,
+        #[starlark(require = named)] at: Option<Value<'v>>,
+        #[starlark(require = named, default = false)] tool: bool,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let heap = eval.heap();
+        let segments = profile_segments(profile, heap, "profile")?;
+        let bend = given(bend).map(|bend| number(bend, "bend")).transpose()?;
+        if bend.is_some_and(|bend| bend <= TOLERANCE_MM) {
+            anyhow::bail!("bend must be a positive radius");
+        }
+        let path = sweep_path(path, bend, heap)?;
+        let at_mm = given(at).map_or(Ok([0.0; 3]), |at| numbers::<3>(at, heap, "at"))?;
+        let state = state(eval)?;
+        let part = insert_profile_part(
+            &state,
+            name,
+            at_mm,
+            ProgramPartBody::Sweep { segments, path },
+            tool,
+        )?;
+        record_source(eval, &state, &[name]);
+        Ok(part_value(&part, heap))
+    }
+
+    /// A solid through closed profiles `sections=[(profile, z), ...]`, each
+    /// in the part's XY plane at height z (strictly increasing).
+    fn loft<'v>(
+        #[starlark(require = pos)] name: &str,
+        #[starlark(require = named)] sections: Value<'v>,
+        #[starlark(require = named)] at: Option<Value<'v>>,
+        #[starlark(require = named, default = false)] tool: bool,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let heap = eval.heap();
+        let sections = loft_sections(sections, heap)?;
+        let at_mm = given(at).map_or(Ok([0.0; 3]), |at| numbers::<3>(at, heap, "at"))?;
+        let state = state(eval)?;
+        let part = insert_profile_part(
+            &state,
+            name,
+            at_mm,
+            ProgramPartBody::Loft { sections },
+            tool,
+        )?;
+        record_source(eval, &state, &[name]);
+        Ok(part_value(&part, heap))
+    }
+
     /// Rounds edges identified by the two named faces that meet there.
     fn fillet<'v>(
         #[starlark(require = pos)] part: Value<'v>,
@@ -1158,6 +1348,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
         let state = state(eval)?;
         record_source(eval, &state, &[&part_name]);
         with_part(&state, &part_name, |part| {
+            reject_swept(part, "cut")?;
             if part.cuts.iter().any(|cut| cut.name == name)
                 || part.fillets.iter().any(|finish| finish.name == name)
                 || part.face_offsets.iter().any(|offset| offset.name == name)
@@ -1198,6 +1389,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
         let state = state(eval)?;
         record_source(eval, &state, &[&part_name]);
         with_part(&state, &part_name, |part| {
+            reject_swept(part, "push_pull")?;
             if part.cuts.iter().any(|cut| cut.name == name)
                 || part.fillets.iter().any(|finish| finish.name == name)
                 || part.face_offsets.iter().any(|offset| offset.name == name)

@@ -4250,6 +4250,18 @@ pub fn plan_rule_part_batch(
                     .apply(part, target)?;
                 continue;
             }
+            ProgramPartBody::Sweep { .. } | ProgramPartBody::Loft { .. } => {
+                crate::rule_booleans::replace_base_body(
+                    &mut commands,
+                    part,
+                    definition_id,
+                    target,
+                    &mut next_feature,
+                )?;
+                BooleanPlanner::new(&mut commands, definition_id, &mut next_feature, &part.name)
+                    .apply(part, target)?;
+                continue;
+            }
         };
         for cut in &part.cuts {
             next_feature = next_feature.checked_add(1).ok_or_else(|| {

@@ -511,6 +511,12 @@ fn program_feature_references_match(
                 segments: right, ..
             },
         ) => segment_names(left) == segment_names(right),
+        // Swept and lofted bodies have no editable parameters: equal or rebuilt.
+        (
+            ketchup_program::model::ProgramPartBody::Sweep { .. }
+            | ketchup_program::model::ProgramPartBody::Loft { .. },
+            _,
+        ) => before.body == after.body,
         _ => false,
     };
     body_matches
@@ -623,6 +629,8 @@ fn program_feature_kind_matches(expected: ProgramFeatureKind, actual: &FeatureKi
                 FeatureKind::SketchPocket(_) | FeatureKind::Pocket { .. }
             )
             | (ProgramFeatureKind::Revolve, FeatureKind::Revolve { .. })
+            | (ProgramFeatureKind::Sweep, FeatureKind::Sweep { .. })
+            | (ProgramFeatureKind::Loft, FeatureKind::Loft { .. })
             | (
                 ProgramFeatureKind::Fillet,
                 FeatureKind::TopologyEdgeFinish {
@@ -666,9 +674,12 @@ mod tests {
         }
     }
 
-    fn exact_graph(session: &DocumentSession) -> ketchup_core::exact_brep_graph::ExactBRepGraph {
+    fn exact_graph_of(
+        session: &DocumentSession,
+        occurrence_index: usize,
+    ) -> ketchup_core::exact_brep_graph::ExactBRepGraph {
         let snapshot = session.snapshot();
-        let occurrence = snapshot.occurrences().next().unwrap();
+        let occurrence = snapshot.occurrences().nth(occurrence_index).unwrap();
         let definition = snapshot.definition(occurrence.definition_id()).unwrap();
         let producer = *definition.feature_ids().last().unwrap();
         ketchup_core::exact_brep_graph::ExactBRepGraph::from_snapshot(
@@ -682,7 +693,15 @@ mod tests {
     fn exact_signature(
         session: &DocumentSession,
     ) -> ketchup_core::exact_brep_graph::ExactBRepGraph {
-        let mut graph = exact_graph(session);
+        exact_signature_of(session, 0)
+    }
+
+    /// The exact graph of one occurrence without document-assigned IDs.
+    fn exact_signature_of(
+        session: &DocumentSession,
+        occurrence_index: usize,
+    ) -> ketchup_core::exact_brep_graph::ExactBRepGraph {
+        let mut graph = exact_graph_of(session, occurrence_index);
         graph.document_id = 0;
         graph.source_revision = 0;
         graph.source_digest.clear();
@@ -695,6 +714,12 @@ mod tests {
         }
         for node in &mut graph.nodes {
             node.source_feature_id = 0;
+            if let ketchup_core::exact_brep_graph::ExactBRepOperation::SpatialSweep {
+                path, ..
+            } = &mut node.operation
+            {
+                path.source_feature_id = 0;
+            }
         }
         graph
     }
@@ -916,6 +941,52 @@ mod tests {
             occurrence_id
         );
         assert_eq!(exact_signature(&incremental), exact_signature(&fresh));
+    }
+
+    #[test]
+    fn swept_and_lofted_parts_rebuild_in_place_like_a_fresh_build() {
+        let program = "B = param(\"bend\", 100)\n\
+            sweep(\"rail\", profile=[(-15, 0), (15, 0), (15, 20), (-15, 20)], path=[(0, 0, 0), (600, 0, 0), (600, 400, 0)], bend=B)\n\
+            loft(\"leg\", sections=[([(0, 0), (40, 0), (40, 40), (0, 40)], 0), ([(B / 10, B / 10), (40 - B / 10, B / 10), (40 - B / 10, 40 - B / 10), (B / 10, 40 - B / 10)], 700)], at=(0, 600, 0))";
+        let mut incremental = DocumentSession::new(SessionSettings::default());
+        let first = incremental
+            .apply_rule_program(profile_source(program, "bend", 100.0), false)
+            .unwrap();
+        let ids: Vec<_> = first.snapshot.occurrences().map(|o| o.id()).collect();
+        let updated = incremental
+            .apply_rule_program(profile_source(program, "bend", 150.0), false)
+            .unwrap();
+        let mut fresh = DocumentSession::new(SessionSettings::default());
+        fresh
+            .apply_rule_program(profile_source(program, "bend", 150.0), false)
+            .unwrap();
+        assert_eq!(
+            updated
+                .snapshot
+                .occurrences()
+                .map(|o| o.id())
+                .collect::<Vec<_>>(),
+            ids
+        );
+        for index in 0..2 {
+            assert_eq!(
+                exact_signature_of(&incremental, index),
+                exact_signature_of(&fresh, index)
+            );
+        }
+        assert_ne!(
+            exact_signature_of(&incremental, 1),
+            exact_signature_of(&first_session(program), 1),
+            "the loft follows the parameter"
+        );
+    }
+
+    fn first_session(program: &str) -> DocumentSession {
+        let mut session = DocumentSession::new(SessionSettings::default());
+        session
+            .apply_rule_program(profile_source(program, "bend", 100.0), false)
+            .unwrap();
+        session
     }
 
     #[test]

@@ -3,12 +3,15 @@
 //! frame and consumed by one Boolean feature.
 
 use crate::diagnostics::{AssistantRejection, assistant_canonical_rejection};
+use crate::sketch::assistant_sketch_entities;
 use ketchup_core::document::{
     BodyId, BooleanOperation, CanonicalCommand, CanonicalError, DefinitionId, Dimension, FeatureId,
-    FeatureKind, ProfileSegment, Transform,
+    FeatureKind, LoftContinuity, LoftSection, ProfileSegment, SpatialPathSegment, Transform,
 };
+use ketchup_core::sketch::{PrincipalPlane, SketchSpec, WorkplaneSpec};
 use ketchup_program::model::{
-    Part, ProgramBoolean, ProgramBooleanKind, ProgramPartBody, ProgramProfileSegment,
+    Part, ProgramBoolean, ProgramBooleanKind, ProgramLoftSection, ProgramPartBody,
+    ProgramPathSegment, ProgramProfileSegment,
 };
 
 /// The canonical segment of one program profile segment.
@@ -25,6 +28,139 @@ pub(crate) fn profile_segment(segment: &ProgramProfileSegment) -> ProfileSegment
             clockwise: arc.clockwise,
         },
     }
+}
+
+/// The canonical sweep path of a program path.
+pub(crate) fn spatial_path(path: &[ProgramPathSegment]) -> FeatureKind {
+    FeatureKind::SpatialPath {
+        segments: path
+            .iter()
+            .map(|segment| match segment.arc {
+                None => SpatialPathSegment::Line {
+                    start_mm: segment.start_mm,
+                    end_mm: segment.end_mm,
+                },
+                Some(arc) => SpatialPathSegment::CircularArc {
+                    start_mm: segment.start_mm,
+                    end_mm: segment.end_mm,
+                    center_mm: arc.center_mm,
+                    normal: arc.normal,
+                    clockwise: false,
+                },
+            })
+            .collect(),
+    }
+}
+
+/// One loft section drawn on `workplane` (the part's XY plane); the loft
+/// lifts it to its height along the plane normal.
+fn section_sketch(section: &ProgramLoftSection, workplane: FeatureId) -> FeatureKind {
+    FeatureKind::Sketch(SketchSpec {
+        workplane,
+        entities: ketchup_program::cad::profile_entities(&section.segments)
+            .iter()
+            .flat_map(assistant_sketch_entities)
+            .collect(),
+        constraints: Vec::new(),
+    })
+}
+
+/// A loft through `profiles`, one per section, at the sections' heights.
+pub(crate) fn loft(sections: &[ProgramLoftSection], profiles: &[FeatureId]) -> FeatureKind {
+    FeatureKind::Loft {
+        sections: sections
+            .iter()
+            .zip(profiles)
+            .map(|(section, profile)| LoftSection {
+                profile: *profile,
+                elevation_mm: section.elevation_mm,
+            })
+            .collect(),
+        guide: None,
+        continuity: LoftContinuity::Position,
+    }
+}
+
+/// Turns the profile sketch and one-millimetre base that `cad::part` plans
+/// for a swept or lofted part into the real body: the sketch becomes the
+/// sweep profile or stays the first loft section, the path or further
+/// sections are added before `body`, and `body` becomes the sweep or loft.
+pub(crate) fn replace_base_body(
+    commands: &mut Vec<CanonicalCommand>,
+    part: &Part,
+    definition_id: DefinitionId,
+    body: FeatureId,
+    next_feature: &mut u64,
+) -> Result<(), AssistantRejection> {
+    let position = |commands: &[CanonicalCommand],
+                    wanted: &dyn Fn(FeatureId, &FeatureKind) -> bool| {
+        commands.iter().position(|command| {
+            matches!(command, CanonicalCommand::CreateFeature { id, definition_id: owner, kind, .. }
+                if *owner == definition_id && wanted(*id, kind))
+        })
+    };
+    let (Some(sketch), Some(mut base)) = (
+        position(commands, &|_, kind| matches!(kind, FeatureKind::Sketch(_))),
+        position(commands, &|id, _| id == body),
+    ) else {
+        unreachable!("cad::part plans a sketch and a base body for every profile part");
+    };
+    let CanonicalCommand::CreateFeature {
+        id: profile,
+        kind: FeatureKind::Sketch(SketchSpec { workplane, .. }),
+        ..
+    } = commands[sketch]
+    else {
+        unreachable!("located as a sketch");
+    };
+    let mut added = Vec::new();
+    let mut create = |name: String, kind: FeatureKind| -> Result<FeatureId, AssistantRejection> {
+        *next_feature = next_feature.checked_add(1).ok_or_else(|| {
+            assistant_canonical_rejection(CanonicalError::IdExhausted, "rule_part", &part.name)
+        })?;
+        let id = FeatureId(*next_feature);
+        added.push(CanonicalCommand::CreateFeature {
+            id,
+            definition_id,
+            name,
+            kind,
+        });
+        Ok(id)
+    };
+    let solid = match &part.body {
+        ProgramPartBody::Sweep { segments, path } => {
+            // Only a plain profile is read in the path's own section frame.
+            if let CanonicalCommand::CreateFeature { kind, .. } = &mut commands[sketch] {
+                *kind = FeatureKind::SegmentProfile {
+                    segments: segments.iter().map(profile_segment).collect(),
+                    closed: true,
+                };
+            }
+            FeatureKind::Sweep {
+                profile,
+                path: create(format!("{} path", part.name), spatial_path(path))?,
+            }
+        }
+        ProgramPartBody::Loft { sections } => {
+            let mut profiles = vec![profile];
+            for (index, section) in sections.iter().enumerate().skip(1) {
+                profiles.push(create(
+                    format!("{} section {}", part.name, index + 1),
+                    section_sketch(section, workplane),
+                )?);
+            }
+            loft(sections, &profiles)
+        }
+        _ => unreachable!("only swept and lofted parts replace their base"),
+    };
+    for command in added {
+        commands.insert(base, command);
+        base += 1;
+    }
+    if let CanonicalCommand::CreateFeature { kind, .. } = &mut commands[base] {
+        *kind = solid;
+    }
+    Ok(())
 }
 
 /// A new definition starts with this body active; the part's own features live in it.
@@ -147,8 +283,25 @@ impl<'a> BooleanPlanner<'a> {
                 ]
             }
             ProgramPartBody::Extrusion { segments, .. }
-            | ProgramPartBody::Revolve { segments, .. } => {
+            | ProgramPartBody::Revolve { segments, .. }
+            | ProgramPartBody::Sweep { segments, .. } => {
                 segments.iter().map(profile_segment).collect()
+            }
+            ProgramPartBody::Loft { sections } => {
+                let workplane = self.feature(
+                    format!("{prefix} tool workplane"),
+                    FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+                )?;
+                let mut profiles = Vec::new();
+                for (index, section) in sections.iter().enumerate() {
+                    profiles.push(self.feature(
+                        format!("{prefix} tool section {}", index + 1),
+                        section_sketch(section, workplane),
+                    )?);
+                }
+                let solid = self.feature(format!("{prefix} tool"), loft(sections, &profiles))?;
+                let solid = self.apply_in_body(tool, solid, body)?;
+                return Ok((solid, body));
             }
         };
         let profile = self.feature(
@@ -159,6 +312,11 @@ impl<'a> BooleanPlanner<'a> {
             },
         )?;
         let solid_kind = match &tool.body {
+            ProgramPartBody::Sweep { path, .. } => FeatureKind::Sweep {
+                profile,
+                path: self.feature(format!("{prefix} tool path"), spatial_path(path))?,
+            },
+            ProgramPartBody::Loft { .. } => unreachable!("built above"),
             ProgramPartBody::Panel => self.extrusion(profile, tool.size_mm[2])?,
             ProgramPartBody::Extrusion { distance_mm, .. } => {
                 self.extrusion(profile, *distance_mm)?

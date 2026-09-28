@@ -19,7 +19,7 @@ fn segments(part: &Part) -> &[ProgramProfileSegment] {
         ProgramPartBody::Extrusion { segments, .. } | ProgramPartBody::Revolve { segments, .. } => {
             segments
         }
-        ProgramPartBody::Panel => panic!("not a profile part"),
+        _ => panic!("not an extrude or revolve part"),
     }
 }
 
