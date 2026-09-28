@@ -620,3 +620,145 @@ fn contact_between_faces_turned_in_their_plane_is_the_overlap_polygon() {
         .contains(&"floating_part")
     );
 }
+
+fn close(actual: f64, expected: f64) -> bool {
+    (actual - expected).abs() < 1.0e-9
+}
+
+#[test]
+fn a_tilted_back_stands_on_a_turned_seat_flush_and_centred_without_coordinates() {
+    let source = r#"
+seat = box("seat", (400, 380, 30), at = (100, 50, 420))
+rotate(seat, axis = (0, 0, 1), angle = 30)
+back = box("back", (360, 20, 400))
+rotate(back, axis = (1, 0, 0), angle = -12)
+rotate(back, axis = (0, 0, 1), angle = 30)
+on(back, seat, align = "y+", center = "x")
+r = distance(back, seat)
+if not r.touching or r.overlap != 0 or r.distance != 0:
+    fail("back does not rest on the seat: %r" % r)
+if nearest(back).name != "seat":
+    fail("nearest part is not the seat")
+"#;
+    let model = eval(source);
+    let (seat, back) = (model.part("seat").unwrap(), model.part("back").unwrap());
+    let axis = |index: usize| std::array::from_fn::<f64, 3, _>(|row| seat.rotation[row][index]);
+    let minus = |v: [f64; 3]| v.map(|value| -value);
+    let (x, y, z) = (axis(0), axis(1), axis(2));
+    // Lowest point of the back lies on the seat top ...
+    assert!(close(-back.reach(minus(z)), seat.reach(z)));
+    // ... its back edge is level with the seat's back edge ...
+    assert!(close(back.reach(y), seat.reach(y)));
+    // ... and it is centred across the seat.
+    let middle = |part: &ketchup_program::model::Part, d: [f64; 3]| {
+        (part.reach(d) - part.reach(minus(d))) / 2.0
+    };
+    assert!(close(middle(back, x), middle(seat, x)));
+    // The tilt was kept: the back is still turned relative to the seat.
+    assert!(!ketchup_program::frame::same_orientation(
+        &back.rotation,
+        &seat.rotation
+    ));
+    assert!(!kinds(source).contains(&"collision"));
+}
+
+#[test]
+fn distance_is_exact_between_boxes_that_are_apart_diagonally_or_overlap() {
+    let model = eval(
+        r#"
+a = box("a", (100, 100, 100))
+b = box("b", (100, 100, 100), at = (110, 110, 0))
+c = box("c", (100, 100, 100), at = (95, 0, 0))
+d = box("d", (100, 100, 100), at = (0, 0, 300))
+rotate(d, axis = (0, 0, 1), angle = 45, pivot = (50, 50, 0))
+ab = distance(a, b)
+if abs(ab.distance - 10 * math.sqrt(2)) > 1e-9 or ab.overlap != 0 or ab.touching:
+    fail("a-b %r" % ab)
+ac = distance(a, c)
+if abs(ac.overlap - 5) > 1e-9 or ac.distance != 0 or ac.direction != (1.0, 0.0, 0.0):
+    fail("a-c %r" % ac)
+ad = distance(a, d)
+if abs(ad.distance - 200) > 1e-9:
+    fail("a-d %r" % ad)
+n = nearest(a, among = [b, d])
+if n.name != "b":
+    fail("nearest %r" % n)
+if abs(reach(d, (1, 0, 0)) - (50 + 50 * math.sqrt(2))) > 1e-9:
+    fail("reach of a turned box %r" % reach(d, (1, 0, 0)))
+"#,
+    );
+    assert_eq!(model.parts.len(), 4);
+}
+
+#[test]
+fn reach_follows_round_and_extruded_bodies_not_their_boxes() {
+    let model = eval(
+        r#"
+seat = revolve("seat", profile = [(0, 0), (180, 0), (180, 30), (0, 30)], axis = [(0, 0), (0, 1)], at = (0, 0, 420))
+rotate(seat, axis = (1, 0, 0), angle = 90)
+wedge = extrude("wedge", profile = [(0, 0), (100, 0), (0, 50)], distance = 20, at = (500, 0, 0))
+leg = box("leg", (30, 30, 300))
+on(leg, seat, face = "y-", center = "xz")
+hanger = box("hanger", (10, 10, 10))
+on(hanger, seat, face = (0, 0, -1))
+"#,
+    );
+    let seat = model.part("seat").unwrap();
+    let diagonal = [
+        std::f64::consts::FRAC_1_SQRT_2,
+        std::f64::consts::FRAC_1_SQRT_2,
+        0.0,
+    ];
+    assert!(
+        close(seat.reach(diagonal), 180.0),
+        "not the corner of its box"
+    );
+    assert!(close(seat.reach([0.0, 0.0, 1.0]), 450.0));
+    let wedge = model.part("wedge").unwrap();
+    // The slanted side lies 100·50/√(100²+50²) from the origin corner.
+    let slant = [0.5 / 1.25f64.sqrt(), 1.0 / 1.25f64.sqrt(), 0.0];
+    assert!(close(
+        wedge.reach(slant) - 500.0 * slant[0],
+        50.0 / 1.25f64.sqrt()
+    ));
+    // The turned seat's bottom is its own y- face; world directions work too.
+    let leg = model.part("leg").unwrap();
+    assert_close(leg.at_mm, [-15.0, -15.0, 120.0]);
+    assert!(close(model.part("hanger").unwrap().at_mm[2], 410.0));
+}
+
+#[test]
+fn table_legs_placed_by_relations_match_the_coordinate_table() {
+    const TABLE: &str = include_str!("../../../examples/programs/table.star");
+    let relational = r#"
+WIDTH = param("width", 1200, min = 600, max = 2400)
+DEPTH = param("depth", 700, min = 400, max = 1200)
+HEIGHT = param("height", 720, min = 400, max = 1100)
+TOP = param("top_thickness", 25, min = 15, max = 60)
+LEG = param("leg_size", 70, min = 40, max = 120)
+INSET = param("leg_inset", 45, min = 20, max = 150)
+
+top = board("table/top", (WIDTH, DEPTH, TOP), at = (0, 0, HEIGHT))
+for name, faces in [("front-left", ["x-", "y-"]), ("front-right", ["x+", "y-"]),
+                    ("back-left", ["x-", "y+"]), ("back-right", ["x+", "y+"])]:
+    leg = board("table/leg-" + name, (LEG, LEG, HEIGHT))
+    on(leg, top, face = "z-")
+    for face in faces:
+        flush(leg, top, face, offset = INSET)
+    dowels(top, leg, dowel = "8x40", margin = 15)
+"#;
+    for overrides in [
+        BTreeMap::new(),
+        BTreeMap::from([("width".to_owned(), 1500.0), ("leg_inset".to_owned(), 80.0)]),
+    ] {
+        let (expected, _) = run("table.star", TABLE, &overrides).unwrap();
+        let (actual, report) = run("relational.star", relational, &overrides).unwrap();
+        assert!(report.ok, "{:#?}", report.issues);
+        assert_eq!(actual.model.parts.len(), expected.model.parts.len());
+        for part in &expected.model.parts {
+            let placed = actual.model.part(&part.name).unwrap();
+            assert_close(placed.at_mm, part.at_mm);
+            assert_eq!(placed.holes.len(), part.holes.len(), "{}", part.name);
+        }
+    }
+}

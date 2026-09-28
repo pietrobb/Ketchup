@@ -147,6 +147,14 @@ impl Obb {
     /// least that much along every candidate axis.
     #[must_use]
     pub fn separation(&self, other: &Self) -> f64 {
+        self.separating_axis(other).1
+    }
+
+    /// The candidate axis behind [`Self::separation`], pointing from this box
+    /// towards `other`, and that separation. When the boxes overlap, moving
+    /// `other` by `-separation` along the axis is the shortest way apart.
+    #[must_use]
+    pub fn separating_axis(&self, other: &Self) -> ([f64; 3], f64) {
         let delta: [f64; 3] = std::array::from_fn(|i| other.centre[i] - self.centre[i]);
         let mut candidates = Vec::with_capacity(15);
         candidates.extend(self.axes);
@@ -160,8 +168,92 @@ impl Obb {
         }
         candidates
             .into_iter()
-            .map(|axis| dot(delta, axis).abs() - self.radius_along(axis) - other.radius_along(axis))
-            .fold(f64::NEG_INFINITY, f64::max)
+            .map(|axis| {
+                let along = dot(delta, axis);
+                let oriented = if along < 0.0 {
+                    axis.map(|value| -value)
+                } else {
+                    axis
+                };
+                let gap = along.abs() - self.radius_along(axis) - other.radius_along(axis);
+                (oriented, gap)
+            })
+            .fold(([0.0, 0.0, 1.0], f64::NEG_INFINITY), |best, candidate| {
+                if candidate.1 > best.1 {
+                    candidate
+                } else {
+                    best
+                }
+            })
+    }
+
+    /// Shortest distance between the two boxes; 0 when they touch or overlap.
+    #[must_use]
+    pub fn distance(&self, other: &Self) -> f64 {
+        if self.separation(other) <= 0.0 {
+            return 0.0;
+        }
+        // Two disjoint convex boxes are closest vertex-to-box or edge-to-edge.
+        let vertex_box = self
+            .vertices()
+            .into_iter()
+            .map(|point| other.point_distance(point))
+            .chain(
+                other
+                    .vertices()
+                    .into_iter()
+                    .map(|point| self.point_distance(point)),
+            );
+        let edge_edge = self.edges().into_iter().flat_map(|(p0, p1)| {
+            other
+                .edges()
+                .into_iter()
+                .map(move |(q0, q1)| segment_distance(p0, p1, q0, q1))
+        });
+        vertex_box.chain(edge_edge).fold(f64::INFINITY, f64::min)
+    }
+
+    fn point_distance(&self, point: [f64; 3]) -> f64 {
+        let delta: [f64; 3] = std::array::from_fn(|i| point[i] - self.centre[i]);
+        (0..3)
+            .map(|i| {
+                (dot(delta, self.axes[i]).abs() - self.half[i])
+                    .max(0.0)
+                    .powi(2)
+            })
+            .sum::<f64>()
+            .sqrt()
+    }
+
+    fn vertex(&self, signs: [f64; 3]) -> [f64; 3] {
+        std::array::from_fn(|n| {
+            self.centre[n]
+                + (0..3)
+                    .map(|i| self.axes[i][n] * self.half[i] * signs[i])
+                    .sum::<f64>()
+        })
+    }
+
+    fn vertices(&self) -> [[f64; 3]; 8] {
+        std::array::from_fn(|bits| {
+            self.vertex(std::array::from_fn(|i| {
+                if bits >> i & 1 == 1 { 1.0 } else { -1.0 }
+            }))
+        })
+    }
+
+    fn edges(&self) -> [([f64; 3], [f64; 3]); 12] {
+        std::array::from_fn(|index| {
+            let (axis, bits) = (index / 4, index % 4);
+            let (p, q) = ((axis + 1) % 3, (axis + 2) % 3);
+            let mut signs = [0.0; 3];
+            signs[p] = if bits & 1 == 1 { 1.0 } else { -1.0 };
+            signs[q] = if bits & 2 == 2 { 1.0 } else { -1.0 };
+            signs[axis] = -1.0;
+            let start = self.vertex(signs);
+            signs[axis] = 1.0;
+            (start, self.vertex(signs))
+        })
     }
 
     /// Half-spaces `normal · x <= offset` whose intersection is the box.
@@ -275,6 +367,40 @@ const fn in_plane_axes(axis: usize) -> (usize, usize) {
         1 => (0, 2),
         _ => (0, 1),
     }
+}
+
+/// Shortest distance between segments `p0-p1` and `q0-q1`.
+fn segment_distance(p0: [f64; 3], p1: [f64; 3], q0: [f64; 3], q1: [f64; 3]) -> f64 {
+    let sub = |a: [f64; 3], b: [f64; 3]| -> [f64; 3] { std::array::from_fn(|i| a[i] - b[i]) };
+    let (d1, d2, r) = (sub(p1, p0), sub(q1, q0), sub(p0, q0));
+    let (a, e, f) = (dot(d1, d1), dot(d2, d2), dot(d2, r));
+    let (c, b) = (dot(d1, r), dot(d1, d2));
+    let (s, t) = if a <= f64::EPSILON && e <= f64::EPSILON {
+        (0.0, 0.0)
+    } else if a <= f64::EPSILON {
+        (0.0, (f / e).clamp(0.0, 1.0))
+    } else if e <= f64::EPSILON {
+        ((-c / a).clamp(0.0, 1.0), 0.0)
+    } else {
+        let denominator = a * e - b * b;
+        let mut s = if denominator > f64::EPSILON {
+            ((b * f - c * e) / denominator).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let mut t = (b * s + f) / e;
+        if t < 0.0 {
+            t = 0.0;
+            s = (-c / a).clamp(0.0, 1.0);
+        } else if t > 1.0 {
+            t = 1.0;
+            s = ((b - c) / a).clamp(0.0, 1.0);
+        }
+        (s, t)
+    };
+    let closest_p: [f64; 3] = std::array::from_fn(|i| p0[i] + d1[i] * s);
+    let closest_q: [f64; 3] = std::array::from_fn(|i| q0[i] + d2[i] * t);
+    length(sub(closest_p, closest_q))
 }
 
 /// Clips a convex polygon to the rectangle `[-half, half]`.

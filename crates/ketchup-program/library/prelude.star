@@ -20,6 +20,29 @@
 #                    origin, size, points) or None; works for rotated parts
 #   joint(a, b, kind=, fasteners=, fastener=, volume=, name=)
 #
+# Placing parts by relation instead of computing coordinates. A face is named
+# in the target's own frame (so it follows a rotated target: a seat revolved
+# and turned upright has its bottom at "y-"), or given as a world direction
+# (0, 0, -1). Rotated parts are measured by their real extent:
+#   on(part, target, face="z+", gap=0, align=None, center=None)  -> part
+#     rests part against target's face from outside; align="y+" or ["x-", "y+"]
+#     also makes it flush with those target faces, center="x" / "xy" centres it
+#   flush(part, target, face, offset=0)  -> part: level with target's face
+#   center_on(part, target, axes="xy")  -> part
+#   between(part, a, b, face=None)  -> part: centred in the gap from a to b
+#   move(part, by=(x, y, z))  -> part: shift by a world vector
+#   face_normal(part, face)  -> world outward normal of a face
+#   reach(part, direction)  -> how far the part reaches along a world direction
+#   distance(a, b)  -> struct(distance, overlap, touching, direction)
+#     direction points from a to b; overlap is how deep they intersect
+#   nearest(part, among=None)  -> struct(name, distance, overlap, touching,
+#     direction) of the closest other part, or None
+#   e.g. on(back, seat, align="y+", center="x") stands a tilted back on the
+#   seat, flush with its back edge and centred left to right;
+#   on(leg, top, face="z-", align=["x-", "y-"]) puts a leg under a corner.
+# They measure the body before cuts, finishes and booleans; distance() and
+# nearest() use each part's box in its own frame (exact for box parts).
+#
 # Profile parts. `profile` is a closed loop in the part's local XY plane:
 # either points [[x, y], ...] (faces become "segment1", "segment2", ...) or
 # named segments [["name", [x0, y0], [x1, y1]], ...]. extrude() pads it along
@@ -108,6 +131,75 @@ def vec_scale(a, factor):
 
 def vec_length(a):
     return math.sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2])
+
+def face_normal(part, face):
+    """World outward normal of `face` ("x-" ... "z+") in the part's own frame,
+    or a world direction (x, y, z) given as it is."""
+    if type(face) != "string":
+        return vec_scale(face, 1.0 / vec_length(face))
+    if len(face) != 2 or face[0] not in AXES or face[1] not in "+-":
+        fail("face must be one of x-, x+, y-, y+, z-, z+ or a world direction; got %r" % face)
+    axis = getattr(part_info(part), face[0])
+    return axis if face[1] == "+" else vec_scale(axis, -1)
+
+def _middle(part, direction):
+    return (reach(part, direction) - reach(part, vec_scale(direction, -1))) / 2.0
+
+def _names(value):
+    if value == None:
+        return []
+    return [value] if type(value) == "string" else value
+
+def flush(part, target, face, offset = 0):
+    """Moves `part` along the normal of `target`'s `face` until its outermost
+    point that way is level with that face, `offset` mm inside it (negative:
+    sticking out). Other directions are kept."""
+    n = face_normal(target, face)
+    return move(part, by = vec_scale(n, reach(target, n) - offset - reach(part, n)))
+
+def center_on(part, target, axes = "xy"):
+    """Centres `part` on `target` along each of `target`'s own axes named in
+    `axes` (e.g. "x", "xy", "xyz"). Other directions are kept."""
+    info = part_info(part)
+    for letter in axes.elems():
+        d = face_normal(target, letter + "+")
+        info = move(part, by = vec_scale(d, _middle(target, d) - _middle(part, d)))
+    return info
+
+def on(part, target, face = "z+", gap = 0, align = None, center = None):
+    """Moves `part` along the normal of `target`'s `face` so it rests against
+    that face from outside (`gap` mm away), e.g. on(back, seat) stands the
+    back on the seat, on(leg, top, face="z-") hangs a leg under a top.
+    `align` = a face name or list of `target` faces to make `part` flush with
+    (see flush), `center` = `target` axes to centre on (see center_on).
+    Rotated parts rest on their outermost point, so a tilted back touches the
+    seat with its lowest edge."""
+    n = face_normal(target, face)
+    info = move(part, by = vec_scale(n, reach(target, n) + gap + reach(part, vec_scale(n, -1))))
+    for other in _names(align):
+        info = flush(part, target, other)
+    if center != None:
+        info = center_on(part, target, center)
+    return info
+
+def between(part, a, b, face = None):
+    """Centres `part` in the gap between `a` and `b`, measured along the
+    normal of `a`'s `face` that looks towards `b` (picked automatically when
+    None). Other directions are kept."""
+    if face == None:
+        ia, ib = part_info(a), part_info(b)
+        towards = vec_sub(vec_add(ib.min, ib.max), vec_add(ia.min, ia.max))
+        best = None
+        for letter in "xyz".elems():
+            axis = getattr(ia, letter)
+            along = axis[0] * towards[0] + axis[1] * towards[1] + axis[2] * towards[2]
+            if best == None or abs(along) > best[0]:
+                best = (abs(along), letter + ("+" if along >= 0 else "-"))
+        face = best[1]
+    n = face_normal(a, face)
+    low = reach(a, n)
+    high = -reach(b, vec_scale(n, -1))
+    return move(part, by = vec_scale(n, (low + high) / 2.0 - _middle(part, n)))
 
 def member(name, start, end, section, across = None, material = "timber", grain = "z", color = None):
     """A straight bar of rectangular `section` (width, height) whose centre

@@ -348,6 +348,55 @@ impl Part {
         }
     }
 
+    /// How far the body (before cuts, finishes and booleans) reaches along a
+    /// world `direction`: the largest `direction · p` over its points. Exact
+    /// for boxes, extruded profiles and full revolutions about the local y
+    /// axis; other revolutions use their bounds in the part's own frame.
+    #[must_use]
+    pub fn reach(&self, direction: [f64; 3]) -> f64 {
+        let local = frame::apply_transposed(&self.rotation, direction);
+        let bounds_reach = || {
+            let (min, max) = self.local_bounds();
+            (0..3)
+                .map(|i| (local[i] * min[i]).max(local[i] * max[i]))
+                .sum::<f64>()
+        };
+        let largest =
+            |values: &mut dyn Iterator<Item = f64>| values.fold(f64::NEG_INFINITY, f64::max);
+        let body = match &self.body {
+            ProgramPartBody::Panel => bounds_reach(),
+            ProgramPartBody::Extrusion {
+                segments,
+                distance_mm,
+            } => {
+                largest(
+                    &mut segments
+                        .iter()
+                        .map(|s| s.start_mm[0] * local[0] + s.start_mm[1] * local[1]),
+                ) + (local[2] * distance_mm).max(0.0)
+            }
+            ProgramPartBody::Revolve {
+                segments,
+                axis_start_mm,
+                axis_end_mm,
+                angle_degrees,
+            } if *angle_degrees >= 360.0
+                && axis_start_mm[0].abs() <= f64::EPSILON
+                && axis_end_mm[0].abs() <= f64::EPSILON
+                && (axis_start_mm[1] - axis_end_mm[1]).abs() > f64::EPSILON =>
+            {
+                let across = local[0].hypot(local[2]);
+                largest(
+                    &mut segments
+                        .iter()
+                        .map(|s| s.start_mm[1] * local[1] + s.start_mm[0].abs() * across),
+                )
+            }
+            ProgramPartBody::Revolve { .. } => bounds_reach(),
+        };
+        frame::dot(self.at_mm, direction) + body
+    }
+
     #[must_use]
     pub fn obb(&self) -> Obb {
         let (min, max) = self.local_bounds();

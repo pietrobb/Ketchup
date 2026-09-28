@@ -303,6 +303,67 @@ fn part_value<'v>(part: &Part, heap: &'v Heap) -> Value<'v> {
     ]))
 }
 
+fn known_part<'m>(model: &'m ProgramModel, name: &str) -> anyhow::Result<&'m Part> {
+    model
+        .part(name)
+        .or_else(|| model.tool(name))
+        .ok_or_else(|| anyhow::anyhow!("unknown part {name:?}"))
+}
+
+/// Distance or overlap between two parts' boxes in their own frames.
+struct Relation {
+    distance: f64,
+    overlap: f64,
+    touching: bool,
+    direction: [f64; 3],
+}
+
+impl Relation {
+    fn between(a: &Part, b: &Part) -> Self {
+        let (a, b) = (a.obb(), b.obb());
+        let (direction, separation) = a.separating_axis(&b);
+        Self {
+            distance: if separation > TOLERANCE_MM {
+                a.distance(&b)
+            } else {
+                0.0
+            },
+            overlap: if separation < -TOLERANCE_MM {
+                -separation
+            } else {
+                0.0
+            },
+            touching: separation.abs() <= TOLERANCE_MM,
+            direction,
+        }
+    }
+
+    fn fields<'v>(&self, heap: &'v Heap) -> [(&'static str, Value<'v>); 4] {
+        let d = self.direction;
+        [
+            ("distance", heap.alloc(self.distance)),
+            ("overlap", heap.alloc(self.overlap)),
+            ("touching", Value::new_bool(self.touching)),
+            ("direction", heap.alloc((d[0], d[1], d[2]))),
+        ]
+    }
+
+    fn value<'v>(&self, heap: &'v Heap) -> Value<'v> {
+        heap.alloc(AllocStruct(self.fields(heap)))
+    }
+
+    fn value_named<'v>(&self, heap: &'v Heap, name: &str) -> Value<'v> {
+        let [distance, overlap, touching, direction] = self.fields(heap);
+        heap.alloc(AllocStruct([
+            ("name", heap.alloc(name)),
+            distance,
+            overlap,
+            touching,
+            direction,
+        ]))
+    }
+}
+
 /// Applies a world rigid motion `p -> pivot + rotation·(p - pivot)` to a part.
 fn rotate_part(part: &mut Part, rotation: &Mat3, pivot: [f64; 3]) {
     move_part(part, rotation, pivot);
@@ -1056,6 +1117,101 @@ fn builtins(builder: &mut GlobalsBuilder) {
             .or_else(|| model.tool(&name))
             .ok_or_else(|| anyhow::anyhow!("unknown part {name:?}"))?;
         Ok(part_value(part, heap))
+    }
+
+    /// How far a part reaches along a world `direction` (the largest
+    /// `direction · p` over its body); works for rotated parts.
+    fn reach<'v>(
+        #[starlark(require = pos)] part: Value<'v>,
+        #[starlark(require = pos)] direction: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<f64> {
+        let heap = eval.heap();
+        let name = part_name(part, heap)?;
+        let direction = numbers::<3>(direction, heap, "direction")?;
+        let direction = frame::normalized(direction).ok_or_else(|| {
+            anyhow::anyhow!("reach({name:?}): direction must be non-zero, got {direction:?}")
+        })?;
+        let state = state(eval)?;
+        let model = state.model.borrow();
+        Ok(known_part(&model, &name)?.reach(direction))
+    }
+
+    /// Moves a part (and what it carries: holes, cuts, tools) by the world
+    /// vector `by`.
+    fn r#move<'v>(
+        #[starlark(require = pos)] part: Value<'v>,
+        #[starlark(require = named)] by: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let heap = eval.heap();
+        let name = part_name(part, heap)?;
+        let by = numbers::<3>(by, heap, "by")?;
+        let state = state(eval)?;
+        record_source(eval, &state, &[&name]);
+        with_part(&state, &name, |part| {
+            translate_part(part, by);
+            part.refresh_feature_tree();
+            Ok(part_value(part, heap))
+        })
+    }
+
+    /// How two parts sit relative to each other, measured on their boxes in
+    /// their own frames (exact for box parts, rotated or not): `distance`
+    /// (0 when touching or overlapping), `overlap` (how deep they overlap,
+    /// 0 otherwise), `touching`, and `direction`, the unit vector from `a`
+    /// towards `b` along which that distance or overlap is measured.
+    fn distance<'v>(
+        #[starlark(require = pos)] a: Value<'v>,
+        #[starlark(require = pos)] b: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let heap = eval.heap();
+        let (a, b) = (part_name(a, heap)?, part_name(b, heap)?);
+        let state = state(eval)?;
+        let model = state.model.borrow();
+        let relation = Relation::between(known_part(&model, &a)?, known_part(&model, &b)?);
+        Ok(relation.value(heap))
+    }
+
+    /// The part closest to `part` (among `among`, default every other part):
+    /// struct(name, distance, overlap, touching, direction) like distance(),
+    /// or None when there is no other part.
+    fn nearest<'v>(
+        #[starlark(require = pos)] part: Value<'v>,
+        #[starlark(require = named)] among: Option<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let heap = eval.heap();
+        let name = part_name(part, heap)?;
+        let among = given(among)
+            .map(|among| {
+                among
+                    .iterate(heap)
+                    .map_err(|_| anyhow::anyhow!("among must be a list of parts"))?
+                    .map(|other| part_name(other, heap))
+                    .collect::<anyhow::Result<Vec<_>>>()
+            })
+            .transpose()?;
+        let state = state(eval)?;
+        let model = state.model.borrow();
+        let this = known_part(&model, &name)?;
+        let candidates = match &among {
+            Some(names) => names
+                .iter()
+                .map(|other| known_part(&model, other))
+                .collect::<anyhow::Result<Vec<_>>>()?,
+            None => model.parts.iter().collect(),
+        };
+        let best = candidates
+            .into_iter()
+            .filter(|other| other.name != name)
+            .map(|other| (other, Relation::between(this, other)))
+            .min_by(|(_, x), (_, y)| (x.distance - x.overlap).total_cmp(&(y.distance - y.overlap)));
+        Ok(match best {
+            None => Value::new_none(),
+            Some((other, relation)) => relation.value_named(heap, &other.name),
+        })
     }
 
     /// Removes the volume of `tool` (a tool body or another part, as it is
