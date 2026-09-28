@@ -256,8 +256,10 @@ impl Obb {
         })
     }
 
-    /// Half-spaces `normal · x <= offset` whose intersection is the box.
-    fn planes(&self) -> [([f64; 3], f64); 6] {
+    /// Half-spaces `normal · x <= offset` whose intersection is the box, in
+    /// the order x+, x-, y+, y-, z+, z-.
+    #[must_use]
+    pub fn planes(&self) -> [([f64; 3], f64); 6] {
         std::array::from_fn(|index| {
             let axis = self.axes[index / 2];
             let normal = if index % 2 == 0 {
@@ -456,6 +458,13 @@ fn polygon_area(points: &[[f64; 2]]) -> f64 {
 #[must_use]
 pub fn intersection_vertices(boxes: &[Obb], tolerance: f64) -> Vec<[f64; 3]> {
     let planes: Vec<_> = boxes.iter().flat_map(Obb::planes).collect();
+    polytope_vertices(&planes, tolerance)
+}
+
+/// Vertices of the convex region where every half-space `normal · x <= offset`
+/// holds (within `tolerance`). Empty when the region is empty.
+#[must_use]
+pub fn polytope_vertices(planes: &[([f64; 3], f64)], tolerance: f64) -> Vec<[f64; 3]> {
     let mut vertices = Vec::new();
     for i in 0..planes.len() {
         for j in i + 1..planes.len() {

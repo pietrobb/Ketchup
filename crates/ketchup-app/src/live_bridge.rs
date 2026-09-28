@@ -437,6 +437,8 @@ fn program_edit_result(
             "errors": report.errors,
             "warnings": report.warnings,
             "issues": issues,
+            "relations": &report.relations[..report.relations.len().min(MAX_REPORTED_RELATIONS)],
+            "relations_total": report.relations.len(),
             "params": report.params,
             "unused_overrides": report.unused_overrides,
             "log": log,
@@ -453,6 +455,7 @@ pub(crate) fn take_error_details() -> Option<Value> {
 }
 
 const MAX_REPORTED_ISSUES: usize = 12;
+const MAX_REPORTED_RELATIONS: usize = 40;
 const MAX_ISSUE_BYTES: usize = 1024;
 
 /// One issue reduced to its scalar fields when it is too large for a frame.

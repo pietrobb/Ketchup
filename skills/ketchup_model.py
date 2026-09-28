@@ -17,6 +17,7 @@ MAX_OUTPUT = 32 * 1024
 PROGRAM_LIBRARY = Path(__file__).resolve().parents[1] / "crates" / "ketchup-program" / "library" / "prelude.star"
 PROGRAM_EXAMPLES = Path(__file__).resolve().parents[1] / "examples" / "programs"
 MAX_REPORT_ISSUES = 50
+MAX_REPORT_RELATIONS = 60
 MAX_SESSIONS = 4
 
 
@@ -309,7 +310,10 @@ def register_tools() -> list:
         change one number and everything that depends on it follows. Helpers (board, dowels,
         groove, rabbet, hole_row, divide, ...) are listed by KetchupDiscover section=program.
         The report names every issue with its parts, location in mm and a fix hint; fix
-        errors and check again before building.
+        errors and check again before building. `relations` maps how parts sit: contact
+        (touching faces + area), overlap (depth; status subtracted/cut_in = socket, collision,
+        ...), gap (mm, within 20 mm) and direction from the first part to the second; read it
+        to confirm placement intent without a picture.
 
         Args:
             action: check (evaluate and validate only) or build (replace the document with
@@ -343,8 +347,10 @@ def register_tools() -> list:
                 entry["document_id"] = document.state["document_id"]
                 runtime.read(entry)
             issues = report["issues"]
+            relations = report.get("relations", [])
             result = {"ok": report["ok"], "errors": report["errors"], "warnings": report["warnings"],
                       "issues": issues[:MAX_REPORT_ISSUES], "issues_truncated": len(issues) > MAX_REPORT_ISSUES,
+                      "relations": relations[:MAX_REPORT_RELATIONS], "relations_total": len(relations),
                       "params": report["params"], "unused_params": report["unused_overrides"],
                       "cut_list": report["bom"]["cut_list"], "hardware": report["bom"]["hardware"],
                       "log": report["log"][:50]}

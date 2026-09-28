@@ -30,6 +30,16 @@ The full example is [`examples/programs/cabinet.star`](../examples/programs/cabi
 
 Every run returns the same report:
 - `issues`: severity, kind, parts, message, location in mm, and a hint;
+- `relations`: how parts sit against each other, one entry per pair that
+  touches, overlaps, is jointed, or is within 20 mm: `kind` `contact` (the
+  touching `faces` of each part in its own frame and `area_mm2`), `touch`
+  (edge or corner only), `overlap` (`depth_mm` and `status`: `subtracted`
+  with `cut_in` naming the part that holds the socket and `depth_mm` how far
+  the other reaches in at its deepest; `removed`, `pocket`, `joint`,
+  `collision`, `unverified`, `boxes_only`) or `gap` (`gap_mm`); `direction`
+  is the world unit vector from the first part towards the second; `joint`
+  names a declared joint; `approx` marks a pair measured on the box of a
+  profile body or an intersected part. The Kečup window lists at most 40.
 - `params`: every parameter with its value, default and range;
 - `bom.cut_list`: identical parts grouped by material and sorted dimensions;
 - `bom.hardware`: fasteners from joints, e.g. `dowel 8x30: 8`;

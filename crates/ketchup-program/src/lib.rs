@@ -14,6 +14,7 @@ pub mod document;
 pub mod eval;
 pub mod frame;
 pub mod model;
+pub mod relations;
 pub mod validate;
 
 pub use bom::{Bom, bom};
@@ -22,6 +23,7 @@ pub use model::{
     Face, ProgramFeature, ProgramFeatureKind, ProgramFeatureParameter, ProgramModel,
     ProgramParameterValueType, ProgramPartBody, ProgramProfileSegment,
 };
+pub use relations::{OverlapStatus, Relation, RelationKind, relations};
 pub use validate::{COLLISION_UNVERIFIED, Issue, Severity, validate};
 
 use serde::Serialize;
@@ -34,6 +36,8 @@ pub struct Report {
     pub errors: usize,
     pub warnings: usize,
     pub issues: Vec<Issue>,
+    /// How parts touch, reach into each other or nearly meet.
+    pub relations: Vec<Relation>,
     pub params: Vec<model::Param>,
     pub bom: Bom,
     pub log: Vec<String>,
@@ -50,6 +54,7 @@ impl Report {
             .count();
         self.warnings = issues.len() - self.errors;
         self.ok = self.errors == 0;
+        relations::sync_with_issues(&mut self.relations, &issues);
         self.issues = issues;
     }
 }
@@ -73,6 +78,7 @@ pub fn run(
         ok: errors == 0,
         errors,
         warnings: issues.len() - errors,
+        relations: relations(&evaluated.model, &issues),
         issues,
         params: evaluated.model.params.clone(),
         bom: bom(&evaluated.model),

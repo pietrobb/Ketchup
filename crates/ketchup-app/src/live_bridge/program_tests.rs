@@ -44,6 +44,12 @@ fn ai_reads_and_edits_the_window_program_in_one_call_each() {
     assert_eq!(created["change"], "created", "{created}");
     assert_eq!(created["parts"], 5);
     assert_eq!(created["report"]["ok"], true);
+    assert_eq!(created["report"]["relations_total"], 4, "{created}");
+    assert_eq!(created["report"]["relations"][0]["kind"], "contact");
+    assert_eq!(
+        created["report"]["relations"][0]["faces"],
+        serde_json::json!(["z-", "z+"])
+    );
     let table = names(&app);
     let undo_steps = app.undo_step_count();
 
@@ -124,6 +130,11 @@ fn applied_program_answers_box_overlaps_with_the_exact_solids() {
     assert_eq!(cleared["exact_collisions"]["cleared"], 1, "{cleared}");
     assert_eq!(cleared["report"]["ok"], true);
     assert_eq!(cleared["report"]["warnings"], 0, "{cleared}");
+    // The relation map follows the exact verdict: only the boxes overlap.
+    assert_eq!(
+        cleared["report"]["relations"][0]["status"], "boxes_only",
+        "{cleared}"
+    );
 
     // Moved onto the triangle's solid part, the same cube collides.
     let solid = format!("{TRIANGLE}c = box(\"c\", (20, 20, 20), at = (10, 10, 0))\n");
@@ -134,4 +145,8 @@ fn applied_program_answers_box_overlaps_with_the_exact_solids() {
     assert_eq!(collides["exact_collisions"]["collisions"], 1, "{collides}");
     assert_eq!(collides["report"]["ok"], false);
     assert_eq!(collides["report"]["issues"][0]["kind"], "collision");
+    assert_eq!(
+        collides["report"]["relations"][0]["status"], "collision",
+        "{collides}"
+    );
 }

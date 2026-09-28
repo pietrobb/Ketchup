@@ -604,7 +604,8 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
         program owns the document). apply sends the WHOLE edited program: the window re-evaluates
         it, rebuilds only the changed parts (unchanged parts keep their IDs), and publishes one
         Undo step; the result lists change, added/removed parts and the program report (issues =
-        collisions, missing contacts, ...). A rejected program changes nothing and names its line.
+        collisions, missing contacts, ...; relations = which faces touch, how deep parts reach
+        into each other, gaps within 20 mm). A rejected program changes nothing and names its line.
         Typical request = read + apply. Helpers (board, dowels, groove, rabbet, hole_row, divide,
         param, extrude, fillet, ...): KetchupDiscover section=program.
 

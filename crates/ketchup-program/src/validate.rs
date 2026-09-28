@@ -41,7 +41,7 @@ fn in_frame_of(a: &Part, b: &Part) -> Option<([f64; 3], [f64; 3])> {
 }
 
 /// World bounds of the region where the two parts' boxes overlap.
-fn overlap(a: &Part, b: &Part) -> Option<([f64; 3], [f64; 3])> {
+pub(crate) fn overlap(a: &Part, b: &Part) -> Option<([f64; 3], [f64; 3])> {
     let intersect = |(a_min, a_max): ([f64; 3], [f64; 3]), (b_min, b_max): ([f64; 3], [f64; 3])| {
         let min: [f64; 3] = std::array::from_fn(|axis| f64::max(a_min[axis], b_min[axis]));
         let max: [f64; 3] = std::array::from_fn(|axis| f64::min(a_max[axis], b_max[axis]));
@@ -76,14 +76,14 @@ fn gap(a: &Part, b: &Part) -> f64 {
         .sqrt()
 }
 
-fn contains(outer: ([f64; 3], [f64; 3]), inner: ([f64; 3], [f64; 3])) -> bool {
+pub(crate) fn contains(outer: ([f64; 3], [f64; 3]), inner: ([f64; 3], [f64; 3])) -> bool {
     (0..3).all(|axis| {
         inner.0[axis] >= outer.0[axis] - TOLERANCE_MM
             && inner.1[axis] <= outer.1[axis] + TOLERANCE_MM
     })
 }
 
-fn world_pockets(part: &Part) -> impl Iterator<Item = ([f64; 3], [f64; 3])> + '_ {
+pub(crate) fn world_pockets(part: &Part) -> impl Iterator<Item = ([f64; 3], [f64; 3])> + '_ {
     part.pockets.iter().map(|pocket| {
         let (min, max) = pocket.local_box(part.size_mm);
         Obb::new(part.at_mm, &part.rotation, min, max).world_bounds()
@@ -93,7 +93,7 @@ fn world_pockets(part: &Part) -> impl Iterator<Item = ([f64; 3], [f64; 3])> + '_
 /// False when `a`'s booleans certainly removed the volume it shares with `b`:
 /// `a` had `b` itself subtracted, or one subtracted plain box tool covers the
 /// whole shared volume, or an intersect tool leaves none of it.
-fn booleans_leave_overlap(a: &Part, b: &Part) -> bool {
+pub(crate) fn booleans_leave_overlap(a: &Part, b: &Part) -> bool {
     if a.subtracts(b) {
         return false;
     }
@@ -123,7 +123,7 @@ fn booleans_leave_overlap(a: &Part, b: &Part) -> bool {
 
 /// Whether the solid of `part`, before booleans, is exactly its box: a panel,
 /// or an extrusion of a rectangle, with no cut, finish or moved face.
-fn is_box(part: &Part) -> bool {
+pub(crate) fn is_box(part: &Part) -> bool {
     let plain = part.cuts.is_empty() && part.fillets.is_empty() && part.face_offsets.is_empty();
     plain
         && match &part.body {
