@@ -608,6 +608,9 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
         into each other, gaps within 20 mm). A rejected program changes nothing and names its line.
         Typical request = read + apply. Helpers (board, dowels, groove, rabbet, hole_row, divide,
         param, extrude, fillet, ...): KetchupDiscover section=program.
+        "This face"/"this edge": KetchupLiveInspect status -> selected_context.program names the
+        user's pick in program terms: {part, face, on_face, point/normal local+world} for a face
+        (face for hole/push_pull/cut, on_face for on(...)), {part, edge:[a, b]} for fillet edges=.
 
         Args:
             action: read or apply. apply is forbidden in plan mode.

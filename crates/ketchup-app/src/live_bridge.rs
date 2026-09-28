@@ -58,6 +58,7 @@ pub mod bootstrap;
 pub mod consent;
 mod image;
 mod program_check;
+mod program_pick;
 #[cfg(test)]
 mod tests;
 mod transport;
@@ -1181,6 +1182,7 @@ impl LiveBridge {
                     ketchup_core::topology::TopologicalElementKind::Edge => "edge",
                     ketchup_core::topology::TopologicalElementKind::Vertex => "vertex",
                 }},
+            "program":program_pick::describe(app, &snapshot, &target.instance_path, reference),
             "dowel_pair":if matches.len() == 1 {matches.into_iter().next()} else {None}})
     }
 

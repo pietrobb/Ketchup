@@ -1,4 +1,5 @@
 use super::*;
+use ketchup_core::topology::TopologicalElementKind;
 
 const TABLE: &str = include_str!("../../../../examples/programs/table.star");
 const APRON: &str = "\napron = board(\"table/apron-front\", (WIDTH - 2 * (INSET + LEG), 20, 80), at = (INSET + LEG, INSET + 25, HEIGHT - 100))\ndowels(legs[0], apron, dowel = \"8x30\", margin = 15)\n";
@@ -108,6 +109,153 @@ fn ai_reads_and_edits_the_window_program_in_one_call_each() {
         .unwrap();
     assert_eq!(names(&app), table);
     assert_eq!(app.document.current_rule_program().unwrap().source, TABLE);
+}
+
+fn evaluate_exact(app: &mut KetchupApp) {
+    let worker = exact_worker_candidates()
+        .into_iter()
+        .find(|path| path.is_file())
+        .expect("build ketchup-exact-worker alongside the app tests");
+    app.headless_force_exact_worker_path(&worker);
+    let snapshot = app.document.current();
+    let task = ketchup_application::evaluation::start_exact_evaluation(
+        snapshot.clone(),
+        &app.container_data,
+        &app.exact_results,
+        &app.topology_results,
+        Some(worker),
+        || {},
+    );
+    let products = task.wait(Duration::from_secs(60)).unwrap();
+    let report = ketchup_application::evaluation::publish_exact_products(
+        &mut app.document,
+        &mut app.exact_results,
+        &mut app.topology_results,
+        &task,
+        products,
+    )
+    .unwrap();
+    assert!(report.complete && report.topology_complete, "{report:?}");
+    app.exact_source = Some(ketchup_application::evaluation::exact_source(&snapshot));
+}
+
+/// Picks every face or edge of the part `name` in turn and returns what the
+/// AI reads about each pick.
+fn picks(
+    app: &mut KetchupApp,
+    bridge: &mut LiveBridge,
+    name: &str,
+    kind: TopologicalElementKind,
+) -> Vec<Value> {
+    let snapshot = app.document.current();
+    let occurrence = snapshot
+        .occurrences()
+        .find(|occurrence| occurrence.name() == name)
+        .unwrap();
+    let package = app
+        .topology_results
+        .get_render(&snapshot, occurrence.definition_id())
+        .unwrap();
+    let producer_feature_id = package.producer_feature_id();
+    let count = package
+        .topological_references()
+        .iter()
+        .filter(|reference| reference.kind == kind)
+        .count() as u32;
+    (0..count)
+        .map(|ordinal| {
+            assert!(app.select_topological_locator(
+                ketchup_interaction::exact_projection::TopologicalPickLocator {
+                    instance_path: InstancePath::root(occurrence.id()),
+                    producer_feature_id,
+                    kind,
+                    ordinal,
+                }
+            ));
+            let status = bridge.execute(app, Request::Status {}, false).unwrap();
+            status["selected_context"]["program"].clone()
+        })
+        .collect()
+}
+
+#[test]
+fn a_picked_face_or_edge_of_a_rotated_part_reads_in_program_terms() {
+    const PARTS: &str = "rail = box(\"rail\", (400, 40, 20), at = (100, 200, 0))\n\
+        rotate(rail, axis = (0, 1, 0), angle = -90)\n\
+        top = extrude(\"top\", profile = [[\"front\", [0, 0], [100, 0]], [\"right\", [100, 0], [100, 50]], \
+        [\"back\", [100, 50], [0, 50]], [\"left\", [0, 50], [0, 0]]], distance = 18, at = (600, 0, 0))\n";
+    let (mut app, mut bridge) = setup();
+    bridge.execute(&mut app, apply(PARTS, true), false).unwrap();
+    evaluate_exact(&mut app);
+
+    // Every face of the rotated box is named by its outward normal in the
+    // box's own frame, whatever way it faces in the world.
+    let faces = picks(&mut app, &mut bridge, "rail", TopologicalElementKind::Face);
+    assert_eq!(faces.len(), 6);
+    for face in &faces {
+        assert_eq!(face["part"], "rail", "{face}");
+        let normal = face["normal_local"].as_array().unwrap();
+        let axis = (0..3)
+            .find(|i| normal[*i].as_f64().unwrap().abs() > 0.999)
+            .unwrap();
+        let sign = if normal[axis].as_f64().unwrap() > 0.0 {
+            "+"
+        } else {
+            "-"
+        };
+        let name = format!("{}{sign}", ["x", "y", "z"][axis]);
+        assert_eq!(face["face"], name, "{face}");
+        assert_eq!(face["on_face"], name, "{face}");
+    }
+    let up = faces
+        .iter()
+        .find(|face| face["normal_world"] == json!([0.0, 0.0, 1.0]))
+        .expect("the rail has an upward face");
+    assert_ne!(up["face"], "z+", "the rail is stood on its end: {up}");
+    let up = up["on_face"].as_str().unwrap().to_owned();
+
+    // A profile part's faces carry the program's segment and cap names; an
+    // edge is the pair of faces fillet() takes.
+    let faces = picks(&mut app, &mut bridge, "top", TopologicalElementKind::Face);
+    let mut names = faces
+        .iter()
+        .map(|face| face["face"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(names, ["back", "end", "front", "left", "right", "start"]);
+    let front = faces.iter().find(|face| face["face"] == "front").unwrap();
+    assert_eq!(front["normal_world"], json!([0.0, -1.0, 0.0]), "{front}");
+    assert_eq!(front["point_world_mm"][1], 0.0, "{front}");
+    let edges = picks(&mut app, &mut bridge, "top", TopologicalElementKind::Edge);
+    assert_eq!(edges.len(), 12);
+    let edge = edges
+        .iter()
+        .map(|edge| edge["edge"].clone())
+        .find(|edge| {
+            let mut pair = serde_json::from_value::<Vec<String>>(edge.clone()).unwrap();
+            pair.sort();
+            pair == ["end", "front"]
+        })
+        .expect("the top has a front upper edge");
+
+    // What was read goes straight back into the program.
+    let used = format!(
+        "{PARTS}c = box(\"c\", (20, 20, 20))\non(c, rail, face = \"{up}\")\n\
+         fillet(top, edges = [{edge}], radius = 3)\n"
+    );
+    let (evaluated, report) = ketchup_program::run("table.star", &used, &BTreeMap::new())
+        .unwrap_or_else(|error| panic!("{error}\n{used}"));
+    assert!(report.ok, "{:#?}", report.issues);
+    assert_eq!(evaluated.model.part("top").unwrap().fillets.len(), 1);
+    let (c, rail) = (
+        evaluated.model.part("c").unwrap(),
+        evaluated.model.part("rail").unwrap(),
+    );
+    assert_eq!(
+        c.world_bounds().0[2],
+        rail.world_bounds().1[2],
+        "c rests on the rail"
+    );
 }
 
 #[test]

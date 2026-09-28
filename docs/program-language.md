@@ -48,6 +48,14 @@ Every run returns the same report:
 When the program itself is wrong, the interpreter error names the file, the
 line and the cause and quotes the source.
 
+A face or edge the user picks in the window on a program-owned part is
+reported by the live `status` under `selected_context.program` in program
+terms: `part`, `face` (`x-` ... `z+` on a box, `start`, `end` or a segment
+name on a profile part, `null` for a face the program cannot name, e.g. a hole
+wall), `on_face` (what `on(part, target, face=...)` takes), and the picked
+point and outward normal in the part's frame and in the world. An edge gives
+`edge`: the two faces that meet there, as `fillet`/`chamfer` `edges=` take.
+
 ## Builtins (Rust, generic)
 
 | Builtin | Purpose |

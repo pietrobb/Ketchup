@@ -14,6 +14,7 @@ pub mod document;
 pub mod eval;
 pub mod exact;
 pub mod expect;
+mod face_at;
 pub mod frame;
 pub mod model;
 pub mod path;

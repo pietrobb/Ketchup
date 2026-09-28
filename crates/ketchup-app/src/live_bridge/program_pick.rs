@@ -1,0 +1,138 @@
+//! A face or edge picked on a program-owned part, told in the program's own
+//! words: which part, which named face (or the two faces of an edge), and its
+//! point and outward normal in the part's frame and in the world, so the AI
+//! can use the pick directly in `on`, `hole`, `push_pull` or `fillet`.
+use super::*;
+use ketchup_core::document::InstancePath;
+use ketchup_core::exact_product::{ExactBodyPackage, ExactFaceRole};
+use ketchup_core::topology::{TopologicalElementKind, TopologicalElementRef};
+use ketchup_program::{frame, model::Part};
+
+const HINT: &str = "face is the program's name for it (box: x-..z+; profile part: start, end or a \
+segment name) for hole/push_pull/cut/contact; on_face is what on(part, target, face=...) takes \
+(an axis of the part's own frame, else a world direction); an edge's two faces go to \
+fillet/chamfer edges=[[a, b]]";
+
+fn round(values: [f64; 3]) -> [f64; 3] {
+    values.map(|value| (value * 1000.0).round() / 1000.0 + 0.0)
+}
+
+/// Point and outward unit normal of face `ordinal`, in the part's frame: the
+/// centroid of its largest triangle and that triangle's normal.
+fn face_sample(package: &ExactBodyPackage, ordinal: u32) -> Option<([f64; 3], [f64; 3])> {
+    let reference = package.topological_reference(TopologicalElementKind::Face, ordinal)?;
+    let vertex = |index: u32| package.vertices()[index as usize].position_mm;
+    package
+        .triangles()
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| package.topological_reference_for_triangle(*index) == Some(reference))
+        .map(|(_, triangle)| {
+            let [a, b, c] = triangle.vertex_indices.map(vertex);
+            let u: [f64; 3] = std::array::from_fn(|i| b[i] - a[i]);
+            let v: [f64; 3] = std::array::from_fn(|i| c[i] - a[i]);
+            let n = [
+                u[1] * v[2] - u[2] * v[1],
+                u[2] * v[0] - u[0] * v[2],
+                u[0] * v[1] - u[1] * v[0],
+            ];
+            let centroid = std::array::from_fn(|i| (a[i] + b[i] + c[i]) / 3.0);
+            (frame::dot(n, n).sqrt(), centroid, n)
+        })
+        .filter(|(area, ..)| *area > 1e-12)
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(area, centroid, n)| (centroid, n.map(|value| value / area)))
+}
+
+/// The name the solid's topology gives a face, in program terms.
+fn role(reference: &TopologicalElementRef) -> Option<&str> {
+    match reference.producer_element_id.as_str() {
+        "" => None,
+        role if role == ExactFaceRole::Top.semantic_role() => Some("end"),
+        role if role == ExactFaceRole::Bottom.semantic_role() => Some("start"),
+        name => Some(name),
+    }
+}
+
+fn describe_face(part: &Part, package: &ExactBodyPackage, ordinal: u32) -> Option<Value> {
+    let reference = package.topological_reference(TopologicalElementKind::Face, ordinal)?;
+    let (point, normal) = face_sample(package, ordinal)?;
+    let normal_world = frame::apply(&part.rotation, normal);
+    let on_face = (0..3)
+        .find(|axis| normal[*axis].abs() > 1.0 - 1e-6)
+        .map_or_else(
+            || json!(round(normal_world)),
+            |axis| {
+                json!(format!(
+                    "{}{}",
+                    ["x", "y", "z"][axis],
+                    if normal[axis] > 0.0 { "+" } else { "-" }
+                ))
+            },
+        );
+    Some(json!({
+        "face": part.face_at(point, normal, role(reference)),
+        "on_face": on_face,
+        "point_local_mm": round(point),
+        "normal_local": round(normal),
+        "point_world_mm": round(part.to_world(point)),
+        "normal_world": round(normal_world),
+    }))
+}
+
+/// The program's view of the one picked face or edge, or `None` when no
+/// program owns the picked part or its solid is not evaluated yet.
+pub(super) fn describe(
+    app: &KetchupApp,
+    snapshot: &Snapshot,
+    instance_path: &InstancePath,
+    reference: &TopologicalElementRef,
+) -> Option<Value> {
+    let program = app.document.current_rule_program()?;
+    if !instance_path.is_root() {
+        return None;
+    }
+    let occurrence = snapshot.occurrence(instance_path.root_occurrence())?;
+    let (evaluated, _) =
+        ketchup_program::run(&program.file_name, &program.source, &program.overrides).ok()?;
+    let part = evaluated.model.part(occurrence.name())?;
+    let package = app
+        .topology_results
+        .get_render(snapshot, occurrence.definition_id())?;
+    let ordinal = |kind| {
+        package
+            .topological_references()
+            .iter()
+            .filter(|candidate| candidate.kind == kind)
+            .position(|candidate| candidate == reference)
+            .and_then(|ordinal| u32::try_from(ordinal).ok())
+    };
+    let mut described = match reference.kind {
+        TopologicalElementKind::Face => {
+            describe_face(part, package, ordinal(TopologicalElementKind::Face)?)?
+        }
+        TopologicalElementKind::Edge => {
+            let edge = ordinal(TopologicalElementKind::Edge)?;
+            let faces = package
+                .edge_evidence()
+                .iter()
+                .find(|evidence| evidence.edge_ordinal == edge)?
+                .adjacent_face_ordinals
+                .iter()
+                .map(|face| describe_face(part, package, *face))
+                .collect::<Option<Vec<_>>>()?;
+            let names = faces
+                .iter()
+                .map(|face| face["face"].as_str())
+                .collect::<Option<Vec<_>>>();
+            json!({
+                "edge": names.filter(|names| names.len() == 2),
+                "faces": faces,
+            })
+        }
+        TopologicalElementKind::Vertex => return None,
+    };
+    described["part"] = json!(part.name);
+    described["hint"] = json!(HINT);
+    Some(described)
+}
