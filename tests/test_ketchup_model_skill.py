@@ -502,13 +502,69 @@ def test_session_limit_and_explicit_executable(monkeypatch, doubles):
     registered = tools(monkeypatch)
     async def scenario():
         monkeypatch.delenv("KETCHUP_HEADLESS")
-        assert (await call(registered, "KetchupSession", action="new"))["error"]["code"] == "executable_required"
+        monkeypatch.setattr(skill, "REPOSITORY", ROOT / "no-such-repository")
+        missing = (await call(registered, "KetchupSession", action="new"))["error"]
+        assert missing["code"] == "executable_required" and "cargo build -p ketchup-headless" in missing["message"]
+        monkeypatch.setattr(skill, "REPOSITORY", ROOT)
         monkeypatch.setenv("KETCHUP_HEADLESS", "explicit-env")
         handles = [(await call(registered, "KetchupSession", action="new"))["result"] for _ in range(4)]
         assert len({h["handle"] for h in handles}) == 4
         assert (await call(registered, "KetchupSession", action="new"))["error"]["code"] == "session_limit"
         for h in handles:
             assert (await call(registered, "KetchupSession", action="close", handle=h["handle"], discard=True, **expected(h)))["ok"]
+    asyncio.run(scenario())
+
+
+def test_headless_binary_prefers_explicit_then_env_then_newest_repository_build(monkeypatch, tmp_path):
+    name = "ketchup-headless.exe" if os.name == "nt" else "ketchup-headless"
+    monkeypatch.delenv("KETCHUP_HEADLESS", raising=False)
+    monkeypatch.setattr(skill, "REPOSITORY", tmp_path)
+    monkeypatch.setenv("PATH", str(tmp_path / "on-path"))
+    (tmp_path / "on-path").mkdir()
+    (tmp_path / "on-path" / name).write_bytes(b"")
+    with pytest.raises(skill.Rejection, match="PATH is never searched"):
+        skill._headless_binary("")
+    builds = {}
+    for profile, age in (("release", 100), ("debug", 10)):
+        (tmp_path / "target" / profile).mkdir(parents=True)
+        builds[profile] = tmp_path / "target" / profile / name
+        builds[profile].write_bytes(b"")
+        os.utime(builds[profile], (1_000_000 - age, 1_000_000 - age))
+    assert skill._headless_binary("") == str(builds["debug"])
+    os.utime(builds["release"], (2_000_000, 2_000_000))
+    assert skill._headless_binary("") == str(builds["release"])
+    monkeypatch.setenv("KETCHUP_HEADLESS", "from-env")
+    assert skill._headless_binary("") == "from-env"
+    explicit = str(tmp_path / "explicit.exe")
+    assert skill._headless_binary(explicit) == str(Path(explicit))
+
+
+@pytest.mark.skipif(not os.environ.get("KETCHUP_HEADLESS"), reason="Set KETCHUP_HEADLESS to updated real build")
+def test_real_program_check_and_build_return_the_relation_map(monkeypatch):
+    registered = tools(monkeypatch)
+    source = ('side = board("side", (18, 450, 600))\n'
+              'shelf = board("shelf", (564, 450, 18))\n'
+              'on(shelf, side, face = "x+", align = ["y-", "z-"])\n'
+              'dowels(side, shelf)\n')
+
+    async def scenario():
+        opened = (await call(registered, "KetchupSession", action="new"))["result"]
+        handle = opened["handle"]
+        try:
+            for action in ("check", "build"):
+                result = await call(registered, "KetchupProgram", action=action, handle=handle, source=source,
+                                    discard=action == "build")
+                assert result["ok"], result
+                relations = result["result"]["relations"]
+                assert result["result"]["relations_total"] == len(relations) >= 1, action
+                pair = relations[0]
+                assert sorted(pair["parts"]) == ["shelf", "side"] and pair["kind"] == "contact", pair
+                assert pair["joint"], pair
+        finally:
+            inspected = (await call(registered, "KetchupInspect", handle=handle))["result"]
+            await call(registered, "KetchupSession", action="close", handle=handle, discard=True,
+                       **expected(inspected))
+
     asyncio.run(scenario())
 
 

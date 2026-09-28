@@ -15,8 +15,9 @@ import uuid
 from anthropic.lib.tools import beta_async_tool
 
 MAX_OUTPUT = 32 * 1024
-PROGRAM_LIBRARY = Path(__file__).resolve().parents[1] / "crates" / "ketchup-program" / "library" / "prelude.star"
-PROGRAM_EXAMPLES = Path(__file__).resolve().parents[1] / "examples" / "programs"
+REPOSITORY = Path(__file__).resolve().parents[1]
+PROGRAM_LIBRARY = REPOSITORY / "crates" / "ketchup-program" / "library" / "prelude.star"
+PROGRAM_EXAMPLES = REPOSITORY / "examples" / "programs"
 MAX_REPORT_ISSUES = 50
 MAX_REPORT_RELATIONS = 60
 MAX_SESSIONS = 4
@@ -110,6 +111,23 @@ def _program_library(name):
         return {"example": name, "text": examples[name].read_text(encoding="utf-8")}
     raise Rejection("unknown_name", "name must be a topic id (%s) or an example (%s)"
                     % (", ".join(topic["id"] for topic in topics), ", ".join(examples)))
+
+
+def _headless_binary(executable):
+    """The explicit executable, else KETCHUP_HEADLESS, else the newest build of
+    this repository (target/release or target/debug). Never searches PATH."""
+    if executable:
+        return _absolute(executable)
+    if os.environ.get("KETCHUP_HEADLESS"):
+        return os.environ["KETCHUP_HEADLESS"]
+    name = "ketchup-headless.exe" if os.name == "nt" else "ketchup-headless"
+    builds = [path for path in (REPOSITORY / "target" / profile / name for profile in ("release", "debug"))
+              if path.is_file()]
+    if not builds:
+        raise Rejection("executable_required",
+                        "No headless build found in %s; run `cargo build -p ketchup-headless` there, "
+                        "or supply executable / KETCHUP_HEADLESS (PATH is never searched)" % (REPOSITORY / "target"))
+    return str(max(builds, key=lambda path: path.stat().st_mtime))
 
 
 def _absolute(path):
@@ -294,7 +312,8 @@ def register_tools() -> list:
             action: new, open, or close. New/open never replaces another handle.
             handle: Only for close; UUID returned by new/open.
             path: Absolute document path, only for open.
-            executable: Explicit absolute headless executable, or existing KETCHUP_HEADLESS env.
+            executable: Optional absolute headless executable; default KETCHUP_HEADLESS, else this
+                repository's newest target/release or target/debug build (never PATH).
             worker: Optional explicit absolute exact-worker path; otherwise SDK worker resolution.
             discard: Required to close any unsaved document, including an unsaved new one.
             expected_revision: Optional revision guard for close.
@@ -318,9 +337,7 @@ def register_tools() -> list:
             if len(runtime.sessions) >= MAX_SESSIONS:
                 raise Rejection("session_limit", "Close an owned session first; maximum is four")
             document_path = _absolute(path) if action == "open" else None
-            binary = _absolute(executable) if executable else os.environ.get("KETCHUP_HEADLESS")
-            if not binary:
-                raise Rejection("executable_required", "Supply executable or KETCHUP_HEADLESS; no automatic PATH binary selection")
+            binary = _headless_binary(executable)
             exact = _absolute(worker) if worker else None
             sdk_session = _sdk().Session(executable=binary, worker=exact, compact=True)
             runtime.sessions[owned] = {"session": sdk_session}
@@ -331,7 +348,8 @@ def register_tools() -> list:
                 entry = runtime.sessions[owned]
                 entry.update(document=document, document_id=state["document_id"], path=document_path,
                              modified=result["modified"])
-                return {"handle": owned, "ownership": "owned_headless_not_live_GUI", **runtime.summary(entry, result)}
+                return {"handle": owned, "ownership": "owned_headless_not_live_GUI", "executable": str(binary),
+                        **runtime.summary(entry, result)}
             except BaseException:
                 runtime.forget(owned)
                 raise
