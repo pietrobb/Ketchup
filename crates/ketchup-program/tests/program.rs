@@ -283,6 +283,49 @@ fn a_door_too_far_from_its_side_is_refused_with_the_distance() {
 }
 
 #[test]
+fn distribute_spaces_shelves_into_equal_compartments() {
+    let source = "\
+bottom = board(\"bottom\", (564, 450, 18))
+top = board(\"top\", (564, 450, 18), at = (0, 0, 582))
+shelves = [board(\"shelf %d\" % i, (564, 430, 18), at = (0, 20, 1000)) for i in (1, 2)]
+gap = distribute(shelves, bottom, top)
+if gap != 176:
+    fail(\"gap %s\" % gap)
+left = board(\"left\", (18, 450, 600), at = (-18, 0, 0))
+right = board(\"right\", (18, 450, 600), at = (564, 0, 0))
+dividers = [board(\"divider %d\" % i, (18, 430, 176), at = (900, 20, 18)) for i in (1, 2, 3)]
+distribute(dividers, left, right, face = \"x+\")
+";
+    let model = eval(source);
+    let min = |name: &str| model.part(name).unwrap().world_bounds().0;
+    assert_eq!((min("shelf 1")[2], min("shelf 2")[2]), (194.0, 388.0));
+    // Other directions are kept.
+    assert_eq!(min("shelf 1")[1], 20.0);
+    // 564 mm less three 18 mm dividers: four gaps of 127.5 mm.
+    let xs: Vec<f64> = (1..=3).map(|i| min(&format!("divider {i}"))[0]).collect();
+    assert_eq!(xs, vec![127.5, 273.0, 418.5]);
+}
+
+#[test]
+fn distribute_refuses_parts_that_do_not_fit_with_the_numbers() {
+    let source = "\
+bottom = board(\"bottom\", (564, 450, 18))
+top = board(\"top\", (564, 450, 18), at = (0, 0, 60))
+shelves = [board(\"shelf %d\" % i, (564, 430, 18), at = (0, 20, 1000)) for i in (1, 2, 3)]
+distribute(shelves, bottom, top)
+";
+    let Err(error) = run("test.star", source, &BTreeMap::new()) else {
+        panic!("54 mm of shelves do not fit into 42 mm");
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("54 mm thick together but only 42 mm"),
+        "{error}"
+    );
+}
+
+#[test]
 fn a_blind_hole_leaving_too_little_material_is_a_warning() {
     let source = "\
 p = box(\"p\", (200, 100, 18))

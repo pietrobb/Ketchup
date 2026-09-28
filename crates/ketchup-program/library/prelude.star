@@ -121,6 +121,8 @@ def member(name, start, end, section, across = None, material = "timber", grain 
 #   flush(part, target, face, offset=0)  -> part: level with target's face
 #   center_on(part, target, axes="xy")  -> part
 #   between(part, a, b, face=None)  -> part: centred in the gap from a to b
+#   distribute(parts, a, b, face=None)  -> clear gap: spaces several parts
+#     between a and b with equal gaps (shelves into equal compartments)
 #   move(part, by=(x, y, z))  -> part: shift by a world vector
 #   face_normal(part, face)  -> world outward normal of a face
 #   reach(part, direction)  -> how far the part reaches along a world direction
@@ -192,20 +194,44 @@ def between(part, a, b, face = None):
     """Centres `part` in the gap between `a` and `b`, measured along the
     normal of `a`'s `face` that looks towards `b` (picked automatically when
     None). Other directions are kept."""
-    if face == None:
-        ia, ib = part_info(a), part_info(b)
-        towards = vec_sub(vec_add(ib.min, ib.max), vec_add(ia.min, ia.max))
-        best = None
-        for letter in "xyz".elems():
-            axis = getattr(ia, letter)
-            along = axis[0] * towards[0] + axis[1] * towards[1] + axis[2] * towards[2]
-            if best == None or abs(along) > best[0]:
-                best = (abs(along), letter + ("+" if along >= 0 else "-"))
-        face = best[1]
-    n = face_normal(a, face)
+    n = face_normal(a, face or _face_towards(a, b))
     low = reach(a, n)
     high = -reach(b, vec_scale(n, -1))
     return move(part, by = vec_scale(n, (low + high) / 2.0 - _middle(part, n)))
+
+def _face_towards(a, b):
+    """The face of `a` whose normal points most directly at `b`."""
+    ia, ib = part_info(a), part_info(b)
+    towards = vec_sub(vec_add(ib.min, ib.max), vec_add(ia.min, ia.max))
+    best = None
+    for letter in "xyz".elems():
+        axis = getattr(ia, letter)
+        along = axis[0] * towards[0] + axis[1] * towards[1] + axis[2] * towards[2]
+        if best == None or abs(along) > best[0]:
+            best = (abs(along), letter + ("+" if along >= 0 else "-"))
+    return best[1]
+
+def distribute(parts, a, b, face = None):
+    """Spaces `parts` (in the order given) between `a` and `b` so that every
+    clear gap along the normal of `a`'s `face` towards `b` is equal: the
+    gap from a to the first part, between the parts, and from the last to b.
+    E.g. distribute([shelf1, shelf2], bottom, top) makes three equal
+    compartments. Other directions are kept. Returns the clear gap in mm."""
+    n = face_normal(a, face or _face_towards(a, b))
+    back = vec_scale(n, -1)
+    low = reach(a, n)
+    high = -reach(b, back)
+    thickness = sum([reach(part, n) + reach(part, back) for part in parts])
+    gap = (high - low - thickness) / (len(parts) + 1.0)
+    if gap < 0:
+        fail("distribute(): the parts are %s mm thick together but only %s mm lie between %s and %s" %
+             (_mm(thickness), _mm(high - low), part_info(a).name, part_info(b).name))
+    position = low + gap
+    for part in parts:
+        size = reach(part, n) + reach(part, back)
+        move(part, by = vec_scale(n, position + reach(part, back)))
+        position += size + gap
+    return gap
 
 #@topic profiles: Profile, revolved, swept and lofted parts; arcs, fillet, chamfer, cut, push_pull
 #

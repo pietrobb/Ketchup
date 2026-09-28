@@ -87,6 +87,10 @@ into its edge) the rest, every hole `clearance` deeper than its dowel end
 (8x35 side to shelf: 12 mm + 26 mm). Parts that cannot hold the dowel fail
 with both parts' limits.
 
+`distribute(parts, a, b, face=None)` spaces several parts between `a` and `b`
+with equal clear gaps (two shelves between bottom and top make three equal
+compartments) and returns the gap; parts that do not fit fail with the numbers.
+
 `hinge(door, side, count=None, ...)` hangs a door (inset or overlay) on
 concealed 35 mm cup hinges: cups in the door's inner face 4 mm from the hinge
 edge, two mounting-plate holes per hinge in the side's inner face 37 mm behind
