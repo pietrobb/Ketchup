@@ -31030,20 +31030,80 @@ impl KetchupApp {
         let exact_hits = cache.exact.exact_surface_picks(ray);
         let exact_hit = exact_hits.first().cloned();
         let mesh_hits = cache.mesh.exact_surface_picks(ray);
-        let mesh_hit = mesh_hits.first().cloned().or_else(|| {
+        let mut mesh_hit = mesh_hits.first().cloned().or_else(|| {
             cache
                 .mesh
                 .surface_pick_with_tolerance(ray, tolerance_px / scale)
         });
         let box_pick = cache.boxes.exact_pick(ray, tolerance_px / scale);
-        let prefer_exact = exact_hit.as_ref().is_some_and(|exact| {
-            mesh_hit
-                .as_ref()
-                .is_none_or(|mesh| exact.ray_distance_mm <= mesh.ray_distance_mm)
-                && box_pick
+        // A profile drawn onto a solid's face lies in that face's plane, so the ray
+        // reaches both at the same distance. The profile is what the user sees on
+        // top and wants to push/pull; the face stays reachable where no profile is.
+        let nearest_mm = [
+            exact_hit.as_ref().map(|hit| hit.ray_distance_mm),
+            mesh_hit.as_ref().map(|hit| hit.ray_distance_mm),
+            box_pick.as_ref().map(|pick| pick.primary.ray_distance_mm),
+        ]
+        .into_iter()
+        .flatten()
+        .fold(f64::INFINITY, f64::min);
+        let coplanar_mm = 1.0e-7 * nearest_mm.abs().max(1.0);
+        let is_flat_profile = |definition_id: DefinitionId| {
+            snapshot
+                .definition(definition_id)
+                .is_some_and(|definition| {
+                    definition.feature_ids().iter().all(|feature_id| {
+                        snapshot
+                            .feature(*feature_id)
+                            .is_some_and(|feature| !feature.kind().produces_body())
+                    })
+                })
+        };
+        let flat_mesh = mesh_hits
+            .iter()
+            .find(|hit| {
+                hit.ray_distance_mm <= nearest_mm + coplanar_mm
+                    && is_flat_profile(hit.definition_id)
+            })
+            .cloned();
+        let flat_box_hit = box_pick
+            .as_ref()
+            .filter(|_| flat_mesh.is_none())
+            .and_then(|pick| {
+                pick.overlapping
+                    .iter()
+                    .find(|hit| {
+                        hit.ray_distance_mm <= nearest_mm + coplanar_mm
+                            && is_flat_profile(hit.reference.definition_id)
+                    })
+                    .cloned()
+            });
+        let flat_box = flat_box_hit.is_some();
+        // The overlap stack is what hover and Tab cycle through; its front entry
+        // must be the promoted profile, not whichever reference sorts first.
+        let put_in_front = |overlapping: &mut Vec<ExactHit>, primary: &ExactHit| {
+            if let Some(index) = overlapping
+                .iter()
+                .position(|hit| hit.reference == primary.reference)
+            {
+                let hit = overlapping.remove(index);
+                overlapping.insert(0, hit);
+            }
+        };
+        let flat_mesh_wins = flat_mesh.is_some();
+        if flat_mesh_wins {
+            mesh_hit = flat_mesh;
+        }
+        let prefer_exact = !flat_box
+            && !flat_mesh_wins
+            && exact_hit.as_ref().is_some_and(|exact| {
+                mesh_hit
                     .as_ref()
-                    .is_none_or(|pick| exact.ray_distance_mm <= pick.primary.ray_distance_mm)
-        });
+                    .is_none_or(|mesh| exact.ray_distance_mm <= mesh.ray_distance_mm)
+                    && box_pick
+                        .as_ref()
+                        .is_none_or(|pick| exact.ray_distance_mm <= pick.primary.ray_distance_mm)
+            });
         if prefer_exact && let Some(hit) = exact_hit {
             let element = self.exact_hit_element(&hit)?;
             let reference = SelectionId {
@@ -31111,11 +31171,13 @@ impl KetchupApp {
                 snap,
             });
         }
-        let prefer_mesh = mesh_hit.as_ref().is_some_and(|mesh| {
-            box_pick
-                .as_ref()
-                .is_none_or(|pick| mesh.ray_distance_mm <= pick.primary.ray_distance_mm + 1.0e-6)
-        });
+        let prefer_mesh = !flat_box
+            && (flat_mesh_wins
+                || mesh_hit.as_ref().is_some_and(|mesh| {
+                    box_pick.as_ref().is_none_or(|pick| {
+                        mesh.ray_distance_mm <= pick.primary.ray_distance_mm + 1.0e-6
+                    })
+                }));
         if prefer_mesh && let Some(hit) = mesh_hit {
             let reference = SelectionId {
                 definition_id: hit.definition_id,
@@ -31165,6 +31227,9 @@ impl KetchupApp {
                     .then_with(|| a.reference.cmp(&b.reference))
             });
             overlapping.dedup_by(|a, b| a.reference == b.reference);
+            if flat_mesh_wins {
+                put_in_front(&mut overlapping, &primary);
+            }
             return Some(PickResult {
                 primary,
                 overlapping,
@@ -31178,6 +31243,17 @@ impl KetchupApp {
         }
 
         box_pick.map(|mut pick| {
+            if let Some(hit) = flat_box_hit {
+                if pick.snap.reference.instance_path != hit.reference.instance_path {
+                    pick.snap = SnapResult {
+                        kind: SnapKind::Face,
+                        reference: hit.reference.clone(),
+                        position_mm: hit.position_mm,
+                        distance_mm: 0.0,
+                    };
+                }
+                pick.primary = hit;
+            }
             pick.overlapping
                 .extend(mesh_hits.into_iter().map(|candidate| ExactHit {
                     reference: SelectionId {
@@ -31213,6 +31289,9 @@ impl KetchupApp {
                     .then_with(|| a.reference.cmp(&b.reference))
             });
             pick.overlapping.dedup_by(|a, b| a.reference == b.reference);
+            if flat_box {
+                put_in_front(&mut pick.overlapping, &pick.primary);
+            }
             pick
         })
     }

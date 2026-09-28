@@ -1550,6 +1550,62 @@ fn semicircular_arc_profile_negative_push_pull_creates_exact_through_cut_atomica
 }
 
 #[test]
+fn rectangle_drawn_on_a_solid_face_is_picked_before_the_face_it_lies_on() {
+    let mut shell = Shell::new();
+    let corners = [Vec3::new(20.0, 15.0, 20.0), Vec3::new(40.0, 35.0, 20.0)];
+    shell.click_command(AppCommand::Rectangle);
+    for corner in corners {
+        shell.click_at(shell.app().viewport_position(corner).unwrap());
+    }
+    let profile = shell.app().selected_reference().unwrap().instance_path;
+    assert_ne!(profile, InstancePath::root(OccurrenceId(1)));
+
+    shell.click_command(AppCommand::Select);
+    shell.click_at(shell.viewport_rect().left_top() + Vec2::new(24.0, 200.0));
+    assert!(shell.app().selected_reference().is_none());
+    // Let the exact body arrive, as in the running app, so the solid's face is
+    // picked from exact geometry rather than from its canonical box.
+    shell.settle();
+    let centre = shell
+        .app()
+        .viewport_position(Vec3::new(30.0, 25.0, 20.0))
+        .unwrap();
+    shell.move_pointer(centre);
+    assert_eq!(
+        shell
+            .app()
+            .hovered_selection()
+            .map(|hover| &hover.instance_path),
+        Some(&profile)
+    );
+    shell.click_at(centre);
+    assert_eq!(
+        shell.app().selected_reference().unwrap().instance_path,
+        profile
+    );
+    // Away from the drawn rectangle the solid's own face is still picked.
+    shell.move_pointer(shell.top_face_centre(1));
+    assert_eq!(
+        shell
+            .app()
+            .hovered_selection()
+            .map(|hover| &hover.instance_path),
+        Some(&InstancePath::root(OccurrenceId(1)))
+    );
+
+    // Push/Pull targets the rectangle under the pointer, not the face beneath it.
+    shell.click_command(AppCommand::PushPull);
+    shell.move_pointer(centre);
+    assert_eq!(
+        shell
+            .app()
+            .hovered_selection()
+            .map(|hover| &hover.instance_path),
+        Some(&profile)
+    );
+}
+
+#[test]
 fn semicircular_arc_profile_negative_push_pull_creates_exact_depth_limited_pocket_atomically() {
     let directory = tempfile::tempdir().unwrap();
     let saved = directory.path().join("arc-pocket.ketchup");
