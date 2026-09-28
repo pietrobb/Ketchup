@@ -8,9 +8,11 @@
 // parameters; the macro-generated wrappers inherit that.
 #![allow(clippy::too_many_arguments)]
 
+use crate::frame::{self, Mat3};
 use crate::model::{
-    Face, Hole, Joint, Param, Part, Pocket, ProgramCut, ProgramEdgeFillet, ProgramEdgeFinishKind,
-    ProgramFaceOffset, ProgramModel, ProgramPartBody, ProgramProfileSegment,
+    Face, Hole, Joint, Param, Part, Pocket, ProgramBoolean, ProgramBooleanKind, ProgramCut,
+    ProgramEdgeFillet, ProgramEdgeFinishKind, ProgramFaceOffset, ProgramModel, ProgramPartBody,
+    ProgramProfileSegment,
 };
 use serde::Serialize;
 use starlark::environment::{FrozenModule, Globals, GlobalsBuilder, LibraryExtension, Module};
@@ -287,35 +289,122 @@ fn face(value: &str) -> anyhow::Result<Face> {
 }
 
 fn part_value<'v>(part: &Part, heap: &'v Heap) -> Value<'v> {
+    let triple = |value: [f64; 3]| heap.alloc((value[0], value[1], value[2]));
+    let (min, max) = part.world_bounds();
     heap.alloc(AllocStruct([
         ("name", heap.alloc(part.name.as_str())),
-        (
-            "size",
-            heap.alloc((part.size_mm[0], part.size_mm[1], part.size_mm[2])),
-        ),
-        (
-            "at",
-            heap.alloc((part.at_mm[0], part.at_mm[1], part.at_mm[2])),
-        ),
-        (
-            "max",
-            heap.alloc((part.max_mm()[0], part.max_mm()[1], part.max_mm()[2])),
-        ),
+        ("size", triple(part.size_mm)),
+        ("at", triple(part.at_mm)),
+        ("min", triple(min)),
+        ("max", triple(max)),
+        ("x", triple(frame::axis(&part.rotation, 0))),
+        ("y", triple(frame::axis(&part.rotation, 1))),
+        ("z", triple(frame::axis(&part.rotation, 2))),
     ]))
 }
 
+/// Applies a world rigid motion `p -> pivot + rotation·(p - pivot)` to a part.
+fn rotate_part(part: &mut Part, rotation: &Mat3, pivot: [f64; 3]) {
+    move_part(part, rotation, pivot);
+    part.refresh_feature_tree();
+}
+
+/// Moves a part and the tools of its booleans rigidly, so cuts already made
+/// stay where they are on the part, like its holes and pockets.
+fn move_part(part: &mut Part, rotation: &Mat3, pivot: [f64; 3]) {
+    let offset = frame::apply(
+        rotation,
+        std::array::from_fn(|axis| part.at_mm[axis] - pivot[axis]),
+    );
+    part.at_mm = std::array::from_fn(|axis| pivot[axis] + offset[axis]);
+    part.rotation = frame::multiply(rotation, &part.rotation);
+    for boolean in &mut part.booleans {
+        move_part(&mut boolean.tool, rotation, pivot);
+    }
+}
+
+/// Sets a part's frame to `origin`/`rotation`, carrying its booleans along.
+fn set_frame(part: &mut Part, origin: [f64; 3], rotation: Mat3) {
+    // The motion old frame -> new frame is p -> new_R·old_Rᵀ·(p - old_at) + origin,
+    // i.e. a rotation about old_at followed by a shift of origin - old_at.
+    let motion = frame::multiply(&rotation, &frame::transposed(&part.rotation));
+    let old_at = part.at_mm;
+    move_part(part, &motion, old_at);
+    let shift: [f64; 3] = std::array::from_fn(|axis| origin[axis] - old_at[axis]);
+    translate_part(part, shift);
+    part.at_mm = origin;
+    part.rotation = rotation;
+    part.refresh_feature_tree();
+}
+
+fn translate_part(part: &mut Part, shift: [f64; 3]) {
+    part.at_mm = std::array::from_fn(|axis| part.at_mm[axis] + shift[axis]);
+    for boolean in &mut part.booleans {
+        translate_part(&mut boolean.tool, shift);
+    }
+}
+
+/// Runs `f` on a part or tool body by name.
 fn with_part<R>(
     state: &State,
     name: &str,
     f: impl FnOnce(&mut Part) -> anyhow::Result<R>,
 ) -> anyhow::Result<R> {
     let mut model = state.model.borrow_mut();
+    let model = &mut *model;
     let part = model
         .parts
         .iter_mut()
+        .chain(model.tools.iter_mut())
         .find(|part| part.name == name)
         .ok_or_else(|| anyhow::anyhow!("unknown part {name:?}; create it with box() first"))?;
     f(part)
+}
+
+fn check_part_name(name: &str) -> anyhow::Result<()> {
+    if name.trim().is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
+        anyhow::bail!("part name must be 1-128 printable bytes, got {name:?}");
+    }
+    Ok(())
+}
+
+/// Adds a part, or a tool body when `tool` is true. Names are shared by both.
+fn insert_part(state: &State, mut part: Part, tool: bool) -> anyhow::Result<Part> {
+    part.refresh_feature_tree();
+    let mut model = state.model.borrow_mut();
+    let name = &part.name;
+    if model.part(name).is_some() || model.tool(name).is_some() {
+        anyhow::bail!("part {name:?} already exists; part names are identities and must be unique");
+    }
+    if model.parts.len() + model.tools.len() >= MAX_PARTS {
+        anyhow::bail!("more than {MAX_PARTS} parts; check the program for a runaway loop");
+    }
+    if tool {
+        model.tools.push(part.clone());
+    } else {
+        model.parts.push(part.clone());
+    }
+    Ok(part)
+}
+
+fn new_part(name: &str, size_mm: [f64; 3], at_mm: [f64; 3], body: ProgramPartBody) -> Part {
+    Part {
+        name: name.to_owned(),
+        size_mm,
+        at_mm,
+        rotation: frame::IDENTITY,
+        material: None,
+        grain_axis: None,
+        color: None,
+        body,
+        fillets: Vec::new(),
+        cuts: Vec::new(),
+        face_offsets: Vec::new(),
+        booleans: Vec::new(),
+        features: Vec::new(),
+        holes: Vec::new(),
+        pockets: Vec::new(),
+    }
 }
 
 fn insert_profile_part(
@@ -323,10 +412,9 @@ fn insert_profile_part(
     name: &str,
     at_mm: [f64; 3],
     body: ProgramPartBody,
+    tool: bool,
 ) -> anyhow::Result<Part> {
-    if name.trim().is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
-        anyhow::bail!("part name must be 1-128 printable bytes, got {name:?}");
-    }
+    check_part_name(name)?;
     let segments = match &body {
         ProgramPartBody::Panel => unreachable!(),
         ProgramPartBody::Extrusion { segments, .. } | ProgramPartBody::Revolve { segments, .. } => {
@@ -360,47 +448,91 @@ fn insert_profile_part(
     if size_mm.iter().any(|value| *value <= TOLERANCE_MM) {
         anyhow::bail!("part {name:?}: profile and body dimensions must be positive");
     }
-    let mut part = Part {
-        name: name.to_owned(),
-        size_mm,
-        at_mm,
-        material: None,
-        grain_axis: None,
-        color: None,
-        body,
-        fillets: Vec::new(),
-        cuts: Vec::new(),
-        face_offsets: Vec::new(),
-        features: Vec::new(),
-        holes: Vec::new(),
-        pockets: Vec::new(),
-    };
-    part.refresh_feature_tree();
-    let mut model = state.model.borrow_mut();
-    if model.parts.iter().any(|existing| existing.name == name) {
-        anyhow::bail!("part {name:?} already exists; part names are identities and must be unique");
-    }
-    if model.parts.len() >= MAX_PARTS {
-        anyhow::bail!("more than {MAX_PARTS} parts; check the program for a runaway loop");
-    }
-    model.parts.push(part.clone());
-    Ok(part)
+    insert_part(state, new_part(name, size_mm, at_mm, body), tool)
 }
 
-/// Contact between two axis-aligned parts: a shared face patch of positive area.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Records `target <kind> tool` on the target part.
+fn apply_boolean<'v>(
+    part: Value<'v>,
+    tool: Value<'v>,
+    name: Option<Value<'v>>,
+    kind: ProgramBooleanKind,
+    eval: &mut Evaluator<'v, '_, '_>,
+) -> anyhow::Result<Value<'v>> {
+    let heap = eval.heap();
+    let target = part_name(part, heap)?;
+    let tool = part_name(tool, heap)?;
+    let operation = match kind {
+        ProgramBooleanKind::Subtract => "subtract",
+        ProgramBooleanKind::Intersect => "intersect",
+    };
+    let state = state(eval)?;
+    let tool_part = {
+        let model = state.model.borrow();
+        model
+            .part(&tool)
+            .or_else(|| model.tool(&tool))
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("{operation}(): unknown tool {tool:?}"))?
+    };
+    if tool == target {
+        anyhow::bail!("{operation}({target:?}, {tool:?}): a part cannot be its own tool");
+    }
+    let requested = text(name, "name")?;
+    record_source(eval, &state, &[&target]);
+    with_part(&state, &target, |part| {
+        let name = requested.unwrap_or_else(|| format!("{operation} {tool}"));
+        check_part_name(&name)?;
+        if part.cuts.iter().any(|cut| cut.name == name)
+            || part.fillets.iter().any(|finish| finish.name == name)
+            || part.face_offsets.iter().any(|offset| offset.name == name)
+            || part.booleans.iter().any(|boolean| boolean.name == name)
+        {
+            anyhow::bail!(
+                "feature name {name:?} is already used on {target:?}; pass a unique name="
+            );
+        }
+        part.booleans.push(ProgramBoolean {
+            name,
+            kind,
+            tool: tool_part,
+        });
+        Ok(part_value(part, heap))
+    })
+}
+
+/// A shared face patch of positive area between two parts.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Contact {
+    /// Local axis of the first part the touching faces are perpendicular to.
     pub axis: usize,
-    /// Face of the first part that touches the second.
+    /// Face of the first part that touches the second, in the first part's frame.
     pub face_a: Face,
+    /// Face of the second part that touches the first, in its own frame.
+    pub face_b: Face,
+    /// World bounds of the patch.
     pub min_mm: [f64; 3],
     pub max_mm: [f64; 3],
+    /// World unit normal pointing out of the first part.
+    pub normal: [f64; 3],
+    /// World directions of `face_a`'s (u, v) axes; the patch's bounding
+    /// rectangle along them starts at `origin_mm` and measures `size_mm`.
+    pub u: [f64; 3],
+    pub v: [f64; 3],
+    pub origin_mm: [f64; 3],
+    pub size_mm: [f64; 2],
+    /// World corners of the convex patch.
+    pub points_mm: Vec<[f64; 3]>,
 }
 
-/// Finds the face patch where `a` touches `b`, if any.
+/// Finds the face patch where `a` touches `b`, if any. Faces are the uncut
+/// box faces of each part in its own frame.
 #[must_use]
 pub fn contact(a: &Part, b: &Part) -> Option<Contact> {
-    let (a_min, a_max, b_min, b_max) = (a.at_mm, a.max_mm(), b.at_mm, b.max_mm());
+    if a.is_rotated() || b.is_rotated() {
+        return rotated_contact(a, b);
+    }
+    let ((a_min, a_max), (b_min, b_max)) = (a.world_bounds(), b.world_bounds());
     for axis in 0..3 {
         for max_side in [true, false] {
             let plane = if max_side { a_max[axis] } else { a_min[axis] };
@@ -419,16 +551,65 @@ pub fn contact(a: &Part, b: &Part) -> Option<Contact> {
             if area_ok {
                 min[axis] = plane;
                 max[axis] = plane;
+                let face_a = Face::from_axis(axis, max_side);
+                let (u_axis, v_axis) = face_a.uv_axes();
+                let unit = |index: usize| -> [f64; 3] {
+                    std::array::from_fn(|i| if i == index { 1.0 } else { 0.0 })
+                };
+                let corner = |u: f64, v: f64| {
+                    let mut point = min;
+                    point[u_axis] = u;
+                    point[v_axis] = v;
+                    point
+                };
                 return Some(Contact {
                     axis,
-                    face_a: Face::from_axis(axis, max_side),
+                    face_a,
+                    face_b: face_a.opposite(),
                     min_mm: min,
                     max_mm: max,
+                    normal: unit(axis).map(|value| if max_side { value } else { -value }),
+                    u: unit(u_axis),
+                    v: unit(v_axis),
+                    origin_mm: min,
+                    size_mm: [max[u_axis] - min[u_axis], max[v_axis] - min[v_axis]],
+                    points_mm: vec![
+                        corner(min[u_axis], min[v_axis]),
+                        corner(max[u_axis], min[v_axis]),
+                        corner(max[u_axis], max[v_axis]),
+                        corner(min[u_axis], max[v_axis]),
+                    ],
                 });
             }
         }
     }
     None
+}
+
+fn rotated_contact(a: &Part, b: &Part) -> Option<Contact> {
+    let patch = a.obb().face_contact(&b.obb(), TOLERANCE_MM)?;
+    let (min_mm, max_mm) = patch.points.iter().fold(
+        ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]),
+        |(min, max), point| {
+            (
+                std::array::from_fn(|i| f64::min(min[i], point[i])),
+                std::array::from_fn(|i| f64::max(max[i], point[i])),
+            )
+        },
+    );
+    Some(Contact {
+        axis: patch.face.0,
+        face_a: Face::from_axis(patch.face.0, patch.face.1),
+        face_b: Face::from_axis(patch.other_face.0, patch.other_face.1),
+        min_mm,
+        max_mm,
+        normal: patch.normal,
+        u: patch.u,
+        v: patch.v,
+        origin_mm: patch.origin,
+        size_mm: patch.size,
+        points_mm: patch.points,
+    })
 }
 
 fn apply_named_edge_finish(
@@ -540,7 +721,9 @@ fn builtins(builder: &mut GlobalsBuilder) {
         Ok(heap.alloc(value))
     }
 
-    /// An axis-aligned cuboid part. `size` is (x, y, z) and `at` its minimum corner.
+    /// A cuboid part occupying `0..size` in its own frame, with its origin at
+    /// `at`. `tool=True` makes a helper body for subtract()/intersect() that is
+    /// never built, listed or validated.
     fn r#box<'v>(
         #[starlark(require = pos)] name: &str,
         #[starlark(require = pos)] size: Value<'v>,
@@ -548,12 +731,11 @@ fn builtins(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] material: Option<Value<'v>>,
         #[starlark(require = named)] grain: Option<Value<'v>>,
         #[starlark(require = named)] color: Option<Value<'v>>,
+        #[starlark(require = named, default = false)] tool: bool,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
         let heap = eval.heap();
-        if name.trim().is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
-            anyhow::bail!("part name must be 1-128 printable bytes, got {name:?}");
-        }
+        check_part_name(name)?;
         let size = numbers::<3>(size, heap, "size")?;
         if let Some(axis) = size.iter().position(|value| *value <= TOLERANCE_MM) {
             anyhow::bail!(
@@ -584,34 +766,16 @@ fn builtins(builder: &mut GlobalsBuilder) {
             })
             .transpose()?;
         let state = state(eval)?;
-        let mut part = Part {
-            name: name.to_owned(),
-            size_mm: size,
-            at_mm: at,
-            material,
-            grain_axis,
-            color,
-            body: crate::model::ProgramPartBody::Panel,
-            fillets: Vec::new(),
-            cuts: Vec::new(),
-            face_offsets: Vec::new(),
-            features: Vec::new(),
-            holes: Vec::new(),
-            pockets: Vec::new(),
-        };
-        part.refresh_feature_tree();
-        {
-            let mut model = state.model.borrow_mut();
-            if model.parts.iter().any(|existing| existing.name == name) {
-                anyhow::bail!(
-                    "part {name:?} already exists; part names are identities and must be unique"
-                );
-            }
-            if model.parts.len() >= MAX_PARTS {
-                anyhow::bail!("more than {MAX_PARTS} parts; check the program for a runaway loop");
-            }
-            model.parts.push(part.clone());
-        }
+        let part = insert_part(
+            &state,
+            Part {
+                material,
+                grain_axis,
+                color,
+                ..new_part(name, size, at, ProgramPartBody::Panel)
+            },
+            tool,
+        )?;
         record_source(eval, &state, &[name]);
         Ok(part_value(&part, heap))
     }
@@ -622,6 +786,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] profile: Value<'v>,
         #[starlark(require = named)] distance: Value<'v>,
         #[starlark(require = named)] at: Option<Value<'v>>,
+        #[starlark(require = named, default = false)] tool: bool,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
         let heap = eval.heap();
@@ -640,6 +805,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
                 segments,
                 distance_mm,
             },
+            tool,
         )?;
         record_source(eval, &state, &[name]);
         Ok(part_value(&part, heap))
@@ -652,6 +818,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] axis: Value<'v>,
         #[starlark(require = named)] angle: Option<Value<'v>>,
         #[starlark(require = named)] at: Option<Value<'v>>,
+        #[starlark(require = named, default = false)] tool: bool,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
         let heap = eval.heap();
@@ -683,6 +850,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
                 axis_end_mm: *axis_end_mm,
                 angle_degrees: angle,
             },
+            tool,
         )?;
         record_source(eval, &state, &[name]);
         Ok(part_value(&part, heap))
@@ -764,6 +932,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
             if part.cuts.iter().any(|cut| cut.name == name)
                 || part.fillets.iter().any(|finish| finish.name == name)
                 || part.face_offsets.iter().any(|offset| offset.name == name)
+                || part.booleans.iter().any(|boolean| boolean.name == name)
             {
                 anyhow::bail!("feature name {name:?} is already used on {part_name:?}");
             }
@@ -803,6 +972,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
             if part.cuts.iter().any(|cut| cut.name == name)
                 || part.fillets.iter().any(|finish| finish.name == name)
                 || part.face_offsets.iter().any(|offset| offset.name == name)
+                || part.booleans.iter().any(|boolean| boolean.name == name)
             {
                 anyhow::bail!("feature name {name:?} is already used on {part_name:?}");
             }
@@ -816,7 +986,63 @@ fn builtins(builder: &mut GlobalsBuilder) {
         })
     }
 
-    /// Current name, size, at and max of a part.
+    /// Rotates a part by `angle` degrees (right hand) about the world direction
+    /// `axis` through `pivot` (default: the part's origin `at`). Rotations compose.
+    fn rotate<'v>(
+        #[starlark(require = pos)] part: Value<'v>,
+        #[starlark(require = named)] axis: Value<'v>,
+        #[starlark(require = named)] angle: Value<'v>,
+        #[starlark(require = named)] pivot: Option<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let heap = eval.heap();
+        let name = part_name(part, heap)?;
+        let axis = numbers::<3>(axis, heap, "axis")?;
+        let angle = number(angle, "angle")?;
+        let rotation = frame::axis_angle(axis, angle).ok_or_else(|| {
+            anyhow::anyhow!("rotate({name:?}): axis must be a non-zero direction, got {axis:?}")
+        })?;
+        let pivot = given(pivot)
+            .map(|pivot| numbers::<3>(pivot, heap, "pivot"))
+            .transpose()?;
+        let state = state(eval)?;
+        record_source(eval, &state, &[&name]);
+        with_part(&state, &name, |part| {
+            rotate_part(part, &rotation, pivot.unwrap_or(part.at_mm));
+            Ok(part_value(part, heap))
+        })
+    }
+
+    /// Sets a part's frame absolutely: local origin at `origin`, local z along
+    /// `z` and local x along `x` (made perpendicular to `z`); y completes a
+    /// right-handed frame.
+    fn place<'v>(
+        #[starlark(require = pos)] part: Value<'v>,
+        #[starlark(require = named)] origin: Value<'v>,
+        #[starlark(require = named)] z: Value<'v>,
+        #[starlark(require = named)] x: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let heap = eval.heap();
+        let name = part_name(part, heap)?;
+        let origin = numbers::<3>(origin, heap, "origin")?;
+        let (z, x) = (numbers::<3>(z, heap, "z")?, numbers::<3>(x, heap, "x")?);
+        let rotation = frame::from_axes(x, z).ok_or_else(|| {
+            anyhow::anyhow!(
+                "place({name:?}): z={z:?} and x={x:?} must be non-zero and not parallel; \
+                 give x any direction across the part's length"
+            )
+        })?;
+        let state = state(eval)?;
+        record_source(eval, &state, &[&name]);
+        with_part(&state, &name, |part| {
+            set_frame(part, origin, rotation);
+            Ok(part_value(part, heap))
+        })
+    }
+
+    /// Current name, size, origin `at`, world bounds `min`/`max` and local
+    /// axes `x`, `y`, `z` (world directions) of a part.
     fn part_info<'v>(
         #[starlark(require = pos)] part: Value<'v>,
         eval: &mut Evaluator<'v, '_, '_>,
@@ -827,8 +1053,30 @@ fn builtins(builder: &mut GlobalsBuilder) {
         let model = state.model.borrow();
         let part = model
             .part(&name)
+            .or_else(|| model.tool(&name))
             .ok_or_else(|| anyhow::anyhow!("unknown part {name:?}"))?;
         Ok(part_value(part, heap))
+    }
+
+    /// Removes the volume of `tool` (a tool body or another part, as it is
+    /// now) from `part`. Applied after the part's other features.
+    fn subtract<'v>(
+        #[starlark(require = pos)] part: Value<'v>,
+        #[starlark(require = pos)] tool: Value<'v>,
+        #[starlark(require = named)] name: Option<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        apply_boolean(part, tool, name, ProgramBooleanKind::Subtract, eval)
+    }
+
+    /// Keeps only the volume `part` shares with `tool` (as it is now).
+    fn intersect<'v>(
+        #[starlark(require = pos)] part: Value<'v>,
+        #[starlark(require = pos)] tool: Value<'v>,
+        #[starlark(require = named)] name: Option<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        apply_boolean(part, tool, name, ProgramBooleanKind::Intersect, eval)
     }
 
     /// Drills a hole perpendicular to `face`. Give either face coordinates
@@ -931,9 +1179,12 @@ fn builtins(builder: &mut GlobalsBuilder) {
         })
     }
 
-    /// Where part `a` touches part `b`: a struct with `axis` ("x"/"y"/"z"),
-    /// `face_a`, `face_b`, and the world rectangle `min`/`max`; None if they
-    /// do not touch.
+    /// Where part `a` touches part `b` face to face (rotated parts too): a
+    /// struct with `axis` (a's local "x"/"y"/"z"), `face_a`/`face_b` in each
+    /// part's own frame, world bounds `min`/`max`, world `normal` out of `a`,
+    /// the patch rectangle `origin` + `size=(du, dv)` along world directions
+    /// `u`/`v` (face_a's face axes) and its world corner `points`; None if
+    /// they do not touch.
     fn contact<'v>(
         #[starlark(require = pos)] a: Value<'v>,
         #[starlark(require = pos)] b: Value<'v>,
@@ -949,19 +1200,29 @@ fn builtins(builder: &mut GlobalsBuilder) {
         let part_b = model
             .part(&b)
             .ok_or_else(|| anyhow::anyhow!("unknown part {b:?}"))?;
+        let point = |value: [f64; 3]| heap.alloc((value[0], value[1], value[2]));
         Ok(match self::contact(part_a, part_b) {
             None => Value::new_none(),
             Some(contact) => heap.alloc(AllocStruct([
                 ("axis", heap.alloc(["x", "y", "z"][contact.axis])),
                 ("face_a", heap.alloc(contact.face_a.name())),
-                ("face_b", heap.alloc(contact.face_a.opposite().name())),
+                ("face_b", heap.alloc(contact.face_b.name())),
+                ("min", point(contact.min_mm)),
+                ("max", point(contact.max_mm)),
+                ("normal", point(contact.normal)),
+                ("u", point(contact.u)),
+                ("v", point(contact.v)),
+                ("origin", point(contact.origin_mm)),
+                ("size", heap.alloc((contact.size_mm[0], contact.size_mm[1]))),
                 (
-                    "min",
-                    heap.alloc((contact.min_mm[0], contact.min_mm[1], contact.min_mm[2])),
-                ),
-                (
-                    "max",
-                    heap.alloc((contact.max_mm[0], contact.max_mm[1], contact.max_mm[2])),
+                    "points",
+                    heap.alloc(
+                        contact
+                            .points_mm
+                            .iter()
+                            .map(|p| point(*p))
+                            .collect::<Vec<_>>(),
+                    ),
                 ),
             ])),
         })
@@ -1033,6 +1294,61 @@ fn builtins(builder: &mut GlobalsBuilder) {
     }
 }
 
+/// `math.*`: the usual functions in radians plus `radians`/`degrees`.
+#[allow(non_upper_case_globals)]
+#[starlark_module]
+fn math_functions(builder: &mut GlobalsBuilder) {
+    fn sqrt(#[starlark(require = pos)] x: UnpackFloat) -> anyhow::Result<f64> {
+        if x.0 < 0.0 {
+            anyhow::bail!("math.sqrt of a negative number {}", x.0);
+        }
+        Ok(x.0.sqrt())
+    }
+    fn sin(#[starlark(require = pos)] x: UnpackFloat) -> anyhow::Result<f64> {
+        Ok(x.0.sin())
+    }
+    fn cos(#[starlark(require = pos)] x: UnpackFloat) -> anyhow::Result<f64> {
+        Ok(x.0.cos())
+    }
+    fn tan(#[starlark(require = pos)] x: UnpackFloat) -> anyhow::Result<f64> {
+        Ok(x.0.tan())
+    }
+    fn asin(#[starlark(require = pos)] x: UnpackFloat) -> anyhow::Result<f64> {
+        if !(-1.0..=1.0).contains(&x.0) {
+            anyhow::bail!("math.asin needs a value in [-1, 1], got {}", x.0);
+        }
+        Ok(x.0.asin())
+    }
+    fn acos(#[starlark(require = pos)] x: UnpackFloat) -> anyhow::Result<f64> {
+        if !(-1.0..=1.0).contains(&x.0) {
+            anyhow::bail!("math.acos needs a value in [-1, 1], got {}", x.0);
+        }
+        Ok(x.0.acos())
+    }
+    fn atan(#[starlark(require = pos)] x: UnpackFloat) -> anyhow::Result<f64> {
+        Ok(x.0.atan())
+    }
+    fn atan2(
+        #[starlark(require = pos)] y: UnpackFloat,
+        #[starlark(require = pos)] x: UnpackFloat,
+    ) -> anyhow::Result<f64> {
+        Ok(y.0.atan2(x.0))
+    }
+    fn hypot(
+        #[starlark(require = pos)] x: UnpackFloat,
+        #[starlark(require = pos)] y: UnpackFloat,
+    ) -> anyhow::Result<f64> {
+        Ok(x.0.hypot(y.0))
+    }
+    fn radians(#[starlark(require = pos)] degrees: UnpackFloat) -> anyhow::Result<f64> {
+        Ok(degrees.0.to_radians())
+    }
+    fn degrees(#[starlark(require = pos)] radians: UnpackFloat) -> anyhow::Result<f64> {
+        Ok(radians.0.to_degrees())
+    }
+    const pi: f64 = std::f64::consts::PI;
+}
+
 fn dialect() -> Dialect {
     Dialect {
         enable_f_strings: true,
@@ -1050,6 +1366,7 @@ fn globals() -> Globals {
         LibraryExtension::Partial,
     ])
     .with(builtins)
+    .with_namespace("math", math_functions)
     .build()
 }
 

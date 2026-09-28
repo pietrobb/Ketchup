@@ -1,5 +1,7 @@
 //! Converts an evaluated model into canonical panel creation requests that
 //! the application planner turns into one undoable command batch.
+//! The operations carry only the part's origin; the planner places each
+//! occurrence with the part's exact frame (`Part::transform_matrix`).
 
 use crate::model::{Part, ProgramModel, ProgramPartBody};
 use ketchup_core::assistant_sidecar::{

@@ -2107,6 +2107,10 @@ impl Wire {
         self.stream.write_all(&frame).unwrap();
     }
     fn call(&mut self, request: Request) -> Response {
+        self.call_within(request, Duration::from_secs(4))
+    }
+    fn call_within(&mut self, request: Request, timeout: Duration) -> Response {
+        self.stream.set_read_timeout(Some(timeout)).unwrap();
         self.send(request, false);
         let mut reader = self.stream.try_clone().unwrap();
         let (tx, rx) = mpsc::channel();
@@ -2118,7 +2122,7 @@ impl Wire {
             tx.send(serde_json::from_slice::<Response>(&bytes).unwrap())
                 .unwrap();
         });
-        let deadline = Instant::now() + Duration::from_secs(4);
+        let deadline = Instant::now() + timeout;
         let response = loop {
             if let Ok(response) = rx.try_recv() {
                 break response;

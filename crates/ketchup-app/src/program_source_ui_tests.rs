@@ -52,7 +52,7 @@ fn harness(app: KetchupApp) -> egui_kittest::Harness<'static, KetchupApp> {
 }
 
 #[test]
-fn selected_program_part_shows_the_lines_that_define_it() {
+fn program_is_always_shown_and_selection_highlights_its_lines() {
     let directory = tempfile::tempdir().unwrap();
     let app = open_table(directory.path());
     let leg = occurrence_named(&app, "table/leg-back-left");
@@ -60,11 +60,30 @@ fn selected_program_part_shows_the_lines_that_define_it() {
     let mut harness = harness(app);
     let catalog = harness.state().catalog.clone();
     let title = catalog.text("program-source-title");
-    assert!(harness.query_by_label(&title).is_none());
+    // The whole program is visible before anything is selected.
+    assert!(harness.query_by_label(&title).is_some());
+    assert!(
+        harness
+            .query_by_label(&catalog.text("program-source-select-hint"))
+            .is_some()
+    );
+    assert!(harness.query_by_label(&line_label(13, false)).is_some());
+    // Groups, components and layers are shown; manual CAD panels are not.
+    for key in ["dock-outliner", "dock-tags"] {
+        assert!(
+            harness.query_by_label(&catalog.text(key)).is_some(),
+            "{key}"
+        );
+    }
+    for key in ["feature-history-title", "body-title", "assembly-title"] {
+        assert!(
+            harness.query_by_label(&catalog.text(key)).is_none(),
+            "{key}"
+        );
+    }
 
     harness.state_mut().selection.select_occurrence(leg, false);
     harness.run_steps(3);
-    assert!(harness.query_by_label(&title).is_some());
     assert!(
         harness
             .query_by_label(&catalog.format(

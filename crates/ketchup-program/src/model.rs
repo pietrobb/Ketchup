@@ -1,9 +1,11 @@
 //! Plain data produced by evaluating a rule program.
 //!
-//! Every part is an axis-aligned cuboid in world millimetres, described by its
-//! minimum corner (`at_mm`) and its extent (`size_mm`). Holes and pockets are
-//! machined into one of the six faces and use face-local coordinates.
+//! Every part has a rigid frame: its local origin `at_mm` in world millimetres
+//! and a rotation (identity for axis-aligned parts). A panel occupies
+//! `0..size_mm` in its own frame. Holes and pockets are machined into one of
+//! the six local faces and use face-local coordinates.
 
+use crate::frame::{self, Mat3, Obb};
 use serde::Serialize;
 
 /// One of the six faces of an axis-aligned part.
@@ -242,6 +244,26 @@ pub struct ProgramCut {
     pub depth_mm: f64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgramBooleanKind {
+    /// Removes the tool's volume from the part.
+    Subtract,
+    /// Keeps only the volume the part shares with the tool.
+    Intersect,
+}
+
+/// A boolean between a part and another body (a tool or a real part). The
+/// tool is recorded as it was when the operation was declared: its body shape
+/// and its own booleans; its holes, pockets, cuts and finishes are not part of
+/// the removed or kept volume.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ProgramBoolean {
+    pub name: String,
+    pub kind: ProgramBooleanKind,
+    pub tool: Part,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ProgramFaceOffset {
     pub name: String,
@@ -270,7 +292,11 @@ pub struct Part {
     /// Stable identity: the path given in the program, e.g. `korpus/bok_lavy`.
     pub name: String,
     pub size_mm: [f64; 3],
+    /// World position of the local origin.
     pub at_mm: [f64; 3],
+    /// Row-major rotation of the local frame; columns are the local axes in world.
+    #[serde(skip_serializing_if = "frame::is_identity")]
+    pub rotation: Mat3,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub material: Option<String>,
     /// Axis index of the grain direction, if the material has one.
@@ -282,6 +308,9 @@ pub struct Part {
     pub fillets: Vec<ProgramEdgeFillet>,
     pub cuts: Vec<ProgramCut>,
     pub face_offsets: Vec<ProgramFaceOffset>,
+    /// Applied after every other feature, in program order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub booleans: Vec<ProgramBoolean>,
     /// Stable, operation-class-level source tree used by incremental reconciliation.
     pub features: Vec<ProgramFeature>,
     pub holes: Vec<Hole>,
@@ -289,21 +318,105 @@ pub struct Part {
 }
 
 impl Part {
+    /// Bounds of the body in its own frame, before cuts and finishes.
     #[must_use]
-    pub fn max_mm(&self) -> [f64; 3] {
-        std::array::from_fn(|axis| self.at_mm[axis] + self.size_mm[axis])
+    pub fn local_bounds(&self) -> ([f64; 3], [f64; 3]) {
+        let profile_bounds = |segments: &[ProgramProfileSegment]| {
+            let (mut min, mut max) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+            for point in segments.iter().flat_map(|s| [s.start_mm, s.end_mm]) {
+                for axis in 0..2 {
+                    min[axis] = min[axis].min(point[axis]);
+                    max[axis] = max[axis].max(point[axis]);
+                }
+            }
+            (min, max)
+        };
+        match &self.body {
+            ProgramPartBody::Panel => ([0.0; 3], self.size_mm),
+            ProgramPartBody::Extrusion {
+                segments,
+                distance_mm,
+            } => {
+                let (min, max) = profile_bounds(segments);
+                ([min[0], min[1], 0.0], [max[0], max[1], *distance_mm])
+            }
+            ProgramPartBody::Revolve { segments, .. } => {
+                let (min, max) = profile_bounds(segments);
+                let radius = self.size_mm[0] * 0.5;
+                ([-radius, min[1], -radius], [radius, max[1], radius])
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn obb(&self) -> Obb {
+        let (min, max) = self.local_bounds();
+        Obb::new(self.at_mm, &self.rotation, min, max)
+    }
+
+    /// World axis-aligned bounds as (min, max).
+    #[must_use]
+    pub fn world_bounds(&self) -> ([f64; 3], [f64; 3]) {
+        self.obb().world_bounds()
+    }
+
+    #[must_use]
+    pub fn is_rotated(&self) -> bool {
+        !frame::is_identity(&self.rotation)
+    }
+
+    /// Row-major 4x4 local-to-world matrix.
+    #[must_use]
+    pub fn transform_matrix(&self) -> [f64; 16] {
+        let mut matrix = [0.0; 16];
+        for row in 0..3 {
+            matrix[row * 4..row * 4 + 3].copy_from_slice(&self.rotation[row]);
+            matrix[row * 4 + 3] = self.at_mm[row];
+        }
+        matrix[15] = 1.0;
+        matrix
+    }
+
+    /// Row-major 4x4 matrix placing `other`'s frame inside this part's frame.
+    #[must_use]
+    pub fn frame_of(&self, other: &Self) -> [f64; 16] {
+        let rotation = frame::multiply(&frame::transposed(&self.rotation), &other.rotation);
+        let origin = self.to_local(other.at_mm);
+        let mut matrix = [0.0; 16];
+        for row in 0..3 {
+            matrix[row * 4..row * 4 + 3].copy_from_slice(&rotation[row]);
+            matrix[row * 4 + 3] = origin[row];
+        }
+        matrix[15] = 1.0;
+        matrix
+    }
+
+    /// Whether the volume `other` occupies now was already subtracted from this part.
+    #[must_use]
+    pub fn subtracts(&self, other: &Self) -> bool {
+        self.booleans.iter().any(|boolean| {
+            boolean.kind == ProgramBooleanKind::Subtract
+                && boolean.tool.name == other.name
+                && boolean.tool.body == other.body
+                && boolean.tool.size_mm == other.size_mm
+                && boolean.tool.transform_matrix() == other.transform_matrix()
+        })
     }
 
     /// World point for a part-local point.
     #[must_use]
     pub fn to_world(&self, local: [f64; 3]) -> [f64; 3] {
-        std::array::from_fn(|axis| self.at_mm[axis] + local[axis])
+        let rotated = frame::apply(&self.rotation, local);
+        std::array::from_fn(|axis| self.at_mm[axis] + rotated[axis])
     }
 
     /// Part-local point for a world point.
     #[must_use]
     pub fn to_local(&self, world: [f64; 3]) -> [f64; 3] {
-        std::array::from_fn(|axis| world[axis] - self.at_mm[axis])
+        frame::apply_transposed(
+            &self.rotation,
+            std::array::from_fn(|axis| world[axis] - self.at_mm[axis]),
+        )
     }
 
     pub fn refresh_feature_tree(&mut self) {
@@ -549,6 +662,9 @@ pub struct Joint {
 pub struct ProgramModel {
     pub params: Vec<Param>,
     pub parts: Vec<Part>,
+    /// Helper bodies used only as boolean tools: never built, listed or validated.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<Part>,
     pub joints: Vec<Joint>,
 }
 
@@ -556,5 +672,10 @@ impl ProgramModel {
     #[must_use]
     pub fn part(&self, name: &str) -> Option<&Part> {
         self.parts.iter().find(|part| part.name == name)
+    }
+
+    #[must_use]
+    pub fn tool(&self, name: &str) -> Option<&Part> {
+        self.tools.iter().find(|part| part.name == name)
     }
 }

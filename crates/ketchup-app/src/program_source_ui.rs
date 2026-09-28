@@ -34,20 +34,19 @@ fn line_ranges(lines: &[SourceLines]) -> String {
 }
 
 impl KetchupApp {
-    /// Shows the Starlark program lines that create or change the selected part.
-    /// Models without a program show nothing, so the dock does not grow for them.
+    /// Shows the whole Starlark program of a program-owned model and highlights
+    /// the lines that create or change the selected part. Models without a
+    /// program show nothing, so the dock does not grow for them.
     pub(super) fn show_program_source(&mut self, ui: &mut egui::Ui) {
         let Some(program) = self.document.current_rule_program() else {
             return;
         };
-        let Some(occurrence_id) = self.selected_occurrence_ids().first().copied() else {
-            return;
-        };
-        let snapshot = self.document.current();
-        let Some(occurrence) = snapshot.occurrence(occurrence_id) else {
-            return;
-        };
-        let part = occurrence.name().to_owned();
+        let part = self.selected_occurrence_ids().first().and_then(|id| {
+            self.document
+                .current()
+                .occurrence(*id)
+                .map(|occurrence| occurrence.name().to_owned())
+        });
         egui::CollapsingHeader::new(self.catalog.text("program-source-title"))
             .id_salt("program-source")
             .default_open(true)
@@ -68,26 +67,36 @@ impl KetchupApp {
                             &BTreeMap::from([("error", error.clone())]),
                         ));
                     }
-                    Ok(parts) => match parts.get(&part) {
-                        None => {
-                            ui.label(self.catalog.format(
-                                "program-source-part-missing",
-                                &BTreeMap::from([("part", part.clone())]),
-                            ));
-                        }
-                        Some(lines) => {
-                            ui.label(self.catalog.format(
-                                "program-source-lines",
-                                &BTreeMap::from([
-                                    ("part", part.clone()),
-                                    ("lines", line_ranges(lines)),
-                                ]),
-                            ));
-                            let scroll = view.scrolled_to.as_deref() != Some(part.as_str());
-                            show_source_lines(ui, &view.source.source, lines, scroll);
-                            view.scrolled_to = Some(part.clone());
-                        }
-                    },
+                    Ok(parts) => {
+                        let lines = match &part {
+                            None => {
+                                ui.weak(self.catalog.text("program-source-select-hint"));
+                                &[][..]
+                            }
+                            Some(part) => match parts.get(part) {
+                                None => {
+                                    ui.label(self.catalog.format(
+                                        "program-source-part-missing",
+                                        &BTreeMap::from([("part", part.clone())]),
+                                    ));
+                                    &[][..]
+                                }
+                                Some(lines) => {
+                                    ui.label(self.catalog.format(
+                                        "program-source-lines",
+                                        &BTreeMap::from([
+                                            ("part", part.clone()),
+                                            ("lines", line_ranges(lines)),
+                                        ]),
+                                    ));
+                                    lines.as_slice()
+                                }
+                            },
+                        };
+                        let scroll = !lines.is_empty() && view.scrolled_to != part;
+                        show_source_lines(ui, &view.source.source, lines, scroll);
+                        view.scrolled_to.clone_from(&part);
+                    }
                 }
                 ui.data_mut(|data| data.insert_temp(id, view));
             });
@@ -100,7 +109,7 @@ fn show_source_lines(ui: &mut egui::Ui, source: &str, lines: &[SourceLines], scr
     let highlight_text = ui.visuals().strong_text_color();
     egui::ScrollArea::both()
         .id_salt("program-source-scroll")
-        .max_height(240.0)
+        .max_height(360.0)
         .auto_shrink([false, true])
         .show(ui, |ui| {
             let mut scrolled = !scroll;

@@ -57,6 +57,7 @@ use std::{
 pub mod bootstrap;
 pub mod consent;
 mod image;
+mod program_check;
 #[cfg(test)]
 mod tests;
 mod transport;
@@ -395,6 +396,7 @@ fn program_failure(error: ketchup_application::RuleProgramApplyError) -> &'stati
 }
 
 /// What an applied program changed, bounded to fit one response frame.
+/// `exact` is the exact collision check of the applied solids, when it ran.
 fn program_edit_result(
     edit: crate::program_edit::ProgramEdit,
     report: &ketchup_program::Report,
@@ -402,6 +404,7 @@ fn program_edit_result(
     after: &ketchup_core::document::Snapshot,
     stamp: &Stamp,
     undo_steps: usize,
+    exact: Option<Value>,
 ) -> Value {
     let added = after
         .occurrences()
@@ -438,7 +441,8 @@ fn program_edit_result(
             "unused_overrides": report.unused_overrides,
             "log": log,
         },
-        "geometry_evaluated": false,
+        "geometry_evaluated": exact.as_ref().is_some_and(|exact| exact["state"] == "verified"),
+        "exact_collisions": exact,
     })
 }
 
@@ -686,6 +690,7 @@ pub(crate) struct LiveBridge {
     pending: Option<Pending>,
     next_proposal: u64,
     apply_and_verify_job: Option<ApplyAndVerifyJob>,
+    program_check_job: Option<program_check::ProgramCheckJob>,
     #[cfg(test)]
     apply_and_verify_fault: Option<ApplyAndVerifyFault>,
     batch_jobs: VecDeque<BatchJob>,
@@ -746,6 +751,7 @@ impl KetchupApp {
         let mut revoke_consent = false;
         let ui_busy = context.wants_keyboard_input() || context.is_using_pointer();
         bridge.poll_apply_and_verify_job(self, context, ui_busy);
+        bridge.poll_program_check_job(self, context);
         for _ in 0..4 {
             let Ok(queued) = bridge.queue.try_recv() else {
                 break;
@@ -762,7 +768,9 @@ impl KetchupApp {
                 continue;
             }
             if bridge.session != queued.session
-                && (bridge.image.is_pending() || bridge.apply_and_verify_job.is_some())
+                && (bridge.image.is_pending()
+                    || bridge.apply_and_verify_job.is_some()
+                    || bridge.program_check_job.is_some())
             {
                 let _ = queued.reply.try_send(Response::error(queued.id, "busy"));
                 continue;
@@ -814,6 +822,12 @@ impl KetchupApp {
                             strict,
                         },
                         ui_busy,
+                    );
+                    continue;
+                }
+                request @ Request::ApplyProgram { .. } => {
+                    bridge.start_queued_apply_program(
+                        self, context, id, reply, cancelled, request, ui_busy,
                     );
                     continue;
                 }
@@ -2126,52 +2140,9 @@ impl LiveBridge {
                     json!({"source": null, "hint": "No Starlark program owns this document. apply_program creates one in an empty document; replace_document=true replaces a saved one."})
                 }))
             }
-            Request::ApplyProgram {
-                expected,
-                source,
-                overrides,
-                file_name,
-                replace_document,
-            } => {
-                Self::guard(app, &expected)?;
-                Self::available(app, ui_busy)?;
-                let file_name = file_name
-                    .or_else(|| {
-                        app.document
-                            .current_rule_program()
-                            .map(|program| program.file_name.clone())
-                    })
-                    .unwrap_or_else(|| "model.star".to_owned());
-                Self::require_request_authority(cancelled)?;
-                let before = app.document.current();
-                let before_stamp = app.live_bridge_stamp();
-                let (edit, report) = app
-                    .apply_program_source(
-                        ketchup_core::document::RuleProgramSource {
-                            file_name,
-                            source,
-                            overrides,
-                        },
-                        replace_document,
-                    )
-                    .map_err(program_failure)?;
-                self.pending = None;
-                let after_stamp = app.live_bridge_stamp();
-                if after_stamp.document_id != before_stamp.document_id {
-                    self.invalidate_document_context();
-                } else {
-                    self.query.invalidate();
-                }
-                self.observed = Some(after_stamp.clone());
-                Ok(program_edit_result(
-                    edit,
-                    &report,
-                    &before,
-                    &app.document.current(),
-                    &after_stamp,
-                    app.undo_step_count(),
-                ))
-            }
+            request @ Request::ApplyProgram { .. } => self
+                .apply_program(app, request, ui_busy, cancelled)
+                .map(|applied| applied.result(None)),
             Request::Undo { expected } => {
                 Self::guard(app, &expected)?;
                 Self::available(app, ui_busy)?;

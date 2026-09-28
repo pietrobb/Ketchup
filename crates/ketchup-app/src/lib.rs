@@ -5419,6 +5419,7 @@ pub struct KetchupApp {
     outliner_visible: bool,
     tags_visible: bool,
     dimensions_visible: bool,
+    manual_cad_panels_visible: bool,
     classification_dimension_name_input: String,
     classification_category_name_input: String,
     classification_selected_dimension: Option<ClassificationDimensionId>,
@@ -5693,6 +5694,7 @@ impl KetchupApp {
             outliner_visible: true,
             tags_visible: true,
             dimensions_visible: true,
+            manual_cad_panels_visible: false,
             classification_dimension_name_input: String::new(),
             classification_category_name_input: String::new(),
             classification_selected_dimension: None,
@@ -5995,6 +5997,7 @@ impl KetchupApp {
         let outliner_visible = self.outliner_visible;
         let tags_visible = self.tags_visible;
         let dimensions_visible = self.dimensions_visible;
+        let manual_cad_panels_visible = self.manual_cad_panels_visible;
         let about_open = self.about_open;
         let exact_worker_path = self.exact_worker_path.clone();
         let exact_worker_attempted = self.exact_worker_attempted;
@@ -6020,6 +6023,7 @@ impl KetchupApp {
         self.outliner_visible = outliner_visible;
         self.tags_visible = tags_visible;
         self.dimensions_visible = dimensions_visible;
+        self.manual_cad_panels_visible = manual_cad_panels_visible;
         self.about_open = about_open;
         self.digest = self.catalog.text("digest-new-document");
     }
@@ -18386,6 +18390,15 @@ impl KetchupApp {
     #[must_use]
     pub const fn tags_visible(&self) -> bool {
         self.tags_visible
+    }
+
+    #[must_use]
+    pub const fn manual_cad_panels_visible(&self) -> bool {
+        self.manual_cad_panels_visible
+    }
+
+    pub fn set_manual_cad_panels_visible(&mut self, visible: bool) {
+        self.manual_cad_panels_visible = visible;
     }
 
     /// How many occurrences of the active document are hidden.
@@ -32472,33 +32485,19 @@ impl KetchupApp {
                 ui.separator();
             });
             ui.menu_button(self.catalog.text("menu-window"), |ui| {
-                if ui
-                    .checkbox(
-                        &mut self.outliner_visible,
-                        self.catalog.text("dock-outliner"),
-                    )
-                    .changed()
-                    && self.outliner_visible
-                {
-                    self.assistant_workspace_mode = AssistantWorkspaceMode::Tab;
-                }
-                if ui
-                    .checkbox(&mut self.tags_visible, self.catalog.text("dock-tags"))
-                    .changed()
-                    && self.tags_visible
-                {
-                    self.assistant_workspace_mode = AssistantWorkspaceMode::Tab;
-                }
-                if ui
-                    .checkbox(
-                        &mut self.dimensions_visible,
-                        self.catalog.text("dock-dimensions"),
-                    )
-                    .changed()
-                    && self.dimensions_visible
-                {
-                    self.assistant_workspace_mode = AssistantWorkspaceMode::Tab;
-                }
+                ui.checkbox(
+                    &mut self.outliner_visible,
+                    self.catalog.text("dock-outliner"),
+                );
+                ui.checkbox(&mut self.tags_visible, self.catalog.text("dock-tags"));
+                ui.checkbox(
+                    &mut self.dimensions_visible,
+                    self.catalog.text("dock-dimensions"),
+                );
+                ui.checkbox(
+                    &mut self.manual_cad_panels_visible,
+                    self.catalog.text("dock-manual-cad"),
+                );
             });
             ui.menu_button(self.catalog.text("menu-help"), |ui| {
                 self.menu_command(ui, AppCommand::Shortcuts);
@@ -35236,6 +35235,17 @@ impl KetchupApp {
         }
     }
 
+    /// Feature history, bodies and assembly joints serve manual CAD editing only;
+    /// they stay hidden unless Window > Manual CAD panels turns them on.
+    fn show_manual_cad_panels(&mut self, ui: &mut egui::Ui) {
+        if !self.manual_cad_panels_visible {
+            return;
+        }
+        self.show_feature_history(ui);
+        self.show_body_editor(ui);
+        self.show_assembly_editor(ui);
+    }
+
     fn show_outliner_without_assistant(&mut self, ui: &mut egui::Ui) {
         self.show_pocket_properties(ui);
         self.show_classification_dimensions(ui);
@@ -35244,8 +35254,10 @@ impl KetchupApp {
             let entries = self.outliner_query();
             section_header(ui, self.palette(), &self.catalog.text("dock-outliner"));
             ui.separator();
+            // Bounded so the sections below it stay reachable in the dock.
             egui::ScrollArea::vertical()
-                .max_height((ui.available_height() - 64.0).max(120.0))
+                .id_salt("outliner-scroll")
+                .max_height(280.0)
                 .show(ui, |ui| {
                     for group in groups {
                         let label = self.catalog.format(
@@ -35359,7 +35371,7 @@ impl KetchupApp {
         if self.tags_visible {
             ui.separator();
             section_header(ui, self.palette(), &self.catalog.text("dock-tags"));
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 let create_enabled = self.can_begin_tag_creation(None);
                 if ui
                     .add_enabled(
@@ -35457,7 +35469,7 @@ impl KetchupApp {
                     self.select_matching_tags();
                 }
             });
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 let select_all_tagged_enabled = self.can_select_all_tagged_occurrences();
                 let select_all_tagged =
                     ui.add_enabled(select_all_tagged_enabled, egui::Button::new("◈"));
@@ -37867,9 +37879,7 @@ impl KetchupApp {
                     dock_scroll_area().show(ui, |ui| {
                         self.show_face_workflow_ui(ui);
                         self.show_program_source(ui);
-                        self.show_feature_history(ui);
-                        self.show_body_editor(ui);
-                        self.show_assembly_editor(ui);
+                        self.show_manual_cad_panels(ui);
                         self.show_occurrence_color_editor(ui);
                         self.show_helix_thread_tool(ui);
                         self.show_parameter_editor(ui);
@@ -37877,6 +37887,8 @@ impl KetchupApp {
                             self.show_assistant(ui);
                         }
                         self.show_validator_panel(ui);
+                        // Below the docked assistant so its input stays in view.
+                        self.show_outliner_without_assistant(ui);
                     });
                 });
             egui::CentralPanel::default()
@@ -37898,13 +37910,11 @@ impl KetchupApp {
                     dock_scroll_area().show(ui, |ui| {
                         self.show_face_workflow_ui(ui);
                         self.show_program_source(ui);
-                        self.show_feature_history(ui);
-                        self.show_body_editor(ui);
-                        self.show_assembly_editor(ui);
+                        self.show_outliner_without_assistant(ui);
+                        self.show_manual_cad_panels(ui);
                         self.show_occurrence_color_editor(ui);
                         self.show_helix_thread_tool(ui);
                         self.show_parameter_editor(ui);
-                        self.show_outliner_without_assistant(ui);
                         self.show_validator_panel(ui);
                     });
                 });

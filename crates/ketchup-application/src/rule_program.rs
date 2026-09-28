@@ -298,6 +298,7 @@ fn feature_level_changes(
         };
         let mut comparable = after.clone();
         comparable.at_mm = before.at_mm;
+        comparable.rotation = before.rotation;
         comparable.size_mm = before.size_mm;
         comparable.body = before.body.clone();
         comparable.fillets = before.fillets.clone();
@@ -306,13 +307,14 @@ fn feature_level_changes(
         comparable.holes = before.holes.clone();
         comparable.pockets = before.pockets.clone();
         comparable.features = before.features.clone();
-        if &comparable != before {
+        // Tools are placed in the part's frame, so moving a part with booleans rebuilds it.
+        if &comparable != before
+            || (!after.booleans.is_empty() && before.transform_matrix() != after.transform_matrix())
+        {
             return None;
         }
         let occurrence = snapshot.occurrences().find(|o| o.name() == before.name)?;
-        let old_position =
-            Transform::from_translation(before.at_mm[0], before.at_mm[1], before.at_mm[2]).ok()?;
-        if occurrence.transform() != old_position {
+        if occurrence.transform() != Transform::from_matrix(before.transform_matrix()).ok()? {
             return None;
         }
         commands.extend(program_feature_commands(
@@ -321,9 +323,8 @@ fn feature_level_changes(
             before,
             after,
         )?);
-        if before.at_mm != after.at_mm {
-            let transform =
-                Transform::from_translation(after.at_mm[0], after.at_mm[1], after.at_mm[2]).ok()?;
+        if before.transform_matrix() != after.transform_matrix() {
+            let transform = Transform::from_matrix(after.transform_matrix()).ok()?;
             commands.push(CanonicalCommand::SetOccurrenceTransform {
                 id: occurrence.id(),
                 transform,
@@ -346,6 +347,8 @@ fn part_replacements(
         };
         let mut comparable = after.clone();
         comparable.at_mm = before.at_mm;
+        comparable.rotation = before.rotation;
+        comparable.booleans = before.booleans.clone();
         comparable.size_mm = before.size_mm;
         comparable.holes = before.holes.clone();
         comparable.pockets = before.pockets.clone();
@@ -355,9 +358,7 @@ fn part_replacements(
             return None;
         }
         let occurrence = snapshot.occurrences().find(|o| o.name() == before.name)?;
-        let position =
-            Transform::from_translation(before.at_mm[0], before.at_mm[1], before.at_mm[2]).ok()?;
-        if occurrence.transform() != position {
+        if occurrence.transform() != Transform::from_matrix(before.transform_matrix()).ok()? {
             return None;
         }
         if before != after {
@@ -770,6 +771,124 @@ mod tests {
 
         session.undo().unwrap();
         assert_eq!(session.rule_program().unwrap().overrides["width"], 100.0);
+    }
+
+    #[test]
+    fn tilted_part_is_placed_at_its_frame_and_retilting_keeps_its_identity() {
+        let program =
+            "X = param(\"splay\", 100)\nmember(\"leg\", (0, 0, 0), (X, 0, 450), (40, 40))";
+        let mut session = DocumentSession::new(SessionSettings::default());
+        let first = session
+            .apply_rule_program(profile_source(program, "splay", 100.0), false)
+            .unwrap();
+        let (evaluated, _) = evaluate(&profile_source(program, "splay", 100.0)).unwrap();
+        let occurrence = first.snapshot.occurrences().next().unwrap();
+        let occurrence_id = occurrence.id();
+        assert_eq!(
+            occurrence.transform().matrix(),
+            &evaluated.model.parts[0].transform_matrix()
+        );
+
+        let retilted = session
+            .apply_rule_program(profile_source(program, "splay", 150.0), false)
+            .unwrap();
+        let (evaluated, _) = evaluate(&profile_source(program, "splay", 150.0)).unwrap();
+        let occurrence = retilted.snapshot.occurrences().next().unwrap();
+        assert!(!retilted.replaced_document);
+        assert_eq!(occurrence.id(), occurrence_id);
+        assert_eq!(
+            occurrence.transform().matrix(),
+            &evaluated.model.parts[0].transform_matrix()
+        );
+    }
+
+    #[test]
+    fn boolean_tools_become_consumed_hidden_bodies_and_follow_parameter_changes() {
+        const STOOL: &str = include_str!("../../../examples/programs/round_stool.star");
+        let mut session = DocumentSession::new(SessionSettings::default());
+        let first = session
+            .apply_rule_program(profile_source(STOOL, "splay", 260.0), false)
+            .unwrap();
+        let ids = |snapshot: &Snapshot| {
+            snapshot
+                .occurrences()
+                .map(|occurrence| (occurrence.name().to_owned(), occurrence.id()))
+                .collect::<BTreeMap<_, _>>()
+        };
+        let original = ids(&first.snapshot);
+        assert_eq!(original.len(), 7, "tools are not published as parts");
+        let seat_definition = |snapshot: &Snapshot| {
+            let seat = snapshot
+                .occurrences()
+                .find(|occurrence| occurrence.name() == "seat")
+                .unwrap();
+            snapshot.definition(seat.definition_id()).unwrap().clone()
+        };
+        let seat = seat_definition(&first.snapshot);
+        // Three legs, each carrying two trims and two rail notches of its own.
+        assert_eq!(seat.bodies().count(), 1 + 3 * 5);
+        assert_eq!(
+            seat.bodies()
+                .filter(|body| body.consumed_by().is_none())
+                .count(),
+            1
+        );
+        for occurrence in first.snapshot.occurrences() {
+            let definition = first
+                .snapshot
+                .definition(occurrence.definition_id())
+                .unwrap();
+            let producer = *definition.feature_ids().last().unwrap();
+            ketchup_core::exact_brep_graph::ExactBRepGraph::from_snapshot(
+                &first.snapshot,
+                occurrence.definition_id(),
+                producer,
+            )
+            .unwrap_or_else(|error| panic!("{}: {error:?}", occurrence.name()));
+        }
+
+        let wider = session
+            .apply_rule_program(profile_source(STOOL, "splay", 300.0), false)
+            .unwrap();
+        assert!(!wider.replaced_document);
+        assert_eq!(ids(&wider.snapshot), original);
+        assert_eq!(seat_definition(&wider.snapshot).bodies().count(), 16);
+    }
+
+    #[test]
+    fn turned_notched_and_doweled_parts_build_exact_bodies() {
+        const PROGRAM: &str = "A = param(\"angle\", 37)\n\
+            leg = box(\"leg\", (40, 40, 400))\n\
+            rail = box(\"rail\", (300, 20, 30), at = (20, 10, 200))\n\
+            subtract(leg, box(\"notch\", (20, 20, 30), at = (20, 10, 200), tool = True))\n\
+            side = box(\"side\", (18, 400, 600), at = (0, 100, 0))\n\
+            shelf = box(\"shelf\", (500, 400, 18), at = (18, 100, 300))\n\
+            for p in (leg, rail, side, shelf):\n\
+            \x20   rotate(p, axis = (1, 2, 3), angle = A, pivot = (0, 0, 0))\n\
+            dowels(side, shelf)\n";
+        let mut session = DocumentSession::new(SessionSettings::default());
+        let first = session
+            .apply_rule_program(profile_source(PROGRAM, "angle", 37.0), false)
+            .unwrap();
+        assert!(first.report.ok, "{:#?}", first.report.issues);
+        let build_all = |snapshot: &Snapshot| {
+            for occurrence in snapshot.occurrences() {
+                let definition = snapshot.definition(occurrence.definition_id()).unwrap();
+                let producer = *definition.feature_ids().last().unwrap();
+                ketchup_core::exact_brep_graph::ExactBRepGraph::from_snapshot(
+                    snapshot,
+                    occurrence.definition_id(),
+                    producer,
+                )
+                .unwrap_or_else(|error| panic!("{}: {error:?}", occurrence.name()));
+            }
+        };
+        build_all(&first.snapshot);
+        let turned = session
+            .apply_rule_program(profile_source(PROGRAM, "angle", 12.0), false)
+            .unwrap();
+        assert!(!turned.replaced_document);
+        build_all(&turned.snapshot);
     }
 
     #[test]

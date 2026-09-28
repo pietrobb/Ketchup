@@ -103,3 +103,35 @@ fn ai_reads_and_edits_the_window_program_in_one_call_each() {
     assert_eq!(names(&app), table);
     assert_eq!(app.document.current_rule_program().unwrap().source, TABLE);
 }
+
+#[test]
+fn applied_program_answers_box_overlaps_with_the_exact_solids() {
+    const TRIANGLE: &str =
+        "t = extrude(\"t\", profile = [(0, 0), (100, 0), (0, 100)], distance = 20)\n";
+    let mut wire = Wire::new();
+    // Plain boards only: boxes decide everything, no exact check runs.
+    let boards = wire.call(apply(TABLE, true)).result.unwrap();
+    assert_eq!(boards["geometry_evaluated"], false, "{boards}");
+    assert!(boards["exact_collisions"].is_null());
+
+    // The cube sits in the corner the triangle leaves empty.
+    let corner = format!("{TRIANGLE}c = box(\"c\", (20, 20, 20), at = (70, 70, 0))\n");
+    let cleared = wire
+        .call_within(apply(&corner, true), Duration::from_secs(60))
+        .result
+        .unwrap();
+    assert_eq!(cleared["geometry_evaluated"], true, "{cleared}");
+    assert_eq!(cleared["exact_collisions"]["cleared"], 1, "{cleared}");
+    assert_eq!(cleared["report"]["ok"], true);
+    assert_eq!(cleared["report"]["warnings"], 0, "{cleared}");
+
+    // Moved onto the triangle's solid part, the same cube collides.
+    let solid = format!("{TRIANGLE}c = box(\"c\", (20, 20, 20), at = (10, 10, 0))\n");
+    let collides = wire
+        .call_within(apply(&solid, false), Duration::from_secs(60))
+        .result
+        .unwrap();
+    assert_eq!(collides["exact_collisions"]["collisions"], 1, "{collides}");
+    assert_eq!(collides["report"]["ok"], false);
+    assert_eq!(collides["report"]["issues"][0]["kind"], "collision");
+}

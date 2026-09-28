@@ -114,6 +114,7 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
         pending: None,
         next_proposal: 1,
         apply_and_verify_job: None,
+        program_check_job: None,
         #[cfg(test)]
         apply_and_verify_fault: None,
         batch_jobs: VecDeque::new(),

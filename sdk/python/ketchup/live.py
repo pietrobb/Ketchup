@@ -12,6 +12,7 @@ immutable temporary strings/bytes or of the caller's credential copy.
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 import base64
 import binascii
 import hashlib
@@ -39,8 +40,11 @@ DEFAULT_IMAGE_SIDE_PX = 512
 MAX_TIMEOUT = 30.0
 # Must exceed the host's own queue/publish margin (15 s) on top of timeout_ms.
 APPLY_AND_VERIFY_RESPONSE_MARGIN_S = 20.0
+# apply_program may wait for the host's exact check of undecided overlaps (20 s + 5 s grace).
+APPLY_PROGRAM_RESPONSE_S = 45.0
 MAX_DISCOVERY_BYTES = 512
 MAX_DISCOVERY_INSTANCES = 64
+DISCOVERY_TIMEOUT = 8.0
 MAX_DISCOVERY_REGISTRY_ENTRIES = 4096
 MAX_CONSENT_TIMEOUT = 65.0
 DISCOVERY_DIRECTORY = Path("Ketchup/live-instances")
@@ -912,52 +916,76 @@ def _registry_endpoint(root: Path, instance_id: str) -> tuple[str, int]:
 
 
 def _list_live_instances(discovery_root: Path | None = None,
-                         timeout: float = 0.25) -> list[dict]:
+                         timeout: float = DISCOVERY_TIMEOUT) -> list[dict]:
     """Bounded same-user registry scan; invalid and stale entries are omitted."""
-    if type(timeout) not in (int, float) or not 0 < timeout <= 2 or not math.isfinite(timeout):
-        raise ValueError("discovery timeout must be finite and in (0, 2] seconds")
+    if type(timeout) not in (int, float) or not 0 < timeout <= DISCOVERY_TIMEOUT or not math.isfinite(timeout):
+        raise ValueError("discovery timeout must be finite and in (0, 8] seconds")
     deadline = time.monotonic() + float(timeout)
     root = _discovery_root() if discovery_root is None else Path(discovery_root)
     if not root.is_absolute():
         raise ValueError("discovery root must be absolute")
     result = []
-    registry_candidates = 0
     try:
         iterator = root.iterdir()
     except OSError:
         return result
+    candidates = []
     for index, path in enumerate(iterator):
         if index >= MAX_DISCOVERY_REGISTRY_ENTRIES or time.monotonic() >= deadline:
             break
         try:
+            modified = path.lstat().st_mtime_ns
+        except OSError:
+            modified = 0
+        candidates.append((modified, path))
+    entries = []
+    for _, path in sorted(candidates, key=lambda candidate: candidate[0], reverse=True):
+        if time.monotonic() >= deadline or len(entries) >= MAX_DISCOVERY_INSTANCES:
+            break
+        try:
             name = path.name
             instance_id = name[:-5] if name.endswith(".json") else ""
-            endpoint = _registry_endpoint(root, instance_id)
-            if registry_candidates >= MAX_DISCOVERY_INSTANCES:
-                break
-            registry_candidates += 1
-            nonce = secrets.token_hex(32)
-            listed = _broker_exchange(
-                endpoint, "list", instance_id, nonce, min(_remaining(deadline), 0.1)
-            )
-            if listed["instance_id"] != instance_id:
-                continue
-            result.append({"instance_id": instance_id, "document": listed["document"],
-                           "status": listed["status"]})
+            entries.append((instance_id, _registry_endpoint(root, instance_id)))
+        except (OSError, UnicodeError, ValueError, TypeError, RecursionError,
+                json.JSONDecodeError):
+            continue
+
+    def probe(entry):
+        instance_id, endpoint = entry
+        try:
+            listed = _broker_exchange(endpoint, "list", instance_id,
+                                      secrets.token_hex(32), min(_remaining(deadline), 1.0))
+            return {"instance_id": instance_id, "document": listed["document"],
+                    "status": listed["status"]}
         except (OSError, UnicodeError, ValueError, TypeError, RecursionError,
                 json.JSONDecodeError, LiveTransportError, TimeoutError):
-            continue
+            return None
+
+    if not entries:
+        return []
+    executor = ThreadPoolExecutor(max_workers=8)
+    try:
+        futures = [executor.submit(probe, entry) for entry in entries]
+        try:
+            for future in as_completed(futures, timeout=max(0, deadline - time.monotonic())):
+                listed = future.result()
+                if listed is not None:
+                    result.append(listed)
+        except FuturesTimeoutError:
+            pass
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
     result.sort(key=lambda instance: instance["instance_id"])
     return result
 
 
-def list_live_instances(timeout: float = 0.25) -> list[dict]:
+def list_live_instances(timeout: float = DISCOVERY_TIMEOUT) -> list[dict]:
     """List nonce-verified Ketchup windows without requesting attachment authority."""
     return _list_live_instances(timeout=timeout)
 
 
 def _attach_live_instance(instance_id: str, discovery_root: Path | None = None,
-                          discovery_timeout: float = 0.25,
+                          discovery_timeout: float = 2.0,
                           consent_timeout: float = MAX_CONSENT_TIMEOUT,
                           session_factory=None):
     """Attach to the selected window; a newer attach replaces any previous client."""
@@ -1007,7 +1035,7 @@ def _attach_live_instance(instance_id: str, discovery_root: Path | None = None,
 
 
 def attach_live_instance(instance_id: str):
-    """Request one in-window confirmation and return a non-owning live session."""
+    """Attach to a selected window without owning its process or document."""
     return _attach_live_instance(instance_id)
 
 
@@ -1268,7 +1296,9 @@ class LiveSession:
         """Evaluate a whole Starlark program and publish only what changed as one Undo step.
 
         Unchanged parts keep their identity. A rejected program publishes nothing and
-        names the failing line. Never resend after a transport error without re-observing.
+        names the failing line. Box overlaps the program could not decide (profile bodies,
+        booleans) are settled by the exact solids before the reply; exact_collisions says how.
+        Never resend after a transport error without re-observing.
         """
         if type(source) is not str or not source.strip():
             raise ValueError("source must be non-empty program text")
@@ -1278,7 +1308,8 @@ class LiveSession:
                 for name, value in overrides.items()):
             raise ValueError("overrides must map parameter names to numbers")
         return self._request(
-            "apply_program", expected=_stamp(expected), source=source,
+            "apply_program", _deadline=time.monotonic() + max(self._timeout, APPLY_PROGRAM_RESPONSE_S),
+            expected=_stamp(expected), source=source,
             overrides={name: float(value) for name, value in overrides.items()},
             file_name=None if file_name is None else _text(file_name, 256),
             replace_document=bool(replace_document),

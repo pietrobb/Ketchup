@@ -2,12 +2,29 @@
 #
 # Domain helpers built only from the generic builtins:
 #   param(name, default, min=, max=, doc=)
-#   box(name, size, at=, material=, grain=, color=)  -> part
-#   part_info(part)
+#   box(name, size, at=, material=, grain=, color=, tool=)  -> part
+#   extrude(name, profile=, distance=, at=, tool=), revolve(name, profile=, axis=, angle=, at=, tool=)
+#   rotate(part, axis=(x, y, z), angle=degrees, pivot=(x, y, z))  -> part
+#   place(part, origin=(x, y, z), z=(x, y, z), x=(x, y, z))  -> part
+#   part_info(part)  -> struct(name, size, at, min, max, x, y, z)
+#   subtract(part, tool, name=), intersect(part, tool, name=)  -> part
+#     `tool` is a helper body made with box/extrude/revolve(..., tool=True)
+#     or another real part, taken as it is at the call. Booleans come after
+#     the part's other features. A part never collides with a part it
+#     subtracted, with a part lying inside one box tool it subtracted (a notch,
+#     a trim), nor with parts outside the tools it was intersected with.
+#   math.sqrt/sin/cos/tan/asin/acos/atan/atan2/hypot/radians/degrees, math.pi
 #   hole(part, face, at=(u, v) | world=(x, y, z), diameter=, depth=, id=)
 #   pocket(part, face, rect=(u_min, v_min, u_max, v_max), depth=, id=)
-#   contact(a, b)  -> struct(axis, face_a, face_b, min, max) or None
+#   contact(a, b)  -> struct(axis, face_a, face_b, min, max, normal, u, v,
+#                    origin, size, points) or None; works for rotated parts
 #   joint(a, b, kind=, fasteners=, fastener=, volume=, name=)
+#
+# Every part has its own frame: `at` is its local origin in world, and
+# rotate()/place() turn that frame. Sizes, faces, holes and pockets are always
+# in the part's own frame, so they follow the part when it is rotated.
+# part_info().min/max are world bounds. contact() and dowels() work between
+# any faces that lie flat against each other, rotated or not.
 #
 # Faces are "x-", "x+", "y-", "y+", "z-", "z+" in the part's own frame.
 # Face coordinates (u, v): z faces use (x, y), x faces use (y, z), y faces
@@ -52,6 +69,59 @@ def board(name, size, at = (0, 0, 0), material = "board", grain = None, color = 
     """A flat panel: an axis-aligned cuboid with a material for the cut list."""
     return box(name, size, at = at, material = material, grain = grain, color = color)
 
+def vec_sub(a, b):
+    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+def vec_add(a, b):
+    return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
+
+def vec_scale(a, factor):
+    return (a[0] * factor, a[1] * factor, a[2] * factor)
+
+def vec_length(a):
+    return math.sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2])
+
+def member(name, start, end, section, across = None, material = "timber", grain = "z", color = None):
+    """A straight bar of rectangular `section` (width, height) whose centre
+    line runs from world point `start` to `end` (legs, rails, struts).
+
+    The bar's local z runs along its length (z- face at `start`, z+ at `end`);
+    local x is `across` made perpendicular to the length (default: world x, or
+    world y when the bar runs along x). Ends are square; trim them with
+    booleans when they must follow another surface.
+    """
+    direction = vec_sub(end, start)
+    length = vec_length(direction)
+    if length <= 0:
+        fail("member(%r): start and end must differ" % name)
+    if across == None:
+        across = (0, 1, 0) if abs(direction[0]) > 0.9 * length else (1, 0, 0)
+    part = box(name, (section[0], section[1], length), material = material, grain = grain, color = color)
+    placed = place(part, origin = start, z = direction, x = across)
+    offset = vec_add(vec_scale(placed.x, -section[0] / 2.0), vec_scale(placed.y, -section[1] / 2.0))
+    return place(part, origin = vec_add(start, offset), z = direction, x = across)
+
+def trim(part, point, normal, name = None):
+    """Cuts `part` off at the plane through world `point`, removing everything
+    on the side `normal` points to (normal (0, 0, -1) at z = 0 trims at the
+    floor; the underside of a seat trims legs with normal (0, 0, 1))."""
+    info = part_info(part)
+    n = vec_scale(normal, 1.0 / vec_length(normal))
+    centre = vec_scale(vec_add(info.min, info.max), 0.5)
+    reach = vec_length(vec_sub(info.max, info.min)) + abs(vec_length(vec_sub(centre, point)))
+    size = 4 * reach + 1
+    along = (centre[0] - point[0]) * n[0] + (centre[1] - point[1]) * n[1] + (centre[2] - point[2]) * n[2]
+    foot = vec_sub(centre, vec_scale(n, along))
+    if name == None:
+        name = "trim %s %s" % (tuple([round_to(v, 0.001) for v in point]), tuple([round_to(v, 0.001) for v in n]))
+    across = (0, 1, 0) if abs(n[0]) > 0.9 else (1, 0, 0)
+    tool_name = "%s/%s" % (info.name, name)
+    tool = box(tool_name, (size, size, size), tool = True)
+    placed = place(tool, origin = foot, z = n, x = across)
+    corner = vec_add(foot, vec_add(vec_scale(placed.x, -size / 2.0), vec_scale(placed.y, -size / 2.0)))
+    place(tool, origin = corner, z = n, x = across)
+    return subtract(part, tool, name = name)
+
 def spread(start, end, count):
     """`count` evenly spaced positions from start to end (inclusive)."""
     if count < 1:
@@ -74,24 +144,16 @@ def dowels(a, b, dowel = "8x30", count = None, margin = 50, spacing = 250, clear
     c = contact(a, b)
     if c == None:
         fail("dowels(%s, %s): the parts do not touch; place them face to face first" % (part_info(a).name, part_info(b).name))
-    normal = AXES[c.axis]
-    in_plane = [axis for axis in (0, 1, 2) if axis != normal]
-    extents = [c.max[axis] - c.min[axis] for axis in in_plane]
-    row = in_plane[0] if extents[0] >= extents[1] else in_plane[1]
-    across = in_plane[1] if row == in_plane[0] else in_plane[0]
-    row_length = c.max[row] - c.min[row]
+    if c.size[0] >= c.size[1]:
+        row, across, row_length, width = c.u, c.v, c.size[0], c.size[1]
+    else:
+        row, across, row_length, width = c.v, c.u, c.size[1], c.size[0]
     if row_length < 2 * margin:
         fail("dowels(%s, %s): the contact is %s mm long, shorter than twice the margin (%s mm)" % (part_info(a).name, part_info(b).name, row_length, margin))
     if count == None:
         count = max(2, 1 + int((row_length - 2 * margin) / spacing))
-    centre_across = (c.min[across] + c.max[across]) / 2.0
-    points = []
-    for position in spread(c.min[row] + margin, c.max[row] - margin, count):
-        point = [0.0, 0.0, 0.0]
-        point[normal] = c.min[normal]
-        point[row] = position
-        point[across] = centre_across
-        points.append(tuple(point))
+    start = vec_add(c.origin, vec_scale(across, width / 2.0))
+    points = [vec_add(start, vec_scale(row, s)) for s in spread(margin, row_length - margin, count)]
     depth = length / 2.0 + clearance
     for i, point in enumerate(points):
         hole(a, c.face_a, world = point, diameter = diameter, depth = depth, id = "dowel:%s:%d" % (part_info(b).name, i + 1))

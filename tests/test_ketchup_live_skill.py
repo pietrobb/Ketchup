@@ -192,7 +192,7 @@ def test_registered_attach_uses_only_instance_id_and_returns_nonowning_handle():
         )
         assert result["ok"] and result["stamp"] == STAMP
         assert result["result"]["ownership"] == "nonowning_existing_GUI_window"
-        assert result["result"]["attachment"] == "Approved directly in the selected existing window."
+        assert result["result"]["attachment"] == "Connected to the selected existing window."
         handle = result["result"]["handle"]
         assert str(__import__("uuid").UUID(handle)) == handle
         assert seen == [instance_id]
@@ -202,6 +202,37 @@ def test_registered_attach_uses_only_instance_id_and_returns_nonowning_handle():
         )
         assert disconnected["ok"] and attached.closed
         assert attached.calls[-2:] == [("disconnect",), ("close",)]
+
+    asyncio.run(scenario())
+
+
+def test_attach_without_id_selects_only_window_or_asks_for_explicit_choice():
+    first, second = "a" * 32, "b" * 32
+    available = []
+    selected = []
+
+    def attacher(instance_id):
+        selected.append(instance_id)
+        return SessionDouble()
+
+    registered = tools(SimpleNamespace(active=False),
+                       lambda *args: pytest.fail("attach must not launch"),
+                       lambda: copy.deepcopy(available), attacher)
+
+    async def scenario():
+        empty = await call(registered, "KetchupLiveSession", action="attach")
+        assert empty["error"]["code"] == "instance_unavailable"
+        available.extend([{"instance_id": first, "document": "table.ketchup", "status": "busy"},
+                          {"instance_id": second, "document": "desk.ketchup", "status": "available"}])
+        multiple = await call(registered, "KetchupLiveSession", action="attach")
+        assert multiple["error"]["code"] == "selection_required"
+        assert first in multiple["error"]["message"] and second in multiple["error"]["message"]
+        assert selected == []
+        chosen = await call(registered, "KetchupLiveSession", action="attach", instance_id=second)
+        assert chosen["ok"] and selected == [second]
+        available.pop()
+        single = await call(registered, "KetchupLiveSession", action="attach")
+        assert single["ok"] and selected == [second, first]
 
     asyncio.run(scenario())
 
@@ -247,7 +278,7 @@ def test_hundred_attach_disconnect_cycles_release_handles_and_reuse_host():
             ))["ok"]
 
     asyncio.run(scenario())
-    assert len(attached) == 104
+    assert len(attached) == 100 + skill.MAX_SESSIONS
     assert all(session.closed for session in attached)
     assert all(session.calls[-2:] == [("disconnect",), ("close",)] for session in attached)
 

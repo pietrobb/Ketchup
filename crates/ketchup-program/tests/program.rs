@@ -1,5 +1,5 @@
 use ketchup_program::model::{Face, ProgramModel, ProgramPartBody};
-use ketchup_program::{Severity, run, validate};
+use ketchup_program::{COLLISION_UNVERIFIED, Severity, run, validate};
 use std::collections::BTreeMap;
 
 const CABINET: &str = include_str!("../../../examples/programs/cabinet.star");
@@ -335,4 +335,288 @@ dowels(
     assert_eq!(lines("left leg"), [(3, 3), (4, 4), (6, 12)]);
     assert_eq!(lines("right leg"), [(3, 3), (5, 5)]);
     assert_eq!(evaluated.part_sources.len(), 3);
+}
+
+const SPLAYED_STOOL: &str = r#"
+H = 450
+seat = extrude("seat", profile = [(-200, -200), (200, -200), (200, 200), (-200, 200)], distance = 30, at = (0, 0, H))
+for i, angle in enumerate([90, 210, 330]):
+    a = math.radians(angle)
+    foot = (230 * math.cos(a), 230 * math.sin(a), 0)
+    top = (120 * math.cos(a), 120 * math.sin(a), H)
+    member("leg%d" % (i + 1), foot, top, (40, 40))
+"#;
+
+fn assert_close(actual: [f64; 3], expected: [f64; 3]) {
+    assert!(
+        (0..3).all(|axis| (actual[axis] - expected[axis]).abs() < 1.0e-9),
+        "{actual:?} != {expected:?}"
+    );
+}
+
+#[test]
+fn members_run_from_point_to_point_and_rotated_bounds_follow_them() {
+    let model = eval(SPLAYED_STOOL);
+    let leg = model.part("leg1").unwrap();
+    let length = 110.0_f64.hypot(450.0);
+    assert!((leg.size_mm[2] - length).abs() < 1.0e-9);
+    assert!(leg.is_rotated());
+    // The centre line ends exactly at the requested points.
+    assert_close(leg.to_world([20.0, 20.0, 0.0]), [0.0, 230.0, 0.0]);
+    assert_close(leg.to_world([20.0, 20.0, length]), [0.0, 120.0, 450.0]);
+    let (min, max) = leg.world_bounds();
+    assert!(
+        min[2] < 0.0 && max[2] > 450.0,
+        "square ends of a tilted bar stick out"
+    );
+    assert!((min[0] + 20.0).abs() < 1.0e-9 && (max[0] - 20.0).abs() < 1.0e-9);
+}
+
+#[test]
+fn tilted_parts_collide_exactly_not_by_their_world_bounds() {
+    // The legs reach into the seat; nothing else overlaps.
+    let issues = validate(&eval(SPLAYED_STOOL));
+    let collisions: Vec<_> = issues
+        .iter()
+        .filter(|issue| issue.kind == "collision")
+        .collect();
+    assert_eq!(collisions.len(), 3, "{issues:#?}");
+    assert!(
+        collisions
+            .iter()
+            .all(|issue| issue.parts.contains(&"seat".to_owned()))
+    );
+    // Differently tilted bars whose world bounds overlap in both cases.
+    let bars = |end: &str| {
+        format!(
+            "member(\"a\", (0, 0, 0), (500, 500, 0), (20, 20))\n\
+             member(\"b\", (300, 0, 0), {end}, (20, 20))\n"
+        )
+    };
+    assert!(!kinds(&bars("(500, 100, 0)")).contains(&"collision"));
+    assert!(kinds(&bars("(100, 400, 0)")).contains(&"collision"));
+}
+
+#[test]
+fn rotate_turns_a_part_about_a_world_axis_and_pivot() {
+    let model = eval(
+        "p = box(\"p\", (100, 10, 10), at = (50, 0, 0))\n\
+         rotate(p, axis = (0, 0, 1), angle = 90, pivot = (0, 0, 0))\n\
+         rotate(p, axis = (0, 0, 1), angle = 90)\n",
+    );
+    let part = model.part("p").unwrap();
+    assert_close(part.at_mm, [0.0, 50.0, 0.0]);
+    assert_close(part.to_world([100.0, 0.0, 0.0]), [-100.0, 50.0, 0.0]);
+}
+
+const ROUND_STOOL: &str = include_str!("../../../examples/programs/round_stool.star");
+
+#[test]
+fn booleans_cut_parts_with_tools_that_are_never_built_or_listed() {
+    let (evaluated, report) = run("stool.star", ROUND_STOOL, &BTreeMap::new()).unwrap();
+    let model = evaluated.model;
+    assert_eq!(model.parts.len(), 7);
+    assert_eq!(model.tools.len(), 6, "two trim tools per leg");
+    assert_eq!(report.bom.total_parts, 7);
+    assert!(report.ok, "{:#?}", report.issues);
+    assert_eq!(report.warnings, 0, "{:#?}", report.issues);
+    let seat = model.part("seat").unwrap();
+    assert_eq!(seat.booleans.len(), 3);
+    // The seat subtracts each leg as it was then: trimmed twice and notched by two rails.
+    assert_eq!(seat.booleans[0].tool.booleans.len(), 4);
+    let (min, max) = seat.world_bounds();
+    assert!((min[2] - 420.0).abs() < 1.0e-9 && (max[2] - 450.0).abs() < 1.0e-9);
+    assert!((max[0] - 180.0).abs() < 1.0e-9);
+}
+
+#[test]
+fn a_part_still_collides_with_what_it_did_not_subtract() {
+    // The round seat fills only part of its box, so boxes cannot decide these
+    // overlaps; they wait for the exact solids instead of being called collisions.
+    let without_seat_holes = ROUND_STOOL.replace("    subtract(seat, leg)\n", "    pass\n");
+    let issues = validate(&eval(&without_seat_holes));
+    let unverified: Vec<_> = issues
+        .iter()
+        .filter(|issue| issue.kind == COLLISION_UNVERIFIED)
+        .collect();
+    assert_eq!(unverified.len(), 3, "{issues:#?}");
+    assert!(unverified.iter().all(
+        |issue| issue.severity == Severity::Warning && issue.parts.contains(&"seat".to_owned())
+    ));
+    assert!(!issues.iter().any(|issue| issue.kind == "collision"));
+    // Intersecting with a tool keeps only what b shares with it; a collision
+    // remains only where that kept piece still reaches into a.
+    let kept = "a = box(\"a\", (100, 100, 100))\nb = box(\"b\", (100, 100, 100), at = (50, 0, 0))\n\
+                keep = box(\"keep\", (40, 100, 100), at = (40, 0, 0), tool = True)\nintersect(b, keep)\n";
+    assert!(
+        kinds(kept).contains(&"collision"),
+        "the kept piece reaches into a"
+    );
+    let missed = kept.replace("at = (40, 0, 0), tool", "at = (110, 0, 0), tool");
+    assert!(!kinds(&missed).contains(&"collision"));
+}
+
+#[test]
+fn boxes_decide_only_what_boxes_can_decide() {
+    let post = "post = box(\"post\", (40, 40, 400))\n";
+    // A rectangle extruded is exactly its box: an overlap is a collision.
+    let square = format!(
+        "{post}s = extrude(\"s\", profile = [(0, 0), (100, 0), (100, 100), (0, 100)], distance = 20, at = (20, 20, 100))\n"
+    );
+    assert!(kinds(&square).contains(&"collision"));
+    // A triangle fills half its box: only the exact solids can tell.
+    let triangle = format!(
+        "{post}t = extrude(\"t\", profile = [(0, 0), (100, 0), (0, 100)], distance = 20, at = (20, 20, 100))\n"
+    );
+    let found = kinds(&triangle);
+    assert!(
+        found.contains(&COLLISION_UNVERIFIED) && !found.contains(&"collision"),
+        "{found:?}"
+    );
+    // Two notches that each miss part of the overlap may still cover it together.
+    let rail = "rail = box(\"rail\", (300, 20, 30), at = (20, 10, 200))\n";
+    let notches = "a = box(\"a\", (12, 20, 30), at = (20, 10, 200), tool = True)\n\
+                   b = box(\"b\", (20, 20, 30), at = (28, 10, 200), tool = True)\n\
+                   subtract(post, a)\nsubtract(post, b)\n";
+    let found = kinds(&format!("{post}{rail}{notches}"));
+    assert!(
+        found.contains(&COLLISION_UNVERIFIED) && !found.contains(&"collision"),
+        "{found:?}"
+    );
+}
+
+/// A leg with a rail let into it: the rail reaches 20 mm into the leg.
+fn notched_leg(notch: &str, turn: bool) -> String {
+    let mut source = format!(
+        "leg = box(\"leg\", (40, 40, 400))\n\
+         rail = box(\"rail\", (300, 20, 30), at = (20, 10, 200))\n\
+         notch = box(\"notch\", {notch}, at = (20, 10, 200), tool = True)\n\
+         subtract(leg, notch)\n"
+    );
+    if turn {
+        // The notch was cut before the turn; it turns with the leg.
+        for part in ["leg", "rail"] {
+            source.push_str(&format!(
+                "rotate({part}, axis = (1, 2, 3), angle = 37, pivot = (0, 0, 0))\n"
+            ));
+        }
+    }
+    source
+}
+
+#[test]
+fn a_notch_cut_by_a_tool_makes_room_for_the_part_that_sits_in_it() {
+    for turn in [false, true] {
+        let fits = kinds(&notched_leg("(20, 20, 30)", turn));
+        assert!(!fits.contains(&"collision"), "turned {turn}: {fits:?}");
+        let shallow = kinds(&notched_leg("(20, 20, 20)", turn));
+        assert!(shallow.contains(&"collision"), "turned {turn}: {shallow:?}");
+    }
+    // Without the notch the rail collides with the leg.
+    let solid = notched_leg("(20, 20, 30)", false).replace("subtract(leg, notch)\n", "");
+    assert!(kinds(&solid).contains(&"collision"));
+    // place() carries the cut along too: it stays put in the leg's own frame.
+    let cut_in_leg = |source: &str| {
+        let model = eval(source);
+        let leg = model.part("leg").unwrap();
+        leg.frame_of(&leg.booleans[0].tool)
+    };
+    let before = cut_in_leg(&notched_leg("(20, 20, 30)", false));
+    let after = cut_in_leg(&format!(
+        "{}place(leg, origin = (100, 50, 0), z = (1, 0, 1), x = (0, 1, 0))\n",
+        notched_leg("(20, 20, 30)", false)
+    ));
+    assert!(
+        before
+            .iter()
+            .zip(after)
+            .all(|(a, b)| (a - b).abs() < 1.0e-9),
+        "{before:?} != {after:?}"
+    );
+}
+
+/// A side and a shelf doweled together, optionally turned as one unit.
+fn doweled_shelf(turn: bool) -> String {
+    let mut source = String::from(
+        "side = box(\"side\", (18, 400, 600))\n\
+         shelf = box(\"shelf\", (500, 400, 18), at = (18, 0, 300))\n",
+    );
+    if turn {
+        source.push_str(
+            "for p in (side, shelf):\n\
+             \x20   rotate(p, axis = (0, 0, 1), angle = 30, pivot = (0, 0, 0))\n\
+             \x20   rotate(p, axis = (1, 0, 0), angle = 10, pivot = (0, 0, 0))\n",
+        );
+    }
+    source.push_str(
+        "c = contact(side, shelf)\n\
+         if (c.face_a, c.face_b) != (\"x+\", \"x-\"):\n\
+         \x20   fail(\"faces %s %s\" % (c.face_a, c.face_b))\n\
+         dowels(side, shelf, dowel = \"8x30\")\n",
+    );
+    source
+}
+
+#[test]
+fn contact_and_dowels_work_on_rotated_parts_in_their_own_frames() {
+    let (flat, flat_report) = run("flat.star", &doweled_shelf(false), &BTreeMap::new()).unwrap();
+    let (turned, turned_report) =
+        run("turned.star", &doweled_shelf(true), &BTreeMap::new()).unwrap();
+    assert!(flat_report.ok, "{:#?}", flat_report.issues);
+    assert!(turned_report.ok, "{:#?}", turned_report.issues);
+    assert_eq!(turned_report.warnings, 0, "{:#?}", turned_report.issues);
+    for name in ["side", "shelf"] {
+        let flat = &flat.model.part(name).unwrap().holes;
+        let turned = &turned.model.part(name).unwrap().holes;
+        assert_eq!(flat.len(), 2);
+        assert_eq!(flat.len(), turned.len());
+        for (a, b) in flat.iter().zip(turned) {
+            assert_eq!(a.face, b.face);
+            assert!((a.u_mm - b.u_mm).abs() < 1.0e-6 && (a.v_mm - b.v_mm).abs() < 1.0e-6);
+        }
+    }
+    assert_eq!(turned.model.joints.len(), 1);
+}
+
+#[test]
+fn contact_between_faces_turned_in_their_plane_is_the_overlap_polygon() {
+    let model = eval(
+        "base = box(\"base\", (200, 200, 20))\n\
+         top = box(\"top\", (100, 100, 20), at = (50, 50, 20))\n\
+         rotate(top, axis = (0, 0, 1), angle = 45, pivot = (100, 100, 0))\n",
+    );
+    let (base, top) = (model.part("base").unwrap(), model.part("top").unwrap());
+    let contact = ketchup_program::eval::contact(base, top).unwrap();
+    assert_eq!((contact.face_a, contact.face_b), (Face::ZMax, Face::ZMin));
+    assert_eq!(contact.points_mm.len(), 4);
+    let half_diagonal = 50.0 * std::f64::consts::SQRT_2;
+    assert_close(
+        contact.origin_mm,
+        [100.0 - half_diagonal, 100.0 - half_diagonal, 20.0],
+    );
+    assert!((contact.size_mm[0] - 2.0 * half_diagonal).abs() < 1.0e-9);
+    // Turned further out, the top overhangs the base and the patch is clipped.
+    let overhang = eval(
+        "base = box(\"base\", (100, 100, 20))\n\
+         top = box(\"top\", (100, 100, 20), at = (0, 0, 20))\n\
+         rotate(top, axis = (0, 0, 1), angle = 45, pivot = (50, 50, 0))\n",
+    );
+    let clipped = ketchup_program::eval::contact(
+        overhang.part("base").unwrap(),
+        overhang.part("top").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        clipped.points_mm.len(),
+        8,
+        "a square cut by a turned square"
+    );
+    assert!(
+        !kinds(
+            "base = box(\"base\", (100, 100, 20))\n\
+         top = box(\"top\", (100, 100, 20), at = (0, 0, 20))\n\
+         rotate(top, axis = (0, 0, 1), angle = 45, pivot = (50, 50, 0))\n"
+        )
+        .contains(&"floating_part")
+    );
 }

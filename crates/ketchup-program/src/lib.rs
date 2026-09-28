@@ -12,6 +12,7 @@ pub mod bom;
 pub mod cad;
 pub mod document;
 pub mod eval;
+pub mod frame;
 pub mod model;
 pub mod validate;
 
@@ -21,7 +22,7 @@ pub use model::{
     Face, ProgramFeature, ProgramFeatureKind, ProgramFeatureParameter, ProgramModel,
     ProgramParameterValueType, ProgramPartBody, ProgramProfileSegment,
 };
-pub use validate::{Issue, Severity, validate};
+pub use validate::{COLLISION_UNVERIFIED, Issue, Severity, validate};
 
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -37,6 +38,20 @@ pub struct Report {
     pub bom: Bom,
     pub log: Vec<String>,
     pub unused_overrides: Vec<String>,
+}
+
+impl Report {
+    /// Replaces the issues (e.g. after an exact check) and recounts them.
+    pub fn set_issues(&mut self, mut issues: Vec<Issue>) {
+        issues.sort_by_key(|issue| issue.severity);
+        self.errors = issues
+            .iter()
+            .filter(|issue| issue.severity == Severity::Error)
+            .count();
+        self.warnings = issues.len() - self.errors;
+        self.ok = self.errors == 0;
+        self.issues = issues;
+    }
 }
 
 /// Evaluates, validates and lists a program in one call.

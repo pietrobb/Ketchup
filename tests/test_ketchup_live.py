@@ -5,6 +5,7 @@ import hashlib
 import zlib
 from dataclasses import FrozenInstanceError, asdict
 import json
+import os
 import random
 from pathlib import Path
 import secrets
@@ -241,7 +242,7 @@ def test_discovery_uses_one_global_timeout_budget(tmp_path):
     elapsed = time.monotonic() - started
 
     assert result == []
-    assert 1 <= len(broker_timeouts) < len(candidates)
+    assert 1 <= len(broker_timeouts) <= len(candidates)
     assert all(0 < remaining <= 0.021 for remaining in broker_timeouts)
     assert elapsed < 0.1
 
@@ -265,6 +266,74 @@ def test_discovery_stale_broker_does_not_hide_next_live_window(tmp_path):
 
     assert result == [{"instance_id": live, "document": "nightstand.ketchup",
                        "status": "available"}]
+
+
+def test_discovery_prioritizes_live_window_over_older_stale_brokers(tmp_path):
+    stale = [f"{index:032x}" for index in range(1, 4)]
+    live = "4" * 32
+    entries = [tmp_path / f"{instance_id}.json" for instance_id in [*stale, live]]
+    for index, path in enumerate(entries, start=1):
+        path.touch()
+        os.utime(path, ns=(index * 1_000_000_000, index * 1_000_000_000))
+
+    def broker(_endpoint, _action, instance_id, nonce, timeout):
+        if instance_id in stale:
+            time.sleep(timeout)
+            raise TimeoutError
+        return {"version": 1, "nonce": nonce, "status": "busy",
+                "instance_id": live, "document": "table.ketchup"}
+
+    with patch.object(Path, "iterdir", return_value=iter(entries)), \
+            patch.object(live_module, "_registry_endpoint", return_value=("127.0.0.1", 1)), \
+            patch.object(live_module, "_broker_exchange", side_effect=broker):
+        result = _list_live_instances(tmp_path, timeout=0.25)
+
+    assert result == [{"instance_id": live, "document": "table.ketchup", "status": "busy"}]
+
+
+def test_discovery_returns_both_windows_despite_slow_stale_and_delayed_live_broker(tmp_path):
+    stale = [f"{index:032x}" for index in range(8)]
+    live = ["a" * 32, "b" * 32]
+    entries = [tmp_path / f"{instance_id}.json" for instance_id in [*stale, *live]]
+    for path in entries:
+        path.touch()
+
+    def broker(_endpoint, _action, instance_id, nonce, timeout):
+        if instance_id in stale:
+            time.sleep(timeout)
+            raise TimeoutError
+        time.sleep(0.35)
+        assert timeout > 0.35
+        return {"version": 1, "nonce": nonce, "status": "busy",
+                "instance_id": instance_id, "document": instance_id + ".ketchup"}
+
+    with patch.object(Path, "iterdir", return_value=iter(entries)), \
+            patch.object(live_module, "_registry_endpoint", return_value=("127.0.0.1", 1)), \
+            patch.object(live_module, "_broker_exchange", side_effect=broker):
+        result = _list_live_instances(tmp_path)
+    assert [entry["instance_id"] for entry in result] == live
+
+
+def test_attach_default_preflight_allows_delayed_broker_response(tmp_path):
+    instance_id = "c" * 32
+    calls = []
+
+    def broker(endpoint, action, selected, nonce, timeout):
+        calls.append((action, timeout))
+        assert selected == instance_id
+        if action == "list":
+            assert timeout > 0.35
+            time.sleep(0.35)
+            return {"status": "busy", "instance_id": selected, "document": "table.ketchup"}
+        return {"status": "allowed", "live_bridge_address": "127.0.0.1:1234",
+                "token": TOKEN}
+
+    with patch.object(live_module, "_registry_endpoint", return_value=("127.0.0.1", 1)), \
+            patch.object(live_module, "_broker_exchange", side_effect=broker):
+        session = _attach_live_instance(instance_id, tmp_path,
+                                        session_factory=lambda *args, **kwargs: args)
+    assert session == ("127.0.0.1:1234", TOKEN)
+    assert [action for action, _ in calls] == ["list", "attach"]
 
 
 @pytest.mark.parametrize("listed_status", ["available", "busy"])

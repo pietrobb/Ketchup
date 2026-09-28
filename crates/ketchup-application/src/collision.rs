@@ -878,19 +878,23 @@ fn collision_report(
             }
             broad_rejected = total_pairs.saturating_sub(candidates.len());
         } else {
-            // An unbounded body anywhere in the model could be an omitted boundary
-            // neighbor, so scoped validation remains incomplete without going all-pairs.
-            if !unbounded.is_empty() {
-                failures.push(json!({
-                    "reason": "incomplete_spatial_boundary_coverage",
-                    "unbounded_body_count": unbounded.len(),
-                }));
-            }
             broad_rejected = if spatial_complete {
                 bounded_relevant_pairs.saturating_sub(candidates.len())
             } else {
                 0
             };
+            // An uncertifiable bound (e.g. a revolved solid) can reject nothing:
+            // pair it with every body it is relevant to, like full-model mode.
+            for &unbounded in &unbounded {
+                let partners: Vec<usize> = if scoped_body_indices.contains(&unbounded) {
+                    (0..bodies.len()).collect()
+                } else {
+                    scoped_body_indices.iter().copied().collect()
+                };
+                candidates.extend(partners.into_iter().filter_map(|other| {
+                    (other != unbounded).then_some((unbounded.min(other), unbounded.max(other)))
+                }));
+            }
             let boundary_occurrences = candidates
                 .iter()
                 .flat_map(|(left, right)| [*left, *right])
@@ -898,8 +902,7 @@ fn collision_report(
                 .map(|index| bodies[index].occurrence.instance_path.clone())
                 .collect::<BTreeSet<_>>();
             report["scope"]["boundary_occurrence_count"] = json!(boundary_occurrences.len());
-            report["scope"]["candidate_coverage_complete"] =
-                json!(spatial_complete && unbounded.is_empty());
+            report["scope"]["candidate_coverage_complete"] = json!(spatial_complete);
             report["scope"]["indexed_body_count"] = json!(bounded.len());
         }
         checked = broad_rejected;

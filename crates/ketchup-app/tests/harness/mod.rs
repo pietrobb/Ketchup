@@ -259,7 +259,9 @@ impl Shell {
         Self::build_at_size(app, SCREEN)
     }
 
-    fn build_at_size(app: KetchupApp, size: Vec2) -> Self {
+    fn build_at_size(mut app: KetchupApp, size: Vec2) -> Self {
+        // The product hides the manual CAD panels; most shell tests drive them.
+        app.set_manual_cad_panels_visible(true);
         let mut harness = Harness::builder()
             .with_size(size)
             // Exact workers can legitimately request more than the default four
@@ -504,9 +506,12 @@ impl Shell {
     }
 
     /// Bounding boxes of all visible nodes published to assistive technology.
+    /// Nodes wholly outside the window are scrolled out of the dock, not visible.
     pub fn visible_accesskit_rects(&self) -> Vec<(String, Rect)> {
+        let window = self.harness.ctx.screen_rect();
         self.harness
             .query_all_by(|node| !node.is_hidden() && node.bounding_box().is_some())
+            .filter(|node| node.rect().intersects(window))
             .map(|node| {
                 let accesskit = node.accesskit_node();
                 (

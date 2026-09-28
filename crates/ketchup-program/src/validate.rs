@@ -2,8 +2,12 @@
 //! reject the model. Production export decides whether issues block.
 
 use crate::eval::{TOLERANCE_MM, contact};
-use crate::model::{Part, ProgramModel};
+use crate::frame::{self, Obb};
+use crate::model::{Part, ProgramBooleanKind, ProgramModel, ProgramPartBody};
 use serde::Serialize;
+
+/// Issue kind for a box overlap that only the exact solids can decide.
+pub const COLLISION_UNVERIFIED: &str = "collision_unverified";
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -23,18 +27,44 @@ pub struct Issue {
     pub hint: String,
 }
 
+/// Bounds of `b` in the frame of `a` when both share one orientation.
+fn in_frame_of(a: &Part, b: &Part) -> Option<([f64; 3], [f64; 3])> {
+    if !frame::same_orientation(&a.rotation, &b.rotation) {
+        return None;
+    }
+    let origin = a.to_local(b.at_mm);
+    let (min, max) = b.local_bounds();
+    Some((
+        std::array::from_fn(|axis| origin[axis] + min[axis]),
+        std::array::from_fn(|axis| origin[axis] + max[axis]),
+    ))
+}
+
+/// World bounds of the region where the two parts' boxes overlap.
 fn overlap(a: &Part, b: &Part) -> Option<([f64; 3], [f64; 3])> {
-    let (a_min, a_max, b_min, b_max) = (a.at_mm, a.max_mm(), b.at_mm, b.max_mm());
-    let min: [f64; 3] = std::array::from_fn(|axis| a_min[axis].max(b_min[axis]));
-    let max: [f64; 3] = std::array::from_fn(|axis| a_max[axis].min(b_max[axis]));
-    (0..3)
-        .all(|axis| max[axis] - min[axis] > TOLERANCE_MM)
-        .then_some((min, max))
+    let intersect = |(a_min, a_max): ([f64; 3], [f64; 3]), (b_min, b_max): ([f64; 3], [f64; 3])| {
+        let min: [f64; 3] = std::array::from_fn(|axis| f64::max(a_min[axis], b_min[axis]));
+        let max: [f64; 3] = std::array::from_fn(|axis| f64::min(a_max[axis], b_max[axis]));
+        (0..3)
+            .all(|axis| max[axis] - min[axis] > TOLERANCE_MM)
+            .then_some((min, max))
+    };
+    if let Some(b_local) = in_frame_of(a, b) {
+        let (min, max) = intersect(a.local_bounds(), b_local)?;
+        return Some(Obb::new(a.at_mm, &a.rotation, min, max).world_bounds());
+    }
+    if a.obb().separation(&b.obb()) >= -TOLERANCE_MM {
+        return None;
+    }
+    frame::common_region(&[a.obb(), b.obb()], TOLERANCE_MM)
 }
 
 /// Smallest distance between two boxes (0 when they touch or overlap).
 fn gap(a: &Part, b: &Part) -> f64 {
-    let (a_min, a_max, b_min, b_max) = (a.at_mm, a.max_mm(), b.at_mm, b.max_mm());
+    let Some((b_min, b_max)) = in_frame_of(a, b) else {
+        return a.obb().separation(&b.obb()).max(0.0);
+    };
+    let (a_min, a_max) = a.local_bounds();
     (0..3)
         .map(|axis| {
             (b_min[axis] - a_max[axis])
@@ -56,8 +86,79 @@ fn contains(outer: ([f64; 3], [f64; 3]), inner: ([f64; 3], [f64; 3])) -> bool {
 fn world_pockets(part: &Part) -> impl Iterator<Item = ([f64; 3], [f64; 3])> + '_ {
     part.pockets.iter().map(|pocket| {
         let (min, max) = pocket.local_box(part.size_mm);
-        (part.to_world(min), part.to_world(max))
+        Obb::new(part.at_mm, &part.rotation, min, max).world_bounds()
     })
+}
+
+/// False when `a`'s booleans certainly removed the volume it shares with `b`:
+/// `a` had `b` itself subtracted, or one subtracted plain box tool covers the
+/// whole shared volume, or an intersect tool leaves none of it.
+fn booleans_leave_overlap(a: &Part, b: &Part) -> bool {
+    if a.subtracts(b) {
+        return false;
+    }
+    let shared = [a.obb(), b.obb()];
+    let corners = frame::intersection_vertices(&shared, TOLERANCE_MM);
+    a.booleans.iter().all(|boolean| {
+        let tool = &boolean.tool;
+        match boolean.kind {
+            // Only a plain box is exactly its bounding box; anything else
+            // removes less, so it cannot prove the overlap gone.
+            ProgramBooleanKind::Subtract => {
+                !(matches!(tool.body, ProgramPartBody::Panel)
+                    && tool.booleans.is_empty()
+                    && !corners.is_empty()
+                    && corners
+                        .iter()
+                        .all(|corner| tool.obb().contains(*corner, TOLERANCE_MM)))
+            }
+            // The tool's box holds the whole tool, so no common volume with
+            // the box means none with the tool.
+            ProgramBooleanKind::Intersect => {
+                frame::common_region(&[shared[0], shared[1], tool.obb()], TOLERANCE_MM).is_some()
+            }
+        }
+    })
+}
+
+/// Whether the solid of `part`, before booleans, is exactly its box: a panel,
+/// or an extrusion of a rectangle, with no cut, finish or moved face.
+fn is_box(part: &Part) -> bool {
+    let plain = part.cuts.is_empty() && part.fillets.is_empty() && part.face_offsets.is_empty();
+    plain
+        && match &part.body {
+            ProgramPartBody::Panel => true,
+            ProgramPartBody::Extrusion { segments, .. } => {
+                let (min, max) = part.local_bounds();
+                let (width, depth) = (max[0] - min[0], max[1] - min[1]);
+                let doubled_area: f64 = segments
+                    .iter()
+                    .map(|s| s.start_mm[0] * s.end_mm[1] - s.end_mm[0] * s.start_mm[1])
+                    .sum();
+                (doubled_area.abs() / 2.0 - width * depth).abs() <= TOLERANCE_MM * (width + depth)
+            }
+            ProgramPartBody::Revolve { .. } => false,
+        }
+}
+
+/// Whether boxes alone cannot decide if the solids of `a` and `b` overlap.
+/// Two boxes overlap by a convex volume; one box tool subtracted from it or
+/// intersected with it leaves a decidable convex question, which
+/// `booleans_leave_overlap` already answered. Profile bodies, and two or more
+/// tools reaching into the shared volume, need the exact solids.
+fn needs_exact_shapes(a: &Part, b: &Part) -> bool {
+    if !is_box(a) || !is_box(b) {
+        return true;
+    }
+    let shared = [a.obb(), b.obb()];
+    let mut reaching = a.booleans.iter().chain(&b.booleans).filter(|boolean| {
+        frame::common_region(&[shared[0], shared[1], boolean.tool.obb()], TOLERANCE_MM).is_some()
+    });
+    match (reaching.next(), reaching.next()) {
+        (None, _) => false,
+        (Some(boolean), None) => !is_box(&boolean.tool) || !boolean.tool.booleans.is_empty(),
+        (Some(_), Some(_)) => true,
+    }
 }
 
 fn round(value: f64) -> f64 {
@@ -65,20 +166,22 @@ fn round(value: f64) -> f64 {
 }
 
 fn collisions(model: &ProgramModel, issues: &mut Vec<Issue>) {
+    let bounds: Vec<_> = model.parts.iter().map(Part::world_bounds).collect();
     let mut order: Vec<usize> = (0..model.parts.len()).collect();
-    order.sort_by(|left, right| {
-        model.parts[*left].at_mm[0].total_cmp(&model.parts[*right].at_mm[0])
-    });
+    order.sort_by(|left, right| bounds[*left].0[0].total_cmp(&bounds[*right].0[0]));
     for (position, &left) in order.iter().enumerate() {
         let a = &model.parts[left];
         for &right in &order[position + 1..] {
             let b = &model.parts[right];
-            if b.at_mm[0] >= a.max_mm()[0] - TOLERANCE_MM {
+            if bounds[right].0[0] >= bounds[left].1[0] - TOLERANCE_MM {
                 break;
             }
             let Some(region) = overlap(a, b) else {
                 continue;
             };
+            if !booleans_leave_overlap(a, b) || !booleans_leave_overlap(b, a) {
+                continue;
+            }
             let seated = world_pockets(a)
                 .chain(world_pockets(b))
                 .any(|pocket| contains(pocket, region));
@@ -93,6 +196,27 @@ fn collisions(model: &ProgramModel, issues: &mut Vec<Issue>) {
                 continue;
             }
             let (min, max) = region;
+            if needs_exact_shapes(a, b) {
+                issues.push(Issue {
+                    severity: Severity::Warning,
+                    kind: COLLISION_UNVERIFIED,
+                    parts: vec![a.name.clone(), b.name.clone()],
+                    message: format!(
+                        "the bounding boxes of {} and {} overlap by {} x {} x {} mm; \
+                         whether the solids themselves overlap needs the exact shapes",
+                        a.name,
+                        b.name,
+                        round(max[0] - min[0]),
+                        round(max[1] - min[1]),
+                        round(max[2] - min[2]),
+                    ),
+                    where_mm: Some((min.map(round), max.map(round))),
+                    hint: "Applying the program in the Kečup window checks the exact solids; \
+                           this offline check only compares boxes."
+                        .to_owned(),
+                });
+                continue;
+            }
             issues.push(Issue {
                 severity: Severity::Error,
                 kind: "collision",
@@ -229,7 +353,16 @@ fn support(model: &ProgramModel, issues: &mut Vec<Issue>) {
     let mut supported: Vec<bool> = model
         .parts
         .iter()
-        .map(|part| part.at_mm[2].abs() <= TOLERANCE_MM)
+        .map(|part| {
+            // Booleans (a trim at the floor) can end a part exactly at z = 0
+            // although its uncut box reaches below.
+            let (min, max) = part.world_bounds();
+            if part.booleans.is_empty() {
+                min[2].abs() <= TOLERANCE_MM
+            } else {
+                min[2] <= TOLERANCE_MM && max[2] > TOLERANCE_MM
+            }
+        })
         .collect();
     if !supported.iter().any(|value| *value) {
         return;
@@ -245,6 +378,8 @@ fn support(model: &ProgramModel, issues: &mut Vec<Issue>) {
             let joined = |other: &Part| {
                 contact(part, other).is_some()
                     || overlap(part, other).is_some()
+                    || ((part.is_rotated() || other.is_rotated())
+                        && gap(part, other) <= TOLERANCE_MM)
                     || model.joints.iter().any(|joint| {
                         joint.parts.contains(&part.name) && joint.parts.contains(&other.name)
                     })
@@ -265,7 +400,10 @@ fn support(model: &ProgramModel, issues: &mut Vec<Issue>) {
                     "{} touches nothing that rests on the floor (z = 0)",
                     part.name
                 ),
-                where_mm: Some((part.at_mm.map(round), part.max_mm().map(round))),
+                where_mm: {
+                    let (min, max) = part.world_bounds();
+                    Some((min.map(round), max.map(round)))
+                },
                 hint: "Move it onto a supporting part or connect it with a joint.".to_owned(),
             });
         }

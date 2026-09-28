@@ -4,6 +4,7 @@ use crate::diagnostics::{
     AssistantPlanningResult, assistant_canonical_rejection, assistant_planning_rejection,
     assistant_rejection,
 };
+use crate::rule_booleans::BooleanPlanner;
 use crate::transforms::{
     rotation_in_parent_space, translated_transform, world_axis_rotation_transform,
     world_plane_mirror_transform,
@@ -4217,6 +4218,20 @@ pub fn plan_rule_part_batch(
         }
     }
     let mut commands = base.commands().to_vec();
+    for command in &mut commands {
+        if let CanonicalCommand::CreateOccurrence {
+            definition_id,
+            transform,
+            ..
+        } = command
+            && let Some(position) = definitions.iter().position(|id| id == definition_id)
+        {
+            *transform =
+                Transform::from_matrix(parts[position].transform_matrix()).map_err(|error| {
+                    assistant_canonical_rejection(error, "rule_part", &parts[position].name)
+                })?;
+        }
+    }
     for (part, definition_id) in parts.iter().zip(definitions) {
         let mut target = *body_features.get(&definition_id).ok_or_else(|| {
             assistant_planning_rejection(
@@ -4230,7 +4245,11 @@ pub fn plan_rule_part_batch(
         let segments = match &part.body {
             ProgramPartBody::Extrusion { segments, .. }
             | ProgramPartBody::Revolve { segments, .. } => segments,
-            ProgramPartBody::Panel => continue,
+            ProgramPartBody::Panel => {
+                BooleanPlanner::new(&mut commands, definition_id, &mut next_feature, &part.name)
+                    .apply(part, target)?;
+                continue;
+            }
         };
         for cut in &part.cuts {
             next_feature = next_feature.checked_add(1).ok_or_else(|| {
@@ -4432,6 +4451,8 @@ pub fn plan_rule_part_batch(
             });
             target = id;
         }
+        BooleanPlanner::new(&mut commands, definition_id, &mut next_feature, &part.name)
+            .apply(part, target)?;
     }
     Ok(CommandBatch::new(commands))
 }

@@ -17,7 +17,7 @@ from anthropic.lib.tools import beta_async_tool
 
 MAX_OUTPUT = 32768
 MAX_STARTUP = 1024
-MAX_SESSIONS = 4
+MAX_SESSIONS = 64
 SESSION_TIMEOUT = 30.0
 # Actionable next step for rejections an agent can fix by itself.
 _REJECTION_HINTS = {
@@ -373,7 +373,7 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
         Args:
             action: list, attach, launch, or disconnect. Attach/launch are forbidden in plan mode.
             handle: Live UUID, required only for disconnect (also allowed in plan mode).
-            instance_id: Listed 32-hex window ID, required only for attach; attach is immediate and replaces any earlier client (status busy only means connected).
+            instance_id: Optional listed 32-hex window ID for attach. Omit to attach the sole window; multiple windows require choosing an ID. A new attach replaces the earlier client.
             executable: Explicit absolute existing GUI executable, required for launch. No discovery or extra arguments.
             document_path: Optional absolute existing document file for the new window; never replaces an existing window.
         """
@@ -400,15 +400,22 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
                     raise Rejection("invalid_arguments", "Attach accepts only one listed instance ID.")
                 runtime.prune_closed()
                 if len(runtime.sessions) >= MAX_SESSIONS:
-                    raise Rejection("session_limit", "Disconnect a live session first; maximum is four.")
-                live_session = runtime.attacher(instance_id)
+                    raise Rejection("session_limit", "Disconnect an unused live session first; maximum is 64.")
+                selected = instance_id
+                if not selected:
+                    instances = runtime.discoverer()
+                    if len(instances) != 1:
+                        raise Rejection("selection_required" if instances else "instance_unavailable",
+                                        "Choose a window by instance_id from: " + json.dumps(instances))
+                    selected = instances[0]["instance_id"]
+                live_session = runtime.attacher(selected)
                 runtime.sessions[owned] = live_session
                 try:
                     runtime.guard()
                     result = live_session.status()
                     return {**result, "result": {**result["result"], "handle": owned,
                             "ownership": "nonowning_existing_GUI_window", "plan_guard_bound": True,
-                            "attachment": "Approved directly in the selected existing window."}}
+                            "attachment": "Connected to the selected existing window."}}
                 except BaseException:
                     try:
                         live_session.disconnect()
@@ -422,7 +429,7 @@ def _register_tools(plan_state, *, launcher=None, discoverer=None, attacher=None
                 raise Rejection("invalid_arguments", "Launch creates a new handle and new GUI window.")
             runtime.prune_closed()
             if len(runtime.sessions) >= MAX_SESSIONS:
-                raise Rejection("session_limit", "Disconnect a live session first; maximum is four.")
+                raise Rejection("session_limit", "Disconnect an unused live session first; maximum is 64.")
             binary = _path(executable)
             path = _path(document_path) if document_path else None
             runtime.guard()
