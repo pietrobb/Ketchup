@@ -32843,8 +32843,7 @@ impl KetchupApp {
         if self.wireframe_visible {
             return;
         }
-        let mut underlay = egui::Mesh::default();
-        let mut fills = Vec::with_capacity(faces.len());
+        let mut mesh = egui::Mesh::default();
         for face in faces {
             let color = if face.out_of_context {
                 Color32::from_rgb(43, 47, 54)
@@ -32875,32 +32874,12 @@ impl KetchupApp {
             } else {
                 color
             };
-            fills.push(color);
-            if self.xray_visible || self.face_workflow.xray_preview() {
-                continue;
-            }
-            let base = u32::try_from(underlay.vertices.len())
-                .expect("a viewport face mesh must fit in u32 indices");
-            let points = face.polygon.points();
-            for point in points {
-                underlay.colored_vertex(*point, color);
-            }
-            for index in 1..points.len() - 1 {
-                let index = u32::try_from(index).expect("a face vertex count must fit in u32");
-                underlay.add_triangle(base, base + index, base + index + 1);
-            }
+            viewport_feedback::add_filled_polygon(&mut mesh, face.polygon.points(), color);
         }
-        // Xray must blend each face once, not both the seam underlay and fill.
-        if !(self.xray_visible || self.face_workflow.xray_preview()) && !underlay.indices.is_empty()
-        {
-            painter.add(egui::Shape::mesh(underlay));
-        }
-        for (face, color) in faces.iter().zip(fills) {
-            painter.add(egui::Shape::convex_polygon(
-                face.polygon.points().to_vec(),
-                color,
-                Stroke::NONE,
-            ));
+        // One unfeathered mesh: no seams between faces, each face blended once
+        // in Xray, and no anti-aliasing spikes from sliver triangles.
+        if !mesh.indices.is_empty() {
+            painter.add(egui::Shape::mesh(mesh));
         }
     }
 

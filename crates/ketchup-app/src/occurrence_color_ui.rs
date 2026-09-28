@@ -191,7 +191,11 @@ mod tests {
                     },
                     |context| app.ui(context),
                 );
-                assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Path(path) if path.fill == expected)), "nested CPU color {override_color:?}, Xray {xray}");
+                assert!(
+                    crate::viewport_feedback::output_has_fill(&output.shapes, &[], |fill| fill
+                        == expected),
+                    "nested CPU color {override_color:?}, Xray {xray}"
+                );
                 assert_eq!(app.document_revision(), revision);
             }
         }
@@ -252,16 +256,10 @@ mod tests {
                 |context| app.ui(context),
             );
             assert!(
-                output.shapes.iter().any(|shape| matches!(
-                    &shape.shape, egui::Shape::Path(path) if path.fill == expected
-                )),
+                crate::viewport_feedback::output_has_fill(&output.shapes, &[], |fill| fill
+                    == expected),
                 "CPU viewport must paint the persisted sRGB color"
             );
-            if xray {
-                assert!(!output.shapes.iter().any(|shape| matches!(
-                    &shape.shape, egui::Shape::Mesh(mesh) if mesh.vertices.iter().any(|vertex| vertex.color == expected)
-                )), "Xray must not also emit a matching mesh underlay");
-            }
             assert_eq!(app.document_revision(), revision);
         }
     }

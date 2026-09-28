@@ -8919,15 +8919,26 @@ fn rectangle_drag_preview_preserves_signed_bounds_until_release() {
         let rect = state.viewport_rect().unwrap();
         let projected = box_corners(expected.size_mm.x, expected.size_mm.y, expected.size_mm.z)
             .map(|point| state.project(point + expected.origin_mm, rect));
-        assert!(box_faces().into_iter().filter(|face| matches!(
-            face.element, ElementId::Face { axis: Axis::X | Axis::Y, .. }
-        )).any(|face| {
-            let points = face.corners.map(|index| projected[index]).to_vec();
-            harness.output().shapes.iter().any(|shape| matches!(
-                &shape.shape,
-                egui::Shape::Path(path) if path.points == points && path.fill != Color32::TRANSPARENT
-            ))
-        }), "painted side walls must span the signed interval, not its positive mirror");
+        assert!(
+            box_faces()
+                .into_iter()
+                .filter(|face| matches!(
+                    face.element,
+                    ElementId::Face {
+                        axis: Axis::X | Axis::Y,
+                        ..
+                    }
+                ))
+                .any(|face| {
+                    let points = face.corners.map(|index| projected[index]).to_vec();
+                    crate::viewport_feedback::output_has_fill(
+                        &harness.output().shapes,
+                        &points,
+                        |fill| fill != Color32::TRANSPARENT,
+                    )
+                }),
+            "painted side walls must span the signed interval, not its positive mirror"
+        );
     }
     let preview = harness.state().render_box(profile);
     harness.input_mut().events.push(egui::Event::PointerButton {
@@ -14750,10 +14761,10 @@ fn xray_projected_faces_use_translucent_fill() {
     });
 
     assert_eq!(output.shapes.len(), 1, "Xray must not double-blend a face");
-    let egui::Shape::Path(fill) = &output.shapes[0].shape else {
-        panic!("x-ray projected faces must have one antialiased fill");
+    let egui::Shape::Mesh(fill) = &output.shapes[0].shape else {
+        panic!("x-ray projected faces must have one fill mesh");
     };
-    assert_eq!(fill.fill.a(), 72);
+    assert!(fill.vertices.iter().all(|vertex| vertex.color.a() == 72));
 }
 
 #[test]
@@ -14831,7 +14842,7 @@ fn hidden_edges_emit_no_edge_shapes_but_keep_shaded_face_fills() {
         app.paint_projected_edges(&painter, &edges);
     });
 
-    assert_eq!(output.shapes.len(), 2);
+    assert_eq!(output.shapes.len(), 1);
     assert!(matches!(output.shapes[0].shape, egui::Shape::Mesh(_)));
 }
 
@@ -15758,17 +15769,14 @@ fn adjacent_projected_triangles_share_a_fill_underlay_and_keep_antialiased_outli
         app.paint_projected_faces(&painter, &faces);
     });
 
-    assert_eq!(output.shapes.len(), 3);
-    let egui::Shape::Mesh(underlay) = &output.shapes[0].shape else {
-        panic!("projected faces must start with one shared mesh underlay");
+    // One unfeathered mesh: feathering sliver triangles one by one draws
+    // anti-aliasing spikes far outside faces with holes.
+    assert_eq!(output.shapes.len(), 1);
+    let egui::Shape::Mesh(fill) = &output.shapes[0].shape else {
+        panic!("projected faces must be one shared fill mesh");
     };
-    assert_eq!(underlay.vertices.len(), 6);
-    assert_eq!(underlay.indices.len(), 6);
-    assert!(
-        output.shapes[1..]
-            .iter()
-            .all(|shape| matches!(shape.shape, egui::Shape::Path(_)))
-    );
+    assert_eq!(fill.vertices.len(), 6);
+    assert_eq!(fill.indices.len(), 6);
 }
 
 #[test]

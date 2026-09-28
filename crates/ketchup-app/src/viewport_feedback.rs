@@ -178,6 +178,7 @@ impl KetchupApp {
         faces: impl Iterator<Item = &'a ProjectedFace>,
     ) {
         let faces = faces.collect::<Vec<_>>();
+        let mut mesh = egui::Mesh::default();
         // Cycling to a hidden overlap is an explicit choice that must stay visible.
         let choosing_hidden_target =
             self.face_workflow.xray_preview() || self.hover_overlap_index != 0;
@@ -205,14 +206,50 @@ impl KetchupApp {
                 } else {
                     continue;
                 };
-                painter.add(egui::Shape::convex_polygon(
-                    face.polygon.points().to_vec(),
-                    fill,
-                    Stroke::NONE,
-                ));
+                add_filled_polygon(&mut mesh, face.polygon.points(), fill);
             }
         }
+        if !mesh.indices.is_empty() {
+            painter.add(egui::Shape::mesh(mesh));
+        }
     }
+}
+
+/// Appends a convex polygon to an unfeathered fill mesh. Tessellated faces
+/// with holes contain long sliver triangles; feathering each of them as its
+/// own polygon shoots anti-aliasing spikes far past the face.
+pub(super) fn add_filled_polygon(mesh: &mut egui::Mesh, points: &[Pos2], color: Color32) {
+    let base = u32::try_from(mesh.vertices.len()).expect("a viewport fill mesh must fit in u32");
+    for point in points {
+        mesh.colored_vertex(*point, color);
+    }
+    for index in 1..u32::try_from(points.len()).expect("a face vertex count must fit in u32") - 1 {
+        mesh.add_triangle(base, base + index, base + index + 1);
+    }
+}
+
+/// Whether the output fills `points` (in order, as one polygon of a fill
+/// mesh) with a colour accepted by `color`; empty `points` matches any fill.
+#[cfg(test)]
+pub(crate) fn output_has_fill(
+    shapes: &[egui::epaint::ClippedShape],
+    points: &[Pos2],
+    color: impl Fn(Color32) -> bool,
+) -> bool {
+    shapes.iter().any(|shape| {
+        let egui::Shape::Mesh(mesh) = &shape.shape else {
+            return false;
+        };
+        if points.is_empty() {
+            return mesh.vertices.iter().any(|vertex| color(vertex.color));
+        }
+        mesh.vertices.windows(points.len()).any(|window| {
+            window
+                .iter()
+                .zip(points)
+                .all(|(vertex, point)| vertex.pos == *point && color(vertex.color))
+        })
+    })
 }
 
 #[cfg(test)]
@@ -330,11 +367,58 @@ mod tests {
                 std::iter::once(&outside),
             );
         });
-        assert!(output.shapes.iter().any(|shape| matches!(
-            &shape.shape,
-            egui::Shape::Path(path)
-                if path.fill == Color32::from_rgba_unmultiplied(190, 195, 205, 95)
-        )));
+        assert!(output_has_fill(&output.shapes, &[], |fill| fill
+            == Color32::from_rgba_unmultiplied(190, 195, 205, 95)));
+    }
+
+    #[test]
+    fn hovered_sliver_triangles_do_not_spike_past_the_face() {
+        let mut app = KetchupApp::new();
+        let selection = SelectionId {
+            definition_id: INITIAL_BOX_DEFINITION,
+            instance_path: InstancePath::root(OccurrenceId(1)),
+            element: ElementId::Face {
+                axis: Axis::X,
+                side: Side::Maximum,
+            },
+        };
+        app.hovered = Some(selection.clone());
+        // A face with dowel holes tessellates into long slivers like this one.
+        let sliver = [
+            Pos2::new(300.0, 100.0),
+            Pos2::new(300.4, 900.0),
+            Pos2::new(300.0, 900.0),
+        ];
+        let face = ProjectedFace {
+            selection,
+            polygon: ProjectedPolygon::Triangle(sliver),
+            color: Color32::WHITE,
+            depth: 0.0,
+            previewed: false,
+            out_of_context: false,
+        };
+        let context = egui::Context::default();
+        let output = context.run(egui::RawInput::default(), |context| {
+            app.paint_face_feedback(
+                &context.layer_painter(egui::LayerId::background()),
+                std::iter::once(&face),
+            );
+        });
+        let bounds = Rect::from_points(&sliver).expand(1.0);
+        let primitives = context.tessellate(output.shapes, output.pixels_per_point);
+        assert!(!primitives.is_empty());
+        for primitive in primitives {
+            let egui::epaint::Primitive::Mesh(mesh) = primitive.primitive else {
+                continue;
+            };
+            for vertex in &mesh.vertices {
+                assert!(
+                    bounds.contains(vertex.pos),
+                    "fill vertex {:?} escapes the face {bounds:?}",
+                    vertex.pos
+                );
+            }
+        }
     }
 
     #[test]
@@ -361,8 +445,7 @@ mod tests {
             .shapes
             .iter()
             .position(|shape| {
-                matches!(&shape.shape, egui::Shape::Path(path)
-                    if path.fill == HOVER_FILL && path.stroke.is_empty())
+                output_has_fill(std::slice::from_ref(shape), &[], |fill| fill == HOVER_FILL)
             })
             .expect("visible face fill, not just internal hover state");
         assert!(overlay > callback);
@@ -371,9 +454,7 @@ mod tests {
         let mut raw = input();
         raw.events.push(egui::Event::PointerGone);
         let output = context.run(raw, |context| app.ui(context));
-        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
-            egui::Shape::Path(path)
-                if path.fill == SELECTED_FILL && path.stroke.is_empty())));
+        assert!(output_has_fill(&output.shapes, &[], |fill| fill == SELECTED_FILL));
 
         assert!(app.copy_selected(Vec3::new(10.0, 0.0, 0.0)));
         app.active_tool = ActiveTool::PushPull;
@@ -392,13 +473,11 @@ mod tests {
             "Alt must not change the persistent view setting"
         );
         assert!(
-            output.shapes.iter().any(|shape| matches!(&shape.shape,
-            egui::Shape::Path(path) if path.fill.a() == 72)),
+            output_has_fill(&output.shapes, &[], |fill| fill.a() == 72),
             "Alt must render translucent faces"
         );
         assert!(
-            output.shapes.iter().any(|shape| matches!(&shape.shape,
-            egui::Shape::Path(path) if path.fill == HOVER_FILL)),
+            output_has_fill(&output.shapes, &[], |fill| fill == HOVER_FILL),
             "cycled target must have a filled highlight"
         );
         let chosen = app.hovered.clone();
@@ -449,11 +528,7 @@ mod tests {
             raw.events.push(egui::Event::PointerMoved(pointer + offset));
             let output = context.run(raw, |context| app.ui(context));
             assert_eq!(app.selection.primary.as_ref(), Some(&selected));
-            let fills = |fill| {
-                output.shapes.iter().any(
-                    |shape| matches!(&shape.shape, egui::Shape::Path(path) if path.fill == fill),
-                )
-            };
+            let fills = |fill| output_has_fill(&output.shapes, &[], |color| color == fill);
             assert!(
                 fills(SELECTED_FILL),
                 "selected face lost its fill at {offset:?}"
@@ -507,8 +582,7 @@ mod tests {
         let output = context.run(input(), |context| app.ui(context));
         assert_eq!(app.hovered.as_ref(), Some(&hidden));
         assert!(
-            output.shapes.iter().any(|shape| matches!(&shape.shape,
-                egui::Shape::Path(path) if path.fill == HOVER_FILL && path.stroke.is_empty())),
+            output_has_fill(&output.shapes, &[], |fill| fill == HOVER_FILL),
             "a cycled back face must remain visibly highlighted"
         );
     }

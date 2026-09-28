@@ -769,18 +769,22 @@ impl KetchupApp {
             points.iter().map(|p| point_depth(*p, forward)).sum::<f64>() / points.len() as f64
         };
         surfaces.sort_by(|(a, _), (b, _)| depth(b).total_cmp(&depth(a)));
+        let mut fill = egui::Mesh::default();
         for (points, alpha) in surfaces {
             let projected = points
                 .iter()
                 .map(|p| self.project(*p, rect))
                 .collect::<Vec<_>>();
             if projected_polygon_has_area(&projected) {
-                painter.add(egui::Shape::convex_polygon(
-                    projected,
+                super::viewport_feedback::add_filled_polygon(
+                    &mut fill,
+                    &projected,
                     Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha),
-                    Stroke::NONE,
-                ));
+                );
             }
+        }
+        if !fill.indices.is_empty() {
+            painter.add(egui::Shape::mesh(fill));
         }
         for edge in outlines {
             painter.line_segment(

@@ -450,10 +450,8 @@ fn continuous_motion_paints_surface_preview_without_waiting_for_exact_worker() {
             app.paint_face_offset_guide(&painter, rect);
         });
         assert!(
-            output.shapes.iter().any(|shape| matches!(
-                &shape.shape,
-                egui::Shape::Path(path) if path.closed && path.fill != Color32::TRANSPARENT
-            )),
+            crate::viewport_feedback::output_has_fill(&output.shapes, &[], |fill| fill
+                != Color32::TRANSPARENT),
             "every pointer update must paint a filled surface, not only an arrow"
         );
         assert!(app.face_offset_evaluation.is_none());
@@ -851,10 +849,14 @@ fn viewport_direct_drag_commits_slanted_face_without_initial_box() {
         let projected = mesh.caps[0]
             .map(|p| harness.state().project(p, rect))
             .to_vec();
-        assert!(harness.output().shapes.iter().any(|shape| matches!(
-            &shape.shape,
-            egui::Shape::Path(path) if path.points == projected && path.fill != Color32::TRANSPARENT
-        )), "viewport output must contain the current displaced face, not just the helper data");
+        assert!(
+            crate::viewport_feedback::output_has_fill(
+                &harness.output().shapes,
+                &projected,
+                |fill| fill != Color32::TRANSPARENT
+            ),
+            "viewport output must contain the current displaced face, not just the helper data"
+        );
     }
     let state = harness.state();
     let snapshot = state.document.current();
