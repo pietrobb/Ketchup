@@ -2040,13 +2040,14 @@ pub fn evaluate(
 mod tests {
     use super::*;
 
-    /// The library header is what `KetchupDiscover section=program` hands an
-    /// AI, so a builtin missing there is a tool the AI cannot know about.
+    /// The library's comments are what `KetchupDiscover section=program` hands
+    /// an AI (topic by topic), so a builtin missing there is a tool the AI
+    /// cannot know about.
     #[test]
-    fn every_builtin_is_documented_in_the_library_header() {
+    fn every_builtin_is_documented_in_the_library_comments() {
         let header = PRELUDE
             .lines()
-            .take_while(|line| line.starts_with('#'))
+            .filter(|line| line.starts_with('#'))
             .collect::<Vec<_>>()
             .join("\n");
         let math_line = header

@@ -26,7 +26,7 @@ The full example is [`examples/programs/cabinet.star`](../examples/programs/cabi
 | Command line, no OCCT or GUI needed | `ketchup-program check cabinet.star --set width=700` |
 | Headless protocol | `program_check` (report only), `program_apply` (replace the document, one undo step) |
 | Python SDK | `session.check_program(source, params={...})`, `session.program_document(source, ...)` |
-| Agent skill | `KetchupProgram` with `action=check` or `action=build`; `KetchupDiscover section=program` returns the library |
+| Agent skill | `KetchupProgram` with `action=check` or `action=build`; `KetchupDiscover section=program` lists the library topics, `name=<topic>` returns one |
 
 Every run returns the same report:
 - `issues`: severity, kind, parts, message, location in mm, and a hint;
@@ -78,6 +78,13 @@ coordinates `(u, v)` are measured from the part's minimum corner: z faces use
 `board`, `dowels`, `groove`, `rabbet`, `hole_row`, `spread`, `divide`, `sum`,
 `round_to`, and the `DOWELS` table. New joinery, hardware or product types are
 added here, never in Rust (see `AGENTS.md`).
+
+The file is split into topics by `#@topic id: title` lines (`basics`,
+`placement`, `profiles`, `machining`, `joinery`, `intent`, `report`). Each
+topic holds the comments that document its builtins and the helpers that
+belong to it, so an AI reads the index and then only the topics it needs;
+every answer stays under the 32 KiB tool limit. A new helper goes into the
+topic it belongs to.
 
 ## Checks
 

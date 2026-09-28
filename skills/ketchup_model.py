@@ -8,6 +8,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import sys
 import uuid
 
@@ -72,6 +73,43 @@ def _output(value):
                   "message": "Complete result exceeds 32 KiB; not returned. Narrow the query. "
                              "Verification is incomplete; do not infer a pass. Do not retry mutations."},
                   "complete": False, "operation_completed": value.get("ok", False)})
+
+
+def _program_topics():
+    """The library split at its "#@topic id: title" lines: (intro, [topic])."""
+    intro, topics, current = [], [], None
+    for line in PROGRAM_LIBRARY.read_text(encoding="utf-8").splitlines(keepends=True):
+        match = re.match(r"#@topic ([a-z_]+): (.+)", line)
+        if match:
+            current = {"id": match[1], "title": match[2].strip(), "text": ""}
+            topics.append(current)
+        elif current is None:
+            intro.append(line)
+        else:
+            current["text"] += line
+    for topic in topics:
+        names = re.findall(r"^#\s+([a-z_]\w*)\(|^def ([a-z]\w*)\(", topic["text"], re.M)
+        topic["helpers"] = list(dict.fromkeys(documented or defined for documented, defined in names))
+    return "".join(intro).strip(), topics
+
+
+def _program_library(name):
+    """Index of the program library, or one topic / example by name."""
+    intro, topics = _program_topics()
+    examples = {path.name: path for path in sorted(PROGRAM_EXAMPLES.glob("*.star"))}
+    if not name:
+        return {"language": "Starlark (Python subset)", "intro": intro,
+                "topics": [{key: topic[key] for key in ("id", "title", "helpers")} for topic in topics],
+                "examples": list(examples),
+                "next": "KetchupDiscover section=program name=<topic id or example file> returns its full text; "
+                        "read basics and placement first."}
+    for topic in topics:
+        if topic["id"] == name:
+            return {"topic": name, "title": topic["title"], "text": topic["text"]}
+    if name in examples:
+        return {"example": name, "text": examples[name].read_text(encoding="utf-8")}
+    raise Rejection("unknown_name", "name must be a topic id (%s) or an example (%s)"
+                    % (", ".join(topic["id"] for topic in topics), ", ".join(examples)))
 
 
 def _absolute(path):
@@ -221,16 +259,15 @@ def register_tools() -> list:
 
         Args:
             section: overview, program, methods, operations, operation, definition, or validators.
-                program returns the rule-program library (all helpers with docs); no handle needed.
-            handle: Owned session UUID; required except for overview.
-            name: Exact operation or schema definition name when requesting its schema.
+                program returns the rule-program library index (topics with their helpers, examples);
+                program with name=<topic id or example file> returns that part in full. No handle needed.
+            handle: Owned session UUID; required except for overview and program.
+            name: Program topic/example, or exact operation or schema definition name for its schema.
         """
         def job():
             _action(section, ("overview", "program", "methods", "operations", "operation", "definition", "validators"))
             if section == "program":
-                return {"language": "Starlark (Python subset)", "library": PROGRAM_LIBRARY.read_text(encoding="utf-8"),
-                        "examples": {path.name: path.read_text(encoding="utf-8")
-                                     for path in sorted(PROGRAM_EXAMPLES.glob("*.star"))}}
+                return _program_library(name)
             if section == "overview":
                 return {"mode": "owned_headless_not_live_GUI", "max_sessions": MAX_SESSIONS,
                         "max_output_bytes": MAX_OUTPUT, "plan_guard_bound": runtime.plan_state is not None,
@@ -308,7 +345,8 @@ def register_tools() -> list:
 
         Prefer this for new furniture and timber models: write parameters and parts once,
         change one number and everything that depends on it follows. Helpers (board, dowels,
-        groove, rabbet, hole_row, divide, ...) are listed by KetchupDiscover section=program.
+        groove, rabbet, hole_row, divide, ...): KetchupDiscover section=program lists the topics,
+        section=program name=<topic> returns one (basics, placement, profiles, joinery, ...).
         The report names every issue with its parts, location in mm and a fix hint; fix
         errors and check again before building. `relations` maps how parts sit: contact
         (touching faces + area), overlap (depth; status subtracted/cut_in = socket, collision,

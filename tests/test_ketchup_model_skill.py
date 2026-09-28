@@ -93,8 +93,8 @@ def tools(monkeypatch, state=None):
     return {tool.name: tool for tool in skill.register_tools()}
 
 
-async def call(registered, name, **kwargs):
-    text = await registered[name].call(kwargs)
+async def call(registered, tool, **kwargs):
+    text = await registered[tool].call(kwargs)
     assert isinstance(text, str)
     assert len(text.encode("utf-8")) <= 32768
     return json.loads(text)
@@ -112,9 +112,16 @@ def test_registration_schema_and_real_decorator_calls(monkeypatch):
     assert set(required) == {"handle", "action"}
     async def scenario():
         assert (await call(registered, "KetchupDiscover"))["result"]["backend_compact"]
-        library = (await call(registered, "KetchupDiscover", section="program"))["result"]
-        assert "def dowels(" in library["library"]
-        assert any("dowels(" in example for example in library["examples"].values())
+        index = (await call(registered, "KetchupDiscover", section="program"))["result"]
+        ids = [topic["id"] for topic in index["topics"]]
+        assert {"basics", "placement", "profiles", "machining", "joinery", "intent", "report"} <= set(ids)
+        joinery = (await call(registered, "KetchupDiscover", section="program", name="joinery"))["result"]
+        assert "def dowels(" in joinery["text"]
+        examples = [(await call(registered, "KetchupDiscover", section="program", name=example))["result"]["text"]
+                    for example in index["examples"]]
+        assert any("dowels(" in example for example in examples)
+        unknown = await call(registered, "KetchupDiscover", section="program", name="nope")
+        assert unknown["error"]["code"] == "unknown_name" and "placement" in unknown["error"]["message"]
         assert (await call(registered, "KetchupProgram", action="check", handle="bad", source="x = 1"))["error"]["code"] == "invalid_handle"
         for name in ("KetchupSession", "KetchupInspect", "KetchupEdit", "KetchupVerify"):
             args = {"action": "invalid", "handle": "bad"}
@@ -123,6 +130,28 @@ def test_registration_schema_and_real_decorator_calls(monkeypatch):
             assert (await call(registered, name, **args))["error"]["code"] == "invalid_action"
         assert (await call(registered, "KetchupInspect", handle="bad"))["error"]["code"] == "invalid_handle"
     asyncio.run(scenario())
+
+
+def test_program_library_topics_fit_one_answer_and_cover_every_helper():
+    import re
+    library = skill.PROGRAM_LIBRARY.read_text(encoding="utf-8")
+    public = set(re.findall(r"^def ([a-z]\w*)\(", library, re.M))
+    intro, topics = skill._program_topics()
+    assert "def " not in intro and len(topics) >= 6
+    index = skill._output({"ok": True, "result": skill._program_library("")})
+    assert len(index.encode("utf-8")) < 8 * 1024, "the index must stay a short overview"
+    listed, texts = set(), []
+    for topic in json.loads(index)["result"]["topics"]:
+        answer = skill._output({"ok": True, "result": skill._program_library(topic["id"])})
+        assert len(answer.encode("utf-8")) < 32 * 1024 and json.loads(answer)["ok"], topic["id"]
+        assert topic["helpers"] or topic["id"] == "report"
+        listed.update(topic["helpers"])
+        texts.append(json.loads(answer)["result"]["text"])
+    assert public <= listed, f"helpers missing from the topic index: {public - listed}"
+    assert "".join(texts).count("\ndef ") + "".join(texts).startswith("def ") == library.count("\ndef ")
+    for example in json.loads(index)["result"]["examples"]:
+        answer = skill._output({"ok": True, "result": skill._program_library(example)})
+        assert len(answer.encode("utf-8")) < 32 * 1024 and json.loads(answer)["ok"], example
 
 
 def test_optional_preconditions_check_only_supplied_fields():
