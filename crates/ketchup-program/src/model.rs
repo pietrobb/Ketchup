@@ -715,6 +715,9 @@ pub struct ProgramModel {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<Part>,
     pub joints: Vec<Joint>,
+    /// Conditions the program states about its geometry (`expect()`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub expectations: Vec<crate::expect::Expectation>,
 }
 
 impl ProgramModel {

@@ -12,6 +12,7 @@ pub mod bom;
 pub mod cad;
 pub mod document;
 pub mod eval;
+pub mod expect;
 pub mod frame;
 pub mod model;
 pub mod relations;

@@ -84,7 +84,7 @@ fn round_direction(direction: [f64; 3]) -> [f64; 3] {
     direction.map(|value| (value * 1000.0).round() / 1000.0 + 0.0)
 }
 
-fn polygon_area(points: &[[f64; 3]]) -> f64 {
+pub(crate) fn polygon_area(points: &[[f64; 3]]) -> f64 {
     let Some(first) = points.first() else {
         return 0.0;
     };

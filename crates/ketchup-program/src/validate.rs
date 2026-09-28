@@ -419,6 +419,7 @@ pub fn validate(model: &ProgramModel) -> Vec<Issue> {
     holes(model, &mut issues);
     joints(model, &mut issues);
     support(model, &mut issues);
+    crate::expect::check(model, &mut issues);
     issues.sort_by_key(|issue| issue.severity);
     issues
 }

@@ -8,6 +8,7 @@
 // parameters; the macro-generated wrappers inherit that.
 #![allow(clippy::too_many_arguments)]
 
+use crate::expect::{Comparison, Direction, Expectation, Measure};
 use crate::frame::{self, Mat3};
 use crate::model::{
     Face, Hole, Joint, Param, Part, Pocket, ProgramBoolean, ProgramBooleanKind, ProgramCut,
@@ -286,6 +287,78 @@ fn part_name<'v>(value: Value<'v>, heap: &'v Heap) -> anyhow::Result<String> {
 fn face(value: &str) -> anyhow::Result<Face> {
     Face::parse(value)
         .ok_or_else(|| anyhow::anyhow!("face must be one of x-, x+, y-, y+, z-, z+; got {value:?}"))
+}
+
+fn items<'v>(value: Value<'v>, heap: &'v Heap, what: &str) -> anyhow::Result<Vec<Value<'v>>> {
+    Ok(value
+        .iterate(heap)
+        .map_err(|_| anyhow::anyhow!("{what} must be a list or tuple, got {}", value.get_type()))?
+        .collect())
+}
+
+/// `(x, y, z)` in world, or `(part, "z+")`: that face's outward normal
+/// wherever the part ends up.
+fn expect_direction<'v>(value: Value<'v>, heap: &'v Heap) -> anyhow::Result<Direction> {
+    let values = items(value, heap, "direction")?;
+    if let [part, face_name] = values.as_slice()
+        && let Some(face_name) = face_name.unpack_str()
+    {
+        return Ok(Direction::Face {
+            part: part_name(*part, heap)?,
+            face: face(face_name)?,
+        });
+    }
+    let vector = numbers::<3>(value, heap, "direction")?;
+    frame::normalized(vector)
+        .map(Direction::World)
+        .ok_or_else(|| anyhow::anyhow!("direction must be non-zero"))
+}
+
+/// `("reach", part, direction)`, `("distance", a, b)` or
+/// `("contact_area", a, b[, face_of_a])`.
+fn expect_measure<'v>(value: Value<'v>, heap: &'v Heap) -> anyhow::Result<Measure> {
+    let values = items(value, heap, "measure")?;
+    let kind = values
+        .first()
+        .and_then(|kind| kind.unpack_str())
+        .unwrap_or("");
+    let part = |index: usize| part_name(values[index], heap);
+    Ok(match (kind, values.len()) {
+        ("reach", 3) => Measure::Reach {
+            part: part(1)?,
+            direction: expect_direction(values[2], heap)?,
+        },
+        ("distance", 3) => Measure::Distance {
+            a: part(1)?,
+            b: part(2)?,
+        },
+        ("contact_area", 3 | 4) => Measure::ContactArea {
+            a: part(1)?,
+            b: part(2)?,
+            face: values
+                .get(3)
+                .map(|face_name| {
+                    face(face_name.unpack_str().ok_or_else(|| {
+                        anyhow::anyhow!("contact_area face must be a string like \"z+\"")
+                    })?)
+                })
+                .transpose()?,
+        },
+        _ => anyhow::bail!(
+            "measure must be (\"reach\", part, direction), (\"distance\", a, b) or \
+             (\"contact_area\", a, b[, face]); got {value}"
+        ),
+    })
+}
+
+fn measure_parts(measure: &Measure) -> Vec<&str> {
+    match measure {
+        Measure::Reach { part, direction } => match direction {
+            Direction::Face { part: of, .. } => vec![part, of],
+            Direction::World(_) => vec![part],
+        },
+        Measure::Distance { a, b } | Measure::ContactArea { a, b, .. } => vec![a, b],
+    }
 }
 
 fn part_value<'v>(part: &Part, heap: &'v Heap) -> Value<'v> {
@@ -1445,6 +1518,72 @@ fn builtins(builder: &mut GlobalsBuilder) {
             fasteners_mm: fasteners,
             fastener: text(fastener, "fastener")?,
             max_gap_mm: max_gap,
+        });
+        Ok(NoneType)
+    }
+
+    /// States a condition on the final model: `Σ coefficient · measure`
+    /// compared by `op` ("==", "<=", ">=", ">") with `value` within
+    /// `tolerance`. `terms` is a list of `(coefficient, measure)`; a measure
+    /// is `("reach", part, direction)`, `("distance", a, b)` (negative when
+    /// they overlap) or `("contact_area", a, b[, face_of_a])`; a direction is
+    /// `(x, y, z)` or `(part, "z+")`. Measured after the whole program ran; a
+    /// condition that does not hold is an `expectation_failed` error.
+    fn expect<'v>(
+        #[starlark(require = pos)] name: &str,
+        #[starlark(require = named)] terms: Value<'v>,
+        #[starlark(require = named)] op: Option<&str>,
+        #[starlark(require = named)] value: Option<Value<'v>>,
+        #[starlark(require = named)] tolerance: Option<Value<'v>>,
+        #[starlark(require = named)] unit: Option<&str>,
+        #[starlark(require = named)] hint: Option<&str>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        let heap = eval.heap();
+        let comparison = Comparison::parse(op.unwrap_or("=="))
+            .ok_or_else(|| anyhow::anyhow!("expect({name:?}): op must be ==, <=, >= or >"))?;
+        let terms = items(terms, heap, "terms")?
+            .into_iter()
+            .map(|term| {
+                let pair = items(term, heap, "each term")?;
+                let [coefficient, measure] = pair.as_slice() else {
+                    anyhow::bail!("each term must be (coefficient, measure)");
+                };
+                Ok((
+                    number(*coefficient, "coefficient")?,
+                    expect_measure(*measure, heap)?,
+                ))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        if terms.is_empty() {
+            anyhow::bail!("expect({name:?}): terms must not be empty");
+        }
+        let tolerance = given(tolerance).map_or(Ok(0.1), |value| number(value, "tolerance"))?;
+        if tolerance < 0.0 {
+            anyhow::bail!("expect({name:?}): tolerance must not be negative");
+        }
+        let mut parts: Vec<String> = Vec::new();
+        for part in terms.iter().flat_map(|(_, measure)| measure_parts(measure)) {
+            if !parts.iter().any(|known| known == part) {
+                parts.push(part.to_owned());
+            }
+        }
+        let state = state(eval)?;
+        let mut model = state.model.borrow_mut();
+        for part in &parts {
+            known_part(&model, part)?;
+        }
+        model.expectations.push(Expectation {
+            name: name.to_owned(),
+            terms,
+            comparison,
+            value: given(value).map_or(Ok(0.0), |value| number(value, "value"))?,
+            tolerance,
+            unit: unit.unwrap_or("mm").to_owned(),
+            parts,
+            hint: hint
+                .unwrap_or("Move or resize the parts, or correct the condition.")
+                .to_owned(),
         });
         Ok(NoneType)
     }

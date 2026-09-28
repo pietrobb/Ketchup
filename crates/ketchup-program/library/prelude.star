@@ -71,6 +71,26 @@
 #     moves one named planar face along its outward normal (negative = in),
 #     e.g. push_pull(board, face="end#2", distance=10, name="raise right half")
 #
+# Stating intent. Each helper records a condition that is measured on the
+# final model (after every move), so write them anywhere; one that does not
+# hold is an `expectation_failed` error naming the measured and required mm.
+# Faces follow the same rule as on(): the target's own frame, or a world
+# direction. Measures use the body before cuts and booleans.
+#   expect_contact(part, target, face=None, tolerance=0.1)  touching, not
+#     apart or overlapping; with face, face to face against that target face
+#   expect_gap(part, target, mm, tolerance=0.1)  clearance of mm between them
+#   expect_flush(part, target, face, tolerance=0.1)  level with target's face
+#   expect_symmetric(a, b, about, axis="x", tolerance=0.1)  a and b mirror
+#     each other about the middle of `about` across its own axis
+#   expect_inside(part, container, tolerance=0.1)  within the container
+# They are built on one generic builtin:
+#   expect(name, terms=[(coefficient, measure), ...], op="==", value=0,
+#          tolerance=0.1, unit="mm", hint=)
+#     measure = ("reach", part, direction) | ("distance", a, b) (negative
+#     when overlapping) | ("contact_area", a, b[, face_of_a]); direction =
+#     (x, y, z) or (part, "z+"); op is "==", "<=", ">=" or ">", e.g.
+#     expect("seat height", terms=[(1, ("reach", seat, (0, 0, 1)))], value=450)
+#
 # Every part has its own frame: `at` is its local origin in world, and
 # rotate()/place() turn that frame. Sizes, faces, holes and pockets are always
 # in the part's own frame, so they follow the part when it is rotated.
@@ -335,3 +355,65 @@ def divide(span, count, round_to = 1):
     remainder = span - base * count
     extra = int(remainder / round_to + 0.5)
     return [base + (round_to if i < extra else 0) for i in range(count)]
+
+def _name(part):
+    return part if type(part) == "string" else part.name
+
+def _direction(part, face):
+    """A face of `part` (followed to the end of the program) or a world direction."""
+    return (part, face) if type(face) == "string" else face
+
+def _reverse(direction):
+    if type(direction) == "tuple" and len(direction) == 2:
+        face = direction[1]
+        return (direction[0], face[0] + ("-" if face[1] == "+" else "+"))
+    return vec_scale(direction, -1)
+
+def expect_contact(part, target, face = None, tolerance = 0.1, name = None):
+    """`part` touches `target`, neither apart nor overlapping; with `face`
+    (a face of target), face to face against that face."""
+    label = name or "%s touches %s" % (_name(part), _name(target))
+    expect(label, terms = [(1, ("distance", part, target))], tolerance = tolerance,
+           hint = "Positive: move them together (on()); negative: they overlap, move them apart.")
+    if face != None:
+        expect(label + " on " + face, terms = [(1, ("contact_area", target, part, face))],
+               op = ">", tolerance = 0, unit = "mm²",
+               hint = "They do not lie face to face on that face; place with on(part, target, face=...).")
+
+def expect_gap(part, target, mm, tolerance = 0.1, name = None):
+    """A clearance of `mm` between `part` and `target`."""
+    expect(name or "%s is %s mm from %s" % (_name(part), mm, _name(target)),
+           terms = [(1, ("distance", part, target))], value = mm, tolerance = tolerance,
+           hint = "Move one part by the difference (on(..., gap=mm) sets it directly).")
+
+def expect_flush(part, target, face, tolerance = 0.1, name = None):
+    """`part` reaches exactly as far as `target`'s `face` (level with it)."""
+    d = _direction(target, face)
+    expect(name or "%s flush with %s %s" % (_name(part), _name(target), face),
+           terms = [(1, ("reach", part, d)), (-1, ("reach", target, d))], tolerance = tolerance,
+           hint = "Positive: part sticks out past the face; negative: it stops short. flush() aligns it.")
+
+def expect_symmetric(a, b, about, axis = "x", tolerance = 0.1, name = None):
+    """`a` and `b` mirror each other about the middle of `about` across its
+    own `axis` ("x", "y", "z") or a world direction: equally far from the
+    middle on opposite sides, and equally wide that way."""
+    label = name or "%s and %s symmetric about %s" % (_name(a), _name(b), _name(about))
+    d = _direction(about, axis + "+") if type(axis) == "string" else axis
+    m = _reverse(d)
+    expect(label, terms = [(0.5, ("reach", a, d)), (-0.5, ("reach", a, m)),
+                           (0.5, ("reach", b, d)), (-0.5, ("reach", b, m)),
+                           (-1, ("reach", about, d)), (1, ("reach", about, m))],
+           tolerance = tolerance,
+           hint = "The number is twice how far the pair's middle lies off the middle of `about`; center one part or move both.")
+    expect(label + " (width)", terms = [(1, ("reach", a, d)), (1, ("reach", a, m)),
+                                        (-1, ("reach", b, d)), (-1, ("reach", b, m))],
+           tolerance = tolerance, hint = "a is wider than b by this much across the axis.")
+
+def expect_inside(part, container, tolerance = 0.1, name = None):
+    """`part` lies within `container` (its box in its own frame)."""
+    label = name or "%s inside %s" % (_name(part), _name(container))
+    for face in ["x-", "x+", "y-", "y+", "z-", "z+"]:
+        d = (container, face)
+        expect("%s at %s" % (label, face), terms = [(1, ("reach", part, d)), (-1, ("reach", container, d))],
+               op = "<=", tolerance = tolerance,
+               hint = "The part sticks out of that face of the container by this much.")

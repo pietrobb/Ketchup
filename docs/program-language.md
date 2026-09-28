@@ -59,6 +59,7 @@ line and the cause and quotes the source.
 | `pocket(part, face, rect=(u0, v0, u1, v1), depth=, id=)` | a rectangular pocket; may run off the face edges |
 | `contact(a, b)` | where two parts touch: `axis`, `face_a`, `face_b`, `min`, `max`, or `None` |
 | `joint(a, b, kind=, fasteners=, fastener=, volume=, max_gap=, name=)` | a declared connection |
+| `expect(name, terms=, op=, value=, tolerance=, unit=, hint=)` | a condition on the final model: a sum of `reach`/`distance`/`contact_area` measures compared with a value; the library's `expect_contact`, `expect_gap`, `expect_flush`, `expect_symmetric` and `expect_inside` are built on it |
 
 Faces are `x-`, `x+`, `y-`, `y+`, `z-` and `z+` in the part's own frame. Face
 coordinates `(u, v)` are measured from the part's minimum corner: z faces use
@@ -80,6 +81,7 @@ added here, never in Rust (see `AGENTS.md`).
 | `joint_without_contact` | error | a joint connects parts that are further apart than its `max_gap` |
 | `param_out_of_range` | error | a parameter is outside its `min`/`max` |
 | `floating_part` | warning | a part touches nothing that rests on z = 0 |
+| `expectation_failed` | error | a stated condition (`expect*`) does not hold; the message gives the measured and the required value |
 
 Checks report; they never stop the program from being evaluated or built.
 
