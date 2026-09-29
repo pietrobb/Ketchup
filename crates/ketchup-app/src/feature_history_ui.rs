@@ -20,6 +20,7 @@ use ketchup_core::sketch::{
     SketchConstraintKind, SketchDiagnosticReport, SketchDiagnosticStatus, SketchEntity,
     SketchEntityId, SketchError,
 };
+use ketchup_core::tolerance::ROUNDING;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum FeatureHistoryPreviewKind {
@@ -381,7 +382,7 @@ impl KetchupApp {
                     .local_unit_normal()
                     .iter()
                     .zip(normal)
-                    .all(|(actual, expected)| (actual - expected).abs() <= 1.0e-9)
+                    .all(|(actual, expected)| (actual - expected).abs() <= ROUNDING)
             })
             .map(|attachment| attachment.reference().clone());
         let reference = references.next()?;

@@ -2,6 +2,7 @@
 
 use crate::{Ray, Vec3};
 use ketchup_core::document::{DocumentId, Snapshot, Transform};
+use ketchup_core::tolerance::ROUNDING;
 use std::{
     collections::BTreeSet,
     fmt,
@@ -10,7 +11,7 @@ use std::{
 
 pub const SPATIAL_INDEX_V1: &str = "ketchup.spatial-bvh.v1";
 const LEAF_CAPACITY: usize = 4;
-const RAY_EPSILON: f64 = 1.0e-12;
+const RAY_EPSILON: f64 = ROUNDING;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SnapshotBinding {

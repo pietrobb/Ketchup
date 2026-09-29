@@ -8,7 +8,7 @@ use crate::document::{
     InstancePathStep, OccurrenceId, Proposal, ProposalPrepareError, Snapshot, Transform,
 };
 use crate::exact_product::{ExactBRepGraphEdgeEvidence, ExactBodyPackage, ExactResultRegistry};
-use crate::tolerance::MAX_COORDINATE_MM;
+use crate::tolerance::{MAX_COORDINATE_MM, ROUNDING};
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -19,8 +19,8 @@ pub const ORTHOGRAPHIC_DRAWING_SCHEMA_V2: &str = "ketchup.orthographic-drawing.v
 pub const ORTHOGRAPHIC_LINEWORK_SCHEMA_V2: &str = "ketchup.orthographic-linework.v2";
 pub const DRAWING_SHEET_LAYOUT_SCHEMA_V1: &str = "ketchup.drawing-sheet-layout.v1";
 pub const DRAWING_SHEET_LAYOUT_SCHEMA_V2: &str = "ketchup.drawing-sheet-layout.v2";
-const VISIBILITY_EPSILON: f64 = 1.0e-12;
-const INTERSECTION_EPSILON: f64 = 1.0e-10;
+const VISIBILITY_EPSILON: f64 = ROUNDING;
+const INTERSECTION_EPSILON: f64 = ROUNDING;
 const MAX_DRAWING_INSTANCES: usize = 8_000;
 const MAX_DRAWING_TRIANGLES: usize = 100_000;
 const MAX_DRAWING_EDGES: usize = 300_000;
@@ -88,13 +88,13 @@ impl DrawingViewFrame {
             .any(|component| !component.is_finite())
             || axes
                 .iter()
-                .any(|axis| (length_squared(*axis) - 1.0).abs() > 1.0e-12)
-            || dot(horizontal, vertical).abs() > 1.0e-12
-            || dot(horizontal, depth).abs() > 1.0e-12
-            || dot(vertical, depth).abs() > 1.0e-12
+                .any(|axis| (length_squared(*axis) - 1.0).abs() > ROUNDING)
+            || dot(horizontal, vertical).abs() > ROUNDING
+            || dot(horizontal, depth).abs() > ROUNDING
+            || dot(vertical, depth).abs() > ROUNDING
             || subtract(cross(vertical, depth), horizontal)
                 .into_iter()
-                .any(|component| component.abs() > 1.0e-12)
+                .any(|component| component.abs() > ROUNDING)
         {
             return Err(DrawingError::InvalidView);
         }
@@ -2566,7 +2566,7 @@ fn project_instance_circles(
         })
         .filter_map(|(edge, radius_mm, center, axis)| {
             let world_axis = normalized(transform_vector(transform, axis))?;
-            if (dot(world_axis, depth).abs() - 1.0).abs() > 1.0e-9 {
+            if (dot(world_axis, depth).abs() - 1.0).abs() > ROUNDING {
                 return None;
             }
             let world_center = transform_point(transform, center);

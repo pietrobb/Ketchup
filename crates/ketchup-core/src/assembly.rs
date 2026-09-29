@@ -3,7 +3,9 @@ use crate::document::{
     Proposal, ProposalPrepareError, Snapshot, Transform,
 };
 use crate::exact_product::{BodySubshapeRef, ExactReferenceResolution, ExactResultRegistry};
-use crate::tolerance::MAX_COORDINATE_MM;
+use crate::tolerance::{
+    ACCUMULATED_ROUNDING, DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM, ROUNDING,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -97,7 +99,7 @@ impl PlanarFaceAttachment {
             && reference.expected_type == "planar_face"
             && local_origin_mm.into_iter().all(f64::is_finite)
             && local_unit_normal.into_iter().all(f64::is_finite)
-            && (normal_length_squared - 1.0).abs() <= 1.0e-12)
+            && (normal_length_squared - 1.0).abs() <= ROUNDING)
             .then_some(Self {
                 reference,
                 local_origin_mm,
@@ -182,7 +184,7 @@ impl AxialAttachment {
             && expected_type_matches
             && local_origin_mm.into_iter().all(f64::is_finite)
             && local_unit_direction.into_iter().all(f64::is_finite)
-            && (direction_length_squared - 1.0).abs() <= 1.0e-12)
+            && (direction_length_squared - 1.0).abs() <= ROUNDING)
             .then_some(Self {
                 reference,
                 kind,
@@ -519,8 +521,8 @@ impl Default for AssemblySolverPolicy {
     fn default() -> Self {
         Self {
             max_iterations: 32,
-            linear_tolerance_mm: 1.0e-7,
-            angular_tolerance_radians: 1.0e-9,
+            linear_tolerance_mm: DEFAULT_LINEAR_TOLERANCE_MM,
+            angular_tolerance_radians: ROUNDING,
             finite_difference_step: 1.0e-6,
             damping: 1.0e-12,
         }
@@ -1188,12 +1190,12 @@ impl RigidPose {
         };
         let rows_are_unit = rotation
             .iter()
-            .all(|row| (dot(*row, *row) - 1.0).abs() <= 1.0e-8);
-        let rows_are_orthogonal = dot(rotation[0], rotation[1]).abs() <= 1.0e-8
-            && dot(rotation[0], rotation[2]).abs() <= 1.0e-8
-            && dot(rotation[1], rotation[2]).abs() <= 1.0e-8;
+            .all(|row| (dot(*row, *row) - 1.0).abs() <= ACCUMULATED_ROUNDING);
+        let rows_are_orthogonal = dot(rotation[0], rotation[1]).abs() <= ACCUMULATED_ROUNDING
+            && dot(rotation[0], rotation[2]).abs() <= ACCUMULATED_ROUNDING
+            && dot(rotation[1], rotation[2]).abs() <= ACCUMULATED_ROUNDING;
         let determinant = dot(rotation[0], cross(rotation[1], rotation[2]));
-        (rows_are_unit && rows_are_orthogonal && (determinant - 1.0).abs() <= 1.0e-8)
+        (rows_are_unit && rows_are_orthogonal && (determinant - 1.0).abs() <= ACCUMULATED_ROUNDING)
             .then_some(pose)
     }
 
@@ -1362,7 +1364,7 @@ pub fn solve_rigid_assembly(
 
     let final_residual = residuals(&state, &mates)?;
     let final_jacobian = numerical_jacobian(&state, &mates, &variables, &final_residual, policy)?;
-    let rank = matrix_rank(&final_jacobian, 1.0e-8);
+    let rank = matrix_rank(&final_jacobian, ACCUMULATED_ROUNDING);
     let raw_remaining_dof = variables.len() * usize::from(RIGID_BODY_DEGREES_OF_FREEDOM) - rank;
     let maximum_residual = final_residual
         .iter()
@@ -1377,8 +1379,8 @@ pub fn solve_rigid_assembly(
                 .map(|axis| variable_index * 6 + axis)
                 .collect::<Vec<_>>();
             let local_jacobian = select_columns(&final_jacobian, &local_columns);
-            let local_remaining =
-                usize::from(RIGID_BODY_DEGREES_OF_FREEDOM) - matrix_rank(&local_jacobian, 1.0e-8);
+            let local_remaining = usize::from(RIGID_BODY_DEGREES_OF_FREEDOM)
+                - matrix_rank(&local_jacobian, ACCUMULATED_ROUNDING);
             (local_remaining == 1
                 && occurrence_has_bounded_axial_symmetry(
                     occurrence_id,
@@ -1414,7 +1416,8 @@ pub fn solve_rigid_assembly(
                 .collect::<Vec<_>>();
             let local_jacobian = select_columns(&final_jacobian, &local_columns);
             let raw_remaining = (usize::from(RIGID_BODY_DEGREES_OF_FREEDOM)
-                - matrix_rank(&local_jacobian, 1.0e-8)) as u8;
+                - matrix_rank(&local_jacobian, ACCUMULATED_ROUNDING))
+                as u8;
             raw_remaining.saturating_sub(u8::from(
                 rotationally_symmetric_occurrences.contains(instance_path),
             ))
@@ -1745,7 +1748,7 @@ fn redundant_mates(
         candidate.push(*mate);
         let baseline = residuals(state, &candidate)?;
         let jacobian = numerical_jacobian(state, &candidate, variables, &baseline, policy)?;
-        let candidate_rank = matrix_rank(&jacobian, 1.0e-8);
+        let candidate_rank = matrix_rank(&jacobian, ACCUMULATED_ROUNDING);
         if candidate_rank == rank {
             redundant.push(mate.id());
         } else {

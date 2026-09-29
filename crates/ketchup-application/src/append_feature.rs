@@ -374,7 +374,7 @@ pub(crate) fn plan_feature_kind(
                     || !matches!(
                         source.kind(),
                         FeatureKind::SpatialPath { segments }
-                            if is_valid_spatial_sweep_path(segments)
+                            if is_valid_spatial_sweep_path(segments, snapshot.tolerance().linear_mm())
                     )
                 {
                     return Err(assistant_planning_rejection(

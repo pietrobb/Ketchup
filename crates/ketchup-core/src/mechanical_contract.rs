@@ -4,7 +4,7 @@ use crate::assembly_joint::{
 };
 use crate::document::{DefinitionId, FeatureKind, OccurrenceId, Snapshot, Transform};
 use crate::sketch::{PadOperation, PadSpec};
-use crate::tolerance::MAX_COORDINATE_MM;
+use crate::tolerance::{APPROXIMATION, MAX_COORDINATE_MM, ROUNDING};
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -13,9 +13,9 @@ pub const MECHANICAL_CONDITION_SCHEMA_V1: &str = "ketchup.mechanical-condition.v
 
 const MAX_INTERFACE_AREA_MM2: f64 = 1.0e12;
 const MAX_CONDITION_TOLERANCE_MM: f64 = 1_000.0;
-const UNIT_NORMAL_EPSILON: f64 = 1.0e-9;
-const ORTHONORMAL_EPSILON: f64 = 1.0e-9;
-const FRAME_MATCH_EPSILON_MM: f64 = 1.0e-6;
+const UNIT_NORMAL_EPSILON: f64 = ROUNDING;
+const ORTHONORMAL_EPSILON: f64 = ROUNDING;
+const FRAME_MATCH_EPSILON_MM: f64 = APPROXIMATION;
 
 #[derive(
     Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
@@ -693,7 +693,7 @@ pub fn evaluate_mechanical_contract(
                     let a = world_frames[&first];
                     let b = world_frames[&second];
                     let cosine = dot(a.normal, b.normal);
-                    if cosine > -1.0 + 1.0e-6 {
+                    if cosine > -1.0 + APPROXIMATION {
                         violations.push(MechanicalViolation {
                             condition_id: Some(condition.id()),
                             interface_id: Some(second),
@@ -725,7 +725,7 @@ pub fn evaluate_mechanical_contract(
                     let base = world_frames[&supporting];
                     let resting = world_frames[&supported];
                     let cosine = dot(base.normal, resting.normal);
-                    if cosine > -1.0 + 1.0e-6 {
+                    if cosine > -1.0 + APPROXIMATION {
                         violations.push(MechanicalViolation {
                             condition_id: Some(condition.id()),
                             interface_id: Some(supported),

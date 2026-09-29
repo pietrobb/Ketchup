@@ -9,11 +9,12 @@
 //! the axis of each arc.
 
 use crate::model::{ProgramPathArc, ProgramPathSegment, ProgramProfileSegment};
+use ketchup_core::tolerance::{APPROXIMATION, ROUNDING};
 use std::f64::consts::TAU;
 
 /// The exact kernel's limits: joins must be tangent to within this angle
 /// (radians) and arc geometry must agree to within this many millimetres.
-const KERNEL_EPSILON: f64 = 1.0e-9;
+const KERNEL_EPSILON: f64 = ROUNDING;
 pub const MAX_PATH_SEGMENTS: usize = 64;
 
 type Vec3 = [f64; 3];
@@ -103,7 +104,7 @@ impl ProgramPathSegment {
 pub fn arc_through(start: Vec3, end: Vec3, through: Vec3) -> Result<ProgramPathArc, String> {
     let (a, b) = (sub(through, start), sub(end, start));
     let normal = unit(cross(a, b))
-        .filter(|_| length(cross(a, b)) > 1.0e-6 * length(a) * length(b))
+        .filter(|_| length(cross(a, b)) > APPROXIMATION * length(a) * length(b))
         .ok_or("the through point lies on the line from start to end; use a line")?;
     // Circumcentre of start, through, end.
     let (aa, bb) = (dot(a, a), dot(b, b));
@@ -129,14 +130,14 @@ pub fn arc_about(
     let normal = unit(normal).ok_or("the arc normal must be a non-zero direction")?;
     let (from, to) = (sub(start, center), sub(end, center));
     let (r_start, r_end) = (length(from), length(to));
-    if (r_start - r_end).abs() > KERNEL_EPSILON.max(1.0e-12 * r_start) {
+    if (r_start - r_end).abs() > KERNEL_EPSILON.max(ROUNDING * r_start) {
         return Err(format!(
             "start and end must lie equally far from the arc center ({r_start} mm vs {r_end} mm)"
         ));
     }
     for (point, radius) in [("start", from), ("end", to)] {
         let off_plane = dot(radius, normal);
-        if off_plane.abs() > KERNEL_EPSILON.max(1.0e-12 * r_start) {
+        if off_plane.abs() > KERNEL_EPSILON.max(ROUNDING * r_start) {
             return Err(format!(
                 "the arc {point} lies {off_plane} mm off the plane through the center square to the normal"
             ));
@@ -184,7 +185,7 @@ pub fn polyline(points: &[Vec3], bend_mm: f64) -> Result<Vec<ProgramPathSegment>
                 direction(points[index], points[index + 1]),
             );
             let turn = dot(a, b).clamp(-1.0, 1.0).acos();
-            if turn >= std::f64::consts::PI - 1.0e-6 {
+            if turn >= std::f64::consts::PI - APPROXIMATION {
                 return Err(format!(
                     "the path reverses at point {} {:?}; a sweep cannot turn back on itself",
                     index + 1,
@@ -248,7 +249,7 @@ pub fn validate(path: &[ProgramPathSegment]) -> Result<(), String> {
         ));
     }
     for (index, segment) in path.iter().enumerate() {
-        if segment.length() <= 1.0e-6 || segment.start_tangent().is_none() {
+        if segment.length() <= APPROXIMATION || segment.start_tangent().is_none() {
             return Err(format!("path segment {} has no length", index + 1));
         }
     }
@@ -283,7 +284,7 @@ pub fn validate(path: &[ProgramPathSegment]) -> Result<(), String> {
 #[must_use]
 pub fn start_frame(path: &[ProgramPathSegment]) -> (Vec3, Vec3, Vec3) {
     let tangent = path[0].start_tangent().expect("validated path");
-    let reference = if length(cross(tangent, [0.0, 0.0, 1.0])) <= 1.0e-9 {
+    let reference = if length(cross(tangent, [0.0, 0.0, 1.0])) <= ROUNDING {
         [0.0, 1.0, 0.0]
     } else {
         [0.0, 0.0, 1.0]

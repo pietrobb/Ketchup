@@ -24,6 +24,22 @@ pub const DEFAULT_LINEAR_TOLERANCE_MM: f64 = 1.0e-7;
 /// Default angular tolerance in radians; the same value as OCCT `Precision::Angular()`.
 pub const DEFAULT_ANGULAR_TOLERANCE_RAD: f64 = 1.0e-12;
 
+/// Numeric guard, not a model tolerance: the relative rounding allowed for a value
+/// computed in `f64`. Compare with `ROUNDING * magnitude`, the magnitude being the size of
+/// the operands (at least 1). It keeps divisions away from zero and absorbs rounding of
+/// computed angles, areas and cross products.
+pub const ROUNDING: f64 = 1.0e-9;
+
+/// Numeric guard for values that went through several computed steps: chained transforms,
+/// iterative solving, rank decisions on a solved Jacobian. Their error accumulates, so they
+/// agree to a looser bound than a single rounding.
+pub const ACCUMULATED_ROUNDING: f64 = 1.0e-8;
+
+/// Agreement allowed where a value is approximated rather than computed exactly: areas,
+/// volumes and bounding boxes the exact kernel measures, and curves flattened into lines.
+/// Absolute (mm, mm², mm³) for magnitudes up to 1; scale it by larger magnitudes.
+pub const APPROXIMATION: f64 = 1.0e-6;
+
 /// Deserializing re-checks the values, so a stored policy is valid like a constructed one.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "StoredTolerancePolicy")]
@@ -31,6 +47,9 @@ pub struct TolerancePolicy {
     linear_mm: f64,
     angular_rad: f64,
 }
+
+// Values are validated finite numbers, never NaN, so equality is total.
+impl Eq for TolerancePolicy {}
 
 #[derive(serde::Deserialize)]
 struct StoredTolerancePolicy {

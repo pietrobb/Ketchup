@@ -1,9 +1,10 @@
 use super::*;
+use ketchup_core::tolerance::DEFAULT_LINEAR_TOLERANCE_MM;
 
 pub(super) fn point_in_frame(point: Vec3, frame: WorkplaneFrame) -> bool {
     let origin = Vec3::new(frame.origin_mm[0], frame.origin_mm[1], frame.origin_mm[2]);
     let normal = Vec3::new(frame.normal[0], frame.normal[1], frame.normal[2]);
-    dot(point - origin, normal).abs() <= 1.0e-7
+    dot(point - origin, normal).abs() <= DEFAULT_LINEAR_TOLERANCE_MM
 }
 
 pub(super) fn local_point(frame: WorkplaneFrame, point: Vec3) -> Vec3 {

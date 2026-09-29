@@ -1,8 +1,8 @@
 use crate::graph::DerivedIdentity;
-use crate::tolerance::{InvalidTolerance, MAX_COORDINATE_MM, TolerancePolicy};
+use crate::tolerance::{InvalidTolerance, MAX_COORDINATE_MM, ROUNDING, TolerancePolicy};
 use std::fmt;
 
-const ORTHONORMAL_EPSILON: f64 = 1.0e-10;
+const ORTHONORMAL_EPSILON: f64 = ROUNDING;
 
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Aabb {

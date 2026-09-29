@@ -2,6 +2,7 @@
 use crate::mesh_projection::{CanonicalPlanarProfileMesh, canonical_profile_feature_mesh};
 use ketchup_core::document::{DefinitionId, FeatureKind, Snapshot};
 use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
+use ketchup_core::tolerance::ROUNDING;
 use std::collections::BTreeMap;
 
 pub type SurfaceMesh = (Vec<[f64; 3]>, Vec<[u32; 3]>);
@@ -59,7 +60,7 @@ pub fn extrude_profile_surface(
         u[0] * v[1] - u[1] * v[0],
     ];
     let direction: f64 = normal.iter().zip(offset).map(|(n, d)| n * d).sum();
-    if direction.abs() <= 1.0e-12 {
+    if direction.abs() <= ROUNDING {
         return None;
     }
     let mut solid = positions.clone();

@@ -16,7 +16,7 @@ use crate::model::{
     ProgramMirror, ProgramModel, ProgramOperation, ProgramPartBody, ProgramPathSegment,
     ProgramProfileSegment, ProgramShell, profile_bounds,
 };
-use ketchup_core::tolerance::MAX_COORDINATE_MM;
+use ketchup_core::tolerance::{APPROXIMATION, MAX_COORDINATE_MM};
 use serde::Serialize;
 use starlark::environment::{FrozenModule, Globals, GlobalsBuilder, LibraryExtension, Module};
 use starlark::eval::Evaluator;
@@ -376,7 +376,7 @@ fn profile_arc<'v>(
         (start[0] - c[0]).hypot(start[1] - c[1]),
         (end[0] - c[0]).hypot(end[1] - c[1]),
     );
-    if (r_start - r_end).abs() > TOLERANCE_MM.max(1.0e-6 * r_start) {
+    if (r_start - r_end).abs() > TOLERANCE_MM.max(APPROXIMATION * r_start) {
         anyhow::bail!(
             "start and end must lie equally far from the arc center ({r_start} mm vs {r_end} mm)"
         );

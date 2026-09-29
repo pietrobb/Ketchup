@@ -29,7 +29,7 @@ use ketchup_core::graph::sha256_hex;
 use ketchup_core::import::{
     MAX_STEP_MESH_TRIANGLES, MAX_STEP_SOURCE_BYTES, StepImportMesh, StepMeshTriangle,
 };
-use ketchup_core::tolerance::MAX_COORDINATE_MM;
+use ketchup_core::tolerance::{APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM};
 use ketchup_core::topology::{
     TopologicalElementRef, TopologicalReferenceStability, topological_edge_provenance_tokens,
 };
@@ -2027,7 +2027,7 @@ fn transform_named_output(
         z: matrix[8] * point.x + matrix[9] * point.y + matrix[10] * point.z + matrix[11],
     };
     let close = |left: f64, right: f64| {
-        (left - right).abs() <= 1.0e-7 * left.abs().max(right.abs()).max(1.0)
+        (left - right).abs() <= DEFAULT_LINEAR_TOLERANCE_MM * left.abs().max(right.abs()).max(1.0)
     };
     let same_point = |left: Point3, right: Point3| {
         close(left.x, right.x) && close(left.y, right.y) && close(left.z, right.z)
@@ -2139,7 +2139,7 @@ fn exact_brep_weldment_joint(
 ) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
     let input_relation = backend.query_body_pair(&first.body, &second.body, 1.0e-7)?;
     if input_relation.relation != ExactPairRelation::Penetrating
-        || input_relation.common_volume_mm3 <= 1.0e-9
+        || input_relation.common_volume_mm3 <= APPROXIMATION
     {
         return Err(exact_brep_graph_error(
             graph,
@@ -2718,7 +2718,7 @@ fn exact_brep_named_circle_body(
             + (point.y - frame[1]) * direction[1]
             + (point.z - frame[2]) * direction[2]
     };
-    let tolerance = 1.0e-6 * interval.length_mm().max(1.0);
+    let tolerance = APPROXIMATION * interval.length_mm().max(1.0);
     let faces = &output.body.topology.faces;
     let mut names = vec![String::new(); faces.len()];
     let mut counts = [0_usize; 3];

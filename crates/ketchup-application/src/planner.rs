@@ -51,6 +51,7 @@ use ketchup_core::joinery::{
 use ketchup_core::sketch::{
     PadOperation, PadProfile, PadSpec, SketchConstraintId, SketchEntity, WorkplaneSupport,
 };
+use ketchup_core::tolerance::ROUNDING;
 use ketchup_core::topology::TopologicalElementKind;
 use ketchup_interaction::Vec3;
 use ketchup_program::model::{Part as ProgramPart, ProgramPartBody};
@@ -866,7 +867,7 @@ fn reject_colliding_physical_dowel_hole(
             point_on_segment(closest_existing, hole.entry_local_mm, proposed_end);
         let closest_existing = point_on_segment(closest_proposed, existing_start, existing_end);
         if squared_distance(closest_proposed, closest_existing)
-            < (proposed_radius + existing_radius).powi(2) - 1.0e-12
+            < (proposed_radius + existing_radius).powi(2) - ROUNDING
         {
             return Err(assistant_planning_rejection(
                 "planning.physical_dowel_hole_collision",
@@ -1212,14 +1213,14 @@ fn transform_axis_to_world(
             || maximum <= f64::EPSILON
             || squared_lengths
                 .into_iter()
-                .any(|length| (length - maximum).abs() > maximum * 1.0e-9)
+                .any(|length| (length - maximum).abs() > maximum * ROUNDING)
             || [(0, 1), (0, 2), (1, 2)].into_iter().any(|(left, right)| {
                 let dot = columns[left]
                     .iter()
                     .zip(columns[right])
                     .map(|(left, right)| left * right)
                     .sum::<f64>();
-                dot.abs() > maximum * 1.0e-9
+                dot.abs() > maximum * ROUNDING
             })
         {
             return None;
@@ -2110,7 +2111,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                 appended_exact_features.push((definition_id, body_feature_id));
             }
             AssistantCadEditOperation::CreateSpatialPath { name, segments } => {
-                let path_segments = validated_spatial_path_segments(segments).map_err(|error| {
+                let path_segments = validated_spatial_path_segments(segments, snapshot.tolerance().linear_mm()).map_err(|error| {
                     assistant_planning_rejection(
                         "planning.cad_spatial_path_invalid",
                         operation_name,

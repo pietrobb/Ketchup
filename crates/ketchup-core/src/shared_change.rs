@@ -27,6 +27,7 @@ use crate::feature_history::{
     BodyHistoryMutationRequest, BodyParameterEditRequest, prepare_body_history_mutation,
     prepare_body_parameter_edit, prepare_dependency_staging_body_parameter_edit,
 };
+use crate::tolerance::ROUNDING;
 use std::fmt;
 use std::sync::Arc;
 
@@ -599,7 +600,7 @@ fn transforms_nearly_equal(left: Transform, right: Transform) -> bool {
         .zip(right.matrix())
         .all(|(left, right)| {
             let scale = left.abs().max(right.abs()).max(1.0);
-            (left - right).abs() <= scale * 1.0e-10
+            (left - right).abs() <= scale * ROUNDING
         })
 }
 

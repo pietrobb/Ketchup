@@ -1,3 +1,4 @@
+use crate::tolerance::ROUNDING;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -539,7 +540,7 @@ impl FeaModel {
             self.nodes[nodes[0]].position_mm,
         );
         let length = norm(delta);
-        (length > 1.0e-12).then(|| (length, scale3(delta, 1.0 / length)))
+        (length > ROUNDING).then(|| (length, scale3(delta, 1.0 / length)))
     }
 
     fn tetrahedron_geometry(&self, nodes: [usize; 4]) -> Option<(f64, [[f64; 3]; 4])> {
@@ -739,7 +740,7 @@ impl FeaModel {
                 maximum[axis] = maximum[axis].max(node.position_mm[axis]);
             }
         }
-        norm(sub3(maximum, minimum)).max(1.0e-12)
+        norm(sub3(maximum, minimum)).max(ROUNDING)
     }
 
     fn bounds(&self) -> ([f64; 3], [f64; 3]) {
@@ -1341,7 +1342,7 @@ fn same_geometric_moments(left: &GeometricMoments, right: &GeometricMoments) -> 
 }
 
 fn near_relative(left: f64, right: f64) -> bool {
-    (left - right).abs() <= 1.0e-9 * left.abs().max(right.abs()).max(1.0)
+    (left - right).abs() <= ROUNDING * left.abs().max(right.abs()).max(1.0)
 }
 
 fn relative_change(previous: f64, current: f64) -> f64 {
@@ -1349,7 +1350,7 @@ fn relative_change(previous: f64, current: f64) -> f64 {
 }
 
 fn near_bounds(left: ([f64; 3], [f64; 3]), right: ([f64; 3], [f64; 3])) -> bool {
-    near3(left.0, right.0, 1.0e-9) && near3(left.1, right.1, 1.0e-9)
+    near3(left.0, right.0, ROUNDING) && near3(left.1, right.1, ROUNDING)
 }
 
 fn near3(left: [f64; 3], right: [f64; 3], tolerance: f64) -> bool {

@@ -4,7 +4,7 @@ use crate::document::{
 };
 use crate::mechanical_coupling::{AssemblyMotionCoupling, AssemblyMotionCouplingId};
 use crate::prismatic::Aabb;
-use crate::tolerance::MAX_COORDINATE_MM;
+use crate::tolerance::{MAX_COORDINATE_MM, ROUNDING};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -14,7 +14,7 @@ pub const MAX_ASSEMBLY_MOTION_SAMPLE_INTERVALS: u32 = 10_000;
 pub const MAX_ASSEMBLY_MOTION_CLEARANCE_PAIR_SAMPLES: usize = 1_000_000;
 
 const MAX_ANGULAR_POSITION_DEGREES: f64 = 360_000.0;
-const MIN_AXIS_DIRECTION_LENGTH: f64 = 1.0e-12;
+const MIN_AXIS_DIRECTION_LENGTH: f64 = ROUNDING;
 
 #[derive(
     Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
@@ -75,7 +75,7 @@ impl AssemblyJointAxis {
                 .pivot_in_parent_mm
                 .iter()
                 .all(|value| value.is_finite() && value.abs() <= MAX_COORDINATE_MM)
-            && (squared_length - 1.0).abs() <= 1.0e-12
+            && (squared_length - 1.0).abs() <= ROUNDING
     }
 }
 
@@ -1916,7 +1916,7 @@ fn insert_coupled_position(
 
 fn coupled_positions_equal(left: f64, right: f64) -> bool {
     let scale = left.abs().max(right.abs()).max(1.0);
-    (left - right).abs() <= 1.0e-10 * scale
+    (left - right).abs() <= ROUNDING * scale
 }
 
 fn remaining_dof_joint_ids(
@@ -2123,7 +2123,7 @@ fn same_linear_transform(start: Transform, end: Transform) -> bool {
     LINEAR_INDICES.into_iter().all(|index| {
         let left = start.matrix()[index];
         let right = end.matrix()[index];
-        (left - right).abs() <= 1.0e-12 * left.abs().max(right.abs()).max(1.0)
+        (left - right).abs() <= ROUNDING * left.abs().max(right.abs()).max(1.0)
     })
 }
 
@@ -2165,7 +2165,7 @@ fn continuous_translational_aabb_clearance(
         }
     }
     breakpoints.sort_by(f64::total_cmp);
-    breakpoints.dedup_by(|left, right| (*left - *right).abs() <= 1.0e-12);
+    breakpoints.dedup_by(|left, right| (*left - *right).abs() <= ROUNDING);
 
     let mut minimum_squared = f64::INFINITY;
     let mut minimum_t = 0.0;
@@ -2273,7 +2273,7 @@ pub(crate) fn transforms_equivalent(left: Transform, right: Transform) -> bool {
         .zip(right.matrix())
         .all(|(left, right)| {
             let scale = left.abs().max(right.abs()).max(1.0);
-            (left - right).abs() <= 1.0e-12 * scale
+            (left - right).abs() <= ROUNDING * scale
         })
 }
 

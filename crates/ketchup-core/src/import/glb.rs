@@ -1,4 +1,4 @@
-use crate::tolerance::MAX_COORDINATE_MM;
+use crate::tolerance::{APPROXIMATION, MAX_COORDINATE_MM};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -1105,7 +1105,7 @@ fn trs_matrix(
     }
     let [x, y, z, w] = quaternion;
     let norm = x * x + y * y + z * z + w * w;
-    if !norm.is_finite() || (norm - 1.0).abs() > 1.0e-6 {
+    if !norm.is_finite() || (norm - 1.0).abs() > APPROXIMATION {
         return Err(GlbImportError::InvalidTransform);
     }
     let rotation = [

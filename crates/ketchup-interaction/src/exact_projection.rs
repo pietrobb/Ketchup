@@ -11,6 +11,7 @@ use ketchup_core::document::{
     Snapshot, Transform,
 };
 use ketchup_core::exact_product::{AssemblySelectionTarget, ExactBodyPackage, ExactResultRegistry};
+use ketchup_core::tolerance::ROUNDING;
 use ketchup_core::topology::{
     TopologicalElementKind, TopologicalElementRef, TopologicalReferenceQuarantineReason,
     TopologicalReferenceResolution,
@@ -19,7 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
-const RAY_EPSILON: f64 = 1.0e-12;
+const RAY_EPSILON: f64 = ROUNDING;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TopologicalPickLocator {

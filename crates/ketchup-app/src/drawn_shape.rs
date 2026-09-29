@@ -8,9 +8,10 @@
 //! The drawn shape is used up in the same Undo step.
 use super::*;
 use ketchup_core::document::{Occurrence, RuleProgramSource};
+use ketchup_core::tolerance::{APPROXIMATION, ROUNDING};
 
 /// Distance within which the drawn shape counts as lying on a face.
-const ON_FACE_MM: f64 = 1.0e-6;
+const ON_FACE_MM: f64 = APPROXIMATION;
 
 /// Distance within which a tessellated face counts as lying in the drawing's
 /// plane.
@@ -308,7 +309,7 @@ impl KetchupApp {
                 (["z+", "z-"], 2, 0, 1),
             ] {
                 let cosine = dot(drawn_normal, axes[normal_axis]);
-                if cosine.abs() < 1.0 - 1.0e-9 {
+                if cosine.abs() < 1.0 - ROUNDING {
                     continue;
                 }
                 for (face, outward, level) in [
@@ -495,11 +496,11 @@ impl KetchupApp {
                 let [a, b, c] = [a?, b?, c?];
                 let normal = cross3(sub3(b, a), sub3(c, a));
                 let length = dot3(normal, normal).sqrt();
-                if length < 1.0e-12 {
+                if length < ROUNDING {
                     return None;
                 }
                 let cosine = dot3(normal, axes[2]) / length;
-                if cosine.abs() < 1.0 - 1.0e-6
+                if cosine.abs() < 1.0 - APPROXIMATION
                     || [a, b, c]
                         .iter()
                         .any(|p| dot3(sub3(*p, origin), axes[2]).abs() > PLANE_MM)

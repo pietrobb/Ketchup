@@ -1,4 +1,5 @@
 use super::{Transform, Vec3, cross, dot, vector_length};
+use ketchup_core::tolerance::DEFAULT_LINEAR_TOLERANCE_MM;
 
 /// Represent coplanar world points in a rigid local XY frame, without flattening them.
 pub(super) fn planar_points(points: &[Vec3]) -> Option<(Transform, Vec<Vec3>)> {
@@ -12,7 +13,7 @@ pub(super) fn planar_points(points: &[Vec3]) -> Option<(Transform, Vec<Vec3>)> {
     }
     let (x, y, normal) = if points
         .iter()
-        .all(|point| (point.z - origin.z).abs() <= 1.0e-7)
+        .all(|point| (point.z - origin.z).abs() <= DEFAULT_LINEAR_TOLERANCE_MM)
     {
         (
             Vec3::new(1.0, 0.0, 0.0),
@@ -28,7 +29,7 @@ pub(super) fn planar_points(points: &[Vec3]) -> Option<(Transform, Vec<Vec3>)> {
         let normal = points
             .iter()
             .map(|point| cross(x, *point - origin))
-            .find(|normal| vector_length(*normal) > 1.0e-7)
+            .find(|normal| vector_length(*normal) > DEFAULT_LINEAR_TOLERANCE_MM)
             .unwrap_or_else(|| {
                 let reference = if x.x.abs() < 0.9 {
                     Vec3::new(1.0, 0.0, 0.0)
@@ -51,7 +52,7 @@ pub(super) fn planar_points(points: &[Vec3]) -> Option<(Transform, Vec<Vec3>)> {
         .map(|point| {
             let delta = *point - origin;
             let distance = dot(delta, normal);
-            (distance.is_finite() && distance.abs() <= 1.0e-7)
+            (distance.is_finite() && distance.abs() <= DEFAULT_LINEAR_TOLERANCE_MM)
                 .then(|| Vec3::new(dot(delta, x), dot(delta, y), 0.0))
         })
         .collect::<Option<Vec<_>>>()?;

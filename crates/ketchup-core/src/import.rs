@@ -1,4 +1,4 @@
-use crate::tolerance::MAX_COORDINATE_MM;
+use crate::tolerance::{APPROXIMATION, MAX_COORDINATE_MM, ROUNDING};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
@@ -716,7 +716,7 @@ fn exact_body_evidence_valid(evidence: &StepImportEvidence) -> bool {
             BodyKind::Surface => {
                 evidence.solid_count == 0
                     && evidence.volume_mm3.is_finite()
-                    && evidence.volume_mm3.abs() <= 1.0e-12
+                    && evidence.volume_mm3.abs() <= APPROXIMATION
             }
         };
     !evidence.result_fingerprint.is_empty()
@@ -1045,8 +1045,8 @@ const MAX_STL_ASCII_LINES: usize = (MAX_STL_TRIANGLES * MAX_STL_ASCII_LINES_PER_
 pub const MAX_STL_SOURCE_BYTES: u64 =
     MAX_STL_ASCII_LINES as u64 * (MAX_STL_ASCII_LINE_BYTES as u64 + 2);
 const MAX_STL_VERTICES: usize = 100_000;
-const STL_AREA_EPSILON: f64 = 1.0e-18;
-const STL_VOLUME_EPSILON: f64 = 1.0e-12;
+const STL_AREA_EPSILON: f64 = ROUNDING * ROUNDING;
+const STL_VOLUME_EPSILON: f64 = APPROXIMATION;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParsedStlMesh {

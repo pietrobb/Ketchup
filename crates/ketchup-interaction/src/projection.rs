@@ -5,6 +5,7 @@ use ketchup_core::document::{
     ProfileSegment, SceneOccurrence, SceneQueryBudgetExceeded, Snapshot, Transform,
 };
 use ketchup_core::sketch::{PadOperation, PadProfile, PadSpec};
+use ketchup_core::tolerance::ROUNDING;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -431,7 +432,7 @@ fn segment_profile_bounds(segments: &[ProfileSegment]) -> Option<(f64, f64, f64,
         min_y = min_y.min(point[1]);
         max_y = max_y.max(point[1]);
     }
-    const MINIMUM_PROXY_SPAN_MM: f64 = 1.0e-9;
+    const MINIMUM_PROXY_SPAN_MM: f64 = ROUNDING;
     let mut width = max_x - min_x;
     let mut depth = max_y - min_y;
     if width == 0.0 && depth > 0.0 {

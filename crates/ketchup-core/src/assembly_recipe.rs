@@ -9,6 +9,7 @@ use crate::sketch::{
     FeatureExtent, PadOperation, PadProfile, PadSpec, PrincipalPlane, SketchEntity, WorkplaneFrame,
     WorkplaneSupport,
 };
+use crate::tolerance::{ACCUMULATED_ROUNDING, ROUNDING};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -592,7 +593,7 @@ pub fn compile_assembly_recipe_patch(
                 parameter: parameter.clone(),
             }
         })?;
-        if value <= 1.0e-9 {
+        if value <= ROUNDING {
             return Err(AssemblyRecipeCompileError::InvalidValue(node.key.clone()));
         }
         let anchor_offset = match anchor {
@@ -963,7 +964,7 @@ fn collect_physical_hole_updates(
         frame.origin_mm[axis] + expected.entry_local_mm[axis] - observed_entry[axis]
     });
     for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
-        if (desired_origin[axis] - frame.origin_mm[axis]).abs() <= 1.0e-8 {
+        if (desired_origin[axis] - frame.origin_mm[axis]).abs() <= ACCUMULATED_ROUNDING {
             continue;
         }
         let target = FeatureParameterTarget::new(
@@ -990,7 +991,7 @@ fn rebind_joint_face(face: &mut DowelJointFace, bounds: SupportedPartBounds) -> 
     } else {
         face.bounds_max_local_mm[axis]
     };
-    if (old_coordinate - expected_old).abs() > 1.0e-8 {
+    if (old_coordinate - expected_old).abs() > ACCUMULATED_ROUNDING {
         return None;
     }
     let new_coordinate = if face.inward_unit_local[axis] > 0.0 {
@@ -1005,9 +1006,9 @@ fn rebind_joint_face(face: &mut DowelJointFace, bounds: SupportedPartBounds) -> 
 }
 
 fn inward_axis(vector: [f64; 3]) -> Option<usize> {
-    let axis = (0..3).find(|axis| (vector[*axis].abs() - 1.0).abs() <= 1.0e-8)?;
+    let axis = (0..3).find(|axis| (vector[*axis].abs() - 1.0).abs() <= ACCUMULATED_ROUNDING)?;
     (0..3)
-        .all(|other| other == axis || vector[other].abs() <= 1.0e-8)
+        .all(|other| other == axis || vector[other].abs() <= ACCUMULATED_ROUNDING)
         .then_some(axis)
 }
 
@@ -1108,7 +1109,7 @@ fn solve_extend_until_contact(
         .map_err(|_| AssemblyRecipeCompileError::PartChanged(target_ref.part.clone()))?;
     let moving_normal = transform_vector(moving_resolved.world_transform, moving_face.normal_local);
     let target_normal = transform_vector(target_resolved.world_transform, target_face.normal_local);
-    if (dot(moving_normal, target_normal) + 1.0).abs() > 1.0e-8
+    if (dot(moving_normal, target_normal) + 1.0).abs() > ACCUMULATED_ROUNDING
         || !faces_overlap(
             moving_resolved.world_transform,
             moving_bounds,
@@ -1138,7 +1139,7 @@ fn solve_extend_until_contact(
         (false, RecipeDimensionAnchor::Maximum) => -1.0,
     };
     if coefficient == 0.0 {
-        if displacement.abs() <= 1.0e-8 {
+        if displacement.abs() <= ACCUMULATED_ROUNDING {
             return snapshot
                 .feature_parameter_value(parameter_target)
                 .ok_or_else(|| AssemblyRecipeCompileError::UnsupportedParameter {
@@ -1157,7 +1158,7 @@ fn solve_extend_until_contact(
             parameter: parameter.clone(),
         })?;
     let value = current + displacement / coefficient;
-    if !value.is_finite() || value <= 1.0e-9 {
+    if !value.is_finite() || value <= ROUNDING {
         return Err(AssemblyRecipeCompileError::ContactUnreachable(
             relation_key.clone(),
         ));
@@ -1337,7 +1338,9 @@ fn faces_overlap(
     if target_world_axes.iter().any(|target_axis| {
         moving_world_axes
             .iter()
-            .filter(|moving_axis| dot(**moving_axis, *target_axis).abs() >= 1.0 - 1.0e-8)
+            .filter(|moving_axis| {
+                dot(**moving_axis, *target_axis).abs() >= 1.0 - ACCUMULATED_ROUNDING
+            })
             .count()
             != 1
     }) {
@@ -1351,7 +1354,7 @@ fn faces_overlap(
         let moving_interval = projection_interval(moving_corners, axis);
         let target_interval = projection_interval(target_corners, axis);
         moving_interval[1].min(target_interval[1]) - moving_interval[0].max(target_interval[0])
-            > 1.0e-8
+            > ACCUMULATED_ROUNDING
     })
 }
 
@@ -1447,7 +1450,8 @@ fn supported_parameter_axis(
         {
             let (_, frame) = supported_rectangle_sketch(snapshot, spec.profile.feature_id())?;
             let direction = spec.direction.vector(frame.normal)?;
-            ((dot(direction, frame.normal).abs() - 1.0).abs() <= 1.0e-8).then_some(direction)
+            ((dot(direction, frame.normal).abs() - 1.0).abs() <= ACCUMULATED_ROUNDING)
+                .then_some(direction)
         }
         _ => None,
     }

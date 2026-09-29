@@ -18,6 +18,7 @@ use ketchup_core::sketch::{
     FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec, SketchSpec, WorkplaneSpec,
     WorkplaneSupport,
 };
+use ketchup_core::tolerance::ROUNDING;
 use ketchup_interaction::Vec3;
 
 fn revolve_axis_in_workplane(
@@ -43,8 +44,8 @@ fn revolve_axis_in_workplane(
     };
     let direction_length = dot(direction, direction).sqrt();
     let origin_scale = relative.into_iter().map(f64::abs).fold(1.0_f64, f64::max);
-    if dot(relative, frame.normal).abs() > 1.0e-9 * origin_scale
-        || dot(direction, frame.normal).abs() > 1.0e-9 * direction_length
+    if dot(relative, frame.normal).abs() > ROUNDING * origin_scale
+        || dot(direction, frame.normal).abs() > ROUNDING * direction_length
     {
         return Err(assistant_planning_rejection(
             "planning.cad_revolve_axis_off_workplane",

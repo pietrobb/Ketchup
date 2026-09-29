@@ -1,4 +1,7 @@
 use super::*;
+use ketchup_core::tolerance::{
+    ACCUMULATED_ROUNDING, APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, ROUNDING,
+};
 
 #[derive(Default)]
 pub(super) struct SceneSnapGeometry {
@@ -85,7 +88,7 @@ impl SceneSnapGeometry {
         let mut remaining = length * 0.5;
         for segment in points.windows(2).filter(|_| endpoints) {
             let length = segment[0].distance(segment[1]);
-            if remaining <= length && length > 1e-12 {
+            if remaining <= length && length > ROUNDING {
                 let mut midpoint = reference.clone();
                 if let ElementId::Snap { index, .. } = &mut midpoint.element {
                     *index += 2;
@@ -123,8 +126,9 @@ impl SceneSnapGeometry {
                     && faces.is_subset(&e.adjacent_face_ordinals.iter().copied().collect())
                     && edge.iter().all(|i| {
                         (0..3).all(|axis| {
-                            positions[*i as usize][axis] >= e.bounds_mm[0][axis] - 1e-6
-                                && positions[*i as usize][axis] <= e.bounds_mm[1][axis] + 1e-6
+                            positions[*i as usize][axis] >= e.bounds_mm[0][axis] - APPROXIMATION
+                                && positions[*i as usize][axis]
+                                    <= e.bounds_mm[1][axis] + APPROXIMATION
                         })
                     })
             });
@@ -166,7 +170,7 @@ impl SceneSnapGeometry {
                     .collect();
                 let linear = points
                     .windows(3)
-                    .all(|p| cross(p[1] - p[0], p[2] - p[1]).length() <= 1e-8);
+                    .all(|p| cross(p[1] - p[0], p[2] - p[1]).length() <= ACCUMULATED_ROUNDING);
                 self.edge(&edge_ref, points, !closed && linear);
             }
         }
@@ -516,7 +520,7 @@ impl KetchupApp {
                         && candidate == reference
                         && centers.iter().any(|(path, selected_center)| {
                             **path == reference.instance_path
-                                && (*center - *selected_center).length() <= 1e-6
+                                && (*center - *selected_center).length() <= APPROXIMATION
                         })
                 })
         };
@@ -617,7 +621,7 @@ impl KetchupApp {
         let mut candidates = Vec::new();
         let mut add = |reference: &SelectionId, kind: SnapKind, point: Vec3| {
             if line_axis.is_some_and(|(start, axis)| {
-                cross(point - start, axis_direction(axis)).length() > 1e-7
+                cross(point - start, axis_direction(axis)).length() > DEFAULT_LINEAR_TOLERANCE_MM
             }) || move_drag
                 .is_some_and(|drag| self.move_drag_applies_to_path(drag, &reference.instance_path))
             {
@@ -667,7 +671,7 @@ impl KetchupApp {
                 let b = dot(edge, ray.direction);
                 let a = dot(edge, edge);
                 let denominator = a - b * b;
-                if denominator <= 1e-12 {
+                if denominator <= ROUNDING {
                     continue;
                 }
                 let t = if self.projection_mode == ProjectionMode::Perspective {
@@ -706,11 +710,14 @@ impl KetchupApp {
             for (reference, center, x, y, radius) in &geometry.circles {
                 let xx = dot(*x, *x);
                 let yy = dot(*y, *y);
-                if (xx - yy).abs() > 1e-8 || dot(*x, *y).abs() > 1e-8 || xx <= 1e-12 {
+                if (xx - yy).abs() > ACCUMULATED_ROUNDING
+                    || dot(*x, *y).abs() > ACCUMULATED_ROUNDING
+                    || xx <= ROUNDING
+                {
                     continue;
                 }
                 let delta = anchor - *center;
-                if dot(delta, cross(*x, *y)).abs() > 1e-7 {
+                if dot(delta, cross(*x, *y)).abs() > DEFAULT_LINEAR_TOLERANCE_MM {
                     continue;
                 }
                 let local = Vec3::new(dot(delta, *x) / xx, dot(delta, *y) / yy, 0.0);
@@ -763,7 +770,7 @@ impl KetchupApp {
         .filter_map(|(axis, d)| {
             let b = dot(d, ray.direction);
             let denominator = 1.0 - b * b;
-            if denominator <= 1e-8 {
+            if denominator <= ACCUMULATED_ROUNDING {
                 return None;
             }
             let t = (dot(d, ray.origin) - b * dot(ray.direction, ray.origin)) / denominator;

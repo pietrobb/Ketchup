@@ -5,6 +5,7 @@
 use super::*;
 use ketchup_core::document::InstancePath;
 use ketchup_core::exact_product::{ExactBodyPackage, ExactFaceRole};
+use ketchup_core::tolerance::{APPROXIMATION, ROUNDING};
 use ketchup_core::topology::{TopologicalElementKind, TopologicalElementRef};
 use ketchup_program::{frame, model::Part};
 
@@ -39,7 +40,7 @@ fn face_sample(package: &ExactBodyPackage, ordinal: u32) -> Option<([f64; 3], [f
             let centroid = std::array::from_fn(|i| (a[i] + b[i] + c[i]) / 3.0);
             (frame::dot(n, n).sqrt(), centroid, n)
         })
-        .filter(|(area, ..)| *area > 1e-12)
+        .filter(|(area, ..)| *area > ROUNDING)
         .max_by(|a, b| a.0.total_cmp(&b.0))
         .map(|(area, centroid, n)| (centroid, n.map(|value| value / area)))
 }
@@ -59,7 +60,7 @@ fn describe_face(part: &Part, package: &ExactBodyPackage, ordinal: u32) -> Optio
     let (point, normal) = face_sample(package, ordinal)?;
     let normal_world = frame::apply(&part.rotation, normal);
     let on_face = (0..3)
-        .find(|axis| normal[*axis].abs() > 1.0 - 1e-6)
+        .find(|axis| normal[*axis].abs() > 1.0 - APPROXIMATION)
         .map_or_else(
             || json!(round(normal_world)),
             |axis| {

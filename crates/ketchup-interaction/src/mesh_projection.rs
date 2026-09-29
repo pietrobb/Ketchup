@@ -9,10 +9,11 @@ use ketchup_core::document::{
     DefinitionId, FeatureId, FeatureKind, InstancePath, ProfileSegment, Snapshot, Transform,
 };
 use ketchup_core::sketch::SolvedSketchRegionProfile;
+use ketchup_core::tolerance::{ACCUMULATED_ROUNDING, ROUNDING};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-const NORMAL_EPSILON: f64 = 1.0e-12;
+const NORMAL_EPSILON: f64 = ROUNDING;
 
 pub type CanonicalPlanarProfileMesh = (FeatureId, Vec<[f64; 3]>, Vec<[u32; 3]>);
 
@@ -440,8 +441,8 @@ fn sample_arc(
     let radius = start_radius[0].hypot(start_radius[1]);
     let end_length = end_radius[0].hypot(end_radius[1]);
     if !radius.is_finite()
-        || radius <= 1.0e-9
-        || (radius - end_length).abs() > 1.0e-8 * radius.max(end_length).max(1.0)
+        || radius <= ROUNDING
+        || (radius - end_length).abs() > ACCUMULATED_ROUNDING * radius.max(end_length).max(1.0)
     {
         return None;
     }
@@ -457,7 +458,7 @@ fn sample_arc(
             sweep += std::f64::consts::TAU;
         }
     }
-    let steps = ((sweep.abs() / std::f64::consts::TAU * 64.0 - 1.0e-9).ceil() as usize).max(1);
+    let steps = ((sweep.abs() / std::f64::consts::TAU * 64.0 - ROUNDING).ceil() as usize).max(1);
     Some(
         (0..=steps)
             .map(|step| {
@@ -472,7 +473,8 @@ fn sample_arc(
 }
 
 fn same_point(left: [f64; 2], right: [f64; 2]) -> bool {
-    (left[0] - right[0]).abs() <= 1.0e-8 && (left[1] - right[1]).abs() <= 1.0e-8
+    (left[0] - right[0]).abs() <= ACCUMULATED_ROUNDING
+        && (left[1] - right[1]).abs() <= ACCUMULATED_ROUNDING
 }
 
 fn oriented_triangles(points: &[[f64; 2]]) -> Option<Vec<[u32; 3]>> {
@@ -509,7 +511,7 @@ fn triangulate_polygon(points: &[[f64; 2]]) -> Option<Vec<[u32; 3]>> {
             let current = remaining[index];
             let next = remaining[(index + 1) % remaining.len()];
             if triangle_cross(points[previous], points[current], points[next]) * orientation
-                <= 1.0e-12
+                <= ROUNDING
             {
                 continue;
             }
@@ -551,8 +553,8 @@ fn point_in_triangle(point: [f64; 2], first: [f64; 2], second: [f64; 2], third: 
         triangle_cross(second, third, point),
         triangle_cross(third, first, point),
     ];
-    let has_negative = crosses.iter().any(|value| *value < -1.0e-12);
-    let has_positive = crosses.iter().any(|value| *value > 1.0e-12);
+    let has_negative = crosses.iter().any(|value| *value < -ROUNDING);
+    let has_positive = crosses.iter().any(|value| *value > ROUNDING);
     !(has_negative && has_positive)
 }
 

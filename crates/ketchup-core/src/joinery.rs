@@ -1,9 +1,10 @@
 use crate::document::{FeatureId, FeatureKind, InstancePath, Snapshot, Transform};
 use crate::sketch::{PadOperation, PadProfile, PadSpec, SketchEntity};
+use crate::tolerance::ACCUMULATED_ROUNDING;
 use std::fmt;
 
 pub const DOWEL_JOINERY_PROJECTION_V1: &str = "ketchup.dowel-joinery-projection.v1";
-const GEOMETRY_TOLERANCE: f64 = 1.0e-8;
+const GEOMETRY_TOLERANCE: f64 = ACCUMULATED_ROUNDING;
 const MAX_DOWELS_PER_JOINT: u32 = 128;
 
 #[derive(

@@ -5,6 +5,7 @@ use ketchup_core::document::{
     Snapshot, Transform,
 };
 use ketchup_core::sketch::{PadOperation, PadSpec};
+use ketchup_core::tolerance::ACCUMULATED_ROUNDING;
 use ketchup_program::model::ProgramOperation;
 use ketchup_program::{ProgramFeatureKind, ProgramModel, ProgramParameterValueType, Report};
 
@@ -131,7 +132,7 @@ pub fn rewrite_rule_program_push_pull(
                 continue;
             };
             let slope = (probe_value - baseline) / (probed - current);
-            if slope.abs() > 1.0e-8 {
+            if slope.abs() > ACCUMULATED_ROUNDING {
                 let replacement = current + distance_mm / slope;
                 if parameter.min.is_none_or(|minimum| replacement >= minimum)
                     && parameter.max.is_none_or(|maximum| replacement <= maximum)

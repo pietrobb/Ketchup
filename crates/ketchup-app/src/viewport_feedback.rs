@@ -1,4 +1,5 @@
 use super::*;
+use ketchup_core::tolerance::APPROXIMATION;
 
 const HOVER_FILL: Color32 = Color32::from_rgba_premultiplied(24, 94, 120, 120);
 const SELECTED_FILL: Color32 = Color32::from_rgba_premultiplied(128, 66, 18, 140);
@@ -117,7 +118,7 @@ impl KetchupApp {
         plane_z: f64,
     ) -> Option<Vec3> {
         self.datum_snap_at_screen(pointer, rect, None)
-            .filter(|(_, axis)| plane_z.abs() < 1e-6 && axis.is_none())
+            .filter(|(_, axis)| plane_z.abs() < APPROXIMATION && axis.is_none())
             .map(|(point, _)| point)
     }
 

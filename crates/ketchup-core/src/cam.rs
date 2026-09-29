@@ -1,6 +1,6 @@
 use crate::document::{BodyKind, DefinitionId, FeatureId, Snapshot};
 use crate::exact_brep_graph::ExactBRepGraph;
-use crate::tolerance::MAX_COORDINATE_MM;
+use crate::tolerance::{DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM, ROUNDING};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -11,13 +11,13 @@ pub const CAM_TOOLPATH_SCHEMA_V1: &str = "ketchup.cam-toolpath.v1";
 pub const CAM_SIMULATION_SCHEMA_V1: &str = "ketchup.cam-simulation.v1";
 pub const CAM_POSTPROCESSOR_SCHEMA_V1: &str = "ketchup.cam-postprocessor.v1";
 const MAX_CAM_POSTPROCESSOR_BYTES: usize = 16 * 1024 * 1024;
-const CAM_POSTPROCESSOR_RESOLUTION_MM: f64 = 1.0e-9;
+const CAM_POSTPROCESSOR_RESOLUTION_MM: f64 = ROUNDING;
 const MAX_RPM: u32 = 200_000;
 const MAX_FEED_MM_PER_MIN: f64 = 1.0e6;
 const MAX_CAM_OPERATIONS: usize = 1_024;
 const MAX_PATH_SEGMENTS: usize = 4_096;
 const MAX_DRILL_POINTS: usize = 4_096;
-const GEOMETRY_TOLERANCE_MM: f64 = 1.0e-9;
+const GEOMETRY_TOLERANCE_MM: f64 = ROUNDING;
 
 #[derive(
     Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -1019,7 +1019,7 @@ impl CamToolpath {
                         || (start_mm[2] - center_mm[2]).abs() > GEOMETRY_TOLERANCE_MM
                         || (distance_3d(*start_mm, *center_mm) - distance_3d(*end_mm, *center_mm))
                             .abs()
-                            > 1.0e-7
+                            > DEFAULT_LINEAR_TOLERANCE_MM
                     {
                         return Err(CamPlannerError::StaleToolpath);
                     }
@@ -1152,7 +1152,7 @@ fn validate_simulation_for_postprocessing(
         .iter()
         .filter(|motion| matches!(motion.kind, CamMotionKind::Plunge | CamMotionKind::Cut))
         .count();
-    let volume_tolerance = simulation.stock_before_mm3.abs().max(1.0) * 1.0e-9;
+    let volume_tolerance = simulation.stock_before_mm3.abs().max(1.0) * ROUNDING;
     if simulation.schema != CAM_SIMULATION_SCHEMA_V1
         || simulation.plan_digest != plan.stable_digest()
         || simulation.plan_digest != toolpath.plan_digest
@@ -1858,7 +1858,7 @@ fn validate_path(
                 let start_radius = distance_2d(current, *center_mm);
                 let end_radius = distance_2d(*to_mm, *center_mm);
                 if start_radius <= GEOMETRY_TOLERANCE_MM
-                    || (start_radius - end_radius).abs() > 1.0e-7
+                    || (start_radius - end_radius).abs() > DEFAULT_LINEAR_TOLERANCE_MM
                 {
                     return Err(CamPlannerError::InvalidOperations);
                 }
@@ -2079,5 +2079,7 @@ fn orthonormal_xy(x: [f64; 3], y: [f64; 3]) -> bool {
         .zip(y)
         .map(|(left, right)| left * right)
         .sum::<f64>();
-    (length(x) - 1.0).abs() <= 1.0e-9 && (length(y) - 1.0).abs() <= 1.0e-9 && dot.abs() <= 1.0e-9
+    (length(x) - 1.0).abs() <= ROUNDING
+        && (length(y) - 1.0).abs() <= ROUNDING
+        && dot.abs() <= ROUNDING
 }

@@ -4,11 +4,13 @@
 //! rotation stored row-major; its columns are the part's local x, y and z axes
 //! expressed in world coordinates.
 
+use ketchup_core::tolerance::ROUNDING;
+
 pub type Mat3 = [[f64; 3]; 3];
 
 pub const IDENTITY: Mat3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
-const ORIENTATION_TOLERANCE: f64 = 1.0e-9;
+const ORIENTATION_TOLERANCE: f64 = ROUNDING;
 
 #[must_use]
 pub fn is_identity(rotation: &Mat3) -> bool {

@@ -19,8 +19,7 @@ use crate::exact_brep_graph::{
     ExactBRepGraph, MAX_EXACT_BREP_GRAPH_NODES, MAX_EXACT_BREP_GRAPH_PROFILES,
     MAX_EXACT_BREP_LOFT_CONTROL_POINTS, MAX_EXACT_BREP_PLANAR_LOOP_SEGMENTS,
     MAX_EXACT_BREP_SWEEP_PATH_LENGTH_MM, MAX_EXACT_BREP_SWEEP_PATH_SEGMENTS,
-    MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM, MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM,
-    SKETCH_SWEEP_FRAME_EPSILON_MM, spatial_sweep_bounds_are_valid, sweep_profile_is_valid,
+    MIN_EXACT_BREP_SWEEP_PATH_LENGTH_MM, spatial_sweep_bounds_are_valid, sweep_profile_is_valid,
 };
 use crate::exact_product::{
     BodySubshapeRef, EXACT_MIN_LENGTH_MM, ExactProducerCompilation, ExactProducerEvidenceContext,
@@ -64,7 +63,7 @@ use crate::space::{
     CanonicalClearanceVolume, CanonicalSpace, ClearanceCoordinateFrame, ClearanceOwner,
     ClearanceSeverity, ClearanceVolumeId, SpaceError, SpaceId,
 };
-use crate::tolerance::{MAX_COORDINATE_MM, TolerancePolicy};
+use crate::tolerance::{APPROXIMATION, MAX_COORDINATE_MM, ROUNDING, TolerancePolicy};
 use crate::topology::{TopologicalElementKind, TopologicalElementRef};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use sha2::{Digest as _, Sha256};
@@ -198,7 +197,7 @@ impl Transform {
     #[must_use]
     pub fn rigid_inverse(self) -> Option<Self> {
         let matrix = self.matrix;
-        let epsilon = 1.0e-9;
+        let epsilon = ROUNDING;
         let rows = [
             [matrix[0], matrix[1], matrix[2]],
             [matrix[4], matrix[5], matrix[6]],
@@ -6592,7 +6591,7 @@ impl DocumentStore {
                 } => {
                     ensure_product_id(id.0)?;
                     ensure_name(name)?;
-                    validate_feature_kind(kind)?;
+                    validate_feature_kind(kind, product.tolerance.linear_mm())?;
                     validate_topological_feature_context(
                         current.document_id(),
                         *definition_id,
@@ -7158,7 +7157,7 @@ impl DocumentStore {
                         }
                         _ => return Err(CanonicalError::FeatureIsNotProfile(*id)),
                     }
-                    validate_feature_kind(&kind)?;
+                    validate_feature_kind(&kind, product.tolerance.linear_mm())?;
                     product.features.insert(
                         *id,
                         Arc::new(Feature {
@@ -7171,7 +7170,7 @@ impl DocumentStore {
                 }
                 CanonicalCommand::SetProfilePoints { id, points_mm } => {
                     let kind = FeatureKind::polygon(points_mm);
-                    validate_feature_kind(&kind)?;
+                    validate_feature_kind(&kind, product.tolerance.linear_mm())?;
                     let feature = product
                         .features
                         .get(id)
@@ -10902,7 +10901,7 @@ fn set_feature_parameter(
         ));
     }
     let mut kind = feature.kind.clone();
-    if !set_feature_kind_parameter(&mut kind, target, &dimension)? {
+    if !set_feature_kind_parameter(&mut kind, target, &dimension, product.tolerance.linear_mm())? {
         return Err(CanonicalError::InvalidFeatureParameterBinding(
             target.clone(),
         ));
@@ -10970,6 +10969,7 @@ fn set_feature_kind_parameter(
     kind: &mut FeatureKind,
     target: &FeatureParameterTarget,
     dimension: &Dimension,
+    tolerance_mm: f64,
 ) -> Result<bool, CanonicalError> {
     let path = target.path.as_str();
     let parts = path.split('.').collect::<Vec<_>>();
@@ -10989,8 +10989,12 @@ fn set_feature_kind_parameter(
         FeatureKind::Profile { segments, closed } => match parts.as_slice() {
             ["bounds", "width"] | ["bounds", "height"] => {
                 let points = kind.polygon_points().unwrap_or_default();
-                *kind =
-                    FeatureKind::polygon(&resize_axis_aligned_rectangle(&points, target, value)?);
+                *kind = FeatureKind::polygon(&resize_axis_aligned_rectangle(
+                    &points,
+                    target,
+                    value,
+                    tolerance_mm,
+                )?);
                 true
             }
             _ => set_segment_parameter(segments, *closed, &parts, value),
@@ -11978,7 +11982,7 @@ fn project_sketch_entity(
             center_mm,
             clockwise,
             ..
-        } if normal_alignment.abs() >= 1.0 - 1.0e-9 => SketchEntity::Arc {
+        } if normal_alignment.abs() >= 1.0 - ROUNDING => SketchEntity::Arc {
             id: new_entity_id,
             start_mm: project_point(*start_mm),
             end_mm: project_point(*end_mm),
@@ -11993,7 +11997,7 @@ fn project_sketch_entity(
             center_mm,
             radius_mm,
             ..
-        } if normal_alignment.abs() >= 1.0 - 1.0e-9 => SketchEntity::Circle {
+        } if normal_alignment.abs() >= 1.0 - ROUNDING => SketchEntity::Circle {
             id: new_entity_id,
             center_mm: project_point(*center_mm),
             radius_mm: *radius_mm,
@@ -12133,7 +12137,7 @@ fn validate_sketch_projections(product: &ProductModel) -> Result<(), CanonicalEr
     Ok(())
 }
 
-fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
+fn validate_feature_kind(kind: &FeatureKind, tolerance_mm: f64) -> Result<(), CanonicalError> {
     match kind {
         FeatureKind::Workplane(spec) => {
             let mut canonical = spec.clone();
@@ -12165,7 +12169,7 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
             Ok(())
         }
         FeatureKind::SpatialPath { segments } => {
-            if !is_valid_spatial_sweep_path(segments) {
+            if !is_valid_spatial_sweep_path(segments, tolerance_mm) {
                 return Err(CanonicalError::InvalidSweep);
             }
             Ok(())
@@ -12217,7 +12221,7 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
                 || !x_length_squared.is_finite()
                 || x_length_squared <= f64::EPSILON
                 || !dot.is_finite()
-                || dot.abs() > 1.0e-9 * (normal_length_squared * x_length_squared).sqrt()
+                || dot.abs() > ROUNDING * (normal_length_squared * x_length_squared).sqrt()
             {
                 return Err(CanonicalError::InvalidConstructionGeometry);
             }
@@ -12482,7 +12486,7 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
             Dimension::new(tolerance.source_token.clone(), tolerance.millimetres).map(|_| ())?;
             if !(2..=256).contains(&surfaces.len())
                 || !surfaces.windows(2).all(|pair| pair[0] < pair[1])
-                || !(1.0e-7..=10.0).contains(&tolerance.millimetres)
+                || !(tolerance_mm..=10.0).contains(&tolerance.millimetres)
             {
                 return Err(CanonicalError::InvalidFeatureMap);
             }
@@ -12575,7 +12579,7 @@ fn validate_imported_exact_body(spec: &ImportedExactBodySpec) -> Result<(), Cano
             typed_body
                 && spec.solid_count == 0
                 && spec.volume_mm3.is_finite()
-                && spec.volume_mm3.abs() <= 1.0e-12
+                && spec.volume_mm3.abs() <= APPROXIMATION
                 && spec.area_mm2.is_finite()
                 && spec.area_mm2 > 0.0
         }
@@ -12610,8 +12614,8 @@ fn validate_imported_exact_body(spec: &ImportedExactBodySpec) -> Result<(), Cano
 
 const MAX_MESH_VERTICES: usize = 100_000;
 const MAX_MESH_TRIANGLES: usize = 200_000;
-const MESH_AREA_EPSILON: f64 = 1.0e-18;
-const MESH_VOLUME_EPSILON: f64 = 1.0e-12;
+const MESH_AREA_EPSILON: f64 = ROUNDING * ROUNDING;
+const MESH_VOLUME_EPSILON: f64 = APPROXIMATION;
 
 fn validate_mesh_body(spec: &MeshBodySpec) -> Result<(), CanonicalError> {
     if spec.schema != MESH_BODY_SCHEMA_V1
@@ -12787,7 +12791,7 @@ fn mesh_vertex_fans_are_manifold(
 }
 
 const MAX_PROFILE_POINTS: usize = 1_024;
-const PROFILE_EPSILON_MM: f64 = 1.0e-9;
+const PROFILE_EPSILON_MM: f64 = ROUNDING;
 
 fn is_axis_aligned_rectangle(points_mm: &[[f64; 2]]) -> bool {
     points_mm.len() == 4
@@ -12803,6 +12807,7 @@ fn resize_axis_aligned_rectangle(
     points_mm: &[[f64; 2]],
     target: &FeatureParameterTarget,
     value_mm: f64,
+    tolerance_mm: f64,
 ) -> Result<Vec<[f64; 2]>, CanonicalError> {
     if !is_axis_aligned_rectangle(points_mm) {
         return Err(CanonicalError::InvalidFeatureParameterBinding(
@@ -12830,18 +12835,21 @@ fn resize_axis_aligned_rectangle(
             ));
         }
     }
-    validate_feature_kind(&FeatureKind::polygon(&resized))?;
+    validate_feature_kind(&FeatureKind::polygon(&resized), tolerance_mm)?;
     Ok(resized)
 }
 
-fn sweep_path_segment_metrics(segment: &ProfileSegment) -> Option<(f64, [f64; 2], [f64; 2])> {
+fn sweep_path_segment_metrics(
+    segment: &ProfileSegment,
+    tolerance_mm: f64,
+) -> Option<(f64, [f64; 2], [f64; 2])> {
     match segment {
         // The exact kernel sweeps along lines, arcs and Bezier curves only.
         ProfileSegment::Spline { .. } => None,
         ProfileSegment::Line { start_mm, end_mm } => {
             let direction = [end_mm[0] - start_mm[0], end_mm[1] - start_mm[1]];
             let length = direction[0].hypot(direction[1]);
-            if !length.is_finite() || length <= MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM {
+            if !length.is_finite() || length <= tolerance_mm {
                 return None;
             }
             let tangent = [direction[0] / length, direction[1] / length];
@@ -12865,11 +12873,11 @@ fn sweep_path_segment_metrics(segment: &ProfileSegment) -> Option<(f64, [f64; 2]
                 (end_angle - start_angle).rem_euclid(std::f64::consts::TAU)
             };
             if !radius.is_finite()
-                || radius <= MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM
+                || radius <= tolerance_mm
                 || (radius - end_radius_length).abs() > PROFILE_EPSILON_MM
                 || start_mm == end_mm
                 || !sweep_angle.is_finite()
-                || radius * sweep_angle <= MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM
+                || radius * sweep_angle <= tolerance_mm
             {
                 return None;
             }
@@ -12909,8 +12917,8 @@ fn sweep_path_segment_metrics(segment: &ProfileSegment) -> Option<(f64, [f64; 2]
             let projection_2 =
                 control_2_from_start[0] * chord[0] + control_2_from_start[1] * chord[1];
             if !control_length.is_finite()
-                || start_length <= MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM
-                || end_length <= MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM
+                || start_length <= tolerance_mm
+                || end_length <= tolerance_mm
                 || projection_1 <= 0.0
                 || projection_2 < projection_1
                 || projection_2 >= chord_squared
@@ -13062,7 +13070,10 @@ fn sweep_path_self_intersects(
     false
 }
 
-pub fn solved_sketch_sweep_path(sketch: &SketchSpec) -> Option<Vec<ProfileSegment>> {
+pub fn solved_sketch_sweep_path(
+    sketch: &SketchSpec,
+    tolerance_mm: f64,
+) -> Option<Vec<ProfileSegment>> {
     let solution = sketch.solve_geometry().ok()?;
     let segments = solution
         .entities
@@ -13101,7 +13112,7 @@ pub fn solved_sketch_sweep_path(sketch: &SketchSpec) -> Option<Vec<ProfileSegmen
             SketchEntity::Circle { .. } => None,
         })
         .collect::<Option<Vec<_>>>()?;
-    is_valid_sweep_path(&segments).then_some(segments)
+    is_valid_sweep_path(&segments, tolerance_mm).then_some(segments)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -13131,13 +13142,14 @@ impl<'a> ValidatedSweepProfile<'a> {
     }
 
     #[must_use]
-    pub fn from_feature_kind(kind: &'a FeatureKind) -> Option<Self> {
+    pub fn from_feature_kind(kind: &'a FeatureKind, tolerance: TolerancePolicy) -> Option<Self> {
         match kind {
             FeatureKind::Profile {
                 segments,
                 closed: true,
-            } if accepts_sweep_segment_profile(segments, true)
-                || (kind.polygon_points().is_some() && sweep_profile_is_valid(kind)) =>
+            } if accepts_sweep_segment_profile(segments, true, tolerance)
+                || (kind.polygon_points().is_some()
+                    && sweep_profile_is_valid(kind, tolerance.linear_mm())) =>
             {
                 Some(Self(ValidatedSweepProfileKind::LineArcBoundary(segments)))
             }
@@ -13185,18 +13197,22 @@ impl<'a> ValidatedSweepPath<'a> {
     }
 
     #[must_use]
-    pub fn from_feature_kind(kind: &'a FeatureKind) -> Option<Self> {
+    pub fn from_feature_kind(kind: &'a FeatureKind, tolerance_mm: f64) -> Option<Self> {
         match kind {
             FeatureKind::Profile {
                 segments,
                 closed: false,
-            } if is_valid_sweep_path(segments) => {
+            } if is_valid_sweep_path(segments, tolerance_mm) => {
                 Some(Self(ValidatedSweepPathKind::Planar(segments)))
             }
-            FeatureKind::SpatialPath { segments } if is_valid_spatial_sweep_path(segments) => {
+            FeatureKind::SpatialPath { segments }
+                if is_valid_spatial_sweep_path(segments, tolerance_mm) =>
+            {
                 Some(Self(ValidatedSweepPathKind::Spatial(segments)))
             }
-            FeatureKind::Sketch(sketch) if solved_sketch_sweep_path(sketch).is_some() => {
+            FeatureKind::Sketch(sketch)
+                if solved_sketch_sweep_path(sketch, tolerance_mm).is_some() =>
+            {
                 Some(Self(ValidatedSweepPathKind::Sketch(sketch)))
             }
             _ => None,
@@ -13227,7 +13243,7 @@ impl<'a> ValidatedSweepInputs<'a> {
         profile_kind: &'a FeatureKind,
         path_kind: &'a FeatureKind,
     ) -> Option<Self> {
-        Self::with_workplane_frames(profile_kind, path_kind, |workplane| {
+        Self::with_workplane_frames(snapshot.tolerance(), profile_kind, path_kind, |workplane| {
             snapshot.feature(workplane).and_then(|feature| {
                 if let FeatureKind::Workplane(spec) = feature.kind() {
                     Some(spec.frame)
@@ -13239,24 +13255,30 @@ impl<'a> ValidatedSweepInputs<'a> {
     }
 
     fn with_workplane_frames(
+        tolerance: TolerancePolicy,
         profile_kind: &'a FeatureKind,
         path_kind: &'a FeatureKind,
         frame: impl FnMut(FeatureId) -> Option<WorkplaneFrame>,
     ) -> Option<Self> {
-        let profile = ValidatedSweepProfile::from_feature_kind(profile_kind)?;
-        let path = ValidatedSweepPath::from_feature_kind(path_kind)?;
+        let profile = ValidatedSweepProfile::from_feature_kind(profile_kind, tolerance)?;
+        let path = ValidatedSweepPath::from_feature_kind(path_kind, tolerance.linear_mm())?;
         let compatible = match (profile.0, path.0) {
             (ValidatedSweepProfileKind::Sketch(profile), ValidatedSweepPathKind::Sketch(path)) => {
-                valid_sketch_sweep_inputs_with_frames(profile, path, frame)
+                valid_sketch_sweep_inputs_with_frames(profile, path, frame, tolerance.linear_mm())
             }
             (ValidatedSweepProfileKind::Sketch(profile), ValidatedSweepPathKind::Spatial(path)) => {
-                valid_sketch_spatial_sweep_inputs_with_frame(profile, path, frame)
+                valid_sketch_spatial_sweep_inputs_with_frame(
+                    profile,
+                    path,
+                    frame,
+                    tolerance.linear_mm(),
+                )
             }
             (ValidatedSweepProfileKind::Sketch(_), _) | (_, ValidatedSweepPathKind::Sketch(_)) => {
                 false
             }
             (_, ValidatedSweepPathKind::Spatial(path)) => {
-                spatial_sweep_bounds_are_valid(profile_kind, path)
+                spatial_sweep_bounds_are_valid(profile_kind, path, tolerance.linear_mm())
             }
             _ => true,
         };
@@ -13286,8 +13308,9 @@ fn valid_sketch_spatial_sweep_inputs_with_frame(
     profile: &SketchSpec,
     path: &[SpatialPathSegment],
     mut frame: impl FnMut(FeatureId) -> Option<WorkplaneFrame>,
+    tolerance_mm: f64,
 ) -> bool {
-    if !valid_sketch_sweep_profile(profile) || !is_valid_spatial_sweep_path(path) {
+    if !valid_sketch_sweep_profile(profile) || !is_valid_spatial_sweep_path(path, tolerance_mm) {
         return false;
     }
     let Some(profile_frame) = frame(profile.workplane) else {
@@ -13321,27 +13344,30 @@ fn valid_sketch_spatial_sweep_inputs_with_frame(
     };
     let length = tangent[0].hypot(tangent[1]).hypot(tangent[2]);
     let direction = tangent.map(|component| component / length);
-    [0, 1, 2].into_iter().all(|axis| {
-        (start[axis] - profile_frame.origin_mm[axis]).abs() <= SKETCH_SWEEP_FRAME_EPSILON_MM
-    }) && [0, 1, 2]
+    [0, 1, 2]
         .into_iter()
-        .map(|axis| direction[axis] * profile_frame.normal[axis])
-        .sum::<f64>()
-        >= 1.0 - SKETCH_SWEEP_FRAME_EPSILON_MM
+        .all(|axis| (start[axis] - profile_frame.origin_mm[axis]).abs() <= ROUNDING)
+        && [0, 1, 2]
+            .into_iter()
+            .map(|axis| direction[axis] * profile_frame.normal[axis])
+            .sum::<f64>()
+            >= 1.0 - ROUNDING
 }
 
 fn valid_sketch_sweep_inputs_with_frames(
     profile: &SketchSpec,
     path: &SketchSpec,
     mut frame: impl FnMut(FeatureId) -> Option<WorkplaneFrame>,
+    tolerance_mm: f64,
 ) -> bool {
     if !valid_sketch_sweep_profile(profile) {
         return false;
     }
-    let Some(path_segments) = solved_sketch_sweep_path(path) else {
+    let Some(path_segments) = solved_sketch_sweep_path(path, tolerance_mm) else {
         return false;
     };
-    let Some((_, start_tangent, _)) = sweep_path_segment_metrics(&path_segments[0]) else {
+    let Some((_, start_tangent, _)) = sweep_path_segment_metrics(&path_segments[0], tolerance_mm)
+    else {
         return false;
     };
     let start_mm = path_segments[0].start_mm();
@@ -13357,18 +13383,18 @@ fn valid_sketch_sweep_inputs_with_frames(
     let direction = [0, 1, 2].map(|axis| {
         path_frame.x_axis[axis] * start_tangent[0] + path_frame.y_axis[axis] * start_tangent[1]
     });
-    let starts_at_profile = [0, 1, 2].into_iter().all(|axis| {
-        (start[axis] - profile_frame.origin_mm[axis]).abs() <= SKETCH_SWEEP_FRAME_EPSILON_MM
-    });
+    let starts_at_profile = [0, 1, 2]
+        .into_iter()
+        .all(|axis| (start[axis] - profile_frame.origin_mm[axis]).abs() <= ROUNDING);
     let aligned = [0, 1, 2]
         .into_iter()
         .map(|axis| direction[axis] * profile_frame.normal[axis])
         .sum::<f64>()
-        >= 1.0 - SKETCH_SWEEP_FRAME_EPSILON_MM;
+        >= 1.0 - ROUNDING;
     starts_at_profile && aligned
 }
 
-pub fn is_valid_sweep_path(segments: &[ProfileSegment]) -> bool {
+pub fn is_valid_sweep_path(segments: &[ProfileSegment], tolerance_mm: f64) -> bool {
     if !(1..=MAX_EXACT_BREP_SWEEP_PATH_SEGMENTS).contains(&segments.len())
         || segments.len() == 1 && !matches!(segments[0], ProfileSegment::Line { .. })
     {
@@ -13376,7 +13402,7 @@ pub fn is_valid_sweep_path(segments: &[ProfileSegment]) -> bool {
     }
     let metrics = segments
         .iter()
-        .map(sweep_path_segment_metrics)
+        .map(|segment| sweep_path_segment_metrics(segment, tolerance_mm))
         .collect::<Option<Vec<_>>>();
     let Some(metrics) = metrics else {
         return false;
@@ -13393,11 +13419,11 @@ pub fn is_valid_sweep_path(segments: &[ProfileSegment]) -> bool {
         let incoming = pair[1].1;
         let dot = outgoing[0] * incoming[0] + outgoing[1] * incoming[1];
         let cross = outgoing[0] * incoming[1] - outgoing[1] * incoming[0];
-        dot >= 1.0 - 1.0e-9 && cross.abs() <= 1.0e-9
+        dot >= 1.0 - ROUNDING && cross.abs() <= ROUNDING
     })
 }
 
-pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment]) -> bool {
+pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment], tolerance_mm: f64) -> bool {
     fn sub(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
         [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
     }
@@ -13414,12 +13440,12 @@ pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment]) -> bool {
     fn length(vector: [f64; 3]) -> f64 {
         dot(vector, vector).sqrt()
     }
-    fn unit(vector: [f64; 3]) -> Option<[f64; 3]> {
+    fn unit(vector: [f64; 3], tolerance_mm: f64) -> Option<[f64; 3]> {
         let magnitude = length(vector);
-        (magnitude.is_finite() && magnitude > MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM)
+        (magnitude.is_finite() && magnitude > tolerance_mm)
             .then(|| vector.map(|value| value / magnitude))
     }
-    fn arc_angle(segment: &SpatialPathSegment) -> Option<f64> {
+    fn arc_angle(segment: &SpatialPathSegment, tolerance_mm: f64) -> Option<f64> {
         let SpatialPathSegment::CircularArc {
             start_mm,
             end_mm,
@@ -13430,7 +13456,7 @@ pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment]) -> bool {
         else {
             return None;
         };
-        let normal = unit(*normal)?;
+        let normal = unit(*normal, tolerance_mm)?;
         let start_radius = sub(*start_mm, *center_mm);
         let end_radius = sub(*end_mm, *center_mm);
         let signed =
@@ -13445,6 +13471,7 @@ pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment]) -> bool {
         left: &SpatialPathSegment,
         right: &SpatialPathSegment,
         tangent: [f64; 3],
+        tolerance_mm: f64,
     ) -> bool {
         let join = left.end_mm();
         let projection = |point: [f64; 3]| dot(sub(point, join), tangent);
@@ -13452,7 +13479,7 @@ pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment]) -> bool {
             SpatialPathSegment::Line { start_mm, .. } => {
                 projection(*start_mm) < -PROFILE_EPSILON_MM
             }
-            SpatialPathSegment::CircularArc { .. } => arc_angle(left)
+            SpatialPathSegment::CircularArc { .. } => arc_angle(left, tolerance_mm)
                 .is_some_and(|angle| angle < std::f64::consts::PI - PROFILE_EPSILON_MM),
             SpatialPathSegment::CubicBezier {
                 start_mm,
@@ -13465,7 +13492,7 @@ pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment]) -> bool {
         };
         let right_is_ahead = match right {
             SpatialPathSegment::Line { end_mm, .. } => projection(*end_mm) > PROFILE_EPSILON_MM,
-            SpatialPathSegment::CircularArc { .. } => arc_angle(right)
+            SpatialPathSegment::CircularArc { .. } => arc_angle(right, tolerance_mm)
                 .is_some_and(|angle| angle < std::f64::consts::PI - PROFILE_EPSILON_MM),
             SpatialPathSegment::CubicBezier {
                 control_1_mm,
@@ -13478,7 +13505,10 @@ pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment]) -> bool {
         };
         left_is_behind && right_is_ahead
     }
-    fn metrics(segment: &SpatialPathSegment) -> Option<(f64, [f64; 3], [f64; 3])> {
+    fn metrics(
+        segment: &SpatialPathSegment,
+        tolerance_mm: f64,
+    ) -> Option<(f64, [f64; 3], [f64; 3])> {
         let start = segment.start_mm();
         let end = segment.end_mm();
         if [start, end]
@@ -13491,7 +13521,7 @@ pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment]) -> bool {
         match segment {
             SpatialPathSegment::Line { .. } => {
                 let direction = sub(end, start);
-                let tangent = unit(direction)?;
+                let tangent = unit(direction, tolerance_mm)?;
                 Some((length(direction), tangent, tangent))
             }
             SpatialPathSegment::CircularArc {
@@ -13513,12 +13543,12 @@ pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment]) -> bool {
                 if (normal_length - 1.0).abs() > PROFILE_EPSILON_MM {
                     return None;
                 }
-                let normal = unit(*normal)?;
+                let normal = unit(*normal, tolerance_mm)?;
                 let start_radius = sub(start, *center_mm);
                 let end_radius = sub(end, *center_mm);
                 let radius = length(start_radius);
                 let end_radius_length = length(end_radius);
-                if radius <= MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM
+                if radius <= tolerance_mm
                     || (radius - end_radius_length).abs() > PROFILE_EPSILON_MM
                     || dot(start_radius, normal).abs() > PROFILE_EPSILON_MM
                     || dot(end_radius, normal).abs() > PROFILE_EPSILON_MM
@@ -13533,12 +13563,13 @@ pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment]) -> bool {
                 } else {
                     signed.rem_euclid(std::f64::consts::TAU)
                 };
-                if radius * angle <= MIN_EXACT_BREP_SWEEP_PATH_SEGMENT_LENGTH_MM {
+                if radius * angle <= tolerance_mm {
                     return None;
                 }
                 let sign = if *clockwise { -1.0 } else { 1.0 };
-                let start_tangent = unit(cross(normal, start_radius).map(|v| sign * v))?;
-                let end_tangent = unit(cross(normal, end_radius).map(|v| sign * v))?;
+                let start_tangent =
+                    unit(cross(normal, start_radius).map(|v| sign * v), tolerance_mm)?;
+                let end_tangent = unit(cross(normal, end_radius).map(|v| sign * v), tolerance_mm)?;
                 Some((radius * angle, start_tangent, end_tangent))
             }
             SpatialPathSegment::CubicBezier {
@@ -13572,8 +13603,8 @@ pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment]) -> bool {
                 }
                 Some((
                     first_length + length(middle) + last_length,
-                    unit(first)?,
-                    unit(last)?,
+                    unit(first, tolerance_mm)?,
+                    unit(last, tolerance_mm)?,
                 ))
             }
         }
@@ -13582,7 +13613,11 @@ pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment]) -> bool {
     if !(1..=MAX_EXACT_BREP_SWEEP_PATH_SEGMENTS).contains(&segments.len()) {
         return false;
     }
-    let Some(metrics) = segments.iter().map(metrics).collect::<Option<Vec<_>>>() else {
+    let Some(metrics) = segments
+        .iter()
+        .map(|segment| metrics(segment, tolerance_mm))
+        .collect::<Option<Vec<_>>>()
+    else {
         return false;
     };
     let total_length = metrics.iter().map(|metric| metric.0).sum::<f64>();
@@ -13621,9 +13656,9 @@ pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment]) -> bool {
             }
             let outgoing = metrics[0].2;
             let incoming = metrics[1].1;
-            !join_is_separated(&segments[0], &segments[1], outgoing)
-                || dot(outgoing, incoming) < 1.0 - 1.0e-9
-                || length(cross(outgoing, incoming)) > 1.0e-9
+            !join_is_separated(&segments[0], &segments[1], outgoing, tolerance_mm)
+                || dot(outgoing, incoming) < 1.0 - ROUNDING
+                || length(cross(outgoing, incoming)) > ROUNDING
         })
     {
         return false;
@@ -13633,9 +13668,9 @@ pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment]) -> bool {
         let first = segments.first().unwrap();
         let outgoing = metrics.last().unwrap().2;
         let incoming = metrics.first().unwrap().1;
-        if !join_is_separated(last, first, outgoing)
-            || dot(outgoing, incoming) < 1.0 - 1.0e-9
-            || length(cross(outgoing, incoming)) > 1.0e-9
+        if !join_is_separated(last, first, outgoing, tolerance_mm)
+            || dot(outgoing, incoming) < 1.0 - ROUNDING
+            || length(cross(outgoing, incoming)) > ROUNDING
         {
             return false;
         }
@@ -14841,7 +14876,7 @@ fn apply_graph_exact_solid_tool(
         }),
     );
     for feature in features {
-        validate_feature_kind(&feature.kind)?;
+        validate_feature_kind(&feature.kind, product.tolerance.linear_mm())?;
         product.features.insert(feature.id, Arc::new(feature));
     }
     let mut result_definition = product.definitions[&plan.result_definition_id]
@@ -15168,7 +15203,7 @@ fn apply_mixed_exact_solid_tool(
         }),
     );
     for feature in features {
-        validate_feature_kind(&feature.kind)?;
+        validate_feature_kind(&feature.kind, product.tolerance.linear_mm())?;
         product.features.insert(feature.id, Arc::new(feature));
     }
     let mut result_definition = product.definitions[&plan.result_definition_id]
@@ -15321,7 +15356,7 @@ fn apply_imported_exact_solid_tool(
         }),
     );
     for feature in features {
-        validate_feature_kind(&feature.kind)?;
+        validate_feature_kind(&feature.kind, product.tolerance.linear_mm())?;
         product.features.insert(feature.id, Arc::new(feature));
     }
     let mut result_definition = product.definitions[&plan.result_definition_id]
@@ -15706,14 +15741,11 @@ fn supported_planar_face_frame(
     graph.extrusion_face_frame(reference.profile_feature_id.0, &reference.semantic_role)
 }
 
-/// Tolerance for a workplane lying on the face it is attached to.
-const PLANAR_FACE_TOLERANCE_MM: f64 = 1.0e-7;
-
 /// A workplane lies on a face when it has the face's axes and its origin is in
 /// the face plane; where in the plane the origin sits is the author's choice.
-fn lies_on_planar_face(frame: WorkplaneFrame, face: WorkplaneFrame) -> bool {
+fn lies_on_planar_face(frame: WorkplaneFrame, face: WorkplaneFrame, tolerance_mm: f64) -> bool {
     let same = |left: [f64; 3], right: [f64; 3]| {
-        (0..3).all(|axis| (left[axis] - right[axis]).abs() <= PLANAR_FACE_TOLERANCE_MM)
+        (0..3).all(|axis| (left[axis] - right[axis]).abs() <= tolerance_mm)
     };
     let offset = (0..3)
         .map(|axis| (frame.origin_mm[axis] - face.origin_mm[axis]) * face.normal[axis])
@@ -15721,13 +15753,17 @@ fn lies_on_planar_face(frame: WorkplaneFrame, face: WorkplaneFrame) -> bool {
     same(frame.x_axis, face.x_axis)
         && same(frame.y_axis, face.y_axis)
         && same(frame.normal, face.normal)
-        && offset.abs() <= PLANAR_FACE_TOLERANCE_MM
+        && offset.abs() <= tolerance_mm
 }
 
 /// Moves a workplane onto its face after the face moved: the in-plane origin
 /// is kept when the face only moved along its normal, otherwise the face frame
 /// is adopted.
-fn frame_on_planar_face(stored: WorkplaneFrame, face: WorkplaneFrame) -> WorkplaneFrame {
+fn frame_on_planar_face(
+    stored: WorkplaneFrame,
+    face: WorkplaneFrame,
+    tolerance_mm: f64,
+) -> WorkplaneFrame {
     let offset = (0..3)
         .map(|axis| (face.origin_mm[axis] - stored.origin_mm[axis]) * face.normal[axis])
         .sum::<f64>();
@@ -15735,7 +15771,7 @@ fn frame_on_planar_face(stored: WorkplaneFrame, face: WorkplaneFrame) -> Workpla
         origin_mm: [0, 1, 2].map(|axis| stored.origin_mm[axis] + face.normal[axis] * offset),
         ..stored
     };
-    if lies_on_planar_face(moved, face) {
+    if lies_on_planar_face(moved, face, tolerance_mm) {
         moved
     } else {
         face
@@ -15913,7 +15949,7 @@ fn refresh_supported_planar_face_frames(
             unreachable!("collected feature is a workplane");
         };
         let mut updated = spec.clone();
-        updated.frame = frame_on_planar_face(spec.frame, frame);
+        updated.frame = frame_on_planar_face(spec.frame, frame, product.tolerance.linear_mm());
         product.features.insert(
             id,
             Arc::new(Feature {
@@ -16255,7 +16291,7 @@ fn validate_motion_coupling_graph(
 
 fn motion_values_equal(left: f64, right: f64) -> bool {
     let scale = left.abs().max(right.abs()).max(1.0);
-    (left - right).abs() <= 1.0e-10 * scale
+    (left - right).abs() <= ROUNDING * scale
 }
 
 fn validate_assembly_motion_study(
@@ -16749,7 +16785,7 @@ fn validate_product_with_drawing_sources(
     for feature in product.features.values() {
         ensure_product_id(feature.id.0)?;
         ensure_name(&feature.name)?;
-        validate_feature_kind(&feature.kind)?;
+        validate_feature_kind(&feature.kind, product.tolerance.linear_mm())?;
         let definition = product
             .definitions
             .get(&feature.definition_id)
@@ -16828,8 +16864,8 @@ fn validate_product_with_drawing_sources(
                     }
                     (FeatureKind::Profile { segments, closed }, None) => {
                         distance.abs() <= MAX_EXACT_PLANAR_OFFSET_LENGTH_MM
-                            && exact_planar_offset_profile(segments, *closed).is_some_and(
-                                |profile| {
+                            && exact_planar_offset_profile(segments, *closed, product.tolerance)
+                                .is_some_and(|profile| {
                                     let bounds = profile.bounds_bits.map(f64::from_bits);
                                     let Some(margin) =
                                         profile.max_planar_offset_displacement_mm(distance)
@@ -16854,8 +16890,7 @@ fn validate_product_with_drawing_sources(
                                         coordinate.is_finite()
                                             && coordinate.abs() <= MAX_COORDINATE_MM
                                     }) && cannot_statically_collapse
-                                },
-                            )
+                                })
                     }
                     (FeatureKind::Sketch(spec), None) => {
                         spec.solved_regions().ok().is_some_and(|regions| {
@@ -16884,6 +16919,7 @@ fn validate_product_with_drawing_sources(
                     .get(&path)
                     .ok_or(CanonicalError::FeatureNotFound(path))?;
                 let valid_inputs = ValidatedSweepInputs::with_workplane_frames(
+                    product.tolerance,
                     &profile_source.kind,
                     &path_source.kind,
                     |workplane| {
@@ -16926,13 +16962,16 @@ fn validate_product_with_drawing_sources(
                     .features
                     .get(&spec.path)
                     .ok_or(CanonicalError::FeatureNotFound(spec.path))?;
-                let valid_profile =
-                    ValidatedSweepProfile::from_feature_kind(&profile_source.kind).is_some();
+                let valid_profile = ValidatedSweepProfile::from_feature_kind(
+                    &profile_source.kind,
+                    product.tolerance,
+                )
+                .is_some();
                 let valid_path = matches!(
                     &path_source.kind,
                     FeatureKind::SpatialPath { segments }
-                        if is_valid_spatial_sweep_path(segments)
-                            && spatial_sweep_bounds_are_valid(&profile_source.kind, segments)
+                        if is_valid_spatial_sweep_path(segments, product.tolerance.linear_mm())
+                            && spatial_sweep_bounds_are_valid(&profile_source.kind, segments, product.tolerance.linear_mm())
                 );
                 let feature_position = definition
                     .feature_ids
@@ -17318,8 +17357,15 @@ fn validate_product_with_drawing_sources(
                     let evidence_and_frame_are_valid = match health {
                         WorkplaneSupportHealth::Resolved => {
                             evidence.is_some_and(|evidence| evidence.as_ref() == reference.as_ref())
-                                && supported_planar_face_frame(product, reference)
-                                    .is_some_and(|face| lies_on_planar_face(spec.frame, face))
+                                && supported_planar_face_frame(product, reference).is_some_and(
+                                    |face| {
+                                        lies_on_planar_face(
+                                            spec.frame,
+                                            face,
+                                            product.tolerance.linear_mm(),
+                                        )
+                                    },
+                                )
                         }
                         WorkplaneSupportHealth::Ambiguous
                         | WorkplaneSupportHealth::Lost
@@ -19658,8 +19704,8 @@ mod parameter_contract_tests {
         Dimension::new(value.to_string(), value).unwrap()
     }
 
-    fn assert_descriptors_have_read_write_accessors(kind: FeatureKind) {
-        validate_feature_kind(&kind).unwrap();
+    fn assert_descriptors_have_read_write_accessors(kind: FeatureKind, tolerance_mm: f64) {
+        validate_feature_kind(&kind, tolerance_mm).unwrap();
         let descriptors = kind.parameter_descriptors();
         assert!(!descriptors.is_empty());
         for descriptor in descriptors {
@@ -19673,11 +19719,12 @@ mod parameter_contract_tests {
             .unwrap();
             let mut updated = kind.clone();
             assert!(
-                set_feature_kind_parameter(&mut updated, &target, &dimension(value)).unwrap(),
+                set_feature_kind_parameter(&mut updated, &target, &dimension(value), tolerance_mm)
+                    .unwrap(),
                 "missing writer for {}",
                 descriptor.path().as_str()
             );
-            validate_feature_kind(&updated).unwrap_or_else(|error| {
+            validate_feature_kind(&updated, tolerance_mm).unwrap_or_else(|error| {
                 panic!(
                     "writer for {} produced invalid feature: {error}",
                     descriptor.path().as_str()
@@ -19692,6 +19739,7 @@ mod parameter_contract_tests {
 
     #[test]
     fn every_structural_descriptor_has_a_valid_read_write_round_trip() {
+        let tolerance_mm = crate::tolerance::DEFAULT_LINEAR_TOLERANCE_MM;
         let sketch = FeatureKind::Sketch(SketchSpec {
             workplane: FeatureId(1),
             entities: vec![SketchEntity::Circle {
@@ -19777,7 +19825,7 @@ mod parameter_contract_tests {
             },
         ];
         for kind in kinds {
-            assert_descriptors_have_read_write_accessors(kind);
+            assert_descriptors_have_read_write_accessors(kind, tolerance_mm);
         }
     }
 }

@@ -4,7 +4,7 @@ use crate::document::{
 };
 use crate::exact_product::EXACT_MIN_LENGTH_MM;
 use crate::sheet_metal::{SheetMetalEdge, SheetMetalFlange, SheetMetalSpec};
-use crate::tolerance::MAX_COORDINATE_MM;
+use crate::tolerance::{APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM, ROUNDING};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -318,6 +318,7 @@ impl AssistantSpatialPathSegment {
 
 pub fn validated_spatial_path_segments(
     segments: &[AssistantSpatialPathSegment],
+    tolerance_mm: f64,
 ) -> Result<Vec<SpatialPathSegment>, String> {
     if !(1..=MAX_ASSISTANT_SPATIAL_PATH_SEGMENTS).contains(&segments.len()) {
         return Err("assistant spatial path segment count is invalid".to_owned());
@@ -326,7 +327,7 @@ pub fn validated_spatial_path_segments(
         .iter()
         .map(AssistantSpatialPathSegment::canonical)
         .collect::<Vec<_>>();
-    if !is_valid_spatial_sweep_path(&segments) {
+    if !is_valid_spatial_sweep_path(&segments, tolerance_mm) {
         return Err("assistant spatial path is invalid".to_owned());
     }
     Ok(segments)
@@ -635,7 +636,7 @@ fn assistant_unit(vector: [f64; 3]) -> Option<[f64; 3]> {
         return None;
     }
     let length = assistant_dot(vector, vector).sqrt();
-    (length > 1.0e-9).then(|| assistant_scale(vector, length.recip()))
+    (length > ROUNDING).then(|| assistant_scale(vector, length.recip()))
 }
 
 fn assistant_add(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
@@ -719,11 +720,11 @@ impl AssistantPanelPocket {
         let axis = self
             .inward_unit_local
             .iter()
-            .position(|value| (value.abs() - 1.0).abs() <= 1.0e-9)?;
+            .position(|value| (value.abs() - 1.0).abs() <= ROUNDING)?;
         self.inward_unit_local
             .iter()
             .enumerate()
-            .all(|(index, value)| index == axis || value.abs() <= 1.0e-9)
+            .all(|(index, value)| index == axis || value.abs() <= ROUNDING)
             .then_some(axis)
     }
 
@@ -742,20 +743,21 @@ impl AssistantPanelPocket {
             || self.id.chars().any(char::is_control)
             || !assistant_cad_vector_is_bounded(self.min_local_mm)
             || !assistant_cad_vector_is_bounded(self.max_local_mm)
-            || (0..3).any(|index| self.max_local_mm[index] - self.min_local_mm[index] <= 1.0e-6)
+            || (0..3)
+                .any(|index| self.max_local_mm[index] - self.min_local_mm[index] <= APPROXIMATION)
         {
             return invalid();
         }
         let entry_ok = if self.inward_unit_local[axis] > 0.0 {
-            self.min_local_mm[axis].abs() <= 1.0e-9
+            self.min_local_mm[axis].abs() <= ROUNDING
         } else {
-            (self.max_local_mm[axis] - dimensions_mm[axis]).abs() <= 1.0e-9
+            (self.max_local_mm[axis] - dimensions_mm[axis]).abs() <= ROUNDING
         };
         let depth = self.max_local_mm[axis] - self.min_local_mm[axis];
         let overlaps_face = (0..3).filter(|index| *index != axis).all(|index| {
             self.min_local_mm[index] < dimensions_mm[index] && self.max_local_mm[index] > 0.0
         });
-        if !entry_ok || depth > dimensions_mm[axis] + 1.0e-9 || !overlaps_face {
+        if !entry_ok || depth > dimensions_mm[axis] + ROUNDING || !overlaps_face {
             return invalid();
         }
         Ok(())
@@ -1423,7 +1425,7 @@ impl AssistantCadBodyFeature {
                 && surface_feature_ids.iter().collect::<BTreeSet<_>>().len()
                     == surface_feature_ids.len()
                 && tolerance_mm.is_finite()
-                && (1.0e-7..=10.0).contains(tolerance_mm) =>
+                && (DEFAULT_LINEAR_TOLERANCE_MM..=10.0).contains(tolerance_mm) =>
             {
                 Ok(())
             }
@@ -2187,7 +2189,7 @@ fn assistant_cad_vectors_are_perpendicular(left: [f64; 3], right: [f64; 3]) -> b
         .zip(right)
         .map(|(left, right)| left * right)
         .sum::<f64>();
-    dot.is_finite() && dot.abs() <= 1.0e-9 * (left_length_squared * right_length_squared).sqrt()
+    dot.is_finite() && dot.abs() <= ROUNDING * (left_length_squared * right_length_squared).sqrt()
 }
 
 impl AssistantInstancePath {
@@ -3049,7 +3051,7 @@ impl AssistantCadEditProgram {
                         let Some(axis) = hole
                             .inward_unit_local
                             .iter()
-                            .position(|value| (value.abs() - 1.0).abs() <= 1.0e-9)
+                            .position(|value| (value.abs() - 1.0).abs() <= ROUNDING)
                         else {
                             return Err("assistant panel hole direction is invalid".to_owned());
                         };
@@ -3063,7 +3065,7 @@ impl AssistantCadEditProgram {
                                 .inward_unit_local
                                 .iter()
                                 .enumerate()
-                                .any(|(index, value)| index != axis && value.abs() > 1.0e-9)
+                                .any(|(index, value)| index != axis && value.abs() > ROUNDING)
                             || !hole.diameter_mm.is_finite()
                             || hole.diameter_mm <= 0.0
                             || !hole.depth_mm.is_finite()
@@ -3073,7 +3075,7 @@ impl AssistantCadEditProgram {
                                 hole.entry_local_mm[axis].abs()
                             } else {
                                 (hole.entry_local_mm[axis] - dimensions_mm[axis]).abs()
-                            }) > 1.0e-9
+                            }) > ROUNDING
                             || (0..3).any(|index| {
                                 index != axis
                                     && (hole.entry_local_mm[index] < radius
@@ -3093,7 +3095,9 @@ impl AssistantCadEditProgram {
                     {
                         return Err("assistant spatial path creation is invalid".to_owned());
                     }
-                    validated_spatial_path_segments(segments)?;
+                    // Structural pre-check; the document validates the path again with its own
+                    // tolerance when the lowered commands apply.
+                    validated_spatial_path_segments(segments, DEFAULT_LINEAR_TOLERANCE_MM)?;
                     1
                 }
                 AssistantCadEditOperation::CreateConstructionPoint { name, position_mm } => {

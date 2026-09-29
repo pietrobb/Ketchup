@@ -4,7 +4,7 @@ use ketchup_core::document::{InstancePath, OccurrenceId, Snapshot};
 use ketchup_core::exact_product::ExactResultRegistry;
 use ketchup_core::exact_validation::*;
 use ketchup_core::joinery::project_dowel_joint_contract;
-use ketchup_core::tolerance::TolerancePolicy;
+use ketchup_core::tolerance::{ACCUMULATED_ROUNDING, ROUNDING, TolerancePolicy};
 use ketchup_core::validation::{
     DiagnosticSeverity, EvidenceClass, HostNeutralValidator, VALIDATOR_ROLE_DIMENSION_V1,
     ValidationExecution, ValidationInvocation, ValidationState, ValidatorRoleError,
@@ -563,7 +563,7 @@ fn assistant_scaled_orthogonal_source_frame_extents_mm(
                 .map(|coordinate| directions[left][coordinate] * directions[right][coordinate])
                 .sum::<f64>()
                 .abs();
-            if alignment > 1.0e-9 {
+            if alignment > ROUNDING {
                 return None;
             }
         }
@@ -644,14 +644,18 @@ fn recipe_face_overlap_area_mm2(
         second
             .tangent_axes_world
             .iter()
-            .filter(|second_axis| validation_dot(*first_axis, **second_axis).abs() >= 1.0 - 1.0e-8)
+            .filter(|second_axis| {
+                validation_dot(*first_axis, **second_axis).abs() >= 1.0 - ACCUMULATED_ROUNDING
+            })
             .count()
             == 1
     }) && second.tangent_axes_world.iter().all(|second_axis| {
         first
             .tangent_axes_world
             .iter()
-            .filter(|first_axis| validation_dot(**first_axis, *second_axis).abs() >= 1.0 - 1.0e-8)
+            .filter(|first_axis| {
+                validation_dot(**first_axis, *second_axis).abs() >= 1.0 - ACCUMULATED_ROUNDING
+            })
             .count()
             == 1
     });
@@ -698,7 +702,7 @@ fn dowel_minimum_edge_distance_mm(
     diameter_mm: f64,
 ) -> Option<f64> {
     let insertion_axis =
-        (0..3).find(|axis| (inward_unit_local[*axis].abs() - 1.0).abs() <= 1.0e-8)?;
+        (0..3).find(|axis| (inward_unit_local[*axis].abs() - 1.0).abs() <= ACCUMULATED_ROUNDING)?;
     let radius = diameter_mm * 0.5;
     (0..3)
         .filter(|axis| *axis != insertion_axis)
@@ -792,8 +796,10 @@ pub fn assistant_assembly_constraints_report(
                 );
                 let overlap_area_mm2 = recipe_face_overlap_area_mm2(first, second, epsilon_mm);
                 let normals_valid = match relation.kind {
-                    RecipeRelationKind::Contact => normal_dot <= -1.0 + 1.0e-8,
-                    RecipeRelationKind::Coincident => normal_dot.abs() >= 1.0 - 1.0e-8,
+                    RecipeRelationKind::Contact => normal_dot <= -1.0 + ACCUMULATED_ROUNDING,
+                    RecipeRelationKind::Coincident => {
+                        normal_dot.abs() >= 1.0 - ACCUMULATED_ROUNDING
+                    }
                 };
                 let passed = normals_valid
                     && signed_gap_mm.abs() <= epsilon_mm
@@ -808,7 +814,7 @@ pub fn assistant_assembly_constraints_report(
                     "second_face_role": relation.second.role,
                     "state": state,
                     "normal_dot": normal_dot,
-                    "normals_opposed": normal_dot <= -1.0 + 1.0e-8,
+                    "normals_opposed": normal_dot <= -1.0 + ACCUMULATED_ROUNDING,
                     "signed_gap_mm": signed_gap_mm,
                     "gap_mm": signed_gap_mm.max(0.0),
                     "penetration_mm": (-signed_gap_mm).max(0.0),
@@ -1294,7 +1300,7 @@ pub fn assistant_assembly_retention_report(
                     .map(|(left, right)| (left - right).powi(2))
                     .sum::<f64>()
                     .sqrt()
-                    > 1.0e-8
+                    > ACCUMULATED_ROUNDING
             }) {
                 distinct_centers.push(*center);
             }
@@ -1558,7 +1564,7 @@ pub fn assistant_shelf_deflection_report(
         let vertical_alignment = geometry
             .source_axis_world_z_alignment(thickness_axis)
             .expect("declared source axis is bounded");
-        if vertical_alignment < 1.0 - 1.0e-9 {
+        if vertical_alignment < 1.0 - ROUNDING {
             not_evaluated.push(serde_json::json!({
                 "occurrence_id": occurrence_id.0,
                 "name": name,
@@ -1716,7 +1722,7 @@ pub fn assistant_tipping_report(
         let vertical_alignment = geometry
             .source_axis_world_z_alignment(vertical_axis)
             .expect("declared source axis is bounded");
-        if vertical_alignment < 1.0 - 1.0e-9 {
+        if vertical_alignment < 1.0 - ROUNDING {
             not_evaluated.push(serde_json::json!({
                 "occurrence_id": occurrence_id.0,
                 "name": name,
@@ -1862,7 +1868,7 @@ pub fn assistant_anchoring_report(
         let vertical_alignment = geometry
             .source_axis_world_z_alignment(vertical_axis)
             .expect("declared source axis is bounded");
-        if vertical_alignment < 1.0 - 1.0e-9 {
+        if vertical_alignment < 1.0 - ROUNDING {
             not_evaluated.push(serde_json::json!({
                 "occurrence_id": occurrence_id.0,
                 "name": name,
@@ -2185,7 +2191,7 @@ pub fn assistant_hardware_manufacturing_report(
                 })
                 .sum::<f64>()
                 .abs();
-            alignment < 1.0 - 1.0e-9
+            alignment < 1.0 - ROUNDING
         }) {
             not_evaluated.push(serde_json::json!({
                 "validator": "hardware_manufacturing",
@@ -3648,7 +3654,7 @@ pub(crate) fn assistant_validation_context_base(
     let declared_gravity = assistant_gravity_input(snapshot).ok();
     if gravity_participants.is_empty() {
         let floor_is_world_xy = declared_gravity.is_none_or(|gravity| {
-            gravity.direction[2] < 0.0 && (1.0 + gravity.direction[2]).abs() <= 1.0e-9
+            gravity.direction[2] < 0.0 && (1.0 + gravity.direction[2]).abs() <= ROUNDING
         });
         gravity_participants =
             assistant_derived_gravity_participants(snapshot, &participants, floor_is_world_xy);

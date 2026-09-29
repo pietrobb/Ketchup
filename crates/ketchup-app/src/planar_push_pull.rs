@@ -2,6 +2,7 @@ use super::*;
 use ketchup_application::evaluation::{
     ProducerKey, publish_exact_products, start_exact_evaluation_scoped,
 };
+use ketchup_core::tolerance::{ACCUMULATED_ROUNDING, ROUNDING};
 use ketchup_interaction::exact_projection::ExactSurfaceHit;
 #[cfg(test)]
 #[path = "planar_push_pull_tests.rs"]
@@ -81,7 +82,7 @@ fn planar_face(
     let first = *triangles.first()?;
     let local_normal = triangle_normal(first);
     let length = vector_length(local_normal);
-    if length <= 1.0e-12 {
+    if length <= ROUNDING {
         return None;
     }
     let local_normal = local_normal * (1.0 / length);
@@ -94,7 +95,7 @@ fn planar_face(
         .flatten()
         .map(f64::abs)
         .fold(1.0, f64::max)
-        * 1.0e-8;
+        * ACCUMULATED_ROUNDING;
     if triangles
         .iter()
         .flatten()
@@ -105,7 +106,7 @@ fn planar_face(
     let world = first.map(|p| transform_model_point(transform, p));
     let normal = triangle_normal(world);
     let length = vector_length(normal);
-    if length <= 1.0e-12 {
+    if length <= ROUNDING {
         return None;
     }
     let normal = normal * (1.0 / length);
@@ -117,7 +118,9 @@ fn planar_face(
     };
     let scale = dot(transformed_normal, normal);
     // Only similarities preserve a perpendicular offset as a perpendicular offset.
-    if scale <= 1.0e-9 || vector_length(transformed_normal - normal * scale) > scale * 1.0e-8 {
+    if scale <= ROUNDING
+        || vector_length(transformed_normal - normal * scale) > scale * ACCUMULATED_ROUNDING
+    {
         return None;
     }
     Some(PlanarFace {

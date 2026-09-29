@@ -14,7 +14,7 @@ use crate::exact_validation::{
 use crate::graph::{DerivedIdentity, sha256_hex};
 use crate::joinery::{DowelHole, project_dowel_joint_contract};
 use crate::sketch::{PadOperation, PadSpec};
-use crate::tolerance::TolerancePolicy;
+use crate::tolerance::{ROUNDING, TolerancePolicy};
 use crate::validation::{
     EvidenceClass, EvidenceCounts, PermittedErrorDirection, TolerantEvidence, ValidationReport,
     ValidationState,
@@ -1468,7 +1468,7 @@ fn btlx_edge_saw_contours(
     let dot = |left: [f64; 2], right: [f64; 2]| left[0] * right[0] + left[1] * right[1];
     let cross = |left: [f64; 2], right: [f64; 2]| left[0] * right[1] - left[1] * right[0];
     let vectors = [vector(first), vector(second), vector(third), vector(fourth)];
-    let close = |left: f64, right: f64| (left - right).abs() <= 1.0e-9;
+    let close = |left: f64, right: f64| (left - right).abs() <= ROUNDING;
     if !close(dot(vectors[0], vectors[1]), 0.0)
         || !close(dot(vectors[1], vectors[2]), 0.0)
         || !close(cross(vectors[0], vectors[2]), 0.0)
@@ -1565,7 +1565,7 @@ fn btlx_arc_points(
     let end_vector = [end[0] - center[0], end[1] - center[1]];
     let start_radius = start_vector[0].hypot(start_vector[1]);
     let end_radius = end_vector[0].hypot(end_vector[1]);
-    let radius_tolerance = 1.0e-9 * start_radius.max(end_radius).max(1.0);
+    let radius_tolerance = ROUNDING * start_radius.max(end_radius).max(1.0);
     if start_radius <= 0.0 || (start_radius - end_radius).abs() > radius_tolerance {
         return None;
     }
@@ -1799,7 +1799,7 @@ fn machining_frame_is_right_handed(frame: &GeneralMachiningFrame) -> bool {
         frame.x_axis[2] * frame.y_axis[0] - frame.x_axis[0] * frame.y_axis[2],
         frame.x_axis[0] * frame.y_axis[1] - frame.x_axis[1] * frame.y_axis[0],
     ];
-    let close = |left: f64, right: f64| (left - right).abs() <= 1.0e-12;
+    let close = |left: f64, right: f64| (left - right).abs() <= ROUNDING;
     close(dot(frame.x_axis, frame.x_axis), 1.0)
         && close(dot(frame.y_axis, frame.y_axis), 1.0)
         && close(dot(frame.normal, frame.normal), 1.0)
@@ -1876,7 +1876,7 @@ fn woodwop_mpr_output(
 
 fn woodwop_dowel_macro(hole: &DowelHole, stock_frame: WoodwopStockFrame) -> Option<String> {
     let normal = hole.inward_unit_local;
-    let tolerance = 1.0e-12;
+    let tolerance = ROUNDING;
     let (x_axis, y_axis) = if normal[0] >= 1.0 - tolerance
         && normal[1].abs() <= tolerance
         && normal[2].abs() <= tolerance
@@ -2034,13 +2034,13 @@ fn woodwop_drilling_macro(
     let direction = woodwop_coordinate(frame.normal, stock_frame);
     let [length_mm, width_mm, thickness_mm] = stock_frame.dimensions_mm;
     let dimensions = stock_frame.dimensions_mm;
-    let tolerance = dimensions.into_iter().fold(1.0_f64, f64::max) * 1.0e-9;
+    let tolerance = dimensions.into_iter().fold(1.0_f64, f64::max) * ROUNDING;
     let axis = (0..3).find(|candidate| {
-        direction[*candidate].abs() >= 1.0 - 1.0e-12
+        direction[*candidate].abs() >= 1.0 - ROUNDING
             && direction
                 .iter()
                 .enumerate()
-                .all(|(index, value)| index == *candidate || value.abs() <= 1.0e-12)
+                .all(|(index, value)| index == *candidate || value.abs() <= ROUNDING)
     })?;
     let sign = if direction[axis] > 0.0 { 1.0 } else { -1.0 };
     let expected_entry = if sign > 0.0 { 0.0 } else { dimensions[axis] };
@@ -2107,14 +2107,14 @@ fn woodwop_vertical_pocket_macro(
         return None;
     }
     let direction = woodwop_coordinate(frame.normal, stock_frame);
-    if direction[2] >= -1.0 + 1.0e-12
-        || direction[0].abs() > 1.0e-12
-        || direction[1].abs() > 1.0e-12
+    if direction[2] >= -1.0 + ROUNDING
+        || direction[0].abs() > ROUNDING
+        || direction[1].abs() > ROUNDING
     {
         return None;
     }
     let dimensions = stock_frame.dimensions_mm;
-    let tolerance = dimensions.into_iter().fold(1.0_f64, f64::max) * 1.0e-9;
+    let tolerance = dimensions.into_iter().fold(1.0_f64, f64::max) * ROUNDING;
     let depth_mm = end_mm - start_mm;
     if depth_mm >= dimensions[2] - tolerance {
         return None;
@@ -2459,7 +2459,7 @@ fn weldment_joint_member_cut(
     let matching = endpoint_pairs
         .into_iter()
         .filter(|(_, first_joint, _, _, second_joint, _)| {
-            weldment_distance(*first_joint, *second_joint) <= 1.0e-9
+            weldment_distance(*first_joint, *second_joint) <= ROUNDING
         })
         .collect::<Vec<_>>();
     let [(first_is_start, joint_point, first_far, second_is_start, _, second_far)] =
@@ -3196,7 +3196,7 @@ fn blind_cut_enters_at_end(
         .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), along| {
             (low.min(along), high.max(along))
         });
-    let tolerance = 1.0e-9;
+    let tolerance = ROUNDING;
     Some((interval.end_mm() - high).abs() <= tolerance && interval.start_mm() > low + tolerance)
 }
 
@@ -3287,7 +3287,7 @@ fn machining_frame(
         frame.x_axis[2] * frame.y_axis[0] - frame.x_axis[0] * frame.y_axis[2],
         frame.x_axis[0] * frame.y_axis[1] - frame.x_axis[1] * frame.y_axis[0],
     ];
-    let close = |left: f64, right: f64| (left - right).abs() <= 1.0e-12;
+    let close = |left: f64, right: f64| (left - right).abs() <= ROUNDING;
     (close(dot(frame.x_axis, frame.x_axis), 1.0)
         && close(dot(frame.y_axis, frame.y_axis), 1.0)
         && close(dot(frame.normal, frame.normal), 1.0)
@@ -3349,7 +3349,7 @@ fn circular_profile(geometry: &ExactBRepPlanarGeometry) -> Option<([f64; 2], f64
     let start = start_bits.map(f64::from_bits);
     let radius_squared = (start[0] - center[0]).powi(2) + (start[1] - center[1]).powi(2);
     let close = |left: f64, right: f64| {
-        (left - right).abs() <= 1.0e-12 * left.abs().max(right.abs()).max(1.0)
+        (left - right).abs() <= ROUNDING * left.abs().max(right.abs()).max(1.0)
     };
     let mut previous_end = start;
     for segment in segments {
@@ -3814,7 +3814,7 @@ fn is_production_transform(transform: Transform) -> bool {
     let m = transform.matrix();
     let determinant = m[0] * (m[5] * m[10] - m[6] * m[9]) - m[1] * (m[4] * m[10] - m[6] * m[8])
         + m[2] * (m[4] * m[9] - m[5] * m[8]);
-    is_rigid_transform(transform) && (determinant - 1.0).abs() <= 1.0e-12
+    is_rigid_transform(transform) && (determinant - 1.0).abs() <= ROUNDING
 }
 fn is_rigid_transform(transform: Transform) -> bool {
     let matrix = transform.matrix();
@@ -3832,7 +3832,7 @@ fn is_rigid_transform(transform: Transform) -> bool {
             .map(|(left, right)| left * right)
             .sum::<f64>()
     };
-    let epsilon = 1.0e-12;
+    let epsilon = ROUNDING;
     columns
         .iter()
         .all(|column| (dot(*column, *column) - 1.0).abs() <= epsilon)

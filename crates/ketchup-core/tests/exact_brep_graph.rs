@@ -23,6 +23,7 @@ use ketchup_core::sketch::{
     WorkplaneSupportHealth,
 };
 use ketchup_core::testing::box_package;
+use ketchup_core::tolerance::{DEFAULT_LINEAR_TOLERANCE_MM, TolerancePolicy};
 use ketchup_core::topology::{
     TopologicalElementKind, TopologicalElementRef, TopologicalReferenceStability,
 };
@@ -1685,6 +1686,7 @@ fn cubic_sweep_selects_v11_round_trips_and_rejects_v10_downgrade() {
 
 #[test]
 fn closed_spatial_path_requires_a_c1_periodic_seam() {
+    let tolerance_mm = DEFAULT_LINEAR_TOLERANCE_MM;
     let quarter = |start_mm, end_mm| SpatialPathSegment::CircularArc {
         start_mm,
         end_mm,
@@ -1698,7 +1700,7 @@ fn closed_spatial_path_requires_a_c1_periodic_seam() {
         quarter([-20.0, 0.0, 0.0], [0.0, -20.0, 0.0]),
         quarter([0.0, -20.0, 0.0], [20.0, 0.0, 0.0]),
     ];
-    assert!(is_valid_spatial_sweep_path(&path));
+    assert!(is_valid_spatial_sweep_path(&path, tolerance_mm));
 
     path[3] = SpatialPathSegment::CubicBezier {
         start_mm: [0.0, -20.0, 0.0],
@@ -1706,7 +1708,7 @@ fn closed_spatial_path_requires_a_c1_periodic_seam() {
         control_2_mm: [19.0, 0.0, 0.0],
         end_mm: [20.0, 0.0, 0.0],
     };
-    assert!(!is_valid_spatial_sweep_path(&path));
+    assert!(!is_valid_spatial_sweep_path(&path, tolerance_mm));
 }
 
 fn spatial_sweep_v12_graph() -> ExactBRepGraph {
@@ -1854,4 +1856,46 @@ fn spatial_sweep_paths_count_toward_the_graph_wide_segment_limit() {
     graph.producer_feature_id = graph.nodes.last().unwrap().source_feature_id;
 
     assert_eq!(graph.to_bytes(), Err(ExactBRepGraphError::ResourceLimit));
+}
+
+#[test]
+fn the_document_tolerance_reaches_the_graph_and_its_digest() {
+    let mut document = arbitrary_boolean_document();
+    let default_graph =
+        ExactBRepGraph::from_snapshot(&document.current(), DEFINITION, BOOLEAN).unwrap();
+    assert!(default_graph.tolerance.is_default());
+
+    let custom = TolerancePolicy::with_angular(0.001, 1.0e-9).unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::SetTolerance {
+            tolerance: custom,
+        }]))
+        .unwrap();
+    let graph = ExactBRepGraph::from_snapshot(&document.current(), DEFINITION, BOOLEAN).unwrap();
+    assert_eq!(graph.tolerance, custom);
+    assert_eq!(graph.nodes, default_graph.nodes);
+    assert_ne!(graph.graph_digest, default_graph.graph_digest);
+    assert_eq!(
+        ExactBRepGraph::from_bytes(&graph.to_bytes().unwrap()).unwrap(),
+        graph
+    );
+}
+
+#[test]
+fn a_path_segment_within_the_linear_tolerance_is_degenerate() {
+    let path = [
+        SpatialPathSegment::Line {
+            start_mm: [0.0, 0.0, 0.0],
+            end_mm: [100.0, 0.0, 0.0],
+        },
+        SpatialPathSegment::Line {
+            start_mm: [100.0, 0.0, 0.0],
+            end_mm: [100.0005, 0.0, 0.0],
+        },
+    ];
+    assert!(is_valid_spatial_sweep_path(
+        &path,
+        DEFAULT_LINEAR_TOLERANCE_MM
+    ));
+    assert!(!is_valid_spatial_sweep_path(&path, 0.001));
 }

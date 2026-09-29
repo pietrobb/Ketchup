@@ -8,13 +8,14 @@ use crate::drawing::{
     ORTHOGRAPHIC_LINEWORK_SCHEMA_V2, OrthographicDrawing, OrthographicView, drawing_layout_digest,
     drawing_result_digest,
 };
+use crate::tolerance::DEFAULT_LINEAR_TOLERANCE_MM;
 use std::fmt;
 
 pub const DRAWING_EXPORT_SCHEMA_V1: &str = "ketchup.drawing-export.v1";
 const MAX_EXPORT_LINES: usize = 100_000;
 const MAX_EXPORT_TEXTS: usize = 1_024;
 const MAX_EXPORT_BYTES: usize = 64 * 1024 * 1024;
-const COORDINATE_EPSILON_MM: f64 = 1.0e-7;
+const COORDINATE_EPSILON_MM: f64 = DEFAULT_LINEAR_TOLERANCE_MM;
 const POINTS_PER_MM: f64 = 72.0 / 25.4;
 const PDF_UNICODE_GLYPHS: &[(char, u8, &str)] = &[
     ('Á', 128, "Aacute"),

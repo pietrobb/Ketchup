@@ -6,6 +6,7 @@
 //! the six local faces and use face-local coordinates.
 
 use crate::frame::{self, Mat3, Obb};
+use ketchup_core::tolerance::ROUNDING;
 use serde::Serialize;
 
 /// One of the six faces of an axis-aligned part.
@@ -256,7 +257,7 @@ fn segment_label(segments: &[ProgramProfileSegment], index: usize) -> String {
             first.end_mm[1] - a.center_mm[1],
         ];
         let radius = start[0].hypot(start[1]);
-        if (start[0] + end[0]).hypot(start[1] + end[1]) <= 1.0e-9 * radius.max(1.0) {
+        if (start[0] + end[0]).hypot(start[1] + end[1]) <= ROUNDING * radius.max(1.0) {
             return "face".to_owned();
         }
     }
@@ -307,8 +308,8 @@ impl ProgramProfileSegment {
             let b = 2.0 * (p0 - 2.0 * p1 + p2);
             let c = p1 - p0;
             let mut roots = Vec::new();
-            if a.abs() <= 1e-12 {
-                if b.abs() > 1e-12 {
+            if a.abs() <= ROUNDING {
+                if b.abs() > ROUNDING {
                     roots.push(-c / b);
                 }
             } else {
@@ -401,7 +402,8 @@ fn moved_side(
     let meet = |neighbour: &ProgramProfileSegment, vertex: [f64; 2]| {
         let along = minus(neighbour.end_mm, neighbour.start_mm);
         let denominator = cross(along, direction);
-        if !neighbour.is_line() || denominator.abs() <= 1e-9 * length * along[0].hypot(along[1]) {
+        if !neighbour.is_line() || denominator.abs() <= ROUNDING * length * along[0].hypot(along[1])
+        {
             return None;
         }
         let t = cross(minus(moved_start, vertex), direction) / denominator;

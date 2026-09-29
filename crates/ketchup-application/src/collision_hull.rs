@@ -5,11 +5,12 @@ use ketchup_core::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry,
     ExactBRepPlanarLoop, ExactBRepPlanarSegment,
 };
+use ketchup_core::tolerance::ROUNDING;
 
 /// Same slab as the native pair query: an apparent overlap up to this depth is
 /// shared faces within OCCT's coincidence tolerance, never common volume.
 const COINCIDENT_SLAB_MM: f64 = 3.0e-7;
-const PARALLEL: f64 = 1.0 - 1.0e-12;
+const PARALLEL: f64 = 1.0 - ROUNDING;
 
 /// Box in definition-local coordinates enclosing the whole solid.
 #[derive(Clone, Copy, Debug)]
@@ -181,7 +182,7 @@ impl LocalHull {
         for i in 0..3 {
             for j in 0..3 {
                 let expected = if i == j { 1.0 } else { 0.0 };
-                if (dot(axes[i], axes[j]) - expected).abs() > 1.0e-12 {
+                if (dot(axes[i], axes[j]) - expected).abs() > ROUNDING {
                     return None;
                 }
             }
@@ -283,7 +284,7 @@ pub(super) fn relate(a: &WorldHull, b: &WorldHull, tolerance_mm: f64) -> HullRel
         for j in 0..3 {
             let c = cross(a.axes[i], b.axes[j]);
             let norm = dot(c, c).sqrt();
-            if norm > 1.0e-9 {
+            if norm > ROUNDING {
                 axes.push(c.map(|x| x / norm));
             }
         }

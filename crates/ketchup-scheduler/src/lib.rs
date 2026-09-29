@@ -10,6 +10,7 @@ pub mod protocol;
 pub use pair_query::{ExactPairCandidate, ExactPairQueryResult, ExactPairRelation};
 pub mod validator_runtime;
 mod worker_client;
+use ketchup_core::tolerance::{ACCUMULATED_ROUNDING, DEFAULT_LINEAR_TOLERANCE_MM, ROUNDING};
 use worker_client::{WorkerResponse, WorkerWriteRequest};
 
 use ketchup_core::cam::{
@@ -1806,7 +1807,7 @@ impl ExactWorkerSupervisor {
                         .any(|index| *index as usize >= vertex_count)
             })
             || !mesh.exact_volume_mm3.is_finite()
-            || (mesh.exact_volume_mm3 - source.volume_mm3).abs() > source_volume_scale * 1.0e-10
+            || (mesh.exact_volume_mm3 - source.volume_mm3).abs() > source_volume_scale * ROUNDING
             || !mesh.tetrahedral_volume_mm3.is_finite()
             || mesh.tetrahedral_volume_mm3 <= 0.0
             || !mesh.relative_volume_error.is_finite()
@@ -2786,9 +2787,10 @@ fn validate_cam_simulation_wire_evidence(
         || volumes
             .into_iter()
             .any(|value| !value.is_finite() || value < 0.0)
-        || (evidence.stock_before_mm3 - expected_stock).abs() > expected_stock.max(1.0) * 1.0e-8
+        || (evidence.stock_before_mm3 - expected_stock).abs()
+            > expected_stock.max(1.0) * ACCUMULATED_ROUNDING
         || (evidence.stock_before_mm3 - evidence.stock_after_mm3 - evidence.removed_stock_mm3).abs()
-            > evidence.stock_before_mm3.max(1.0) * 1.0e-8
+            > evidence.stock_before_mm3.max(1.0) * ACCUMULATED_ROUNDING
         || evidence.backend.is_empty()
         || evidence.tolerance.is_empty()
         || !evidence.result_fingerprint.is_empty()
@@ -2821,7 +2823,7 @@ fn validate_cam_simulation_wire_evidence(
             || collision.distance_mm < 0.0
             || collision.common_volume_mm3 == 0.0
                 && collision.contact_area_mm2 == 0.0
-                && collision.distance_mm > 1.0e-7
+                && collision.distance_mm > DEFAULT_LINEAR_TOLERANCE_MM
             || !collision_keys.insert((
                 collision.motion_index,
                 collision.participant,

@@ -1,4 +1,4 @@
-use crate::tolerance::MAX_COORDINATE_MM;
+use crate::tolerance::{ACCUMULATED_ROUNDING, MAX_COORDINATE_MM, ROUNDING};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
@@ -21,7 +21,7 @@ const MAX_DXF_ENTITIES: usize = 10_000;
 const MAX_DXF_PROFILES: usize = (ProposalBudget::HOST_MAX.max_commands - 1) / 3;
 const MAX_DXF_SEGMENTS_PER_PROFILE: usize = 1_024;
 const MAX_DXF_BLOCK_DEPTH: usize = 32;
-const DXF_GEOMETRY_EPSILON_MM: f64 = 1.0e-9;
+const DXF_GEOMETRY_EPSILON_MM: f64 = ROUNDING;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DxfImportOptions {
@@ -4325,7 +4325,7 @@ fn point_key(point: [f64; 2]) -> [u64; 2] {
 }
 
 fn duplicate_point_key(point: [f64; 2]) -> [i64; 2] {
-    const DUPLICATE_GRID_MM: f64 = 1.0e-8;
+    const DUPLICATE_GRID_MM: f64 = ACCUMULATED_ROUNDING;
     [
         (point[0] / DUPLICATE_GRID_MM).round() as i64,
         (point[1] / DUPLICATE_GRID_MM).round() as i64,

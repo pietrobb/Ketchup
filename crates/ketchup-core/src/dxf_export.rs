@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use crate::tolerance::MAX_COORDINATE_MM;
+use crate::tolerance::{MAX_COORDINATE_MM, ROUNDING};
 use std::collections::BTreeSet;
 use std::fmt::{self, Write as _};
 
@@ -13,7 +13,7 @@ use crate::sketch::{
 pub const DXF_PROFILE_EXPORT_SCHEMA_V1: &str = "ketchup.dxf-profile-export.v1";
 const MAX_EXPORT_PROFILES: usize = 170;
 const MAX_EXPORT_SEGMENTS: usize = 10_000;
-const EPSILON: f64 = 1.0e-9;
+const EPSILON: f64 = ROUNDING;
 const IMPORTED_LAYER_PREFIX: &str = "DXF profile · ";
 
 #[derive(Clone, Debug, Eq, PartialEq)]

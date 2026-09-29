@@ -18,13 +18,14 @@ use ketchup_core::document::{
     DefinitionId, DocumentStore, FeatureId, FeatureKind, InstancePath, Proposal,
     ProposalCommitError, ProposalPrepareError, Revision, Snapshot,
 };
+use ketchup_core::tolerance::ROUNDING;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::{Add, Mul, Sub};
 use std::sync::Arc;
 
-const RAY_EPSILON: f64 = 1.0e-12;
-const SNAP_EPSILON: f64 = 1.0e-9;
+const RAY_EPSILON: f64 = ROUNDING;
+const SNAP_EPSILON: f64 = ROUNDING;
 const BOX_EDGE_ENDPOINTS: [(usize, usize); 12] = [
     (0, 1),
     (2, 3),

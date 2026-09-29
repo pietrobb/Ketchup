@@ -23,6 +23,7 @@ use ketchup_core::mechanical_coupling::{
     AssemblyTransmissionKind, CoupledJointKind, GearMeshKind, ScrewHandedness,
 };
 use ketchup_core::prismatic::Aabb;
+use ketchup_core::tolerance::ROUNDING;
 use ketchup_interaction::projection::CanonicalInteractionProjection;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -696,7 +697,7 @@ impl KetchupApp {
             + moving_normal.z * desired_normal.z)
             .clamp(-1.0, 1.0);
         let cross_length = vector_length(cross);
-        let rotated_local = if cross_length > 1.0e-12 {
+        let rotated_local = if cross_length > ROUNDING {
             let rotation = world_axis_rotation_transform(
                 moving_origin,
                 cross,

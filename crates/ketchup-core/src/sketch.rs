@@ -1,6 +1,8 @@
 use crate::document::{Dimension, FeatureId};
 use crate::exact_product::BodySubshapeRef;
-use crate::tolerance::MAX_COORDINATE_MM;
+use crate::tolerance::{
+    ACCUMULATED_ROUNDING, APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM, ROUNDING,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -9,13 +11,13 @@ mod rank;
 pub const MAX_SKETCH_ENTITIES: usize = 4_096;
 pub const MAX_SKETCH_CONSTRAINTS: usize = 8_192;
 const MAX_SKETCH_SOLVER_DOF: usize = 512;
-const EPSILON_MM: f64 = 1.0e-7;
-const FRAME_EPSILON: f64 = 1.0e-9;
+const EPSILON_MM: f64 = DEFAULT_LINEAR_TOLERANCE_MM;
+const FRAME_EPSILON: f64 = ROUNDING;
 const MAX_SKETCH_SOLVER_ITERATIONS: u16 = 256;
 const MAX_SKETCH_NUMERICAL_EVALUATIONS: usize = 67_108_864;
 const MAX_CUBIC_FLATTEN_DEPTH: u8 = 16;
 const MAX_CUBIC_FLATTEN_SEGMENTS: usize = 16_384;
-const CUBIC_FLATTEN_TOLERANCE_MM: f64 = 1.0e-6;
+const CUBIC_FLATTEN_TOLERANCE_MM: f64 = APPROXIMATION;
 
 #[derive(
     Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
@@ -3065,7 +3067,7 @@ fn arc_parts(curve: RegionCurve) -> ([f64; 2], [f64; 2], [f64; 2], bool) {
 fn point_on_arc(point: [f64; 2], curve: RegionCurve) -> bool {
     let (start, end, center, clockwise) = arc_parts(curve);
     let radius = distance2(start, center);
-    if (distance2(point, center) - radius).abs() > radius.max(1.0) * 1.0e-8 {
+    if (distance2(point, center) - radius).abs() > radius.max(1.0) * ACCUMULATED_ROUNDING {
         return false;
     }
     let start_angle = (start[1] - center[1]).atan2(start[0] - center[0]);
@@ -3081,7 +3083,7 @@ fn point_on_arc(point: [f64; 2], curve: RegionCurve) -> bool {
     } else {
         (point_angle - start_angle).rem_euclid(std::f64::consts::TAU)
     };
-    offset <= total + 1.0e-10
+    offset <= total + ROUNDING
 }
 
 fn line_arc_intersects(start: [f64; 2], end: [f64; 2], arc: RegionCurve) -> bool {
@@ -3117,7 +3119,7 @@ fn arcs_intersect(left: RegionCurve, right: RegionCurve) -> bool {
     let left_radius = distance2(left_start, left_center);
     let right_radius = distance2(right_start, right_center);
     let center_distance = distance2(left_center, right_center);
-    let tolerance = left_radius.max(right_radius).max(1.0) * 1.0e-8;
+    let tolerance = left_radius.max(right_radius).max(1.0) * ACCUMULATED_ROUNDING;
     if center_distance <= tolerance && (left_radius - right_radius).abs() <= tolerance {
         return true;
     }

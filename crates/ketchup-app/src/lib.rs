@@ -115,8 +115,10 @@ use ketchup_core::state_view::{AGENT_STATE_VIEW, encode_semantic_state};
 use ketchup_core::three_mf_export::{
     ExactThreeMfExport, MeshThreeMfInstance, model_three_mf_export,
 };
-use ketchup_core::tolerance::MAX_COORDINATE_MM;
 use ketchup_core::tolerance::TolerancePolicy;
+use ketchup_core::tolerance::{
+    ACCUMULATED_ROUNDING, APPROXIMATION, DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM, ROUNDING,
+};
 use ketchup_core::topology::{TopologicalElementKind, TopologicalElementRef};
 use ketchup_core::validation::ValidatorRoleIndex;
 use ketchup_interaction::{
@@ -4156,7 +4158,7 @@ impl AssistantRepairOperation {
                         .sum::<f64>()
                         - 1.0)
                         .abs()
-                        > 1.0e-9
+                        > ROUNDING
                 {
                     return false;
                 }
@@ -14599,7 +14601,8 @@ impl KetchupApp {
         distance_expression: &str,
         distance_mm: f64,
     ) -> Option<(PlanarOffsetPreviewPlan, CommandBatch)> {
-        if distance_mm.abs() <= 1.0e-6 || self.planar_offset_source_plan().as_ref() != Some(source)
+        if distance_mm.abs() <= APPROXIMATION
+            || self.planar_offset_source_plan().as_ref() != Some(source)
         {
             return None;
         }
@@ -14648,7 +14651,7 @@ impl KetchupApp {
             return false;
         };
         let Some(distance_mm) =
-            parse_distance_mm(&self.value_input).filter(|distance| distance.abs() > 1.0e-6)
+            parse_distance_mm(&self.value_input).filter(|distance| distance.abs() > APPROXIMATION)
         else {
             self.digest = self.catalog.text("digest-planar-offset-invalid-distance");
             return false;
@@ -24935,7 +24938,7 @@ impl KetchupApp {
         let mut world_origin = transform_model_point(occurrence.transform, local_origin);
         let normal = cross(world_x_axis, world_y_axis);
         let normal_length = vector_length(normal);
-        if normal_length > 1.0e-12 {
+        if normal_length > ROUNDING {
             let unit_normal = normal * (1.0 / normal_length);
             world_origin =
                 world_origin + unit_normal * dot(hit_position - world_origin, unit_normal);
@@ -25265,7 +25268,7 @@ impl KetchupApp {
                     - world_origin;
                 let x_length = vector_length(world_x);
                 let y_length = vector_length(world_y);
-                if x_length <= 1.0e-12 || y_length <= 1.0e-12 {
+                if x_length <= ROUNDING || y_length <= ROUNDING {
                     continue;
                 }
                 let world_x_axis = world_x * (1.0 / x_length);
@@ -25962,7 +25965,7 @@ impl KetchupApp {
         let ray = self.view_ray(pointer, rect)?;
         let normal = axis_direction(axis);
         let denominator = dot(ray.direction, normal);
-        if denominator.abs() <= 1.0e-9 {
+        if denominator.abs() <= ROUNDING {
             return None;
         }
         let distance = dot(centre_mm - ray.origin, normal) / denominator;
@@ -26592,7 +26595,7 @@ impl KetchupApp {
         if let Some(last) = points.last() {
             twice_area += last.x * points[0].y - points[0].x * last.y;
         }
-        if !twice_area.is_finite() || twice_area.abs() <= 1.0e-6 {
+        if !twice_area.is_finite() || twice_area.abs() <= APPROXIMATION {
             return false;
         }
 
@@ -27371,7 +27374,7 @@ impl KetchupApp {
 
     fn screen_to_plane(&self, pointer: Pos2, rect: Rect, plane_z: f64) -> Option<Vec3> {
         let ray = self.view_ray(pointer, rect)?;
-        if ray.direction.z.abs() <= 1.0e-9 {
+        if ray.direction.z.abs() <= ROUNDING {
             return None;
         }
         let distance = (plane_z - ray.origin.z) / ray.direction.z;
@@ -27399,7 +27402,7 @@ impl KetchupApp {
         let origin = Vec3::new(frame.origin_mm[0], frame.origin_mm[1], frame.origin_mm[2]);
         let normal = Vec3::new(frame.normal[0], frame.normal[1], frame.normal[2]);
         let denominator = dot(ray.direction, normal);
-        if denominator.abs() <= 1.0e-9 {
+        if denominator.abs() <= ROUNDING {
             return None;
         }
         let distance = dot(origin - ray.origin, normal) / denominator;
@@ -28598,7 +28601,7 @@ impl KetchupApp {
                             element: face_element_from_normal(normal),
                             ..selection.clone()
                         };
-                        if point_depth(normal, forward) >= -1.0e-9
+                        if point_depth(normal, forward) >= -ROUNDING
                             && self.hovered.as_ref() != Some(&selection)
                         {
                             continue;
@@ -28850,7 +28853,7 @@ impl KetchupApp {
                             && hovered.instance_path == occurrence.instance_path
                             && hovered.element == element
                     });
-                if point_depth(normal, forward) >= -1.0e-9 && !hovered {
+                if point_depth(normal, forward) >= -ROUNDING && !hovered {
                     continue;
                 }
                 let projected = points_mm.map(|point| self.project(point, response.rect));
@@ -28983,7 +28986,7 @@ impl KetchupApp {
             for triangle in &mesh.triangles {
                 let corners = triangle.map(|index| points_mm[index as usize]);
                 let normal = triangle_normal(corners);
-                if point_depth(normal, forward) >= -1.0e-9 {
+                if point_depth(normal, forward) >= -ROUNDING {
                     continue;
                 }
                 let projected = corners.map(|point| self.project(point, response.rect));
@@ -29467,7 +29470,7 @@ impl KetchupApp {
         .into_iter()
         .flatten()
         .fold(f64::INFINITY, f64::min);
-        let coplanar_mm = 1.0e-7 * nearest_mm.abs().max(1.0);
+        let coplanar_mm = DEFAULT_LINEAR_TOLERANCE_MM * nearest_mm.abs().max(1.0);
         let is_flat_profile = |definition_id: DefinitionId| {
             snapshot
                 .definition(definition_id)
@@ -29567,7 +29570,7 @@ impl KetchupApp {
             }
             if let Some(mesh) = mesh_hit.as_ref().filter(|mesh| {
                 mesh.instance_path != primary.reference.instance_path
-                    && mesh.ray_distance_mm <= primary.ray_distance_mm + 1.0e-6
+                    && mesh.ray_distance_mm <= primary.ray_distance_mm + APPROXIMATION
             }) {
                 overlapping.push(ExactHit {
                     reference: SelectionId {
@@ -29595,7 +29598,7 @@ impl KetchupApp {
             && (flat_mesh_wins
                 || mesh_hit.as_ref().is_some_and(|mesh| {
                     box_pick.as_ref().is_none_or(|pick| {
-                        mesh.ray_distance_mm <= pick.primary.ray_distance_mm + 1.0e-6
+                        mesh.ray_distance_mm <= pick.primary.ray_distance_mm + APPROXIMATION
                     })
                 }));
         if prefer_mesh && let Some(hit) = mesh_hit {
@@ -31402,7 +31405,7 @@ impl KetchupApp {
     /// the camera moves between millimetre details and kilometre-scale scenes.
     fn paint_ground_plane(&self, painter: &egui::Painter, rect: Rect) {
         let palette = self.palette();
-        let scale = self.view_scale(rect).max(1.0e-12);
+        let scale = self.view_scale(rect).max(ROUNDING);
         let step = adaptive_grid_step(scale);
         let centre = self
             .screen_to_plane(rect.center(), rect, 0.0)
@@ -36695,7 +36698,7 @@ fn axis_travel_along(ray: &Ray, anchor: Vec3, axis: Axis) -> Option<f64> {
     let alignment = dot(unit, ray.direction);
     // `unit` is a unit vector, so its own square length is exactly one.
     let denominator = ray_length_squared - alignment * alignment;
-    if denominator.abs() <= 1.0e-9 {
+    if denominator.abs() <= ROUNDING {
         return None;
     }
     let travel = alignment.mul_add(
@@ -37187,7 +37190,7 @@ fn exact_surface_element(normal: Vec3) -> Option<ElementId> {
         .into_iter()
         .enumerate()
         .max_by(|left, right| left.1.total_cmp(&right.1))?;
-    if magnitude <= 1.0e-9 {
+    if magnitude <= ROUNDING {
         return None;
     }
     let (axis, signed_component) = match axis_index {
@@ -38188,7 +38191,7 @@ fn face_is_visible(element: &ElementId, forward: Vec3) -> bool {
         Side::Minimum => -direction,
         Side::Maximum => direction,
     };
-    outward_dot_forward < -1.0e-9
+    outward_dot_forward < -ROUNDING
 }
 
 fn projected_face_has_area(corners: [usize; 4], projected: &[Pos2; 8]) -> bool {
@@ -38209,7 +38212,7 @@ fn projected_polygon_has_area(points: &[Pos2]) -> bool {
 
 fn adaptive_grid_step(pixels_per_mm: f64) -> f64 {
     const TARGET_SPACING_PX: f64 = 32.0;
-    let desired = (TARGET_SPACING_PX / pixels_per_mm.max(1.0e-12)).max(GRID_STEP_MM);
+    let desired = (TARGET_SPACING_PX / pixels_per_mm.max(ROUNDING)).max(GRID_STEP_MM);
     let magnitude = 10.0_f64.powf(desired.log10().floor());
     let normalized = desired / magnitude;
     let factor = if normalized <= 1.0 {
@@ -38342,7 +38345,7 @@ fn push_pull_distance_from_pointer(drag: &PushPullDrag, pointer: Pos2, snaps_ena
 fn tangent_points(anchor: Vec3, center: Vec3, radius: f64) -> Vec<Vec3> {
     let delta = anchor - center;
     let distance_squared = delta.x * delta.x + delta.y * delta.y;
-    if !radius.is_finite() || radius <= 0.0 || distance_squared <= radius * radius + 1.0e-9 {
+    if !radius.is_finite() || radius <= 0.0 || distance_squared <= radius * radius + ROUNDING {
         return Vec::new();
     }
     let base_scale = radius * radius / distance_squared;
@@ -38364,7 +38367,7 @@ fn tangent_points(anchor: Vec3, center: Vec3, radius: f64) -> Vec<Vec3> {
 fn point_line_signed_distance(point: Vec3, start: Vec3, end: Vec3) -> f64 {
     let chord = end - start;
     let length = chord.x.hypot(chord.y);
-    if length <= 1.0e-12 {
+    if length <= ROUNDING {
         0.0
     } else {
         (chord.x * (point.y - start.y) - chord.y * (point.x - start.x)) / length
@@ -38372,12 +38375,12 @@ fn point_line_signed_distance(point: Vec3, start: Vec3, end: Vec3) -> f64 {
 }
 
 fn arc_geometry(start: Vec3, end: Vec3, bulge: Vec3) -> Option<ArcGeometry> {
-    if (start.z - end.z).abs() > 1.0e-6 || (start.z - bulge.z).abs() > 1.0e-6 {
+    if (start.z - end.z).abs() > APPROXIMATION || (start.z - bulge.z).abs() > APPROXIMATION {
         return None;
     }
     let determinant = 2.0
         * (start.x * (end.y - bulge.y) + end.x * (bulge.y - start.y) + bulge.x * (start.y - end.y));
-    if !determinant.is_finite() || determinant.abs() <= 1.0e-9 {
+    if !determinant.is_finite() || determinant.abs() <= ROUNDING {
         return None;
     }
     let start_squared = start.x * start.x + start.y * start.y;
@@ -38398,7 +38401,7 @@ fn arc_geometry(start: Vec3, end: Vec3, bulge: Vec3) -> Option<ArcGeometry> {
     let end_radius = vector_length(center - end);
     if !radius.is_finite()
         || radius <= 0.01
-        || (radius - end_radius).abs() > 1.0e-8 * radius.max(end_radius).max(1.0)
+        || (radius - end_radius).abs() > ACCUMULATED_ROUNDING * radius.max(end_radius).max(1.0)
     {
         return None;
     }

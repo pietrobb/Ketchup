@@ -2,6 +2,7 @@
 //! its outward normal in the part's frame, so a face or edge picked in the
 //! window can be used directly in `on`, `hole`, `push_pull` or `fillet`.
 use crate::model::{Part, ProgramPartBody, ProgramProfileSegment};
+use ketchup_core::tolerance::{APPROXIMATION, ROUNDING};
 use std::f64::consts::TAU;
 
 const AXES: [char; 3] = ['x', 'y', 'z'];
@@ -19,7 +20,7 @@ impl Part {
         let extent = (0..3).map(|i| max[i] - min[i]).fold(1.0, f64::max);
         let on_plane = |value: f64, plane: f64| (value - plane).abs() <= 1e-4 * extent;
         let cap = |axis: usize| {
-            (normal[axis].abs() > 1.0 - 1e-6).then(|| {
+            (normal[axis].abs() > 1.0 - APPROXIMATION).then(|| {
                 if normal[axis] > 0.0 {
                     (on_plane(point[axis], max[axis]), "+")
                 } else {
@@ -61,7 +62,7 @@ impl Part {
                 if let Some((true, sign)) = cap(2) {
                     return Some(if sign == "+" { "end" } else { "start" }.to_owned());
                 }
-                if normal[2].abs() > 1e-6 {
+                if normal[2].abs() > APPROXIMATION {
                     return None;
                 }
                 closest(segments, [point[0], point[1]], tolerance)
@@ -119,7 +120,7 @@ fn distance(segment: &ProgramProfileSegment, p: [f64; 2]) -> f64 {
     // counter-clockwise one from its end back to its start.
     let (from, to) = if arc.clockwise { (b, a) } else { (a, b) };
     let span = (angle(to) - angle(from)).rem_euclid(TAU);
-    let span = if span <= 1e-12 { TAU } else { span };
+    let span = if span <= ROUNDING { TAU } else { span };
     if (angle(p) - angle(from)).rem_euclid(TAU) <= span {
         (length(minus(p, c)) - length(minus(a, c))).abs()
     } else {

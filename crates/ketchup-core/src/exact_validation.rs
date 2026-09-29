@@ -11,7 +11,7 @@ use crate::exact_product::{ExactBodyPackage, ExactResultKey, ExactResultRegistry
 use crate::graph::sha256_hex;
 use crate::prismatic::Aabb;
 use crate::sketch::{PadOperation, PadSpec};
-use crate::tolerance::TolerancePolicy;
+use crate::tolerance::{ROUNDING, TolerancePolicy};
 use crate::validation::{
     DIAGNOSTIC_SCHEMA_V1, DiagnosticLocation, DiagnosticSeverity, EvidenceClass, EvidenceCounts,
     HostNeutralValidator, PermittedErrorDirection, PolicyRequirement, PolicySeverity, ReadScope,
@@ -404,7 +404,7 @@ pub fn general_body_narrow_phase(
         for right_axis in right_obb.axes {
             let cross = vector_cross(left_axis, right_axis);
             let length = vector_length(cross);
-            if length > 1.0e-12 {
+            if length > ROUNDING {
                 axes.push(cross.map(|value| value / length));
             }
         }
@@ -474,7 +474,7 @@ fn general_body_obb(
     });
     for left in 0..3 {
         for right in left + 1..3 {
-            if vector_dot(axes[left], axes[right]).abs() > 1.0e-9 {
+            if vector_dot(axes[left], axes[right]).abs() > ROUNDING {
                 return Err(GeneralBodyValidationError::InvalidGeometry);
             }
         }
@@ -1304,7 +1304,7 @@ fn exact_box_face_contact_has_positive_area(
     let support_axis = |body: GeneralBodyObb| {
         body.axes
             .iter()
-            .position(|axis| (vector_dot(*axis, support_direction).abs() - 1.0).abs() <= 1.0e-9)
+            .position(|axis| (vector_dot(*axis, support_direction).abs() - 1.0).abs() <= ROUNDING)
     };
     let (Some(candidate_support_axis), Some(supporter_support_axis)) =
         (support_axis(candidate), support_axis(supporter))
@@ -1606,7 +1606,7 @@ fn is_axis_aligned_rectangle_profile(points_mm: &[[f64; 2]]) -> bool {
         return false;
     };
     // Solved sketch coordinates carry rounding noise far below any tolerance.
-    let same = |left: f64, right: f64| (left - right).abs() <= 1.0e-9;
+    let same = |left: f64, right: f64| (left - right).abs() <= ROUNDING;
     let horizontal = |from: &[f64; 2], to: &[f64; 2]| same(from[1], to[1]) && !same(from[0], to[0]);
     let vertical = |from: &[f64; 2], to: &[f64; 2]| same(from[0], to[0]) && !same(from[1], to[1]);
     (horizontal(a, b) && vertical(b, c) && horizontal(c, d) && vertical(d, a))

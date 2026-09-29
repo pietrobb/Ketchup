@@ -7,6 +7,7 @@ pub use ketchup_core::assistant_sidecar::{
 };
 use ketchup_core::assistant_sidecar::{AssistantCadEditOperation, AssistantCadEditProgram};
 use ketchup_core::document::SpatialPathSegment;
+use ketchup_core::tolerance::ROUNDING;
 use ketchup_interaction::{ElementId, Vec3};
 use std::collections::BTreeMap;
 
@@ -130,7 +131,7 @@ impl KetchupApp {
         let start = super::transform_model_point(transform, start);
         let end = super::transform_model_point(transform, end);
         let direction = end - start;
-        (direction.distance(Vec3::ZERO) > 1.0e-9).then_some((
+        (direction.distance(Vec3::ZERO) > ROUNDING).then_some((
             [start.x, start.y, start.z],
             [direction.x, direction.y, direction.z],
         ))
@@ -157,7 +158,7 @@ impl KetchupApp {
             .iter()
             .chain(&direction)
             .all(|value| value.is_finite())
-            && length_squared > 1.0e-18)
+            && length_squared > ROUNDING * ROUNDING)
             .then_some((origin, direction))
     }
 
@@ -620,7 +621,7 @@ fn unit(vector: [f64; 3]) -> Option<[f64; 3]> {
         return None;
     }
     let length = dot(vector, vector).sqrt();
-    (length > 1.0e-9).then(|| scale(vector, length.recip()))
+    (length > ROUNDING).then(|| scale(vector, length.recip()))
 }
 
 #[cfg(test)]
