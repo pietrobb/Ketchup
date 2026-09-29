@@ -323,6 +323,20 @@ fn an_ellipse_profile_extrudes_to_the_ellipse_volume() {
 }
 
 #[test]
+fn a_circle_drawn_as_two_half_arcs_extrudes_to_a_disc() {
+    let mut worker = worker();
+    // Both halves share both endpoints; the exact kernel must still tell
+    // the named first arc from the second one.
+    let program = "disc = extrude(\"disc\", profile=[[\"a\", (40, 0), (-40, 0), {\"through\": (0, 40)}], [\"b\", (-40, 0), (40, 0), {\"through\": (0, -40)}]], distance=10)";
+    assert_close(
+        volume(&mut worker, program, "disc"),
+        PI * 40.0 * 40.0 * 10.0,
+        1.0e-9,
+    );
+    assert_eq!(face_count(&mut worker, program, "disc"), 4);
+}
+
+#[test]
 fn a_regular_polygon_profile_extrudes_to_its_area() {
     let mut worker = worker();
     let program = "nut = extrude(\"nut\", profile=polygon(6, 50), distance=10)";

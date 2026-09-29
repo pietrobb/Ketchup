@@ -3160,6 +3160,7 @@ std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
     std::size_t first_arc_index = profile_edges.capacity();
     std::size_t first_line_index = profile_edges.capacity();
     std::size_t first_cubic_index = profile_edges.capacity();
+    gp_Pnt first_arc_middle;
     for (std::size_t offset = 0; offset < segments.size(); offset += 10) {
       const double kind = segments[offset];
       const gp_Pnt start(segments[offset + 1], segments[offset + 2], 0.0);
@@ -3196,6 +3197,7 @@ std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
         edge = BRepBuilderAPI_MakeEdge(arc_builder.Value()).Edge();
         if (first_arc_index == profile_edges.capacity()) {
           first_arc_index = profile_edges.size();
+          first_arc_middle = middle;
         }
       } else if (kind == 2.0) {
         edge = cubic_bezier_edge(segments, offset, 0.0);
@@ -3255,7 +3257,16 @@ std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
                 && last_point.Distance(expected_reference_end) <= 1.0e-9)
             || (first_point.Distance(expected_reference_end) <= 1.0e-9
                 && last_point.Distance(expected_reference_start) <= 1.0e-9);
-        if (endpoints_match) {
+        // Two arcs of one circle share both endpoints (a circle drawn as two
+        // halves); the arc's midpoint tells them apart.
+        bool middle_matches = true;
+        if (endpoints_match && reference_is_arc) {
+          const BRepAdaptor_Curve curve(candidate);
+          const gp_Pnt candidate_middle =
+              curve.Value((curve.FirstParameter() + curve.LastParameter()) / 2.0);
+          middle_matches = candidate_middle.Distance(first_arc_middle) <= 1.0e-6;
+        }
+        if (endpoints_match && middle_matches) {
           if (!profile_reference.IsNull()) {
             return error_result(STATUS_INVALID_SHAPE, "OCCT segmented profile reference edge is ambiguous");
           }
