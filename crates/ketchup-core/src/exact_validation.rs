@@ -791,12 +791,6 @@ impl BuiltinGravitySupportValidator {
     }
 }
 
-impl Default for BuiltinGravitySupportValidator {
-    fn default() -> Self {
-        Self::new(TolerancePolicy::default())
-    }
-}
-
 #[must_use]
 pub fn general_body_validator_descriptor() -> ValidatorDescriptor {
     ValidatorDescriptor {
@@ -841,12 +835,6 @@ impl BuiltinGeneralBodyValidator {
             descriptor: general_body_validator_descriptor(),
             tolerance,
         }
-    }
-}
-
-impl Default for BuiltinGeneralBodyValidator {
-    fn default() -> Self {
-        Self::new(TolerancePolicy::default())
     }
 }
 
@@ -1802,7 +1790,7 @@ mod tests {
             gravity_participant(5, [300.0, 0.0, 100.0], [320.0, 20.0, 120.0], true),
         ];
         let validator_input = GravitySupportInput::new(participants, [0.0, 0.0, -9.81]).unwrap();
-        let validator = BuiltinGravitySupportValidator::default();
+        let validator = BuiltinGravitySupportValidator::new(TolerancePolicy::default());
         assert_eq!(
             validator.descriptor().implementation_id,
             "ketchup.builtin.gravity-support.exact-contact-cpu-f64.v3"
@@ -1843,7 +1831,7 @@ mod tests {
             [0.0, 0.0, -9.81],
         )
         .unwrap();
-        let validator = BuiltinGravitySupportValidator::default();
+        let validator = BuiltinGravitySupportValidator::new(TolerancePolicy::default());
         let policy = gravity_support_validation_policy();
         let input = gravity_support_input_bytes(&validator_input);
         let invocation = ValidationInvocation::bind(
@@ -1888,7 +1876,7 @@ mod tests {
             (path(3), path(1)),
             (path(3), path(2)),
         ]);
-        let validator = BuiltinGravitySupportValidator::default();
+        let validator = BuiltinGravitySupportValidator::new(TolerancePolicy::default());
         let policy = gravity_support_validation_policy();
         let input = gravity_support_input_bytes(&validator_input);
         let invocation = ValidationInvocation::bind(

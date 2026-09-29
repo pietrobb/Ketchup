@@ -729,7 +729,7 @@ pub fn assistant_assembly_constraints_report(
             "contacts": [], "physical_dowel_joints": [], "issues": [], "not_evaluated": [],
         });
     }
-    let tolerance = TolerancePolicy::default();
+    let tolerance = snapshot.tolerance();
     let epsilon_mm = tolerance.linear_mm();
     let mut contacts = Vec::new();
     let mut physical_dowel_joints = Vec::new();
@@ -3428,7 +3428,7 @@ pub(crate) fn assistant_validation_context_base(
     collision: serde_json::Value,
     exact_gravity_contacts: &[GravitySupportContact],
 ) -> serde_json::Value {
-    let tolerance = TolerancePolicy::default();
+    let tolerance = snapshot.tolerance();
     let needs_participant_projection = selection.requested.iter().any(|id| *id != "collision");
     let (visible_occurrences, scene_query_error) = if needs_participant_projection {
         match snapshot.scene_query_bounded(

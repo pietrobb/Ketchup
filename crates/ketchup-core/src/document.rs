@@ -64,7 +64,7 @@ use crate::space::{
     CanonicalClearanceVolume, CanonicalSpace, ClearanceCoordinateFrame, ClearanceOwner,
     ClearanceSeverity, ClearanceVolumeId, SpaceError, SpaceId,
 };
-use crate::tolerance::MAX_COORDINATE_MM;
+use crate::tolerance::{MAX_COORDINATE_MM, TolerancePolicy};
 use crate::topology::{TopologicalElementKind, TopologicalElementRef};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use sha2::{Digest as _, Sha256};
@@ -2239,6 +2239,8 @@ impl LocalGroup {
 pub(crate) struct ProductModel {
     pub(crate) document_id: DocumentId,
     pub(crate) units: UnitSystem,
+    #[serde(default, skip_serializing_if = "TolerancePolicy::is_default")]
+    pub(crate) tolerance: TolerancePolicy,
     pub(crate) evaluator_nodes: BTreeMap<NodeId, Arc<EvaluatorNode>>,
     pub(crate) overrides: BTreeMap<u64, Arc<CanonicalOverride>>,
     pub(crate) feature_parameter_bindings:
@@ -2323,6 +2325,7 @@ impl Default for ProductModel {
         Self {
             document_id: allocate_document_id(),
             units: UnitSystem::Millimetres,
+            tolerance: TolerancePolicy::default(),
             evaluator_nodes: BTreeMap::new(),
             overrides: BTreeMap::new(),
             feature_parameter_bindings: BTreeMap::new(),
@@ -2681,6 +2684,10 @@ pub struct PersistentDimensionProjection {
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub enum CanonicalCommand {
+    /// Replace the model tolerance every check of the document uses.
+    SetTolerance {
+        tolerance: TolerancePolicy,
+    },
     /// Assign a document-unique, machine-neutral code to one physical instance.
     SetProductionCode {
         instance_path: InstancePath,
@@ -3165,6 +3172,7 @@ pub enum AuthoritativeDependency {
     ClearanceVolume(ClearanceVolumeId),
     CamPlan(CamPlanId),
     DowelJoint(DowelJointId),
+    Tolerance,
     ProductionCodes,
     AssemblyRecipe,
     PersistentDimension(PersistentDimensionId),
@@ -4006,6 +4014,12 @@ impl Snapshot {
     #[must_use]
     pub fn units(&self) -> UnitSystem {
         self.product.units
+    }
+
+    /// The model tolerance every check of this document uses.
+    #[must_use]
+    pub fn tolerance(&self) -> TolerancePolicy {
+        self.product.tolerance
     }
 
     #[must_use]
@@ -5797,6 +5811,9 @@ impl DocumentStore {
 
         for command in &batch.commands {
             match command {
+                CanonicalCommand::SetTolerance { tolerance } => {
+                    product.tolerance = *tolerance;
+                }
                 CanonicalCommand::SetProductionCode {
                     instance_path,
                     code,
@@ -18197,6 +18214,9 @@ fn authoritative_writes(
     let mut writes = BTreeSet::new();
     for command in &batch.commands {
         match command {
+            CanonicalCommand::SetTolerance { .. } => {
+                writes.insert(AuthoritativeDependency::Tolerance);
+            }
             CanonicalCommand::SetProductionCode { .. } => {
                 writes.insert(AuthoritativeDependency::ProductionCodes);
             }
@@ -18501,6 +18521,9 @@ fn authoritative_dependencies(
     let mut dependencies = BTreeSet::new();
     for command in &batch.commands {
         match command {
+            CanonicalCommand::SetTolerance { .. } => {
+                dependencies.insert(AuthoritativeDependency::Tolerance);
+            }
             CanonicalCommand::SetProductionCode { instance_path, .. } => {
                 dependencies.insert(AuthoritativeDependency::ProductionCodes);
                 dependencies.insert(AuthoritativeDependency::Occurrence(

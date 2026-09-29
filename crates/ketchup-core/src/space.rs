@@ -127,9 +127,6 @@ impl CanonicalClearanceVolume {
         if !volume.has_positive_volume() {
             return Err(SpaceError::InvalidVolume);
         }
-        tolerance
-            .validated()
-            .map_err(|error| SpaceError::Prismatic(error.into()))?;
         Ok(Self {
             id,
             owner,

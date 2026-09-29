@@ -24,10 +24,26 @@ pub const DEFAULT_LINEAR_TOLERANCE_MM: f64 = 1.0e-7;
 /// Default angular tolerance in radians; the same value as OCCT `Precision::Angular()`.
 pub const DEFAULT_ANGULAR_TOLERANCE_RAD: f64 = 1.0e-12;
 
+/// Deserializing re-checks the values, so a stored policy is valid like a constructed one.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "StoredTolerancePolicy")]
 pub struct TolerancePolicy {
     linear_mm: f64,
     angular_rad: f64,
+}
+
+#[derive(serde::Deserialize)]
+struct StoredTolerancePolicy {
+    linear_mm: f64,
+    angular_rad: f64,
+}
+
+impl TryFrom<StoredTolerancePolicy> for TolerancePolicy {
+    type Error = InvalidTolerance;
+
+    fn try_from(stored: StoredTolerancePolicy) -> Result<Self, Self::Error> {
+        Self::with_angular(stored.linear_mm, stored.angular_rad)
+    }
 }
 
 impl TolerancePolicy {
@@ -61,9 +77,11 @@ impl TolerancePolicy {
         self.angular_rad
     }
 
-    /// Re-checks a policy that did not come through a constructor (deserialized input).
-    pub fn validated(self) -> Result<Self, InvalidTolerance> {
-        Self::with_angular(self.linear_mm, self.angular_rad)
+    /// Whether this is the default policy; a document stores only a non-default one, so
+    /// documents on the default keep their saved bytes and digest.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
     }
 }
 
@@ -96,7 +114,6 @@ mod tests {
         let policy = TolerancePolicy::default();
         assert_eq!(policy.linear_mm(), DEFAULT_LINEAR_TOLERANCE_MM);
         assert_eq!(policy.angular_rad(), DEFAULT_ANGULAR_TOLERANCE_RAD);
-        assert_eq!(policy.validated(), Ok(policy));
         let spacing_at_limit = MAX_COORDINATE_MM * f64::EPSILON;
         assert!(policy.linear_mm() > 100.0 * spacing_at_limit);
     }

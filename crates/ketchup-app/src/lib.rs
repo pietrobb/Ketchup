@@ -7746,7 +7746,7 @@ impl KetchupApp {
     ) -> Result<GeneralFabricationProjection, String> {
         let snapshot = self.document.current();
         self.rebind_exact_results(&snapshot);
-        let tolerance = TolerancePolicy::default();
+        let tolerance = snapshot.tolerance();
         let occurrences = snapshot
             .scene_query()
             .into_iter()
@@ -9305,6 +9305,7 @@ impl KetchupApp {
             AuthoritativeDependency::Tag(id) => Some(("assistant-entity-tag", id.0)),
             AuthoritativeDependency::Collection(id) => Some(("assistant-entity-collection", id.0)),
             AuthoritativeDependency::Import(_)
+            | AuthoritativeDependency::Tolerance
             | AuthoritativeDependency::ProductionCodes
             | AuthoritativeDependency::AssemblyRecipe => None,
             AuthoritativeDependency::Definition(id) => Some(("assistant-entity-definition", id.0)),
@@ -11081,7 +11082,7 @@ impl KetchupApp {
                     snapshot,
                     &exact_results,
                     occurrence.instance_path,
-                    TolerancePolicy::default(),
+                    snapshot.tolerance(),
                 )
                 .ok()
                 .map(|participant| (occurrence_id, participant))
@@ -11093,8 +11094,8 @@ impl KetchupApp {
         participants: &BTreeMap<OccurrenceId, GeneralBodyParticipant>,
         left_id: OccurrenceId,
         right_id: OccurrenceId,
+        tolerance: TolerancePolicy,
     ) -> Option<[f64; 3]> {
-        let tolerance = TolerancePolicy::default();
         let narrow_phase = general_body_narrow_phase(
             participants.get(&left_id)?,
             participants.get(&right_id)?,
@@ -11186,9 +11187,12 @@ impl KetchupApp {
                 continue;
             };
             let (left_id, right_id) = (OccurrenceId(left_id), OccurrenceId(right_id));
-            if let Some(delta_mm) =
-                Self::assistant_collision_repair_delta(&participants, left_id, right_id)
-            {
+            if let Some(delta_mm) = Self::assistant_collision_repair_delta(
+                &participants,
+                left_id,
+                right_id,
+                snapshot.tolerance(),
+            ) {
                 operations.push(AssistantRepairOperation::ResolveCollision {
                     left_occurrence_id: left_id.0,
                     moved_occurrence_id: right_id.0,

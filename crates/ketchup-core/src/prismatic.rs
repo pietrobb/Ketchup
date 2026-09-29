@@ -85,7 +85,6 @@ impl Aabb {
         other: &Self,
         tolerance: TolerancePolicy,
     ) -> Result<bool, PrismaticError> {
-        validate_policy(tolerance)?;
         Ok((0..3).all(|axis| {
             self.max[axis] + tolerance.linear_mm() >= other.min[axis]
                 && other.max[axis] + tolerance.linear_mm() >= self.min[axis]
@@ -117,7 +116,6 @@ impl Aabb {
         container: &Self,
         tolerance: TolerancePolicy,
     ) -> Result<bool, PrismaticError> {
-        validate_policy(tolerance)?;
         let expanded = container.inflate(tolerance.linear_mm())?;
         Ok((0..3).all(|axis| {
             self.min[axis] >= expanded.min[axis] && self.max[axis] <= expanded.max[axis]
@@ -314,7 +312,6 @@ pub fn obb_sat(
     right: &Obb,
     tolerance: TolerancePolicy,
 ) -> Result<CollisionRelation, PrismaticError> {
-    validate_policy(tolerance)?;
     let mut rotation = [[0.0; 3]; 3];
     let mut absolute = [[0.0; 3]; 3];
     for left_axis in 0..3 {
@@ -498,7 +495,6 @@ pub fn validate_joint_geometry(
     declared_joint: Option<&CanonicalJoint>,
     tolerance: TolerancePolicy,
 ) -> Result<Option<JointValidationOutcome>, PrismaticError> {
-    validate_policy(tolerance)?;
     let mut has_penetration = false;
     let mut has_declared_contact = false;
     let mut outside_declared_volume = false;
@@ -574,13 +570,6 @@ pub fn validate_joint_overlap(
         )),
         (None, None) => Ok(None),
     }
-}
-
-fn validate_policy(tolerance: TolerancePolicy) -> Result<(), PrismaticError> {
-    tolerance
-        .validated()
-        .map(|_| ())
-        .map_err(PrismaticError::from)
 }
 
 fn separated(

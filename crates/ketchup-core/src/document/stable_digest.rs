@@ -98,6 +98,7 @@ impl StableDigest {
             D::ClearanceVolume(id) => self.value(&product.clearance_volumes.get(id)),
             D::CamPlan(id) => self.value(&product.cam_plans.get(id)),
             D::DowelJoint(id) => self.value(&product.dowel_joints.get(id)),
+            D::Tolerance => self.value(&product.tolerance),
             D::ProductionCodes => self.value(&product.production_codes),
             D::AssemblyRecipe => self.value(&product.assembly_recipe),
             D::PersistentDimension(id) => self.value(&product.persistent_dimensions.get(id)),

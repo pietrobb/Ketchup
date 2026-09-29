@@ -9,6 +9,7 @@ use ketchup_core::persistence::LegacyFeatureKind;
 use ketchup_core::persistence::{self, LoadDisposition, PersistenceError};
 use ketchup_core::sheet_metal::{SheetMetalEdge, SheetMetalFlange, SheetMetalSpec};
 use ketchup_core::testing::with_document_id;
+use ketchup_core::tolerance::TolerancePolicy;
 
 fn load_error(bytes: &[u8]) -> PersistenceError {
     match persistence::load(bytes) {
@@ -1486,5 +1487,48 @@ fn sheet_metal_schema_81_remains_readable_and_current_schema_is_byte_stable() {
     assert!(matches!(
         loaded_81.snapshot().feature(feature_id).unwrap().kind(),
         FeatureKind::SheetMetal(reopened) if reopened == &spec
+    ));
+}
+
+#[test]
+fn document_tolerance_is_saved_undoable_and_part_of_the_digest() {
+    let mut store = DocumentStore::new();
+    let default_digest = store.current().canonical_digest();
+    let default_bytes = persistence::save(&store.current());
+    assert_eq!(store.current().tolerance(), TolerancePolicy::default());
+
+    let custom = TolerancePolicy::with_angular(0.01, 1.0e-6).unwrap();
+    store
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::SetTolerance {
+            tolerance: custom,
+        }]))
+        .unwrap();
+    assert_eq!(store.current().tolerance(), custom);
+    assert_ne!(store.current().canonical_digest(), default_digest);
+
+    let bytes = persistence::save(&store.current());
+    let loaded = persistence::load(&bytes).unwrap();
+    assert_eq!(loaded.disposition(), LoadDisposition::EditableLossless);
+    assert_eq!(loaded.snapshot().tolerance(), custom);
+    assert_eq!(
+        loaded.snapshot().canonical_digest(),
+        store.current().canonical_digest()
+    );
+
+    // Back on the default policy the document stores and hashes exactly as before.
+    store.undo().unwrap();
+    assert_eq!(store.current().tolerance(), TolerancePolicy::default());
+    assert_eq!(store.current().canonical_digest(), default_digest);
+    assert_eq!(persistence::save(&store.current()), default_bytes);
+
+    // A stored policy is checked like a constructed one.
+    let invalid = ketchup_core::testing::rewrite_saved_snapshot(&bytes, |saved| {
+        let product = ketchup_core::testing::cbor_entry(saved, "product");
+        let tolerance = ketchup_core::testing::cbor_entry(product, "tolerance");
+        *ketchup_core::testing::cbor_entry(tolerance, "linear_mm") = ciborium::Value::Float(0.0);
+    });
+    assert!(matches!(
+        load_error(&invalid),
+        PersistenceError::InvalidPayload(_)
     ));
 }

@@ -792,12 +792,6 @@ impl BuiltinPrismaticValidator {
     }
 }
 
-impl Default for BuiltinPrismaticValidator {
-    fn default() -> Self {
-        Self::new(TolerancePolicy::default())
-    }
-}
-
 impl HostNeutralValidator<[PrismaticJointCase]> for BuiltinPrismaticValidator {
     fn descriptor(&self) -> &ValidatorDescriptor {
         &self.descriptor

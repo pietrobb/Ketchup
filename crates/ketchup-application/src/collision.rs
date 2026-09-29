@@ -342,6 +342,7 @@ fn add_pair_fact(
     bodies: &[Body],
     (left, right): (usize, usize),
     fact: ExactPair,
+    tolerance: TolerancePolicy,
 ) {
     let Some(facts) = facts else {
         return;
@@ -353,7 +354,7 @@ fn add_pair_fact(
     if left == right {
         return;
     }
-    let tolerance = TolerancePolicy::default().linear_mm();
+    let tolerance = tolerance.linear_mm();
     facts
         .entry((left.min(right), left.max(right)))
         .and_modify(|known| {
@@ -403,6 +404,7 @@ fn collision_report(
     mut pair_facts: Option<&mut ExactPairFacts>,
 ) -> Value {
     let started = Instant::now();
+    let tolerance = snapshot.tolerance();
     let mut report = json!({"document_id": snapshot.document_id().0,
         "revision": snapshot.revision_id(), "canonical_digest": snapshot.canonical_digest(),
         "state": "skipped", "complete": false, "checked_occurrence_count": 0,
@@ -636,7 +638,7 @@ fn collision_report(
                         snapshot,
                         &ExactResultRegistry::default(),
                         occurrence.instance_path.clone(),
-                        TolerancePolicy::default(),
+                        tolerance,
                     )
                     .ok()
                     .filter(|body| matches!(body.evidence_class(), EvidenceClass::Exact))
@@ -831,10 +833,11 @@ fn collision_report(
         let world_bounds = bodies
             .iter()
             .map(|body| {
-                local_bounds.get(body.graph?).copied().flatten()?.world(
-                    *body.occurrence.transform.matrix(),
-                    TolerancePolicy::default().linear_mm(),
-                )
+                local_bounds
+                    .get(body.graph?)
+                    .copied()
+                    .flatten()?
+                    .world(*body.occurrence.transform.matrix(), tolerance.linear_mm())
             })
             .collect::<Vec<_>>();
         let mut pairs = Vec::new();
@@ -994,7 +997,7 @@ fn collision_report(
                 continue;
             };
             if let (Some(a), Some(b)) = (&world_hulls[left], &world_hulls[right]) {
-                let decided = match hull::relate(a, b, TolerancePolicy::default().linear_mm()) {
+                let decided = match hull::relate(a, b, tolerance.linear_mm()) {
                     hull::HullRelation::Overlapping => None,
                     hull::HullRelation::Separated => Some((0.0, None)),
                     hull::HullRelation::Touching { area_mm2 } => Some((area_mm2, Some(0.0))),
@@ -1014,6 +1017,7 @@ fn collision_report(
                             contact_area_mm2: area_mm2,
                             distance_mm,
                         },
+                        tolerance,
                     );
                     continue;
                 }
@@ -1076,7 +1080,7 @@ fn collision_report(
                             &graphs,
                             &candidates,
                             &sources,
-                            TolerancePolicy::default().linear_mm(),
+                            tolerance.linear_mm(),
                             &cancel_worker,
                         ) {
                             Ok(results) if results.len() == candidates.len() => {
@@ -1126,6 +1130,7 @@ fn collision_report(
                                             contact_area_mm2: result.common_contact_area_mm2,
                                             distance_mm: Some(result.distance_mm),
                                         },
+                                        tolerance,
                                     );
                                     if result.relation == ExactPairRelation::Penetrating {
                                         issues.push(issue(&bodies[left], &bodies[right], json!({"method": "occt_brep_common_volume", "common_volume_mm3": result.common_volume_mm3, "distance_mm": result.distance_mm})));
@@ -1160,7 +1165,7 @@ fn collision_report(
         for left in 0..bodies.len() {
             for right in left + 1..bodies.len() {
                 if let (Some(l), Some(r)) = (&bodies[left].analytic, &bodies[right].analytic) {
-                    match general_body_narrow_phase(l, r, TolerancePolicy::default()) {
+                    match general_body_narrow_phase(l, r, tolerance) {
                     Ok(result) => { checked += 1; if result.relation == GeneralBodyNarrowPhaseRelation::Intersecting {
                         issues.push(issue(&bodies[left], &bodies[right], json!({"method": "canonical_box_analytic", "signed_separation_mm": result.signed_separation_mm})));
                     } },

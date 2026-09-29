@@ -5,7 +5,6 @@ use ketchup_core::fabrication::production::{
     HomagWoodwopAdapter, ProductionAdapter, instance_path_value,
 };
 use ketchup_core::fabrication::{WoodwopMprOptions, project_general_fabrication};
-use ketchup_core::tolerance::TolerancePolicy;
 use std::time::Duration;
 
 #[derive(Deserialize)]
@@ -133,7 +132,7 @@ impl Server {
         let started = Instant::now();
         self.session.evaluate_with_timeout(budget)?;
         let snapshot = self.session.snapshot();
-        let tolerance = TolerancePolicy::default();
+        let tolerance = snapshot.tolerance();
         let participants = snapshot
             .scene_query()
             .into_iter()
