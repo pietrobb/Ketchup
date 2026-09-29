@@ -2090,6 +2090,33 @@ fn overwrite_save_requires_payload_bound_human_receipt_before_disk_write() {
 }
 
 #[test]
+fn saving_the_opened_document_again_asks_nothing() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("own.ketchup");
+    let mut author = Shell::with_dialogs(ScriptedFileDialogs::new().queue_save(&path));
+    author.click_menu_command("menu-file", AppCommand::Save);
+
+    let script = ScriptedFileDialogs::new().queue_open(&path);
+    let mut shell = Shell::with_dialogs(script.clone());
+    shell.click_menu_command("menu-file", AppCommand::Open);
+    assert!(shell.app_mut().create_box());
+    shell.click_menu_command("menu-file", AppCommand::Save);
+    assert!(!shell.app().is_dirty(), "{}", shell.app().action_digest());
+    assert!(shell.app_mut().create_box());
+    shell.click_menu_command("menu-file", AppCommand::Save);
+
+    assert!(!shell.app().is_dirty(), "{}", shell.app().action_digest());
+    assert!(script.high_risk_prompts().is_empty());
+    assert_eq!(
+        ketchup_core::persistence::load_file(&path)
+            .unwrap()
+            .snapshot()
+            .canonical_digest(),
+        shell.app().canonical_digest()
+    );
+}
+
+#[test]
 fn save_as_rejects_a_target_changed_after_overwrite_approval() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("existing.ketchup");

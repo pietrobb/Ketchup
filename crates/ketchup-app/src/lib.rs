@@ -6251,7 +6251,10 @@ impl KetchupApp {
             );
             return false;
         }
+        // Saving over this document's own, unchanged file is a plain Save: only
+        // replacing some other existing file needs the user's consent.
         if expected_identity.is_some()
+            && owned_identity.is_none()
             && let Err(error) = self.authorize_overwrite(path, &prepared)
         {
             self.digest = self.catalog.format(

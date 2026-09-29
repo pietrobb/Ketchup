@@ -184,19 +184,19 @@ fn canceled_save_and_failed_write_leave_the_document_open_and_dirty() {
 }
 
 #[test]
-fn refused_overwrite_on_close_does_not_change_disk_or_close() {
+fn save_on_close_writes_the_own_file_without_asking() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("existing.ketchup");
-    let mut harness = shell(ScriptedFileDialogs::new(), false);
+    let script = ScriptedFileDialogs::new();
+    let mut harness = shell(script.clone(), false);
     assert!(harness.state_mut().save_document_to(&path));
     let before = std::fs::read(&path).unwrap();
     assert!(harness.state_mut().create_box());
     close_event(&mut harness);
     click(&mut harness, "file-save");
-    assert!(harness.state().is_dirty());
-    assert!(harness.state().close_guard.pending);
-    assert!(harness.state().close_guard.approved.is_none());
-    assert_eq!(std::fs::read(path).unwrap(), before);
+    assert!(!harness.state().is_dirty());
+    assert!(script.high_risk_prompts().is_empty());
+    assert_ne!(std::fs::read(path).unwrap(), before);
 }
 
 #[test]

@@ -210,12 +210,10 @@ fn disconnect_during_live_overwrite_consent_revokes_publication_authority() {
 }
 
 #[test]
-fn save_is_revision_bound_and_uses_the_live_gui_overwrite_consent() {
+fn save_is_revision_bound_and_writes_the_own_file_without_asking() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("live-save.ketchup");
-    let dialogs = ScriptedFileDialogs::new()
-        .queue_refused_high_risk()
-        .queue_high_risk_approval(7);
+    let dialogs = ScriptedFileDialogs::new();
     let probe = dialogs.clone();
     let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
     app.selection.clear();
@@ -240,20 +238,6 @@ fn save_is_revision_bound_and_uses_the_live_gui_overwrite_consent() {
     assert!(probe.high_risk_prompts().is_empty());
 
     let expected = app.live_bridge_stamp();
-    assert_eq!(
-        bridge.execute(
-            &mut app,
-            Request::Save {
-                expected: Some(expected.clone()),
-            },
-            false,
-        ),
-        Err("save_rejected")
-    );
-    assert!(app.is_dirty());
-    assert_eq!(probe.high_risk_prompts().len(), 1);
-    assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
-
     let saved = bridge
         .execute(
             &mut app,
@@ -268,7 +252,7 @@ fn save_is_revision_bound_and_uses_the_live_gui_overwrite_consent() {
         json!({"saved":true,"same_gui_document":true,"dirty":false})
     );
     assert!(!app.is_dirty());
-    assert_eq!(probe.high_risk_prompts().len(), 2);
+    assert!(probe.high_risk_prompts().is_empty());
     assert_ne!(std::fs::read(&path).unwrap(), original_bytes);
     let mut reopened = KetchupApp::new();
     assert!(reopened.open_document_path(&path));
@@ -1228,56 +1212,12 @@ fn apply_and_verify_one_undo_redo_restores_geometry_recipe_and_exact_binding_wit
 }
 
 #[test]
-fn apply_and_verify_reports_committed_but_unsaved() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("apply-verify-save-refused.ketchup");
-    let dialogs = ScriptedFileDialogs::new().queue_refused_high_risk();
-    let probe = dialogs.clone();
-    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
-    app.selection.clear();
-    app.document
-        .apply_batch(&CommandBatch::new(vec![
-            CanonicalCommand::SetOccurrenceGrounded {
-                id: OccurrenceId(1),
-                grounded: true,
-            },
-        ]))
-        .unwrap();
-    crate::tests::install_initial_graph_result(&mut app);
-    assert!(app.save_document_to(&path));
-    let original_bytes = std::fs::read(&path).unwrap();
-    let expected = app.live_bridge_stamp();
-    let before_steps = app.undo_step_count();
-    let mut bridge = transport::start(egui::Context::default()).unwrap();
-    let request = Request::ApplyAndVerify {
-        expected: Some(expected),
-        selection: Some(vec![]),
-        program: program(),
-        validators: mandatory_validators(),
-        timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
-        strict: false,
-        save: Some(ApplyAndVerifySave::Current {}),
-    };
-
-    let first = bridge.execute(&mut app, request, false).unwrap();
-    assert_eq!(first["published"], true);
-    assert_eq!(first["saved"], false);
-    assert_eq!(first["save_state"], "committed_but_unsaved");
-    assert_eq!(first["save_error"], "save_rejected");
-    assert_eq!(first["save_path"], path.to_string_lossy().as_ref());
-    assert!(app.is_dirty());
-    assert_eq!(app.undo_step_count(), before_steps + 1);
-    assert_eq!(probe.high_risk_prompts().len(), 1);
-    assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
-}
-
-#[test]
 fn apply_and_verify_save_io_failure_preserves_last_good_file_and_dirty_gui_state() {
     use egui_kittest::{Harness, kittest::Queryable as _};
 
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("save-io-failure.ketchup");
-    let dialogs = ScriptedFileDialogs::new().queue_high_risk_approval(42);
+    let dialogs = ScriptedFileDialogs::new();
     let probe = dialogs.clone();
     let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
     app.selection.clear();
@@ -1318,7 +1258,7 @@ fn apply_and_verify_save_io_failure_preserves_last_good_file_and_dirty_gui_state
     assert_eq!(report["saved"], false);
     assert_eq!(report["save_state"], "committed_but_unsaved");
     assert_eq!(report["save_error"], "save_rejected");
-    assert_eq!(probe.high_risk_prompts().len(), 1);
+    assert!(probe.high_risk_prompts().is_empty());
     assert_eq!(
         app.live_bridge_stamp().document_id,
         original_stamp.document_id
