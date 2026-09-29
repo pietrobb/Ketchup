@@ -8,6 +8,7 @@ use crate::document::{
     InstancePathStep, OccurrenceId, Proposal, ProposalPrepareError, Snapshot, Transform,
 };
 use crate::exact_product::{ExactBRepGraphEdgeEvidence, ExactBodyPackage, ExactResultRegistry};
+use crate::tolerance::MAX_COORDINATE_MM;
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -20,7 +21,6 @@ pub const DRAWING_SHEET_LAYOUT_SCHEMA_V1: &str = "ketchup.drawing-sheet-layout.v
 pub const DRAWING_SHEET_LAYOUT_SCHEMA_V2: &str = "ketchup.drawing-sheet-layout.v2";
 const VISIBILITY_EPSILON: f64 = 1.0e-12;
 const INTERSECTION_EPSILON: f64 = 1.0e-10;
-const MAX_DRAWING_ABS_COORDINATE_MM: f64 = 1.0e12;
 const MAX_DRAWING_INSTANCES: usize = 8_000;
 const MAX_DRAWING_TRIANGLES: usize = 100_000;
 const MAX_DRAWING_EDGES: usize = 300_000;
@@ -142,7 +142,7 @@ pub struct DrawingSectionPlane {
 
 impl DrawingSectionPlane {
     pub fn new(frame: DrawingViewFrame, depth_mm: f64) -> Result<Self, DrawingError> {
-        if !depth_mm.is_finite() || depth_mm.abs() > MAX_DRAWING_ABS_COORDINATE_MM {
+        if !depth_mm.is_finite() || depth_mm.abs() > MAX_COORDINATE_MM {
             return Err(DrawingError::InvalidView);
         }
         Ok(Self {
@@ -181,10 +181,10 @@ impl DrawingDetailRegion {
     ) -> Result<Self, DrawingError> {
         if center_mm
             .into_iter()
-            .any(|value| !value.is_finite() || value.abs() > MAX_DRAWING_ABS_COORDINATE_MM)
+            .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
             || !radius_mm.is_finite()
             || radius_mm <= INTERSECTION_EPSILON
-            || radius_mm > MAX_DRAWING_ABS_COORDINATE_MM
+            || radius_mm > MAX_COORDINATE_MM
         {
             return Err(DrawingError::InvalidView);
         }
@@ -471,7 +471,7 @@ impl DrawingLinearDimension {
             || !valid_drawing_text(&source_line_id)
             || !offset_page_mm.is_finite()
             || offset_page_mm.abs() <= INTERSECTION_EPSILON
-            || offset_page_mm.abs() > MAX_DRAWING_ABS_COORDINATE_MM
+            || offset_page_mm.abs() > MAX_COORDINATE_MM
         {
             return Err(DrawingError::InvalidDimension);
         }
@@ -564,7 +564,7 @@ impl DrawingAngularDimension {
                 .any(|source| source.trim().is_empty() || !valid_drawing_text(source))
             || !arc_radius_page_mm.is_finite()
             || arc_radius_page_mm <= INTERSECTION_EPSILON
-            || arc_radius_page_mm > MAX_DRAWING_ABS_COORDINATE_MM
+            || arc_radius_page_mm > MAX_COORDINATE_MM
         {
             return Err(DrawingError::InvalidDimension);
         }
@@ -678,7 +678,7 @@ impl DrawingCircularDimension {
             || !(0.0..360.0).contains(&leader_angle_degrees)
             || !offset_page_mm.is_finite()
             || offset_page_mm <= INTERSECTION_EPSILON
-            || offset_page_mm > MAX_DRAWING_ABS_COORDINATE_MM
+            || offset_page_mm > MAX_COORDINATE_MM
         {
             return Err(DrawingError::InvalidDimension);
         }
@@ -875,7 +875,7 @@ impl DrawingDatumSymbol {
             || !valid_datum_label(&label)
             || offset_page_mm
                 .into_iter()
-                .any(|value| !value.is_finite() || value.abs() > MAX_DRAWING_ABS_COORDINATE_MM)
+                .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
             || offset_page_mm
                 .into_iter()
                 .all(|value| value.abs() <= INTERSECTION_EPSILON)
@@ -977,7 +977,7 @@ impl DrawingFeatureControlFrame {
             || !valid_drawing_text(&source_line_id)
             || !tolerance_mm.is_finite()
             || tolerance_mm <= INTERSECTION_EPSILON
-            || tolerance_mm > MAX_DRAWING_ABS_COORDINATE_MM
+            || tolerance_mm > MAX_COORDINATE_MM
             || datum_references.len() > 3
             || (!characteristic.permits_datum_references() && !datum_references.is_empty())
             || datum_references
@@ -988,7 +988,7 @@ impl DrawingFeatureControlFrame {
                 != datum_references.len()
             || offset_page_mm
                 .into_iter()
-                .any(|value| !value.is_finite() || value.abs() > MAX_DRAWING_ABS_COORDINATE_MM)
+                .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
             || offset_page_mm
                 .into_iter()
                 .all(|value| value.abs() <= INTERSECTION_EPSILON)
@@ -1096,7 +1096,7 @@ impl DrawingBomBalloon {
             || position == 0
             || offset_page_mm
                 .into_iter()
-                .any(|value| !value.is_finite() || value.abs() > MAX_DRAWING_ABS_COORDINATE_MM)
+                .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
             || offset_page_mm
                 .into_iter()
                 .all(|value| value.abs() <= INTERSECTION_EPSILON)
@@ -1156,8 +1156,7 @@ impl DrawingNote {
         let text_template = text_template.into();
         if id.0 == 0
             || position_page_mm.into_iter().any(|coordinate| {
-                !coordinate.is_finite()
-                    || !(0.0..=MAX_DRAWING_ABS_COORDINATE_MM).contains(&coordinate)
+                !coordinate.is_finite() || !(0.0..=MAX_COORDINATE_MM).contains(&coordinate)
             })
             || text_template.trim().is_empty()
             || !valid_drawing_template(&text_template)
@@ -2627,7 +2626,7 @@ fn project_view(
             if points
                 .iter()
                 .flatten()
-                .any(|value| !value.is_finite() || value.abs() > MAX_DRAWING_ABS_COORDINATE_MM)
+                .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
             {
                 return Err(DrawingError::InvalidGeometry);
             }
@@ -3239,7 +3238,7 @@ fn validate_tolerance_value(value_mm: f64, allow_zero: bool) -> Result<(), Drawi
     if !value_mm.is_finite()
         || value_mm < 0.0
         || (!allow_zero && value_mm <= INTERSECTION_EPSILON)
-        || value_mm > MAX_DRAWING_ABS_COORDINATE_MM
+        || value_mm > MAX_COORDINATE_MM
     {
         return Err(DrawingError::InvalidDimension);
     }

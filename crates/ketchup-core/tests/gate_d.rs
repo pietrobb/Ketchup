@@ -13,12 +13,13 @@ use ketchup_core::intent::{
     IntentCapability, IntentError, IntentGrant, IntentRequest, RequestingPrincipal, WorkflowIntent,
     propose_intent,
 };
-use ketchup_core::prismatic::{Aabb, CanonicalJoint, JointId, TolerancePolicy};
+use ketchup_core::prismatic::{Aabb, CanonicalJoint, JointId};
 use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_core::space::{
     CanonicalClearanceVolume, CanonicalSpace, ClearanceCoordinateFrame, ClearanceOwner,
     ClearanceSeverity, ClearanceVolumeId, SpaceId,
 };
+use ketchup_core::tolerance::TolerancePolicy;
 
 const RULE: NodeId = NodeId(1);
 const EXPRESSION_INPUT: NodeId = NodeId(2);

@@ -9,8 +9,9 @@ use crate::exact_brep_graph::{
 };
 use crate::exact_product::{ExactBodyPackage, ExactResultKey, ExactResultRegistry};
 use crate::graph::sha256_hex;
-use crate::prismatic::{Aabb, TolerancePolicy};
+use crate::prismatic::Aabb;
 use crate::sketch::{PadOperation, PadSpec};
+use crate::tolerance::TolerancePolicy;
 use crate::validation::{
     DIAGNOSTIC_SCHEMA_V1, DiagnosticLocation, DiagnosticSeverity, EvidenceClass, EvidenceCounts,
     HostNeutralValidator, PermittedErrorDirection, PolicyRequirement, PolicySeverity, ReadScope,
@@ -423,7 +424,7 @@ pub fn general_body_narrow_phase(
     if vector_dot(delta, separation_axis_world) < 0.0 {
         separation_axis_world = separation_axis_world.map(|component| -component);
     }
-    let epsilon_mm = tolerance.epsilon_mm();
+    let epsilon_mm = tolerance.linear_mm();
     let relation = if signed_separation_mm > epsilon_mm {
         GeneralBodyNarrowPhaseRelation::Separated
     } else if signed_separation_mm >= -epsilon_mm {
@@ -505,7 +506,7 @@ fn general_obb_evidence(
     } else {
         EvidenceClass::Tolerant(
             TolerantEvidence::new(
-                tolerance.epsilon_mm(),
+                tolerance.linear_mm(),
                 GENERAL_BODY_OBB_NARROW_PHASE_METHOD_V1,
                 PermittedErrorDirection::FalsePositiveOnly,
             )
@@ -1270,15 +1271,14 @@ fn body_support_contact(
         - obb_projection_radius(candidate_obb, support_direction);
     let supporter_upper_mm = vector_dot(supporter_obb.center, support_direction)
         + obb_projection_radius(supporter_obb, support_direction);
-    if (candidate_lower_mm - supporter_upper_mm).abs() > tolerance.epsilon_mm() {
+    if (candidate_lower_mm - supporter_upper_mm).abs() > tolerance.linear_mm() {
         return GravityContactEvidence::None;
     }
     if let Some(contact) = exact_contacts
         .iter()
         .find(|contact| contact.connects(candidate.instance_path(), supporter.instance_path()))
     {
-        return if contact.common_contact_area_mm2()
-            > tolerance.epsilon_mm() * tolerance.epsilon_mm()
+        return if contact.common_contact_area_mm2() > tolerance.linear_mm() * tolerance.linear_mm()
         {
             GravityContactEvidence::ProvenExact
         } else {
@@ -1297,7 +1297,7 @@ fn body_support_contact(
                 candidate_obb,
                 supporter_obb,
                 support_direction,
-                tolerance.epsilon_mm(),
+                tolerance.linear_mm(),
             ) =>
         {
             GravityContactEvidence::ProvenExact
@@ -1453,7 +1453,7 @@ fn general_input_evidence(
 
 fn general_tolerant_evidence(tolerance: TolerancePolicy) -> TolerantEvidence {
     TolerantEvidence::new(
-        tolerance.epsilon_mm(),
+        tolerance.linear_mm(),
         GENERAL_BODY_OBB_NARROW_PHASE_METHOD_V1,
         PermittedErrorDirection::FalsePositiveOnly,
     )

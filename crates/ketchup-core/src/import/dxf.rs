@@ -1,3 +1,4 @@
+use crate::tolerance::MAX_COORDINATE_MM;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
@@ -20,7 +21,6 @@ const MAX_DXF_ENTITIES: usize = 10_000;
 const MAX_DXF_PROFILES: usize = (ProposalBudget::HOST_MAX.max_commands - 1) / 3;
 const MAX_DXF_SEGMENTS_PER_PROFILE: usize = 1_024;
 const MAX_DXF_BLOCK_DEPTH: usize = 32;
-const MAX_DXF_ABS_MM: f64 = 1_000_000.0;
 const DXF_GEOMETRY_EPSILON_MM: f64 = 1.0e-9;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3900,7 +3900,7 @@ fn deterministic_sin_cos_degrees(degrees: f64) -> (f64, f64) {
 }
 
 fn normalize_coordinate(value: f64) -> Result<f64, DxfImportError> {
-    if !value.is_finite() || value.abs() > MAX_DXF_ABS_MM {
+    if !value.is_finite() || value.abs() > MAX_COORDINATE_MM {
         return Err(DxfImportError::CoordinateOutOfRange);
     }
     Ok(if value == 0.0 { 0.0 } else { value })

@@ -16,7 +16,7 @@ use ketchup_core::exact_validation::{
     general_body_validation_policy, general_body_validator_descriptor,
 };
 use ketchup_core::persistence::ContainerData;
-use ketchup_core::prismatic::TolerancePolicy;
+use ketchup_core::tolerance::TolerancePolicy;
 use ketchup_core::validation::{
     DIAGNOSTIC_SCHEMA_V1, DiagnosticLocation, DiagnosticSeverity, EvidenceClass, EvidenceCounts,
     ValidationDiagnostic, ValidationInvocation, ValidationReport, ValidationState,
@@ -353,7 +353,7 @@ fn add_pair_fact(
     if left == right {
         return;
     }
-    let tolerance = TolerancePolicy::default().epsilon_mm();
+    let tolerance = TolerancePolicy::default().linear_mm();
     facts
         .entry((left.min(right), left.max(right)))
         .and_modify(|known| {
@@ -833,7 +833,7 @@ fn collision_report(
             .map(|body| {
                 local_bounds.get(body.graph?).copied().flatten()?.world(
                     *body.occurrence.transform.matrix(),
-                    TolerancePolicy::default().epsilon_mm(),
+                    TolerancePolicy::default().linear_mm(),
                 )
             })
             .collect::<Vec<_>>();
@@ -994,7 +994,7 @@ fn collision_report(
                 continue;
             };
             if let (Some(a), Some(b)) = (&world_hulls[left], &world_hulls[right]) {
-                let decided = match hull::relate(a, b, TolerancePolicy::default().epsilon_mm()) {
+                let decided = match hull::relate(a, b, TolerancePolicy::default().linear_mm()) {
                     hull::HullRelation::Overlapping => None,
                     hull::HullRelation::Separated => Some((0.0, None)),
                     hull::HullRelation::Touching { area_mm2 } => Some((area_mm2, Some(0.0))),
@@ -1076,7 +1076,7 @@ fn collision_report(
                             &graphs,
                             &candidates,
                             &sources,
-                            TolerancePolicy::default().epsilon_mm(),
+                            TolerancePolicy::default().linear_mm(),
                             &cancel_worker,
                         ) {
                             Ok(results) if results.len() == candidates.len() => {

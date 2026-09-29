@@ -1,39 +1,8 @@
 use crate::graph::DerivedIdentity;
+use crate::tolerance::{InvalidTolerance, MAX_COORDINATE_MM, TolerancePolicy};
 use std::fmt;
 
-pub const PRISMATIC_TOLERANCE_V1: &str = "ketchup.prismatic-tolerance.v1";
-const MAX_COORDINATE_MM: f64 = 1.0e12;
 const ORTHONORMAL_EPSILON: f64 = 1.0e-10;
-
-#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct TolerancePolicy {
-    epsilon_mm: f64,
-}
-
-impl TolerancePolicy {
-    pub fn new(epsilon_mm: f64) -> Result<Self, PrismaticError> {
-        if !epsilon_mm.is_finite() || epsilon_mm <= 0.0 {
-            return Err(PrismaticError::InvalidTolerance);
-        }
-        Ok(Self { epsilon_mm })
-    }
-
-    #[must_use]
-    pub const fn id(&self) -> &'static str {
-        PRISMATIC_TOLERANCE_V1
-    }
-
-    #[must_use]
-    pub const fn epsilon_mm(&self) -> f64 {
-        self.epsilon_mm
-    }
-}
-
-impl Default for TolerancePolicy {
-    fn default() -> Self {
-        Self::new(1.0e-7).expect("the built-in prismatic tolerance is valid")
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Aabb {
@@ -118,8 +87,8 @@ impl Aabb {
     ) -> Result<bool, PrismaticError> {
         validate_policy(tolerance)?;
         Ok((0..3).all(|axis| {
-            self.max[axis] + tolerance.epsilon_mm >= other.min[axis]
-                && other.max[axis] + tolerance.epsilon_mm >= self.min[axis]
+            self.max[axis] + tolerance.linear_mm() >= other.min[axis]
+                && other.max[axis] + tolerance.linear_mm() >= self.min[axis]
         }))
     }
 
@@ -149,7 +118,7 @@ impl Aabb {
         tolerance: TolerancePolicy,
     ) -> Result<bool, PrismaticError> {
         validate_policy(tolerance)?;
-        let expanded = container.inflate(tolerance.epsilon_mm)?;
+        let expanded = container.inflate(tolerance.linear_mm())?;
         Ok((0..3).all(|axis| {
             self.min[axis] >= expanded.min[axis] && self.max[axis] <= expanded.max[axis]
         }))
@@ -352,7 +321,7 @@ pub fn obb_sat(
         for right_axis in 0..3 {
             rotation[left_axis][right_axis] = dot(left.axes[left_axis], right.axes[right_axis]);
             absolute[left_axis][right_axis] =
-                rotation[left_axis][right_axis].abs() + tolerance.epsilon_mm;
+                rotation[left_axis][right_axis].abs() + tolerance.linear_mm();
         }
     }
     let world_translation = subtract(right.centre, left.centre);
@@ -432,8 +401,8 @@ pub fn collide_axis_aligned_prisms(
     }
     let physical_intersection = left.convex_intersection(&right)?;
     let conservative_intersection = left
-        .inflate(tolerance.epsilon_mm)?
-        .convex_intersection(&right.inflate(tolerance.epsilon_mm)?)?;
+        .inflate(tolerance.linear_mm())?
+        .convex_intersection(&right.inflate(tolerance.linear_mm())?)?;
     if conservative_intersection.is_none() {
         return Err(PrismaticError::NumericalFailure);
     }
@@ -552,7 +521,7 @@ pub fn validate_joint_geometry(
             {
                 for vertex in intersection.vertices() {
                     outside_declared_volume |=
-                        joint.volume.distance_to_point(vertex)? > tolerance.epsilon_mm;
+                        joint.volume.distance_to_point(vertex)? > tolerance.linear_mm();
                 }
             }
         }
@@ -590,7 +559,7 @@ pub fn validate_joint_overlap(
                 .map(|vertex| joint.volume.distance_to_point(vertex))
                 .collect::<Result<Vec<_>, _>>()?
                 .into_iter()
-                .all(|distance| distance <= tolerance.epsilon_mm);
+                .all(|distance| distance <= tolerance.linear_mm());
             if inside {
                 Ok(Some(JointValidationOutcome::OverlapInsideDeclaredJointOk))
             } else {
@@ -608,7 +577,10 @@ pub fn validate_joint_overlap(
 }
 
 fn validate_policy(tolerance: TolerancePolicy) -> Result<(), PrismaticError> {
-    TolerancePolicy::new(tolerance.epsilon_mm).map(|_| ())
+    tolerance
+        .validated()
+        .map(|_| ())
+        .map_err(PrismaticError::from)
 }
 
 fn separated(
@@ -618,7 +590,7 @@ fn separated(
     tolerance: TolerancePolicy,
 ) -> Result<bool, PrismaticError> {
     ensure_finite([distance, left_radius, right_radius])?;
-    let bound = left_radius + right_radius + tolerance.epsilon_mm;
+    let bound = left_radius + right_radius + tolerance.linear_mm();
     if !bound.is_finite() {
         return Err(PrismaticError::NumericalFailure);
     }
@@ -656,7 +628,7 @@ pub enum PrismaticError {
 impl fmt::Display for PrismaticError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::InvalidTolerance => "prismatic tolerance must be finite and positive",
+            Self::InvalidTolerance => "tolerance must be finite and positive",
             Self::InvalidAabb => "axis-aligned bounds are invalid or outside the bounded envelope",
             Self::InvalidObb => "oriented bounds are invalid or not orthonormal",
             Self::EmptyVolume => "joint bounds must have finite positive volume",
@@ -671,3 +643,9 @@ impl fmt::Display for PrismaticError {
 }
 
 impl std::error::Error for PrismaticError {}
+
+impl From<InvalidTolerance> for PrismaticError {
+    fn from(_: InvalidTolerance) -> Self {
+        Self::InvalidTolerance
+    }
+}

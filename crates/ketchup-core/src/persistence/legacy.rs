@@ -77,7 +77,7 @@ use crate::mechanical_coupling::{
     ASSEMBLY_MOTION_COUPLING_SCHEMA_V1, AssemblyMotionCoupling, AssemblyMotionCouplingId,
     AssemblyMotionDirection, AssemblyTransmissionKind, GearMeshKind, ScrewHandedness,
 };
-use crate::prismatic::{Aabb, CanonicalJoint, JointId, TolerancePolicy};
+use crate::prismatic::{Aabb, CanonicalJoint, JointId};
 use crate::sheet_metal::{SheetMetalEdge, SheetMetalFlange, SheetMetalSpec};
 use crate::sketch::{
     CutStart, FeatureDirection, FeatureExtent, FeatureExtentEnd, MAX_SKETCH_CONSTRAINTS,
@@ -90,6 +90,7 @@ use crate::space::{
     CanonicalClearanceVolume, CanonicalSpace, ClearanceOwner, ClearanceSeverity, ClearanceVolumeId,
     SpaceId,
 };
+use crate::tolerance::TolerancePolicy;
 use crate::topology::TopologicalElementRef;
 
 use super::{MAGIC, MigrationLoss, PersistenceError};

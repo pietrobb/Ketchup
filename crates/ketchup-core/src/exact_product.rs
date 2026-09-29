@@ -9,12 +9,12 @@ use crate::document::{
 };
 use crate::exact_brep_graph::{
     ExactBRepGraph, ExactBRepGraphError, ExactBRepOperation, ExactBRepPlanarLoop,
-    ExactBRepPlanarSegment, MAX_EXACT_BREP_COORDINATE_MM, MAX_EXACT_BREP_REGION_HOLES,
-    MAX_EXACT_BREP_REGION_SEGMENTS,
+    ExactBRepPlanarSegment, MAX_EXACT_BREP_REGION_HOLES, MAX_EXACT_BREP_REGION_SEGMENTS,
 };
 use crate::graph::{DerivedIdentity, sha256_hex};
 use crate::import::StepImportMesh;
 use crate::sketch::{SolvedSketchRegion, SolvedSketchRegionEdge, SolvedSketchRegionProfile};
+use crate::tolerance::MAX_COORDINATE_MM;
 use crate::topology::{
     TopologicalElementKind, TopologicalElementRef, TopologicalReferenceError,
     TopologicalReferenceResolution, TopologicalReferenceStability,
@@ -4641,7 +4641,7 @@ pub(crate) fn accepts_planar_offset_geometry(
 
     min.into_iter()
         .chain(max)
-        .all(|value| value.is_finite() && value.abs() <= MAX_EXACT_BREP_COORDINATE_MM)
+        .all(|value| value.is_finite() && value.abs() <= MAX_COORDINATE_MM)
         && min[0] < max[0]
         && min[1] < max[1]
         && min[2].abs() <= TOLERANCE
@@ -4683,7 +4683,7 @@ pub(crate) fn accepts_planar_circle_offset_geometry(
             .zip(expected_bounds.into_iter().flatten())
             .all(|(actual, expected)| {
                 actual.is_finite()
-                    && actual.abs() <= MAX_EXACT_BREP_COORDINATE_MM
+                    && actual.abs() <= MAX_COORDINATE_MM
                     && (actual - expected).abs() <= 1.0e-6
             })
         && (area_mm2 - expected_area).abs() <= area_tolerance
@@ -4921,7 +4921,7 @@ pub(crate) fn exact_planar_offset_profile_from_segments(
     let valid_point = |point: [f64; 2]| {
         point
             .into_iter()
-            .all(|value| value.is_finite() && value.abs() <= MAX_EXACT_BREP_COORDINATE_MM)
+            .all(|value| value.is_finite() && value.abs() <= MAX_COORDINATE_MM)
     };
     let mut points = Vec::new();
     let mut signed_area = 0.0;
@@ -5843,9 +5843,10 @@ fn planar_offset_loop_is_valid(planar_loop: &ExactBRepPlanarLoop, distance_mm: f
             let cannot_statically_collapse = distance_mm > 0.0
                 || bounds[2] - bounds[0] > 2.0 * distance_mm.abs()
                     && bounds[3] - bounds[1] > 2.0 * distance_mm.abs();
-            output_envelope.into_iter().all(|coordinate| {
-                coordinate.is_finite() && coordinate.abs() <= MAX_EXACT_BREP_COORDINATE_MM
-            }) && cannot_statically_collapse
+            output_envelope
+                .into_iter()
+                .all(|coordinate| coordinate.is_finite() && coordinate.abs() <= MAX_COORDINATE_MM)
+                && cannot_statically_collapse
         }
         ExactBRepPlanarLoop::Circle {
             center_bits,
@@ -5869,9 +5870,7 @@ fn planar_offset_loop_is_valid(planar_loop: &ExactBRepPlanarLoop, distance_mm: f
                     center[1] + output_radius,
                 ]
                 .into_iter()
-                .all(|coordinate| {
-                    coordinate.is_finite() && coordinate.abs() <= MAX_EXACT_BREP_COORDINATE_MM
-                })
+                .all(|coordinate| coordinate.is_finite() && coordinate.abs() <= MAX_COORDINATE_MM)
         }
     }
 }
@@ -5916,7 +5915,7 @@ pub(crate) fn accepts_planar_offset_solved_profile(
                     ]
                     .into_iter()
                     .all(|coordinate| {
-                        coordinate.is_finite() && coordinate.abs() <= MAX_EXACT_BREP_COORDINATE_MM
+                        coordinate.is_finite() && coordinate.abs() <= MAX_COORDINATE_MM
                     })
                 })
         }
@@ -5945,9 +5944,10 @@ pub(crate) fn accepts_planar_offset_solved_profile(
             let cannot_statically_collapse = distance_mm > 0.0
                 || bounds[2] - bounds[0] > 2.0 * minimum_displacement
                     && bounds[3] - bounds[1] > 2.0 * minimum_displacement;
-            output_envelope.into_iter().all(|coordinate| {
-                coordinate.is_finite() && coordinate.abs() <= MAX_EXACT_BREP_COORDINATE_MM
-            }) && cannot_statically_collapse
+            output_envelope
+                .into_iter()
+                .all(|coordinate| coordinate.is_finite() && coordinate.abs() <= MAX_COORDINATE_MM)
+                && cannot_statically_collapse
         }
     }
 }

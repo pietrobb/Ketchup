@@ -4,6 +4,7 @@ use crate::document::{
 };
 use crate::mechanical_coupling::{AssemblyMotionCoupling, AssemblyMotionCouplingId};
 use crate::prismatic::Aabb;
+use crate::tolerance::MAX_COORDINATE_MM;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -12,7 +13,6 @@ pub const ASSEMBLY_MOTION_STUDY_SCHEMA_V1: &str = "ketchup.assembly-motion-study
 pub const MAX_ASSEMBLY_MOTION_SAMPLE_INTERVALS: u32 = 10_000;
 pub const MAX_ASSEMBLY_MOTION_CLEARANCE_PAIR_SAMPLES: usize = 1_000_000;
 
-const MAX_LINEAR_POSITION_MM: f64 = 1_000_000.0;
 const MAX_ANGULAR_POSITION_DEGREES: f64 = 360_000.0;
 const MIN_AXIS_DIRECTION_LENGTH: f64 = 1.0e-12;
 
@@ -74,7 +74,7 @@ impl AssemblyJointAxis {
             && self
                 .pivot_in_parent_mm
                 .iter()
-                .all(|value| value.is_finite() && value.abs() <= MAX_LINEAR_POSITION_MM)
+                .all(|value| value.is_finite() && value.abs() <= MAX_COORDINATE_MM)
             && (squared_length - 1.0).abs() <= 1.0e-12
     }
 }
@@ -161,9 +161,9 @@ impl AssemblyJointKind {
             } => {
                 axis.is_valid()
                     && position_mm.is_finite()
-                    && position_mm.abs() <= MAX_LINEAR_POSITION_MM
+                    && position_mm.abs() <= MAX_COORDINATE_MM
                     && limits.is_none_or(|limits| {
-                        limits.is_valid_for(MAX_LINEAR_POSITION_MM) && limits.contains(position_mm)
+                        limits.is_valid_for(MAX_COORDINATE_MM) && limits.contains(position_mm)
                     })
             }
             Self::Helical {
@@ -175,7 +175,7 @@ impl AssemblyJointKind {
                 axis.is_valid()
                     && lead_mm_per_revolution.is_finite()
                     && lead_mm_per_revolution > 0.0
-                    && lead_mm_per_revolution <= MAX_LINEAR_POSITION_MM
+                    && lead_mm_per_revolution <= MAX_COORDINATE_MM
                     && position_degrees.is_finite()
                     && position_degrees.abs() <= MAX_ANGULAR_POSITION_DEGREES
                     && limits.is_none_or(|limits| {

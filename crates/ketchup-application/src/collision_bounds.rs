@@ -221,7 +221,7 @@ mod tests {
     use super::*;
     use ketchup_core::document::*;
     use ketchup_core::exact_brep_graph::{ExactBRepNodeId, ExactBRepProfileId};
-    use ketchup_core::prismatic::TolerancePolicy;
+    use ketchup_core::tolerance::TolerancePolicy;
 
     fn graph(points: Vec<[f64; 2]>) -> ExactBRepGraph {
         let mut document = DocumentStore::new();
@@ -256,7 +256,7 @@ mod tests {
         bounds
             .world(
                 *Transform::from_translation(x, 0.0, 0.0).unwrap().matrix(),
-                TolerancePolicy::default().epsilon_mm(),
+                TolerancePolicy::default().linear_mm(),
             )
             .unwrap()
     }
@@ -278,7 +278,7 @@ mod tests {
     #[test]
     fn touching_and_tolerance_boundary_are_not_rejected() {
         let bounds = certified_bounds(&square()).unwrap();
-        let epsilon = TolerancePolicy::default().epsilon_mm();
+        let epsilon = TolerancePolicy::default().linear_mm();
         for offset in [10.0, 10.0 + epsilon, 10.0 + 2.0 * epsilon] {
             assert!(!world(bounds, 0.0).separated(world(bounds, offset)));
         }

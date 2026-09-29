@@ -4,7 +4,7 @@ use ketchup_core::document::{InstancePath, OccurrenceId, Snapshot};
 use ketchup_core::exact_product::ExactResultRegistry;
 use ketchup_core::exact_validation::*;
 use ketchup_core::joinery::project_dowel_joint_contract;
-use ketchup_core::prismatic::TolerancePolicy;
+use ketchup_core::tolerance::TolerancePolicy;
 use ketchup_core::validation::{
     DiagnosticSeverity, EvidenceClass, HostNeutralValidator, VALIDATOR_ROLE_DIMENSION_V1,
     ValidationExecution, ValidationInvocation, ValidationState, ValidatorRoleError,
@@ -730,7 +730,7 @@ pub fn assistant_assembly_constraints_report(
         });
     }
     let tolerance = TolerancePolicy::default();
-    let epsilon_mm = tolerance.epsilon_mm();
+    let epsilon_mm = tolerance.linear_mm();
     let mut contacts = Vec::new();
     let mut physical_dowel_joints = Vec::new();
     let mut issues = Vec::new();

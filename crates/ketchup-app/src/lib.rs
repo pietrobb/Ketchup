@@ -99,7 +99,7 @@ use ketchup_core::local_pdm::{
     ReleaseDependencyInput, ReleaseManifest,
 };
 use ketchup_core::persistence::ContainerData;
-use ketchup_core::prismatic::{JointId, TolerancePolicy};
+use ketchup_core::prismatic::JointId;
 use ketchup_core::sheet_metal::{
     SheetMetalManufacturingProjection, project_sheet_metal_manufacturing,
 };
@@ -115,6 +115,8 @@ use ketchup_core::state_view::{AGENT_STATE_VIEW, encode_semantic_state};
 use ketchup_core::three_mf_export::{
     ExactThreeMfExport, MeshThreeMfInstance, model_three_mf_export,
 };
+use ketchup_core::tolerance::MAX_COORDINATE_MM;
+use ketchup_core::tolerance::TolerancePolicy;
 use ketchup_core::topology::{TopologicalElementKind, TopologicalElementRef};
 use ketchup_core::validation::ValidatorRoleIndex;
 use ketchup_interaction::{
@@ -240,7 +242,6 @@ const MAX_ASSISTANT_MEMORY_STORAGE_BYTES: usize = 320 * 1024;
 const MAX_ASSISTANT_VALIDATION_OCCURRENCES: usize = 100;
 const MAX_ASSISTANT_VALIDATION_ISSUES: usize = 100;
 pub const ASSISTANT_REPAIR_PROGRAM_SCHEMA_V1: &str = "ketchup.assistant-repair-program.v1";
-const MAX_ASSISTANT_REPAIR_TRANSLATION_MM: f64 = 1_000_000.0;
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct AssistantValidationSelection {
     mode: &'static str,
@@ -4163,9 +4164,10 @@ impl AssistantRepairOperation {
             }
         };
         occurrence_ids[0] != occurrence_ids[1]
-            && self.delta_mm().iter().all(|component| {
-                component.is_finite() && component.abs() <= MAX_ASSISTANT_REPAIR_TRANSLATION_MM
-            })
+            && self
+                .delta_mm()
+                .iter()
+                .all(|component| component.is_finite() && component.abs() <= MAX_COORDINATE_MM)
             && self
                 .delta_mm()
                 .iter()
@@ -11102,7 +11104,7 @@ impl KetchupApp {
         if narrow_phase.relation != GeneralBodyNarrowPhaseRelation::Intersecting {
             return None;
         }
-        let distance_mm = -narrow_phase.signed_separation_mm + tolerance.epsilon_mm();
+        let distance_mm = -narrow_phase.signed_separation_mm + tolerance.linear_mm();
         Some(
             narrow_phase
                 .separation_axis_world

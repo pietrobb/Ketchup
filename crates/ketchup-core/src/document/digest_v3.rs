@@ -439,7 +439,7 @@ impl DigestV3 {
         self.byte(match clearance.coordinate_frame() {
             ClearanceCoordinateFrame::World => 1,
         });
-        self.u64(clearance.tolerance().epsilon_mm().to_bits());
+        self.u64(clearance.tolerance().linear_mm().to_bits());
         self.byte(match clearance.severity() {
             ClearanceSeverity::Advisory => 1,
             ClearanceSeverity::Required => 2,

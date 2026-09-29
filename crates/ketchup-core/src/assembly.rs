@@ -3,12 +3,12 @@ use crate::document::{
     Proposal, ProposalPrepareError, Snapshot, Transform,
 };
 use crate::exact_product::{BodySubshapeRef, ExactReferenceResolution, ExactResultRegistry};
+use crate::tolerance::MAX_COORDINATE_MM;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 pub const ASSEMBLY_MATE_SCHEMA_V1: &str = "ketchup.assembly-mate.v1";
 pub const RIGID_BODY_DEGREES_OF_FREEDOM: u8 = 6;
-const MAX_ASSEMBLY_DISTANCE_MM: f64 = 1_000_000.0;
 
 #[derive(
     Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash, serde::Serialize, serde::Deserialize,
@@ -439,11 +439,11 @@ impl AssemblyMateKind {
     pub fn is_valid(self) -> bool {
         match self {
             Self::CoincidentPlanar { offset_mm, .. } => {
-                offset_mm.is_finite() && offset_mm.abs() <= MAX_ASSEMBLY_DISTANCE_MM
+                offset_mm.is_finite() && offset_mm.abs() <= MAX_COORDINATE_MM
             }
             Self::ConcentricAxial { .. } => true,
             Self::Distance { distance_mm } => {
-                distance_mm.is_finite() && (0.0..=MAX_ASSEMBLY_DISTANCE_MM).contains(&distance_mm)
+                distance_mm.is_finite() && (0.0..=MAX_COORDINATE_MM).contains(&distance_mm)
             }
             Self::Angle { angle_degrees } => {
                 angle_degrees.is_finite() && (0.0..=180.0).contains(&angle_degrees)

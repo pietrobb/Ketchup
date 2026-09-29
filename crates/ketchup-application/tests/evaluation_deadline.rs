@@ -124,7 +124,7 @@ fn physical_recipe_save_open_history_recomputes_full_exact_without_cached_eviden
         FABRICATION_ROLE_DIMENSION_V1, TIMBER_MEMBER_ROLE_V1, project_general_fabrication,
     };
     use ketchup_core::joinery::{DowelJointId, project_dowel_joint_contract};
-    use ketchup_core::prismatic::TolerancePolicy;
+    use ketchup_core::tolerance::TolerancePolicy;
 
     let key = |name: &str| RecipeKey::new(name).unwrap();
     let mut session = worker_session();

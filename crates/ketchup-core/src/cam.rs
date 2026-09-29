@@ -1,5 +1,6 @@
 use crate::document::{BodyKind, DefinitionId, FeatureId, Snapshot};
 use crate::exact_brep_graph::ExactBRepGraph;
+use crate::tolerance::MAX_COORDINATE_MM;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -11,7 +12,6 @@ pub const CAM_SIMULATION_SCHEMA_V1: &str = "ketchup.cam-simulation.v1";
 pub const CAM_POSTPROCESSOR_SCHEMA_V1: &str = "ketchup.cam-postprocessor.v1";
 const MAX_CAM_POSTPROCESSOR_BYTES: usize = 16 * 1024 * 1024;
 const CAM_POSTPROCESSOR_RESOLUTION_MM: f64 = 1.0e-9;
-const MAX_ABS_MM: f64 = 1.0e6;
 const MAX_RPM: u32 = 200_000;
 const MAX_FEED_MM_PER_MIN: f64 = 1.0e6;
 const MAX_CAM_OPERATIONS: usize = 1_024;
@@ -1029,7 +1029,7 @@ impl CamToolpath {
             if start
                 .into_iter()
                 .chain(end)
-                .any(|value| !value.is_finite() || value.abs() > MAX_ABS_MM)
+                .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
                 || distance_3d(start, expected_start) > GEOMETRY_TOLERANCE_MM
             {
                 return Err(CamPlannerError::StaleToolpath);
@@ -1276,7 +1276,7 @@ fn validate_postprocessed_program(
         if motion
             .end_mm
             .into_iter()
-            .any(|value| !value.is_finite() || value.abs() > MAX_ABS_MM)
+            .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
         {
             return Err(CamPostprocessorError::Parse);
         }
@@ -1303,7 +1303,7 @@ fn validate_postprocessed_program(
             || motion.center_offset_mm.is_some_and(|offset| {
                 offset
                     .into_iter()
-                    .any(|value| !value.is_finite() || value.abs() > MAX_ABS_MM)
+                    .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
             })
         {
             return Err(CamPostprocessorError::Parse);
@@ -1571,7 +1571,7 @@ impl CamFixture {
                 .minimum_mm
                 .into_iter()
                 .chain(self.maximum_mm)
-                .any(|value| !value.is_finite() || value.abs() > MAX_ABS_MM)
+                .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
             || (0..3).any(|axis| self.minimum_mm[axis] >= self.maximum_mm[axis])
         {
             Err(CamPlannerError::InvalidOperations)
@@ -1722,7 +1722,7 @@ fn valid_rectangle(minimum: [f64; 2], maximum: [f64; 2]) -> bool {
     minimum
         .into_iter()
         .chain(maximum)
-        .all(|value| value.is_finite() && value.abs() <= MAX_ABS_MM)
+        .all(|value| value.is_finite() && value.abs() <= MAX_COORDINATE_MM)
         && minimum[0] < maximum[0]
         && minimum[1] < maximum[1]
 }
@@ -2033,7 +2033,7 @@ fn target_graph(
 }
 
 fn validate_scalar_data(plan: &CamPlan) -> Result<(), CamError> {
-    let bounded = |value: f64| value.is_finite() && value.abs() <= MAX_ABS_MM;
+    let bounded = |value: f64| value.is_finite() && value.abs() <= MAX_COORDINATE_MM;
     let positive = |value: f64| bounded(value) && value > 0.0;
     if plan.id.0 == 0
         || plan.name.trim().is_empty()

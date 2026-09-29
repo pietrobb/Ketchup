@@ -16,6 +16,7 @@ use crate::sketch::{
     SketchRegionId, SolvedSketchRegion, SolvedSketchRegionEdge, SolvedSketchRegionProfile,
     WorkplaneFrame,
 };
+use crate::tolerance::MAX_COORDINATE_MM;
 use crate::topology::{TopologicalElementKind, TopologicalElementRef};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -54,8 +55,7 @@ pub const MAX_EXACT_BREP_REGION_HOLES: usize = 64;
 pub const MAX_EXACT_BREP_REGION_SEGMENTS: usize = 4_096;
 pub const MAX_EXACT_BREP_GRAPH_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_EXACT_BREP_TOPOLOGY_SELECTORS: usize = 64;
-pub const MAX_EXACT_BREP_COORDINATE_MM: f64 = 1_000_000.0;
-const MAX_ABS_MM: f64 = MAX_EXACT_BREP_COORDINATE_MM;
+const MAX_ABS_MM: f64 = MAX_COORDINATE_MM;
 const MIN_LENGTH_MM: f64 = 1.0e-7;
 pub const SKETCH_SWEEP_FRAME_EPSILON_MM: f64 = 1.0e-9;
 
@@ -5865,10 +5865,7 @@ mod tests {
         }
         profiles[1].geometry = ExactBRepPlanarGeometry::Boundary {
             closed: false,
-            segments: vec![line(
-                [MAX_EXACT_BREP_COORDINATE_MM, 0.0],
-                [MAX_EXACT_BREP_COORDINATE_MM, 100.0],
-            )],
+            segments: vec![line([MAX_COORDINATE_MM, 0.0], [MAX_COORDINATE_MM, 100.0])],
         };
         assert!(!valid_operation_profiles(&sweep, &profiles));
 
@@ -5878,7 +5875,7 @@ mod tests {
         };
         profiles[0].frame_bits[0] = 10.0_f64.to_bits();
         assert!(valid_operation_profiles(&sweep, &profiles));
-        profiles[0].frame_bits[0] = MAX_EXACT_BREP_COORDINATE_MM.to_bits();
+        profiles[0].frame_bits[0] = MAX_COORDINATE_MM.to_bits();
         assert!(!valid_operation_profiles(&sweep, &profiles));
         profiles[0].frame_bits = identity_frame();
 

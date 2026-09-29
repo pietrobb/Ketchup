@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+use crate::tolerance::MAX_COORDINATE_MM;
 use std::collections::BTreeSet;
 use std::fmt::{self, Write as _};
 
@@ -12,7 +13,6 @@ use crate::sketch::{
 pub const DXF_PROFILE_EXPORT_SCHEMA_V1: &str = "ketchup.dxf-profile-export.v1";
 const MAX_EXPORT_PROFILES: usize = 170;
 const MAX_EXPORT_SEGMENTS: usize = 10_000;
-const MAX_ABS_MM: f64 = 1_000_000.0;
 const EPSILON: f64 = 1.0e-9;
 const IMPORTED_LAYER_PREFIX: &str = "DXF profile · ";
 
@@ -377,7 +377,7 @@ fn transform_point(point: [f64; 2], matrix: &[f64; 16]) -> Result<[f64; 2], DxfP
     ];
     if transformed
         .iter()
-        .any(|value| !value.is_finite() || value.abs() > MAX_ABS_MM)
+        .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
     {
         return Err(DxfProfileExportError::InvalidGeometry);
     }

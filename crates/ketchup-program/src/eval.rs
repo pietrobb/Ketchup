@@ -16,6 +16,7 @@ use crate::model::{
     ProgramMirror, ProgramModel, ProgramOperation, ProgramPartBody, ProgramPathSegment,
     ProgramProfileSegment, ProgramShell, profile_bounds,
 };
+use ketchup_core::tolerance::MAX_COORDINATE_MM;
 use serde::Serialize;
 use starlark::environment::{FrozenModule, Globals, GlobalsBuilder, LibraryExtension, Module};
 use starlark::eval::Evaluator;
@@ -33,7 +34,6 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const TOLERANCE_MM: f64 = 0.01;
 /// Upper bound on generated parts, so a runaway loop fails fast.
 pub const MAX_PARTS: usize = 20_000;
-const MAX_ABS_MM: f64 = 1_000_000.0;
 const PRELUDE: &str = include_str!("../library/prelude.star");
 
 /// Why a program could not be evaluated. `message` already contains the file,
@@ -154,8 +154,10 @@ fn number(value: Value, what: &str) -> anyhow::Result<f64> {
         .flatten()
         .ok_or_else(|| anyhow::anyhow!("{what} must be a number, got {}", value.get_type()))?
         .0;
-    if !number.is_finite() || number.abs() > MAX_ABS_MM {
-        anyhow::bail!("{what} must be a finite number within ±{MAX_ABS_MM} mm, got {number}");
+    if !number.is_finite() || number.abs() > MAX_COORDINATE_MM {
+        anyhow::bail!(
+            "{what} must be a finite number within ±{MAX_COORDINATE_MM} mm, got {number}"
+        );
     }
     Ok(number)
 }

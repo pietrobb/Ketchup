@@ -8,7 +8,7 @@ use ketchup_core::{
     document::*,
     exact_product::ExactResultRegistry,
     persistence::{self, ContainerData},
-    prismatic::TolerancePolicy,
+    tolerance::TolerancePolicy,
     validation::ValidationState,
 };
 use std::time::Duration;

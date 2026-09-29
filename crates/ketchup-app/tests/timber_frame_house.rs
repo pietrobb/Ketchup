@@ -40,8 +40,8 @@ use ketchup_core::fabrication::{
     TIMBER_MEMBER_ROLE_V1,
 };
 use ketchup_core::persistence::{self, ContainerData};
-use ketchup_core::prismatic::TolerancePolicy;
 use ketchup_core::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
+use ketchup_core::tolerance::TolerancePolicy;
 use ketchup_core::validation::{
     HostNeutralValidator, ValidationExecution, ValidationInvocation, ValidationReport,
     ValidationState,

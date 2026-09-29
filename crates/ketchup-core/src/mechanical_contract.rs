@@ -4,13 +4,13 @@ use crate::assembly_joint::{
 };
 use crate::document::{DefinitionId, FeatureKind, OccurrenceId, Snapshot, Transform};
 use crate::sketch::{PadOperation, PadSpec};
+use crate::tolerance::MAX_COORDINATE_MM;
 use std::collections::BTreeMap;
 use std::fmt;
 
 pub const MECHANICAL_INTERFACE_SCHEMA_V1: &str = "ketchup.mechanical-interface.v1";
 pub const MECHANICAL_CONDITION_SCHEMA_V1: &str = "ketchup.mechanical-condition.v1";
 
-const MAX_INTERFACE_COORDINATE_MM: f64 = 1_000_000.0;
 const MAX_INTERFACE_AREA_MM2: f64 = 1.0e12;
 const MAX_CONDITION_TOLERANCE_MM: f64 = 1_000.0;
 const UNIT_NORMAL_EPSILON: f64 = 1.0e-9;
@@ -98,8 +98,7 @@ impl MechanicalPlanarFrame {
 
     #[must_use]
     pub fn is_valid(self) -> bool {
-        let finite_coordinate =
-            |value: f64| value.is_finite() && value.abs() <= MAX_INTERFACE_COORDINATE_MM;
+        let finite_coordinate = |value: f64| value.is_finite() && value.abs() <= MAX_COORDINATE_MM;
         self.origin_mm.into_iter().all(finite_coordinate)
             && self.bounds_mm.into_iter().flatten().all(finite_coordinate)
             && self.area_mm2.is_finite()
@@ -267,7 +266,7 @@ impl MechanicalConditionKind {
                     && second.0 != 0
                     && first != second
                     && offset_mm.is_finite()
-                    && offset_mm.abs() <= MAX_INTERFACE_COORDINATE_MM
+                    && offset_mm.abs() <= MAX_COORDINATE_MM
                     && valid_tolerance(tolerance_mm)
             }
             Self::Support {
@@ -300,8 +299,8 @@ impl MechanicalConditionKind {
                     && minimum.is_finite()
                     && maximum.is_finite()
                     && minimum <= maximum
-                    && minimum.abs() <= MAX_INTERFACE_COORDINATE_MM
-                    && maximum.abs() <= MAX_INTERFACE_COORDINATE_MM
+                    && minimum.abs() <= MAX_COORDINATE_MM
+                    && maximum.abs() <= MAX_COORDINATE_MM
             }
         }
     }

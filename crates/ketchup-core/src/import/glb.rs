@@ -1,3 +1,4 @@
+use crate::tolerance::MAX_COORDINATE_MM;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -34,7 +35,6 @@ const MAX_GLB_COMMANDS: usize = 1_024;
 const MAX_VERTICES_PER_PRIMITIVE: usize = 100_000;
 const MAX_TRIANGLES_PER_PRIMITIVE: usize = 200_000;
 const MAX_TEXT_BYTES: usize = 1_024;
-const MAX_ABS_MM: f64 = 1_000_000.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParsedGlbScene {
@@ -790,7 +790,7 @@ fn decode_positions(
         ];
         if point
             .iter()
-            .any(|coordinate| !coordinate.is_finite() || coordinate.abs() > MAX_ABS_MM)
+            .any(|coordinate| !coordinate.is_finite() || coordinate.abs() > MAX_COORDINATE_MM)
         {
             return Err(GlbImportError::InvalidGeometry);
         }
@@ -1162,7 +1162,7 @@ fn gltf_transform_to_ketchup(gltf: [f64; 16]) -> Result<Transform, GlbImportErro
         + matrix[2] * (matrix[4] * matrix[9] - matrix[5] * matrix[8]);
     if matrix
         .iter()
-        .any(|value| !value.is_finite() || value.abs() > MAX_ABS_MM)
+        .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
         || determinant.abs() <= f64::EPSILON
     {
         return Err(GlbImportError::InvalidTransform);

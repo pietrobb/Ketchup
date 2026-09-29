@@ -1,9 +1,9 @@
 use crate::assembly_joint::AssemblyJointId;
+use crate::tolerance::MAX_COORDINATE_MM;
 
 pub const ASSEMBLY_MOTION_COUPLING_SCHEMA_V1: &str = "ketchup.assembly-motion-coupling.v1";
 
 const MAX_TOOTH_COUNT: u32 = 1_000_000;
-const MAX_PITCH_DIMENSION_MM: f64 = 1_000_000.0;
 const MAX_REFERENCE_POSITION: f64 = 1_000_000.0;
 
 #[derive(
@@ -278,7 +278,7 @@ fn valid_count(value: u32) -> bool {
 }
 
 fn valid_pitch_dimension(value: f64) -> bool {
-    value.is_finite() && value > 0.0 && value <= MAX_PITCH_DIMENSION_MM
+    value.is_finite() && value > 0.0 && value <= MAX_COORDINATE_MM
 }
 
 fn valid_reference(value: f64) -> bool {

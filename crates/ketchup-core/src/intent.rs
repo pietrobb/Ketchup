@@ -851,7 +851,7 @@ pub fn propose_intent(
                         reason,
                         crate::prismatic::Aabb::new(volume_min, volume_max)
                             .map_err(crate::document::CanonicalError::from)?,
-                        crate::prismatic::TolerancePolicy::new(tolerance_mm)
+                        crate::tolerance::TolerancePolicy::new(tolerance_mm)
                             .map_err(crate::document::CanonicalError::from)?,
                         severity,
                         None,

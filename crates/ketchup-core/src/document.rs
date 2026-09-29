@@ -64,6 +64,7 @@ use crate::space::{
     CanonicalClearanceVolume, CanonicalSpace, ClearanceCoordinateFrame, ClearanceOwner,
     ClearanceSeverity, ClearanceVolumeId, SpaceError, SpaceId,
 };
+use crate::tolerance::MAX_COORDINATE_MM;
 use crate::topology::{TopologicalElementKind, TopologicalElementRef};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use sha2::{Digest as _, Sha256};
@@ -75,7 +76,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const COMMAND_SCHEMA_V1: &str = "ketchup.command.v1";
 pub const TOLERANCE_PROFILE_V1: &str = "ketchup.tolerance.r0-v1";
-const MAX_CANONICAL_ABS_MM: f64 = 1_000_000.0;
 pub const MAX_SOLID_TOOL_RESULT_FEATURES: usize =
     2 * (MAX_EXACT_BREP_GRAPH_NODES + 2 * MAX_EXACT_BREP_GRAPH_PROFILES) + 3;
 
@@ -2529,7 +2529,7 @@ impl Dimension {
         if source_token.trim().is_empty() {
             return Err(CanonicalError::EmptySourceToken);
         }
-        if !millimetres.is_finite() || millimetres.abs() > MAX_CANONICAL_ABS_MM {
+        if !millimetres.is_finite() || millimetres.abs() > MAX_COORDINATE_MM {
             return Err(CanonicalError::DimensionOutsideEnvelope);
         }
         Ok(Self {
@@ -10333,6 +10333,12 @@ impl From<PrismaticError> for CanonicalError {
     }
 }
 
+impl From<crate::tolerance::InvalidTolerance> for CanonicalError {
+    fn from(error: crate::tolerance::InvalidTolerance) -> Self {
+        Self::Prismatic(error.into())
+    }
+}
+
 impl From<SpaceError> for CanonicalError {
     fn from(error: SpaceError) -> Self {
         Self::Space(error)
@@ -12148,9 +12154,10 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
             Ok(())
         }
         FeatureKind::ConstructionPoint { position_mm } => {
-            if position_mm.iter().any(|coordinate| {
-                !coordinate.is_finite() || coordinate.abs() > MAX_CANONICAL_ABS_MM
-            }) {
+            if position_mm
+                .iter()
+                .any(|coordinate| !coordinate.is_finite() || coordinate.abs() > MAX_COORDINATE_MM)
+            {
                 return Err(CanonicalError::InvalidConstructionGeometry);
             }
             Ok(())
@@ -12160,9 +12167,11 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
             direction,
         } => {
             let direction_length_squared = direction.iter().map(|value| value * value).sum::<f64>();
-            if origin_mm.iter().chain(direction).any(|coordinate| {
-                !coordinate.is_finite() || coordinate.abs() > MAX_CANONICAL_ABS_MM
-            }) || !direction_length_squared.is_finite()
+            if origin_mm
+                .iter()
+                .chain(direction)
+                .any(|coordinate| !coordinate.is_finite() || coordinate.abs() > MAX_COORDINATE_MM)
+                || !direction_length_squared.is_finite()
                 || direction_length_squared <= f64::EPSILON
             {
                 return Err(CanonicalError::InvalidConstructionGeometry);
@@ -12185,9 +12194,7 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
                 .iter()
                 .chain(normal)
                 .chain(x_direction)
-                .any(|coordinate| {
-                    !coordinate.is_finite() || coordinate.abs() > MAX_CANONICAL_ABS_MM
-                })
+                .any(|coordinate| !coordinate.is_finite() || coordinate.abs() > MAX_COORDINATE_MM)
                 || !normal_length_squared.is_finite()
                 || normal_length_squared <= f64::EPSILON
                 || !x_length_squared.is_finite()
@@ -12392,9 +12399,9 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
             transform
                 .rigid_inverse()
                 .ok_or(CanonicalError::InvalidTransform)?;
-            if transform.matrix()[3].abs() > MAX_CANONICAL_ABS_MM
-                || transform.matrix()[7].abs() > MAX_CANONICAL_ABS_MM
-                || transform.matrix()[11].abs() > MAX_CANONICAL_ABS_MM
+            if transform.matrix()[3].abs() > MAX_COORDINATE_MM
+                || transform.matrix()[7].abs() > MAX_COORDINATE_MM
+                || transform.matrix()[11].abs() > MAX_COORDINATE_MM
             {
                 return Err(CanonicalError::InvalidTransform);
             }
@@ -12410,7 +12417,7 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
             if axis_start_mm
                 .iter()
                 .chain(axis_end_mm)
-                .any(|value| !value.is_finite() || value.abs() > MAX_CANONICAL_ABS_MM)
+                .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
                 || (axis_end_mm[0] - axis_start_mm[0]).hypot(axis_end_mm[1] - axis_start_mm[1])
                     <= PROFILE_EPSILON_MM
                 || !angle_degrees.is_finite()
@@ -12505,7 +12512,7 @@ fn validate_feature_kind(kind: &FeatureKind) -> Result<(), CanonicalError> {
                 })
                 || sections.iter().any(|section| {
                     !section.elevation_mm.is_finite()
-                        || section.elevation_mm.abs() > MAX_CANONICAL_ABS_MM
+                        || section.elevation_mm.abs() > MAX_COORDINATE_MM
                 })
                 || sections
                     .iter()
@@ -12527,7 +12534,7 @@ fn validate_imported_exact_body(spec: &ImportedExactBodySpec) -> Result<(), Cano
         .bounds_mm
         .iter()
         .flatten()
-        .all(|coordinate| coordinate.is_finite() && coordinate.abs() <= MAX_CANONICAL_ABS_MM)
+        .all(|coordinate| coordinate.is_finite() && coordinate.abs() <= MAX_COORDINATE_MM)
         && (0..3).all(|axis| spec.bounds_mm[0][axis] <= spec.bounds_mm[1][axis]);
     let legacy_solid = matches!(
         (spec.schema.as_str(), spec.source_part_index, spec.body_kind),
@@ -12597,7 +12604,7 @@ fn validate_mesh_body(spec: &MeshBodySpec) -> Result<(), CanonicalError> {
             .vertices_mm
             .iter()
             .flatten()
-            .any(|coordinate| !coordinate.is_finite() || coordinate.abs() > MAX_CANONICAL_ABS_MM)
+            .any(|coordinate| !coordinate.is_finite() || coordinate.abs() > MAX_COORDINATE_MM)
     {
         return Err(CanonicalError::InvalidMeshBody);
     }
@@ -13460,7 +13467,7 @@ pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment]) -> bool {
         if [start, end]
             .into_iter()
             .flatten()
-            .any(|coordinate| !coordinate.is_finite() || coordinate.abs() > MAX_CANONICAL_ABS_MM)
+            .any(|coordinate| !coordinate.is_finite() || coordinate.abs() > MAX_COORDINATE_MM)
         {
             return None;
         }
@@ -13480,7 +13487,7 @@ pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment]) -> bool {
                     .into_iter()
                     .flatten()
                     .any(|coordinate| {
-                        !coordinate.is_finite() || coordinate.abs() > MAX_CANONICAL_ABS_MM
+                        !coordinate.is_finite() || coordinate.abs() > MAX_COORDINATE_MM
                     })
                 {
                     return None;
@@ -13526,7 +13533,7 @@ pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment]) -> bool {
                     .into_iter()
                     .flatten()
                     .any(|coordinate| {
-                        !coordinate.is_finite() || coordinate.abs() > MAX_CANONICAL_ABS_MM
+                        !coordinate.is_finite() || coordinate.abs() > MAX_COORDINATE_MM
                     })
                 {
                     return None;
@@ -13630,7 +13637,7 @@ fn is_valid_segment_profile(segments: &[ProfileSegment], closed: bool) -> bool {
     let valid_point = |point: [f64; 2]| {
         point
             .into_iter()
-            .all(|coordinate| coordinate.is_finite() && coordinate.abs() <= MAX_CANONICAL_ABS_MM)
+            .all(|coordinate| coordinate.is_finite() && coordinate.abs() <= MAX_COORDINATE_MM)
     };
     let distinct = |left: [f64; 2], right: [f64; 2]| {
         (left[0] - right[0]).hypot(left[1] - right[1]) > PROFILE_EPSILON_MM
@@ -13681,7 +13688,7 @@ fn is_valid_profile(points_mm: &[[f64; 2]]) -> bool {
         || points_mm
             .iter()
             .flatten()
-            .any(|coordinate| !coordinate.is_finite() || coordinate.abs() > MAX_CANONICAL_ABS_MM)
+            .any(|coordinate| !coordinate.is_finite() || coordinate.abs() > MAX_COORDINATE_MM)
     {
         return false;
     }
@@ -16798,7 +16805,7 @@ fn validate_product_with_drawing_sources(
                             points_mm[2][1] + distance,
                         ];
                         output_bounds.into_iter().all(|coordinate| {
-                            coordinate.is_finite() && coordinate.abs() <= MAX_CANONICAL_ABS_MM
+                            coordinate.is_finite() && coordinate.abs() <= MAX_COORDINATE_MM
                         }) && output_bounds[2] - output_bounds[0] >= EXACT_MIN_LENGTH_MM
                             && output_bounds[3] - output_bounds[1] >= EXACT_MIN_LENGTH_MM
                     }
@@ -16828,7 +16835,7 @@ fn validate_product_with_drawing_sources(
                                             && bounds[3] - bounds[1] > 2.0 * minimum_displacement;
                                     output_envelope.into_iter().all(|coordinate| {
                                         coordinate.is_finite()
-                                            && coordinate.abs() <= MAX_CANONICAL_ABS_MM
+                                            && coordinate.abs() <= MAX_COORDINATE_MM
                                     }) && cannot_statically_collapse
                                 },
                             )
@@ -17945,7 +17952,7 @@ fn proposal_value(
                         volume_min: clearance.volume().min(),
                         volume_max: clearance.volume().max(),
                         coordinate_frame: clearance.coordinate_frame(),
-                        tolerance_mm: clearance.tolerance().epsilon_mm(),
+                        tolerance_mm: clearance.tolerance().linear_mm(),
                         severity: clearance.severity(),
                         derived_from: clearance.derived_from().cloned(),
                     }

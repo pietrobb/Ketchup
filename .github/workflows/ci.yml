@@ -27,6 +27,8 @@ jobs:
           python-version: "3.11"
       - name: No named products in core source
         run: python scripts/check_no_named_products.py
+      - name: No new tolerance literals outside tolerance.rs
+        run: python scripts/check_tolerance_literals.py
       - name: Python tests
         run: |
           python -m pip install --quiet pytest openpyxl anthropic

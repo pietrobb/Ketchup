@@ -1,3 +1,4 @@
+use crate::tolerance::MAX_COORDINATE_MM;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -24,7 +25,6 @@ const MAX_TOTAL_TRIANGLES: usize = 400_000;
 const MAX_VERTICES_PER_DEFINITION: usize = 100_000;
 const MAX_TRIANGLES_PER_DEFINITION: usize = 200_000;
 const MAX_TEXT_BYTES: usize = 1_024;
-const MAX_ABS_MM: f64 = 1_000_000.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParsedSketchupScene {
@@ -381,10 +381,9 @@ pub fn inspect_sketchup_scene(
             .into_iter()
             .map(|vertex| {
                 let scaled = vertex.map(|coordinate| coordinate * 25.4);
-                if scaled
-                    .iter()
-                    .any(|coordinate| !coordinate.is_finite() || coordinate.abs() > MAX_ABS_MM)
-                {
+                if scaled.iter().any(|coordinate| {
+                    !coordinate.is_finite() || coordinate.abs() > MAX_COORDINATE_MM
+                }) {
                     Err(SketchupSceneImportError::InvalidGeometry)
                 } else {
                     Ok(scaled)
@@ -434,7 +433,7 @@ pub fn inspect_sketchup_scene(
         if matrix.iter().any(|value| !value.is_finite())
             || [0, 1, 2, 4, 5, 6, 8, 9, 10]
                 .into_iter()
-                .any(|index| matrix[index].abs() > MAX_ABS_MM)
+                .any(|index| matrix[index].abs() > MAX_COORDINATE_MM)
             || !determinant.is_finite()
             || determinant.abs() <= 1.0e-12
         {
@@ -450,7 +449,7 @@ pub fn inspect_sketchup_scene(
                     + matrix[row * 4 + 1] * vertex[1]
                     + matrix[row * 4 + 2] * vertex[2]
                     + matrix[row * 4 + 3];
-                !coordinate.is_finite() || coordinate.abs() > MAX_ABS_MM
+                !coordinate.is_finite() || coordinate.abs() > MAX_COORDINATE_MM
             })
         }) {
             return Err(SketchupSceneImportError::InvalidTransform);

@@ -17,7 +17,7 @@ use ketchup_core::fabrication::{
     WELDMENT_DRAWING_SVG_V1, WeldmentCutTreatment, project_general_fabrication,
 };
 use ketchup_core::persistence::{self, ContainerData};
-use ketchup_core::prismatic::TolerancePolicy;
+use ketchup_core::tolerance::TolerancePolicy;
 use ketchup_core::validation::{
     HostNeutralValidator, ValidationExecution, ValidationInvocation, ValidationState,
 };

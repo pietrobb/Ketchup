@@ -22,14 +22,14 @@ use ketchup_core::exact_brep_graph::{
     ExactBRepProfileFaceReference, ExactBRepSheetMetalEdge, ExactBRepSheetMetalFlange,
     ExactBRepShellDirection, ExactBRepSpatialPath, ExactBRepSpatialPathSegment,
     ExactBRepTopologyKind, ExactBRepTopologySelector, ExactBRepWeldmentJointPolicy,
-    ExactBRepWeldmentJointPrimary, MAX_EXACT_BREP_COORDINATE_MM,
-    exact_brep_planar_rectangle_bounds,
+    ExactBRepWeldmentJointPrimary, exact_brep_planar_rectangle_bounds,
 };
 use ketchup_core::exact_product::{EXACT_BREP_GRAPH_EVALUATOR_V1, ExactFaceRole};
 use ketchup_core::graph::sha256_hex;
 use ketchup_core::import::{
     MAX_STEP_MESH_TRIANGLES, MAX_STEP_SOURCE_BYTES, StepImportMesh, StepMeshTriangle,
 };
+use ketchup_core::tolerance::MAX_COORDINATE_MM;
 use ketchup_core::topology::{
     TopologicalElementRef, TopologicalReferenceStability, topological_edge_provenance_tokens,
 };
@@ -1600,8 +1600,8 @@ fn exact_brep_through_all_interval(
     let end = maximum + 1.0;
     if !start.is_finite()
         || !end.is_finite()
-        || start.abs() > MAX_EXACT_BREP_COORDINATE_MM
-        || end.abs() > MAX_EXACT_BREP_COORDINATE_MM
+        || start.abs() > MAX_COORDINATE_MM
+        || end.abs() > MAX_COORDINATE_MM
         || end <= start
     {
         return Err(exact_brep_graph_error(

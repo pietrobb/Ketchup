@@ -1,5 +1,6 @@
 use crate::document::{Dimension, FeatureId};
 use crate::exact_product::BodySubshapeRef;
+use crate::tolerance::MAX_COORDINATE_MM;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -7,7 +8,6 @@ mod rank;
 
 pub const MAX_SKETCH_ENTITIES: usize = 4_096;
 pub const MAX_SKETCH_CONSTRAINTS: usize = 8_192;
-const MAX_ABS_MM: f64 = 1_000_000.0;
 const MAX_SKETCH_SOLVER_DOF: usize = 512;
 const EPSILON_MM: f64 = 1.0e-7;
 const FRAME_EPSILON: f64 = 1.0e-9;
@@ -145,7 +145,7 @@ impl WorkplaneFrame {
             .chain(self.x_axis.iter())
             .chain(self.y_axis.iter())
             .chain(self.normal.iter())
-            .any(|value| !value.is_finite() || value.abs() > MAX_ABS_MM)
+            .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
         {
             return Err(SketchError::InvalidWorkplaneFrame);
         }
@@ -348,7 +348,7 @@ impl SketchEntity {
         let valid_point = |point: &[f64; 2]| {
             point
                 .iter()
-                .all(|value| value.is_finite() && value.abs() <= MAX_ABS_MM)
+                .all(|value| value.is_finite() && value.abs() <= MAX_COORDINATE_MM)
         };
         match self {
             Self::Line {
@@ -387,7 +387,7 @@ impl SketchEntity {
                 if !valid_point(center_mm)
                     || !radius_mm.is_finite()
                     || *radius_mm <= EPSILON_MM
-                    || *radius_mm > MAX_ABS_MM
+                    || *radius_mm > MAX_COORDINATE_MM
                 {
                     return Err(SketchError::InvalidEntity(self.id()));
                 }
@@ -698,7 +698,7 @@ impl FeatureDirection {
             let length = vector[0].hypot(vector[1]).hypot(vector[2]);
             if vector.iter().any(|component| !component.is_finite())
                 || length <= EPSILON_MM
-                || length > MAX_ABS_MM
+                || length > MAX_COORDINATE_MM
             {
                 return Err(SketchError::InvalidFeatureDirection);
             }
@@ -802,7 +802,7 @@ fn validate_extent_distance(distance: &Dimension) -> Result<(), SketchError> {
 fn validate_extent_length(distance: &Dimension, length_mm: f64) -> Result<(), SketchError> {
     Dimension::new(distance.source_token(), distance.millimetres())
         .map_err(|_| SketchError::InvalidDimension)?;
-    if length_mm <= EPSILON_MM || length_mm > MAX_ABS_MM {
+    if length_mm <= EPSILON_MM || length_mm > MAX_COORDINATE_MM {
         return Err(SketchError::InvalidDimension);
     }
     Ok(())
@@ -2291,7 +2291,8 @@ impl SketchSpec {
         if self.is_projected_entity(entity_id) {
             return Err(SketchError::ProjectedEntityReadOnly(entity_id));
         }
-        if !distance_mm.is_finite() || distance_mm <= EPSILON_MM || distance_mm > MAX_ABS_MM {
+        if !distance_mm.is_finite() || distance_mm <= EPSILON_MM || distance_mm > MAX_COORDINATE_MM
+        {
             return Err(SketchError::InvalidOffsetDistance);
         }
         if new_entity_id.0 == 0 {
@@ -2358,7 +2359,7 @@ impl SketchSpec {
                 let source_radius = distance2(start_mm, center_mm);
                 let radial_direction = if clockwise { side_sign } else { -side_sign };
                 let radius = source_radius + distance_mm * radial_direction;
-                if !radius.is_finite() || radius <= EPSILON_MM || radius > MAX_ABS_MM {
+                if !radius.is_finite() || radius <= EPSILON_MM || radius > MAX_COORDINATE_MM {
                     return Err(SketchError::AmbiguousOffset);
                 }
                 SketchEntity::Arc {
@@ -2375,7 +2376,7 @@ impl SketchSpec {
                 ..
             } => {
                 let radius = radius_mm - distance_mm * side_sign;
-                if !radius.is_finite() || radius <= EPSILON_MM || radius > MAX_ABS_MM {
+                if !radius.is_finite() || radius <= EPSILON_MM || radius > MAX_COORDINATE_MM {
                     return Err(SketchError::AmbiguousOffset);
                 }
                 SketchEntity::Circle {
@@ -3655,7 +3656,7 @@ fn evaluate_constraint(
             point(*reference)?;
             if position_mm
                 .iter()
-                .any(|value| !value.is_finite() || value.abs() > MAX_ABS_MM)
+                .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
             {
                 return Err(SketchError::InvalidConstraintReference(constraint.id));
             }

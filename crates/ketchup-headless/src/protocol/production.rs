@@ -5,7 +5,7 @@ use ketchup_core::fabrication::production::{
     HomagWoodwopAdapter, ProductionAdapter, instance_path_value,
 };
 use ketchup_core::fabrication::{WoodwopMprOptions, project_general_fabrication};
-use ketchup_core::prismatic::TolerancePolicy;
+use ketchup_core::tolerance::TolerancePolicy;
 use std::time::Duration;
 
 #[derive(Deserialize)]

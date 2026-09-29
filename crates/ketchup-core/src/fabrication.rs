@@ -13,8 +13,8 @@ use crate::exact_validation::{
 };
 use crate::graph::{DerivedIdentity, sha256_hex};
 use crate::joinery::{DowelHole, project_dowel_joint_contract};
-use crate::prismatic::TolerancePolicy;
 use crate::sketch::{PadOperation, PadSpec};
+use crate::tolerance::TolerancePolicy;
 use crate::validation::{
     EvidenceClass, EvidenceCounts, PermittedErrorDirection, TolerantEvidence, ValidationReport,
     ValidationState,
@@ -2787,7 +2787,7 @@ pub fn project_general_fabrication(
                 .iter()
                 .map(|participant| participant.evidence_class()),
             TolerantEvidence::new(
-                tolerance.epsilon_mm(),
+                tolerance.linear_mm(),
                 GENERAL_FABRICATION_EVALUATOR_V5,
                 PermittedErrorDirection::BidirectionalBounded,
             )

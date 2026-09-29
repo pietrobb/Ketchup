@@ -2,7 +2,8 @@ use crate::document::{InstancePath, Snapshot};
 use crate::exact_product::ExactResultRegistry;
 use crate::exact_validation::{GeneralBodyParticipant, GeneralBodyValidationError};
 use crate::graph::{DerivedIdentity, SlotResolution};
-use crate::prismatic::{Aabb, PrismaticError, TolerancePolicy, collide_axis_aligned_prisms};
+use crate::prismatic::{Aabb, PrismaticError, collide_axis_aligned_prisms};
+use crate::tolerance::TolerancePolicy;
 use crate::validation::EvidenceCounts;
 use std::fmt;
 
@@ -126,7 +127,9 @@ impl CanonicalClearanceVolume {
         if !volume.has_positive_volume() {
             return Err(SpaceError::InvalidVolume);
         }
-        TolerancePolicy::new(tolerance.epsilon_mm()).map_err(SpaceError::Prismatic)?;
+        tolerance
+            .validated()
+            .map_err(|error| SpaceError::Prismatic(error.into()))?;
         Ok(Self {
             id,
             owner,

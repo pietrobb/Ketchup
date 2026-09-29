@@ -25,12 +25,13 @@ use ketchup_core::fabrication::{
 use ketchup_core::graph::{DerivedIdentity, PortSpec, RuleOutput, SlotPath, SlotSegment};
 use ketchup_core::import::{StepImportMesh, StepMeshTriangle};
 use ketchup_core::persistence;
-use ketchup_core::prismatic::{Aabb, TolerancePolicy};
+use ketchup_core::prismatic::Aabb;
 use ketchup_core::space::{
     CanonicalClearanceVolume, CanonicalSpace, ClearanceOwner, ClearanceSeverity,
     ClearanceValidationError, ClearanceVolumeId, SpaceId, validate_clearance_occupancy,
 };
 use ketchup_core::testing::box_package;
+use ketchup_core::tolerance::TolerancePolicy;
 use ketchup_core::validation::{
     EvidenceClass, EvidenceCounts, HostNeutralValidator, VALIDATOR_ROLE_DIMENSION_V1,
     ValidationExecution, ValidationInvocation, ValidationState, ValidatorRoleError,

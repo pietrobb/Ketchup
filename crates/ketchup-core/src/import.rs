@@ -1,3 +1,4 @@
+use crate::tolerance::MAX_COORDINATE_MM;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
@@ -1044,7 +1045,6 @@ const MAX_STL_ASCII_LINES: usize = (MAX_STL_TRIANGLES * MAX_STL_ASCII_LINES_PER_
 pub const MAX_STL_SOURCE_BYTES: u64 =
     MAX_STL_ASCII_LINES as u64 * (MAX_STL_ASCII_LINE_BYTES as u64 + 2);
 const MAX_STL_VERTICES: usize = 100_000;
-const MAX_STL_ABS_MM: f64 = 1_000_000.0;
 const STL_AREA_EPSILON: f64 = 1.0e-18;
 const STL_VOLUME_EPSILON: f64 = 1.0e-12;
 
@@ -1400,7 +1400,7 @@ fn normalize_and_validate_stl(
         for (destination, source_vertex) in scaled.iter_mut().zip(vertices) {
             for axis in 0..3 {
                 let value = source_vertex[axis] * scale;
-                if !value.is_finite() || value.abs() > MAX_STL_ABS_MM {
+                if !value.is_finite() || value.abs() > MAX_COORDINATE_MM {
                     return Err(StlImportError::CoordinateOutOfRange);
                 }
                 destination[axis] = if value == 0.0 { 0.0 } else { value };

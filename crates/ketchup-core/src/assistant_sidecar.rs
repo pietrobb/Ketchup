@@ -4,6 +4,7 @@ use crate::document::{
 };
 use crate::exact_product::EXACT_MIN_LENGTH_MM;
 use crate::sheet_metal::{SheetMetalEdge, SheetMetalFlange, SheetMetalSpec};
+use crate::tolerance::MAX_COORDINATE_MM;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -28,7 +29,6 @@ const MAX_ASSISTANT_REJECTION_OPERATION_BYTES: usize = 128;
 const MAX_ASSISTANT_REJECTION_TARGET_BYTES: usize = 256;
 const MAX_ASSISTANT_REJECTION_TEXT_BYTES: usize = 2_048;
 const MAX_ASSISTANT_REJECTION_BYTES: usize = 8 * 1_024;
-const MAX_ASSISTANT_ABS_MM: f64 = 1_000_000.0;
 const MAX_ASSISTANT_HELIX_TURNS: f64 = 16.0;
 const MAX_ASSISTANT_HELIX_SEGMENTS: usize = 64;
 const MAX_ASSISTANT_SPATIAL_PATH_SEGMENTS: usize = 64;
@@ -460,14 +460,14 @@ impl AssistantHelixParameters {
         self.axis.validate()?;
         let axial_length = self.pitch_mm * self.turns;
         if !self.radius_mm.is_finite()
-            || !(EXACT_MIN_LENGTH_MM..=MAX_ASSISTANT_ABS_MM).contains(&self.radius_mm)
+            || !(EXACT_MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(&self.radius_mm)
             || !self.pitch_mm.is_finite()
-            || !(EXACT_MIN_LENGTH_MM..=MAX_ASSISTANT_ABS_MM).contains(&self.pitch_mm)
+            || !(EXACT_MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(&self.pitch_mm)
             || !self.turns.is_finite()
             || !(0.01..=MAX_ASSISTANT_HELIX_TURNS).contains(&self.turns)
             || !self.start_angle_degrees.is_finite()
             || !axial_length.is_finite()
-            || axial_length > MAX_ASSISTANT_ABS_MM
+            || axial_length > MAX_COORDINATE_MM
         {
             return Err("assistant helix parameters are invalid".to_owned());
         }
@@ -794,7 +794,7 @@ impl AssistantCadPartFeature {
             Self::Extrusion { distance_mm }
                 if distance_mm.is_finite()
                     && *distance_mm > 0.0
-                    && *distance_mm <= MAX_ASSISTANT_ABS_MM =>
+                    && *distance_mm <= MAX_COORDINATE_MM =>
             {
                 Ok(())
             }
@@ -1282,7 +1282,7 @@ impl AssistantCadBodyFeature {
                 && target_feature_id != profile_feature_id
                 && depth_mm.is_finite()
                 && *depth_mm > 0.0
-                && *depth_mm <= MAX_ASSISTANT_ABS_MM =>
+                && *depth_mm <= MAX_COORDINATE_MM =>
             {
                 Ok(())
             }
@@ -1293,7 +1293,7 @@ impl AssistantCadBodyFeature {
             } if *profile_feature_id != 0
                 && distance_mm.is_finite()
                 && distance_mm.abs() >= EXACT_MIN_LENGTH_MM
-                && distance_mm.abs() <= MAX_ASSISTANT_ABS_MM =>
+                && distance_mm.abs() <= MAX_COORDINATE_MM =>
             {
                 Ok(())
             }
@@ -1345,7 +1345,7 @@ impl AssistantCadBodyFeature {
                 && sections.iter().all(|section| {
                     section.profile_feature_id.validate().is_ok()
                         && section.elevation_mm.is_finite()
-                        && section.elevation_mm.abs() <= MAX_ASSISTANT_ABS_MM
+                        && section.elevation_mm.abs() <= MAX_COORDINATE_MM
                 })
                 && sections
                     .iter()
@@ -1377,7 +1377,7 @@ impl AssistantCadBodyFeature {
                 && sections.iter().all(|section| {
                     section.profile_feature_id.validate().is_ok()
                         && section.elevation_mm.is_finite()
-                        && section.elevation_mm.abs() <= MAX_ASSISTANT_ABS_MM
+                        && section.elevation_mm.abs() <= MAX_COORDINATE_MM
                 })
                 && sections
                     .iter()
@@ -1407,7 +1407,7 @@ impl AssistantCadBodyFeature {
                 distance_mm,
             } if target_feature_id.validate().is_ok()
                 && distance_mm.is_finite()
-                && (EXACT_MIN_LENGTH_MM..=MAX_ASSISTANT_ABS_MM).contains(distance_mm) =>
+                && (EXACT_MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(distance_mm) =>
             {
                 Ok(())
             }
@@ -1893,7 +1893,7 @@ impl AssistantFeaReviewRequest {
             || !self.fine_deflection_mm.is_finite()
             || self.fine_deflection_mm <= 0.0
             || self.coarse_deflection_mm <= self.fine_deflection_mm
-            || self.coarse_deflection_mm > MAX_ASSISTANT_ABS_MM
+            || self.coarse_deflection_mm > MAX_COORDINATE_MM
         {
             return Err("assistant FEA review request is invalid".to_owned());
         }
@@ -2172,7 +2172,7 @@ pub enum AssistantCadEditOperation {
 fn assistant_cad_vector_is_bounded(vector: [f64; 3]) -> bool {
     vector
         .iter()
-        .all(|value| value.is_finite() && value.abs() <= MAX_ASSISTANT_ABS_MM)
+        .all(|value| value.is_finite() && value.abs() <= MAX_COORDINATE_MM)
 }
 
 fn assistant_cad_vector_is_nonzero(vector: [f64; 3]) -> bool {
@@ -2228,8 +2228,8 @@ impl AssistantAssemblyJointLimits {
         if !self.min.is_finite()
             || !self.max.is_finite()
             || self.min > self.max
-            || self.min.abs() > MAX_ASSISTANT_ABS_MM
-            || self.max.abs() > MAX_ASSISTANT_ABS_MM
+            || self.min.abs() > MAX_COORDINATE_MM
+            || self.max.abs() > MAX_COORDINATE_MM
             || position < self.min
             || position > self.max
         {
@@ -2245,7 +2245,7 @@ impl AssistantAssemblyJointKind {
                                limits: Option<AssistantAssemblyJointLimits>,
                                position: f64| {
             axis.validate()?;
-            if !position.is_finite() || position.abs() > MAX_ASSISTANT_ABS_MM {
+            if !position.is_finite() || position.abs() > MAX_COORDINATE_MM {
                 return Err("assistant assembly joint position is invalid".to_owned());
             }
             if let Some(limits) = limits {
@@ -2274,7 +2274,7 @@ impl AssistantAssemblyJointKind {
                 validate_motion(axis, limits, position_degrees)?;
                 if !lead_mm_per_revolution.is_finite()
                     || lead_mm_per_revolution <= 0.0
-                    || lead_mm_per_revolution > MAX_ASSISTANT_ABS_MM
+                    || lead_mm_per_revolution > MAX_COORDINATE_MM
                 {
                     return Err("assistant assembly helical joint is invalid".to_owned());
                 }
@@ -2321,7 +2321,7 @@ impl AssistantCadRotation {
             || !axis_length_squared.is_finite()
             || axis_length_squared <= f64::EPSILON
             || !self.angle_degrees.is_finite()
-            || self.angle_degrees.abs() > MAX_ASSISTANT_ABS_MM
+            || self.angle_degrees.abs() > MAX_COORDINATE_MM
             || shortest_angle < 0.01
         {
             return Err("assistant CAD rotation is invalid".to_owned());
@@ -2346,7 +2346,7 @@ impl AssistantWorkplaneSpec {
                 distance_mm,
             } if *base_feature_id != 0
                 && distance_mm.is_finite()
-                && distance_mm.abs() <= MAX_ASSISTANT_ABS_MM =>
+                && distance_mm.abs() <= MAX_COORDINATE_MM =>
             {
                 Ok(())
             }
@@ -2480,7 +2480,7 @@ impl AssistantSketchEntity {
         let point = |point: &[f64; 2]| {
             point
                 .iter()
-                .all(|value| value.is_finite() && value.abs() <= MAX_ASSISTANT_ABS_MM)
+                .all(|value| value.is_finite() && value.abs() <= MAX_COORDINATE_MM)
         };
         let valid = match self {
             Self::Line {
@@ -2500,7 +2500,7 @@ impl AssistantSketchEntity {
                 point(center_mm)
                     && radius_mm.is_finite()
                     && *radius_mm > 0.0
-                    && *radius_mm <= MAX_ASSISTANT_ABS_MM
+                    && *radius_mm <= MAX_COORDINATE_MM
             }
             Self::Ellipse {
                 segment_ids,
@@ -2515,14 +2515,14 @@ impl AssistantSketchEntity {
                     && point(center_mm)
                     && radius_x_mm.is_finite()
                     && *radius_x_mm > 0.0
-                    && *radius_x_mm <= MAX_ASSISTANT_ABS_MM
+                    && *radius_x_mm <= MAX_COORDINATE_MM
                     && radius_y_mm.is_finite()
                     && *radius_y_mm > 0.0
-                    && *radius_y_mm <= MAX_ASSISTANT_ABS_MM
+                    && *radius_y_mm <= MAX_COORDINATE_MM
                     && rotation_degrees.is_finite()
                     && maximum_deviation_mm.is_finite()
                     && *maximum_deviation_mm > 0.0
-                    && *maximum_deviation_mm <= MAX_ASSISTANT_ABS_MM
+                    && *maximum_deviation_mm <= MAX_COORDINATE_MM
                     && self.ellipse_approximation_is_within_tolerance(1.0)
             }
             Self::RoundedRectangle {
@@ -2538,16 +2538,16 @@ impl AssistantSketchEntity {
                     && point(center_mm)
                     && width_mm.is_finite()
                     && *width_mm > 0.0
-                    && *width_mm <= MAX_ASSISTANT_ABS_MM
+                    && *width_mm <= MAX_COORDINATE_MM
                     && height_mm.is_finite()
                     && *height_mm > 0.0
-                    && *height_mm <= MAX_ASSISTANT_ABS_MM
+                    && *height_mm <= MAX_COORDINATE_MM
                     && corner_radius_mm.is_finite()
                     && *corner_radius_mm > 0.0
                     && *corner_radius_mm < 0.5 * width_mm.min(*height_mm)
                     && rotation_degrees.is_finite()
-                    && center_mm[0].abs() + 0.5 * width_mm + 0.5 * height_mm <= MAX_ASSISTANT_ABS_MM
-                    && center_mm[1].abs() + 0.5 * width_mm + 0.5 * height_mm <= MAX_ASSISTANT_ABS_MM
+                    && center_mm[0].abs() + 0.5 * width_mm + 0.5 * height_mm <= MAX_COORDINATE_MM
+                    && center_mm[1].abs() + 0.5 * width_mm + 0.5 * height_mm <= MAX_COORDINATE_MM
             }
             Self::ProfileCopies {
                 source_entities,
@@ -2586,7 +2586,7 @@ impl AssistantSketchEntity {
                             })
                             && copy.translation_mm[0].hypot(copy.translation_mm[1])
                                 + copy.uniform_scale * source_bound
-                                <= MAX_ASSISTANT_ABS_MM
+                                <= MAX_COORDINATE_MM
                     })
             }
             Self::CubicBezier {
@@ -2631,7 +2631,7 @@ impl AssistantSketchConstraint {
         let valid_point = |point: &[f64; 2]| {
             point
                 .iter()
-                .all(|value| value.is_finite() && value.abs() <= MAX_ASSISTANT_ABS_MM)
+                .all(|value| value.is_finite() && value.abs() <= MAX_COORDINATE_MM)
         };
         let valid = match self {
             Self::Horizontal { entity_id, .. } | Self::Vertical { entity_id, .. } => {
@@ -2643,7 +2643,7 @@ impl AssistantSketchConstraint {
                     && valid_point_ref(b)
                     && value_mm.is_finite()
                     && *value_mm > 0.0
-                    && *value_mm <= MAX_ASSISTANT_ABS_MM
+                    && *value_mm <= MAX_COORDINATE_MM
             }
             Self::Radius {
                 entity_id,
@@ -2653,7 +2653,7 @@ impl AssistantSketchConstraint {
                 *entity_id != 0
                     && value_mm.is_finite()
                     && *value_mm > 0.0
-                    && *value_mm <= MAX_ASSISTANT_ABS_MM
+                    && *value_mm <= MAX_COORDINATE_MM
             }
             Self::FixedPoint {
                 point, position_mm, ..
@@ -3033,7 +3033,7 @@ impl AssistantCadEditProgram {
                         || name.len() > MAX_ASSISTANT_NAME_BYTES
                         || name.chars().any(char::is_control)
                         || dimensions_mm.iter().any(|value| {
-                            !value.is_finite() || *value <= 0.0 || *value > MAX_ASSISTANT_ABS_MM
+                            !value.is_finite() || *value <= 0.0 || *value > MAX_COORDINATE_MM
                         })
                         || holes.len() > 128
                         || !assistant_cad_vector_is_bounded(*translation_mm)
@@ -3245,7 +3245,7 @@ impl AssistantCadEditProgram {
                         || name.chars().any(char::is_control)
                         || !depth_mm.is_finite()
                         || *depth_mm <= 0.0
-                        || *depth_mm > MAX_ASSISTANT_ABS_MM
+                        || *depth_mm > MAX_COORDINATE_MM
                         || target_feature == profile_feature
                     {
                         return Err("assistant CAD program Pocket is invalid".to_owned());
@@ -3288,7 +3288,7 @@ impl AssistantCadEditProgram {
                         || constraint_id == &Some(0)
                         || !value_mm.is_finite()
                         || *value_mm <= 0.0
-                        || *value_mm > MAX_ASSISTANT_ABS_MM
+                        || *value_mm > MAX_COORDINATE_MM
                     {
                         return Err("assistant CAD dimension edit is invalid".to_owned());
                     }
@@ -3305,7 +3305,7 @@ impl AssistantCadEditProgram {
                         || parameter_path.len() > MAX_ASSISTANT_NAME_BYTES
                         || parameter_path.chars().any(char::is_control)
                         || !value.is_finite()
-                        || value.abs() > MAX_ASSISTANT_ABS_MM
+                        || value.abs() > MAX_COORDINATE_MM
                         || (*value_type == AssistantCadParameterValueType::Length && *value <= 0.0)
                     {
                         return Err("assistant CAD feature parameter edit is invalid".to_owned());
@@ -3511,7 +3511,7 @@ impl AssistantCadEditProgram {
                 AssistantCadEditOperation::SetAssemblyJointPosition { joint_id, position } => {
                     if *joint_id == 0
                         || !position.is_finite()
-                        || position.abs() > MAX_ASSISTANT_ABS_MM
+                        || position.abs() > MAX_COORDINATE_MM
                         || self.operations.len() != 1
                     {
                         return Err("assistant assembly joint edit is invalid".to_owned());
@@ -3647,7 +3647,7 @@ impl AssistantCadEditProgram {
                         || name.len() > MAX_ASSISTANT_NAME_BYTES
                         || name.chars().any(char::is_control)
                         || !value.is_finite()
-                        || value.abs() > MAX_ASSISTANT_ABS_MM
+                        || value.abs() > MAX_COORDINATE_MM
                     {
                         return Err("assistant CAD evaluator input is invalid".to_owned());
                     }
@@ -3709,7 +3709,7 @@ impl AssistantCadEditProgram {
                         || !assistant_cad_vector_is_nonzero(*step_mm)
                         || step_mm.iter().any(|value| {
                             (*value * f64::from(instances.saturating_sub(1))).abs()
-                                > MAX_ASSISTANT_ABS_MM
+                                > MAX_COORDINATE_MM
                         })
                     {
                         return Err("assistant CAD linear pattern is invalid".to_owned());
@@ -3732,7 +3732,7 @@ impl AssistantCadEditProgram {
                     if !valid_count
                         || axis.validate().is_err()
                         || !angle_step_degrees.is_finite()
-                        || angle_step_degrees.abs() > MAX_ASSISTANT_ABS_MM
+                        || angle_step_degrees.abs() > MAX_COORDINATE_MM
                         || duplicate_angle
                     {
                         return Err("assistant CAD circular pattern is invalid".to_owned());
@@ -3865,7 +3865,7 @@ impl AssistantModelIntent {
                 || translation
                     .delta_mm
                     .iter()
-                    .any(|value| !value.is_finite() || value.abs() > MAX_ASSISTANT_ABS_MM)
+                    .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
             {
                 return Err("assistant translation is invalid".to_owned());
             }
@@ -3890,11 +3890,11 @@ impl AssistantModelIntent {
                     .pivot_mm
                     .iter()
                     .chain(rotation.axis.iter())
-                    .any(|value| !value.is_finite() || value.abs() > MAX_ASSISTANT_ABS_MM)
+                    .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
                 || !axis_length_squared.is_finite()
                 || axis_length_squared <= f64::EPSILON
                 || !rotation.angle_degrees.is_finite()
-                || rotation.angle_degrees.abs() > MAX_ASSISTANT_ABS_MM
+                || rotation.angle_degrees.abs() > MAX_COORDINATE_MM
                 || shortest_angle < 0.01
             {
                 return Err("assistant rotation is invalid".to_owned());
@@ -3910,7 +3910,7 @@ impl AssistantModelIntent {
                 || translation
                     .delta_mm
                     .iter()
-                    .any(|value| !value.is_finite() || value.abs() > MAX_ASSISTANT_ABS_MM)
+                    .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
                 || translation.delta_mm.iter().all(|value| *value == 0.0)
             {
                 return Err("assistant profile translation is invalid".to_owned());
@@ -3923,7 +3923,7 @@ impl AssistantModelIntent {
                 || edit.constraint_id == Some(0)
                 || !edit.value_mm.is_finite()
                 || edit.value_mm <= 0.0
-                || edit.value_mm > MAX_ASSISTANT_ABS_MM
+                || edit.value_mm > MAX_COORDINATE_MM
             {
                 return Err("assistant parameter edit is invalid".to_owned());
             }
@@ -3942,11 +3942,11 @@ impl AssistantModelIntent {
                 || array
                     .step_mm
                     .iter()
-                    .any(|value| !value.is_finite() || value.abs() > MAX_ASSISTANT_ABS_MM)
+                    .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
                 || array.step_mm.iter().all(|value| *value == 0.0)
                 || array.step_mm.iter().any(|value| {
                     (*value * f64::from(array.instances.saturating_sub(1))).abs()
-                        > MAX_ASSISTANT_ABS_MM
+                        > MAX_COORDINATE_MM
                 })
             {
                 return Err("assistant linear array is invalid".to_owned());
@@ -3976,11 +3976,11 @@ impl AssistantModelIntent {
             if item
                 .size_mm
                 .iter()
-                .any(|value| !value.is_finite() || *value <= 0.0 || *value > MAX_ASSISTANT_ABS_MM)
+                .any(|value| !value.is_finite() || *value <= 0.0 || *value > MAX_COORDINATE_MM)
                 || item
                     .origin_mm
                     .iter()
-                    .any(|value| !value.is_finite() || value.abs() > MAX_ASSISTANT_ABS_MM)
+                    .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
             {
                 return Err(
                     "assistant box dimensions or origin are outside the envelope".to_owned(),

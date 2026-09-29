@@ -8033,7 +8033,7 @@ fn assistant_delete_clearance_volume_is_typed_observational_and_undoable() {
         ketchup_core::space::ClearanceOwner::Space(owner),
         "maintenance envelope",
         ketchup_core::prismatic::Aabb::bounded_volume([0.0, 0.0, 0.0], [1.0, 2.0, 3.0]).unwrap(),
-        ketchup_core::prismatic::TolerancePolicy::new(0.01).unwrap(),
+        ketchup_core::tolerance::TolerancePolicy::new(0.01).unwrap(),
         ketchup_core::space::ClearanceSeverity::Required,
         None,
     )

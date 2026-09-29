@@ -4,9 +4,10 @@ use crate::document::{
 use crate::exact_product::BodyResultIdentity;
 use crate::graph::{DerivedIdentity, sha256_hex};
 use crate::prismatic::{
-    Aabb, CanonicalJoint, ExactPrismaticBody, JointId, JointValidationOutcome, TolerancePolicy,
+    Aabb, CanonicalJoint, ExactPrismaticBody, JointId, JointValidationOutcome,
     validate_joint_geometry,
 };
+use crate::tolerance::TolerancePolicy;
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -606,7 +607,7 @@ fn prismatic_case_evidence(case: &PrismaticJointCase, tolerance: TolerancePolicy
     EvidenceClass::weakest(
         [&case.left_evidence_class, &case.right_evidence_class],
         TolerantEvidence::new(
-            tolerance.epsilon_mm(),
+            tolerance.linear_mm(),
             PRISMATIC_VALIDATOR_IMPLEMENTATION_V1,
             PermittedErrorDirection::FalsePositiveOnly,
         )
@@ -623,7 +624,7 @@ fn prismatic_input_evidence(
             .iter()
             .flat_map(|case| [&case.left_evidence_class, &case.right_evidence_class]),
         TolerantEvidence::new(
-            tolerance.epsilon_mm(),
+            tolerance.linear_mm(),
             PRISMATIC_VALIDATOR_IMPLEMENTATION_V1,
             PermittedErrorDirection::FalsePositiveOnly,
         )
@@ -636,7 +637,7 @@ pub fn prismatic_input_bytes(cases: &[PrismaticJointCase], tolerance: ToleranceP
     let mut input = Vec::new();
     push_bytes(&mut input, PRISMATIC_VALIDATOR_INPUT_V1.as_bytes());
     push_bytes(&mut input, tolerance.id().as_bytes());
-    input.extend_from_slice(&tolerance.epsilon_mm().to_bits().to_le_bytes());
+    input.extend_from_slice(&tolerance.linear_mm().to_bits().to_le_bytes());
     input.extend_from_slice(&(cases.len() as u64).to_le_bytes());
     for case in cases {
         push_identity(&mut input, &case.left_identity);
